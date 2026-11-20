@@ -20,7 +20,12 @@ import { TranscriptDetailProvider } from './transcriptDetail';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { KikiClient } from '../lib/client';
 import type { MediaPreviewApi } from './mediaPreviewContext';
-import { configureRemoteMediaPlayback, useSessionMediaPlayback } from './useSessionMediaPlayback';
+import {
+  clearSessionMediaPlaybackCache,
+  configureRemoteMediaPlayback,
+  evictSessionMediaPlayback,
+  useSessionMediaPlayback,
+} from './useSessionMediaPlayback';
 const mocks = vi.hoisted(() => ({
   readSessionMediaBytes: vi.fn(),
   readHostFileBytes: vi.fn(),
@@ -759,7 +764,7 @@ describe('session Range playback', () => {
     mocks.openMediaPlayback.mockReset().mockResolvedValue(descriptor());
     mocks.closeMediaPlayback.mockReset().mockResolvedValue(undefined);
   });
-  afterEach(() => { mocks.remote = false; configureRemoteMediaPlayback(null); vi.useRealTimers(); });
+  afterEach(() => { mocks.remote = false; configureRemoteMediaPlayback(null); clearSessionMediaPlaybackCache(); vi.useRealTimers(); });
 
   it.each([
     { item: video, tag: 'video', mime: 'video/mp4' },
@@ -774,7 +779,7 @@ describe('session Range playback', () => {
     expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
   });
 
-  it('revokes a late mint through its original client after switching client and session', async () => {
+  it('keeps grants cached per client and session instead of revoking on client or session switch', async () => {
     const old = playbackClient();
     const next = playbackClient();
     let finish!: (grant: ReturnType<typeof descriptor>) => void;
@@ -783,24 +788,33 @@ describe('session Range playback', () => {
     await renderSettled(root, <Player client={old.client} />);
     await renderSettled(root, <Player client={next.client} sessionId="session-b" />);
     await act(async () => { finish(descriptor('late')); });
-    expect(old.close).toHaveBeenCalledExactlyOnceWith('late', { timeoutMs: 10_000 });
+    expect(old.close).not.toHaveBeenCalled();
     expect(next.close).not.toHaveBeenCalled();
     expect(next.open).toHaveBeenCalledWith('session-b', video.fileId, expect.anything());
     expect(container.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/grant-1');
+    evictSessionMediaPlayback(old.client, 'session-a');
+    expect(old.close).toHaveBeenCalledExactlyOnceWith('late', { timeoutMs: 10_000 });
   });
 
-  it('releases on file change and unmount exactly once', async () => {
+  it('reuses cached grants in 0ms across unmount/remount and only revokes on explicit eviction', async () => {
     const owner = playbackClient();
     owner.open.mockResolvedValueOnce(descriptor('first')).mockResolvedValueOnce(descriptor('second'));
-    const { root } = makeRoot();
+    const { root, container } = makeRoot();
     await renderSettled(root, <Player client={owner.client} />);
+    expect(owner.open).toHaveBeenCalledTimes(1);
     await renderSettled(root, <Player client={owner.client} item={{ ...video, fileId: 'other-video' }} />);
-    expect(owner.close.mock.calls.map(([id]) => id)).toEqual(['first']);
+    expect(owner.close).not.toHaveBeenCalled();
     await renderSettled(root, null);
+    expect(owner.close).not.toHaveBeenCalled();
+    // Remounting the first file hits the shared cache synchronously without a second POST.
+    await renderSettled(root, <Player client={owner.client} />);
+    expect(owner.open).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/first');
+    evictSessionMediaPlayback(owner.client, 'session-a');
     expect(owner.close.mock.calls.map(([id]) => id)).toEqual(['first', 'second']);
   });
 
-  it('revokes a mint that resolves after unmount and consumes a rejected revoke', async () => {
+  it('consumes rejected revokes cleanly on explicit eviction even after unmount', async () => {
     const owner = playbackClient();
     let finish!: (grant: ReturnType<typeof descriptor>) => void;
     owner.open.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -809,6 +823,8 @@ describe('session Range playback', () => {
     await renderSettled(root, <Player client={owner.client} />);
     await renderSettled(root, null);
     await act(async () => { finish(descriptor('departed')); });
+    expect(owner.close).not.toHaveBeenCalled();
+    evictSessionMediaPlayback(owner.client, 'session-a');
     expect(owner.close).toHaveBeenCalledExactlyOnceWith('departed', { timeoutMs: 10_000 });
   });
 
@@ -846,16 +862,20 @@ describe('session Range playback', () => {
     expect(container.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/renewed');
   });
 
-  it.each(['unsupported', 'remote', 'loopback denied'] as const)('preserves the canonical byte fallback for %s', async (mode) => {
-    if (mode === 'remote') mocks.remote = true;
-    else mocks.openMediaPlayback.mockRejectedValue(mode === 'unsupported'
-      ? { code: 404 } : { code: 40301, message: 'media_preview_requires_local_connection' });
+  it.each(['unsupported', 'remote-disabled', 'loopback denied'] as const)('preserves the canonical byte fallback for %s', async (mode) => {
+    if (mode === 'remote-disabled') {
+      mocks.remote = true;
+      configureRemoteMediaPlayback(false);
+    } else {
+      mocks.openMediaPlayback.mockRejectedValue(mode === 'unsupported'
+        ? { code: 404 } : { code: 40301, message: 'media_preview_requires_local_connection' });
+    }
     mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2]), mime: 'video/mp4' });
     await attachment(video);
     expect(document.querySelector('video')?.getAttribute('src')).toBe('blob:kiki-session-media');
     expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session-a', video.fileId, expect.anything());
     expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
-    if (mode === 'remote') expect(mocks.openMediaPlayback).not.toHaveBeenCalled();
+    if (mode === 'remote-disabled') expect(mocks.openMediaPlayback).not.toHaveBeenCalled();
   });
 
   it.each([new Error('network unavailable'), { code: 40409 }])('keeps mint failures visible instead of disguising them as unsupported', async (error) => {

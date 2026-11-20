@@ -588,13 +588,16 @@ export const AgentRoster = memo(function AgentRoster({
   );
 });
 
-/** Wall clock at minute granularity: only ticks while running agents exist. */
+/** Wall clock at minute granularity: only ticks while running agents exist and the document is visible. */
 function useMinuteClock(enabled: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!enabled) return;
     setNow(Date.now());
-    const timer = window.setInterval(() => { setNow(Date.now()); }, 30_000);
+    const timer = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      setNow(Date.now());
+    }, 30_000);
     return () => { window.clearInterval(timer); };
   }, [enabled]);
   return now;

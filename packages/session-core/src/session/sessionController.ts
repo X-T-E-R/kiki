@@ -125,6 +125,7 @@ const WINDOW_TRIM_ABOVE_TURNS = 60;
 const WINDOW_KEEP_TURNS = 40;
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
+const VISIBLE_BURST_FLUSH_INTERVAL_MS = 32;
 /**
  * Roster reads one agent id may cost before its row is given up on: one
  * speculative read when the agent appears, plus up to two more when later
@@ -512,6 +513,12 @@ export class SessionController {
   private readonly visibilityDocument: VisibilityDocument | undefined;
   private readonly rewriteResetTimeoutMs: number;
   private frameHandle: unknown = null;
+  private visibleBurstTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastVisibleFlushAt = 0;
+  private inFrameFlush = false;
+  private frameFlushContentDirty = false;
+  private frameFlushForestChanged = false;
+  private frameFlushPublishedMain = false;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
   private resyncInFlightRewrite = false;
@@ -778,7 +785,8 @@ export class SessionController {
   private publish(agentId: string): void {
     if (agentId === MAIN_AGENT_ID) {
       this.publishTimeline(MAIN_AGENT_ID);
-      this.publishContentRevision();
+      if (this.inFrameFlush) this.frameFlushContentDirty = true;
+      else this.publishContentRevision();
       return;
     }
     this.dirtyAgents.add(agentId);
@@ -788,7 +796,8 @@ export class SessionController {
   private publishDirtyAgents(): void {
     for (const agentId of this.dirtyAgents) this.publishTimeline(agentId);
     this.dirtyAgents.clear();
-    this.publishContentRevision();
+    if (this.inFrameFlush) this.frameFlushContentDirty = true;
+    else this.publishContentRevision();
   }
 
   /**
@@ -915,6 +924,10 @@ export class SessionController {
   }
 
   private cancelVisibleFrameFlush(): void {
+    if (this.visibleBurstTimer !== null) {
+      clearTimeout(this.visibleBurstTimer);
+      this.visibleBurstTimer = null;
+    }
     if (this.frameHandle === null) return;
     this.scheduler.cancel(this.frameHandle);
     this.frameHandle = null;
@@ -927,7 +940,7 @@ export class SessionController {
   }
 
   private scheduleFrameFlush(): void {
-    if (this.frameHandle !== null || this.hiddenFrameTimer !== null || this.closed) return;
+    if (this.frameHandle !== null || this.visibleBurstTimer !== null || this.hiddenFrameTimer !== null || this.closed) return;
     if (this.isDocumentHidden()) {
       this.hiddenFrameTimer = setTimeout(() => {
         this.hiddenFrameTimer = null;
@@ -935,8 +948,29 @@ export class SessionController {
       }, HIDDEN_FRAME_FLUSH_INTERVAL_MS);
       return;
     }
+    const now = Date.now();
+    const remainingBurstCooldown = this.usesBrowserScheduler && this.lastVisibleFlushAt > 0
+      ? VISIBLE_BURST_FLUSH_INTERVAL_MS - (now - this.lastVisibleFlushAt)
+      : 0;
+    if (remainingBurstCooldown > 0) {
+      this.visibleBurstTimer = setTimeout(() => {
+        this.visibleBurstTimer = null;
+        if (this.closed) return;
+        if (this.isDocumentHidden()) {
+          this.scheduleFrameFlush();
+          return;
+        }
+        this.frameHandle = this.scheduler.schedule(() => {
+          this.frameHandle = null;
+          this.lastVisibleFlushAt = Date.now();
+          this.flushFrames();
+        });
+      }, remainingBurstCooldown);
+      return;
+    }
     this.frameHandle = this.scheduler.schedule(() => {
       this.frameHandle = null;
+      if (this.usesBrowserScheduler) this.lastVisibleFlushAt = Date.now();
       this.flushFrames();
     });
   }
@@ -948,9 +982,44 @@ export class SessionController {
     if (this.pendingTranscriptAgents.size > 0) {
       const agents = [...this.pendingTranscriptAgents];
       this.pendingTranscriptAgents.clear();
-      for (const agentId of agents) {
-        const store = this.timelines.get(agentId)?.store;
-        if (store !== undefined) this.publishProjectedAgent(agentId, store);
+      const wasInFrameFlush = this.inFrameFlush;
+      this.inFrameFlush = true;
+      if (!wasInFrameFlush) {
+        this.frameFlushContentDirty = false;
+        this.frameFlushForestChanged = false;
+        this.frameFlushPublishedMain = false;
+      }
+      try {
+        // Project main last so a single batched forest publish sees every
+        // subagent store update from this frame before notifying shell listeners.
+        const ordered = agents.length > 1 && agents.includes(MAIN_AGENT_ID)
+          ? [...agents.filter((id) => id !== MAIN_AGENT_ID), MAIN_AGENT_ID]
+          : agents;
+        let needForestPublish = this.publishedForest === undefined;
+        for (const agentId of ordered) {
+          if (this.forestDirtyAgents.delete(agentId)) needForestPublish = true;
+        }
+        if (needForestPublish && this.publishForest()) {
+          this.frameFlushForestChanged = true;
+        }
+        for (const agentId of ordered) {
+          const store = this.timelines.get(agentId)?.store;
+          if (store !== undefined) {
+            if (agentId === MAIN_AGENT_ID) this.frameFlushPublishedMain = true;
+            this.publishProjectedAgent(agentId, store);
+          }
+        }
+      } finally {
+        if (!wasInFrameFlush) {
+          this.inFrameFlush = false;
+          const shellDirty = this.frameFlushForestChanged && !this.frameFlushPublishedMain;
+          const contentDirty = this.frameFlushContentDirty;
+          this.frameFlushContentDirty = false;
+          this.frameFlushForestChanged = false;
+          this.frameFlushPublishedMain = false;
+          if (shellDirty) this.publishShell();
+          else if (contentDirty) this.publishContentRevision();
+        }
       }
     }
   };
@@ -2945,7 +3014,7 @@ export class SessionController {
       if (obsolete()) return { kind: 'cancelled', changed: false };
       const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
       const current = this.viewOf(agentId);
-      if (code === 40923) {
+      if (code === 40922 || code === 40923 || code === API_CODES.SESSION_BUSY || code === API_CODES.SESSION_INDEX_BUILDING) {
         this.publishView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
         return { kind: 'preparing', changed: false };
       }
@@ -4919,9 +4988,11 @@ export class SessionController {
     const transcriptReady = this.transcriptPresentable(agentId);
     const withCoverage = { ...projected, globalCoverage: timeline.globalCoverage, contentRefs, historyRead: timeline.historyRead, todoRead: timeline.todoRead,
       transcriptReady, refreshing: transcriptReady && timeline.refreshing };
-    const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
-      ? this.publishForest()
-      : false;
+    const forestChanged = this.inFrameFlush
+      ? false
+      : (this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
+          ? this.publishForest()
+          : false);
     if (timeline.cursor !== undefined) timeline.publishedCursor = timeline.cursor;
     const steersChanged = this.adoptAcceptedSteers(agentId, withCoverage);
     // A projection of main's timeline also means the session has loaded: the

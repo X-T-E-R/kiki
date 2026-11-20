@@ -1786,6 +1786,70 @@ function parseTimelineMs(value: string | undefined): number | undefined {
  * the block's frozen dispatch snapshot is only the fallback, and its stale
  * endedAt must never pin a live run at 0ms.
  */
+const sharedSecondClockListeners = new Set<() => void>();
+let sharedSecondClockNow = Date.now();
+let sharedSecondClockTimer: ReturnType<typeof setInterval> | null = null;
+let sharedSecondClockVisibilityBound = false;
+
+function stopSharedSecondClock(): void {
+  if (sharedSecondClockTimer !== null) {
+    clearInterval(sharedSecondClockTimer);
+    sharedSecondClockTimer = null;
+  }
+}
+
+function tickSharedSecondClock(): void {
+  sharedSecondClockNow = Date.now();
+  for (const listener of sharedSecondClockListeners) listener();
+}
+
+function startSharedSecondClock(): void {
+  if (sharedSecondClockTimer !== null || sharedSecondClockListeners.size === 0) return;
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  sharedSecondClockTimer = setInterval(tickSharedSecondClock, 1000);
+}
+
+function onSharedSecondClockVisibility(): void {
+  if (sharedSecondClockListeners.size === 0) return;
+  if (document.visibilityState === 'hidden') {
+    stopSharedSecondClock();
+  } else {
+    tickSharedSecondClock();
+    startSharedSecondClock();
+  }
+}
+
+function subscribeSharedSecondClock(listener: () => void): () => void {
+  sharedSecondClockListeners.add(listener);
+  if (!sharedSecondClockVisibilityBound && typeof document !== 'undefined') {
+    sharedSecondClockVisibilityBound = true;
+    document.addEventListener('visibilitychange', onSharedSecondClockVisibility);
+  }
+  sharedSecondClockNow = Date.now();
+  startSharedSecondClock();
+  return () => {
+    sharedSecondClockListeners.delete(listener);
+    if (sharedSecondClockListeners.size === 0) stopSharedSecondClock();
+  };
+}
+
+function noopSubscribe(): () => void {
+  return () => {};
+}
+
+function getSharedSecondClockNow(): number {
+  return sharedSecondClockNow;
+}
+
+/** Single synchronized 1-second clock shared across all live elapsed counters; pauses when hidden. */
+function useSharedSecondClock(enabled: boolean): number {
+  return useSyncExternalStore(
+    enabled ? subscribeSharedSecondClock : noopSubscribe,
+    enabled ? getSharedSecondClockNow : Date.now,
+    Date.now,
+  );
+}
+
 function useSubagentElapsed(
   block: SubagentBlock,
   node: AgentTreeNode | undefined,
@@ -1793,12 +1857,7 @@ function useSubagentElapsed(
   isLatestRun = true,
 ): number | undefined {
   const live = status === 'running' || status === 'background' || status === 'suspended';
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const timer = setInterval(() => { setNow(Date.now()); }, 1000);
-    return () => { clearInterval(timer); };
-  }, [live]);
+  const now = useSharedSecondClock(live);
   const start = isLatestRun
     ? (parseTimelineMs(node?.startedAt) ?? parseTimelineMs(block.startedAt))
     : (parseTimelineMs(block.startedAt) ?? parseTimelineMs(node?.startedAt));
@@ -4241,9 +4300,10 @@ function captureTranscriptAnchor(
   };
 }
 
-function MeasuredTranscriptRow({ index, rowKey, virtualizer, onDetach, arriving, children }: {
+function MeasuredTranscriptRow({ index, rowKey, start, virtualizer, onDetach, arriving, children }: {
   index: number;
   rowKey: string;
+  start: number;
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
   onDetach: (element: HTMLDivElement) => void;
   /** The row was appended after the previous commit's last row. Read once, at mount. */
@@ -4251,11 +4311,20 @@ function MeasuredTranscriptRow({ index, rowKey, virtualizer, onDetach, arriving,
   children: ReactNode;
 }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
+  const startRef = useRef(start);
+  startRef.current = start;
   const [entering] = useState(arriving);
   const measure = useCallback((element: HTMLDivElement | null) => {
     if (element === null && rowRef.current !== null) onDetach(rowRef.current);
-    if (element !== null && !entering) {
-      element.querySelectorAll<HTMLElement>('.anim-enter').forEach((entrance) => { entrance.style.animation = 'none'; });
+    if (element !== null) {
+      // Seed top position synchronously on first mount so directDomUpdates never
+      // paints a brand-new row at top: 0 before its post-commit layout pass.
+      if (element.style.top === '') {
+        element.style.top = `${startRef.current - virtualizer.options.scrollMargin}px`;
+      }
+      if (!entering) {
+        element.querySelectorAll<HTMLElement>('.anim-enter').forEach((entrance) => { entrance.style.animation = 'none'; });
+      }
     }
     rowRef.current = element;
     virtualizer.measureElement(element);
@@ -4726,16 +4795,8 @@ const TurnStatusLine = memo(function TurnStatusLine({
   retry?: TurnRetryInfo;
 }) {
   const { t, time } = useI18n();
-  const [elapsedMs, setElapsedMs] = useState(() =>
-    startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt),
-  );
-  useEffect(() => {
-    if (startedAt === undefined) return;
-    const tick = () => { setElapsedMs(Math.max(0, Date.now() - startedAt)); };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => { clearInterval(timer); };
-  }, [startedAt]);
+  const now = useSharedSecondClock(startedAt !== undefined);
+  const elapsedMs = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
   // A provider retry names the wait: cause + attempt counter + backoff delay,
   // in warn tone, so a failing relay reads as such instead of a stuck tool.
   const retryText =
@@ -4980,13 +5041,8 @@ export const TurnTailLine = memo(function TurnTailLine({
 export function TranscriptLoading({ rootRef }: { rootRef?: React.Ref<HTMLDivElement> } = {}) {
   const { t } = useI18n();
   const [startedAt] = useState(Date.now);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
-    return () => { clearInterval(timer); };
-  }, [startedAt]);
+  const now = useSharedSecondClock(true);
+  const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   return (
     <div ref={rootRef} data-transcript-loading role="status" aria-live="polite" className="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-faint">
       <span aria-hidden="true" className="status-dot-busy h-1 w-1 rounded-full bg-ink-faint" />
@@ -5094,7 +5150,6 @@ export const Transcript = memo(function Transcript({
   onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
 }) {
   const { t } = useI18n();
-  const { blocks } = state;
   const controller = useTranscriptController();
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -5112,7 +5167,28 @@ export const Transcript = memo(function Transcript({
       return !signal.aborted;
     } finally { lease.release(); }
   }, [controller, agentId]);
-  const loaded = state.loaded && state.transcriptReady;
+  // Once a session/agent transcript has mounted ready state, keep [data-transcript-scroll]
+  // permanently mounted across transient cold->live sends or resyncs (where `state.loaded`,
+  // `state.transcriptReady`, or `state.blocks` momentarily flicker) so the screen never
+  // unmounts into <TranscriptLoading /> or <Wordmark /> and never drops scroll offset to 0.
+  const readyTranscriptKeyRef = useRef<string | null>(null);
+  const lastNonEmptyBlocksRef = useRef<{ key: string; blocks: readonly Block[] } | null>(null);
+  const transcriptIdentityKey = `${state.sessionId}\0${agentId}`;
+  if (state.loaded && state.transcriptReady && !(state.refreshing === true && state.blocks.length === 0 && !state.busy)) {
+    readyTranscriptKeyRef.current = transcriptIdentityKey;
+  }
+  if (state.blocks.length > 0) {
+    lastNonEmptyBlocksRef.current = { key: transcriptIdentityKey, blocks: state.blocks };
+  }
+  const hasPriorReadyTranscript = readyTranscriptKeyRef.current === transcriptIdentityKey;
+  const loaded = (state.loaded && state.transcriptReady) || hasPriorReadyTranscript;
+  const blocks =
+    hasPriorReadyTranscript
+    && (!state.loaded || !state.transcriptReady)
+    && state.blocks.length === 0
+    && lastNonEmptyBlocksRef.current?.key === transcriptIdentityKey
+      ? lastNonEmptyBlocksRef.current.blocks
+      : state.blocks;
   const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
   const activeDraftKey = useActiveDraftKey(sessionIdForLocate);
@@ -5732,9 +5808,17 @@ export const Transcript = memo(function Transcript({
     return stick.isAtBottom && !stick.escapedFromLock;
   }, []);
   const handleScrollRef = useCallback((node: HTMLDivElement | null) => {
+    const previous = scrollRef.current;
     scrollRef.current = node;
+    if (node !== null && node !== previous) {
+      // A freshly mounted scroll element always starts at scrollTop 0; re-arm
+      // initial bottom landing so it never inherits a stale done flag.
+      initialScrollDoneRef.current = false;
+      lastObservedScrollTopRef.current = node.scrollTop;
+      programmaticScrollTopRef.current = null;
+    }
     stickToBottomRef.current.scrollRef(node);
-    setScrollElement((previous) => (previous === node ? previous : node));
+    setScrollElement((prev) => (prev === node ? prev : node));
   }, []);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const olderIntentRef = useRef(false);
@@ -6188,7 +6272,10 @@ export const Transcript = memo(function Transcript({
         if (!isProgrammatic && Math.abs(currentTop - lastObservedScrollTopRef.current) > 0.5) {
           programmaticScrollTopRef.current = null;
           const dist = el.scrollHeight - el.clientHeight - currentTop;
-          if (dist > TRANSCRIPT_END_THRESHOLD || currentTop < lastObservedScrollTopRef.current - 0.5) {
+          // `use-stick-to-bottom` clamps its internal target to `scrollHeight - 1 - clientHeight`
+          // and clears `ignoreScrollToTop` in its own scroll handler before ours runs. Ignore
+          // <=2px bottom-clamp jitter so send/streaming never misclassifies it as an upward scroll.
+          if (dist > TRANSCRIPT_END_THRESHOLD || (currentTop < lastObservedScrollTopRef.current - 2 && dist > 2)) {
             if (stick.state.isAtBottom || !stick.state.escapedFromLock) {
               stick.stopScroll();
             }
@@ -6310,7 +6397,7 @@ export const Transcript = memo(function Transcript({
       }
       const prevTop = lastObservedScrollTopRef.current;
       const dist = el.scrollHeight - el.clientHeight - current;
-      if (dist > TRANSCRIPT_END_THRESHOLD || current < prevTop - 0.5) {
+      if (dist > TRANSCRIPT_END_THRESHOLD || (current < prevTop - 2 && dist > 2)) {
         if (stick.state.isAtBottom || !stick.state.escapedFromLock) {
           stick.stopScroll();
         }
@@ -6620,19 +6707,37 @@ export const Transcript = memo(function Transcript({
     if (!loaded || loadError !== undefined) return;
     const scroll = scrollRef.current;
     if (scroll === null) return;
+    let hasEditing = false;
     const updateEditingRows = () => {
       const blockIds = [...scroll.querySelectorAll<HTMLElement>('[data-edit-editor]')]
         .map((editor) => editor.closest<HTMLElement>('[data-block-id]')?.dataset['blockId'])
         .filter((blockId): blockId is string => blockId !== undefined)
         .sort();
+      hasEditing = blockIds.length > 0;
       setEditingBlockIds((previous) =>
         previous.length === blockIds.length && previous.every((blockId, index) => blockId === blockIds[index])
           ? previous
           : blockIds,
       );
     };
+    const nodeMayTouchEditor = (node: Node): boolean => {
+      if (!(node instanceof Element)) return false;
+      return node.hasAttribute('data-edit-editor') || node.querySelector('[data-edit-editor]') !== null;
+    };
     updateEditingRows();
-    const observer = new MutationObserver(updateEditingRows);
+    const observer = new MutationObserver((records) => {
+      if (!hasEditing) {
+        let sawEditor = false;
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (nodeMayTouchEditor(node)) { sawEditor = true; break; }
+          }
+          if (sawEditor) break;
+        }
+        if (!sawEditor) return;
+      }
+      updateEditingRows();
+    });
     observer.observe(scroll, { childList: true, subtree: true });
     return () => { observer.disconnect(); };
   }, [loadError, loaded, virtualNodes.length]);
@@ -7458,7 +7563,7 @@ export const Transcript = memo(function Transcript({
     );
   }
 
-  if (!loaded || (state.refreshing === true && timelineBlocks.length === 0 && !state.busy)) {
+  if (!loaded || (!hasPriorReadyTranscript && state.refreshing === true && timelineBlocks.length === 0 && !state.busy)) {
     return <TranscriptLoading rootRef={surfaceRef} />;
   }
 
@@ -7483,49 +7588,8 @@ export const Transcript = memo(function Transcript({
     readingRestoreFailed === null &&
     (topEdgeState.hasMoreHistory || topEdgeState.loadingOlder || topEdgeState.olderError !== undefined) &&
     (topEdgeState.historyCoverageKind !== 'unknown' || topEdgeState.loadingOlder || topEdgeState.olderError !== undefined);
-  if (timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory) {
-    return (
-      <div ref={surfaceRef} className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
-        <Wordmark size="lg" />
-        {sessionRemainderPending ? null : state.historyCoverageKind === 'unknown' ? (
-          <span role="img" data-history-unverified title={t('transcript.historyPartial')} aria-label={t('transcript.historyPartial')} className="inline-flex text-ink-faint">
-            <Icon name="partial" size={12} />
-          </span>
-        ) : (
-          <p className="text-[13px] text-ink-faint">{t('transcript.blank')}</p>
-        )}
-        {/* The session's own remainder is offered from the composer's footer
-            now, so the reader sees what is missing from where they are typing
-            rather than having to scroll back through a transcript that is not
-            there. The blank-state sentence above still yields to it, so an
-            unread session is never announced as an empty one. */}
-        {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
-          <button
-            type="button"
-            disabled={blankRetrying}
-            aria-busy={blankRetrying || undefined}
-            data-reading-restore-retry={readingRestoreFailed !== null || undefined}
-            onClick={() => {
-              if (blankRetrying) return;
-              if (readingRestoreFailed !== null) {
-                reading.retryRestore();
-                return;
-              }
-              setBlankRetrying(true);
-              const pending = state.hasMoreHistory || onRetryLoad === undefined
-                ? Promise.resolve(onLoadOlder())
-                : Promise.resolve(onRetryLoad());
-              void pending.finally(() => { setBlankRetrying(false); });
-            }}
-            className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-faint transition-colors hover:text-ink-soft disabled:cursor-wait disabled:opacity-60"
-          >
-            {blankRetrying ? <Spinner label={t('common.retry')} size={12} /> : null}
-            {t('common.retry')}
-          </button>
-        ) : null}
-      </div>
-    );
-  }
+  const showEmptyWordmark =
+    timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory;
 
   return (
     <AgentRefResolutionProvider value={agentRefResolution}>
@@ -7534,18 +7598,18 @@ export const Transcript = memo(function Transcript({
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
     <MessageLinkContext.Provider value={messageLink}>
     <FindRevealContext.Provider value={findReveal}>
-    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleFindKeyDown}>
+    <div ref={surfaceRef} className="flex min-h-0 flex-1 flex-col" onKeyDown={handleFindKeyDown}>
       {loadError !== undefined ? <div role="alert" className="mx-4 mt-2 flex shrink-0 items-center gap-3 rounded-lg border border-danger/30 bg-paper p-3 text-[12px] text-danger shadow-sm">
         <div className="min-w-0 flex-1"><p className="font-medium">{t('transcript.couldNotOpen')}</p><p className="break-words font-mono text-[11px]">{loadError}</p></div>
         {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
       </div> : null}
       <div className="relative min-h-0 flex-1">
-      {topEdgeState.loadingOlder || topEdgeState.olderError !== undefined ? (
+      {!showEmptyWordmark && (topEdgeState.loadingOlder || topEdgeState.olderError !== undefined) ? (
         <div data-history-feedback className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-xl border border-hairline bg-paper px-4 py-2 shadow-sm">
           <TopEdge state={topEdgeState} onLoadOlder={() => requestOlderAtReadingAnchor()} onCancel={olderBatchActive ? cancelOlderRun : undefined} />
         </div>
       ) : null}
-      {readingRestoreFailed ? (
+      {!showEmptyWordmark && readingRestoreFailed ? (
         <button type="button" data-reading-restore-retry onClick={reading.retryRestore}
           className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full border border-hairline bg-paper px-3 py-1 text-[12px] text-ink-soft">
           {readingRestoreFailed} · {t('common.retry')}
@@ -7562,8 +7626,42 @@ export const Transcript = memo(function Transcript({
         onKeyDown={handleAnnotationKeyDown}
         onScroll={handleAnnotationScroll}
       >
-        {/* Bottom clearance is 24px of breathing room + the 36px fade band the
-            shell's active composer seat overlaps (see index.css). */}
+        {showEmptyWordmark ? (
+          <div className="flex h-full min-h-full flex-1 flex-col items-center justify-center gap-3 opacity-70">
+            <Wordmark size="lg" />
+            {sessionRemainderPending ? null : state.historyCoverageKind === 'unknown' ? (
+              <span role="img" data-history-unverified title={t('transcript.historyPartial')} aria-label={t('transcript.historyPartial')} className="inline-flex text-ink-faint">
+                <Icon name="partial" size={12} />
+              </span>
+            ) : (
+              <p className="text-[13px] text-ink-faint">{t('transcript.blank')}</p>
+            )}
+            {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
+              <button
+                type="button"
+                disabled={blankRetrying}
+                aria-busy={blankRetrying || undefined}
+                data-reading-restore-retry={readingRestoreFailed !== null || undefined}
+                onClick={() => {
+                  if (blankRetrying) return;
+                  if (readingRestoreFailed !== null) {
+                    reading.retryRestore();
+                    return;
+                  }
+                  setBlankRetrying(true);
+                  const pending = state.hasMoreHistory || onRetryLoad === undefined
+                    ? Promise.resolve(onLoadOlder())
+                    : Promise.resolve(onRetryLoad());
+                  void pending.finally(() => { setBlankRetrying(false); });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-faint transition-colors hover:text-ink-soft disabled:cursor-wait disabled:opacity-60"
+              >
+                {blankRetrying ? <Spinner label={t('common.retry')} size={12} /> : null}
+                {t('common.retry')}
+              </button>
+            ) : null}
+          </div>
+        ) : (
         <CompactionRecoveryContext.Provider value={compactionRecoveryValue}>
         <PhoneMergedPendingLeadContext.Provider value={mergedPendingLeadId}>
         <div
@@ -7597,6 +7695,7 @@ export const Transcript = memo(function Transcript({
               <MeasuredTranscriptRow
                 key={virtualItem.key}
                 rowKey={String(virtualItem.key)}
+                start={virtualItem.start}
                 virtualizer={virtualizer}
                 index={virtualItem.index}
                 arriving={previousLastIndex !== undefined && virtualItem.index > previousLastIndex}
@@ -7722,6 +7821,7 @@ export const Transcript = memo(function Transcript({
         </div>
         </PhoneMergedPendingLeadContext.Provider>
         </CompactionRecoveryContext.Provider>
+        )}
       </div>
       {annotationPopover !== null && openAnnotation !== undefined ? (
         <AnnotationPopover

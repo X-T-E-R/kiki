@@ -467,7 +467,9 @@ it('hides idle partial prompt records from the composer footer when no queue or 
   expect(queueToggle).not.toBeNull();
   await act(async () => queueToggle!.click());
   const action = container.querySelector<HTMLButtonElement>('[data-content-continuation-action]');
-  expect(container.textContent).toContain('8 / 12 message records loaded');
+  expect(action).not.toBeNull();
+  expect(action?.getAttribute('title')).toContain('8 / 12 message records loaded');
+  expect(container.textContent).not.toContain('8 / 12 message records loaded');
   await act(async () => action!.click());
   expect(fixture.loadEntities).toHaveBeenCalledExactlyOnceWith('main', 'prompt');
   expect(container.querySelector('[data-composer-input][contenteditable]')).not.toBeNull();
@@ -944,16 +946,18 @@ it('migrates a legacy draft quote and restores all serialized queued quotes thro
   const edit = async () => { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click()); await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); };
   await edit();
   const quoteTitles = (selector: string) => [...container.querySelectorAll(selector)].map(item => item.getAttribute('title'));
-  const noteTitles = () => [...container.querySelectorAll('[data-composer-note] > span[title]:first-child')].map(item => item.getAttribute('title'));
-  if (container.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
+  const noteTitles = () => [...document.querySelectorAll('[data-composer-note] > span[title]:first-child')].map(item => item.getAttribute('title'));
+  if (document.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
   expect(noteTitles()).toEqual(['queued first', 'queued second']);
   expect(quoteTitles('[data-queue-item="queued-example"] [data-quote-chip]')).toEqual(['queued first', 'queued second']);
   expect(composerInput(container).value).toBe('queued body');
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
+  if (document.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
   expect(noteTitles()).toEqual(['legacy passage']);
   expect(replaceQueued).not.toHaveBeenCalled();
   await edit();
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
+  if (document.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
   expect(replaceQueued).toHaveBeenCalledWith('queued-example', content[0].text, [], carry.presentation);
   expect(noteTitles()).toEqual(['legacy passage']);
 });
@@ -1097,8 +1101,8 @@ it('keeps truncated queued content non-editable until hydrated while keeping can
   await act(async () => { hydrations[1]!.resolve(fullContent); await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(input().disabled).toBe(false);
   expect(input().value).toBe('complete hydrated queued body');
-  if (container.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
-  const noteTitles = () => [...container.querySelectorAll('[data-composer-note] > span[title]:first-child')].map(item => item.getAttribute('title'));
+  if (document.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
+  const noteTitles = () => [...document.querySelectorAll('[data-composer-note] > span[title]:first-child')].map(item => item.getAttribute('title'));
   expect(noteTitles()).toEqual(['hydrated first', 'hydrated second']);
   expect(confirm().disabled).toBe(false);
   await act(async () => confirm().click());
@@ -1242,7 +1246,7 @@ describe('live composer mode controls', () => {
   }
 
   async function click(selector: string) {
-    const button = container.querySelector<HTMLButtonElement>(selector);
+    const button = container.querySelector<HTMLButtonElement>(selector) ?? document.querySelector<HTMLButtonElement>(selector);
     expect(button, selector).not.toBeNull();
     await act(async () => button!.click());
   }
@@ -1262,10 +1266,10 @@ describe('live composer mode controls', () => {
     await click('[data-add-menu-mode]');
     await click('[data-mode-switch="plan"]');
     expect(fixture.updateSessionProfile).toHaveBeenNthCalledWith(1, 'session-example', { agent_config: { plan_mode: true } });
-    expect(container.querySelector('[data-mode-switch="plan"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(document.querySelector('[data-mode-switch="plan"]')?.getAttribute('aria-checked')).toBe('true');
     await click('[data-mode-switch="normal"]');
     expect(fixture.updateSessionProfile).toHaveBeenNthCalledWith(2, 'session-example', { agent_config: { plan_mode: false } });
-    expect(container.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(document.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('rolls back a failed permission write and reports the failure', async () => {
@@ -1299,10 +1303,10 @@ describe('live composer mode controls', () => {
     await click('[data-mode-switch="plan"]');
     await click('[data-mode-switch="planGate"]');
     expect(fixture.updateSessionProfile).toHaveBeenLastCalledWith('session-example', { agent_config: { plan_gate: 'gated' } });
-    expect(container.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(document.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
     fixture.updateSessionProfile.mockRejectedValueOnce(new Error('gate write failed'));
     await click('[data-mode-switch="planGate"]');
-    expect(container.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(document.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
     expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('gate write failed') }));
   });
 
@@ -1312,7 +1316,7 @@ describe('live composer mode controls', () => {
     await click('[data-add-menu-trigger]');
     await click('[data-add-menu-mode]');
     await click('[data-mode-switch="plan"]');
-    expect(container.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(document.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
     expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('plan write failed') }));
   });
 });

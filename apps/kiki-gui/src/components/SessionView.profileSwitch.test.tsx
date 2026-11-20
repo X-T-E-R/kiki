@@ -244,9 +244,9 @@ async function mount() {
   return { container, root };
 }
 
-/** The composer and its panels are queried through the whole mounted tree. */
-function ui(container: HTMLElement): HTMLElement {
-  return container;
+/** The composer and its portaled popovers are queried through document.body. */
+function ui(_container: HTMLElement): HTMLElement {
+  return document.body;
 }
 
 async function click(element: Element | null | undefined): Promise<void> {
@@ -623,7 +623,7 @@ function workspaceProfile(name: string, extras: Pick<NamedAgentProfile, 'pinned_
 
 async function waitForElement(container: HTMLElement, selector: string): Promise<Element> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const found = container.querySelector(selector);
+    const found = container.querySelector(selector) ?? document.querySelector(selector);
     if (found !== null) return found;
     await settle();
   }
@@ -1219,7 +1219,7 @@ describe('effort-only changes stay on the current engine', () => {
     await click(await waitForElement(container, '#composer-execution-select'));
     await click(await waitForElement(container, '[data-execution-effort="high"]'));
     await settle();
-    const selectedButton = container.querySelector<HTMLButtonElement>('[data-execution-effort="medium"]');
+    const selectedButton = ui(container).querySelector<HTMLButtonElement>('[data-execution-effort="medium"]');
     expect(selectedButton?.getAttribute('aria-checked')).toBe('true');
     expect(selectedButton?.className ?? '').toContain('bg-panel');
     const track = selectedButton?.parentElement;
@@ -1238,7 +1238,7 @@ describe('effort-only changes stay on the current engine', () => {
       const page = await browser.newPage({ viewport: { width: 520, height: 160 }, deviceScaleFactor: 2 });
       await page.setContent(
         '<!doctype html><html data-theme="light"><head><meta charset="utf-8"></head>'
-        + '<body class="bg-canvas text-ink"><div class="bg-surface p-6">' + track.outerHTML + '</div></body></html>',
+        + '<body class="bg-canvas text-ink"><div class="bg-panel p-6">' + track.outerHTML + '</div></body></html>',
       );
       await page.addStyleTag({ path: cssPath });
       // The capsules exist before the stylesheet, so transition-colors starts

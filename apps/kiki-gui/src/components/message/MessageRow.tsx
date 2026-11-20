@@ -399,20 +399,25 @@ function AudioAttachment({ attachment, voice }: { readonly attachment: MessageAt
   const caption = [t(voice ? 'message.media.voice' : 'message.media.audio'), attachmentDisplayName(attachment),
     attachment.size === undefined ? undefined : formatBytes(attachment.size)]
     .filter((part): part is string => part !== undefined && part !== '').join(' · ');
+  const resolvedSrc = playback.status === 'ready' ? playback.url : load.status === 'ready' ? load.url : undefined;
+  const [stickySrc, setStickySrc] = useState<{ readonly key: string; readonly url: string } | null>(null);
+  const mediaKey = `${preview?.sessionId ?? ''}\0${item.fileId ?? item.path ?? item.url ?? ''}\0${attempt}`;
+  if (resolvedSrc !== undefined && (stickySrc?.key !== mediaKey || stickySrc.url !== resolvedSrc)) {
+    setStickySrc({ key: mediaKey, url: resolvedSrc });
+  }
+  const activeSrc = resolvedSrc ?? (playback.status !== 'failed' && load.status !== 'failed' && stickySrc?.key === mediaKey ? stickySrc.url : undefined);
   let body: ReactNode;
-  if (playback.status === 'ready') {
+  if (activeSrc !== undefined) {
     body = (
       <audio
         controls
         preload="metadata"
-        src={playback.url}
-        onError={playback.fail}
+        src={activeSrc}
+        onError={playback.status === 'ready' ? playback.fail : undefined}
         aria-label={caption}
         className="h-10 w-full max-w-[320px]"
       />
     );
-  } else if (load.status === 'ready') {
-    body = <audio controls preload="metadata" src={load.url} aria-label={caption} className="h-10 w-full max-w-[320px]" />;
   } else if (playback.status === 'failed' || load.status === 'failed') {
     body = (
       <button

@@ -291,12 +291,37 @@ export function observeRowMutations(
   if (scroll === null) return () => undefined;
   let queued = false;
   let active = true;
-  const observer = new MutationObserver(() => {
+  let fullScan = false;
+  const dirtyRows = new Set<HTMLDivElement>();
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      const target = record.target instanceof HTMLElement ? record.target : record.target.parentElement;
+      const row = target?.closest<HTMLDivElement>('[data-row-key]') ?? null;
+      if (row instanceof HTMLDivElement && scroll.contains(row)) {
+        dirtyRows.add(row);
+      } else {
+        fullScan = true;
+      }
+    }
     if (queued) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
-      if (active && scroll.isConnected) reconcileMountedRows(instance);
+      if (!active || !scroll.isConnected) {
+        dirtyRows.clear();
+        fullScan = false;
+        return;
+      }
+      if (fullScan) {
+        fullScan = false;
+        dirtyRows.clear();
+        reconcileMountedRows(instance);
+        return;
+      }
+      if (dirtyRows.size === 0) return;
+      const rows = [...dirtyRows];
+      dirtyRows.clear();
+      reconcileMountedRows(instance, rows);
     });
   });
   observer.observe(scroll, {
@@ -308,17 +333,34 @@ export function observeRowMutations(
   });
   return () => {
     active = false;
+    dirtyRows.clear();
     observer.disconnect();
   };
 }
 
 /**
- * Re-read every connected mounted row and update the virtualizer where a row's
- * rendered height diverged from `itemSizeCache`. Hidden rows keep their last size.
+ * Re-read connected mounted rows (or a mutated subset) and update the virtualizer
+ * where a row's rendered height diverged from `itemSizeCache`. Hidden rows keep their last size.
  */
-export function reconcileMountedRows(instance: TranscriptVirtualizer): void {
+export function reconcileMountedRows(
+  instance: TranscriptVirtualizer,
+  subset?: readonly HTMLDivElement[],
+): void {
   const scroll = instance.scrollElement;
   if (scroll instanceof HTMLElement && (!scroll.isConnected || scroll.clientHeight === 0)) return;
+  if (subset !== undefined) {
+    for (const element of subset) {
+      if (!element.isConnected) continue;
+      const index = instance.indexFromElement(element);
+      if (index < 0 || index >= instance.options.count) continue;
+      const key = instance.options.getItemKey(index);
+      const domKey = element.dataset['rowKey'];
+      if (domKey !== undefined && domKey !== String(key)) continue;
+      const size = readRowHeight(element);
+      if (size > 0 && instance.itemSizeCache.get(key) !== size) instance.resizeItem(index, size);
+    }
+    return;
+  }
   for (const [key, element] of instance.elementsCache) {
     if (!element.isConnected) continue;
     const index = instance.indexFromElement(element);

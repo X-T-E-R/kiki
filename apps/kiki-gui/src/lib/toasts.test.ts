@@ -90,6 +90,14 @@ describe('toast queue', () => {
       text: 'Open: opener failed',
     });
   });
+
+  it('deduplicates identical active error toasts instead of stacking duplicates', () => {
+    const first = pushToast({ tone: 'error', text: 'Could not load earlier messages.' });
+    const second = pushToast({ tone: 'error', text: 'Could not load earlier messages.' });
+    expect(second).toBe(first);
+    expect(getToasts()).toHaveLength(1);
+    expect(getToasts()[0]?.text).toBe('Could not load earlier messages.');
+  });
 });
 
 describe('pushUndoToast', () => {

@@ -108,11 +108,13 @@ export const EMPTY_SLOTS: ConversationShellSlots = {
 /**
  * Resolve the phase before any seat is registered (first paint, or the commit
  * gap between an unmounting route and the mounting one): /new can only be the
- * hero; a session route without its controller yet is still settling — never
- * flash the docked bar over an unloaded transcript.
+ * hero; an in-flight /new -> /s/:id handoff or same-session subroute switch
+ * stays active without a 1-frame settling flash; an unseated cold session route
+ * starts settling so the docked bar never flashes over an unloaded transcript.
  */
-export function resolveFallbackPhase(isNewRoute: boolean): ConversationPhase {
-  return isNewRoute ? 'hero' : 'settling';
+export function resolveFallbackPhase(isNewRoute: boolean, keepActive = false): ConversationPhase {
+  if (isNewRoute) return 'hero';
+  return keepActive ? 'active' : 'settling';
 }
 
 function hasFiles(event: DragEvent): boolean {
@@ -300,7 +302,21 @@ export function ConversationShell() {
   );
 
   const isNewRoute = useMatch('/new') !== null;
-  const phase = seat?.phase ?? resolveFallbackPhase(isNewRoute);
+  const sessionSubrouteMatch = useMatch('/s/:id/*');
+  const sessionDirectMatch = useMatch('/s/:id');
+  const routeSessionId = sessionSubrouteMatch?.params.id ?? sessionDirectMatch?.params.id;
+  const prevPhaseRef = useRef<ConversationPhase | null>(null);
+  const prevSessionIdRef = useRef<string | undefined>(undefined);
+  const keepActiveAcrossTransition =
+    !isNewRoute
+    && routeSessionId !== undefined
+    && (
+      prevPhaseRef.current === 'hero'
+      || (prevPhaseRef.current === 'active' && prevSessionIdRef.current === routeSessionId)
+    );
+  const phase = seat?.phase ?? resolveFallbackPhase(isNewRoute, keepActiveAcrossTransition);
+  prevPhaseRef.current = phase;
+  prevSessionIdRef.current = routeSessionId;
   const centerCovered = previewPresentation.maximized && preview !== null;
 
   return (

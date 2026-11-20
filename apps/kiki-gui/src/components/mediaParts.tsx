@@ -17,7 +17,7 @@ import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
 import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
 import { RemoteImageGate } from './RemoteImageGate';
-import { useSessionMediaPlayback } from './useSessionMediaPlayback';
+import { useHostMediaPreview, useSessionMediaPlayback } from './useSessionMediaPlayback';
 import { useTranscriptDetail } from './transcriptDetail';
 
 const ActiveDraftKeyContext = createContext<{
@@ -771,10 +771,6 @@ function AudioPart({ item }: { item: MediaRef }) {
   const [hostRef, visible] = useVisibleOnce();
   const [attempt, setAttempt] = useState(0);
   const hostPath = item.path === undefined ? undefined : resolveHostPath(item.path, preview?.cwd);
-  const [hostPreview, setHostPreview] = useState<{
-    readonly status: 'idle' | 'loading' | 'ready' | 'fallback';
-    readonly url?: string;
-  }>({ status: 'idle' });
   const canHostPreview =
     visible &&
     item.url === undefined &&
@@ -783,31 +779,7 @@ function AudioPart({ item }: { item: MediaRef }) {
     localKikiComputer &&
     client !== undefined &&
     typeof client.openHostMediaPreview === 'function';
-  useEffect(() => {
-    if (!canHostPreview || client === undefined || hostPath === undefined) {
-      setHostPreview({ status: 'fallback' });
-      return;
-    }
-    let active = true;
-    let previewId: string | undefined;
-    const controller = new AbortController();
-    setHostPreview({ status: 'loading' });
-    void client.openHostMediaPreview({ path: hostPath }, { signal: controller.signal }).then((opened) => {
-      previewId = opened.preview_id;
-      if (!active) {
-        void client.closeHostMediaPreview(opened.preview_id).catch(() => {});
-        return;
-      }
-      setHostPreview({ status: 'ready', url: opened.url });
-    }).catch(() => {
-      if (active) setHostPreview({ status: 'fallback' });
-    });
-    return () => {
-      active = false;
-      controller.abort();
-      if (previewId !== undefined) void client.closeHostMediaPreview(previewId).catch(() => {});
-    };
-  }, [canHostPreview, client, hostPath, attempt]);
+  const hostPreview = useHostMediaPreview(client, hostPath, canHostPreview, attempt);
 
   const playbackSessionId = visible && item.url === undefined ? preview?.sessionId : undefined;
   const remotePlayback = client === undefined || !localKikiComputer;
@@ -818,7 +790,7 @@ function AudioPart({ item }: { item: MediaRef }) {
     playback.status === 'fallback' &&
     (!canHostPreview || hostPreview.status === 'fallback');
   const load = useSessionMedia(item, preview?.sessionId, needBlobFallback, false, attempt);
-  const src =
+  const resolvedSrc =
     item.url ??
     (playback.status === 'ready'
       ? playback.url
@@ -827,6 +799,14 @@ function AudioPart({ item }: { item: MediaRef }) {
         : load.status === 'ready'
           ? load.url
           : undefined);
+  // Keep the last valid audio URL mounted across prop/client churn so `<audio>`
+  // never flashes back to a loading skeleton once ready.
+  const [stickySrc, setStickySrc] = useState<{ readonly key: string; readonly url: string } | null>(null);
+  const mediaKey = `${preview?.sessionId ?? ''}\0${item.fileId ?? item.path ?? item.url ?? ''}\0${attempt}`;
+  if (resolvedSrc !== undefined && (stickySrc?.key !== mediaKey || stickySrc.url !== resolvedSrc)) {
+    setStickySrc({ key: mediaKey, url: resolvedSrc });
+  }
+  const src = resolvedSrc ?? (playback.status !== 'failed' && stickySrc?.key === mediaKey ? stickySrc.url : undefined);
   const failed = src === undefined && (playback.status === 'failed' || (needBlobFallback && load.status === 'failed'));
   const label = attachmentName(item, undefined, t('media.attachment'));
   return (

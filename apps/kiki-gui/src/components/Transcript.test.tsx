@@ -11160,14 +11160,14 @@ describe('serialized queue edit consumer', () => {
     expect(input.value).toBe(expectedBody);
     expect(container.querySelector('[data-composer-card]')?.textContent).not.toMatch(/thread_refs|original-host|original-workspace|kiki-source/);
     await act(async () => { click(container.querySelector('[data-composer-notes-pill]')!); });
-    expect([...container.querySelectorAll('[data-composer-note] span[title]')].filter((node) => expectedNotes.includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(expectedNotes);
+    expect([...document.querySelectorAll('[data-composer-note] span[title]')].filter((node) => expectedNotes.includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(expectedNotes);
     return { client, sessionId, container, input };
   }
 
   it.each(['unchanged', 'prose', 'delete', 'retarget', 'selection-delete'] as const)('retains original hidden targets and ordered selection sources: %s', { timeout: 30_000 }, async (change) => {
     const fixture = serializedEditFixture();
     const { client, sessionId, container, input } = await openQueuedEditSession('active-round-trip', 'queued-round-trip', fixture.content, fixture.body, ['A', 'B', 'C']);
-    if (change === 'selection-delete') await act(async () => { click(container.querySelectorAll('[data-composer-note-remove]')[1]!); });
+    if (change === 'selection-delete') await act(async () => { click(document.querySelectorAll('[data-composer-note-remove]')[1]!); });
     const editedBody = change === 'unchanged' || change === 'selection-delete' ? fixture.body : change === 'prose' ? `edited prose: ${fixture.body}`
       : change === 'delete' ? 'compare /s/session_second' : 'compare /s/session_new and /s/session_second';
     if (editedBody !== fixture.body) await act(async () => { setComposerInputValue(input, editedBody); });
