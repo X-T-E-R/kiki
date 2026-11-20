@@ -181,6 +181,9 @@ export class UsageExportStore {
   }
   discardStage(run: string): void { this.assertWriter(); this.stmt('DELETE FROM staging WHERE run=?').run(run); }
   retireSession(workspaceId: string, sessionId: string): void {
+    if (/[\u0000-\u001f]/u.test(workspaceId) || /[\u0000-\u001f]/u.test(sessionId)) {
+      throw new Error('invalid-session-identifier');
+    }
     const key = `${workspaceId}\0${sessionId}`;
     const operationPrefix = `operation\0${key}\0`;
     const operationUpper = `operation\0${key}\u0001`;

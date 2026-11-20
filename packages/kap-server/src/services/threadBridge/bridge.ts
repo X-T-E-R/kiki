@@ -33,7 +33,7 @@ import { machineLabel } from '../connections/pairing';
 import { evictPinnedAgent, isRetryableTransportError, peerFetch } from '../connections/peerTls';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import type { TranscriptService } from '../transcript/transcriptService';
-import type { PeerBridgeRegistry } from '../../transport/klient/peerBridgeSocket';
+import { PEER_BRIDGE_LIST_MAX_RESPONSE_BYTES, type PeerBridgeRegistry } from '../../transport/klient/peerBridgeSocket';
 import { readSessionViewTranscriptPage, readSessionViewTranscriptContent } from '../../transport/klient/sessionViewReads';
 import { ContentChangedError } from '../../transport/klient/boundedContent';
 import { bridgeTargetInputSchema, localBridgePolicySchema } from '@kiki/protocol';
@@ -1042,7 +1042,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         return envelope.data.result;
       }
       const serializedBody = JSON.stringify(body);
-      const responseLimit = operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'tools_call' ? 16 * 1024 * 1024 : operation === 'tools_list' ? 512 * 1024 : operation === 'list' ? 128 * 1024 : 16 * 1024;
+      const responseLimit = operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'tools_call' ? 16 * 1024 * 1024 : operation === 'tools_list' ? 512 * 1024 : operation === 'list' ? PEER_BRIDGE_LIST_MAX_RESPONSE_BYTES : 16 * 1024;
       const sendOverHttp = async (): Promise<T> => {
         if (record.purposes.includes('gui') && record.pinnedFingerprint === undefined) {
           const { grant, grantId } = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });

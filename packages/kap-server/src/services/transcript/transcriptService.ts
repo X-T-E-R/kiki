@@ -124,6 +124,7 @@ const COLD_SNAPSHOT_CACHE_TTL_MS = 15_000;
 const COLD_SNAPSHOT_CACHE_MAX_BYTES = 4 << 20;
 const RETAINED_COLD_TURNS_BYTES = 1024 * 1024;
 const RETAINED_COLD_TURN_ENTRY_BYTES = 8 << 20;
+const RETAINED_COLD_TURNS_MAX_TOTAL_BYTES = 8 << 20;
 const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
 const COLD_ROSTER_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
@@ -154,9 +155,6 @@ const WINDOW_OPAQUE_RECORDS = [
   'llm.tools_snapshot',
   'hook.step.prepared',
   'staleGuard.recorded',
-  'token_counting.measured',
-  'token_counting.rebased',
-  'usage.record',
   'plugin.session_start',
   'context_rebuild.reported',
   'auto_compact.override_changed',
@@ -662,7 +660,7 @@ interface ColdToolTurnIndex {
 }
 
 interface ScannedSpanMarker {
-  readonly kind: 'turn.prompt' | 'turn_begin' | 'pre_turn' | 'visibility_reset' | 'implicit_turn';
+  readonly kind: 'turn.prompt' | 'turn_begin' | 'turn.ended' | 'pre_turn' | 'visibility_reset' | 'implicit_turn';
   readonly startByteOffset: number;
   readonly endByteOffset: number;
   readonly turnId?: string;
@@ -748,6 +746,10 @@ function classifySpanMarker(record: ContextRecord, startByteOffset: number, endB
     const turnId = wireTurnId(record);
     return { kind: 'turn_begin', startByteOffset, endByteOffset, turnId };
   }
+  if (type === 'turn.ended') {
+    const turnId = wireTurnId(record);
+    return { kind: 'turn.ended', startByteOffset, endByteOffset, turnId };
+  }
   if (type === 'prompt.enqueued' || type === 'prompt.replaced' || type === 'prompt.steer_accepted' || type === 'prompt.launch_committed') {
     const rawPromptId = (record as { promptId?: unknown }).promptId;
     const rawUserMessageId = (record as { userMessageId?: unknown }).userMessageId;
@@ -757,7 +759,7 @@ function classifySpanMarker(record: ContextRecord, startByteOffset: number, endB
     return { kind: 'pre_turn', startByteOffset, endByteOffset, promptId, userMessageId };
   }
   if (type === 'context.append_message') {
-    const delivery = (record as { delivery?: { messageId?: unknown } }).delivery;
+    const delivery = (record as { delivery?: { messageId?: unknown; turnId?: unknown } }).delivery;
     const message = (record as { message?: { id?: unknown; role?: unknown; origin?: { kind?: unknown } } }).message;
     if (delivery === undefined) {
       const kind = message?.origin?.kind;
@@ -770,8 +772,13 @@ function classifySpanMarker(record: ContextRecord, startByteOffset: number, endB
     const promptId = typeof delivery.messageId === 'string' && delivery.messageId.length > 0
       ? delivery.messageId
       : typeof message?.id === 'string' && message.id.length > 0 ? message.id : undefined;
-    if (promptId === undefined) return undefined;
-    return { kind: 'pre_turn', startByteOffset, endByteOffset, promptId };
+    const turnId = typeof delivery.turnId === 'number' && Number.isFinite(delivery.turnId)
+      ? `t${delivery.turnId}`
+      : typeof delivery.turnId === 'string' && delivery.turnId.length > 0
+        ? (delivery.turnId.startsWith('t') ? delivery.turnId : `t${delivery.turnId}`)
+        : undefined;
+    if (promptId === undefined && turnId === undefined) return undefined;
+    return { kind: 'pre_turn', startByteOffset, endByteOffset, turnId, promptId };
   }
   return undefined;
 }
@@ -1070,6 +1077,7 @@ export class TranscriptService {
   private readonly initOnlyProvenSnapshots = new WeakSet<AgentTranscriptSnapshot>();
   private readonly coldRosterCache = new Map<string, { readonly revision: string; readonly roster: readonly AgentDescriptor[] }>();
   private readonly retainedColdTurns = new Map<string, { fingerprint: string; turns: Map<string, TranscriptTurn>; bytes: number }>();
+  private retainedColdTurnBytes = 0;
   private readonly coldWireWindows = new Map<string, ColdWireWindow>();
   private readonly coldTurnSpans = new Map<string, ColdTurnSpanIndex>();
   private readonly coldToolTurnIds = new Map<string, ColdToolTurnIndex>();
@@ -2551,19 +2559,19 @@ export class TranscriptService {
     if (info.size <= (tailFirst || boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       if (this.coldWireWindows.has(wirePath)) {
         this.forgetColdWindow(wirePath);
-        this.retainedColdTurns.delete(wirePath);
+        this.deleteRetainedColdTurns(wirePath);
         this.deleteColdSnapshotCache(wirePath);
       }
       return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, tailFirst || boundedPage);
     }
     const retained = this.retainedColdTurns.get(wirePath);
-    if (retained !== undefined && retained.fingerprint !== fingerprint) this.retainedColdTurns.delete(wirePath);
+    if (retained !== undefined && retained.fingerprint !== fingerprint) this.deleteRetainedColdTurns(wirePath);
     const opened = signal ?? new AbortController().signal;
     if (!extendOlder && !preserveWindow) {
       const existing = this.coldWireWindows.get(wirePath);
       if (existing !== undefined && existing.fingerprint === fingerprint && (existing.droppedTail === true || existing.end < info.size)) {
         this.forgetColdWindow(wirePath);
-        this.retainedColdTurns.delete(wirePath);
+        this.deleteRetainedColdTurns(wirePath);
         this.deleteColdSnapshotCache(wirePath);
       }
     }
@@ -2601,7 +2609,7 @@ export class TranscriptService {
     this.assertReadableAgent(sessionId, agentId);
     if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
       this.forgetColdWindow(wirePath);
-      this.retainedColdTurns.delete(wirePath);
+      this.deleteRetainedColdTurns(wirePath);
       this.coldTurnSpans.delete(wirePath);
       this.coldToolTurnIds.delete(wirePath);
       const projected = project({ ...partialColdWindowSnapshot(window), hasMoreOlder: window.start > 0 });
@@ -2697,7 +2705,7 @@ export class TranscriptService {
     }
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     const retained = this.retainedColdTurns.get(wirePath);
-    if (retained !== undefined && retained.fingerprint !== fingerprint) this.retainedColdTurns.delete(wirePath);
+    if (retained !== undefined && retained.fingerprint !== fingerprint) this.deleteRetainedColdTurns(wirePath);
     const cached = this.coldSnapshotCache.get(wirePath);
     if (cached !== undefined) {
       const fresh = cached.fingerprint === fingerprint && cached.expiresAt > Date.now();
@@ -2720,7 +2728,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
     if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
-      this.retainedColdTurns.delete(wirePath);
+      this.deleteRetainedColdTurns(wirePath);
       const projected = project(snapshot);
       this.contiguousColdSnapshots.add(projected);
       return projected;
@@ -2952,7 +2960,7 @@ export class TranscriptService {
     const merged = [...read.records, ...window.records];
     if (next > 0 && merged[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(merged)) {
       this.forgetColdWindow(wirePath);
-      this.retainedColdTurns.delete(wirePath);
+      this.deleteRetainedColdTurns(wirePath);
       this.deleteColdSnapshotCache(wirePath);
       return undefined;
     }
@@ -2981,7 +2989,7 @@ export class TranscriptService {
       if (startAt === undefined || startAt >= window.start) return window;
       if (startAt > 0 && fitted.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(fitted.records)) {
         this.forgetColdWindow(wirePath);
-        this.retainedColdTurns.delete(wirePath);
+        this.deleteRetainedColdTurns(wirePath);
         this.deleteColdSnapshotCache(wirePath);
         return undefined;
       }
@@ -3159,10 +3167,59 @@ export class TranscriptService {
 
   private trimColdWindows(): void {
     while (this.coldWireWindows.size > COLD_WIRE_WINDOWS_MAX_ENTRIES ||
-      this.coldWireWindowBytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES) {
+      this.coldWireWindowBytes + this.retainedColdTurnBytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES) {
+      if (this.coldWireWindows.size > COLD_WIRE_WINDOWS_MAX_ENTRIES || this.coldWireWindowBytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES) {
+        const oldest = this.coldWireWindows.keys().next().value;
+        if (oldest === undefined) break;
+        this.forgetColdWindow(oldest);
+        continue;
+      }
+      if (this.retainedColdTurns.size > 0) {
+        const oldestRetained = this.retainedColdTurns.keys().next().value;
+        if (oldestRetained !== undefined) {
+          this.deleteRetainedColdTurns(oldestRetained);
+          continue;
+        }
+      }
       const oldest = this.coldWireWindows.keys().next().value;
       if (oldest === undefined) break;
       this.forgetColdWindow(oldest);
+    }
+  }
+
+  private deleteRetainedColdTurns(wirePath: string): void {
+    const existing = this.retainedColdTurns.get(wirePath);
+    if (existing === undefined) return;
+    this.retainedColdTurns.delete(wirePath);
+    this.retainedColdTurnBytes = Math.max(0, this.retainedColdTurnBytes - existing.bytes);
+  }
+
+  private clearRetainedColdTurns(): void {
+    this.retainedColdTurns.clear();
+    this.retainedColdTurnBytes = 0;
+  }
+
+  private setRetainedColdTurns(wirePath: string, entry: { fingerprint: string; turns: Map<string, TranscriptTurn>; bytes: number }): void {
+    this.deleteRetainedColdTurns(wirePath);
+    this.retainedColdTurns.set(wirePath, entry);
+    this.retainedColdTurnBytes += entry.bytes;
+    this.trimRetainedColdTurns(wirePath);
+    this.trimColdWindows();
+  }
+
+  private trimRetainedColdTurns(protectedWirePath?: string): void {
+    while (
+      this.retainedColdTurns.size > COLD_WIRE_WINDOWS_MAX_ENTRIES ||
+      this.retainedColdTurnBytes > RETAINED_COLD_TURNS_MAX_TOTAL_BYTES
+    ) {
+      let evicted = false;
+      for (const candidate of this.retainedColdTurns.keys()) {
+        if (candidate === protectedWirePath && this.retainedColdTurns.size > 1) continue;
+        this.deleteRetainedColdTurns(candidate);
+        evicted = true;
+        break;
+      }
+      if (!evicted) break;
     }
   }
 
@@ -3170,8 +3227,8 @@ export class TranscriptService {
     for (const wirePath of this.coldSnapshotCache.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.deleteColdSnapshotCache(wirePath);
     }
-    for (const wirePath of this.retainedColdTurns.keys()) {
-      if (wirePath.split(/[/\\]/).includes(sessionId)) this.retainedColdTurns.delete(wirePath);
+    for (const wirePath of [...this.retainedColdTurns.keys()]) {
+      if (wirePath.split(/[/\\]/).includes(sessionId)) this.deleteRetainedColdTurns(wirePath);
     }
     for (const wirePath of this.coldWireWindows.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.forgetColdWindow(wirePath);
@@ -3659,7 +3716,38 @@ export class TranscriptService {
     };
 
     const preTurnByPromptId = new Map<string, number>();
-    let openTurn: { readonly turnId: string; readonly startOffset: number; readonly duplicate: boolean } | undefined;
+    let openTurn: {
+      readonly turnId: string;
+      readonly startOffset: number;
+      readonly duplicate: boolean;
+      readonly promptId?: string;
+      readonly userMessageId?: string;
+      ended: boolean;
+      firstForeignPreTurnOffset?: number;
+    } | undefined;
+
+    const belongsToOpenTurn = (
+      current: NonNullable<typeof openTurn>,
+      marker: ScannedSpanMarker,
+    ): boolean => {
+      if (marker.turnId !== undefined) return marker.turnId === current.turnId;
+      if (current.promptId !== undefined && (marker.promptId === current.promptId || marker.userMessageId === current.promptId)) {
+        return true;
+      }
+      if (current.userMessageId !== undefined && (marker.userMessageId === current.userMessageId || marker.promptId === current.userMessageId)) {
+        return true;
+      }
+      return false;
+    };
+
+    const closeOpenTurn = (endOffset: number, forceInvalidated = false): void => {
+      if (openTurn === undefined) return;
+      const boundedEnd = openTurn.firstForeignPreTurnOffset !== undefined
+        ? Math.min(openTurn.firstForeignPreTurnOffset, endOffset)
+        : endOffset;
+      storeSpan(openTurn.turnId, openTurn.startOffset, boundedEnd, forceInvalidated || openTurn.duplicate);
+      openTurn = undefined;
+    };
 
     for (let i = 0; i < markers.length; i += 1) {
       const marker = markers[i]!;
@@ -3670,14 +3758,27 @@ export class TranscriptService {
             index.spans.set(turnId, { ...span, undoneOrReplaced: true });
           }
         }
-        if (openTurn !== undefined) {
-          storeSpan(openTurn.turnId, openTurn.startOffset, marker.startByteOffset, true);
-          openTurn = undefined;
-        }
+        closeOpenTurn(marker.startByteOffset, true);
         preTurnByPromptId.clear();
         continue;
       }
+      if (marker.kind === 'turn.ended') {
+        if (openTurn !== undefined && (marker.turnId === undefined || marker.turnId === openTurn.turnId)) {
+          openTurn.ended = true;
+          openTurn.firstForeignPreTurnOffset = undefined;
+          preTurnByPromptId.clear();
+        }
+        continue;
+      }
       if (marker.kind === 'pre_turn') {
+        if (openTurn !== undefined && !belongsToOpenTurn(openTurn, marker)) {
+          if (openTurn.ended) {
+            storeSpan(openTurn.turnId, openTurn.startOffset, marker.startByteOffset, openTurn.duplicate);
+            openTurn = undefined;
+          } else if (openTurn.firstForeignPreTurnOffset === undefined) {
+            openTurn.firstForeignPreTurnOffset = marker.startByteOffset;
+          }
+        }
         if (marker.promptId !== undefined && !preTurnByPromptId.has(marker.promptId)) {
           preTurnByPromptId.set(marker.promptId, marker.startByteOffset);
         }
@@ -3687,10 +3788,7 @@ export class TranscriptService {
         continue;
       }
       if (marker.kind === 'implicit_turn' || marker.kind === 'turn_begin') {
-        if (openTurn !== undefined) {
-          storeSpan(openTurn.turnId, openTurn.startOffset, marker.startByteOffset, openTurn.duplicate);
-          openTurn = undefined;
-        }
+        closeOpenTurn(marker.startByteOffset);
         preTurnByPromptId.clear();
         continue;
       }
@@ -3706,9 +3804,7 @@ export class TranscriptService {
         ) {
           startOffset = preStart;
         }
-        if (openTurn !== undefined) {
-          storeSpan(openTurn.turnId, openTurn.startOffset, Math.min(startOffset, marker.startByteOffset), openTurn.duplicate);
-        }
+        closeOpenTurn(Math.min(startOffset, marker.startByteOffset));
         preTurnByPromptId.clear();
         const priorPromptStart = index.promptStarts.get(marker.turnId);
         const duplicate = priorPromptStart !== undefined && priorPromptStart !== startOffset;
@@ -3726,15 +3822,22 @@ export class TranscriptService {
             index.promptStarts.delete(oldest);
           }
         }
-        openTurn = { turnId: marker.turnId, startOffset, duplicate };
+        openTurn = {
+          turnId: marker.turnId,
+          startOffset,
+          duplicate,
+          promptId: marker.promptId,
+          userMessageId: marker.userMessageId,
+          ended: false,
+        };
       }
     }
 
     if (openTurn !== undefined) {
       if (rangeEnd >= fileSize && complete) {
-        storeSpan(openTurn.turnId, openTurn.startOffset, rangeEnd, openTurn.duplicate);
+        closeOpenTurn(rangeEnd);
       } else if (contiguousNextBoundary !== undefined && contiguousNextBoundary > openTurn.startOffset) {
-        storeSpan(openTurn.turnId, openTurn.startOffset, contiguousNextBoundary, openTurn.duplicate);
+        closeOpenTurn(contiguousNextBoundary);
       }
     }
   }
@@ -3937,10 +4040,11 @@ export class TranscriptService {
   }
 
   private retainDirectColdTurn(wirePath: string, fingerprint: string, turn: TranscriptTurn): void {
+    const maxEntryBytes = Math.min(RETAINED_COLD_TURN_ENTRY_BYTES, RETAINED_COLD_TURNS_MAX_TOTAL_BYTES);
     const size = estimateColdSnapshotBytes({
       items: [turn], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
-    }, RETAINED_COLD_TURN_ENTRY_BYTES + 1);
-    if (size > RETAINED_COLD_TURN_ENTRY_BYTES) return;
+    }, maxEntryBytes + 1);
+    if (size > maxEntryBytes) return;
     const existing = this.retainedColdTurns.get(wirePath);
     const turns = existing !== undefined && existing.fingerprint === fingerprint
       ? existing.turns
@@ -3950,30 +4054,24 @@ export class TranscriptService {
     if (prior !== undefined) {
       const priorSize = estimateColdSnapshotBytes({
         items: [prior], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
-      }, RETAINED_COLD_TURN_ENTRY_BYTES + 1);
+      }, maxEntryBytes + 1);
       bytes = Math.max(0, bytes - priorSize);
       turns.delete(turn.turnId);
     }
-    const budget = Math.max(RETAINED_COLD_TURNS_BYTES, size);
+    const budget = Math.min(RETAINED_COLD_TURNS_MAX_TOTAL_BYTES, Math.max(RETAINED_COLD_TURNS_BYTES, size));
     while (turns.size > 0 && bytes + size > budget) {
       const oldestKey = turns.keys().next().value;
       if (oldestKey === undefined) break;
       const oldest = turns.get(oldestKey)!;
       const oldestSize = estimateColdSnapshotBytes({
         items: [oldest], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
-      }, RETAINED_COLD_TURN_ENTRY_BYTES + 1);
+      }, maxEntryBytes + 1);
       turns.delete(oldestKey);
       bytes = Math.max(0, bytes - oldestSize);
     }
     turns.set(turn.turnId, structuredClone(turn));
     bytes += size;
-    this.retainedColdTurns.delete(wirePath);
-    this.retainedColdTurns.set(wirePath, { fingerprint, turns, bytes });
-    while (this.retainedColdTurns.size > 4) {
-      const oldest = this.retainedColdTurns.keys().next().value;
-      if (oldest === undefined || oldest === wirePath) break;
-      this.retainedColdTurns.delete(oldest);
-    }
+    this.setRetainedColdTurns(wirePath, { fingerprint, turns, bytes });
   }
 
   async readRetainedColdTurn(sessionId: string, agentId: string, turnId: string, signal?: AbortSignal): Promise<TranscriptTurn | undefined> {
@@ -3989,7 +4087,7 @@ export class TranscriptService {
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     const retained = this.retainedColdTurns.get(location.wirePath);
     if (retained === undefined || retained.fingerprint !== fingerprint) {
-      if (retained !== undefined) this.retainedColdTurns.delete(location.wirePath);
+      if (retained !== undefined) this.deleteRetainedColdTurns(location.wirePath);
       return undefined;
     }
     return retained.turns.get(turnId);
@@ -3998,6 +4096,7 @@ export class TranscriptService {
   private retainColdTailTurns(wirePath: string, fingerprint: string, snapshot: AgentTranscriptSnapshot): void {
     const existing = this.retainedColdTurns.get(wirePath);
     if (existing !== undefined && existing.fingerprint === fingerprint && existing.turns.size > 0) return;
+    const maxEntryBytes = Math.min(RETAINED_COLD_TURN_ENTRY_BYTES, RETAINED_COLD_TURNS_MAX_TOTAL_BYTES);
     const turns = new Map<string, TranscriptTurn>();
     let bytes = 0;
     for (let index = snapshot.items.length - 1; index >= 0; index -= 1) {
@@ -4005,23 +4104,17 @@ export class TranscriptService {
       if (item?.kind !== 'turn') continue;
       const size = estimateColdSnapshotBytes({
         items: [item], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
-      }, RETAINED_COLD_TURN_ENTRY_BYTES + 1);
-      if (size > RETAINED_COLD_TURN_ENTRY_BYTES || (turns.size > 0 && bytes + size > RETAINED_COLD_TURNS_BYTES)) break;
+      }, maxEntryBytes + 1);
+      if (size > maxEntryBytes || (turns.size > 0 && bytes + size > RETAINED_COLD_TURNS_BYTES)) break;
       turns.set(item.turnId, structuredClone(item));
       bytes += size;
       if (bytes >= RETAINED_COLD_TURNS_BYTES) break;
     }
     if (turns.size === 0) {
-      this.retainedColdTurns.delete(wirePath);
+      this.deleteRetainedColdTurns(wirePath);
       return;
     }
-    this.retainedColdTurns.delete(wirePath);
-    this.retainedColdTurns.set(wirePath, { fingerprint, turns, bytes });
-    while (this.retainedColdTurns.size > 4) {
-      const oldest = this.retainedColdTurns.keys().next().value;
-      if (oldest === undefined || oldest === wirePath) break;
-      this.retainedColdTurns.delete(oldest);
-    }
+    this.setRetainedColdTurns(wirePath, { fingerprint, turns, bytes });
   }
 
   /** Oversized canonical detail cache admission; zero disables retention, never reading. */
@@ -5582,7 +5675,7 @@ export class TranscriptService {
       anchorWindowBytes: [...this.anchorWindows.values()].reduce((bytes, entry) => bytes + entry.bytes, 0),
       anchorSeekEntries: this.anchorSeeks.size,
       coldSnapshotBytes: this.coldSnapshotCacheBytes,
-      retainedTurnBytes: [...this.retainedColdTurns.values()].reduce((bytes, entry) => bytes + entry.bytes, 0),
+      retainedTurnBytes: this.retainedColdTurnBytes,
       readLane: this.historyReads.report(),
       eventLoopDelay: {
         meanMs: Number.isFinite(this.eventLoopDelay.mean) ? this.eventLoopDelay.mean / 1e6 : 0,
@@ -5626,7 +5719,7 @@ export class TranscriptService {
     this.anchorWindows.clear();
     this.turnStartIndexes.clear();
     this.anchorOpeningSeeks.clear();
-    this.retainedColdTurns.clear();
+    this.clearRetainedColdTurns();
     for (const sessionId of this.live.keys()) this.dropSession(sessionId);
   }
 
