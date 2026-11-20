@@ -18,6 +18,12 @@ import { clone10kSubagents } from './clone-10k-subagents.mjs';
 import { createContractTwinServer } from './contract-twin-server.mjs';
 import { generateChaosCorpus } from './corpus-generator.mjs';
 import { parseCcpCliArgs, resolveAccountSources, resolveManifestPath } from './run-on-ccp.mjs';
+import {
+  computeSoakLinearSlopes,
+  generateExtremeMediaSession,
+  generateSyntheticMp4,
+  generateSyntheticWav,
+} from './scenario-soak-and-media-weaknet.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
@@ -50,6 +56,30 @@ defineTestContract({
   sunset_when: 'Physically delete this contract if the 10k-subagent scale harness or session snapshot API is retired; never weaken assertions or add compatibility shims',
   sunset: { kind: 'symbolRemoved', file: 'scripts/ccp-chaos/clone-10k-subagents.mjs', symbol: 'clone10kSubagents' },
   tags: ['chaos', 'scale-10k'],
+});
+
+defineTestContract({
+  invariant: 'Accelerated multi-day client/server soak (Scenario S7) bounds JS heap, DOM nodes, event listeners, ObjectURLs, and server RSS/FD slope across 200 lifecycle cycles',
+  mechanism: 'Runs time-compressed 20x timers, 200 SPA session/page/overlay/reconnect cycles with live streaming turns, and measures linear GC checkpoint slopes (C1->C4)',
+  covers: [
+    'scripts/ccp-chaos/scenario-soak-and-media-weaknet.mjs',
+    'scripts/ccp-chaos/chaos-scale-runner.mjs',
+  ],
+  sunset_when: 'Physically delete this contract if the long-running soak harness or browser SPA shell is retired; never weaken leak-slope checkpoints',
+  sunset: { kind: 'symbolRemoved', file: 'scripts/ccp-chaos/scenario-soak-and-media-weaknet.mjs', symbol: 'runScenarioS7LongRunningSoak' },
+  tags: ['chaos', 'soak', 'memory-leak'],
+});
+
+defineTestContract({
+  invariant: 'Extreme multimodal timeline (600+ images, 70 AV assets) under 3 Mbps / 180 ms RTT weak network and 32 concurrent giant requests prevents HTTP starvation and 64-grant exhaustion',
+  mechanism: 'Generates canonical kimi-file media corpus, probes POST /api/sessions/:id/media-playback past MAX_GRANTS=64 with Range fetches, and runs CDP weak-net scroll + concurrent upload/abort storm',
+  covers: [
+    'POST /api/sessions/:sessionId/media-playback',
+    'scripts/ccp-chaos/scenario-soak-and-media-weaknet.mjs',
+  ],
+  sunset_when: 'Physically delete this contract if session media-playback grants or the S8 weak-network media harness is retired; never mask 429 or starvation regressions',
+  sunset: { kind: 'symbolRemoved', file: 'scripts/ccp-chaos/scenario-soak-and-media-weaknet.mjs', symbol: 'runScenarioS8MediaWeakNetStorm' },
+  tags: ['chaos', 'media', 'weak-network'],
 });
 
 describe('Contract-Verifying Twin Server (HTTP/1.1 + HTTP/2 TLS)', () => {
@@ -623,6 +653,82 @@ describe('10k-Subagent Cloner & AGENT_LIST_10K Twin Telemetry', () => {
       assert.ok(stats.lastResultBytes > 0 && stats.lastResultBytes < 1024);
     } finally {
       await twin.close();
+    }
+  });
+});
+
+describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => {
+  it('computes accurate linear per-cycle leak slopes across soak GC checkpoints', () => {
+    const slopes = computeSoakLinearSlopes([
+      { cycle: 20, jsHeapMb: 80, domNodes: 2000, jsEventListeners: 1000, liveObjectUrls: 1, serverRssMb: 1200, serverHeapMb: 600, serverOpenFds: 55 },
+      { cycle: 80, jsHeapMb: 86, domNodes: 2060, jsEventListeners: 1060, liveObjectUrls: 1, serverRssMb: 1210, serverHeapMb: 605, serverOpenFds: 56 },
+      { cycle: 200, jsHeapMb: 98, domNodes: 2180, jsEventListeners: 1180, liveObjectUrls: 3, serverRssMb: 1236, serverHeapMb: 618, serverOpenFds: 57 },
+    ]);
+    assert.equal(slopes.fromCycle, 20);
+    assert.equal(slopes.toCycle, 200);
+    assert.equal(slopes.deltaCycles, 180);
+    assert.equal(slopes.jsHeapKbPerCycle, 102.4);
+    assert.equal(slopes.domNodesPerCycle, 1);
+    assert.equal(slopes.listenersPerCycle, 1);
+    assert.equal(slopes.unrevokedObjectUrlsDelta, 2);
+    assert.equal(slopes.serverRssKbPerCycle, 204.8);
+    assert.equal(slopes.serverFdsDelta, 2);
+  });
+
+  it('generates canonical kimi-file extreme media session with valid PNG/MP4/WAV headers and metadata', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-s8-media-test-'));
+    try {
+      const mp4 = generateSyntheticMp4(64 * 1024);
+      assert.equal(mp4.subarray(4, 12).toString('ascii'), 'ftypisom');
+      const wav = generateSyntheticWav(64 * 1024);
+      assert.equal(wav.subarray(0, 4).toString('ascii'), 'RIFF');
+      assert.equal(wav.subarray(8, 12).toString('ascii'), 'WAVE');
+
+      const summary = generateExtremeMediaSession({
+        dir: tmpDir,
+        imageCount: 24,
+        giantImageCount: 2,
+        videoCount: 4,
+        audioCount: 3,
+        turnsCount: 4,
+        giantPngWidth: 64,
+        giantPngHeight: 64,
+        regularPngWidth: 32,
+        regularPngHeight: 32,
+        videoBytes: 16 * 1024,
+        audioBytes: 16 * 1024,
+      });
+      assert.equal(summary.imageCount, 24);
+      assert.equal(summary.totalPlaybackAssets, 7);
+      assert.equal(summary.videoFileIds.length, 4);
+      assert.equal(summary.audioFileIds.length, 3);
+      assert.ok(fs.existsSync(summary.mainWirePath));
+      assert.ok(fs.existsSync(summary.stateJsonPath));
+
+      const wireText = fs.readFileSync(summary.mainWirePath, 'utf8');
+      assert.ok(wireText.includes('kimi-file://f_s8img_0001'));
+      assert.ok(wireText.includes('kimi-file://f_s8vid_0001'));
+      assert.ok(wireText.includes('kimi-file://f_s8aud_0001'));
+
+      const metaPath = path.join(
+        summary.homeDir,
+        'sessions',
+        summary.workspaceId,
+        summary.sessionId,
+        'media',
+        'meta',
+        'f_s8vid_0001.json',
+      );
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      assert.equal(meta.version, 1);
+      assert.equal(meta.key, 'f_s8vid_0001.mp4');
+      assert.equal(meta.mediaType, 'video/mp4');
+
+      const parsedFlags = parseCcpCliArgs(['--run-s7-s8', '--s7-cycles', '180']);
+      assert.equal(parsedFlags.runS7S8, true);
+      assert.equal(parsedFlags.s7Cycles, 180);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

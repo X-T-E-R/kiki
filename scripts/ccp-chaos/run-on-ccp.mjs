@@ -399,7 +399,12 @@ export async function runChaosOnCcp(options = {}) {
   const runBrowser = options.runBrowser !== false;
   const regenCorpus = Boolean(options.regenCorpus);
   const s6Only = Boolean(options.s6Only);
+  const s7Only = Boolean(options.s7Only);
+  const s8Only = Boolean(options.s8Only);
+  const runS7S8 = Boolean(options.runS7S8);
+  const isolatedOnly = s6Only || s7Only || s8Only || runS7S8;
   const runS6 = s6Only || Boolean(options.runS6);
+  const s7Cycles = options.s7Cycles ?? 200;
   const tenKSubagentCount = options.tenKSubagentCount ?? 10_000;
   const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
   const keepRuntime = Boolean(options.keepRuntime);
@@ -708,8 +713,8 @@ export async function runChaosOnCcp(options = {}) {
     }
 
     log(
-      s6Only
-        ? `Running Scenario S6 (10k-Subagent Extreme Scale + Playwright CDP Virtualization) on CCP Linux (keepRuntime=${keepRuntime})...`
+      isolatedOnly
+        ? `Running targeted Chaos-Scale scenarios (s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}) on CCP Linux (keepRuntime=${keepRuntime})...`
         : 'Running test hygiene, node --test, full S1-S5 Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...',
     );
     const runnerFlags = [
@@ -721,6 +726,10 @@ export async function runChaosOnCcp(options = {}) {
       ...(usedExistingCorpus ? ['--existing-corpus'] : []),
       ...(runBrowser ? [] : ['--no-browser']),
       ...(s6Only ? ['--s6-only'] : runS6 ? ['--run-s6'] : []),
+      ...(s7Only ? ['--s7-only'] : []),
+      ...(s8Only ? ['--s8-only'] : []),
+      ...(runS7S8 ? ['--run-s7-s8'] : []),
+      ...(s7Only || runS7S8 || options.runS7 ? [`--s7-cycles ${s7Cycles}`] : []),
       ...(runS6 ? [`--tenk-subagents ${tenKSubagentCount}`, `--s6-step-timeout-ms ${s6StepTimeoutMs}`] : []),
       ...(syncCodeOnly || options.reuseWarmCorpus ? ['--reuse-10k-session'] : []),
       '--out /tmp/kiki-chaos-results.json',
@@ -735,7 +744,7 @@ export async function runChaosOnCcp(options = {}) {
       `node scripts/ccp-chaos/chaos-scale-runner.mjs ${runnerFlags}`,
       'CHAOS_RC=$?',
       'echo "CHAOS_RUNNER_EXIT=$CHAOS_RC"',
-      ...(runVitest && !s6Only
+      ...(runVitest && !isolatedOnly
         ? [
             'pnpm exec vitest run packages/protocol/test packages/transcript/test packages/kap-server/test/remotePairing.test.ts --reporter=json --outputFile=/tmp/kiki-vitest-results.json',
             'VITEST_RC=$?',
@@ -854,7 +863,13 @@ export function parseCcpCliArgs(args) {
     runBrowser: true,
     regenCorpus: false,
     s6Only: false,
+    s7Only: false,
+    s8Only: false,
+    runS7S8: false,
     runS6: false,
+    runS7: false,
+    runS8: false,
+    s7Cycles: 200,
     tenKSubagentCount: 10_000,
     s6StepTimeoutMs: 45_000,
     keepRuntime: false,
@@ -872,7 +887,13 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--no-browser') opts.runBrowser = false;
     else if (args[i] === '--regen-corpus') opts.regenCorpus = true;
     else if (args[i] === '--s6-only') opts.s6Only = true;
+    else if (args[i] === '--s7-only') opts.s7Only = true;
+    else if (args[i] === '--s8-only') opts.s8Only = true;
+    else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-s6') opts.runS6 = true;
+    else if (args[i] === '--run-s7') opts.runS7 = true;
+    else if (args[i] === '--run-s8') opts.runS8 = true;
+    else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
     else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);
     else if (args[i] === '--keep-runtime') opts.keepRuntime = true;
