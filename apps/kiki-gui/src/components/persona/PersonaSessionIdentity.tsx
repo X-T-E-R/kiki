@@ -31,7 +31,6 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { useLayoutPreferences, useMediaQuery } from '../../lib/layoutHooks';
 import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
-import { DisclosureChevron } from '../icons';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
 import { PersonaConversationSwitcher } from './PersonaConversationSwitcher';
 import { buildPersonaDirectory } from './usePersonaDirectory';
@@ -170,7 +169,17 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
           onClick={() => { setOpen((value) => !value); }}
           className="flex h-5 w-4 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
-          <DisclosureChevron open={open} />
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 12 12"
+            fill="none"
+            aria-hidden
+            data-persona-chevron
+            className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${open ? 'rotate-180' : ''}`}
+          >
+            <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       </div>
       <span aria-hidden className="shrink-0 text-[13px] text-ink-faint/70">/</span>

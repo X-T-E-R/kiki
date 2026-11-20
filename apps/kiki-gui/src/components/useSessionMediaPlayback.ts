@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 
 import type { KikiClient } from '../lib/client';
@@ -176,6 +176,7 @@ function startPlaybackMint(
     entry.status = 'ready';
     entry.expiryTimer = setTimeout(() => {
       if (map.get(key) === entry) {
+        map.delete(key);
         failEntry(entry, attempt);
       }
     }, remaining);
@@ -239,11 +240,16 @@ export function useSessionMediaPlayback(
   const eligible = item.path === undefined && item.fileId !== undefined && sessionId !== undefined
     && (item.kind === 'video' || item.kind === 'audio' || /^(?:video|audio)\//i.test(item.mime ?? ''));
   const fileId = item.fileId;
+  const activeEntryRef = useRef<CachedPlaybackEntry | undefined>(undefined);
   const [, setVersion] = useState(0);
 
   useEffect(() => {
-    if (!eligible || remoteBlocked || client === undefined || sessionId === undefined || fileId === undefined) return;
+    if (!eligible || remoteBlocked || client === undefined || sessionId === undefined || fileId === undefined) {
+      activeEntryRef.current = undefined;
+      return;
+    }
     const entry = startPlaybackMint(client, sessionId, fileId, attempt);
+    activeEntryRef.current = entry;
     const bump = () => { setVersion((v) => v + 1); };
     entry.listeners.add(bump);
     // Sync once immediately in case mint settled synchronously or before subscribe.
@@ -253,10 +259,17 @@ export function useSessionMediaPlayback(
     };
   }, [eligible, remoteBlocked, client, sessionId, fileId, attempt]);
 
-  if (!eligible || remoteBlocked || client === undefined || sessionId === undefined || fileId === undefined) {
+  if (!eligible || remoteBlocked || sessionId === undefined || fileId === undefined) {
     return { status: 'fallback' };
   }
-  const cached = playbackCacheByClient.get(client)?.get(playbackCacheKey(sessionId, fileId));
+  if (client === undefined) {
+    return { status: 'loading' };
+  }
+  const key = playbackCacheKey(sessionId, fileId);
+  const cached = playbackCacheByClient.get(client)?.get(key)
+    ?? (activeEntryRef.current?.key === key && activeEntryRef.current.client === client
+      ? activeEntryRef.current
+      : undefined);
   return snapshotEntry(cached, attempt);
 }
 

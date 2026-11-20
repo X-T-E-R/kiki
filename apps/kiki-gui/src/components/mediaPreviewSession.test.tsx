@@ -862,6 +862,26 @@ describe('session Range playback', () => {
     expect(container.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/renewed');
   });
 
+  it('evicts an expired grant on TTL expiry so revisiting at attempt=0 mints a fresh capability', async () => {
+    vi.useFakeTimers();
+    const owner = playbackClient();
+    owner.open
+      .mockResolvedValueOnce(descriptor('expires-cached', 'video/mp4', Date.now() + 1000))
+      .mockResolvedValueOnce(descriptor('reminted-fresh', 'video/mp4', Date.now() + 60_000));
+    const first = makeRoot();
+    await renderSettled(first.root, <Player client={owner.client} attempt={0} />);
+    expect(first.container.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/expires-cached');
+    await renderSettled(first.root, null);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(owner.close).toHaveBeenCalledExactlyOnceWith('expires-cached', { timeoutMs: 10_000 });
+
+    const second = makeRoot();
+    await renderSettled(second.root, <Player client={owner.client} attempt={0} />);
+    expect(owner.open).toHaveBeenCalledTimes(2);
+    expect(second.container.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/reminted-fresh');
+  });
+
   it.each(['unsupported', 'remote-disabled', 'loopback denied'] as const)('preserves the canonical byte fallback for %s', async (mode) => {
     if (mode === 'remote-disabled') {
       mocks.remote = true;

@@ -491,18 +491,19 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * then two groups:
  *
  *   Add context   Files & images · Skills ▸ · Mention a file ▸ · SSH hosts ▸
- *   Session       Plugins ▸ · MCP servers ▸ · Mode ▸ · Rebuild context
+ *   Session       Mode ▸ · Rebuild context
+ *   Extensions    Non-panel composer slot actions (plugin panels live in header WorkspacePanelsControl)
  *
- * Typing in the search filters skills, files, plugins, MCP servers and SSH
- * hosts in one list. Each ▸ row drills into its own view (→ / Enter in, ← /
- * Escape / the Back row out). What the menu adds lands where typing would put
- * it: a skill becomes the same `/name ` token the `/` picker writes, a file the
- * same @-mention chip, a host the same session host chip. A plugin or an MCP
- * server is a fact about the conversation rather than something typed, so those
- * rows switch the conversation and write no text. `view` is parent-owned so
- * `/plan`, `/goal` and the run-mode chip can open straight into Mode (Escape
- * then closes, since nothing was drilled from). `data-plan-select` stays on the
- * root for proofs that address the run-shape panel by that hook.
+ * Plugins, optional capabilities, and session MCP overrides live in the Right
+ * Rail `Environment & extensions` section, while direct slash/mention/drill views
+ * remain reachable when opened explicitly. Typing in the search filters skills,
+ * files, non-panel extensions, and SSH hosts in one list. Each ▸ row drills into
+ * its own view (→ / Enter in, ← / Escape / the Back row out). What the menu adds
+ * lands where typing would put it: a skill becomes the same `/name ` token the `/`
+ * picker writes, a file the same @-mention chip, a host the same session host chip.
+ * `view` is parent-owned so `/plan`, `/goal` and the run-mode chip can open straight
+ * into Mode (Escape then closes, since nothing was drilled from). `data-plan-select`
+ * stays on the root for proofs that address the run-shape panel by that hook.
  *
  * The panel floats above the whole composer card (useComposerPanelAnchor),
  * never over the card's own chips or header.
@@ -1927,7 +1928,7 @@ export function AddMenu({
                 finalFocus={false}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: 'composer-add',
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-add'),
                   [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
                 }}
                 className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
@@ -2158,7 +2159,7 @@ export function PermissionSelect({
                 finalFocus={false}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: 'composer-mode',
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-mode'),
                   [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
                 }}
                 className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-72 flex-col overflow-hidden p-1 outline-none ${POPOVER_SURFACE_CLASS}`}

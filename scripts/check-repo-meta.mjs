@@ -1103,6 +1103,16 @@ function checkGuiCssAndOverlayRatchet(root, inventory, errors) {
             `Migrate this floating surface to @base-ui/react Popover/Dialog/Menu Portal or register a layout slot explicitly`,
           );
         }
+        if (/role="menu"/.test(line) && /\babsolute\b/.test(line)) {
+          addViolation(
+            errors,
+            'gui-floating-portal-ratchet',
+            rel,
+            i + 1,
+            `Unportaled inline absolute role="menu" in "${rel}" bypasses @base-ui/react Popover/Menu Portal`,
+            `Render menus inside @base-ui/react Popover.Portal / Menu.Portal with POPOVER_SURFACE_CLASS`,
+          );
+        }
       }
     }
   }

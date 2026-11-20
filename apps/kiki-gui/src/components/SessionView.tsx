@@ -7,6 +7,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { Popover } from '@base-ui/react/popover';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
@@ -185,7 +186,8 @@ import { useViewedSession } from '../lib/useAwayNotifications';
 import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
-import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { anyOverlayOpen, floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
+import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
 import { resolveControllerSubagentSearch } from '../lib/subagentSearch';
@@ -1005,7 +1007,8 @@ export function SessionActionsMenu({
     const onPointerDown = (event: PointerEvent) => {
       if (
         !(event.target instanceof HTMLElement) ||
-        event.target.closest('[data-session-actions]') === null
+        (event.target.closest('[data-session-actions]') === null &&
+          event.target.closest('[data-session-actions-menu]') === null)
       ) {
         setOpen(false);
       }
@@ -1193,7 +1196,36 @@ export function SessionActionsMenu({
           ) : null}
         </ActionSheet>
       ) : open ? (
-        <div role="menu" className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              setOpen(false);
+              triggerRef.current?.focus();
+              return;
+            }
+            eventDetails.cancel();
+          }}
+        >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="end"
+              sideOffset={4}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                role="menu"
+                data-session-actions-menu
+                initialFocus={false}
+                finalFocus={false}
+                className={`anim-enter w-56 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
           {leading !== undefined ? (
             <>
               {leading(() => { setOpen(false); })}
@@ -1320,7 +1352,10 @@ export function SessionActionsMenu({
           >
             {t('menu.undo')}
           </button>
-        </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
   );

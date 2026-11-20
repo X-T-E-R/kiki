@@ -147,7 +147,7 @@ export function OutputLayerSelect({
                   onKeyDown={onKeyDown}
                   {...{
                     [FLOATING_OWNER_ATTRIBUTE]: 'composer-output-layer',
-                    [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                    [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-output-layer'),
                     [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
                   }}
                   className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1.5 outline-none ${POPOVER_SURFACE_CLASS}`}

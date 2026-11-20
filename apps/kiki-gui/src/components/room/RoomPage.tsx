@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useSearchParams } from 'react-router-dom';
 
@@ -26,7 +27,8 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, roomUsageQueryKey, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
-import { registerOverlay } from '../../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { useConnection } from '../../state/connection';
 import { AvatarStack } from '../bot/SidebarBotRoomGroups';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -178,6 +180,7 @@ function RoomView({
 
   const [membersOpen, setMembersOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1280);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [stopFirst, setStopFirst] = useState(false);
 
@@ -330,12 +333,13 @@ function RoomView({
             </button>
           )}
           <div className="relative" data-room-menu>
-            <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={t('room.menu')} title={t('room.menu')}
+            <button ref={menuTriggerRef} type="button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={t('room.menu')} title={t('room.menu')}
               onClick={() => { setMenuOpen((open) => !open); }} className={HEADER_BUTTON}>
               <Icon name="more" size={16} />
             </button>
             {menuOpen ? (
               <RoomMenu
+                anchor={menuTriggerRef}
                 onClose={() => { setMenuOpen(false); }}
                 onStop={() => { setMenuOpen(false); action.mutate('stop'); }}
                 onDelete={() => { setMenuOpen(false); setConfirmDelete(true); }}
@@ -427,14 +431,24 @@ function RoomView({
   );
 }
 
-function RoomMenu({ onClose, onStop, onDelete }: { readonly onClose: () => void; readonly onStop: () => void; readonly onDelete: () => void }) {
+function RoomMenu({ anchor, onClose, onStop, onDelete }: {
+  readonly anchor: React.RefObject<HTMLButtonElement | null>;
+  readonly onClose: () => void;
+  readonly onStop: () => void;
+  readonly onDelete: () => void;
+}) {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const unregister = registerOverlay('room-menu');
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
     const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof HTMLElement) || event.target.closest('[data-room-menu]') === null) onClose();
+      if (
+        !(event.target instanceof HTMLElement) ||
+        (event.target.closest('[data-room-menu]') === null && event.target.closest('[data-room-menu-panel]') === null)
+      ) {
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
@@ -447,17 +461,50 @@ function RoomMenu({ onClose, onStop, onDelete }: { readonly onClose: () => void;
   }, [onClose]);
   const item = 'flex min-h-8 w-full flex-col items-start justify-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none';
   return (
-    <div ref={ref} role="menu" aria-label={t('room.menu')}
-      className="anim-enter absolute top-full right-0 z-40 mt-1 w-64 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
-      <button type="button" role="menuitem" className={item} onClick={onStop} data-room-stop>
-        <span>{t('room.stopAll')}</span>
-        <span className="text-[11.5px] leading-4 text-ink-faint">{t('room.stopAllTitle')}</span>
-      </button>
-      <div className="my-1 h-px bg-hairline" />
-      <button type="button" role="menuitem" className={`${item} hover:text-danger`} onClick={onDelete} data-room-delete>
-        {t('room.deleteRoom')}
-      </button>
-    </div>
+    <Popover.Root
+      open
+      modal={false}
+      onOpenChange={(nextOpen, eventDetails) => {
+        if (nextOpen) return;
+        if (eventDetails.reason === 'escape-key') {
+          onClose();
+          anchor.current?.focus();
+          return;
+        }
+        eventDetails.cancel();
+      }}
+    >
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={anchor}
+          side="bottom"
+          align="end"
+          sideOffset={4}
+          collisionPadding={8}
+          positionMethod="fixed"
+          style={{ zIndex: floatingSurfaceZIndex(anchor.current) }}
+        >
+          <Popover.Popup
+            ref={ref}
+            role="menu"
+            data-room-menu-panel
+            aria-label={t('room.menu')}
+            initialFocus={false}
+            finalFocus={false}
+            className={`anim-enter w-64 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+          >
+            <button type="button" role="menuitem" className={item} onClick={onStop} data-room-stop>
+              <span>{t('room.stopAll')}</span>
+              <span className="text-[11.5px] leading-4 text-ink-faint">{t('room.stopAllTitle')}</span>
+            </button>
+            <div className="my-1 h-px bg-hairline" />
+            <button type="button" role="menuitem" className={`${item} hover:text-danger`} onClick={onDelete} data-room-delete>
+              {t('room.deleteRoom')}
+            </button>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

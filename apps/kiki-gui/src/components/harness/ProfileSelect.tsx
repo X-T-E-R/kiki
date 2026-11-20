@@ -944,11 +944,16 @@ export function ProfileSelect({
 
                     {/* Retained built-in profile from previous session / read-only */}
                     {(() => {
-                      const retainedProfile = (boundExecution?.profile !== undefined && boundExecution.profile_file === undefined && !candidateProfiles.some((p) => p.name === boundExecution.profile))
+                      const retainedProfile = (
+                        boundExecution?.profile !== undefined
+                        && boundExecution.profile_file === undefined
+                        && !(boundExecution.profile === 'agent' && isNativeExecutor(boundExecution.executor))
+                        && !candidateProfiles.some((p) => p.name === boundExecution.profile)
+                      )
                         ? boundExecution.profile
                         : undefined;
                       if (!retainedProfile) return null;
-                      const isSelected = choice.profile === retainedProfile && choice.profile_file === undefined;
+                      const isSelected = !isNativeSelected && choice.profile === retainedProfile && choice.profile_file === undefined;
                       return (
                         <li key={retainedProfile} data-profile-retained={retainedProfile}>
                           <button

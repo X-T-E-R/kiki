@@ -1708,7 +1708,9 @@ export function Composer({
     [variant, queueEditing, messageEditing, pluginGuiSlots.slots],
   );
   const addMenuExtensionItems = useMemo<readonly AddMenuExtensionItem[]>(
-    () => pluginToolbarSlots.map((slot) => {
+    () => pluginToolbarSlots
+      .filter((slot) => slot.action.kind !== 'open_plugin_panel')
+      .map((slot) => {
       const key = `${slot.pluginId}:${slot.id}`;
       const label = resolvePluginLocalizedText(slot.label, locale);
       const tooltip = slot.tooltip === undefined ? label : resolvePluginLocalizedText(slot.tooltip, locale);
@@ -4357,7 +4359,7 @@ export function Composer({
                           onMouseLeave={closeSendTimingOnLeave}
                           {...{
                             [FLOATING_OWNER_ATTRIBUTE]: 'composer-send-timing',
-                            [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(sendTimingRootRef.current),
+                            [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(sendTimingRootRef.current, 'composer-send-timing'),
                             [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(sendTimingRootRef.current),
                           }}
                           className={`composer-floating-panel anim-enter max-h-[min(var(--available-height,22rem),22rem,calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}

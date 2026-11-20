@@ -37,6 +37,7 @@ import {
   FLOATING_OWNER_ATTRIBUTE,
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
   owningModalId,
   resolveFloatingOwners,
 } from '../lib/uiBusy';
@@ -385,6 +386,10 @@ export function ContextMeter({
           onOpenChange={(nextOpen, eventDetails) => {
             if (nextOpen) return;
             if (eventDetails.reason === 'escape-key') {
+              if (hasOpenOwnedFloatingPortal('composer-context')) {
+                eventDetails.cancel();
+                return;
+              }
               setOpen(false);
               triggerRef.current?.focus();
               return;
@@ -412,7 +417,7 @@ export function ContextMeter({
                 finalFocus={false}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: 'composer-context',
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-context'),
                   [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
                 }}
                 className={`composer-floating-panel anim-enter w-72 max-w-[calc(100vw-24px)] max-h-[min(var(--available-height,480px),calc(100dvh-96px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS}`}

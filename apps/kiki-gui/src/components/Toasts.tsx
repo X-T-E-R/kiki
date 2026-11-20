@@ -98,11 +98,11 @@ function ToastCard({
             <button
               type="button"
               onClick={handleCopy}
-              className="inline-flex items-center gap-1 rounded-md border border-current px-1.5 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-75"
+              className="inline-flex items-center gap-1 rounded-md bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 focus-visible:outline-2 focus-visible:outline-selected-ink"
               title={copyPayload}
             >
               {copied ? <Icon name="check" size={12} /> : null}
-              {copied ? t('cb.copied') : t('cb.copy')}
+              {copied ? t('connect.desktopCopied') : t('contextMenu.copy')}
             </button>
           ) : null}
           {toast.action !== undefined ? (

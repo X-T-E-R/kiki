@@ -1633,19 +1633,24 @@ export function Sidebar({
   const listRef = useRef<HTMLDivElement>(null);
   const scrollRestored = useRef(false);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [listScrolled, setListScrolled] = useState(false);
   const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const top = event.currentTarget.scrollTop;
+    setListScrolled((prev) => (prev === (top > 2) ? prev : top > 2));
     clearTimeout(scrollTimer.current);
     scrollTimer.current = setTimeout(() => { writeWorkspaceGroupMemory(scopeId, { scrollTop: top }); }, 150);
   };
   useEffect(() => () => { clearTimeout(scrollTimer.current); }, []);
-  useEffect(() => { scrollRestored.current = false; }, [search.active, scopeId]);
+  useEffect(() => { scrollRestored.current = false; setListScrolled(false); }, [search.active, scopeId]);
   useLayoutEffect(() => {
     const node = listRef.current;
     if (node === null || scrollRestored.current || sessionGroups.length === 0) return;
     scrollRestored.current = true;
     const top = readWorkspaceGroupMemory(scopeId).scrollTop;
-    if (top > 0) node.scrollTop = top;
+    if (top > 0) {
+      node.scrollTop = top;
+      setListScrolled(top > 2);
+    }
   });
 
   // Threads a session started (ThreadCreate) and branches forked off it nest
@@ -2081,9 +2086,9 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-9 w-full items-center gap-2 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-panel pointer-coarse:h-10"
+          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.045] pointer-coarse:h-10"
         >
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center text-accent"><Icon name="plus" size={14} /></span>
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent-ink"><Icon name="plus" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
         </button>
         {searchOpen ? (
@@ -2185,7 +2190,15 @@ export function Sidebar({
           />
         </>
       ) : (
-      <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
+      <div
+        ref={listRef}
+        onScroll={onListScroll}
+        data-session-list-scrolled={listScrolled ? 'true' : undefined}
+        className={`min-h-0 flex-1 overflow-y-auto border-t px-2.5 pb-2 transition-colors duration-[var(--kiki-motion-quick)] ${listScrolled ? 'border-hairline/75' : 'border-transparent'}`}
+        data-session-list
+        role="region"
+        aria-label={t('sidebar.listAria')}
+      >
         <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
         <div className="flex items-center gap-0.5 pt-2 pr-0 pb-0.5 pl-2">

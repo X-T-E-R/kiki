@@ -120,18 +120,18 @@ export const FLOATING_OWNER_ATTRIBUTE = 'data-floating-owner';
 export const FLOATING_PORTAL_OWNERS_ATTRIBUTE = 'data-floating-owners';
 
 /** Space-separated ancestor floating-owner chain for a trigger/anchor element. */
-export function resolveFloatingOwners(anchor: Element | null): string | undefined {
+export function resolveFloatingOwners(anchor: Element | null, excludeOwnerId?: string): string | undefined {
   const seen: string[] = [];
   const collect = (start: Element | null) => {
     for (let node: Element | null = start; node !== null; node = node.parentElement) {
       const inherited = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
       if (inherited !== null && inherited !== '') {
         for (const id of inherited.split(/\s+/)) {
-          if (id !== '' && !seen.includes(id)) seen.push(id);
+          if (id !== '' && id !== excludeOwnerId && !seen.includes(id)) seen.push(id);
         }
       }
       const own = node.getAttribute(FLOATING_OWNER_ATTRIBUTE);
-      if (own !== null && own !== '' && !seen.includes(own)) seen.push(own);
+      if (own !== null && own !== '' && own !== excludeOwnerId && !seen.includes(own)) seen.push(own);
     }
   };
   collect(anchor);
@@ -160,6 +160,7 @@ export function containsOrOwnsFloatingTarget(
 export function hasOpenOwnedFloatingPortal(ownerId: string | undefined): boolean {
   if (ownerId === undefined || ownerId === '' || typeof document === 'undefined') return false;
   for (const node of document.querySelectorAll(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}]`)) {
+    if (node.getAttribute(FLOATING_OWNER_ATTRIBUTE) === ownerId) continue;
     const owners = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
     if (owners !== null && owners.split(/\s+/).includes(ownerId)) return true;
   }

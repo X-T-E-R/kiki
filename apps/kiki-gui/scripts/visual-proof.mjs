@@ -7749,16 +7749,23 @@ async function scenarioGuiPresetStates() {
   if (headerCheck.clipped) throw new Error('header title vertically clipped');
   await shot('preset-01-persona-header-audio');
 
-  // ---- Scenario 2: Sidebar >80 sessions + Persona expanded + scrolled mid-list + raised + New session ----
-  const newSessionCard = await page.evaluate(() => {
+  // ---- Scenario 2: Sidebar >80 sessions + Persona expanded + scrolled mid-list + flat circular + New session ----
+  const newSessionRow = await page.evaluate(() => {
     const btn = document.querySelector('[data-new-session]');
     if (!btn) return null;
     const cs = getComputedStyle(btn);
-    return { shadow: cs.boxShadow, bg: cs.backgroundColor, height: Math.round(btn.getBoundingClientRect().height) };
+    const badge = btn.querySelector('span');
+    const badgeCs = badge ? getComputedStyle(badge) : null;
+    return {
+      shadow: cs.boxShadow,
+      bg: cs.backgroundColor,
+      height: Math.round(btn.getBoundingClientRect().height),
+      badgeRadius: badgeCs ? Number.parseFloat(badgeCs.borderTopLeftRadius) : 0,
+    };
   });
-  console.log(`[check] preset-02 newSession=${JSON.stringify(newSessionCard)}`);
-  if (!newSessionCard || newSessionCard.shadow === 'none') {
-    throw new Error(`+ 新会话 button must be raised paper card, got ${JSON.stringify(newSessionCard)}`);
+  console.log(`[check] preset-02 newSession=${JSON.stringify(newSessionRow)}`);
+  if (!newSessionRow || newSessionRow.shadow !== 'none' || newSessionRow.badgeRadius < 8) {
+    throw new Error(`+ 新会话 button must be flat Zone-1 rail row with circular + badge, got ${JSON.stringify(newSessionRow)}`);
   }
   // Load page 2 so >60 sessions cross SIDEBAR_VIRTUALIZE_THRESHOLD.
   const loadMoreBtn = page.locator('[data-session-load-more]');
@@ -7897,6 +7904,13 @@ async function scenarioGuiPresetStates() {
   await page.locator('#composer-profile-select').click();
   await page.locator('[data-execution-panel]').waitFor({ timeout: 5_000 });
   const profileMetrics = await checkSinglePopup('profile');
+  const selectedProfileRows = await page.evaluate(() =>
+    document.querySelectorAll('[data-execution-panel] [role="option"][aria-selected="true"]').length,
+  );
+  console.log(`[check] preset-03a selectedProfileRows=${selectedProfileRows}`);
+  if (selectedProfileRows !== 1) {
+    throw new Error(`ProfileSelect showed ${selectedProfileRows} selected options (expected exactly 1)`);
+  }
   await shot('preset-03a-composer-profile-picker');
 
   await page.locator('#composer-execution-select').click();
