@@ -24,6 +24,13 @@ import {
   generateSyntheticMp4,
   generateSyntheticWav,
 } from './scenario-soak-and-media-weaknet.mjs';
+import {
+  computeOggCrc32,
+  evaluateS9Verdict,
+  generateValidOggOpus,
+  resolveS9TierConfig,
+  seedS9ChaosExtensions,
+} from './scenario-s9-browser-flight-recorder.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
@@ -80,6 +87,20 @@ defineTestContract({
   sunset_when: 'Physically delete this contract if session media-playback grants or the S8 weak-network media harness is retired; never mask 429 or starvation regressions',
   sunset: { kind: 'symbolRemoved', file: 'scripts/ccp-chaos/scenario-soak-and-media-weaknet.mjs', symbol: 'runScenarioS8MediaWeakNetStorm' },
   tags: ['chaos', 'media', 'weak-network'],
+});
+
+defineTestContract({
+  invariant: 'Full-stack browser flight recorder (Scenario S9) catches phase settling flashes, transcript remount/scroll collapses, audio skeleton flashes/redundant re-mints, overlapping/unrounded/nested-scroll popups, Sidebar blank voids, and QuickSwitcher blind arrow scroll under live server load',
+  mechanism: 'Drives real built apps/kiki-gui in Playwright Chromium with a frame-by-frame rAF+MutationObserver+PerformanceObserver flight recorder against a live kap-server loaded with mega wire, 10k sessions/subagents, personas, Ogg/Opus+MP4 media, concurrent streaming turns, and live SessionIndex churn',
+  covers: [
+    'POST /api/sessions/:sessionId/media-playback',
+    'GET /media-preview/:previewId',
+    'scripts/ccp-chaos/scenario-s9-browser-flight-recorder.mjs',
+    'scripts/ccp-chaos/chaos-scale-runner.mjs',
+  ],
+  sunset_when: 'Physically delete this contract if the Scenario S9 browser flight recorder or kiki-gui browser shell is retired; never weaken flight-recorder breach assertions',
+  sunset: { kind: 'symbolRemoved', file: 'scripts/ccp-chaos/scenario-s9-browser-flight-recorder.mjs', symbol: 'runScenarioS9BrowserFlightRecorder' },
+  tags: ['chaos', 'browser', 'flight-recorder', 's9'],
 });
 
 describe('Contract-Verifying Twin Server (HTTP/1.1 + HTTP/2 TLS)', () => {
@@ -730,5 +751,170 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
+  it('generates RFC-valid Ogg/Opus binary with valid OggS pages, OpusHead/OpusTags, BOS/EOS flags, and CRC32', () => {
+    const ogg = generateValidOggOpus(600);
+    assert.equal(ogg.subarray(0, 4).toString('ascii'), 'OggS');
+    assert.equal(ogg[5], 0x02); // BOS on first page
+    assert.ok(ogg.includes(Buffer.from('OpusHead', 'ascii')));
+    assert.ok(ogg.includes(Buffer.from('OpusTags', 'ascii')));
+
+    // Verify every OggS page's CRC32 matches RFC 3533
+    let offset = 0;
+    let pages = 0;
+    let sawEos = false;
+    while (offset < ogg.length) {
+      assert.equal(ogg.subarray(offset, offset + 4).toString('ascii'), 'OggS');
+      const headerType = ogg[offset + 5];
+      if ((headerType & 0x04) !== 0) sawEos = true;
+      const segCount = ogg[offset + 26];
+      let bodyLen = 0;
+      for (let i = 0; i < segCount; i += 1) bodyLen += ogg[offset + 27 + i];
+      const pageLen = 27 + segCount + bodyLen;
+      const pageSlice = Buffer.from(ogg.subarray(offset, offset + pageLen));
+      const storedCrc = pageSlice.readUInt32LE(22);
+      pageSlice.writeUInt32LE(0, 22);
+      assert.equal(computeOggCrc32(pageSlice), storedCrc);
+      offset += pageLen;
+      pages += 1;
+    }
+    assert.ok(pages >= 3);
+    assert.equal(sawEos, true);
+  });
+
+  it('streams multi-chunk SSE tokens across [CHAOS:STREAM_HOLD:<ms>] on Contract Twin', async () => {
+    const twin = await createContractTwinServer({ mode: 'clean', seed: 109, enableTls: false });
+    try {
+      const t0 = Date.now();
+      const res = await fetch(`${twin.httpBaseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': 'k' },
+        body: JSON.stringify({
+          model: 'twin-anthropic',
+          max_tokens: 256,
+          stream: true,
+          metadata: { user_id: 'scope-s9-hold' },
+          messages: [{ role: 'user', content: '[CHAOS:STREAM_HOLD:300] stream slowly' }],
+        }),
+      });
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      const elapsed = Date.now() - t0;
+      assert.ok(elapsed >= 220, `Expected >= 220ms stream hold, got ${elapsed}ms`);
+      assert.ok(text.includes('tok1 '));
+      assert.ok(text.includes('[stream-complete]'));
+    } finally {
+      await twin.close();
+    }
+  });
+
+  it('seeds S9 personas, multi-workspace scale sessions, and Ogg/MP4/PNG ScopedMediaStore session', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-s9-seed-test-'));
+    try {
+      const fullCfg = resolveS9TierConfig('full');
+      const smokeCfg = resolveS9TierConfig('smoke');
+      assert.equal(fullCfg.sessionCount, 10_000);
+      assert.equal(fullCfg.subagentCount, 10_000);
+      assert.equal(smokeCfg.sessionCount, 140);
+      assert.equal(smokeCfg.quickSwitcherArrows, 35);
+
+      const seeded = seedS9ChaosExtensions({
+        dir: tmpDir,
+        corpus: {
+          rootDir: tmpDir,
+          homeDir: path.join(tmpDir, 'home'),
+          workspaceDir: path.join(tmpDir, 'workspace'),
+        },
+        tierConfig: resolveS9TierConfig('smoke', { sessionCount: 95, personaCount: 4 }),
+      });
+      assert.equal(seeded.personaIds.length, 4);
+      assert.equal(seeded.seededSessionCount, 95);
+      assert.ok(fs.existsSync(path.join(seeded.homeDir, 'personas', 's9-persona-01', 'persona.md')));
+      const oggMeta = JSON.parse(
+        fs.readFileSync(
+          path.join(seeded.homeDir, 'sessions', seeded.primaryWorkspaceId, seeded.mediaSessionId, 'media', 'meta', 'f_s9ogg_0001.json'),
+          'utf8',
+        ),
+      );
+      assert.equal(oggMeta.mediaType, 'audio/ogg');
+      assert.equal(oggMeta.key, 'f_s9ogg_0001.ogg');
+
+      const parsedS9 = parseCcpCliArgs(['--tier', 'full', '--run-all', '--s9-only', '--run-s9']);
+      assert.equal(parsedS9.tier, 'full');
+      assert.equal(parsedS9.runAll, true);
+      assert.equal(parsedS9.s9Only, true);
+      assert.equal(parsedS9.runS9, true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('hard-fails evaluateS9Verdict on any flight-recorder, audio, popup, sidebar, or QuickSwitcher breach', () => {
+    const cleanInput = () => ({
+      flightRecorder: {
+        breaches: {
+          phaseFlashToSettling: [],
+          errorBoundaryMounts: [],
+          transcriptRootRemounts: [],
+          scrollHeightCollapses: [],
+          unexpectedScrollSnapBacks: [],
+          audioUnmounts: [],
+          audioSkeletonFlashes: [],
+          floatingOverlapBreaches: [],
+          floatingRadiusBreaches: [],
+          floatingScrollableBreaches: [],
+        },
+      },
+      pageErrors: [],
+      http5xxResponses: [],
+      drill1: {
+        roundsSucceeded: 10,
+        composerUsableAfterAllRounds: true,
+        composerPopupSweep: { triggersClicked: 4, breachCount: 0 },
+      },
+      drill2: {
+        oggRangeProbe: { status: 206, rangeLatencyMs: 18 },
+        mp4RangeProbe: { status: 206, rangeLatencyMs: 22 },
+        mountedAudioCount: 2,
+        attachmentPreviewOpened: true,
+        redundantMediaPlaybackRemints: [],
+      },
+      drill3: {
+        sidebar: { virtualized: true, personasToggleFound: true, maxBlankGapPx: 0 },
+        quickSwitcher: { opened: true, highlightedMounted: true, highlightedInViewport: true },
+        rightRail10k: { foundColdNeedleA: true },
+      },
+      serverHealth: { unhandledRejections: 0, uncaughtExceptions: 0 },
+      tierConfig: resolveS9TierConfig('smoke'),
+    });
+
+    assert.equal(evaluateS9Verdict(cleanInput()).passed, true);
+
+    const withPhaseFlash = cleanInput();
+    withPhaseFlash.flightRecorder.breaches.phaseFlashToSettling.push({ from: 'active', to: 'settling' });
+    assert.equal(evaluateS9Verdict(withPhaseFlash).passed, false);
+
+    const withSidebarVoid = cleanInput();
+    withSidebarVoid.drill3.sidebar.maxBlankGapPx = 450;
+    assert.equal(evaluateS9Verdict(withSidebarVoid).passed, false);
+
+    const withBlindSwitcher = cleanInput();
+    withBlindSwitcher.drill3.quickSwitcher.highlightedInViewport = false;
+    assert.equal(evaluateS9Verdict(withBlindSwitcher).passed, false);
+
+    const withAudioRemint = cleanInput();
+    withAudioRemint.drill2.redundantMediaPlaybackRemints.push({ sessionId: 'chaos_s9_media', fileId: 'f_s9ogg_0001' });
+    assert.equal(evaluateS9Verdict(withAudioRemint).passed, false);
+
+    const withSlowMediaRange = cleanInput();
+    withSlowMediaRange.drill2.oggRangeProbe.rangeLatencyMs = 310;
+    assert.equal(evaluateS9Verdict(withSlowMediaRange).passed, false);
+
+    const withPopupOverlap = cleanInput();
+    withPopupOverlap.flightRecorder.breaches.floatingOverlapBreaches.push({ count: 2 });
+    assert.equal(evaluateS9Verdict(withPopupOverlap).passed, false);
   });
 });

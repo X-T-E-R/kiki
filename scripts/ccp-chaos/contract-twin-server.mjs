@@ -301,6 +301,15 @@ function detectBarrierId(promptText) {
   return matches.length > 0 ? matches.at(-1)[1] : null;
 }
 
+function detectStreamHoldMs(text) {
+  if (typeof text !== 'string' || !text.includes('[CHAOS:STREAM_HOLD:')) return 0;
+  const matches = [...text.matchAll(/\[CHAOS:STREAM_HOLD:(\d{2,5})\]/gu)];
+  if (matches.length === 0) return 0;
+  const raw = Number.parseInt(matches.at(-1)[1], 10);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.min(30_000, Math.max(50, raw));
+}
+
 function extractScopeKey(headers, body, promptText) {
   const userId = body?.metadata?.user_id;
   if (typeof userId === 'string' && userId.length > 0) return userId;
@@ -689,7 +698,7 @@ export async function createContractTwinServer(options = {}) {
     res.end();
   }
 
-  async function sendAnthropicSuccess(res, req, { model, replyText, messageId, stream, barrierId }) {
+  async function sendAnthropicSuccess(res, req, { model, replyText, messageId, stream, barrierId, streamHoldMs = 0 }) {
     if (!stream) {
       counters.succeededResponses += 1;
       sendJson(res, 200, {
@@ -740,6 +749,43 @@ export async function createContractTwinServer(options = {}) {
           entry.promise,
           new Promise((resolve) => req.once('close', resolve)),
         ]);
+      }
+    }
+    if (streamHoldMs > 0 && !res.writableEnded && !res.destroyed) {
+      const deadline = Date.now() + streamHoldMs;
+      let aborted = false;
+      const onClose = () => {
+        if (!res.writableFinished) aborted = true;
+      };
+      res.once('close', onClose);
+      let chunkIndex = 0;
+      try {
+        while (!aborted && !res.writableEnded && !res.destroyed) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          await new Promise((resolve) => {
+            const onAbort = () => {
+              clearTimeout(t);
+              resolve();
+            };
+            const t = setTimeout(() => {
+              res.off('close', onAbort);
+              resolve();
+            }, Math.min(120, remaining));
+            res.once('close', onAbort);
+          });
+          if (aborted || res.writableEnded || res.destroyed) break;
+          chunkIndex += 1;
+          res.write(
+            `event: content_block_delta\ndata: ${JSON.stringify({
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'text_delta', text: `tok${chunkIndex} ` },
+            })}\n\n`,
+          );
+        }
+      } finally {
+        res.off('close', onClose);
       }
     }
     if (res.writableEnded || res.destroyed) return;
@@ -1334,6 +1380,7 @@ export async function createContractTwinServer(options = {}) {
 
             const replyText = `Twin OK [${messageId}]`;
             const barrierId = detectBarrierId(promptText);
+            const streamHoldMs = detectStreamHoldMs(latestUser.text);
             threadStore.set(messageId, {
               messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: replyText }] }],
               createdAt: Date.now(),
@@ -1342,7 +1389,14 @@ export async function createContractTwinServer(options = {}) {
               const oldest = threadStore.keys().next().value;
               if (oldest) threadStore.delete(oldest);
             }
-            await sendAnthropicSuccess(res, req, { model: body.model, replyText, messageId, stream: body.stream !== false, barrierId });
+            await sendAnthropicSuccess(res, req, {
+              model: body.model,
+              replyText,
+              messageId,
+              stream: body.stream !== false,
+              barrierId,
+              streamHoldMs,
+            });
             return;
           }
 
