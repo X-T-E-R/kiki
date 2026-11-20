@@ -104,7 +104,9 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
     const seenIds = new Set<string>([session.id]);
     const list: Session[] = [session];
     for (const [, cached] of queryClient.getQueriesData<SessionListData>({ queryKey: ['sessions'] })) {
-      for (const page of cached?.pages ?? []) {
+      if (!Array.isArray(cached?.pages)) continue;
+      for (const page of cached.pages) {
+        if (!Array.isArray(page?.items)) continue;
         for (const item of page.items) {
           if (!seenIds.has(item.id) && sessionMatchesPrivateFilter(item, effectivePrivateFilter)) {
             seenIds.add(item.id);

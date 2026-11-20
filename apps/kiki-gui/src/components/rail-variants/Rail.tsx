@@ -639,7 +639,7 @@ export const Rail = memo(function Rail({
     <div
       id="rail-todos"
       data-rail-section="todos"
-      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-notes-state=loading]]:hidden [&_[data-agent-hooks-state=loading]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty],[data-agent-notes-state=loading]):not(:has([data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty],[data-agent-notes-state=loading]):not(:has([data-rail-todos],[data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
+      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-notes-state=loading]]:hidden [&_[data-agent-notes-state=unknown]]:hidden [&_[data-agent-hooks-state=loading]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty],[data-agent-notes-state=loading],[data-agent-notes-state=unknown]):not(:has([data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty],[data-agent-notes-state=loading],[data-agent-notes-state=unknown]):not(:has([data-rail-todos],[data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
     >
       <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
       <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
@@ -731,7 +731,7 @@ export const Rail = memo(function Rail({
   // conversation's settings. One hairline above the group, then one folded
   // row each, side by side — never a fold inside another fold.
   const tailSection = (
-    <div data-inspector-tail className={`${SECTION} mt-auto space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [contain:layout_style]`}>
+    <div data-inspector-tail className={`${SECTION} shrink-0 min-h-[156px] max-h-[45%] overflow-y-auto space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [contain:layout_style]`}>
       <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
       {!isRoutedChildPage ? <EnvironmentBlock sessionId={state.sessionId} /> : null}
       <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
@@ -795,7 +795,7 @@ export const Rail = memo(function Rail({
       aria-labelledby="rail-overview-title"
       className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
     >
-      <div data-rail-overview-well className={mode === 'default' ? 'min-h-[172px]' : undefined}>
+      <div data-rail-overview-well className={mode === 'default' ? 'min-h-[192px]' : undefined}>
         {panelSlot.mounted ? (
           <AgentPanelContainer
             key={`overview:${mode === 'cockpit' && !isRoutedChildPage ? state.sessionId : agentPanelKey}`}
@@ -823,7 +823,9 @@ export const Rail = memo(function Rail({
   );
   // Standard reads figures, then session branches, then the work in hand and
   // team; the cockpit leads with the session graph, branches, and worker team.
-  const orderedSections = (mode === 'cockpit'
+  // The low-frequency tail stays docked below the upper scroller so expanding
+  // sections above never shift it.
+  const upperOrderedSections = (mode === 'cockpit'
     ? [
       ['overview', overviewSection],
       ['branches', branchesSection],
@@ -831,7 +833,6 @@ export const Rail = memo(function Rail({
       ['todos', todosSection],
       ['tasks', tasksSection],
       ['cron', cronSection],
-      ['tail', tailSection],
     ] as const
     : [
       ['overview', overviewSection],
@@ -840,7 +841,6 @@ export const Rail = memo(function Rail({
       ['tasks', tasksSection],
       ['agents', agentsSection],
       ['cron', cronSection],
-      ['tail', tailSection],
     ] as const
   ).filter(([, section]) => section !== null);
   return (
@@ -869,9 +869,9 @@ export const Rail = memo(function Rail({
           if (event.relatedTarget !== null && !event.currentTarget.contains(event.relatedTarget as Node)) focusInRail.current = false;
         }}
       >
-      <div ref={railScrollRef} data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 [contain:layout_style]">
-      {/* Strict h-12 sticky bar aligning across all 3 panes. */}
-      <div data-rail-pinned className="sticky top-0 z-20 -mx-4 flex h-12 items-center justify-between gap-2 border-b border-hairline bg-panel px-4">
+      <div data-agent-panel-scroll className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 [contain:layout_style]">
+      {/* Strict h-12 pinned bar aligning across all 3 panes. */}
+      <div data-rail-pinned className="z-20 -mx-4 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-hairline bg-panel px-4">
       {(() => {
         const railHeaderControls = (
           <span className="flex shrink-0 items-center gap-1.5">
@@ -929,8 +929,10 @@ export const Rail = memo(function Rail({
       </div>
 
       {/* One page per agent: NeedsYouList, ProfileHead, InspectorNow, then
-          ordered sections all scroll smoothly beneath the h-12 sticky bar. */}
-      <div key={focusedAgentId} className="rail-page flex min-h-[calc(100%-3rem)] flex-col pt-3">
+          upper sections scroll in their own flex-1 viewport above the docked
+          tail so dynamic expansion never shifts the bottom footer. */}
+      <div key={focusedAgentId} className="rail-page flex min-h-0 flex-1 flex-col">
+      <div ref={railScrollRef} data-rail-upper-scroll className="-mx-4 min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-3">
       {needsYouSection !== null ? <div className="pb-3">{needsYouSection}</div> : null}
       <div data-rail-now-block className="space-y-3 pb-3">
       <ProfileHead
@@ -998,9 +1000,11 @@ export const Rail = memo(function Rail({
         })()}
       />
       </div>
-      {orderedSections.map(([key, section]) => (
+      {upperOrderedSections.map(([key, section]) => (
         <Fragment key={key}>{section}</Fragment>
       ))}
+      </div>
+      {tailSection}
       </div>
       </div>
 

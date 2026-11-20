@@ -17,7 +17,7 @@ export const SESSION_ABSENCE_RECHECK_DELAYS_MS = [250, 750] as const;
 /** A loaded roster row is independent evidence that the id is not a deletion event. */
 export function sessionListedInCache(queryClient: QueryClient, sessionId: string): boolean {
   for (const [, data] of queryClient.getQueriesData<SessionListData>({ queryKey: ['sessions'] })) {
-    if (data?.pages?.some((page) => page.items.some((item) => item.id === sessionId)) === true) return true;
+    if (Array.isArray(data?.pages) && data.pages.some((page) => Array.isArray(page?.items) && page.items.some((item) => item.id === sessionId))) return true;
   }
   return false;
 }

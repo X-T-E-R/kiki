@@ -189,8 +189,11 @@ function sessionLabel(
  * Inactive caches may retain an archived root; other session queries may have no pages. */
 function isSessionStillListed(queryClient: QueryClient, sessionId: string): boolean {
   return queryClient.getQueryCache().findAll({ queryKey: ['sessions'], type: 'active' })
-    .some(({ state }) => !state.isInvalidated && (state.data as SessionListData | undefined)?.pages?.some((page) =>
-      page.items.some((item) => item.id === sessionId && item.archived !== true)) === true);
+    .some(({ state }) => {
+      const pages = (state.data as SessionListData | undefined)?.pages;
+      return !state.isInvalidated && Array.isArray(pages) && pages.some((page) =>
+        Array.isArray(page?.items) && page.items.some((item) => item.id === sessionId && item.archived !== true));
+    });
 }
 
 /** Text with highlighted ranges (search matches). */
@@ -1171,7 +1174,7 @@ export function Sidebar({
           ? old
           : {
               ...old,
-              pages: old.pages.map((page) => ({
+              pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
                 ...page,
                 items: page.items.map((entry) => (entry.id === session.id ? transform(entry) : entry)),
               })),
@@ -1217,7 +1220,7 @@ export function Sidebar({
             ? old
             : {
                 ...old,
-                pages: old.pages.map((page) => ({
+                pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
                   ...page,
                   items: page.items.map((item) => (item.id === session.id ? { ...item, ...updated, private: nextPrivate } : item)),
                 })),
@@ -1376,7 +1379,7 @@ export function Sidebar({
     // Non-paginated session views keep their own shape and refetch below.
     queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => old === undefined || !Array.isArray(old.pages) ? old : {
       ...old,
-      pages: old.pages.map((page) => ({
+      pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
         ...page,
         items: page.items.map((session) => ids.has(session.id) ? { ...session, archived: true } : session),
       })),
@@ -1693,12 +1696,14 @@ export function Sidebar({
     getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
     refetchInterval: (query) =>
       wsStatus === 'open'
-        ? ((query.state.data?.pages[0]?.items.length ?? 0) > 0 ? 60_000 : false)
+        ? ((Array.isArray(query.state.data?.pages) && Array.isArray(query.state.data.pages[0]?.items) ? query.state.data.pages[0].items.length : 0) > 0 ? 60_000 : false)
         : 15_000,
     enabled: inert !== true,
   });
   const ephemeralSessions = useMemo(
-    () => ephemeralQuery.data?.pages.flatMap((page) => page.items) ?? EMPTY_SESSIONS,
+    () => (Array.isArray(ephemeralQuery.data?.pages)
+      ? ephemeralQuery.data.pages.flatMap((page) => (Array.isArray(page?.items) ? page.items : []))
+      : EMPTY_SESSIONS),
     [ephemeralQuery.data],
   );
   // While a filter narrows the list, a workspace group shows what matched
@@ -2920,7 +2925,7 @@ export function Sidebar({
                   ? old
                   : {
                       ...old,
-                      pages: old.pages.map((page) => ({
+                      pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
                         ...page,
                         items: page.items.map((entry) => (entry.id === target.id ? mergeUpdated(entry) : entry)),
                       })),

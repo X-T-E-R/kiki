@@ -67,13 +67,44 @@ function skillTokenDecorations(state: EditorState, spans: readonly ComposerSkill
   );
 }
 
+function sameReferenceLabels(
+  a: readonly ComposerReferenceLabel[],
+  b: readonly ComposerReferenceLabel[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]!;
+    const right = b[i]!;
+    if (left.raw !== right.raw || left.label !== right.label || left.unresolved !== right.unresolved) return false;
+  }
+  return true;
+}
+
+function sameSkillSpans(
+  a: readonly ComposerSkillSpan[],
+  b: readonly ComposerSkillSpan[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]!;
+    const right = b[i]!;
+    if (left.start !== right.start || left.end !== right.end || left.skillName !== right.skillName) return false;
+  }
+  return true;
+}
+
 /** Adapt CodeMirror's replace-decoration/atomicRanges pattern; raw links remain in the document. */
 function referenceDecorations(state: EditorState, labels: readonly ComposerReferenceLabel[]): DecorationSet {
-  const byRaw = new Map(labels.map((entry) => [entry.raw, entry]));
+  const doc = state.sliceDoc();
+  if (!doc.includes('/') && !doc.includes('[[') && !doc.includes('@')) return Decoration.none;
   const refs = [
-    ...findConversationRefs(state.sliceDoc()),
-    ...findAgentRefs(state.sliceDoc()).map((ref) => ({ ...ref, kind: 'agent' })),
+    ...findConversationRefs(doc),
+    ...findAgentRefs(doc).map((ref) => ({ ...ref, kind: 'agent' })),
   ].sort((a, b) => a.start - b.start || a.end - b.end);
+  if (refs.length === 0) return Decoration.none;
+  const byRaw = new Map(labels.map((entry) => [entry.raw, entry]));
   const selection = state.selection.main;
   return Decoration.set(refs.map((ref) => {
     const inside = selection.empty && selection.head > ref.start && selection.head < ref.end;
@@ -128,8 +159,12 @@ export function ComposerInput(props: ComposerInputProps) {
   const externalChange = useRef(false);
   const labelsRef = useRef(props.references);
   labelsRef.current = props.references;
-  const skillSpansRef = useRef(props.skillSpans ?? []);
-  skillSpansRef.current = props.skillSpans ?? [];
+  const emptySkillSpansRef = useRef<readonly ComposerSkillSpan[]>([]);
+  const nextSkillSpans = props.skillSpans ?? emptySkillSpansRef.current;
+  const skillSpansRef = useRef(nextSkillSpans);
+  skillSpansRef.current = nextSkillSpans;
+  const dispatchedLabelsRef = useRef<readonly ComposerReferenceLabel[]>(props.references);
+  const dispatchedSkillSpansRef = useRef<readonly ComposerSkillSpan[]>(nextSkillSpans);
   const configuration = () => {
     const current = propsRef.current;
     return [
@@ -159,8 +194,20 @@ export function ComposerInput(props: ComposerInputProps) {
     if (container === null) return;
     const references = StateField.define<DecorationSet>({
       create: (state) => referenceDecorations(state, labelsRef.current),
-      update: (decorations, transaction) => transaction.docChanged || transaction.selection !== undefined || transaction.effects.some((effect) => effect.is(refreshReferences))
-        ? referenceDecorations(transaction.state, labelsRef.current) : decorations,
+      update: (decorations, transaction) => {
+        if (
+          !transaction.docChanged &&
+          transaction.selection === undefined &&
+          !transaction.effects.some((effect) => effect.is(refreshReferences))
+        ) {
+          return decorations;
+        }
+        if (decorations === Decoration.none) {
+          const doc = transaction.state.sliceDoc();
+          if (!doc.includes('/') && !doc.includes('[[') && !doc.includes('@')) return decorations;
+        }
+        return referenceDecorations(transaction.state, labelsRef.current);
+      },
       provide: (field) => [
         EditorView.decorations.from(field),
         EditorView.atomicRanges.of((view) => view.state.field(field)),
@@ -168,8 +215,12 @@ export function ComposerInput(props: ComposerInputProps) {
     });
     const skillTokens = StateField.define<DecorationSet>({
       create: (state) => skillTokenDecorations(state, skillSpansRef.current),
-      update: (decorations, transaction) => transaction.docChanged || transaction.effects.some((effect) => effect.is(refreshSkillTokens))
-        ? skillTokenDecorations(transaction.state, skillSpansRef.current) : decorations,
+      update: (decorations, transaction) => {
+        const force = transaction.effects.some((effect) => effect.is(refreshSkillTokens));
+        if (!transaction.docChanged && !force) return decorations;
+        if (decorations === Decoration.none && skillSpansRef.current.length === 0) return decorations;
+        return skillTokenDecorations(transaction.state, skillSpansRef.current);
+      },
       provide: (field) => EditorView.decorations.from(field),
     });
     let composing = false;
@@ -208,12 +259,14 @@ export function ComposerInput(props: ComposerInputProps) {
             const current = propsRef.current;
             if (current.disabled) return;
             if (update.docChanged) current.onChange(update.state.sliceDoc(), update.state.selection.main.head);
-            if (update.selectionSet || update.docChanged) current.onSelection(update.state.selection.main.head);
+            else if (update.selectionSet) current.onSelection(update.state.selection.main.head);
           }),
         ],
       }),
     });
     viewRef.current = view;
+    dispatchedLabelsRef.current = labelsRef.current;
+    dispatchedSkillSpansRef.current = skillSpansRef.current;
     const handle: ComposerInputHandle = {
       element: view.contentDOM,
       get value() { return view.state.sliceDoc(); },
@@ -283,13 +336,17 @@ export function ComposerInput(props: ComposerInputProps) {
 
   useLayoutEffect(() => {
     const view = viewRef.current;
-    if (view !== null && !view.composing) view.dispatch({ effects: refreshReferences.of(null) });
+    if (view === null || view.composing || sameReferenceLabels(dispatchedLabelsRef.current, props.references)) return;
+    dispatchedLabelsRef.current = props.references;
+    view.dispatch({ effects: refreshReferences.of(null) });
   }, [props.references]);
 
   useLayoutEffect(() => {
     const view = viewRef.current;
-    if (view !== null && !view.composing) view.dispatch({ effects: refreshSkillTokens.of(null) });
-  }, [props.skillSpans]);
+    if (view === null || view.composing || sameSkillSpans(dispatchedSkillSpansRef.current, nextSkillSpans)) return;
+    dispatchedSkillSpansRef.current = nextSkillSpans;
+    view.dispatch({ effects: refreshSkillTokens.of(null) });
+  }, [nextSkillSpans]);
 
   return (
     <div

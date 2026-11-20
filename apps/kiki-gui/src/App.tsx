@@ -561,7 +561,7 @@ function NormalApp() {
     const probedForeignIds = new Set<string>();
 
     const hasSessionInCache = (data: SessionListData | undefined, sessionId: string): boolean =>
-      data?.pages.some((page) => page.items.some((item) => item.id === sessionId)) === true;
+      Array.isArray(data?.pages) && data.pages.some((page) => Array.isArray(page?.items) && page.items.some((item) => item.id === sessionId));
 
     const runHeadRefresh = async () => {
       if (controller.signal.aborted) return;

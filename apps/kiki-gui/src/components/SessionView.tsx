@@ -3064,13 +3064,15 @@ export function SessionView({
     getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
     refetchInterval: (query) =>
       wsStatus === 'open'
-        ? ((query.state.data?.pages[0]?.items.length ?? 0) > 0 ? 60_000 : false)
+        ? ((Array.isArray(query.state.data?.pages) && Array.isArray(query.state.data.pages[0]?.items) ? query.state.data.pages[0].items.length : 0) > 0 ? 60_000 : false)
         : 15_000,
   });
   useEffect(() => {
     if (controller === null) return;
     const record = sessions.find((item) => item.id === controller.sessionId)
-      ?? ephemeralQuery.data?.pages.flatMap((page) => page.items).find((item) => item.id === controller.sessionId);
+      ?? (Array.isArray(ephemeralQuery.data?.pages)
+        ? ephemeralQuery.data.pages.flatMap((page) => (Array.isArray(page?.items) ? page.items : [])).find((item) => item.id === controller.sessionId)
+        : undefined);
     if (record !== undefined) controller.handleSessionRecord(record);
   }, [controller, sessions, ephemeralQuery.data]);
 
@@ -4168,7 +4170,7 @@ boundExecution,
             ? old
             : {
                 ...old,
-                pages: old.pages.map((page) => ({
+                pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
                   ...page,
                   items: page.items.map((item) => (item.id === sessionId ? mergeUpdated(item) : item)),
                 })),
@@ -4209,7 +4211,7 @@ boundExecution,
             ? old
             : {
                 ...old,
-                pages: old.pages.map((page) => ({
+                pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
                   ...page,
                   items: page.items.map((item) => (item.id === sessionId ? { ...item, ...updated, private: nextPrivate } : item)),
                 })),

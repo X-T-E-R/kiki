@@ -75,7 +75,10 @@ export async function readSessionFirstPage(
   signal?.throwIfAborted();
   let head = await read();
   signal?.throwIfAborted();
-  const ids = new Set(loaded?.pages[0]?.items.map((item) => item.id));
+  const firstItems = Array.isArray(loaded?.pages) && Array.isArray(loaded.pages[0]?.items)
+    ? loaded.pages[0].items
+    : [];
+  const ids = new Set(firstItems.map((item) => item.id));
   const cursors = new Set<string>();
   while (ids.size > 0 && head.has_more && !head.items.some((item) => ids.has(item.id))) {
     const cursor = head.next_cursor ?? head.items.at(-1)?.id;
@@ -103,9 +106,10 @@ export function mergeSessionFirstPage(
   old: SessionListData | undefined,
   first: SessionListPage,
 ): SessionListData | undefined {
-  if (old === undefined) return old;
+  if (old === undefined || old === null || !Array.isArray(old.pages)) return old;
   const knownSeqs = new Map<string, number>();
   for (const page of old.pages) {
+    if (!Array.isArray(page?.items)) continue;
     for (const item of page.items) {
       const prev = knownSeqs.get(item.id) ?? 0;
       if (item.last_seq > prev) knownSeqs.set(item.id, item.last_seq);
@@ -116,7 +120,7 @@ export function mergeSessionFirstPage(
     items: first.items.map((item) => retainSessionSeq(item, knownSeqs.get(item.id))),
   };
   const previous = old.pages[0];
-  if (previous === undefined || !normalizedFirst.has_more) return { pages: [normalizedFirst], pageParams: [undefined] };
+  if (previous === undefined || !Array.isArray(previous.items) || !normalizedFirst.has_more) return { pages: [normalizedFirst], pageParams: [undefined] };
   const ids = new Set(normalizedFirst.items.map((item) => item.id));
   const overlap = previous.items.findLastIndex((item) => ids.has(item.id));
   const retained = previous.items.slice(overlap + 1);
@@ -133,8 +137,8 @@ export function mergeSessionFirstPage(
  * not move a row backwards. Cursors, page boundaries and untouched rows stay.
  */
 export function mergeSessionActivity(old: SessionListData | undefined, fresh: Session): SessionListData | undefined {
-  if (old === undefined) return old;
-  return { ...old, pages: old.pages.map((page) => ({
+  if (old === undefined || old === null || !Array.isArray(old.pages)) return old;
+  return { ...old, pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
     ...page,
     items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at)
       ? retainSessionSeq(fresh, session.last_seq)
@@ -153,10 +157,10 @@ export function mergeSessionWorkChanged(
   old: SessionListData | undefined,
   change: SessionWorkChangedPatch,
 ): SessionListData | undefined {
-  if (old === undefined || !Array.isArray(old.pages)) return old;
+  if (old === undefined || old === null || !Array.isArray(old.pages)) return old;
   return {
     ...old,
-    pages: old.pages.map((page) => ({
+    pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
       ...page,
       items: page.items.map((session) => patchSessionWorkChanged(session, change)),
     })),
@@ -207,9 +211,10 @@ export function withPinnedSessions(
 
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */
 export function dedupeSessions(data: SessionListData | undefined): Session[] {
+  if (data === undefined || data === null || !Array.isArray(data.pages)) return [];
   const seen = new Set<string>();
-  return (data?.pages ?? [])
-    .flatMap((page) => page.items)
+  return data.pages
+    .flatMap((page) => (Array.isArray(page?.items) ? page.items : []))
     .filter((session) => {
       if (seen.has(session.id)) return false;
       seen.add(session.id);

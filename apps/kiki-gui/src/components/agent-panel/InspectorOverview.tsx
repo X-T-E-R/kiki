@@ -196,7 +196,7 @@ export const InspectorOverview = memo(function InspectorOverview({
       {renderLayout === undefined ? scopeSwitch : null}
 
       {contextUsed !== undefined ? (
-        <div data-overview-context={level} className="space-y-1.5">
+        <div data-overview-context={level} className={renderLayout !== undefined ? 'min-h-[60px] space-y-1.5' : 'space-y-1.5'}>
           <div className="flex items-baseline gap-2 text-[12.5px]">
             <span className="text-ink-soft">{t('inspector.context')}</span>
             {/* Stable hook for the rail's context figure styling. */}
@@ -238,12 +238,15 @@ export const InspectorOverview = memo(function InspectorOverview({
             ) : null}
           </p>
         </div>
-      ) : renderLayout !== undefined && (figureCells.length > 0 || workLine.length > 0) ? (
-        <div aria-hidden className="h-[52px]" />
+      ) : renderLayout !== undefined ? (
+        <div aria-hidden className="h-[60px]" />
       ) : null}
 
       {figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial ? (
-        <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-nowrap items-baseline gap-x-4 overflow-hidden">
+        <div
+          {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })}
+          className={`flex flex-nowrap items-baseline gap-x-4 overflow-hidden${renderLayout !== undefined ? ' min-h-[38px]' : ''}`}
+        >
           {figureCells}
           {shown.counting === true ? (
             <span role="status" data-metrics-counting title={t('usage.strip.counting')} aria-label={t('usage.strip.counting')} className="inline-flex text-ink-faint">
@@ -262,6 +265,8 @@ export const InspectorOverview = memo(function InspectorOverview({
             </span>
           ) : null}
         </div>
+      ) : renderLayout !== undefined ? (
+        <div aria-hidden className="h-[38px]" />
       ) : null}
 
       {workLine.length > 0 ? (

@@ -127,7 +127,7 @@ function usePersonaSettings(sessionId: string): PersonaSettingsController {
           if (old === undefined || !Array.isArray(old.pages)) return old;
           return {
             ...old,
-            pages: old.pages.map((page) => ({
+            pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
               ...page,
               items: page.items.map(patchSession),
             })),
@@ -143,7 +143,7 @@ function usePersonaSettings(sessionId: string): PersonaSettingsController {
             if (old === undefined || !Array.isArray(old.pages)) return old;
             return {
               ...old,
-              pages: old.pages.map((page) => ({
+              pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
                 ...page,
                 items: page.items.map((session) => (session.id === fresh.id ? fresh : session)),
               })),

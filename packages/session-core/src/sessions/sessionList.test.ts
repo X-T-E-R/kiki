@@ -88,6 +88,31 @@ describe('mergeSessionFirstPage', () => {
     );
     expect(afterActivity?.pages[0]?.items[0]).toMatchObject({ title: 'renamed', last_seq: 12 });
   });
+
+  it('ignores non-paged cached values under the sessions prefix without throwing', () => {
+    const fresh = session('s1', '2026-10-05T12:00:00Z', { title: 'updated' });
+    const first = page(['s1'], false);
+    const change = { sessionId: 's1', busy: true, executing: true };
+    const nonPagedValues: unknown[] = [
+      { persona_id: 'p1', pinned: false },
+      { items: [fresh], has_more: false },
+      [fresh],
+      null,
+      'string-cache',
+    ];
+    for (const cached of nonPagedValues) {
+      const asData = cached as SessionListData | undefined;
+      expect(mergeSessionActivity(asData, fresh)).toBe(cached);
+      expect(mergeSessionFirstPage(asData, first)).toBe(cached);
+      expect(mergeSessionWorkChanged(asData, change)).toBe(cached);
+      expect(dedupeSessions(asData)).toEqual([]);
+    }
+    const malformedPage = { pages: [{ has_more: false } as unknown as PageResponse<Session>], pageParams: [undefined] };
+    expect(mergeSessionActivity(malformedPage, fresh)?.pages).toEqual(malformedPage.pages);
+    expect(mergeSessionWorkChanged(malformedPage, change)?.pages).toEqual(malformedPage.pages);
+    expect(mergeSessionFirstPage(malformedPage, first)?.pages).toEqual([first]);
+    expect(dedupeSessions(malformedPage)).toEqual([]);
+  });
 });
 
 describe('activity recency', () => {

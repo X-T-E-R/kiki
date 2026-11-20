@@ -135,7 +135,7 @@ import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAva
 import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
-import { ComposerInput } from './ComposerInput';
+import { ComposerInput, type ComposerReferenceLabel, type ComposerSkillSpan } from './ComposerInput';
 import { normalizeComposerText, type ComposerInputHandle } from '../lib/composerInput';
 import { Icon, resolvePluginSlotIconName } from './icons';
 import { useElapsedSince, useNow } from './RelativeTime';
@@ -370,6 +370,20 @@ interface ComposerUndoEntry {
 
 /** anything-llm's PromptInput caps its local stack at 100; so does this one. */
 const UNDO_STACK_LIMIT = 100;
+
+const EMPTY_DRAFT_SKILLS: {
+  readonly occurrences: readonly ReturnType<typeof extractSlashSkillTokens>['occurrences'][number][];
+  readonly activations: readonly ReturnType<typeof extractSlashSkillTokens>['activations'][number][];
+} = { occurrences: [], activations: [] };
+const EMPTY_SKILL_SPANS: readonly ComposerSkillSpan[] = [];
+const EMPTY_CONVERSATION_REFS: readonly ReturnType<typeof findConversationRefs>[number][] = [];
+const EMPTY_AGENT_REFS: readonly ReturnType<typeof findAgentRefs>[number][] = [];
+const EMPTY_OVERLAY_TOKENS: readonly ComposerReferenceLabel[] = [];
+const EMPTY_STRING_IDS: readonly string[] = [];
+
+function hasSpecialDraftSyntax(draft: string): boolean {
+  return draft.includes('/') || draft.includes('@') || draft.includes('[[');
+}
 
 export function Composer({
   busy,
@@ -825,30 +839,57 @@ export function Composer({
   // Phone contract: the IME's Enter is the newline key (sending belongs to
   // the button), and the input text stays ≥16px so iOS never zooms on focus.
   const coarsePointer = useCoarsePointer();
-  // Mirror the controlled `value` locally while a typing transition is in
-  // flight so each keystroke paints inside Composer without waiting on parent
-  // route/workspace re-renders; once the transition settles (or when an
-  // external prop update arrives), follow the authoritative controlled `value`.
+  // Mirror the controlled `value` locally and defer plain prose continuation
+  // updates via `startDraftTransition` so CodeMirror paints each keystroke
+  // immediately without blocking rAF on a full Composer + route re-render.
+  // Empty <-> non-empty transitions, slash/mention/link triggers, and external
+  // resets still update synchronously; `liveTextRef` always holds the latest
+  // keystroke so immediate Enter/undo/send never reads a stale prefix.
   const normalizedPropValue = normalizeComposerText(value);
-  const [draftTransitionPending, startDraftTransition] = useTransition();
+  const [, startDraftTransition] = useTransition();
   const [localText, setLocalText] = useState(normalizedPropValue);
+  const liveTextRef = useRef(normalizedPropValue);
+  const pendingEmitsRef = useRef<string[]>([]);
   const prevPropValueRef = useRef(normalizedPropValue);
   if (prevPropValueRef.current !== normalizedPropValue) {
     prevPropValueRef.current = normalizedPropValue;
-    if (localText !== normalizedPropValue) setLocalText(normalizedPropValue);
-  } else if (!draftTransitionPending && localText !== normalizedPropValue) {
-    setLocalText(normalizedPropValue);
+    const echoIndex = pendingEmitsRef.current.indexOf(normalizedPropValue);
+    if (echoIndex >= 0) {
+      pendingEmitsRef.current.splice(0, echoIndex + 1);
+    } else {
+      pendingEmitsRef.current.length = 0;
+      liveTextRef.current = normalizedPropValue;
+      if (localText !== normalizedPropValue) setLocalText(normalizedPropValue);
+    }
   }
-  const text = draftTransitionPending ? localText : normalizedPropValue;
-  const commitText = useCallback((nextText: string) => {
+  const text = localText;
+  const commitText = useCallback((nextText: string, urgent = false) => {
     const normalized = normalizeComposerText(nextText);
+    const prevLive = liveTextRef.current;
+    liveTextRef.current = normalized;
     if (composingRef.current) {
+      pendingEmitsRef.current.length = 0;
+      setLocalText(normalized);
       onChange(normalized);
       return;
     }
-    setLocalText(normalized);
+    pendingEmitsRef.current.push(normalized);
+    if (pendingEmitsRef.current.length > 64) {
+      pendingEmitsRef.current.splice(0, pendingEmitsRef.current.length - 64);
+    }
+    const emptyEdgeChanged = (prevLive.trim() === '') !== (normalized.trim() === '');
+    const syntaxEdge = hasSpecialDraftSyntax(prevLive) || hasSpecialDraftSyntax(normalized);
+    if (urgent || emptyEdgeChanged || syntaxEdge) {
+      setLocalText(normalized);
+      startDraftTransition(() => {
+        onChange(liveTextRef.current);
+      });
+      return;
+    }
     startDraftTransition(() => {
-      onChange(normalized);
+      const latest = liveTextRef.current;
+      setLocalText(latest);
+      onChange(latest);
     });
   }, [onChange, startDraftTransition]);
   const textareaRef = useRef<ComposerInputHandle>(null);
@@ -875,8 +916,8 @@ export function Composer({
     if (!messageEditing || !autoFocus || disabled) return;
     textareaRef.current?.focus();
   }, [messageEditing, autoFocus, disabled]);
-  const pasteDraftRef = useRef({ text, sessionId, connectionId, scopeId });
-  pasteDraftRef.current = { text, sessionId, connectionId, scopeId };
+  const pasteDraftRef = useRef({ sessionId, connectionId, scopeId });
+  pasteDraftRef.current = { sessionId, connectionId, scopeId };
   const ownsReservedAttachmentResult = () => mountedRef.current &&
     (queueEditing || messageEditing ? ownsAttachmentResult() :
       pasteDraftRef.current.sessionId === sessionId && pasteDraftRef.current.connectionId === connectionId && pasteDraftRef.current.scopeId === scopeId);
@@ -993,8 +1034,8 @@ export function Composer({
   const skillCwd = agentProfileCatalogMode.mode === 'cwd' ? agentProfileCatalogMode.cwd : undefined;
   const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined || agentProfileCatalogMode.mode !== 'disabled';
   const skillScope = JSON.stringify([scopeId, sessionId, workspaceId, skillCwd, skillCatalogReady]);
-  const currentSlashDraftRef = useRef({ text, skillScope });
-  currentSlashDraftRef.current = { text, skillScope };
+  const currentSlashDraftRef = useRef({ skillScope });
+  currentSlashDraftRef.current = { skillScope };
   // Queue-edit remove is a two-step control: the first click arms the button
   // ("Remove?"), the second actually drops the queued message. The arm times
   // out so a stray hover never leaves a live one-click remove behind.
@@ -1607,7 +1648,7 @@ export function Composer({
   // stays unchipped until completed.
   const skillActivationEnabled = !externalExecution && onActivateSkill !== undefined;
   const resolvedDraftSkills = useMemo(() => {
-    if (!skillActivationEnabled) return { occurrences: [], activations: [] };
+    if (!skillActivationEnabled || !text.includes('/')) return EMPTY_DRAFT_SKILLS;
     const activeSlashEnd = menu?.kind === 'slash' ? menu.end : undefined;
     const raw = extractSlashSkillTokens(slashItems, text, {
       includeLeading: true,
@@ -1616,7 +1657,7 @@ export function Composer({
     const occurrences = raw.occurrences.filter(
       (match) => !(match.start === 0 && match.end === text.length),
     );
-    if (occurrences.length === 0) return { occurrences: [], activations: [] };
+    if (occurrences.length === 0) return EMPTY_DRAFT_SKILLS;
     const seen = new Set<string>();
     const activations = occurrences.filter((match) => {
       const key = match.skillName.toLowerCase();
@@ -1628,11 +1669,13 @@ export function Composer({
   }, [skillActivationEnabled, slashItems, text, menu]);
   const draftSkills = resolvedDraftSkills.activations;
   const skillSpans = useMemo(
-    () => resolvedDraftSkills.occurrences.map((match) => ({
-      start: match.start,
-      end: match.end,
-      skillName: match.skillName,
-    })),
+    () => (resolvedDraftSkills.occurrences.length === 0
+      ? EMPTY_SKILL_SPANS
+      : resolvedDraftSkills.occurrences.map((match) => ({
+          start: match.start,
+          end: match.end,
+          skillName: match.skillName,
+        }))),
     [resolvedDraftSkills.occurrences],
   );
   const removeDraftSkill = (skillName: string) => {
@@ -1653,20 +1696,40 @@ export function Composer({
   };
   // Conversation links in the draft — threads and rooms alike: one tray chip
   // each, a tinted token in the text, and whole-link deletion.
-  const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
-  const agentRefs = useMemo(() => findAgentRefs(text), [text]);
+  const conversationRefs = useMemo(
+    () => (text.includes('/') || text.includes('[[') ? findConversationRefs(text) : EMPTY_CONVERSATION_REFS),
+    [text],
+  );
+  const agentRefs = useMemo(
+    () => (text.includes('@') ? findAgentRefs(text) : EMPTY_AGENT_REFS),
+    [text],
+  );
   // Labels are presentation only; the editor, draft and submission share raw offsets.
   const backdropTokens = useMemo(
-    () => [
-      ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
-      ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string, profile: ref.profile as string | undefined })),
-    ].sort((a, b) => a.start - b.start || a.end - b.end),
+    () => (conversationRefs.length === 0 && agentRefs.length === 0
+      ? []
+      : [
+          ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
+          ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string, profile: ref.profile as string | undefined })),
+        ].sort((a, b) => a.start - b.start || a.end - b.end)),
     [conversationRefs, agentRefs],
   );
-  const threadRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'session'), [conversationRefs]);
-  const roomRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'room'), [conversationRefs]);
-  const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.id), [threadRefs]);
-  const roomRefIds = useMemo(() => roomRefs.map((ref) => ref.id), [roomRefs]);
+  const threadRefs = useMemo(
+    () => (conversationRefs.length === 0 ? EMPTY_CONVERSATION_REFS : conversationRefs.filter((ref) => ref.kind === 'session')),
+    [conversationRefs],
+  );
+  const roomRefs = useMemo(
+    () => (conversationRefs.length === 0 ? EMPTY_CONVERSATION_REFS : conversationRefs.filter((ref) => ref.kind === 'room')),
+    [conversationRefs],
+  );
+  const threadRefIds = useMemo(
+    () => (threadRefs.length === 0 ? EMPTY_STRING_IDS : threadRefs.map((ref) => ref.id)),
+    [threadRefs],
+  );
+  const roomRefIds = useMemo(
+    () => (roomRefs.length === 0 ? EMPTY_STRING_IDS : roomRefs.map((ref) => ref.id)),
+    [roomRefs],
+  );
   const fetchThreadSession = useCallback((id: string) => client.getSession(id), [client]);
   const fetchThreadHostId = useCallback(() => client.klient.global.threads.hostId(), [client]);
   const threadRefDirectory = useThreadRefDirectory(threadRefIds, fetchThreadSession, fetchThreadHostId);
@@ -1692,7 +1755,7 @@ export function Composer({
     return map;
   }, [agentCandidateList]);
   const overlayTokens = useMemo(
-    () => backdropTokens.map((ref) => {
+    () => (backdropTokens.length === 0 ? EMPTY_OVERLAY_TOKENS : backdropTokens.map((ref) => {
       let label: string;
       let unresolved = false;
       if (ref.kind === 'agent') {
@@ -1723,7 +1786,7 @@ export function Composer({
         label = ref.raw;
       }
       return { ...ref, label, unresolved };
-    }),
+    })),
     [backdropTokens, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory, locale],
   );
   const pluginToolbarSlots = useMemo(
@@ -1848,6 +1911,7 @@ export function Composer({
     const nextValue = normalizeComposerText(nextText);
     const nextCursor = normalizeComposerText(nextText.slice(0, Math.max(0, Math.min(cursor, nextText.length)))).length;
     lastCursorRef.current = nextCursor;
+    pendingEmitsRef.current.length = 0;
     const node = textareaRef.current;
     if (node !== null && !composingRef.current) {
       node.focus();
@@ -1866,8 +1930,9 @@ export function Composer({
     const selection = focused
       ? { start: node.selectionStart, end: node.selectionEnd }
       : { start: lastCursorRef.current, end: lastCursorRef.current };
-    const next = insertThreadRef(text, selection, snippet);
-    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    const currentText = liveTextRef.current;
+    const next = insertThreadRef(currentText, selection, snippet);
+    pushUndoSnapshot({ text: currentText, cursor: lastCursorRef.current });
     historyIndexRef.current = null;
     applyTextChange(next.text, next.cursor);
     return true;
@@ -1909,7 +1974,7 @@ export function Composer({
   const undoEdit = () => {
     const entry = undoStackRef.current.pop();
     if (entry === undefined) return;
-    redoStackRef.current.push({ text, cursor: lastCursorRef.current });
+    redoStackRef.current.push({ text: liveTextRef.current, cursor: lastCursorRef.current });
     historyIndexRef.current = null;
     applyTextChange(entry.text, entry.cursor);
   };
@@ -1917,7 +1982,7 @@ export function Composer({
   const redoEdit = () => {
     const entry = redoStackRef.current.pop();
     if (entry === undefined) return;
-    undoStackRef.current.push({ text, cursor: lastCursorRef.current });
+    undoStackRef.current.push({ text: liveTextRef.current, cursor: lastCursorRef.current });
     historyIndexRef.current = null;
     applyTextChange(entry.text, entry.cursor);
   };
@@ -1937,7 +2002,7 @@ export function Composer({
     const atEnd = node.selectionStart === node.value.length;
     if (historyIndexRef.current === null) {
       if (delta !== -1 || !atStart) return false;
-      historySnapshotRef.current = text;
+      historySnapshotRef.current = liveTextRef.current;
       historyIndexRef.current = inputHistory.length - 1;
     } else {
       const canStepOlder = delta === -1 && (atStart || (atEnd && recalledCaretUntouchedRef.current));
@@ -1980,11 +2045,12 @@ export function Composer({
    * (`/plan` …) are not sent, so they never land here.
    */
   const recordSubmission = (surface: boolean) => {
-    if (historyKey !== undefined) pushInputHistory(historyKey, text);
+    const currentText = liveTextRef.current;
+    if (historyKey !== undefined) pushInputHistory(historyKey, currentText);
     if (!surface) return;
     setAttachmentError(null);
     historyIndexRef.current = null;
-    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    pushUndoSnapshot({ text: currentText, cursor: lastCursorRef.current });
   };
   const submissionVisible = (flight: SendFlight): boolean =>
     composerAliveRef.current
@@ -2294,7 +2360,7 @@ export function Composer({
   pasteContentRef.current = (read) => {
     const node = textareaRef.current;
     if (node === null || node.disabled) return Promise.resolve();
-    const draft = pasteDraftRef.current;
+    const draft = { ...pasteDraftRef.current, text: liveTextRef.current };
     const selection = { start: node.selectionStart ?? lastCursorRef.current, end: node.selectionEnd ?? lastCursorRef.current };
     const run = async () => {
       if (disabledRef.current || textareaRef.current !== node || node.disabled) return;
@@ -2302,7 +2368,7 @@ export function Composer({
       try {
         const native = await host.readClipboardFiles?.();
         const browser = native === null || native === undefined ? await read() : null;
-        const latest = pasteDraftRef.current;
+        const latest = { ...pasteDraftRef.current, text: liveTextRef.current };
         if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
         const paths = [...(native?.paths ?? [])];
         const media = [...(native?.media ?? [])];
@@ -2468,8 +2534,8 @@ export function Composer({
     });
   }, [host]);
 
-  const submitWithSlashItems = (items: readonly SlashItem[], catalogAvailable: boolean) => {
-    const trimmed = text.trim();
+  const submitWithSlashItems = (items: readonly SlashItem[], catalogAvailable: boolean, draftText = liveTextRef.current) => {
+    const trimmed = draftText.trim();
     const classified = classifySlashSubmission(items, trimmed);
     const inlineMatches = skillActivationEnabled
       ? extractSlashSkillTokens(items, trimmed, { includeLeading: false }).activations
@@ -2577,8 +2643,10 @@ export function Composer({
 
   /** `now`: join the running turn instead of queueing behind it (plain prompts only). */
   const send = (now = false, timing?: DeferredAppendTiming) => {
+    const currentText = liveTextRef.current;
     if (!canSend || slashCatalogPendingRef.current || composingRef.current) return;
-    if (text !== normalizedPropValue) onChange(text);
+    if (currentText !== localText) setLocalText(currentText);
+    if (currentText !== normalizedPropValue) onChange(currentText);
     sendNowRef.current = now && onSendNow !== undefined;
     sendTimingRef.current = timing;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
@@ -2586,7 +2654,7 @@ export function Composer({
     // never to command classification, skill activation, or a fresh send.
     if (queueEditing || messageEditing) {
       setMenu(null);
-      const edited = prepareThreadRefContext(text.trim(), threadRefDirectory.info, roomRefInfoOf);
+      const edited = prepareThreadRefContext(currentText.trim(), threadRefDirectory.info, roomRefInfoOf);
       runAgentTurn(async () => {
         if (queueEditing) await onQueueEditConfirm?.(edited.text, attachments, edited.presentation);
         else await onSend(edited.text, attachments, { presentation: edited.presentation });
@@ -2614,7 +2682,7 @@ export function Composer({
       return;
     }
     setMenu(null);
-    const trimmed = text.trim();
+    const trimmed = currentText.trim();
     const localSlash = classifySlashSubmission(slashItems, trimmed);
     const needsColdCatalog = (
       (localSlash !== null && localSlash.kind !== 'resolved') ||
@@ -2634,10 +2702,10 @@ export function Composer({
         slashCatalogPendingRef.current = false;
         setSlashCatalogPending(false);
         const current = currentSlashDraftRef.current;
-        if (current.text !== text || current.skillScope !== skillScope) return;
+        if (liveTextRef.current !== currentText || current.skillScope !== skillScope) return;
         if (result.data === undefined) {
           setAttachmentError(t('composer.slash.submitCatalogFailed'));
-          submitWithSlashItems(slashItems, true);
+          submitWithSlashItems(slashItems, true, currentText);
           return;
         }
         setAttachmentError((previous) => previous === t('composer.slash.submitCatalogFailed') ? null : previous);
@@ -2655,11 +2723,12 @@ export function Composer({
             onOpenBranch !== undefined,
           ),
           true,
+          currentText,
         );
       });
       return;
     }
-    submitWithSlashItems(slashItems, skillsQuery.isSuccess);
+    submitWithSlashItems(slashItems, skillsQuery.isSuccess, currentText);
   };
 
   /**
@@ -2927,6 +2996,14 @@ export function Composer({
   /** Recompute the trigger-driven menu after any text/caret change. */
   const refreshMenu = (nextText: string, cursor: number) => {
     if (composingRef.current) return;
+    if (
+      menu === null &&
+      dismissedTriggerRef.current === null &&
+      !nextText.includes('/') &&
+      !nextText.includes('@')
+    ) {
+      return;
+    }
     const dismissed = dismissedTriggerRef.current;
     const slashTrigger = parseSlashTrigger(nextText, cursor);
     if (slashTrigger !== null) {
@@ -2976,25 +3053,30 @@ export function Composer({
     if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey) {
       const node = textareaRef.current;
       if (node === null) return;
-      const range = threadRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
-      if (range !== null) {
-        event.preventDefault();
-        pushUndoSnapshot({ text, cursor: node.selectionStart });
-        historyIndexRef.current = null;
-        const next = removeThreadRef(text, range);
-        applyTextChange(next.text, next.cursor);
-        refreshMenu(next.text, next.cursor);
-        return;
+      const currentText = liveTextRef.current;
+      if (currentText.includes('/') || currentText.includes('[[')) {
+        const range = threadRefDeletionRange(currentText, node.selectionStart, node.selectionEnd, event.key);
+        if (range !== null) {
+          event.preventDefault();
+          pushUndoSnapshot({ text: currentText, cursor: node.selectionStart });
+          historyIndexRef.current = null;
+          const next = removeThreadRef(currentText, range);
+          applyTextChange(next.text, next.cursor);
+          refreshMenu(next.text, next.cursor);
+          return;
+        }
       }
-      const agentRange = agentRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
-      if (agentRange !== null) {
-        event.preventDefault();
-        pushUndoSnapshot({ text, cursor: node.selectionStart });
-        historyIndexRef.current = null;
-        const next = removeAgentRef(text, agentRange);
-        applyTextChange(next.text, next.cursor);
-        refreshMenu(next.text, next.cursor);
-        return;
+      if (currentText.includes('@')) {
+        const agentRange = agentRefDeletionRange(currentText, node.selectionStart, node.selectionEnd, event.key);
+        if (agentRange !== null) {
+          event.preventDefault();
+          pushUndoSnapshot({ text: currentText, cursor: node.selectionStart });
+          historyIndexRef.current = null;
+          const next = removeAgentRef(currentText, agentRange);
+          applyTextChange(next.text, next.cursor);
+          refreshMenu(next.text, next.cursor);
+          return;
+        }
       }
     }
     if (menu !== null && menuRowCount > 0) {
@@ -3958,16 +4040,16 @@ export function Composer({
               enterKeyHint={coarsePointer ? 'enter' : undefined}
               onCompositionStart={() => {
                 composingRef.current = true;
-                pushUndoSnapshot({ text, cursor: textareaRef.current?.selectionStart ?? lastCursorRef.current });
+                pushUndoSnapshot({ text: liveTextRef.current, cursor: textareaRef.current?.selectionStart ?? lastCursorRef.current });
                 historyIndexRef.current = null;
               }}
               onCompositionEnd={() => {
                 composingRef.current = false;
                 const node = textareaRef.current;
                 if (node === null) return;
-                commitText(node.value);
+                commitText(node.value, true);
                 lastCursorRef.current = node.selectionStart;
-                setSlashConfirm(null);
+                if (slashConfirm !== null) setSlashConfirm(null);
                 refreshMenu(node.value, node.selectionStart);
               }}
               sessionId={sessionId}
@@ -3975,16 +4057,17 @@ export function Composer({
               autoFocus={autoFocus}
               disabled={disabled}
               onChange={(nextText, cursor) => {
-                setAttachmentError(null);
-                if (!composingRef.current && nextText !== text) {
-                  pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+                if (attachmentError !== null) setAttachmentError(null);
+                const prevLive = liveTextRef.current;
+                if (!composingRef.current && nextText !== prevLive) {
+                  pushUndoSnapshot({ text: prevLive, cursor: lastCursorRef.current });
                 }
                 historyIndexRef.current = null;
                 recalledCaretUntouchedRef.current = false;
                 recalledCaretPosRef.current = null;
                 commitText(nextText);
                 lastCursorRef.current = cursor;
-                setSlashConfirm(null);
+                if (slashConfirm !== null) setSlashConfirm(null);
                 refreshMenu(nextText, cursor);
               }}
               onKeyDown={onKeyDown}
@@ -3993,10 +4076,13 @@ export function Composer({
                 if (recalledCaretUntouchedRef.current && recalledCaretPosRef.current !== null && cursor !== recalledCaretPosRef.current) {
                   recalledCaretUntouchedRef.current = false;
                 }
-                refreshMenu(textareaRef.current?.value ?? text, cursor);
+                refreshMenu(textareaRef.current?.value ?? liveTextRef.current, cursor);
               }}
               onFocus={() => { setInputFocused(true); }}
               onBlur={() => {
+                const latest = liveTextRef.current;
+                if (latest !== localText) setLocalText(latest);
+                if (latest !== normalizedPropValue) onChange(latest);
                 setMenu(null);
                 setInputFocused(false);
                 if (textareaRef.current?.disabled) refocusOnEnableRef.current = true;

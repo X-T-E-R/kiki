@@ -493,6 +493,7 @@ export function ActivityInlineDecisionStrip({
         if (old === undefined || !Array.isArray(old.pages)) return old;
         let changed = false;
         const pages = old.pages.map((page) => {
+          if (!Array.isArray(page?.items)) return page;
           let pageChanged = false;
           const items = page.items.map((session) => {
             if (session.id === sessionId && session.pending_interaction === reason) {
