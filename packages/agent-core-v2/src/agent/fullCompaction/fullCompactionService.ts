@@ -363,14 +363,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (this.scope.agentId !== 'main') {
       if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
       if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow };
-      return { strategy: config?.subagentContextStrategy ?? 'auto', source: 'subagent', shadow };
+      return { strategy: config?.subagentContextStrategy ?? 'summarize', source: 'subagent', shadow };
     }
     const override = this.states.get(contextStrategyOverrideKey);
     if (override !== null) return { strategy: override, source: 'session', shadow };
     if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
     if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow };
     if (config?.contextStrategy !== undefined) return { strategy: config.contextStrategy, source: 'global', shadow };
-    return { strategy: 'auto', source: 'default', shadow };
+    return { strategy: 'summarize', source: 'default', shadow };
   }
 
   setContextStrategyOverride(strategy: 'summarize' | 'auto' | 'fresh' | null): void {
@@ -1223,9 +1223,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       } catch (error) {
         if (error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
         const filteredFailure = compactionFailureKind(error) === 'filtered';
-        const allowAutoFilteredRelay = data.source === 'auto' && requested !== 'summarize' && filteredFailure;
-        if ((choice.strategy === 'summarize' && !allowAutoFilteredRelay) || customInstruction ||
-            !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError || filteredFailure)) throw error;
+        const overflowFailure = this.shouldRecoverFromContextOverflow(error);
+        const allowAutoEmergencyRelay = data.source === 'auto' && requested !== 'summarize' && (filteredFailure || overflowFailure);
+        if ((choice.strategy === 'summarize' && !allowAutoEmergencyRelay) || customInstruction ||
+            !(overflowFailure || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError || filteredFailure)) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
         const targetCompactCount = relayCompactCount > 0 ? relayCompactCount : compactCount;
         let rescueSummary = relaySummary;

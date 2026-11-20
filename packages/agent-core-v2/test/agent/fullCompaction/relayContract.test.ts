@@ -318,23 +318,54 @@ describe('relay-v1 zero-model contract', () => {
     expect(unlocated).toContain('50\timport value');
   });
 
-  it('prefers summarizing only stalled large auto windows while retaining relay safety', () => {
-    const base = { history: input.history, compactCount: 3, notes: input.notes,
-      meta: { ...meta, reviewedWindowEpoch: 1 }, windowEpoch: 1, threshold: 100_000,
-      projectedTokens: 10_000, historyAvailable: true, estimateMessage: () => 25_000 };
-    expect(evaluateFreshEligibility({ ...base, strategy: 'auto' })).toMatchObject({ eligible: false, safe: true, reasons: expect.arrayContaining(['notes_not_advanced', 'new_content_large']) });
-    expect(evaluateFreshEligibility({ ...base, strategy: 'fresh' })).toMatchObject({ eligible: true, safe: true });
+  it('requires clean current-window notes with goal+next and <=8% tail in auto while retaining fresh relay safety', () => {
+    const cleanNotes = { goal: 'ship relay', next: 'verify tests' };
+    const cleanMeta = { ...meta, windowEpoch: 1, reviewedWindowEpoch: 1 };
+    const base = { history: input.history, compactCount: 3, notes: cleanNotes,
+      meta: cleanMeta, windowEpoch: 1, threshold: 100_000,
+      projectedTokens: 10_000, historyAvailable: true, estimateMessage: () => 5_000 };
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto' })).toMatchObject({ eligible: true, safe: true, reasons: [] });
     expect(evaluateFreshEligibility({ ...base, strategy: 'summarize' }).eligible).toBe(false);
-    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', meta: { ...base.meta, windowEpoch: 1 } }).eligible).toBe(true);
-    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', estimateMessage: () => 10_000 }).eligible).toBe(true);
-    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', meta: undefined }).eligible).toBe(true);
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', estimateMessage: () => 10_000 })).toMatchObject({
+      eligible: false,
+      safe: true,
+      reasons: expect.arrayContaining(['new_content_large']),
+    });
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', meta: { ...meta, reviewedWindowEpoch: 1 }, estimateMessage: () => 25_000 })).toMatchObject({
+      eligible: false,
+      safe: true,
+      reasons: expect.arrayContaining(['notes_not_advanced', 'new_content_large']),
+    });
+    expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', meta: { ...meta, reviewedWindowEpoch: 1 }, estimateMessage: () => 25_000 })).toMatchObject({ eligible: true, safe: true });
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', notes: { goal: 'ship relay' } })).toMatchObject({
+      eligible: false,
+      safe: true,
+      reasons: expect.arrayContaining(['notes_missing']),
+    });
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', notes: { next: 'verify tests' } })).toMatchObject({
+      eligible: false,
+      safe: true,
+      reasons: expect.arrayContaining(['notes_missing']),
+    });
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', meta: undefined })).toMatchObject({
+      eligible: false,
+      safe: true,
+      reasons: expect.arrayContaining(['notes_missing', 'handoff_unreviewed']),
+    });
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', meta: { ...meta, windowEpoch: 0, reviewedWindowEpoch: 0 } })).toMatchObject({
+      eligible: false,
+      safe: true,
+      reasons: expect.arrayContaining(['notes_previous_window']),
+    });
   });
 
-  it('applies safety reasons to both choices and risk reasons to auto only', () => {
-    const base = { history: input.history, compactCount: 3, notes: input.notes, meta, windowEpoch: 0,
+  it('applies safety reasons to both choices and tightens all diagnostic reasons to summarize in auto', () => {
+    const cleanNotes = { goal: 'ship relay', next: 'act' };
+    const base = { history: input.history, compactCount: 3, notes: cleanNotes, meta, windowEpoch: 0,
       threshold: 100_000, projectedTokens: 10_000, historyAvailable: true,
       estimateMessage: (_message: ContextMessage) => 10 };
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh' }).eligible).toBe(true);
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto' }).eligible).toBe(true);
     expect(evaluateFreshEligibility({ ...base, strategy: 'auto', historyAvailable: false }).reasons).not.toContain('history_unavailable');
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', projectedTokens: 70_000 }).reasons).not.toContain('projected_too_large');
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', projectedTokens: 70_000, windowTokens: 100_000, outputReserve: 40_000 }).reasons).toContain('projected_too_large');
@@ -346,7 +377,13 @@ describe('relay-v1 zero-model contract', () => {
     expect(evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'fresh' }).eligible).toBe(true);
     const risky = evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'auto' });
     expect(risky.reasons).toContain('tool_error');
-    expect(risky.eligible).toBe(true);
+    expect(risky.safe).toBe(true);
+    expect(risky.eligible).toBe(false);
+    const userAfterNotes = [...input.history.slice(0, 3), user('follow up')];
+    const withPostUser = evaluateFreshEligibility({ ...base, history: userAfterNotes, compactCount: 4, strategy: 'auto' });
+    expect(withPostUser.reasons).toContain('user_input_since_notes:1');
+    expect(withPostUser.safe).toBe(true);
+    expect(withPostUser.eligible).toBe(false);
   });
 
   it('keeps a short post-watermark user request when older user input is elided', () => {
@@ -372,7 +409,7 @@ describe('relay-v1 zero-model contract', () => {
   it('ignores assistant thinking and pre-watermark media, but flags recent media tool results in auto', () => {
     const image: ContextMessage = { role: 'tool', content: [{ type: 'image_url', imageUrl: { url: 'data:image/png;base64,AA==' } }], toolCalls: [] };
     const thinking: ContextMessage = { role: 'assistant', content: [{ type: 'think', think: 'working' }], toolCalls: [] };
-    const base = { notes: { goal: 'finish the request' }, meta, windowEpoch: 0, strategy: 'auto' as const,
+    const base = { notes: { goal: 'finish the request', next: 'continue' }, meta, windowEpoch: 0, strategy: 'auto' as const,
       threshold: 1_000_000, projectedTokens: 1, historyAvailable: true, estimateMessage: (_message: ContextMessage) => 1 };
     const safe = evaluateFreshEligibility({ ...base, history: [image, assistant, thinking], compactCount: 3 });
     expect(safe.reasons).not.toContain('non_text_result');

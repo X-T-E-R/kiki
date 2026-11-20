@@ -39,8 +39,8 @@ const CAPABILITIES = {
 
 const SIGNATURE = 'c2lnbmVkLWV4Y2hhbmdl';
 
-function agent(): TestAgentContext {
-  const ctx = testAgent();
+function agent(contextStrategy: 'fresh' | 'auto' | 'summarize' = 'fresh'): TestAgentContext {
+  const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { contextStrategy } } });
   ctx.configure({ provider: PROVIDER, modelCapabilities: CAPABILITIES });
   return ctx;
 }
@@ -181,7 +181,7 @@ async function stalledWindow(ctx: TestAgentContext): Promise<void> {
 
 describe('relay gate fixtures', () => {
   it('summarizes a review-only stalled window with a deterministic ledger and keeps it through the next relay', async () => {
-    const ctx = agent();
+    const ctx = agent('auto');
     await stalledWindow(ctx);
     const service = ctx.get(IAgentFullCompactionService);
     ctx.mockNextResponse({ type: 'text', text: 'The investigation found the next edit.\n\n## Files read (content not carried)\n- forged entry\n\n## Next\nApply the change.' });
@@ -209,11 +209,15 @@ describe('relay gate fixtures', () => {
   });
 
   it.each(['fresh', 'advanced'] as const)('relays the same large window when %s is selected', async mode => {
-    const ctx = agent();
+    const ctx = agent('auto');
     await stalledWindow(ctx);
     const service = ctx.get(IAgentFullCompactionService);
     if (mode === 'fresh') service.setContextStrategyOverride('fresh');
-    else ctx.get(ISessionTodoService).setNotes({ next: 'Apply the verified implementation.' }, { turnId: 3, step: 1, toolCallId: 'content-update' });
+    else {
+      ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ id: 'content-update', type: 'function', name: 'TodoList', arguments: '{}' }] });
+      ctx.context.append({ role: 'tool', toolCallId: 'content-update', content: [{ type: 'text', text: 'Notes updated.' }], toolCalls: [] });
+      ctx.get(ISessionTodoService).setNotes({ next: 'Apply the verified implementation.' }, { turnId: 3, step: 1, toolCallId: 'content-update', reviewHandoff: true });
+    }
     expect(service.begin({ source: 'manual' })).toBe(true);
     expect(await service.compacting!.promise).toMatchObject({ strategy: 'relay' });
     expect(ctx.llmCalls).toHaveLength(0);
@@ -221,7 +225,7 @@ describe('relay gate fixtures', () => {
   });
 
   it('rescues a retryable failed stalled summary with the safe relay ledger', async () => {
-    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 } }, generate: async () => { throw new APIConnectionError('connection interrupted'); } });
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { contextStrategy: 'auto', compactionMaxAttempts: 1 } }, generate: async () => { throw new APIConnectionError('connection interrupted'); } });
     await stalledWindow(ctx);
     const service = ctx.get(IAgentFullCompactionService);
     expect(service.begin({ source: 'manual' })).toBe(true);
@@ -270,7 +274,7 @@ describe('relay gate fixtures', () => {
     let attempts = 0;
     const error = new APIContextOverflowError(400, 'context too long');
     if (mode === 'transport') noteConfirmedRequestExecution(error);
-    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 }, retry: {
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { contextStrategy: 'auto', compactionMaxAttempts: 1 }, retry: {
       policies: mode === 'policy' ? [{ match: 'APIContextOverflowError', retry: false }] : [],
     } }, generate: async () => { attempts += 1; throw error; } });
     try {
@@ -332,7 +336,7 @@ describe('relay gate fixtures', () => {
     const text = summary?.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n') ?? '';
     expect(result).toMatchObject({ strategy: 'relay' });
     expect(result.fallbackFrom).toBeUndefined();
-    expect(result.reasonCodes).toEqual(expect.arrayContaining(['tool_error', 'requested:auto', 'strategy_source:default']));
+    expect(result.reasonCodes).toEqual(expect.arrayContaining(['tool_error', 'requested:fresh', 'strategy_source:global']));
     expect(result.reasonCodes).not.toEqual(expect.arrayContaining(['non_replayable_result', 'debug_chain', 'multiple_sources']));
     expect(ctx.llmCalls).toHaveLength(0);
     expect(text.match(/HistoryRead \{step_id:"t3\.1"\}/g)).toHaveLength(1);
@@ -455,7 +459,7 @@ describe('relay gate fixtures', () => {
 
   it('falls back when carried media tokens exceed the reserved window and relays the same text without them', async () => {
     const wide = testAgent({
-      initialConfig: { providers: {}, loopControl: { reservedContextSize: 0 } },
+      initialConfig: { providers: {}, loopControl: { reservedContextSize: 0, contextStrategy: 'fresh' } },
     });
     wide.configure({
       provider: PROVIDER,
@@ -469,7 +473,7 @@ describe('relay gate fixtures', () => {
     const windowTokens = measured.tokensAfter + 2_000;
 
     const control = testAgent({
-      initialConfig: { providers: {}, loopControl: { reservedContextSize: 0 } },
+      initialConfig: { providers: {}, loopControl: { reservedContextSize: 0, contextStrategy: 'fresh' } },
     });
     control.configure({
       provider: PROVIDER,
@@ -493,7 +497,7 @@ describe('relay gate fixtures', () => {
       imageUrl: { url: `https://media.example/dropped-${String(index)}`, id: `dropped-${String(index)}` },
     }));
     const crowded = testAgent({
-      initialConfig: { providers: {}, loopControl: { reservedContextSize: 0 } },
+      initialConfig: { providers: {}, loopControl: { reservedContextSize: 0, contextStrategy: 'fresh' } },
     });
     crowded.configure({
       provider: PROVIDER,
@@ -563,7 +567,7 @@ describe('relay gate fixtures', () => {
     expect(relayed.llmCalls).toHaveLength(0);
     expect(relayText).toContain('## Compaction instruction\nKeep the deployment window.');
 
-    const instructed = agent();
+    const instructed = agent('auto');
     instructed.appendExchange(1, 'old user one', 'old assistant one', 20);
     instructed.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     instructed.mockNextResponse({ type: 'text', text: 'Instruction stayed with the summarizer.' });

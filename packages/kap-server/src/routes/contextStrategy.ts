@@ -41,7 +41,7 @@ export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void
       }
       if (req.params.agent_id !== MAIN_AGENT_ID) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id)); return; }
       const config = core.accessor.get(IConfigService).get<LoopControl>('loopControl');
-      reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'auto', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));
+      reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'summarize', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));
       return;
     }
     await withSessionOperation(core, req.params.session_id, async (session) => {
@@ -50,7 +50,7 @@ export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void
       if (agent === undefined) {
         if (req.params.agent_id !== MAIN_AGENT_ID) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id)); return; }
         const config = core.accessor.get(IConfigService).get<LoopControl>('loopControl');
-        reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'auto', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));
+        reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'summarize', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));
         return;
       }
       reply.send(okEnvelope(agent.accessor.get(IAgentFullCompactionService).getContextStrategy(), req.id));
