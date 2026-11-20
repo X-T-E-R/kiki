@@ -17,12 +17,13 @@ import { z } from 'zod';
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
-export const configTargetSchema = z.enum(['user', 'memory']);
+export const configTargetSchema = z.enum(['user', 'local', 'memory']);
 
 export const configInspectValueSchema = z.object({
   value: z.unknown().optional(),
   defaultValue: z.unknown().optional(),
   userValue: z.unknown().optional(),
+  localValue: z.unknown().optional(),
   memoryValue: z.unknown().optional(),
 });
 

@@ -31,7 +31,7 @@ export const browserConnectionSchema = z.object({
   cliPath: path.optional(), profileId: z.string().min(1).max(256).optional(), serverName: z.string().min(1).max(256).optional(),
 }).strict();
 export type BrowserConnection = z.infer<typeof browserConnectionSchema>;
-export const controlSettingSourceSchema = z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']);
+export const controlSettingSourceSchema = z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']);
 export type ControlSettingSource = z.infer<typeof controlSettingSourceSchema>;
 export const browserSourceIdSchema = z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
 export type BrowserSourceId = z.infer<typeof browserSourceIdSchema>;

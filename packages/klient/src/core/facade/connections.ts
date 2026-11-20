@@ -1,4 +1,4 @@
-import type { BridgeOperation, ConnectionIdentity, ConnectionAddInput, ConnectionGrant, ConnectionHandshake, ConnectionPairInput, InboundStatus, PairCodeCreateOutput, RemoteConnection, SpaceSummary, SshConnectionConnectInput, SshRemoteProfile, SshRemotePlan, SshRemoteStatus, SshConnectionRegisterInput } from '@kiki/protocol';
+import type { BridgeOperation, ConnectionIdentity, ConnectionAddInput, ConnectionGrant, ConnectionHandshake, ConnectionPairInput, ConnectionTrustUpdateInput, InboundStatus, MeshCapability, PairCodeCreateOutput, PeerTrustTier, RemoteConnection, SpaceSummary, SshConnectionConnectInput, SshRemoteProfile, SshRemotePlan, SshRemoteStatus, SshConnectionRegisterInput } from '@kiki/protocol';
 import type { HttpRestRequestOptions } from './http-rest.js';
 export interface ConnectionsFacade {
   list(): Promise<RemoteConnection[]>;
@@ -6,6 +6,7 @@ export interface ConnectionsFacade {
   setInbound(enabled: boolean): Promise<InboundStatus>;
   invite(input: { source: ConnectionIdentity; label: string; expiresInMs?: number }): Promise<{ grant: ConnectionGrant; invitation: string }>;
   revoke(grantId: string): Promise<InboundStatus>;
+  setGrantTrust(grantId: string, input: ConnectionTrustUpdateInput): Promise<ConnectionGrant>;
   add(input: ConnectionAddInput): Promise<RemoteConnection>;
   remove(connectionId: string): Promise<void>;
   setEnabled(connectionId: string, enabled: boolean): Promise<RemoteConnection>;
@@ -13,7 +14,7 @@ export interface ConnectionsFacade {
   verifyFingerprint(connectionId: string, options?: HttpRestRequestOptions): Promise<RemoteConnection>;
   summary(connectionId: string, options?: HttpRestRequestOptions): Promise<SpaceSummary>;
   handshake(): Promise<ConnectionHandshake>;
-  createPairCode(input?: { label?: string; expiresInMs?: number; allowBridge?: boolean; bridgeOperations?: BridgeOperation[] }): Promise<PairCodeCreateOutput>;
+  createPairCode(input?: { label?: string; expiresInMs?: number; allowBridge?: boolean; bridgeOperations?: BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: MeshCapability[] }): Promise<PairCodeCreateOutput>;
   pair(input: ConnectionPairInput): Promise<RemoteConnection>;
   sshConnect(input: SshConnectionConnectInput, options?: HttpRestRequestOptions): Promise<RemoteConnection>;
   sshPlan(profile: SshRemoteProfile, options?: HttpRestRequestOptions): Promise<SshRemotePlan>;

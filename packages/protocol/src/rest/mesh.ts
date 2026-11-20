@@ -47,8 +47,8 @@ export type MeshWorkspaceCopyStrategy = z.infer<typeof meshWorkspaceCopyStrategy
 export const leasedPeerNodeSchema = z.object({
   nodeId: z.string().min(1).max(128),
   label: z.string().min(1).max(128),
-  trustTier: peerTrustTierSchema.default('trusted_personal'),
-  capabilities: z.array(meshCapabilitySchema).default([...DEFAULT_TRUSTED_PERSONAL_CAPABILITIES]),
+  trustTier: peerTrustTierSchema.default('restricted_peer'),
+  capabilities: z.array(meshCapabilitySchema).default([...DEFAULT_RESTRICTED_PEER_CAPABILITIES]),
   state: z.enum(['online', 'offline', 'degraded']),
   platform: z.enum(['win32', 'linux', 'darwin']).optional(),
   pinnedAt: z.number().int().nonnegative(),
@@ -96,7 +96,9 @@ export type LeasedPortTunnel = z.infer<typeof leasedPortTunnelSchema>;
 export const meshSessionLeaseSchema = z.object({
   sessionId: z.string().min(1).max(128),
   revision: z.number().int().nonnegative(),
+  epoch: z.number().int().nonnegative().default(0),
   updatedAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative().optional(),
   nodes: z.array(leasedPeerNodeSchema),
   seats: z.array(leasedSeatSchema),
   workspaceCopies: z.array(leasedWorkspaceCopySchema),
@@ -124,8 +126,15 @@ export type MeshLeasePinInput = z.infer<typeof meshLeasePinInputSchema>;
 export const meshLeaseUnpinInputSchema = z.object({
   kind: z.enum(['node', 'seat', 'workspace_copy', 'port_tunnel']),
   id: z.string().min(1).max(128),
+  expectedEpoch: z.number().int().nonnegative().optional(),
 }).strict();
 export type MeshLeaseUnpinInput = z.infer<typeof meshLeaseUnpinInputSchema>;
+
+export const meshLeaseRenewInputSchema = z.object({
+  ttlMs: z.number().int().min(1000).max(86_400_000).default(300_000),
+  expectedEpoch: z.number().int().nonnegative().optional(),
+}).strict();
+export type MeshLeaseRenewInput = z.infer<typeof meshLeaseRenewInputSchema>;
 
 export const meshWorkspaceCopyCreateInputSchema = z.object({
   sourceRoot: z.string().min(1).max(4096),
@@ -140,7 +149,9 @@ export const meshWorkspaceCopyApplyInputSchema = z.object({
   permissionMode: z.enum(['manual', 'review', 'auto', 'yolo']).optional(),
   targetId: z.string().min(1).max(128).optional(),
   overrideHumanLease: z.boolean().optional(),
+  expectedEpoch: z.number().int().nonnegative().optional(),
   deleteRemoved: z.boolean().default(true),
+  forceOverwriteSource: z.boolean().default(false),
 }).strict();
 export type MeshWorkspaceCopyApplyInput = z.infer<typeof meshWorkspaceCopyApplyInputSchema>;
 
@@ -160,6 +171,7 @@ export type HumanTakeoverHolder = z.infer<typeof humanTakeoverHolderSchema>;
 export const humanTakeoverLeaseSchema = z.object({
   targetId: z.string().min(1).max(128),
   holder: humanTakeoverHolderSchema,
+  epoch: z.number().int().nonnegative().default(1),
   acquiredAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().nonnegative(),
   reason: z.string().max(256).optional(),
@@ -170,6 +182,8 @@ export const humanTakeoverAcquireInputSchema = z.object({
   holder: humanTakeoverHolderSchema,
   ttlMs: z.number().int().min(1000).max(86_400_000).default(300_000),
   reason: z.string().max(256).optional(),
+  expectedEpoch: z.number().int().nonnegative().optional(),
+  overrideHumanLease: z.boolean().optional(),
 }).strict();
 export type HumanTakeoverAcquireInput = z.infer<typeof humanTakeoverAcquireInputSchema>;
 
@@ -177,16 +191,61 @@ export const humanTakeoverConflictSchema = z.object({
   error: z.literal('human_controlling'),
   targetId: z.string().min(1).max(128),
   holder: z.literal('human'),
+  epoch: z.number().int().nonnegative().optional(),
   expiresAt: z.number().int().nonnegative(),
 });
 export type HumanTakeoverConflict = z.infer<typeof humanTakeoverConflictSchema>;
 
+export const meshStaleEpochConflictSchema = z.object({
+  error: z.literal('stale_epoch'),
+  targetId: z.string().min(1).max(128),
+  expectedEpoch: z.number().int().nonnegative(),
+  currentEpoch: z.number().int().nonnegative(),
+});
+export type MeshStaleEpochConflict = z.infer<typeof meshStaleEpochConflictSchema>;
+
 export const meshTargetDispatchInputSchema = z.object({
-  operation: z.enum(['remote_command', 'out_of_workspace', 'cow_apply', 'file_sync', 'port_tunnel', 'interactive_login']),
+  operation: z.enum([
+    'remote_command',
+    'out_of_workspace',
+    'cow_apply',
+    'file_sync',
+    'port_tunnel',
+    'interactive_login',
+    'remote_question',
+  ]),
   action: z.string().min(1).max(512),
   sessionId: z.string().min(1).max(128).optional(),
-  permissionMode: z.enum(['manual', 'review', 'auto', 'yolo']).default('auto'),
+  permissionMode: z.enum(['manual', 'review', 'auto', 'yolo']).optional(),
   overrideHumanLease: z.boolean().optional(),
+  expectedEpoch: z.number().int().nonnegative().optional(),
   payload: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 export type MeshTargetDispatchInput = z.infer<typeof meshTargetDispatchInputSchema>;
+
+export const meshResolveQuestionInputSchema = z.object({
+  questionId: z.string().min(1).max(128).optional(),
+  answer: z.string().min(1).max(4096),
+  sessionId: z.string().min(1).max(128).optional(),
+  expectedEpoch: z.number().int().nonnegative().optional(),
+}).strict();
+export type MeshResolveQuestionInput = z.infer<typeof meshResolveQuestionInputSchema>;
+
+export const meshInboundExecuteInputSchema = z.object({
+  operation: z.enum([
+    'remote_command',
+    'out_of_workspace',
+    'cow_apply',
+    'file_sync',
+    'port_tunnel',
+    'interactive_login',
+    'remote_question',
+  ]),
+  action: z.string().min(1).max(512),
+  targetId: z.string().min(1).max(128).default('local'),
+  sessionId: z.string().min(1).max(128).optional(),
+  overrideHumanLease: z.boolean().optional(),
+  expectedEpoch: z.number().int().nonnegative().optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+export type MeshInboundExecuteInput = z.infer<typeof meshInboundExecuteInputSchema>;

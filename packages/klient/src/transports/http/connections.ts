@@ -16,6 +16,7 @@ export function createConnectionsFacade(transport: HttpRestTransport): Connectio
     setInbound: (enabled) => transport.json(prefix + '/inbound', { method: 'PUT', body: { enabled } }),
     invite: (input) => transport.json(prefix + '/inbound/invitations', { method: 'POST', body: input }),
     revoke: (grantId) => transport.json(prefix + '/inbound/grants/' + id(grantId) + '/revoke', { method: 'POST', body: {} }),
+    setGrantTrust: (grantId, input) => transport.json(prefix + '/inbound/grants/' + id(grantId) + '/trust', { method: 'PATCH', body: input }),
     add: (input) => transport.json(prefix, { method: 'POST', body: input }),
     remove: (connectionId) => transport.json(prefix + '/' + id(connectionId), { method: 'DELETE' }),
     setEnabled: (connectionId, enabled) => transport.json(prefix + '/' + id(connectionId) + '/enabled', { method: 'PUT', body: { enabled } }),

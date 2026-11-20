@@ -40,6 +40,7 @@ const providerConfigObjectSchema = z.object({
 
   type: providerTypeSchema.optional(),
   apiKey: z.string().optional(),
+  credentialId: z.string().optional(),
   oauth: oAuthRefSchema.optional(),
   env: stringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),

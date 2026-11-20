@@ -381,6 +381,8 @@ export interface HttpRestFacade {
   readonly externalClients: import('./external-clients.js').ExternalClientsFacade;
   readonly webAccess: import('./web-access.js').WebAccessFacade;
   readonly connections: import('./connections.js').ConnectionsFacade;
+  readonly mesh: import('./mesh.js').MeshFacade;
+  readonly sync: import('./sync.js').SyncFacade;
   readonly threadBridges: import('./thread-bridges.js').ThreadBridgesFacade;
   readonly usageExport: import('./usage-export.js').UsageExportFacade;
   readonly providerQuotas: import('./provider-quota.js').ProviderQuotaFacade;

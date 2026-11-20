@@ -11,6 +11,8 @@ import type {
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
 import { createOutputLayerFacade } from './output-layer.js';
 import { createConnectionsFacade } from './connections.js';
+import { createMeshFacade } from './mesh.js';
+import { createSyncFacade } from './sync.js';
 import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
 import { createUsageExportFacade } from './usage-export.js';
@@ -97,6 +99,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     externalClients: createExternalClientsFacade(transport),
     webAccess: createWebAccessFacade(transport),
     connections: createConnectionsFacade(transport),
+    mesh: createMeshFacade(transport),
+    sync: createSyncFacade(transport),
     threadBridges: createThreadBridgesFacade(transport),
     usageExport: createUsageExportFacade(transport),
     providerQuotas: createProviderQuotaFacade(transport),

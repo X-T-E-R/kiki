@@ -105,8 +105,16 @@ export const pairClaimInputSchema = z.object({
   requestBridge: z.boolean().optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
   sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(),
+  x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
+  includeTrustMetadata: z.boolean().optional(),
 }).strict();
 export type PairClaimInput = z.infer<typeof pairClaimInputSchema>;
+
+export const connectionTrustUpdateInputSchema = z.object({
+  trustTier: peerTrustTierSchema,
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
+}).strict();
+export type ConnectionTrustUpdateInput = z.infer<typeof connectionTrustUpdateInputSchema>;
 export const sshConnectionConnectInputSchema = z.object({
   profile: sshRemoteProfileSchema,
   label: z.string().max(128).optional(),

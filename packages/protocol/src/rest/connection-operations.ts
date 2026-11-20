@@ -97,6 +97,12 @@ export const CONNECTION_OPERATIONS = {
   notificationsProviders: ['GET', '/notifications/providers'], notificationsDeliveries: ['GET', '/notifications/deliveries'],
   memorySources: ['GET', '/memory/sources'], memoryEntries: ['GET', '/memory/{scope}'], memoryEntry: ['GET', '/memory/{scope}/{entryId}'],
   memoryJournal: ['GET', '/memory/{scope}/journal'], memoryInbox: ['GET', '/memory/{scope}/inbox'],
+  meshInboundExecute: ['POST', '/mesh/inbound/execute'],
+  meshTakeoverInspect: ['GET', '/mesh/takeover/{targetId}'],
+  syncDeviceKey: ['GET', '/sync/device-key'],
+  syncBundleExport: ['POST', '/sync/bundle/export'],
+  syncBundleImport: ['POST', '/sync/bundle/import'],
+  syncCredentialsMerge: ['POST', '/sync/credentials/merge'],
 } as const;
 export type ConnectionOperation = keyof typeof CONNECTION_OPERATIONS;
 export interface ResolvedConnectionOperation { operation: ConnectionOperation; params: Record<string, string> }
