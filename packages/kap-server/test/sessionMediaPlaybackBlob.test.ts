@@ -3,11 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   IHostFileSystem,
+  ISessionContext,
+  ISessionMetadata,
+  SessionIndexReconcilePendingError,
   agentScopeOf,
   sessionScopeOf,
   workspacePersistenceScope,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
@@ -122,5 +126,122 @@ describe('session playback of a persisted blobref', () => {
     expect(hostFs.stat).not.toHaveBeenCalled();
     expect(Buffer.compare(Buffer.from((await blobs.get(scope, videoHash))!), video)).toBe(0);
     expect(Buffer.compare(Buffer.from((await blobs.get(scope, audioHash))!), audio)).toBe(0);
+  });
+
+  it('serves live session audio range immediately without acquireSessionOperation even when ISessionIndex throws SessionIndexReconcilePendingError', async () => {
+    const audio = media(1024, (payload) => { payload.write('RIFF', 0, 'latin1'); payload.write('WAVE', 8, 'latin1'); });
+    const buildLive = (isPrivate: boolean) => ({
+      accessor: {
+        get: (token: unknown) => {
+          if (token === ISessionContext) return { workspaceId: 'ws-live', ephemeral: false, isPrivate: () => isPrivate };
+          if (token === ISessionMetadata) return { isPrivate: () => isPrivate, snapshot: () => ({ private: isPrivate }) };
+          if (token === ISessionMediaStore) {
+            return {
+              open: async (fileId: string) => fileId !== 'audio-1' ? undefined : {
+                name: 'voice.wav',
+                mediaType: 'audio/wav',
+                size: audio.byteLength,
+                stream: (range?: { readonly start: number; readonly end: number }) => (async function* () {
+                  const start = range?.start ?? 0;
+                  const end = range?.end ?? audio.byteLength - 1;
+                  yield audio.subarray(start, end + 1);
+                })(),
+              },
+            };
+          }
+          throw new Error('unexpected live token');
+        },
+      },
+    });
+
+    const livePublic = buildLive(false);
+    const livePrivate = buildLive(true);
+    const storage = new RangeRecordingStorage();
+    const blobs = new BlobStoreService(storage);
+    const blobHash = 'de'.repeat(32);
+    const blobScope = `${agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', 'ws-live'), 'session-live-pub'), 'main')}/blobs`;
+    await blobs.put(blobScope, blobHash, audio);
+    const neverResolves = new Promise<never>(() => {});
+    const acquireSpy = vi.fn(() => neverResolves);
+    const hostFs = { realpath: vi.fn(async () => { throw new Error('host path'); }), stat: vi.fn(async () => { throw new Error('host path'); }) };
+    const services = new Map<unknown, unknown>([
+      [IHostFileSystem, hostFs],
+      [IBootstrapService, { scope: (name: string) => name }],
+      [IBlobStore, blobs],
+      [ISessionIndex, {
+        get: vi.fn(async () => { throw new SessionIndexReconcilePendingError('concurrent_changes', 1); }),
+      }],
+      [ISessionManager, {
+        isEphemeral: () => false,
+        get: (id: string) => id === 'session-live-pub' ? livePublic : id === 'session-live-priv' ? livePrivate : undefined,
+        acquire: acquireSpy,
+      }],
+    ]);
+    const core = {
+      accessor: {
+        get: (token: unknown) => {
+          const service = services.get(token);
+          if (service === undefined) throw new Error('unexpected core token');
+          return service;
+        },
+      },
+    } as unknown as Scope;
+
+    const app = Fastify();
+    app.setValidatorCompiler(() => () => true);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    registerHostMediaPreviewRoutes(app, core);
+    cleanups.push(() => app.close());
+
+    const t0 = performance.now();
+    const opened = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-live-pub/media-playback',
+      payload: { file_id: 'audio-1' },
+    });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const pubData = opened.json().data as { preview_id: string; mime: string; size: number };
+    expect(pubData.mime).toBe('audio/wav');
+
+    const ranged = await app.inject({
+      url: `/media-preview/${pubData.preview_id}`,
+      headers: { range: 'bytes=0-3' },
+    });
+    const elapsedMs = performance.now() - t0;
+    expect(ranged.statusCode).toBe(206);
+    expect(ranged.headers['cache-control']).toBe('private, max-age=1800, immutable');
+    expect([...ranged.rawPayload]).toEqual([...audio.subarray(0, 4)]);
+    expect(elapsedMs).toBeLessThan(100);
+    expect(acquireSpy).not.toHaveBeenCalled();
+
+    const privOpened = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-live-priv/media-playback',
+      payload: { file_id: 'audio-1' },
+    });
+    expect(privOpened.statusCode, privOpened.body).toBe(200);
+    const privId = (privOpened.json().data as { preview_id: string }).preview_id;
+    const privRanged = await app.inject({
+      url: `/media-preview/${privId}`,
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(privRanged.statusCode).toBe(206);
+    expect(privRanged.headers['cache-control']).toBe('private, no-store');
+
+    const blobOpened = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-live-pub/media-playback',
+      payload: { file_id: `blobref:main:${blobHash}` },
+    });
+    expect(blobOpened.statusCode, blobOpened.body).toBe(200);
+    const blobId = (blobOpened.json().data as { preview_id: string }).preview_id;
+    const blobRanged = await app.inject({
+      url: `/media-preview/${blobId}`,
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(blobRanged.statusCode).toBe(206);
+    expect(blobRanged.headers['cache-control']).toBe('private, max-age=1800, immutable');
+    expect([...blobRanged.rawPayload]).toEqual([...audio.subarray(0, 4)]);
+    expect(acquireSpy).not.toHaveBeenCalled();
   });
 });

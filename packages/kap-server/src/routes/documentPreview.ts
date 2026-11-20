@@ -435,15 +435,13 @@ async function openPreviewFile(
   let workDir = '';
   let additionalDirs: readonly string[] = [];
 
-  if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) {
-    operation = await acquireSessionOperation(core, sessionId, 'document-preview');
-    if (operation.handle !== undefined) {
-      const context = operation.handle.accessor.get(ISessionContext);
-      const workspace = operation.handle.accessor.get(ISessionWorkspaceContext);
-      workspaceId = context.workspaceId;
-      workDir = workspace.workDir;
-      additionalDirs = workspace.additionalDirs;
-    }
+  const live = core.accessor.get(ISessionManager).get(sessionId);
+  if (live !== undefined) {
+    const context = live.accessor.get(ISessionContext);
+    const workspace = live.accessor.get(ISessionWorkspaceContext);
+    workspaceId = context.workspaceId;
+    workDir = workspace.workDir;
+    additionalDirs = workspace.additionalDirs;
   }
   if (workspaceId === undefined) {
     await operation?.dispose();
