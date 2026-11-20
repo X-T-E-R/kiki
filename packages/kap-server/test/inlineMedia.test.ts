@@ -152,7 +152,7 @@ describe('canonical inline media original', () => {
       const response = await app.inject({ method: 'POST', url: '/sessions/fixture/skills/welcome:activate', payload: { attachments: draft } });
       expect(response.json()).toMatchObject({ code: 0, data: { activated: true, skill_name: 'welcome' } });
       expect(activate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ content: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${original.toString('base64')}`, name: 'ordinary.png' } }] }));
-      expect(forSessionLive).toHaveBeenCalledWith('fixture');
+      expect(forSessionLive).toHaveBeenCalledWith('fixture', { tailFirst: true });
       expect(store.open).not.toHaveBeenCalled();
       expect(JSON.stringify(draft)).toBe(before);
       transcript.apply([{ op: 'prompt.upsert', prompt: { ...prompt, content: [{ ...image, source: { ...image.source, data: original.subarray(0, 32).toString('base64') } }] } }]);

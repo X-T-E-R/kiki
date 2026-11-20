@@ -3,6 +3,8 @@ import type { QueryClient, Query } from '@tanstack/react-query';
 
 type UsageSource = { readonly sessionId?: string; readonly agentId?: string };
 type PanelUsageSession = { revision?: number; byAgent: Map<string, number>; listeners: Set<() => void> };
+const MAX_IDLE_USAGE_SESSIONS = 64;
+const MAX_PANEL_USAGE_AGENTS = 256;
 const panelUsageByClient = new WeakMap<Pick<Klient, 'events'>, {
   attached: boolean;
   sequence: number;
@@ -15,12 +17,30 @@ function panelUsageFor(klient: Pick<Klient, 'events'>) {
   return usage;
 }
 
+function pruneIdleUsageSessions(sessions: Map<string, PanelUsageSession>): void {
+  if (sessions.size <= MAX_IDLE_USAGE_SESSIONS) return;
+  for (const [id, entry] of sessions) {
+    if (entry.listeners.size > 0) continue;
+    sessions.delete(id);
+    if (sessions.size <= MAX_IDLE_USAGE_SESSIONS) break;
+  }
+}
+
 export function observePanelUsage(klient: Pick<Klient, 'events'>, sessionId: string, listener: () => void): () => void {
   const { sessions } = panelUsageFor(klient);
   let session = sessions.get(sessionId);
-  if (session === undefined) sessions.set(sessionId, session = { byAgent: new Map(), listeners: new Set() });
+  if (session === undefined) {
+    pruneIdleUsageSessions(sessions);
+    sessions.set(sessionId, session = { byAgent: new Map(), listeners: new Set() });
+  } else {
+    sessions.delete(sessionId);
+    sessions.set(sessionId, session);
+  }
   session.listeners.add(listener);
-  return () => { session.listeners.delete(listener); };
+  return () => {
+    session.listeners.delete(listener);
+    if (session.listeners.size === 0) pruneIdleUsageSessions(sessions);
+  };
 }
 
 export function panelUsageRevision(klient: Pick<Klient, 'events'>, sessionId: string, agentId: string): number | undefined {
@@ -32,7 +52,14 @@ function advanceSessionUsage(session: PanelUsageSession, revision: number, agent
   if (agentId === undefined) {
     session.revision = revision;
     session.byAgent.clear();
-  } else session.byAgent.set(agentId, revision);
+  } else {
+    if (session.byAgent.has(agentId)) session.byAgent.delete(agentId);
+    else if (session.byAgent.size >= MAX_PANEL_USAGE_AGENTS) {
+      const oldest = session.byAgent.keys().next().value;
+      if (oldest !== undefined) session.byAgent.delete(oldest);
+    }
+    session.byAgent.set(agentId, revision);
+  }
   for (const listener of session.listeners) listener();
 }
 

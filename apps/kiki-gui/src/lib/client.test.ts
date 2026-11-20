@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   API_CODES,
   ApiError,
+  configureMediaTransportLimits,
   isSessionIndexBuildingError,
   isUnconfirmedTransportError,
   isSessionNotFoundMessage,
@@ -2335,10 +2336,12 @@ describe('KikiClient compound action generation (F1)', () => {
 
 describe('KikiClient background preview lane and high-priority media bypass', () => {
   afterEach(() => {
+    configureMediaTransportLimits(null);
     vi.unstubAllGlobals();
   });
 
   it('caps concurrent background thumbnail reads at 2, drops aborted waiters, and lets full-resolution media bypass the lane immediately', async () => {
+    configureMediaTransportLimits({ mediaFetchConcurrency: 2 });
     let activePreviews = 0;
     let peakPreviews = 0;
     const previewResolvers: Array<{ readonly fileId: string; readonly resolve: () => void }> = [];
