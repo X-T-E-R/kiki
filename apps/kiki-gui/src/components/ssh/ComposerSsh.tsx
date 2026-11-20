@@ -1,30 +1,21 @@
 /**
- * The composer's SSH surface for a live session: one resident control beside
- * the input that holds the hosts joined to THIS session for as long as the
- * session lives.
+ * The composer's external session-context capsule (`[data-composer-ssh-strip]`)
+ * for SSH hosts, pinned Mesh resources (nodes, seats, COW copies), and active
+ * loopback port tunnels bound to THIS session.
  *
- *   - The strip appears only once this session has SSH context — a joined
- *     host, or on /new a host picked to join. With nothing joined it is not
- *     drawn at all: an "SSH 0" line beside the input reads as a control the
- *     user must clear, and a zero count is not session state. The ＋ menu's SSH
- *     view stays the way in, so hiding the strip removes no route to adding.
- *   - 1–3 hosts: shown directly in the strip without folding.
- *   - >3 hosts: folded by default into the trigger pill with an explicit
- *     manual expand/collapse toggle so the resident row never balloons over
- *     the composer input.
- *   - Panel: shows each host with a clear enabled/disabled status, an operable
- *     Toggle switch, and an independent connection state mark. Joining a host
- *     to the session does not initiate a TCP connection.
- *
- * "In use" is the session's host list, never whether a request is on the wire
- * right now: a joined host stays joined between turns, and keying the strip to
- * live traffic would make it blink out mid-conversation.
- *
- * Adding a host does not connect to it. There is no push event for session
- * hosts, so every change refetches the session list (contract).
+ *   - Hidden when idle/zero: when a session has neither joined SSH hosts nor
+ *     pinned Mesh resources/tunnels, `resident` returns `null`. The ＋ menu's
+ *     SSH view remains available whenever native SSH is enabled.
+ *   - Single calm external capsule: `>_ <primaryLabel> +N ▾` opening upward
+ *     via `@base-ui/react/popover` (`side="top"`) with one inner scroll
+ *     container (`max-h-[min(320px,52vh)] overflow-y-auto`).
+ *   - SSH panel: shows each host with an operable Toggle switch and independent
+ *     connection state mark. Joining a host does not initiate a TCP connection.
+ *   - Mesh section: shown only when this session holds pinned Mesh resources or
+ *     active port tunnels, offering one-click unpin and tunnel close.
  */
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from '@base-ui/react/popover';
 import type { SshHostAttachment } from '@kiki/session-core/composer';
 import { useNavigate } from 'react-router-dom';
@@ -33,6 +24,18 @@ import { useQueryClient } from '@tanstack/react-query';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import {
+  collectMeshTargetIds,
+  countMeshLeaseItems,
+  formatTunnelEndpoint,
+  meshApi,
+  meshSummaryTone,
+  primaryMeshLabel,
+  useMeshHumanTakeovers,
+  useSessionMeshLease,
+  type LeasedPortTunnel,
+  type MeshLeaseUnpinInput,
+} from '../../lib/mesh';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   sshApi,
@@ -47,14 +50,21 @@ import {
 import { pushToast } from '../../lib/toasts';
 import {
   COMPOSER_FLOATING_GROUP,
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
   notifyFloatingGroupOpen,
+  owningModalId,
   registerOverlay,
+  resolveFloatingOwners,
   subscribeFloatingGroup,
 } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
+import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { Icon } from '../icons';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { ComposerMeshSection } from './ComposerMeshSection';
 import { SSH_HOST_CHIP_CLASS, SshStateMark, stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
 
@@ -73,7 +83,7 @@ export interface ComposerSsh {
   readonly joinedCount: number;
   /** The ＋ menu's SSH view; `close` closes the popover. */
   readonly renderPanel: (close: (refocus?: boolean) => void) => ReactNode;
-  /** The resident session strip; null when this session has no SSH context. */
+  /** The resident session strip; null when this session has no SSH hosts or Mesh leases/tunnels. */
   readonly resident: ReactNode;
   /** The host form, mounted outside the popover so it survives the close. */
   readonly dialog: ReactNode;
@@ -90,15 +100,21 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const queryClient = useQueryClient();
   const peer = isPeerConnectionSource(connectionSource);
   const flag = useNativeSshEnabled(peer ? null : client);
-  const available = enabled && !peer && flag.enabled === true && client.klient.rest !== undefined;
+  const available = enabled && !peer && flag.enabled === true && client.klient?.rest?.ssh !== undefined;
   const hostsQuery = useSshHosts(client, available);
   const sessionQuery = useSessionSshHosts(client, sessionId, available);
+  const mesh = meshApi(client);
+  const meshAvailable = enabled && !peer && sessionId !== undefined && typeof mesh?.getSessionLease === 'function';
+  const meshLeaseQuery = useSessionMeshLease(client, sessionId, meshAvailable);
+  const meshLease = meshAvailable ? meshLeaseQuery.data?.lease : undefined;
   // Join/leave flights keyed by the session that started them. The resident
   // hook survives route changes, so a single set would disable the next
   // conversation until the previous request settled, and its `finally` would
   // clear a join the next conversation had already started.
   const inflightRef = useRef(new Map<string, Set<string>>());
   const [inflightBySession, setInflightBySession] = useState<ReadonlyMap<string, ReadonlySet<string>>>(() => new Map());
+  const meshInflightRef = useRef(new Map<string, Set<string>>());
+  const [meshInflightBySession, setMeshInflightBySession] = useState<ReadonlyMap<string, ReadonlySet<string>>>(() => new Map());
   const sessionKeyRef = useRef(sessionId);
   sessionKeyRef.current = sessionId;
   const aliveRef = useRef(true);
@@ -106,15 +122,20 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const [selected, setSelected] = useState<readonly SshHost[]>([]);
   const [listOpen, setListOpen] = useState(false);
 
+  const meshTargetIds = useMemo(() => collectMeshTargetIds(meshLease), [meshLease]);
+  const humanTakeovers = useMeshHumanTakeovers(client, meshTargetIds, meshAvailable && listOpen);
+
   useEffect(() => {
     aliveRef.current = true;
     return () => { aliveRef.current = false; };
   }, []);
   useEffect(() => {
     setSelected([]);
+    setListOpen(false);
   }, [sessionId]);
 
   const pending = sessionId === undefined ? NO_INFLIGHT_HOSTS : inflightBySession.get(sessionId) ?? NO_INFLIGHT_HOSTS;
+  const meshPending = sessionId === undefined ? NO_INFLIGHT_HOSTS : meshInflightBySession.get(sessionId) ?? NO_INFLIGHT_HOSTS;
 
   const joined = sessionId === undefined ? selected.map((host) => ({ host, status: undefined })) : sessionQuery.data ?? [];
   const joinedIds = new Set(joined.map((entry) => entry.host.id));
@@ -128,6 +149,17 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     else map.set(key, ids);
     if (!aliveRef.current) return;
     setInflightBySession(new Map(map));
+  };
+
+  const setMeshBusy = (key: string, id: string, busy: boolean) => {
+    const map = meshInflightRef.current;
+    const ids = new Set(map.get(key) ?? []);
+    if (busy) ids.add(id);
+    else ids.delete(id);
+    if (ids.size === 0) map.delete(key);
+    else map.set(key, ids);
+    if (!aliveRef.current) return;
+    setMeshInflightBySession(new Map(map));
   };
 
   // The server's list is the truth the strip draws, so a change reads it back
@@ -158,6 +190,56 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
       });
     } finally {
       setBusy(key, host.id, false);
+    }
+  };
+
+  const unpinMesh = async (kind: MeshLeaseUnpinInput['kind'], id: string, label: string) => {
+    if (sessionId === undefined || typeof mesh?.unpinResource !== 'function') return;
+    const busyKey = `${kind}:${id}`;
+    if (meshInflightRef.current.get(sessionId)?.has(busyKey)) return;
+    const key = sessionId;
+    setMeshBusy(key, busyKey, true);
+    try {
+      await mesh.unpinResource(key, { kind, id });
+      await meshLeaseQuery.refetch();
+    } catch (error) {
+      if (!aliveRef.current || sessionKeyRef.current !== key) return;
+      pushToast({
+        tone: 'error',
+        text: t('composer.mesh.unpinFailed', { name: label, detail: errorText(locale, error) }),
+      });
+    } finally {
+      setMeshBusy(key, busyKey, false);
+    }
+  };
+
+  const closeMeshTunnel = async (tunnel: LeasedPortTunnel) => {
+    if (sessionId === undefined || typeof mesh?.closeTunnel !== 'function') return;
+    const busyKey = `tunnel:${tunnel.tunnelId}`;
+    if (meshInflightRef.current.get(sessionId)?.has(busyKey)) return;
+    const key = sessionId;
+    setMeshBusy(key, busyKey, true);
+    try {
+      await mesh.closeTunnel(tunnel.tunnelId);
+      if (typeof mesh.unpinResource === 'function') {
+        try {
+          await mesh.unpinResource(key, { kind: 'port_tunnel', id: tunnel.tunnelId });
+        } catch {
+          // Loopback tunnel is already closed; refetching reconciles the session lease.
+        }
+      }
+      await meshLeaseQuery.refetch();
+    } catch (error) {
+      if (!aliveRef.current || sessionKeyRef.current !== key) return;
+      pushToast({
+        tone: 'error',
+        text: t('composer.mesh.closeTunnelFailed', {
+          endpoint: formatTunnelEndpoint(tunnel),
+          detail: errorText(locale, error),
+        }),
+      });
+    } finally {
+      setMeshBusy(key, busyKey, false);
     }
   };
 
@@ -286,20 +368,27 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   }, [listOpen]);
 
   // Bare external ContextStrip trigger below the composer card:
-  // `>_ GPU box +2 ▾` opening the host-management Popover upwards (`side="top"`).
+  // `>_ <primaryLabel> +N ▾` opening the host/mesh Popover upwards (`side="top"`).
   const contextKnown = sessionId === undefined || sessionQuery.data !== undefined;
-  const primaryJoined = joined[0];
+  const activeJoined = available && contextKnown ? joined : [];
+  const sshCount = activeJoined.length;
+  const meshCount = countMeshLeaseItems(meshLease);
+  const totalCount = sshCount + meshCount;
+  const primaryJoined = activeJoined[0];
   const primaryState = primaryJoined === undefined
     ? undefined
-    : joined.map((entry) => visibleState(entry.status)).find((s) => s === 'failed' || s === 'disconnected')
+    : activeJoined.map((entry) => visibleState(entry.status)).find((s) => s === 'failed' || s === 'disconnected')
       ?? visibleState(primaryJoined.status);
-  const summaryLabel = primaryJoined === undefined
-    ? t('composer.ssh.hosts')
-    : joined.length > 1
-      ? `${primaryJoined.host.name} +${joined.length - 1}`
-      : primaryJoined.host.name;
+  const meshTone = primaryState === undefined ? meshSummaryTone(meshLease) : undefined;
+  const primaryLabel = primaryJoined !== undefined
+    ? primaryJoined.host.name
+    : primaryMeshLabel(meshLease) ?? t('composer.ssh.hosts');
+  const summaryLabel = totalCount > 1 ? `${primaryLabel} +${totalCount - 1}` : primaryLabel;
+  const triggerTitle = sshCount > 0
+    ? t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')
+    : t('composer.mesh.heading');
 
-  const resident = available && contextKnown && joined.length > 0 ? (
+  const resident = totalCount > 0 ? (
     <div
       data-composer-ssh-strip
       data-composer-ssh-open={listOpen ? '' : undefined}
@@ -312,13 +401,19 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
           data-composer-ssh-toggle
           data-composer-ssh-summary=""
           aria-controls={listId}
-          title={t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')}
+          title={triggerTitle}
           className={`inline-flex h-6 max-w-52 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] leading-4 text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 ${listOpen ? 'bg-ink/[0.06] text-ink' : ''}`}
         >
           <Icon name="terminal" size={12} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 truncate">{summaryLabel}</span>
           {primaryState !== undefined ? (
             <span aria-label={t(`st.ssh.state.${primaryState}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(primaryState)}`} />
+          ) : meshTone !== undefined ? (
+            <span
+              aria-hidden
+              data-composer-mesh-tone={meshTone}
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${meshTone === 'danger' ? 'bg-danger' : 'bg-amber-rule'}`}
+            />
           ) : null}
           <Icon
             name="chevron"
@@ -327,48 +422,78 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
           />
         </Popover.Trigger>
         <Popover.Portal>
-          <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50 outline-none">
+          <Popover.Positioner
+            side="top"
+            align="start"
+            sideOffset={6}
+            collisionPadding={8}
+            positionMethod="fixed"
+            style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            className="outline-none"
+          >
             <Popover.Popup
               id={listId}
               data-composer-ssh-list
               role="group"
-              aria-label={t('composer.ssh.heading')}
-              className={`anim-enter flex w-72 max-h-[min(22rem,var(--available-height,60vh))] flex-col overflow-hidden rounded-[10px] p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              aria-label={sshCount > 0 ? t('composer.ssh.heading') : t('composer.mesh.heading')}
+              {...{
+                [FLOATING_OWNER_ATTRIBUTE]: 'composer-ssh-strip',
+                [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-ssh-strip'),
+                [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+              }}
+              className={`anim-enter flex w-72 max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[10px] p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
             >
-              <div className="flex flex-wrap items-center gap-1 border-b border-hairline/70 px-1.5 pt-1 pb-1.5" role="list">
-                {joined.map(({ host, status }) => {
-                  const state = visibleState(status);
-                  const target = sshTargetLabel(host);
-                  return (
-                    <span
-                      key={host.id}
-                      role="listitem"
-                      data-composer-ssh-chip={host.id}
-                      title={target === undefined ? host.id : `${host.id} · ${target}`}
-                      className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
-                    >
-                      <Icon name="terminal" size={12} className="text-ink-faint" />
-                      <span className="min-w-0 truncate">{host.name}</span>
-                      {state !== undefined ? (
-                        <span aria-label={t(`st.ssh.state.${state}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(state)}`} />
-                      ) : null}
-                      <button
-                        type="button"
-                        data-composer-ssh-chip-remove
-                        aria-label={t('composer.ssh.removeChip', { name: host.name })}
-                        title={t('composer.ssh.removeChip', { name: host.name })}
-                        disabled={pending.has(host.id)}
-                        onClick={() => void toggle(host, false)}
-                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1 pointer-coarse:h-8 pointer-coarse:w-8"
-                      >
-                        <Icon name="close" size={12} />
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto pt-1">
-                {renderPanel(() => { setListOpen(false); })}
+              <div className="max-h-[min(320px,52vh)] overflow-y-auto overscroll-contain">
+                {sshCount > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1 border-b border-hairline/70 px-1.5 pt-1 pb-1.5" role="list">
+                    {activeJoined.map(({ host, status }) => {
+                      const state = visibleState(status);
+                      const target = sshTargetLabel(host);
+                      return (
+                        <span
+                          key={host.id}
+                          role="listitem"
+                          data-composer-ssh-chip={host.id}
+                          title={target === undefined ? host.id : `${host.id} · ${target}`}
+                          className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
+                        >
+                          <Icon name="terminal" size={12} className="text-ink-faint" />
+                          <span className="min-w-0 truncate">{host.name}</span>
+                          {state !== undefined ? (
+                            <span aria-label={t(`st.ssh.state.${state}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(state)}`} />
+                          ) : null}
+                          <button
+                            type="button"
+                            data-composer-ssh-chip-remove
+                            aria-label={t('composer.ssh.removeChip', { name: host.name })}
+                            title={t('composer.ssh.removeChip', { name: host.name })}
+                            disabled={pending.has(host.id)}
+                            onClick={() => void toggle(host, false)}
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1 pointer-coarse:h-8 pointer-coarse:w-8"
+                          >
+                            <Icon name="close" size={12} />
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {meshCount > 0 && meshLease !== undefined ? (
+                  <div className={available ? 'border-b border-hairline/70 pb-1' : ''}>
+                    <ComposerMeshSection
+                      lease={meshLease}
+                      humanTakeovers={humanTakeovers}
+                      pendingKeys={meshPending}
+                      onUnpin={(kind, id, label) => { void unpinMesh(kind, id, label); }}
+                      onCloseTunnel={(tunnel) => { void closeMeshTunnel(tunnel); }}
+                    />
+                  </div>
+                ) : null}
+                {available ? (
+                  <div className={sshCount > 0 || meshCount > 0 ? 'pt-1' : ''}>
+                    {renderPanel(() => { setListOpen(false); })}
+                  </div>
+                ) : null}
               </div>
             </Popover.Popup>
           </Popover.Positioner>

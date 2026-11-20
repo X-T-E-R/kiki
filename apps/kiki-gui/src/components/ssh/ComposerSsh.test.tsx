@@ -17,7 +17,13 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SshHost, SshHostStatus, SshSessionHostsResponse } from '@kiki/protocol';
+import type {
+  HumanTakeoverLease,
+  MeshContextProjection,
+  SshHost,
+  SshHostStatus,
+  SshSessionHostsResponse,
+} from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
 import { getToasts } from '../../lib/toasts';
@@ -50,7 +56,41 @@ const ssh = {
   })),
 };
 
-const connection = {
+function emptyMeshProjection(sessionId: string): MeshContextProjection {
+  return {
+    sessionId,
+    revision: 1,
+    contextBlock: null,
+    byteLength: 0,
+    lease: {
+      sessionId,
+      revision: 1,
+      epoch: 1,
+      updatedAt: 1_700_000_000_000,
+      nodes: [],
+      seats: [],
+      workspaceCopies: [],
+      portTunnels: [],
+    },
+  };
+}
+
+const mesh = {
+  getSessionLease: vi.fn(async (sessionId: string): Promise<MeshContextProjection> => emptyMeshProjection(sessionId)),
+  unpinResource: vi.fn(async (sessionId: string) => emptyMeshProjection(sessionId)),
+  closeTunnel: vi.fn(async (_tunnelId: string) => ({ closed: true })),
+  inspectTakeover: vi.fn(async (_targetId: string): Promise<{ lease: HumanTakeoverLease | null; epoch: number }> => ({
+    lease: null,
+    epoch: 0,
+  })),
+};
+
+const connection: {
+  client: {
+    meta: ReturnType<typeof vi.fn>;
+    klient: { rest: { ssh: typeof ssh; mesh?: typeof mesh } };
+  };
+} = {
   client: {
     meta: vi.fn(async () => ({ experimental_flags: { native_ssh: true } })),
     klient: { rest: { ssh } },
@@ -73,12 +113,19 @@ beforeAll(() => {
 
 beforeEach(() => {
   for (const fn of Object.values(ssh)) fn.mockClear();
+  for (const fn of Object.values(mesh)) fn.mockClear();
   connection.client.meta.mockClear();
+  connection.client.meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+  connection.client.klient.rest = { ssh };
   ssh.list.mockResolvedValue({ hosts: HOSTS });
   ssh.sessionHosts.mockResolvedValue({ hosts: [] });
   ssh.addSessionHost.mockResolvedValue({ ok: true });
   ssh.removeSessionHost.mockResolvedValue({ ok: true });
   ssh.upsert.mockImplementation(async (id: string): Promise<{ host: SshHost }> => ({ host: { id, name: id, source: 'kiki' } }));
+  mesh.getSessionLease.mockImplementation(async (sessionId: string) => emptyMeshProjection(sessionId));
+  mesh.unpinResource.mockImplementation(async (sessionId: string) => emptyMeshProjection(sessionId));
+  mesh.closeTunnel.mockResolvedValue({ closed: true });
+  mesh.inspectTakeover.mockResolvedValue({ lease: null, epoch: 0 });
 });
 
 afterEach(() => {
@@ -406,5 +453,207 @@ describe('ComposerSsh', () => {
 
     // The resident strip keeps showing both hosts (`Host One +1`), not a blank card.
     expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Host One +1');
+  });
+
+  it('stays hidden when SSH=0 and Mesh=0 even with mesh REST wired', async () => {
+    connection.client.klient.rest = { ssh, mesh };
+    ssh.sessionHosts.mockResolvedValue({ hosts: [] });
+    mesh.getSessionLease.mockResolvedValue(emptyMeshProjection('sess-idle'));
+
+    const { container } = await renderHook('sess-idle');
+    expect(mesh.getSessionLease).toHaveBeenCalledWith('sess-idle');
+    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
+  });
+
+  it('unifies pinned Mesh resources and active port tunnels into the upward capsule with unpin, close-tunnel, human_controlling mark, and Escape dismissal', async () => {
+    connection.client.meta.mockResolvedValue({ experimental_flags: { native_ssh: false } });
+    connection.client.klient.rest = { ssh, mesh };
+
+    let currentProjection: MeshContextProjection = {
+      sessionId: 'sess-mesh',
+      revision: 3,
+      contextBlock: null,
+      byteLength: 0,
+      lease: {
+        sessionId: 'sess-mesh',
+        revision: 3,
+        epoch: 2,
+        updatedAt: 1_700_000_000_000,
+        nodes: [
+          {
+            nodeId: 'node-gpu',
+            label: 'GPU Mac',
+            trustTier: 'trusted_personal',
+            capabilities: ['execute', 'port_tunnel'],
+            state: 'online',
+            platform: 'darwin',
+            pinnedAt: 1_700_000_000_000,
+            createdBySession: false,
+          },
+        ],
+        seats: [
+          {
+            seatId: 'seat-1',
+            nodeId: 'node-gpu',
+            label: 'Claude Seat',
+            state: 'running',
+            pinnedAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_000_000,
+            createdBySession: true,
+          },
+        ],
+        workspaceCopies: [
+          {
+            copyId: 'copy-1',
+            nodeId: 'node-gpu',
+            sourceRoot: '/Users/dev/repos/kiki',
+            copyPath: '/tmp/cow/copy-1',
+            strategy: 'apfs_clone',
+            dirty: true,
+            createdAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_000_000,
+          },
+        ],
+        portTunnels: [
+          {
+            tunnelId: 'tun-5173',
+            nodeId: 'node-gpu',
+            remoteHost: '127.0.0.1',
+            remotePort: 3000,
+            localHost: '127.0.0.1',
+            localPort: 5173,
+            healthy: true,
+            createdAt: 1_700_000_000_000,
+          },
+        ],
+      },
+    };
+    mesh.getSessionLease.mockImplementation(async () => currentProjection);
+    mesh.inspectTakeover.mockImplementation(async (targetId: string) => ({
+      lease: targetId === 'node-gpu'
+        ? {
+            targetId: 'node-gpu',
+            holder: 'human',
+            epoch: 4,
+            acquiredAt: Date.now() - 10_000,
+            expiresAt: Date.now() + 60_000,
+            reason: 'manual debug',
+          }
+        : null,
+      epoch: 4,
+    }));
+
+    const { container } = await renderHook('sess-mesh');
+    const strip = container.querySelector('[data-composer-ssh-strip]');
+    expect(strip).not.toBeNull();
+    const toggle = strip!.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    expect(toggle.textContent).toContain('GPU Mac +3');
+    // Takeover is only probed lazily once the popover opens.
+    expect(mesh.inspectTakeover).not.toHaveBeenCalled();
+
+    await act(async () => { toggle.click(); });
+    await flush();
+    await flush();
+
+    const popup = document.querySelector<HTMLElement>('[data-composer-ssh-list]');
+    expect(popup).not.toBeNull();
+    expect(popup!.dataset['floatingOwner']).toBe('composer-ssh-strip');
+    expect(popup!.querySelector('[data-composer-mesh-section]')).not.toBeNull();
+    expect(popup!.querySelector('[data-composer-mesh-item="node:node-gpu"]')).not.toBeNull();
+    expect(popup!.querySelector('[data-composer-mesh-item="seat:seat-1"]')).not.toBeNull();
+    expect(popup!.querySelector('[data-composer-mesh-item="workspace_copy:copy-1"]')).not.toBeNull();
+    expect(popup!.querySelector('[data-composer-mesh-tunnel="tun-5173"]')?.textContent).toContain('127.0.0.1:5173 → 3000');
+    expect(popup!.querySelector('[data-composer-mesh-item="node:node-gpu"] [data-composer-mesh-takeover="human"]')).not.toBeNull();
+    // Native SSH flag is off so the SSH host panel is omitted cleanly.
+    expect(popup!.querySelector('[data-composer-ssh-panel]')).toBeNull();
+
+    // Unpinning the node calls unpinResource and updates the summary count.
+    currentProjection = {
+      ...currentProjection,
+      lease: { ...currentProjection.lease, nodes: [] },
+    };
+    const unpinNodeBtn = popup!.querySelector<HTMLButtonElement>('[data-composer-mesh-unpin="node:node-gpu"]')!;
+    await act(async () => { unpinNodeBtn.click(); });
+    await flush();
+    await flush();
+    expect(mesh.unpinResource).toHaveBeenCalledWith('sess-mesh', { kind: 'node', id: 'node-gpu' });
+    expect(toggle.textContent).toContain('Claude Seat +2');
+
+    // Closing the port tunnel closes it on the server, unpins it from the session lease, and updates count.
+    currentProjection = {
+      ...currentProjection,
+      lease: { ...currentProjection.lease, portTunnels: [] },
+    };
+    const closeTunnelBtn = document.querySelector<HTMLButtonElement>('[data-composer-mesh-tunnel-close="tun-5173"]')!;
+    await act(async () => { closeTunnelBtn.click(); });
+    await flush();
+    await flush();
+    expect(mesh.closeTunnel).toHaveBeenCalledWith('tun-5173');
+    expect(mesh.unpinResource).toHaveBeenCalledWith('sess-mesh', { kind: 'port_tunnel', id: 'tun-5173' });
+    expect(toggle.textContent).toContain('Claude Seat +1');
+
+    // Escape dismisses the upward popover cleanly.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await flush();
+    expect(document.querySelector('[data-composer-ssh-list]')).toBeNull();
+  });
+
+  it('combines SSH host count with pinned Mesh node and port tunnel count in the single capsule', async () => {
+    connection.client.klient.rest = { ssh, mesh };
+    ssh.sessionHosts.mockResolvedValue({
+      hosts: [{ host: HOSTS[0]!, status: { hostId: 'h1', state: 'ready', generation: 1 } }],
+    });
+    mesh.getSessionLease.mockResolvedValue({
+      sessionId: 'sess-both',
+      revision: 1,
+      contextBlock: null,
+      byteLength: 0,
+      lease: {
+        sessionId: 'sess-both',
+        revision: 1,
+        epoch: 1,
+        updatedAt: 1_700_000_000_000,
+        nodes: [
+          {
+            nodeId: 'node-1',
+            label: 'Mac Studio',
+            trustTier: 'trusted_personal',
+            capabilities: ['execute'],
+            state: 'online',
+            pinnedAt: 1_700_000_000_000,
+            createdBySession: false,
+          },
+        ],
+        seats: [],
+        workspaceCopies: [],
+        portTunnels: [
+          {
+            tunnelId: 'tun-8080',
+            nodeId: 'node-1',
+            remoteHost: '127.0.0.1',
+            remotePort: 8080,
+            localHost: '127.0.0.1',
+            localPort: 18080,
+            healthy: true,
+            createdAt: 1_700_000_000_000,
+          },
+        ],
+      },
+    });
+
+    const { container } = await renderHook('sess-both');
+    const toggle = container.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    // 1 SSH host + 1 Mesh node + 1 port tunnel = 3 total -> "Host One +2"
+    expect(toggle.textContent).toContain('Host One +2');
+
+    await act(async () => { toggle.click(); });
+    await flush();
+    const popup = document.querySelector<HTMLElement>('[data-composer-ssh-list]')!;
+    expect(popup.querySelector('[data-composer-ssh-chip="h1"]')).not.toBeNull();
+    expect(popup.querySelector('[data-composer-mesh-item="node:node-1"]')).not.toBeNull();
+    expect(popup.querySelector('[data-composer-mesh-tunnel="tun-8080"]')).not.toBeNull();
+    expect(popup.querySelector('[data-composer-ssh-panel]')).not.toBeNull();
   });
 });
