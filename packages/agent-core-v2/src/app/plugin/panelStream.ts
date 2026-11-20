@@ -17,6 +17,10 @@ export class PanelStream implements PluginPanelStream {
   private readonly binary = new Set<(chunk: Buffer) => void>();
   private readonly text = new Set<(text: string) => void>();
   private readonly closed = new Set<(reason?: string) => void>();
+  private pendingBinary: Buffer[] = [];
+  private pendingText: string[] = [];
+  private pendingBinaryBytes = 0;
+  private pendingTextBytes = 0;
   private ended = false;
   private reason?: string;
   private readonly header = Buffer.allocUnsafe(5);
@@ -84,13 +88,50 @@ export class PanelStream implements PluginPanelStream {
       this.socket.once('close', () => clearTimeout(timer));
     } else this.socket.destroy();
     this.payload = undefined;
+    this.pendingBinary = [];
+    this.pendingText = [];
+    this.pendingBinaryBytes = 0;
+    this.pendingTextBytes = 0;
     this.onEnd();
     for (const listener of this.closed) listener(reason);
     this.binary.clear(); this.text.clear(); this.closed.clear();
   }
 
-  onBinary(listener: (chunk: Buffer) => void): () => void { this.binary.add(listener); return () => { this.binary.delete(listener); }; }
-  onText(listener: (text: string) => void): () => void { this.text.add(listener); return () => { this.text.delete(listener); }; }
+  onBinary(listener: (chunk: Buffer) => void): () => void {
+    if (this.ended) return () => {};
+    this.binary.add(listener);
+    if (this.pendingBinary.length > 0) {
+      const queued = this.pendingBinary;
+      this.pendingBinary = [];
+      this.pendingBinaryBytes = 0;
+      for (const frame of queued) {
+        if (this.ended) break;
+        for (const candidate of this.binary) {
+          if (this.ended) break;
+          candidate(frame);
+        }
+      }
+    }
+    return () => { this.binary.delete(listener); };
+  }
+
+  onText(listener: (text: string) => void): () => void {
+    if (this.ended) return () => {};
+    this.text.add(listener);
+    if (this.pendingText.length > 0) {
+      const queued = this.pendingText;
+      this.pendingText = [];
+      this.pendingTextBytes = 0;
+      for (const frame of queued) {
+        if (this.ended) break;
+        for (const candidate of this.text) {
+          if (this.ended) break;
+          candidate(frame);
+        }
+      }
+    }
+    return () => { this.text.delete(listener); };
+  }
   onClose(listener: (reason?: string) => void): () => void {
     if (this.ended) { listener(this.reason); return () => {}; }
     this.closed.add(listener);
@@ -123,8 +164,30 @@ export class PanelStream implements PluginPanelStream {
       const opcode = this.header[0];
       this.headerBytes = 0; this.payloadBytes = 0; this.payload = undefined;
       if (opcode === 8) this.destroy(frame.toString('utf8'));
-      else if (opcode === 1) { for (const listener of this.text) listener(frame.toString('utf8')); }
-      else { for (const listener of this.binary) listener(frame); }
+      else if (opcode === 1) {
+        const text = frame.toString('utf8');
+        if (this.text.size === 0) {
+          if (this.pendingBinaryBytes + this.pendingTextBytes + frame.length > MAX_FRAME_BYTES) {
+            this.destroy('Plugin stream buffer limit exceeded');
+            return;
+          }
+          this.pendingText.push(text);
+          this.pendingTextBytes += frame.length;
+        } else {
+          for (const listener of this.text) listener(text);
+        }
+      } else {
+        if (this.binary.size === 0) {
+          if (this.pendingBinaryBytes + this.pendingTextBytes + frame.length > MAX_FRAME_BYTES) {
+            this.destroy('Plugin stream buffer limit exceeded');
+            return;
+          }
+          this.pendingBinary.push(Buffer.from(frame));
+          this.pendingBinaryBytes += frame.length;
+        } else {
+          for (const listener of this.binary) listener(frame);
+        }
+      }
     }
   }
 }

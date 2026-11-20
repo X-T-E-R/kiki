@@ -138,3 +138,72 @@ it('cancels pending stream startup without waiting for the plugin open result', 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('buffers initial binary and text frames sent before listeners attach and enforces the pre-listener buffer limit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'panel-stream-prelistener-'));
+  const file = join(root, 'prelistener-entry.mjs');
+  await writeFile(
+    file,
+    [
+      'export async function openPanelStream(name, _args, session) {',
+      '  if (name === "overflow") {',
+      '    session.onText(() => session.sendBinary(Buffer.alloc(9 * 1024 * 1024, 0x11)));',
+      '    return { protocol: "overflow" };',
+      '  }',
+      '  session.sendBinary(new Uint8Array([0, 0, 0, 1, 0x67, 0x42]));',
+      '  session.sendBinary(new Uint8Array([0, 0, 0, 1, 0x68, 0xce]));',
+      '  session.sendBinary(new Uint8Array([0, 0, 0, 1, 0x65, 0x88]));',
+      '  session.sendText({ seq: 1, kind: "codec" });',
+      '  session.sendText({ seq: 2, kind: "rotation" });',
+      '  session.onText((text) => session.sendText(`echo:${text}`));',
+      '  return { protocol: "h264-scrcpy-v1", keyframeBuffered: true };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  const host = new PluginHost('stream-prelistener', file, []);
+  try {
+    const stream = await host.openPanelStream('screen', 'keyframe', {}, {}, {});
+    expect(stream.result).toEqual({ protocol: 'h264-scrcpy-v1', keyframeBuffered: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const binary: Buffer[] = [];
+    const text: string[] = [];
+    stream.onBinary((chunk) => binary.push(Buffer.from(chunk)));
+    stream.onText((chunk) => text.push(chunk));
+
+    expect(binary).toEqual([
+      Buffer.from([0, 0, 0, 1, 0x67, 0x42]),
+      Buffer.from([0, 0, 0, 1, 0x68, 0xce]),
+      Buffer.from([0, 0, 0, 1, 0x65, 0x88]),
+    ]);
+    expect(text).toEqual([
+      '{"seq":1,"kind":"codec"}',
+      '{"seq":2,"kind":"rotation"}',
+    ]);
+
+    stream.sendText('live');
+    await vi.waitFor(() => expect(text[2]).toBe('echo:live'));
+    stream.close();
+
+    const closingStream = await host.openPanelStream('screen', 'keyframe', {}, {}, {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const deliveredBeforeClose: Buffer[] = [];
+    closingStream.onBinary((chunk) => {
+      deliveredBeforeClose.push(Buffer.from(chunk));
+      closingStream.close('stop-mid-flush');
+    });
+    expect(deliveredBeforeClose).toEqual([Buffer.from([0, 0, 0, 1, 0x67, 0x42])]);
+
+    const overflow = await host.openPanelStream('screen', 'overflow', {}, {}, {});
+    const overflowClosed = vi.fn();
+    overflow.onClose(overflowClosed);
+    overflow.sendText('push-1');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    overflow.sendText('push-2');
+    await vi.waitFor(() => expect(overflowClosed).toHaveBeenCalledExactlyOnceWith('Plugin stream buffer limit exceeded'));
+  } finally {
+    await host.stopAndWait();
+    await rm(root, { recursive: true, force: true });
+  }
+});
