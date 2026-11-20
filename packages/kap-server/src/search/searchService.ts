@@ -453,7 +453,7 @@ export class GlobalSearchService implements IGlobalSearchService {
     return {
       id: summary.id,
       workspaceId: summary.workspaceId,
-      title: summary.title,
+      title: summary.title ?? '',
       updatedAt: summary.updatedAt,
       dir: sessionDirOf(
         this.bootstrap.homeDir,

@@ -668,17 +668,17 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.thinkingEffortExplicit === b.thinkingEffortExplicit &&
     a.executor === b.executor &&
     a.executorProtocol === b.executorProtocol &&
-    JSON.stringify(a.execution) === JSON.stringify(b.execution) &&
-    JSON.stringify(a.executorAuth) === JSON.stringify(b.executorAuth) &&
-    JSON.stringify(a.negotiated) === JSON.stringify(b.negotiated) &&
+    (a.execution === b.execution || JSON.stringify(a.execution) === JSON.stringify(b.execution)) &&
+    (a.executorAuth === b.executorAuth || JSON.stringify(a.executorAuth) === JSON.stringify(b.executorAuth)) &&
+    (a.negotiated === b.negotiated || JSON.stringify(a.negotiated) === JSON.stringify(b.negotiated)) &&
     a.allowKikiSubagents === b.allowKikiSubagents &&
     a.status === b.status &&
     a.completedAt === b.completedAt &&
     a.resultSummary === b.resultSummary &&
     a.error === b.error &&
     a.taskId === b.taskId &&
-    JSON.stringify(a.runSources) === JSON.stringify(b.runSources) &&
-    JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
+    (a.runSources === b.runSources || JSON.stringify(a.runSources) === JSON.stringify(b.runSources)) &&
+    (a.usage === b.usage || JSON.stringify(a.usage) === JSON.stringify(b.usage)) &&
     a.contextTokens === b.contextTokens &&
     a.toolCallCount === b.toolCallCount &&
     recordEquals(a.labels, b.labels)

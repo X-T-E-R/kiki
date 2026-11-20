@@ -3345,7 +3345,7 @@ export class TranscriptService {
     for (const wirePath of this.coldSnapshotCache.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.deleteColdSnapshotCache(wirePath);
     }
-    for (const wirePath of [...this.retainedColdTurns.keys()]) {
+    for (const wirePath of Array.from(this.retainedColdTurns.keys())) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.deleteRetainedColdTurns(wirePath);
     }
     for (const wirePath of this.coldWireWindows.keys()) {

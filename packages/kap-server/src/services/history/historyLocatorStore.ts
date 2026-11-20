@@ -304,7 +304,7 @@ export class HistoryLocatorEngine {
   invalidateCanonical(): void { this.canonicalReader?.invalidate(); }
 
   async deleteSession(sessionId: string): Promise<number> {
-    for (const key of [...this.scanners.keys()]) {
+    for (const key of Array.from(this.scanners.keys())) {
       if (key.includes(`\0${sessionId}\0`)) this.scanners.delete(key);
     }
     this.canonicalReader?.invalidate();

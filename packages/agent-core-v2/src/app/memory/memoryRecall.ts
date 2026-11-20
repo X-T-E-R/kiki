@@ -93,7 +93,7 @@ export interface MemoryRecallIndex {
 }
 
 export function buildMemoryRecallIndex(entries: readonly MemoryRecallEntry[]): MemoryRecallIndex {
-  const docs: IndexedRecallDoc[] = new Array(entries.length);
+  const docs: IndexedRecallDoc[] = Array.from({ length: entries.length });
   const postings = new Map<string, TermPosting[]>();
   const exactIds = new Map<string, number[]>();
   const addExactId = (value: string, docIndex: number): void => {

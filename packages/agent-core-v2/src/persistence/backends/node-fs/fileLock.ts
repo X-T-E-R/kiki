@@ -374,7 +374,7 @@ function schedulePendingReaderUnlinkRetry(): void {
 
 async function flushPendingReaderUnlinks(): Promise<void> {
   if (PENDING_READER_UNLINKS.size === 0) return;
-  for (const leasePath of [...PENDING_READER_UNLINKS]) {
+  for (const leasePath of Array.from(PENDING_READER_UNLINKS)) {
     try {
       await unlink(leasePath);
       PENDING_READER_UNLINKS.delete(leasePath);
@@ -411,8 +411,8 @@ function hookExit(): void {
   exitHooked = true;
   const releaseHeld = (): void => {
     for (const lock of HELD) lock.releaseSync();
-    for (const lease of [...READER_HELD]) lease.releaseSync();
-    for (const leasePath of [...PENDING_READER_UNLINKS]) {
+    for (const lease of Array.from(READER_HELD)) lease.releaseSync();
+    for (const leasePath of Array.from(PENDING_READER_UNLINKS)) {
       if (tryUnlinkSyncComplete(leasePath)) PENDING_READER_UNLINKS.delete(leasePath);
     }
     if (localWorkerBeaconServer !== undefined) {

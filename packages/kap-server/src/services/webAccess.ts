@@ -192,13 +192,13 @@ export class WebAccess {
   private revokeConnection(id: string): void { const set = this.connectionLeases.get(id); this.connectionLeases.delete(id); for (const close of set ?? []) close(); }
   private replaceSharedConnections(ids: readonly string[]): void {
     const next = new Set(ids);
-    for (const id of [...this.sharedConnections]) if (!next.has(id)) { this.sharedConnections.delete(id); this.revokeConnection(id); }
+    for (const id of Array.from(this.sharedConnections)) if (!next.has(id)) { this.sharedConnections.delete(id); this.revokeConnection(id); }
     for (const id of next) this.sharedConnections.add(id);
   }
   private async stop(): Promise<void> {
     if (this.expiryTimer !== undefined) { clearTimeout(this.expiryTimer); this.expiryTimer = undefined; }
     this.codes.clear(); for (const id of this.sessions.keys()) this.remove(id);
-    for (const id of [...this.connectionLeases.keys()]) this.revokeConnection(id);
+    for (const id of Array.from(this.connectionLeases.keys())) this.revokeConnection(id);
     const listener = this.listener; this.listener = undefined; this.input = undefined; this.expiresAt = null;
     await listener?.close();
   }

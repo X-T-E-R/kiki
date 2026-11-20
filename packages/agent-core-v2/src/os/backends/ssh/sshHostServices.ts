@@ -152,9 +152,7 @@ async function probePosixRg(ssh: SSHKaos): Promise<string | undefined> {
   } finally {
     try {
       proc.dispose();
-    } catch {
-      undefined;
-    }
+    } catch {}
   }
 }
 

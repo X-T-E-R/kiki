@@ -9,7 +9,6 @@ import {
   getLiveSessionById,
   isError2,
   platformDefaultDisabledTools,
-  Error2,
   type Scope,
   type ToolInfo,
   type ToolSource,

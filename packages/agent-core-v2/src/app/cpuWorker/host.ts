@@ -22,7 +22,7 @@ export interface CpuRequestOptions {
   readonly timeoutMs?: number;
   readonly transferList?: readonly Transferable[];
   readonly bytes?: number;
-  readonly priority?: 'high' | 'normal';
+  readonly priority?: 'high' | 'normal' | 'low';
 }
 
 export class CpuWorkerError extends Error {
@@ -76,6 +76,7 @@ export class CpuWorkerPool {
   private readonly retiringExits = new Set<Promise<void>>();
   private readonly waiting: Pending[] = [];
   private readonly highWaiting: Pending[] = [];
+  private readonly lowWaiting: Pending[] = [];
   private consecutiveHigh = 0;
   private readonly maxQueue: number;
   private readonly maxQueuedBytes: number;
@@ -129,7 +130,7 @@ export class CpuWorkerPool {
     const timeoutMs = positiveInteger(options.timeoutMs ?? this.timeoutMs, 'timeoutMs');
     const bytes = options.bytes ?? options.transferList?.reduce((sum, value) => sum + (value instanceof ArrayBuffer ? value.byteLength : 0), 0) ?? 0;
     if (!Number.isSafeInteger(bytes) || bytes < 0) return Promise.reject(new RangeError('CPU request bytes must be a nonnegative safe integer'));
-    if (this.waiting.length + this.highWaiting.length >= this.maxQueue || this.queuedBytes + bytes > this.maxQueuedBytes) {
+    if (this.waiting.length + this.highWaiting.length + this.lowWaiting.length >= this.maxQueue || this.queuedBytes + bytes > this.maxQueuedBytes) {
       return Promise.reject(new CpuWorkerError('CPU_QUEUE_FULL', 'CPU worker queue is full; retry after active work completes'));
     }
     const cancellation = new SharedArrayBuffer(4);
@@ -140,13 +141,28 @@ export class CpuWorkerPool {
       options.signal?.addEventListener('abort', pending.abort, { once: true });
       pending.timer = setTimeout(() => { this.cancel(pending, new CpuWorkerError('CPU_TIMEOUT', 'CPU worker request timed out'), true); }, timeoutMs);
       if (options.priority === 'high') this.highWaiting.push(pending);
+      else if (options.priority === 'low') this.lowWaiting.push(pending);
       else this.waiting.push(pending);
       this.queuedBytes += bytes;
       this.pump();
     });
   }
 
-  private dequeueNext(): Pending | undefined {
+  private activeSlotCount(): number {
+    let count = 0;
+    for (const slot of this.slots) {
+      if (slot.active !== undefined || slot.drainingCancel !== undefined) count += 1;
+    }
+    return count;
+  }
+
+  private hasRunnableWaiting(activeCount: number): boolean {
+    if (this.highWaiting.length > 0 || this.waiting.length > 0) return true;
+    if (this.lowWaiting.length === 0) return false;
+    return this.size <= 1 || activeCount < this.size - 1;
+  }
+
+  private dequeueNext(allowLow: boolean): Pending | undefined {
     if (this.highWaiting.length > 0 && (this.waiting.length === 0 || this.consecutiveHigh < 4)) {
       this.consecutiveHigh += 1;
       return this.highWaiting.shift();
@@ -159,12 +175,17 @@ export class CpuWorkerPool {
       this.consecutiveHigh += 1;
       return this.highWaiting.shift();
     }
+    if (allowLow && this.lowWaiting.length > 0) {
+      this.consecutiveHigh = 0;
+      return this.lowWaiting.shift();
+    }
     return undefined;
   }
 
   private pump(): void {
     if (this.closing !== undefined) return;
-    while (this.highWaiting.length > 0 || this.waiting.length > 0) {
+    let activeCount = this.activeSlotCount();
+    while (this.hasRunnableWaiting(activeCount)) {
       let slot = this.slots.find((candidate) => candidate.worker !== undefined && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined)
         ?? this.slots.find((candidate) => candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined);
       if (slot === undefined) {
@@ -173,9 +194,11 @@ export class CpuWorkerPool {
         this.slots.push(slot);
       }
       this.clearIdleTimer(slot);
-      const pending = this.dequeueNext()!;
+      const pending = this.dequeueNext(this.size <= 1 || activeCount < this.size - 1);
+      if (pending === undefined) break;
       this.queuedBytes -= pending.bytes;
       slot.active = pending;
+      activeCount += 1;
       try {
         const worker = slot.worker ?? this.spawn(slot);
         worker.ref();
@@ -183,6 +206,7 @@ export class CpuWorkerPool {
       } catch (error) {
         this.settle(pending, new CpuWorkerError('CPU_WORKER_EXIT', 'CPU worker dispatch failed', { cause: error }));
         slot.active = undefined;
+        activeCount -= 1;
         void this.retire(slot);
       }
     }
@@ -278,7 +302,7 @@ export class CpuWorkerPool {
   }
 
   private reconcileIdleTimers(): void {
-    if (this.closing !== undefined || this.waiting.length > 0) {
+    if (this.closing !== undefined || this.waiting.length > 0 || this.highWaiting.length > 0 || this.lowWaiting.length > 0) {
       for (const slot of this.slots) this.clearIdleTimer(slot);
       return;
     }
@@ -314,6 +338,8 @@ export class CpuWorkerPool {
       slot.worker === undefined ||
       slot.retiring !== undefined ||
       this.waiting.length > 0 ||
+      this.highWaiting.length > 0 ||
+      this.lowWaiting.length > 0 ||
       this.liveWorkerCount <= WARM_WORKER_FLOOR
     ) {
       this.reconcileIdleTimers();
@@ -420,6 +446,13 @@ export class CpuWorkerPool {
       this.settle(pending, error);
       return;
     }
+    const lowIndex = this.lowWaiting.indexOf(pending);
+    if (lowIndex >= 0) {
+      this.lowWaiting.splice(lowIndex, 1);
+      this.queuedBytes -= pending.bytes;
+      this.settle(pending, error);
+      return;
+    }
     const slot = this.slots.find((candidate) => candidate.active === pending);
     if (slot === undefined) return;
     slot.active = undefined;
@@ -449,7 +482,7 @@ export class CpuWorkerPool {
     if (this.closing !== undefined) return this.closing;
     const error = new CpuWorkerError('CPU_POOL_CLOSED', 'CPU worker pool is closed');
     this.closing = Promise.resolve();
-    for (const pending of [...this.highWaiting.splice(0), ...this.waiting.splice(0)]) {
+    for (const pending of [...this.highWaiting.splice(0), ...this.waiting.splice(0), ...this.lowWaiting.splice(0)]) {
       Atomics.store(pending.cancelFlag, 0, 1);
       this.settle(pending, error);
     }

@@ -2309,7 +2309,8 @@ async function hasColdSegmentsManifest(wirePath: string): Promise<boolean> {
   );
 }
 
-const COLD_MARKER_CHUNK_BYTES = 4 * 1024 * 1024;
+const COLD_MARKER_CHUNK_BYTES = 32 * 1024 * 1024;
+const COLD_MARKER_SEARCH_SLICE_BYTES = 4 * 1024 * 1024;
 const COLD_MARKER_SCRATCH_MAX_OVERLAP = 1024;
 const COLD_MARKER_SCRATCH_IDLE_MS = 30_000;
 let coldMarkerScratchBuf: Buffer | undefined;
@@ -2322,7 +2323,9 @@ function acquireColdMarkerScratch(neededBytes: number): { readonly buf: Buffer; 
       clearTimeout(coldMarkerScratchTimer);
       coldMarkerScratchTimer = undefined;
     }
-    coldMarkerScratchBuf ??= Buffer.allocUnsafe(COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP);
+    if (coldMarkerScratchBuf === undefined || coldMarkerScratchBuf.length < neededBytes) {
+      coldMarkerScratchBuf = Buffer.allocUnsafe(neededBytes);
+    }
     coldMarkerScratchInUse = true;
     return { buf: coldMarkerScratchBuf, pooled: true };
   }
@@ -2419,7 +2422,7 @@ export async function scanColdWireMarkers(
     if (controller.signal.aborted) return undefined;
     const maxNeedleLen = needles.reduce((acc, n) => Math.max(acc, n.buf.length), 1);
     const overlap = Math.max(0, maxNeedleLen - 1);
-    const chunkSize = COLD_MARKER_CHUNK_BYTES;
+    const chunkSize = Math.min(COLD_MARKER_CHUNK_BYTES, Math.max(1, info.size));
     const scratch = acquireColdMarkerScratch(chunkSize + overlap);
     const buf = scratch.buf;
     let stable = false;
@@ -2427,31 +2430,45 @@ export async function scanColdWireMarkers(
     try {
       let pos = 0;
       let carry = 0;
-      while (pos < info.size) {
+      let allFound = false;
+      while (pos < info.size && !allFound) {
         if (controller.signal.aborted) return undefined;
         const toRead = Math.min(chunkSize, info.size - pos);
         const { bytesRead } = await abortable(fh.read(buf, carry, toRead, pos), controller.signal);
         if (bytesRead <= 0) break;
         const windowLen = carry + bytesRead;
-        const slice = buf.subarray(0, windowLen);
-        let parentReceiptHitThisSlice = false;
-        if (parentReceiptGate !== undefined) {
-          parentReceiptHitThisSlice = slice.indexOf(parentReceiptGate.buf) !== -1;
-          if (parentReceiptHitThisSlice) parentReceiptGate.found = true;
-        }
-        let allFound = true;
-        for (const n of needles) {
-          if (n.found) continue;
-          if (n === parentReceiptGate) {
-            allFound = false;
-            continue;
+        let searchYieldAt = performance.now();
+        let subStart = 0;
+        while (subStart < windowLen) {
+          const subEnd = Math.min(windowLen, subStart + COLD_MARKER_SEARCH_SLICE_BYTES);
+          const sliceStart = subStart === 0 ? 0 : Math.max(0, subStart - overlap);
+          const slice = buf.subarray(sliceStart, subEnd);
+          let parentReceiptHitThisSlice = false;
+          if (parentReceiptGate !== undefined) {
+            parentReceiptHitThisSlice = slice.indexOf(parentReceiptGate.buf) !== -1;
+            if (parentReceiptHitThisSlice) parentReceiptGate.found = true;
           }
-          if (n.gatedByParentReceipt && parentReceiptGate !== undefined && !parentReceiptHitThisSlice) {
-            allFound = false;
-            continue;
+          allFound = true;
+          for (const n of needles) {
+            if (n.found) continue;
+            if (n === parentReceiptGate) {
+              allFound = false;
+              continue;
+            }
+            if (n.gatedByParentReceipt && parentReceiptGate !== undefined && !parentReceiptHitThisSlice) {
+              allFound = false;
+              continue;
+            }
+            if (slice.indexOf(n.buf) !== -1) n.found = true;
+            else allFound = false;
           }
-          if (slice.indexOf(n.buf) !== -1) n.found = true;
-          else allFound = false;
+          if (allFound) break;
+          subStart = subEnd;
+          if (subStart < windowLen && performance.now() - searchYieldAt >= 4) {
+            await new Promise<void>((resolve) => { setImmediate(resolve); });
+            if (controller.signal.aborted) return undefined;
+            searchYieldAt = performance.now();
+          }
         }
         if (allFound) break;
         pos += bytesRead;
@@ -2460,6 +2477,10 @@ export async function scanColdWireMarkers(
           carry = overlap;
         } else {
           carry = windowLen;
+        }
+        if (pos < info.size && performance.now() - searchYieldAt >= 4) {
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+          if (controller.signal.aborted) return undefined;
         }
       }
       if (controller.signal.aborted) return undefined;

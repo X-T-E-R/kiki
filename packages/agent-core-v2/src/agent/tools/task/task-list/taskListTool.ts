@@ -28,7 +28,7 @@ async function resolveSnapshotsBounded(
   items: readonly AgentTaskInfo[],
 ): Promise<AgentTaskInfo[]> {
   if (items.length === 0) return [];
-  const results = new Array<AgentTaskInfo>(items.length);
+  const results = Array.from<AgentTaskInfo>({ length: items.length });
   let cursor = 0;
   const workerCount = Math.min(SNAPSHOT_CONCURRENCY, items.length);
   await Promise.all(

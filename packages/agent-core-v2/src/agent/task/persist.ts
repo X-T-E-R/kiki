@@ -326,7 +326,7 @@ export class AgentTaskPersistence {
     }
     if (validEntries.length === 0) return { reservedIds, tasks: [] };
     const scope = this.tasksScope(root);
-    const resolved = new Array<ListedTask | undefined>(validEntries.length);
+    const resolved = Array.from<ListedTask | undefined>({ length: validEntries.length });
     let cursor = 0;
     let completed = 0;
     const workerCount = Math.min(resolveListConcurrency(), validEntries.length);

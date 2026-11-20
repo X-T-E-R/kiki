@@ -3,7 +3,7 @@ import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
-import { IMemoryPersistence, type MemoryCommit, type MemoryLegacyPayload, type MemoryReadOptions, type MemoryReadView, type MemoryScopeSummary } from '#/persistence/interface/memoryPersistence';
+import { IMemoryPersistence, type MemoryCommit, type MemoryLegacyPayload, type MemoryReadView, type MemoryScopeSummary } from '#/persistence/interface/memoryPersistence';
 import { trackQueryStoreDisposal } from '#/persistence/queryStoreDisposals';
 import { MemoryWorker } from './host';
 import type { MemoryOperation } from './protocol';

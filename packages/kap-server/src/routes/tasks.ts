@@ -386,7 +386,7 @@ class PersistedTasksReader {
     if (status === undefined) {
       const end = Math.min(ordered.length, offset + limit);
       const pageIds = ordered.slice(offset, end);
-      const resolved = new Array<AgentTaskInfo | undefined>(pageIds.length);
+      const resolved = Array.from<AgentTaskInfo | undefined>({ length: pageIds.length });
       let cursor = 0;
       let completed = 0;
       const workers = Array.from(
@@ -424,7 +424,7 @@ class PersistedTasksReader {
       if (batches % 4 === 0) await yieldToEventLoop();
     }
     const pageIds = matchedIds.slice(offset, offset + limit);
-    const verified = new Array<AgentTaskInfo | undefined>(pageIds.length);
+    const verified = Array.from<AgentTaskInfo | undefined>({ length: pageIds.length });
     let cursor = 0;
     const workers = Array.from(
       { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },

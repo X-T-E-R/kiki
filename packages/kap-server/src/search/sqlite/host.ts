@@ -483,7 +483,7 @@ export class SqliteSearchHost {
         return;
       }
       this.safeSend(this.child, { type: 'heartbeat' });
-    }, this.options.heartbeatMs ?? 1000);
+    }, this.options.heartbeatMs ?? 15_000);
     this.timer.unref();
   }
 

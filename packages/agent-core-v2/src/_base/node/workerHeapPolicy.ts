@@ -5,6 +5,9 @@ let enabled = false;
 
 /** Opt in before creating workers. Keeps the existing main isolate's heap and lets future isolates use their own resourceLimits. Changes the process-wide V8 default for future isolates. */
 export function enableIndependentWorkerHeaps(): void {
+  if (!process.env['UV_THREADPOOL_SIZE']) {
+    process.env['UV_THREADPOOL_SIZE'] = '16';
+  }
   if (enabled) return;
   if (!isMainThread) throw new Error('Worker heap policy must be enabled by the main thread before workers start');
   setFlagsFromString('--max-old-space-size=0');

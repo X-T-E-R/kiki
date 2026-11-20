@@ -467,9 +467,9 @@ export class SessionIndexProjector {
           const result =
             fingerprint !== undefined && isLargeFingerprint(fingerprint)
               ? await runLargeRead(() =>
-                  readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log),
+                  readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log, storage),
                 )
-              : await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+              : await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log, storage);
           summaryReadCount += 1;
           await maybeYield(summaryReadCount % COOPERATIVE_SCAN_ITEMS === 0);
           return { sessionId, result };
@@ -845,9 +845,9 @@ export class SessionIndexProjector {
         async ({ sessionId, fingerprint }) => {
           const result = isLargeFingerprint(fingerprint)
             ? await runLargeRead(() =>
-                readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log),
+                readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log, storage),
               )
-            : await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+            : await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log, storage);
           summaryReadCount += 1;
           await maybeYield(summaryReadCount % COOPERATIVE_SCAN_ITEMS === 0);
           return { sessionId, fingerprint, result };

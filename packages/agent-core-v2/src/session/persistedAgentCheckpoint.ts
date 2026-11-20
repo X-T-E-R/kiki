@@ -44,6 +44,9 @@ const LIGHTWEIGHT_STATE_NAMES = new Set([
   goalKey.name,
   autoCompactOverrideKey.name,
   contextStrategyOverrideKey.name,
+  'prompt.modelSwitches',
+  'prompt.queue',
+  'externalHooks.clock',
 ]);
 
 const CHECKPOINT_SUBSCOPE = 'replay-checkpoints';
@@ -121,7 +124,7 @@ async function decodeCheckpointSource(
   if (workers !== undefined && checkpointPath !== undefined) {
     return workers.request<{ readonly wire: ReplayCheckpointWire; readonly states: Map<string, unknown> } | undefined>(
       { type: 'checkpoint.read', path: checkpointPath, names: [...names] },
-      { signal },
+      { signal, priority: 'high' },
     );
   }
   const checkpoint = await docs?.get<Checkpoint>(checkpointScope, checkpointKey);
@@ -194,7 +197,7 @@ export async function readPersistedAgentCheckpoint(
       const digest = async (start: number, end: number) => {
         const hash = createHash('sha256');
         let read = 0;
-        if (end > start) for await (const bytes of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: end - 1 })) {
+        if (end > start) for await (const bytes of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: end - 1 }, { chunkBytes: 64 * 1024 })) {
           hash.update(bytes);
           read += bytes.byteLength;
         }

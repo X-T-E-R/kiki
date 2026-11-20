@@ -61,7 +61,7 @@ const HEARTBEAT_MISS_LIMIT = 2;
 
 type SessionSubscription = TargetSubscription;
 
-const DEFAULT_FLUSH_INTERVAL_MS = 16;
+const DEFAULT_FLUSH_INTERVAL_MS = 30;
 const DEFAULT_MAX_BATCH_SIZE = 64;
 const DEFAULT_HIGH_WATER_MARK_BYTES = 1 << 20;
 const DEFAULT_MAX_OUTBOUND_BUFFER_BYTES = 4 << 20;
@@ -1273,6 +1273,40 @@ function isCoalescableTranscriptOps(frame: unknown): frame is CoalescableTranscr
   return typeof c['epoch'] === 'string' && typeof c['seq'] === 'number';
 }
 
+function compactTranscriptOps(ops: readonly unknown[]): unknown[] {
+  if (ops.length <= 1) return [...ops];
+  const lastTaskUpsertIndex = new Map<string, number>();
+  let lastToolCountIndex = -1;
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    if (typeof op !== 'object' || op === null) continue;
+    const record = op as { op?: unknown; task?: { taskId?: unknown } };
+    if (record.op === 'reset') {
+      lastTaskUpsertIndex.clear();
+      lastToolCountIndex = -1;
+    } else if (record.op === 'task.upsert' && typeof record.task?.taskId === 'string') {
+      lastTaskUpsertIndex.set(record.task.taskId, i);
+    } else if (record.op === 'tool.count.set') {
+      lastToolCountIndex = i;
+    }
+  }
+  const compacted: unknown[] = [];
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    if (typeof op === 'object' && op !== null) {
+      const record = op as { op?: unknown; task?: { taskId?: unknown } };
+      if (record.op === 'task.upsert' && typeof record.task?.taskId === 'string' && lastTaskUpsertIndex.get(record.task.taskId) !== i) {
+        continue;
+      }
+      if (record.op === 'tool.count.set' && lastToolCountIndex !== -1 && lastToolCountIndex !== i) {
+        continue;
+      }
+    }
+    compacted.push(op);
+  }
+  return compacted;
+}
+
 /**
  * Merge adjacent compatible volatile text deltas or contiguous `transcript.ops`
  * batches into a single envelope while preserving frame order and bounds.
@@ -1310,17 +1344,21 @@ export function coalesceFrames(frames: readonly unknown[]): unknown[] {
       const prevBytes = lastTranscriptOpsBytes > 0 ? lastTranscriptOpsBytes : Buffer.byteLength(JSON.stringify(last));
       const nextBytes = Buffer.byteLength(JSON.stringify(frame));
       if (prevBytes + nextBytes <= MAX_COALESCED_TRANSCRIPT_OPS_BYTES) {
-        out[out.length - 1] = {
+        const mergedOps = compactTranscriptOps([...last.payload.ops, ...frame.payload.ops]);
+        const merged: CoalescableTranscriptOps = {
           ...last,
           seq: frame.seq,
           payload: {
             ...last.payload,
-            ops: [...last.payload.ops, ...frame.payload.ops],
+            ops: mergedOps,
             cursor: frame.payload.cursor,
             through_seq: frame.payload.through_seq,
           },
         };
-        lastTranscriptOpsBytes = prevBytes + nextBytes;
+        out[out.length - 1] = merged;
+        lastTranscriptOpsBytes = mergedOps.length < last.payload.ops.length + frame.payload.ops.length
+          ? Buffer.byteLength(JSON.stringify(merged))
+          : prevBytes + nextBytes;
       } else {
         out.push(frame);
         lastTranscriptOpsBytes = nextBytes;
