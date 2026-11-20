@@ -212,6 +212,17 @@ class FakeTaskService implements IAgentTaskService {
     return this.list().some((info) => info.lifetime !== 'service');
   }
 
+  count(activeOnly = true): number {
+    let total = 0;
+    for (const entry of this.entries.values()) {
+      const info = entry.info;
+      if (activeOnly && TERMINAL_STATUSES.has(info.status) && info.cleanupPending !== true) continue;
+      if (!activeOnly && TERMINAL_STATUSES.has(info.status) && info.cleanupPending !== true && info.detached === false) continue;
+      total += 1;
+    }
+    return total;
+  }
+
   list(activeOnly = true, limit?: number, offset = 0): readonly AgentTaskInfo[] {
     const result: AgentTaskInfo[] = [];
     let skipped = 0;
@@ -1982,4 +1993,45 @@ describe('TaskWait tool (harness)', () => {
       await ctx.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('caps TaskList(active_only=false) at the default limit across 10,000 tasks and reports omitted count', async () => {
+    const previousLimit = process.env['KIKI_TASK_LIST_DEFAULT_LIMIT'];
+    try {
+      delete process.env['KIKI_TASK_LIST_DEFAULT_LIMIT'];
+      const tasks = new FakeTaskService();
+      const tool = new TaskListTool(tasks);
+      for (let i = 0; i < 10_000; i++) {
+        tasks.add(
+          agentTaskInfo({
+            taskId: `agent-${i.toString().padStart(8, '0')}`,
+            agentId: `agent-scale-${i}`,
+            description: `completed task ${i}`,
+            status: 'completed',
+          }),
+        );
+      }
+
+      const start = performance.now();
+      const result = await executeTool(tool, context('list_10k', { active_only: false }));
+      const elapsedMs = performance.now() - start;
+      const output = outputString(result);
+      expect(result.isError ?? false).toBe(false);
+      expect(output).toContain('background_tasks: 20');
+      expect(output).toContain('total: 10000');
+      expect(output).toContain('omitted: 9980');
+      expect(output).toContain('next_offset: 20');
+      expect(elapsedMs).toBeLessThan(100);
+
+      process.env['KIKI_TASK_LIST_DEFAULT_LIMIT'] = '50';
+      const configured = await executeTool(tool, context('list_10k_env', { active_only: false }));
+      const configuredOut = outputString(configured);
+      expect(configuredOut).toContain('background_tasks: 50');
+      expect(configuredOut).toContain('total: 10000');
+      expect(configuredOut).toContain('omitted: 9950');
+      console.log('task-list-10k-scale', { tasks: 10_000, elapsedMs: Number(elapsedMs.toFixed(2)) });
+    } finally {
+      if (previousLimit === undefined) delete process.env['KIKI_TASK_LIST_DEFAULT_LIMIT'];
+      else process.env['KIKI_TASK_LIST_DEFAULT_LIMIT'] = previousLimit;
+    }
+  });
 });

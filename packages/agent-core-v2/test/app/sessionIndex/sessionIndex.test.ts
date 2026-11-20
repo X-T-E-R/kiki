@@ -669,6 +669,12 @@ describe('FileSessionIndex (legacy)', () => {
         }
         return super.mtime(scope, key);
       }
+      override async statMeta(scope: string, key: string): Promise<{ mtimeMs: number; size: number } | undefined> {
+        if (scope === `sessions/${workspaceId}/denied` && key === 'state.json') {
+          throw new StorageError(StorageErrors.codes.STORAGE_PERMISSION_DENIED, 'stat denied');
+        }
+        return super.statMeta(scope, key);
+      }
     }
     const warnings: string[] = [];
     const log: ILogService = { ...stubLog(), warn: (message) => { warnings.push(message); } };
@@ -3473,6 +3479,10 @@ describe('FileSessionIndex (read model)', () => {
         this.stats++;
         return super.size(scope, key);
       }
+      override async statMeta(scope: string, key: string): Promise<{ mtimeMs: number; size: number } | undefined> {
+        this.stats++;
+        return super.statMeta(scope, key);
+      }
     }
     await Promise.all(Array.from({ length: 1500 }, (_, index) => seedSession(`s${index}`, { createdAt: 1, updatedAt: index + 1 })));
     const storage = new FingerprintStorage(homeDir);
@@ -3495,7 +3505,7 @@ describe('FileSessionIndex (read model)', () => {
     });
     try {
       await store.reconcileNow({ reuseFingerprints: true });
-      expect(reads).toEqual([6001, 5]);
+      expect(reads).toEqual([3001, 3]);
       expect((await store.get('s1499'))?.title).toBe('managed active turn');
       expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1500);
       console.log('session-index-reconcile-retry', { sessions: 1500, fingerprintReads: reads });
@@ -3512,6 +3522,10 @@ describe('FileSessionIndex (read model)', () => {
       override async size(scope: string, key: string): Promise<number | undefined> {
         this.stats += 1;
         return super.size(scope, key);
+      }
+      override async statMeta(scope: string, key: string): Promise<{ mtimeMs: number; size: number } | undefined> {
+        this.stats += 1;
+        return super.statMeta(scope, key);
       }
     }
     await seedSession('a', { title: 'before', createdAt: 1, updatedAt: 2 });
@@ -3536,7 +3550,7 @@ describe('FileSessionIndex (read model)', () => {
     try {
       storage.stats = 0;
       await store.reconcileNow({ reuseFingerprints: true });
-      expect(storage.stats).toBe(5);
+      expect(storage.stats).toBe(3);
       expect((await store.get('a'))?.title).toBe('later');
     } finally {
       date.mockRestore();
@@ -3695,6 +3709,10 @@ describe('FileSessionIndex (read model)', () => {
         this.stats += 1;
         return super.size(scope, key);
       }
+      override async statMeta(scope: string, key: string): Promise<{ mtimeMs: number; size: number } | undefined> {
+        this.stats += 1;
+        return super.statMeta(scope, key);
+      }
     }
     await seedSession('a', { title: 'before', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'unchanged', createdAt: 1, updatedAt: 1 });
@@ -3713,7 +3731,7 @@ describe('FileSessionIndex (read model)', () => {
     await vi.waitFor(async () => {
       expect((await store.get('a'))?.title).toBe('after');
     }, { timeout: 5000 });
-    expect(storage.stats).toBe(5);
+    expect(storage.stats).toBe(3);
 
     await fsp.rm(join(sessionsDir, workspaceId, 'b'), { recursive: true, force: true });
     sourceChanges.fire({
@@ -4833,6 +4851,10 @@ describe('FileSessionIndex (read model)', () => {
         this.stats += 1;
         return super.size(scope, key);
       }
+      override async statMeta(scope: string, key: string): Promise<{ mtimeMs: number; size: number } | undefined> {
+        this.stats += 1;
+        return super.statMeta(scope, key);
+      }
     }
     await seedSession('a', { title: 'a-0', createdAt: 1, updatedAt: 1 });
     await seedSession('b', { title: 'b-0', createdAt: 1, updatedAt: 2 });
@@ -4847,7 +4869,7 @@ describe('FileSessionIndex (read model)', () => {
     await seedSession('a', { title: 'a-external', createdAt: 1, updatedAt: 11 });
     storage.stats = 0;
     await store.reconcileNow({ reuseFingerprints: true });
-    expect(storage.stats).toBe(5);
+    expect(storage.stats).toBe(3);
     expect((await store.get('a'))?.title).toBe('a-external');
 
     let gateCommit = false;
@@ -5016,4 +5038,60 @@ describe('FileSessionIndex (read model)', () => {
       mtimeSpy.mockRestore();
     }
   }, 20_000);
+
+  it('bounds concurrency and yields cooperatively across 10,000 cold sessions while using statMeta', async () => {
+    const ids = Array.from({ length: 10_000 }, (_, i) => `s-${i}`);
+    let statMetaCalls = 0;
+    let mtimeCalls = 0;
+    let sizeCalls = 0;
+    const fakeStorage = {
+      statMeta: async (_scope: string, _key: string) => {
+        statMetaCalls += 1;
+        return { mtimeMs: 1_700_000_000_000, size: 512 };
+      },
+      mtime: async () => {
+        mtimeCalls += 1;
+        return 1_700_000_000_000;
+      },
+      size: async () => {
+        sizeCalls += 1;
+        return 512;
+      },
+    } as unknown as IFileSystemStorageService;
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let immediateTicks = 0;
+    let pumping = true;
+    const pump = (): void => {
+      if (!pumping) return;
+      immediateTicks += 1;
+      setImmediate(pump);
+    };
+    setImmediate(pump);
+
+    const startedAt = performance.now();
+    try {
+      const { mapBounded, sessionStateFingerprint } = await import('#/app/sessionIndex/sessionIndexSource');
+      const fingerprints = await mapBounded(ids, 16, async (sessionId) => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        try {
+          return await sessionStateFingerprint(fakeStorage, 'sessions', 'ws-scale', sessionId);
+        } finally {
+          inFlight -= 1;
+        }
+      });
+      const elapsedMs = performance.now() - startedAt;
+      expect(fingerprints).toHaveLength(10_000);
+      expect(maxInFlight).toBeLessThanOrEqual(16);
+      expect(statMetaCalls).toBe(20_000);
+      expect(mtimeCalls).toBe(0);
+      expect(sizeCalls).toBe(0);
+      expect(immediateTicks).toBeGreaterThanOrEqual(8);
+      console.log('session-index-10k-scale', { sessions: 10_000, elapsedMs: Number(elapsedMs.toFixed(2)), statMetaCalls, immediateTicks, maxInFlight });
+    } finally {
+      pumping = false;
+    }
+  });
 });

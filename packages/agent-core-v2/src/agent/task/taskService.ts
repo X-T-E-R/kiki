@@ -592,9 +592,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private activeBackgroundTaskReminder(): string | undefined {
     if (!this.activeTaskReminderPending) return undefined;
     this.activeTaskReminderPending = false;
-    const tasks = this.list(true);
+    const cap = 100;
+    const tasks = this.list(true, cap + 1);
     if (tasks.length === 0) return undefined;
-    return `${ACTIVE_BACKGROUND_TASK_GUIDANCE}\n\n${formatTaskList(tasks, true)}`;
+    if (tasks.length <= cap) {
+      return `${ACTIVE_BACKGROUND_TASK_GUIDANCE}\n\n${formatTaskList(tasks, true)}`;
+    }
+    const total = this.count(true);
+    const omitted = Math.max(1, total - cap);
+    return `${ACTIVE_BACKGROUND_TASK_GUIDANCE}\n\n${formatTaskList(tasks.slice(0, cap), true)}\n... (${omitted} more active background tasks omitted)`;
   }
 
   private restoreGhostsFromWire(): void {
@@ -1007,6 +1013,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
     return result;
+  }
+
+  count(activeOnly = true): number {
+    let total = 0;
+    for (const taskId of activeOnly ? this.tasks.keys() : this.localTaskIds) {
+      const info = this.getTask(taskId);
+      if (info !== undefined && shouldListTask(info, activeOnly)) total++;
+    }
+    if (!activeOnly) {
+      for (const ghost of this.ghosts.values()) {
+        if (this.localTaskIds.has(ghost.taskId)) continue;
+        if (shouldListTask(ghost, false)) total++;
+      }
+    }
+    return total;
   }
 
   hasWorkPreventingPausedExit(): boolean {

@@ -127,6 +127,7 @@ export interface IAgentTaskService {
   findPausedAgentTask(agentId: string, taskId?: string): Promise<AgentTaskInfo | undefined>;
   settlePausedAgentTask?(taskId: string, reason: string): Promise<AgentTaskInfo | undefined>;
   list(activeOnly?: boolean, limit?: number, offset?: number): readonly AgentTaskInfo[];
+  count?(activeOnly?: boolean): number;
   hasUnfinishedWork(includeRestoration?: boolean): boolean;
   hasWorkPreventingPausedExit?(): boolean;
   checkpointExecutionWait(taskId: string): Promise<void>;

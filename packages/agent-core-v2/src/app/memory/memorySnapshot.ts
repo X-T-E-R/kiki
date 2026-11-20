@@ -180,7 +180,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       await store.prepare?.();
       if (this.agent.agentId !== 'main' && store.snapshot === undefined) return [];
       const scopes = this.readScopes();
-      const entries = store.snapshot === undefined ? (await Promise.all(scopes.map((scope) => store.list(scope)))).flat() : (await store.snapshot(scopes)).entries;
+      const entries = store.snapshot === undefined ? (await Promise.all(scopes.map((scope) => store.list(scope)))).flat() : (await store.snapshot(scopes, { statuses: ['active'] })).entries;
       return entries.filter((entry) => entry.status === 'active' && entry.source.session === this.session.sessionId)
         .sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 20);
     } catch { return []; }
@@ -312,7 +312,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     }
     if (store.snapshot !== undefined) {
       const scopes = this.readScopes();
-      const view = await store.snapshot(scopes);
+      const view = await store.snapshot(scopes, { statuses: ['active'] });
       const advice = settings.advisor?.mode === 'off' || (settings.advisor?.source === undefined && settings.advisor?.selector === undefined) ? undefined : this.advice;
       const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget), Date.now(), advice);
       const previous = this.projectionView;

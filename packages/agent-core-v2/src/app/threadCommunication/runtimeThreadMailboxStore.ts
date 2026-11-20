@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as yieldToEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { abortable } from '#/_base/utils/abort';
 
 import type { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
@@ -1027,16 +1027,28 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       return this.scanDeliveryHead(db, partition, target, meta.nextMessageSeq, fallbackMinSeq);
     }
     let seq = startSeq;
-    let steps = 0;
-    while (seq < meta.nextMessageSeq && steps < DELIVERY_HEAD_REPAIR_STEP_LIMIT) {
-      const key = targetMessageKey(partition, seq);
-      const message = asMessage(await db.partitionGet(partition, key));
-      if (message !== undefined) {
-        assertThreadIdentity(message.message.target, target, key);
-        if (!isTerminalState(message.state)) return { seq, key, message };
+    const firstKey = targetMessageKey(partition, seq);
+    const firstMessage = asMessage(await db.partitionGet(partition, firstKey));
+    if (firstMessage !== undefined) {
+      assertThreadIdentity(firstMessage.message.target, target, firstKey);
+      if (!isTerminalState(firstMessage.state)) return { seq, key: firstKey, message: firstMessage };
+    }
+    seq++;
+    const batchEnd = Math.min(meta.nextMessageSeq, startSeq + DELIVERY_HEAD_REPAIR_STEP_LIMIT);
+    if (seq < batchEnd) {
+      const keys: string[] = [];
+      for (let cursor = seq; cursor < batchEnd; cursor++) keys.push(targetMessageKey(partition, cursor));
+      const values = await db.partitionMget(partition, keys);
+      for (let index = 0; index < values.length; index++) {
+        const currentSeq = seq + index;
+        const key = keys[index]!;
+        const message = asMessage(values[index]);
+        if (message !== undefined) {
+          assertThreadIdentity(message.message.target, target, key);
+          if (!isTerminalState(message.state)) return { seq: currentSeq, key, message };
+        }
       }
-      seq++;
-      steps++;
+      seq = batchEnd;
     }
     if (seq >= meta.nextMessageSeq) return { seq: meta.nextMessageSeq };
     return this.scanDeliveryHead(db, partition, target, meta.nextMessageSeq, fallbackMinSeq);
@@ -1105,17 +1117,41 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     let cancelled = 0;
     let metaAfter: string | undefined;
     for (;;) {
+      throwIfAborted(ctx.signal);
       const metas = await db.page('t/', metaAfter, 128, 'target_meta', ctx.signal);
+      const idleEntries: Array<{ readonly meta: TargetMetaDoc; readonly partition: string; readonly checkpointKey: string }> = [];
+      const activeEntries: Array<{ readonly meta: TargetMetaDoc; readonly partition: string }> = [];
       for (const entry of metas) {
         const meta = asTargetMeta(entry.value);
         if (meta === undefined) continue;
         const partition = targetPartition(meta.target);
+        if (meta.pendingCount === 0) {
+          idleEntries.push({ meta, partition, checkpointKey: requestReceiptKey(partition, method, ctx) });
+        } else {
+          activeEntries.push({ meta, partition });
+        }
+      }
+      if (idleEntries.length > 0) {
+        const checkpoints = await db.partitionMget(SYSTEM_PARTITION, idleEntries.map((item) => item.checkpointKey));
+        for (let index = 0; index < idleEntries.length; index++) {
+          const item = idleEntries[index]!;
+          const checkpoint = readReceipt(checkpoints[index], item.checkpointKey, method, ctx, input)?.result as
+            { readonly after?: string; readonly cancelled: number; readonly complete: boolean } | undefined;
+          if (checkpoint?.complete === true) {
+            cancelled += checkpoint.cancelled;
+          } else if (checkpoint !== undefined) {
+            activeEntries.push({ meta: item.meta, partition: item.partition });
+          }
+        }
+      }
+      for (const { meta, partition } of activeEntries) {
         cancelled += await this.withPartition(partition, ctx, async () => {
           const checkpointKey = requestReceiptKey(partition, method, ctx);
           const checkpoint = readReceipt(await db.partitionGet(partition, checkpointKey), checkpointKey, method, ctx, input)?.result as
             { readonly after?: string; readonly cancelled: number; readonly complete: boolean } | undefined;
           if (checkpoint?.complete === true) return checkpoint.cancelled;
-          let after = checkpoint?.after;
+          const deliverableSeq = finitePositiveInteger(meta.nextDeliverableSeq) ?? 1;
+          let after = checkpoint?.after ?? (deliverableSeq > 1 ? targetMessageKey(partition, deliverableSeq - 1) : undefined);
           let partitionCancelled = checkpoint?.cancelled ?? 0;
           const prefix = targetMessagePrefix(partition);
           const upper = targetMessageKey(partition, meta.nextMessageSeq);
@@ -1156,6 +1192,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       }
       if (metas.length < 128) break;
       metaAfter = metas.at(-1)!.key;
+      await yieldToEventLoop();
     }
     throwIfAborted(ctx.signal);
     this.assertOwnerContext(ctx);
@@ -1237,9 +1274,19 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       }
       const start = Math.max(input.afterSeq + 1, meta.minActivitySeq);
       const activities: StoredThreadActivity[] = [];
-      for (let seq = start; seq < meta.nextActivitySeq && activities.length < input.limit; seq++) {
-        const entry = asActivity(await db.partitionGet(partition, targetActivityKey(partition, seq)));
-        if (entry !== undefined) activities.push(entry.activity);
+      let seq = start;
+      while (seq < meta.nextActivitySeq && activities.length < input.limit) {
+        const batchSize = Math.min(input.limit - activities.length, meta.nextActivitySeq - seq, 64);
+        const keys: string[] = [];
+        for (let offset = 0; offset < batchSize; offset++) {
+          keys.push(targetActivityKey(partition, seq + offset));
+        }
+        const values = await db.partitionMget(partition, keys);
+        for (const value of values) {
+          const entry = asActivity(value);
+          if (entry !== undefined) activities.push(entry.activity);
+        }
+        seq += batchSize;
       }
       return { epoch: meta.activityEpoch, latestSeq: meta.nextActivitySeq - 1, activities };
     });

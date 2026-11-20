@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { join } from 'pathe';
 
 import { BugIndicatingError } from '#/errors';
@@ -13,6 +14,16 @@ const VALID_TASK_ID: RegExp = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
 const TASKS_SCOPE = 'tasks';
 const OUTPUT_LOG_KEY = 'output.log';
 const JSON_SUFFIX = '.json';
+const DEFAULT_LIST_CONCURRENCY = 16;
+const LIST_CONCURRENCY_ENV = 'KIKI_TASK_PERSIST_READ_CONCURRENCY';
+const LIST_YIELD_EVERY = 64;
+
+function resolveListConcurrency(): number {
+  const raw = process.env[LIST_CONCURRENCY_ENV];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_LIST_CONCURRENCY;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 128 ? parsed : DEFAULT_LIST_CONCURRENCY;
+}
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -305,23 +316,43 @@ export class AgentTaskPersistence {
   }> {
     const keys = (await this.docs.list(this.tasksScope(root))).toSorted();
     const reservedIds = new Set<string>();
-    const tasks: ListedTask[] = [];
+    const validEntries: Array<{ readonly id: string; readonly key: string }> = [];
     for (const key of keys) {
       if (!key.endsWith(JSON_SUFFIX)) continue;
       const id = key.slice(0, -JSON_SUFFIX.length);
       if (!VALID_TASK_ID.test(id)) continue;
       reservedIds.add(id);
-      let task: DiskPersistedTask | undefined;
-      try {
-        task = await this.docs.get<DiskPersistedTask>(this.tasksScope(root), key);
-      } catch {
-        continue;
-      }
-      if (task === undefined || !isReadablePersistedTask(task)) continue;
-      const info = normalizePersistedTask(task);
-      if (filter?.(info) === false) continue;
-      tasks.push({ keyId: id, task: await this.verifyReceipt(info, root) });
+      validEntries.push({ id, key });
     }
+    if (validEntries.length === 0) return { reservedIds, tasks: [] };
+    const scope = this.tasksScope(root);
+    const resolved = new Array<ListedTask | undefined>(validEntries.length);
+    let cursor = 0;
+    let completed = 0;
+    const workerCount = Math.min(resolveListConcurrency(), validEntries.length);
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (cursor < validEntries.length) {
+          const index = cursor++;
+          const { id, key } = validEntries[index]!;
+          let task: DiskPersistedTask | undefined;
+          try {
+            task = await this.docs.get<DiskPersistedTask>(scope, key);
+          } catch {
+            task = undefined;
+          }
+          if (task !== undefined && isReadablePersistedTask(task)) {
+            const info = normalizePersistedTask(task);
+            if (filter?.(info) !== false) {
+              resolved[index] = { keyId: id, task: await this.verifyReceipt(info, root) };
+            }
+          }
+          completed++;
+          if (completed % LIST_YIELD_EVERY === 0) await yieldToEventLoop();
+        }
+      }),
+    );
+    const tasks = resolved.filter((entry): entry is ListedTask => entry !== undefined);
     return { reservedIds, tasks };
   }
 

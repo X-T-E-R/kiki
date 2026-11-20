@@ -36,7 +36,7 @@ import {
 } from './sessionIndexSource';
 
 const WRITE_CHUNK = 500;
-const SCAN_CONCURRENCY = 16;
+const DEFAULT_SCAN_CONCURRENCY = 16;
 const SUMMARY_READ_CONCURRENCY = 8;
 const LARGE_METADATA_BYTES = 524_288;
 const SHARED_SCAN_REUSE_MS = 30_000;
@@ -44,6 +44,12 @@ const FINGERPRINT_REUSE_MS = 30 * 60_000;
 const COOPERATIVE_YIELD_BUDGET_MS = 12;
 const COOPERATIVE_SCAN_ITEMS = 16;
 const scheduleImmediate = setImmediate;
+
+function resolveScanConcurrency(): number {
+  const raw = Number(process.env['KIKI_SESSION_INDEX_SCAN_CONCURRENCY']);
+  if (Number.isInteger(raw) && raw >= 1 && raw <= 128) return raw;
+  return DEFAULT_SCAN_CONCURRENCY;
+}
 
 function monotonicMs(): number {
   return Number(process.hrtime.bigint()) / 1_000_000;
@@ -374,7 +380,7 @@ export class SessionIndexProjector {
       const previousFingerprints = await queryStore.getMany<SessionSourceFingerprint>(sources, candidates);
       let fingerprintedCount = 0;
       const fingerprintBySession = new Map<string, SessionSourceFingerprint>();
-      const fingerprintEntries = await mapBounded(candidates, SCAN_CONCURRENCY, async (sessionId) => {
+      const fingerprintEntries = await mapBounded(candidates, resolveScanConcurrency(), async (sessionId) => {
         const key = `${workspaceId}/${sessionId}`;
         const cached = this.fingerprintCache.get(key);
         const reusable = options?.reuseFingerprints === true &&
@@ -652,7 +658,7 @@ export class SessionIndexProjector {
       const sessionIds = [
         ...await listSessionIds(storage, sessionsScope, workspaceId, log),
       ].toSorted();
-      const fingerprinted = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
+      const fingerprinted = await mapBounded(sessionIds, resolveScanConcurrency(), async (sessionId) => {
         const fingerprint = await sessionStateFingerprint(
           storage,
           sessionsScope,

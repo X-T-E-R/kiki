@@ -25,10 +25,12 @@ import { ISessionActivityView, type SessionActivityState } from '#/session/sessi
 class MemoryDocuments implements IAtomicDocumentStore {
   readonly _serviceBrand = undefined;
   private readonly values = new Map<string, unknown>();
+  readonly reads: string[] = [];
 
   constructor(private readonly flatListing = false) {}
 
   async get<T>(scope: string, key: string): Promise<T | undefined> {
+    this.reads.push(`${scope}/${key}`);
     return this.values.get(`${scope}\0${key}`) as T | undefined;
   }
 
@@ -144,6 +146,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false, personaRe
   legacyReads(): number;
   botEnabled(): boolean;
   seedRoom(room: RoomDocument): Promise<void>;
+  readonly documents: MemoryDocuments;
   room: Promise<RoomDocument>;
 } {
   const documents = new MemoryDocuments(flatListing);
@@ -302,6 +305,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false, personaRe
     legacyReads: () => logs.reads,
     botEnabled: () => enabled,
     seedRoom: (value) => documents.set(`rooms/${value.id}`, 'room.json', value),
+    documents,
     release: (messageId) => {
       const waiter = waiters.get(messageId);
       if (waiter === undefined) released.add(messageId);
@@ -1009,5 +1013,79 @@ describe('RoomService', () => {
     release(calls[0]!.id);
     await service.continue(room.id);
     expect((await service.get(room.id))?.budgetUsed).toBe(0);
+  });
+
+  it('reads the newest 50 entries from a 50,000-message room in O(page) segments and serves warm afterId via LRU cache', async () => {
+    const { service, documents, room: roomPromise } = setup();
+    const room = await roomPromise;
+    const scope = `rooms/${room.id}`;
+    const total = 50_000;
+    const segmentSize = 64;
+    const totalSegments = Math.ceil(total / segmentSize);
+    for (let seg = 0; seg < totalSegments; seg++) {
+      const startSeq = seg * segmentSize + 1;
+      const endSeq = Math.min(total, startSeq + segmentSize - 1);
+      const entries = [];
+      for (let seq = startSeq; seq <= endSeq; seq++) {
+        entries.push({
+          seq,
+          activitySeq: seq,
+          entry: {
+            id: `m-${seq}`,
+            at: '2026-01-01T00:00:00Z',
+            kind: 'message',
+            from: 'user',
+            text: `message ${seq}`,
+            mentions: [],
+          },
+        });
+      }
+      await documents.set(scope, `log-segments/${seg.toString().padStart(8, '0')}.json`, { entries });
+    }
+    await documents.set(scope, 'log-state.json', {
+      version: 1,
+      nextSeq: total + 1,
+      userMessages: total,
+      botMessages: 0,
+      activitySeq: total,
+      updatedAt: '2026-01-01T00:00:00Z',
+    });
+    await documents.set(scope, `log-pointers/${encodeURIComponent('m-49950')}.json`, { seq: 49_950 });
+
+    documents.reads.length = 0;
+    const tailStart = performance.now();
+    const tailPage = await service.log(room.id, { tail: true, limit: 50 });
+    const tailMs = performance.now() - tailStart;
+    const tailSegmentReads = documents.reads.filter((path) => path.includes('/log-segments/')).length;
+    expect(tailPage.entries).toHaveLength(50);
+    expect(tailPage.entries[0]!.id).toBe('m-49951');
+    expect(tailPage.entries[49]!.id).toBe('m-50000');
+    expect(tailPage.lastSeq).toBe(50_000);
+    expect(tailPage.nextCursor).toBeUndefined();
+    expect(tailSegmentReads).toBeLessThanOrEqual(2);
+    expect(tailMs).toBeLessThan(25);
+
+    documents.reads.length = 0;
+    const afterCold = await service.log(room.id, { afterId: 'm-49950', limit: 50 });
+    expect(afterCold.entries).toHaveLength(50);
+    expect(afterCold.entries[0]!.id).toBe('m-49951');
+    expect(afterCold.entries[49]!.id).toBe('m-50000');
+
+    documents.reads.length = 0;
+    const afterWarmStart = performance.now();
+    const afterWarm = await service.log(room.id, { afterId: 'm-49950', limit: 50 });
+    const afterWarmMs = performance.now() - afterWarmStart;
+    const warmPointerReads = documents.reads.filter((path) => path.includes('/log-pointers/')).length;
+    expect(afterWarm.entries).toHaveLength(50);
+    expect(afterWarm.entries[0]!.id).toBe('m-49951');
+    expect(warmPointerReads).toBe(0);
+    expect(afterWarmMs).toBeLessThan(25);
+    console.log('room-50k-scale', {
+      total,
+      tailMs: Number(tailMs.toFixed(2)),
+      tailSegmentReads,
+      afterWarmMs: Number(afterWarmMs.toFixed(2)),
+      warmPointerReads,
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   IAgentLifecycleService, IAgentTaskService, IAtomicDocumentStore,
   IFileSystemStorageService, ISessionContext, ISessionMetadata,
@@ -6,7 +7,7 @@ import {
   type AgentTaskInfo, type Scope, type SessionSummary,
 } from '@kiki/agent-core-v2';
 import {
-  agentTaskSummarySchema, agentTasksFailureSchema, taskReceiptSchema, agentRunSourceSchema,
+  agentTaskSummarySchema, taskReceiptSchema, agentRunSourceSchema,
   type AgentTaskSummary, type AgentTasksFailure, type ListAgentTasksQuery,
   type ListAgentTasksResponse,
 } from '@kiki/protocol';
@@ -14,12 +15,30 @@ import { z } from 'zod';
 
 const taskIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
 const safeSegment = (value: string): boolean => value !== '.' && value !== '..' && !/[/\\\0]/.test(value) && value.length > 0;
+const DEFAULT_TASK_READ_CONCURRENCY = 16;
+const TASK_READ_CONCURRENCY_ENV = 'KIKI_AGENT_TASKS_READ_CONCURRENCY';
+const MAX_CURSOR_STATES = 1024;
+const YIELD_EVERY = 64;
+
+function resolveTaskReadConcurrency(): number {
+  const raw = process.env[TASK_READ_CONCURRENCY_ENV];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_TASK_READ_CONCURRENCY;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 128 ? parsed : DEFAULT_TASK_READ_CONCURRENCY;
+}
+
+interface CursorFailureState {
+  readonly failures: readonly AgentTasksFailure[];
+  readonly failed: readonly string[];
+}
+
 const cursorKeys = new WeakMap<Scope, Buffer>();
+const cursorStates = new WeakMap<Scope, Map<string, CursorFailureState>>();
 const cursorSchema = z.object({
   version: z.literal(1), session: z.string(), scope: z.string(), inventory: z.string(),
   owner: z.number().int().nonnegative(), offset: z.number().int().nonnegative(),
   prefix: z.string().optional(), started_at: z.string().datetime(),
-  failures: z.array(agentTasksFailureSchema), failed: z.array(z.string()),
+  state_id: z.string().min(1).max(64).optional(),
 });
 type Cursor = z.infer<typeof cursorSchema>;
 
@@ -33,6 +52,42 @@ function cursorKey(core: Scope): Buffer {
   let key = cursorKeys.get(core);
   if (key === undefined) { key = randomBytes(32); cursorKeys.set(core, key); }
   return key;
+}
+
+function cursorStateStore(core: Scope): Map<string, CursorFailureState> {
+  let store = cursorStates.get(core);
+  if (store === undefined) {
+    store = new Map();
+    cursorStates.set(core, store);
+  }
+  return store;
+}
+
+function saveCursorState(core: Scope, state: CursorFailureState): string | undefined {
+  if (state.failures.length === 0 && state.failed.length === 0) return undefined;
+  const store = cursorStateStore(core);
+  const stateId = randomBytes(16).toString('hex');
+  if (store.size >= MAX_CURSOR_STATES) {
+    const oldest = store.keys().next().value;
+    if (oldest !== undefined) store.delete(oldest);
+  }
+  store.set(stateId, {
+    failures: [...state.failures],
+    failed: [...state.failed],
+  });
+  return stateId;
+}
+
+function loadCursorState(core: Scope, stateId: string | undefined): CursorFailureState {
+  if (stateId === undefined) return { failures: [], failed: [] };
+  const store = cursorStateStore(core);
+  const saved = store.get(stateId);
+  if (saved === undefined) {
+    throw new AgentTasksPageTokenError('Invalid or expired agent-tasks page_token; restart pagination');
+  }
+  store.delete(stateId);
+  store.set(stateId, saved);
+  return saved;
 }
 
 function encodeCursor(core: Scope, cursor: Cursor): string {
@@ -49,6 +104,29 @@ function decodeCursor(core: Scope, token: string): Cursor {
     if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) throw new Error('Invalid page token');
     return cursorSchema.parse(JSON.parse(Buffer.from(body, 'base64url').toString('utf8')));
   } catch { throw new AgentTasksPageTokenError('Invalid or expired agent-tasks page_token; restart pagination'); }
+}
+
+async function mapBounded<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  let completed = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await fn(items[index]!);
+        completed++;
+        if (completed % YIELD_EVERY === 0) await yieldToEventLoop();
+      }
+    }),
+  );
+  return results;
 }
 
 const storedBaseSchema = z.object({
@@ -160,26 +238,42 @@ export async function readSessionAgentTasks(core: Scope, summary: SessionSummary
   const inventory = digest(owners.map((id) => [id, live.has(id)]));
   const cursor: Cursor = query.page_token === undefined ? {
     version: 1, session: summary.id, scope, inventory, owner: 0, offset: 0,
-    started_at: new Date().toISOString(), failures: [], failed: [],
+    started_at: new Date().toISOString(),
   } : decodeCursor(core, query.page_token);
   if (cursor.session !== summary.id || cursor.scope !== scope || cursor.inventory !== inventory || cursor.owner > owners.length) {
     throw new AgentTasksPageTokenError('Agent owner inventory changed or page_token belongs to another session; restart pagination');
   }
-  cursor.failures = [...cursor.failures, ...failures.filter((f) => !cursor.failures.some((old) => JSON.stringify(old) === JSON.stringify(f)))];
+  const priorState = loadCursorState(core, cursor.state_id);
+  const allFailures: AgentTasksFailure[] = [...priorState.failures];
+  const failureKeys = new Set(allFailures.map((failure) => JSON.stringify(failure)));
+  for (const failure of failures) {
+    const key = JSON.stringify(failure);
+    if (!failureKeys.has(key)) {
+      failureKeys.add(key);
+      allFailures.push(failure);
+    }
+  }
   const items: AgentTaskSummary[] = [];
   const pageSize = query.page_size ?? 100;
+  const readConcurrency = resolveTaskReadConcurrency();
   let reads = 0;
   let visits = 0;
-  const failed = new Set(cursor.failed);
+  const failed = new Set(priorState.failed);
   while (cursor.owner < owners.length && reads < pageSize && visits < pageSize) {
     const ownerId = owners[cursor.owner]!;
     visits++;
+    if (visits % YIELD_EVERY === 0) await yieldToEventLoop();
     const handle = live.get(ownerId);
     const source = handle === undefined ? 'persisted' : 'live';
     const fail = (stage: 'owner' | 'task_metadata', message: string, taskId?: string): void => {
       if (failed.has(ownerId)) return;
       failed.add(ownerId);
-      cursor.failures.push({ owner_agent_id: ownerId, task_id: taskId, stage, message });
+      const failure: AgentTasksFailure = { owner_agent_id: ownerId, task_id: taskId, stage, message };
+      const key = JSON.stringify(failure);
+      if (!failureKeys.has(key)) {
+        failureKeys.add(key);
+        allFailures.push(failure);
+      }
     };
     try {
       const remaining = pageSize - reads;
@@ -194,27 +288,53 @@ export async function readSessionAgentTasks(core: Scope, summary: SessionSummary
         prefix = digest(tasks.slice(0, remaining).slice(-1).map((task) => task.taskId));
       } else {
         const primary = `${agentScopeOf(scope, ownerId)}/tasks`;
-        const keys = (await docs.list(primary)).filter((key) => key.endsWith('.json'));
-        const entries = new Map(keys.map((key) => [key, primary]));
+        const [primaryKeys, legacyKeys] = ownerId === 'main'
+          ? await Promise.all([docs.list(primary), docs.list(`${scope}/tasks`)])
+          : [await docs.list(primary), [] as readonly string[]];
+        const entries = new Map<string, string>();
+        for (const key of primaryKeys) {
+          if (key.endsWith('.json')) entries.set(key, primary);
+        }
         if (ownerId === 'main') {
-          for (const key of await docs.list(`${scope}/tasks`)) {
+          for (const key of legacyKeys) {
             if (key.endsWith('.json') && !entries.has(key)) entries.set(key, `${scope}/tasks`);
           }
         }
         const sorted = [...entries.keys()].toSorted();
-        const previous = digest(sorted.slice(0, cursor.offset));
-        if (cursor.prefix !== undefined && previous !== cursor.prefix) throw new AgentTasksPageTokenError('Task inventory changed; restart pagination');
+        if (cursor.prefix !== undefined && cursor.offset > sorted.length) {
+          throw new AgentTasksPageTokenError('Task inventory changed; restart pagination');
+        }
+        const prefixHash = createHash('sha256');
+        for (let index = 0; index < cursor.offset && index < sorted.length; index++) {
+          prefixHash.update(sorted[index]!).update('\0');
+        }
+        const previous = prefixHash.copy().digest('hex');
+        if (cursor.prefix !== undefined && previous !== cursor.prefix) {
+          throw new AgentTasksPageTokenError('Task inventory changed; restart pagination');
+        }
         rows = sorted.slice(cursor.offset, cursor.offset + remaining + 1).map((key) => ({ id: key.slice(0, -5), read: () => docs.get(entries.get(key)!, key) }));
-        prefix = digest(sorted.slice(0, cursor.offset + Math.min(rows.length, remaining)));
+        const nextEnd = Math.min(sorted.length, cursor.offset + Math.min(rows.length, remaining));
+        for (let index = cursor.offset; index < nextEnd; index++) {
+          prefixHash.update(sorted[index]!).update('\0');
+        }
+        prefix = prefixHash.digest('hex');
       }
       const batch = rows.slice(0, remaining);
-      for (const row of batch) {
-        reads++;
+      const resolved = await mapBounded(batch, readConcurrency, async (row) => {
         try {
-          const info = storedTask(await row.read(), row.id);
-          if (info.ownerAgentId !== undefined && info.ownerAgentId !== ownerId) continue;
-          items.push(toSummary(summary.id, ownerId, source, info));
-        } catch { fail('task_metadata', 'Unable to read valid task metadata', row.id); }
+          return { ok: true as const, id: row.id, info: storedTask(await row.read(), row.id) };
+        } catch {
+          return { ok: false as const, id: row.id };
+        }
+      });
+      reads += batch.length;
+      for (const entry of resolved) {
+        if (!entry.ok) {
+          fail('task_metadata', 'Unable to read valid task metadata', entry.id);
+          continue;
+        }
+        if (entry.info.ownerAgentId !== undefined && entry.info.ownerAgentId !== ownerId) continue;
+        items.push(toSummary(summary.id, ownerId, source, entry.info));
       }
       if (rows.length > remaining) { cursor.offset += batch.length; cursor.prefix = prefix; break; }
     } catch (error) {
@@ -225,12 +345,14 @@ export async function readSessionAgentTasks(core: Scope, summary: SessionSummary
     cursor.offset = 0;
     cursor.prefix = undefined;
   }
-  cursor.failed = [...failed];
   const hasMore = cursor.owner < owners.length;
+  const nextCursor: Cursor = hasMore
+    ? { ...cursor, state_id: saveCursorState(core, { failures: allFailures, failed: [...failed] }) }
+    : cursor;
   const failedCount = failed.size;
   const completed = cursor.owner - owners.slice(0, cursor.owner).filter((id) => failed.has(id)).length;
   const pending = owners.length - completed - failedCount;
-  inventoryComplete = inventoryComplete && !cursor.failures.some((failure) => failure.stage === 'inventory');
+  inventoryComplete = inventoryComplete && !allFailures.some((failure) => failure.stage === 'inventory');
   const partial = !inventoryComplete || failedCount > 0;
   return {
     items,
@@ -238,8 +360,8 @@ export async function readSessionAgentTasks(core: Scope, summary: SessionSummary
       state: failed.has(id) ? 'failed' : index < cursor.owner ? 'complete' : 'pending' })),
     coverage: { total_owners: owners.length, completed_owners: completed, failed_owners: failedCount,
       pending_owners: pending, inventory_complete: inventoryComplete, complete: !hasMore && !partial,
-      failures: cursor.failures },
-    has_more: hasMore, next_page_token: hasMore ? encodeCursor(core, cursor) : undefined,
+      failures: allFailures },
+    has_more: hasMore, next_page_token: hasMore ? encodeCursor(core, nextCursor) : undefined,
     partial, consistency: 'incremental', started_at: cursor.started_at, observed_at: new Date().toISOString(),
   };
 }
