@@ -38,6 +38,7 @@ import { defaultRangeExtractor, elementScroll, useVirtualizer, type Virtualizer 
 import { useStickToBottom } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer, SessionSeedMode } from '@kiki/protocol';
+import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
 import type { TimelineOffshootItem } from './fork/forkLineageModel';
 import { TimelineOffshootRail } from './fork/TimelineOffshootRail';
 
@@ -2041,9 +2042,9 @@ function SubagentCompactCard({
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
       glyph={<span className={`inline-block h-2 w-2 rounded-full align-middle ${subagentStatusTone(status)}`} />}
       tone={error !== undefined ? 'danger' : 'plain'}
-      label={block.name}
+      label={block.name || block.label || block.subagentId}
       detail={detail}
-      title={error ?? t('subagent.openAgent', { name: block.name })}
+      title={error ?? t('subagent.openAgent', { name: block.name || block.label || block.subagentId })}
       onOpen={() => { onOpenAgent?.(block.subagentId); }}
       stats={toolCalls.known && !folded ? <span className="font-sans">{tp('transcript.toolCalls', toolCalls.count)}</span> : undefined}
       meta={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
@@ -2103,14 +2104,18 @@ function OtherDescendantGroup({
   members: readonly AgentTreeNode[];
   renderMember: (member: AgentTreeNode) => ReactNode;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
   const { open, toggle } = useDispatchGroup(groupKey);
+  const batchLimit = getSubagentScaleConfig().inlineBatchPreviewLimit;
+  const [visibleLimit, setVisibleLimit] = useState(batchLimit);
   const counts = countFoldedDescendants(members);
   const summary = [
     tp('subagent.otherGroupCount', counts.total),
     counts.running > 0 ? t('subagent.otherGroupRunning', { count: counts.running }) : null,
     counts.failed > 0 ? t('subagent.otherGroupFailed', { count: counts.failed }) : null,
   ].filter((part): part is string => part !== null).join(' · ');
+  const shownMembers = open && members.length > visibleLimit ? members.slice(0, visibleLimit) : members;
+  const remaining = members.length - shownMembers.length;
   return (
     <ActivityRow
       nested
@@ -2130,7 +2135,16 @@ function OtherDescendantGroup({
     >
       {open ? (
         <div className="space-y-1">
-          {members.map((member) => renderMember(member))}
+          {shownMembers.map((member) => renderMember(member))}
+          {remaining > 0 ? (
+            <button
+              type="button"
+              onClick={() => { setVisibleLimit((limit) => limit + batchLimit); }}
+              className="cursor-pointer rounded px-1.5 py-0.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+            >
+              {locale === 'zh' ? `显示更多（剩余 ${remaining} 项）` : `Show more (${remaining} remaining)`}
+            </button>
+          ) : null}
         </div>
       ) : undefined}
     </ActivityRow>
@@ -2156,7 +2170,9 @@ const SubagentCard = memo(function SubagentCard({
   formOverride?: SubagentCardForm;
   onToggleForm?: (agentId: string, form: SubagentCardForm) => void;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
+  const batchLimit = getSubagentScaleConfig().inlineBatchPreviewLimit;
+  const [childrenVisibleLimit, setChildrenVisibleLimit] = useState(batchLimit);
   const node = forest?.byId[block.subagentId];
   const children = forest === undefined ? [] : agentChildren(forest, block.subagentId);
   const latestCard = childBlocks?.get(block.subagentId);
@@ -2257,7 +2273,7 @@ const SubagentCard = memo(function SubagentCard({
     : 'anim-enter group -ml-[17px] flex w-[calc(100%+25px)] items-start gap-1 rounded-md py-1.5 pl-[17px] pr-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04]';
   const body = (
     <SubagentCardBody
-      name={block.name}
+      name={block.name || block.label || block.subagentId}
       model={model}
       status={status}
       toolCallCount={toolCalls.count}
@@ -2366,7 +2382,18 @@ const SubagentCard = memo(function SubagentCard({
                     other one folds into one line, including any this view cannot
                     place. Folding is a default, not a deletion and not a claim
                     about age — the reader opens it and finds the same subtree. */}
-                {descendantGroups.current.map((child) => renderChildCard(child))}
+                {descendantGroups.current.slice(0, childrenVisibleLimit).map((child) => renderChildCard(child))}
+                {descendantGroups.current.length > childrenVisibleLimit ? (
+                  <button
+                    type="button"
+                    onClick={() => { setChildrenVisibleLimit((limit) => limit + batchLimit); }}
+                    className="cursor-pointer rounded px-1.5 py-0.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+                  >
+                    {locale === 'zh'
+                      ? `显示更多（剩余 ${descendantGroups.current.length - childrenVisibleLimit} 项）`
+                      : `Show more (${descendantGroups.current.length - childrenVisibleLimit} remaining)`}
+                  </button>
+                ) : null}
                 {descendantGroups.other.length > 0 ? (
                   <OtherDescendantGroup
                     groupKey={dispatchGroupKey}
@@ -3038,7 +3065,9 @@ function HistoryFoldRow({
   onToggle: (id: string) => void;
   renderMember: (member: RenderNode) => ReactNode;
 }) {
-  const { t, tp, time } = useI18n();
+  const { t, tp, time, locale } = useI18n();
+  const batchLimit = getSubagentScaleConfig().inlineBatchPreviewLimit;
+  const [visibleLimit, setVisibleLimit] = useState(batchLimit);
   const sentParts = (fold.sentMessages ?? []).map((item) =>
     t('transcript.fold.sentTo', { name: item.name, count: item.count }),
   );
@@ -3093,11 +3122,24 @@ function HistoryFoldRow({
     >
       {expanded ? (
         <div data-history-fold-members className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
-          {fold.members.map((member) => (
+          {(fold.members.length > visibleLimit ? fold.members.slice(0, visibleLimit) : fold.members).map((member) => (
             <div key={member.id} data-block-id={member.id} data-fold-member>
               {renderMember(member)}
             </div>
           ))}
+          {fold.members.length > visibleLimit ? (
+            <div data-history-fold-more className="py-1 pl-1">
+              <button
+                type="button"
+                onClick={() => { setVisibleLimit((limit) => limit + batchLimit); }}
+                className="cursor-pointer rounded px-1.5 py-0.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+              >
+                {locale === 'zh'
+                  ? `显示更多（剩余 ${fold.members.length - visibleLimit} 项）`
+                  : `Show more (${fold.members.length - visibleLimit} remaining)`}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : undefined}
     </ActivityRow>
@@ -3704,22 +3746,27 @@ function sameTurn(left: string | undefined, right: string | undefined): boolean 
  * "latest equal value" pattern; safe here because the transcript subtree is
  * never rendered concurrently with a conflicting cache writer.)
  */
-function useStableMap<K, V>(build: () => Map<K, V>): ReadonlyMap<K, V> {
+const EMPTY_SENDER_IDENTITIES: ReadonlyMap<string, SenderIdentity> = new Map();
+
+function useStableMap<K, V>(build: () => Map<K, V>, deps: readonly unknown[]): ReadonlyMap<K, V> {
   const ref = useRef<ReadonlyMap<K, V> | null>(null);
-  const next = build();
-  const prev = ref.current;
-  if (prev !== null && prev.size === next.size) {
-    let identical = true;
-    for (const [key, value] of next) {
-      if (prev.get(key) !== value) {
-        identical = false;
-        break;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => {
+    const next = build();
+    const prev = ref.current;
+    if (prev !== null && prev.size === next.size) {
+      let identical = true;
+      for (const [key, value] of next) {
+        if (prev.get(key) !== value) {
+          identical = false;
+          break;
+        }
       }
+      if (identical) return prev;
     }
-    if (identical) return prev;
-  }
-  ref.current = next;
-  return next;
+    ref.current = next;
+    return next;
+  }, deps);
 }
 
 function annotationListsEqual(
@@ -5480,37 +5527,57 @@ export const Transcript = memo(function Transcript({
       }
     }
     return map;
-  });
+  }, [blocks]);
   const agentNames = useStableMap(() => {
     const map = new Map<string, string>();
     for (const block of blocks) {
       if (block.kind === 'subagent') map.set(block.subagentId, block.name);
     }
     if (stableForest !== undefined) {
-      for (const node of Object.values(stableForest.byId)) {
-        if (!map.has(node.agentId)) map.set(node.agentId, node.label);
+      for (const key in stableForest.byId) {
+        const node = stableForest.byId[key];
+        if (node !== undefined && !map.has(node.agentId)) map.set(node.agentId, node.label);
       }
     }
     return map;
-  });
-  // Sender identities for injected bubbles: the roster (`snapshot.subagents`)
-  // is the one place the client holds an agent's role profile and model, and
-  // its array identity only changes when the roster itself does, so rows keep
-  // referentially stable props across ordinary deltas.
+  }, [blocks, stableForest]);
+  // Sender identities for injected bubbles: scan only the small set of sender
+  // IDs actually referenced by visible user blocks instead of iterating 10,000
+  // snapshotSubagents / agentNames on cold open.
+  const referencedSenderIds = useMemo(() => {
+    let ids: Set<string> | undefined;
+    for (const block of blocks) {
+      if (block.kind !== 'user') continue;
+      const senderId = block.agentMessage?.senderAgentId;
+      if (senderId !== undefined && senderId !== '') {
+        ids ??= new Set();
+        ids.add(senderId);
+      }
+      const branchId = block.branchFold?.branchId;
+      if (branchId !== undefined && branchId !== '') {
+        ids ??= new Set();
+        ids.add(branchId);
+      }
+    }
+    return ids;
+  }, [blocks]);
   const senderIdentities = useMemo(() => {
+    if (referencedSenderIds === undefined || referencedSenderIds.size === 0) return EMPTY_SENDER_IDENTITIES;
     const map = new Map<string, SenderIdentity>();
-    for (const [agentId, name] of agentNames) {
-      if (name !== agentId) map.set(agentId, { title: name });
+    for (const agentId of referencedSenderIds) {
+      const name = agentNames.get(agentId);
+      if (name !== undefined && name !== agentId) map.set(agentId, { title: name });
     }
     for (const row of state.snapshotSubagents) {
       const agentId = snapshotSubagentAgentId(row);
+      if (!referencedSenderIds.has(agentId)) continue;
       const profile = row.profile?.trim() || undefined;
       const model = row.model?.trim() || undefined;
       const title = row.label?.trim() || row.description?.trim() || map.get(agentId)?.title;
       map.set(agentId, { title, profile, model });
     }
     return map;
-  }, [state.snapshotSubagents, agentNames]);
+  }, [referencedSenderIds, state.snapshotSubagents, agentNames]);
   // The gallery's one ordering source: a block's place in the session's own
   // blocks. Built here (not from the display nodes) so a block keeps that
   // place inside a fold or a merged run, and stable across deltas that do not
@@ -5521,7 +5588,7 @@ export const Transcript = memo(function Transcript({
     const map = new Map<string, number>();
     state.blocks.forEach((block, index) => { if (!map.has(block.id)) map.set(block.id, index); });
     return map;
-  });
+  }, [state.blocks]);
   // y/n acts on the focused card, else the topmost visible pending card
   // (SessionView's resolver); every pending card advertises that shortcut.
   const hasUnresolvedApproval = useMemo(
@@ -5598,7 +5665,7 @@ export const Transcript = memo(function Transcript({
       if (execution !== undefined) map.set(nodeKey(node), execution);
     }
     return map;
-  });
+  }, [groupedNodes, state.turnExecutions]);
   // A blank transcript is only blank when the session has nothing left
   // unloaded: the snapshot's own structures count as pending reading here.
   const sessionRemainderPending = useSessionRemainderPending();

@@ -24,6 +24,8 @@
  */
 
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
+import type { SessionAgentCounts } from '@kiki/protocol';
+import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 
 export type RosterBucket = 'waiting' | 'running' | 'idle' | 'unknown' | 'ended';
 
@@ -73,7 +75,13 @@ export type RosterRow = RosterAgentRow | RosterGroupRow;
 export interface RosterModel {
   readonly counts: Readonly<Record<RosterBucket, number>>;
   readonly total: number;
+  /** Exact total including unhydrated server-side subagents when `agentCounts` is present. */
+  readonly displayTotal: number;
   readonly rows: readonly RosterRow[];
+  /** True when the visible settled/unknown slice is capped below the total count. */
+  readonly settledTruncated: boolean;
+  readonly settledShown: number;
+  readonly settledTotal: number;
 }
 
 export interface RosterInput {
@@ -92,6 +100,12 @@ export interface RosterInput {
   readonly unknownOpen?: boolean;
   /** The trailing "N finished" group is open. Independent of `unknownOpen`. */
   readonly doneOpen: boolean;
+  /** Optional server-side exact counts when the local forest is a bounded window. */
+  readonly agentCounts?: SessionAgentCounts;
+  /** Optional remote search hits (from `controller.searchSubagents`) merged by `agentId`. */
+  readonly extraNodes?: readonly AgentTreeNode[];
+  /** Override for bounded settled display cap (default: `getSubagentScaleConfig().settledRosterWindow`). */
+  readonly settledCap?: number;
 }
 
 import { isEphemeralBtwNode } from './InspectorBranches';
@@ -120,7 +134,7 @@ function childrenOf(forest: AgentForest, rootId: string): AgentTreeNode[] {
 
 function matches(node: AgentTreeNode, needle: string): boolean {
   if (needle === '') return true;
-  return [node.label, node.name, node.description, node.model, node.summary, node.error]
+  return [node.label, node.name, node.agentId, node.description, node.model, node.summary, node.error]
     .some((value) => value !== undefined && value.toLowerCase().includes(needle));
 }
 
@@ -131,35 +145,54 @@ function timeOf(iso: string | undefined): number {
 }
 
 export function buildRoster(input: RosterInput): RosterModel {
-  const { forest, rootId, waiting, expanded, filter, unknownOpen = false, doneOpen } = input;
+  const {
+    forest,
+    rootId,
+    waiting,
+    expanded,
+    filter,
+    unknownOpen = false,
+    doneOpen,
+    agentCounts,
+    extraNodes,
+    settledCap = getSubagentScaleConfig().settledRosterWindow,
+  } = input;
   const needle = input.query.trim().toLowerCase();
   const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, idle: 0, unknown: 0, ended: 0 };
   const bucketOf = new Map<string, RosterBucket>();
   const subtreeRank = new Map<string, number>();
   const waitingBelow = new Map<string, number>();
+  const updatedAt = new Map<string, number>();
   const kids = new Map<string, AgentTreeNode[]>();
   const seen = new Set<string>([rootId]);
 
-  // One post-order pass: bucket, subtree urgency, waiting descendants.
+  // Single post-order pass: bucket, subtree urgency, waiting descendants, and
+  // iterative subtree latest timestamp (no Math.max(...children) stack spread).
   const visit = (node: AgentTreeNode): void => {
     const bucket = rosterBucket(node, waiting);
     bucketOf.set(node.agentId, bucket);
     counts[bucket] += 1;
-    const children = node.childIds.flatMap((id) => {
+    const children: AgentTreeNode[] = [];
+    for (const id of node.childIds) {
       const child = forest.byId[id];
-      if (child === undefined || isConversationBranch(child) || seen.has(id)) return [];
+      if (child === undefined || isConversationBranch(child) || seen.has(id)) continue;
       seen.add(id);
-      return [child];
-    });
+      children.push(child);
+    }
     let rank = RANK[bucket];
     let below = 0;
+    let maxTime = Math.max(timeOf(node.endedAt), timeOf(node.startedAt));
     for (const child of children) {
       visit(child);
-      rank = Math.min(rank, subtreeRank.get(child.agentId)!);
+      const childRank = subtreeRank.get(child.agentId)!;
+      if (childRank < rank) rank = childRank;
       below += waitingBelow.get(child.agentId)! + (bucketOf.get(child.agentId) === 'waiting' ? 1 : 0);
+      const childTime = updatedAt.get(child.agentId)!;
+      if (childTime > maxTime) maxTime = childTime;
     }
     subtreeRank.set(node.agentId, rank);
     waitingBelow.set(node.agentId, below);
+    updatedAt.set(node.agentId, maxTime);
     kids.set(node.agentId, children);
   };
   const top = childrenOf(forest, rootId).filter((node) => {
@@ -168,29 +201,35 @@ export function buildRoster(input: RosterInput): RosterModel {
     return true;
   });
   for (const node of top) visit(node);
-  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const total = counts.waiting + counts.running + counts.idle + counts.unknown + counts.ended;
 
-  // Within a rank, the most recently updated first: a node's update time is
-  // the latest start or end anywhere in its subtree.
-  const updatedAt = new Map<string, number>();
-  const stamp = (node: AgentTreeNode): number => {
-    const known = updatedAt.get(node.agentId);
-    if (known !== undefined) return known;
-    const own = Math.max(timeOf(node.endedAt), timeOf(node.startedAt));
-    const value = Math.max(own, ...(kids.get(node.agentId) ?? []).map(stamp));
-    updatedAt.set(node.agentId, value);
-    return value;
-  };
+  const useServerCounts = rootId === MAIN_AGENT_ID && agentCounts !== undefined && agentCounts.subagents > total;
+  const effectiveCounts: Record<RosterBucket, number> = useServerCounts
+    ? {
+        waiting: counts.waiting,
+        running: Math.max(counts.running, Math.max(0, agentCounts.active - counts.waiting)),
+        idle: Math.max(counts.idle, agentCounts.idle ?? 0),
+        unknown: Math.max(counts.unknown, agentCounts.unknown),
+        ended: Math.max(counts.ended, agentCounts.completed + agentCounts.failed + agentCounts.cancelled),
+      }
+    : counts;
+  const displayTotal = rootId === MAIN_AGENT_ID && agentCounts !== undefined
+    ? Math.max(total, agentCounts.subagents)
+    : total;
+
+  const stampOf = (agentId: string, node: AgentTreeNode): number =>
+    updatedAt.get(agentId) ?? Math.max(timeOf(node.endedAt), timeOf(node.startedAt));
+
   const byUrgency = (list: readonly AgentTreeNode[]) =>
     list
       .map((node, index) => ({ node, index }))
-      .sort((a, b) => subtreeRank.get(a.node.agentId)! - subtreeRank.get(b.node.agentId)! || stamp(b.node) - stamp(a.node) || a.index - b.index)
+      .sort((a, b) => subtreeRank.get(a.node.agentId)! - subtreeRank.get(b.node.agentId)! || stampOf(b.node.agentId, b.node) - stampOf(a.node.agentId, a.node) || a.index - b.index)
       .map((entry) => entry.node);
 
   const rowFor = (node: AgentTreeNode, depth: number, path: readonly string[]): RosterAgentRow => ({
     kind: 'agent',
     node,
-    bucket: bucketOf.get(node.agentId)!,
+    bucket: bucketOf.get(node.agentId) ?? rosterBucket(node, waiting),
     depth,
     childCount: kids.get(node.agentId)?.length ?? 0,
     expanded: expanded.has(node.agentId),
@@ -200,19 +239,70 @@ export function buildRoster(input: RosterInput): RosterModel {
 
   const rows: RosterRow[] = [];
   if (filter !== 'all' || needle !== '') {
-    const flat: { row: RosterAgentRow; rank: number; order: number }[] = [];
+    const flat: { row: RosterAgentRow; rank: number; time: number; order: number }[] = [];
+    const matchedIds = new Set<string>();
     let order = 0;
     const walk = (node: AgentTreeNode, path: readonly string[]): void => {
       const bucket = bucketOf.get(node.agentId)!;
       if ((filter === 'all' || bucket === filter) && matches(node, needle)) {
-        flat.push({ row: { ...rowFor(node, 0, path), expanded: false, childCount: 0 }, rank: RANK[bucket], order: order++ });
+        matchedIds.add(node.agentId);
+        flat.push({
+          row: { ...rowFor(node, 0, path), expanded: false, childCount: 0 },
+          rank: RANK[bucket],
+          time: stampOf(node.agentId, node),
+          order: order++,
+        });
       }
       for (const child of kids.get(node.agentId) ?? []) walk(child, [...path, node.label]);
     };
     for (const node of top) walk(node, []);
-    flat.sort((a, b) => a.rank - b.rank || stamp(b.row.node) - stamp(a.row.node) || a.order - b.order);
-    return { counts, total, rows: flat.map((entry) => entry.row) };
+
+    // Merge remote server-search hits (deduped by agentId) when searching.
+    if (needle !== '' && extraNodes !== undefined && extraNodes.length > 0) {
+      for (const remote of extraNodes) {
+        if (remote.agentId === rootId || isConversationBranch(remote) || matchedIds.has(remote.agentId)) continue;
+        const bucket = rosterBucket(remote, waiting);
+        if (filter !== 'all' && bucket !== filter) continue;
+        matchedIds.add(remote.agentId);
+        flat.push({
+          row: {
+            kind: 'agent',
+            node: remote,
+            bucket,
+            depth: 0,
+            childCount: 0,
+            expanded: false,
+            waitingBelow: 0,
+            path: agentTrail(forest, remote.agentId),
+          },
+          rank: RANK[bucket],
+          time: Math.max(timeOf(remote.endedAt), timeOf(remote.startedAt)),
+          order: order++,
+        });
+      }
+    }
+
+    flat.sort((a, b) => a.rank - b.rank || b.time - a.time || a.order - b.order);
+    const shouldCapFlat = needle === '' && (filter === 'ended' || filter === 'unknown') && flat.length > settledCap;
+    const sliced = shouldCapFlat ? flat.slice(0, settledCap) : flat;
+    const totalForFilter = needle === '' && filter !== 'all'
+      ? Math.max(flat.length, effectiveCounts[filter])
+      : flat.length;
+    const truncated = needle === '' && (filter === 'ended' || filter === 'unknown') && totalForFilter > sliced.length;
+    return {
+      counts: effectiveCounts,
+      total,
+      displayTotal,
+      rows: sliced.map((entry) => entry.row),
+      settledTruncated: truncated,
+      settledShown: truncated ? sliced.length : 0,
+      settledTotal: truncated ? totalForFilter : 0,
+    };
   }
+
+  let settledTruncated = false;
+  let settledShown = 0;
+  let settledTotal = 0;
 
   const emit = (node: AgentTreeNode, depth: number): void => {
     const row = rowFor(node, depth, []);
@@ -220,15 +310,26 @@ export function buildRoster(input: RosterInput): RosterModel {
     if (!row.expanded) return;
     for (const child of byUrgency(kids.get(node.agentId) ?? [])) emit(child, depth + 1);
   };
-  // More than three is the existing handful. Fewer stay rows.
+  // More than three is the existing handful. Fewer stay rows unless server
+  // counts report additional unhydrated settled/unknown subagents.
   const foldWhenMany = (nodes: readonly AgentTreeNode[], bucket: 'unknown' | 'ended', open: boolean): void => {
-    if (nodes.length === 0) return;
-    if (nodes.length <= 3) {
+    const serverCount = useServerCounts ? effectiveCounts[bucket] : 0;
+    const groupCount = Math.max(nodes.length, serverCount);
+    if (groupCount === 0) return;
+    if (groupCount <= 3) {
       for (const node of nodes) emit(node, 0);
       return;
     }
-    rows.push({ kind: 'group', bucket, count: nodes.length, open });
-    if (open) for (const node of nodes) emit(node, 0);
+    rows.push({ kind: 'group', bucket, count: groupCount, open });
+    if (open) {
+      const limit = Math.min(nodes.length, settledCap);
+      for (let i = 0; i < limit; i += 1) emit(nodes[i]!, 0);
+      if (groupCount > limit) {
+        settledTruncated = true;
+        settledShown += limit;
+        settledTotal += groupCount;
+      }
+    }
   };
   const ordered = byUrgency(top);
   // Subtree rank, not the parent's own bucket. An unknown parent whose
@@ -239,7 +340,15 @@ export function buildRoster(input: RosterInput): RosterModel {
   for (const node of active) emit(node, 0);
   foldWhenMany(historicalUnknown, 'unknown', unknownOpen);
   foldWhenMany(settled, 'ended', doneOpen);
-  return { counts, total, rows };
+  return {
+    counts: effectiveCounts,
+    total,
+    displayTotal,
+    rows,
+    settledTruncated,
+    settledShown,
+    settledTotal,
+  };
 }
 
 /** Labels from the roster root down to (not including) `agentId`. */

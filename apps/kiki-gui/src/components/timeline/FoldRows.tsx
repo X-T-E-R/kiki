@@ -4,13 +4,14 @@
  * are rows of their own; a history fold stops at them and resumes after.
  */
 
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 
 import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import { effectiveSubagentStatus, isLiveSubagentStatus, isMediaTool, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { resolveProfileIcon } from '../../lib/profileIcon';
+import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 import { ContentContinuation, MESSAGE_TEXT_ROOTS, TASK_SUMMARY_ROOTS } from '../ContentContinuation';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaParts';
@@ -141,20 +142,43 @@ export function SubagentGroupRow({
   childBlocks?: ReadonlyMap<string, SubagentBlock>;
   renderMember: (member: SubagentBlock) => ReactNode;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
+  const batchLimit = getSubagentScaleConfig().inlineBatchPreviewLimit;
+  const [visibleLimit, setVisibleLimit] = useState(batchLimit);
   const total = group.members.length;
-  const done = group.members.filter((member) => settled(liveStatus(member, forest, childBlocks))).length;
-  const memberIcons = new Set(
-    group.members.map((member) =>
-      resolveProfileIcon({
-        profile: member.label ?? member.name,
-        executor: member.executorId ?? forest?.byId[member.subagentId]?.executorId,
-        main: false,
-        description: member.description,
-      }),
-    ),
-  );
-  const groupIcon = memberIcons.size === 1 ? [...memberIcons][0]! : 'agent';
+  const { done, groupIcon, orderedMembers } = useMemo(() => {
+    let doneCount = 0;
+    let sharedIcon: ReturnType<typeof resolveProfileIcon> | undefined;
+    let mixedIcon = false;
+    const liveOrFailed: SubagentBlock[] = [];
+    const settledRest: SubagentBlock[] = [];
+    for (const member of group.members) {
+      const status = liveStatus(member, forest, childBlocks);
+      const isSettled = settled(status);
+      if (isSettled) doneCount += 1;
+      if (!mixedIcon) {
+        const icon = resolveProfileIcon({
+          profile: member.label ?? member.name,
+          executor: member.executorId ?? forest?.byId[member.subagentId]?.executorId,
+          main: false,
+          description: member.description,
+        });
+        if (sharedIcon === undefined) sharedIcon = icon;
+        else if (sharedIcon !== icon) mixedIcon = true;
+      }
+      if (total > batchLimit) {
+        if (!isSettled || status === 'failed') liveOrFailed.push(member);
+        else settledRest.push(member);
+      }
+    }
+    return {
+      done: doneCount,
+      groupIcon: !mixedIcon && sharedIcon !== undefined ? sharedIcon : 'agent' as const,
+      orderedMembers: total > batchLimit ? [...liveOrFailed, ...settledRest] : group.members,
+    };
+  }, [group.members, forest, childBlocks, total, batchLimit]);
+  const shownMembers = total > visibleLimit ? orderedMembers.slice(0, visibleLimit) : orderedMembers;
+  const remaining = total - shownMembers.length;
   return (
     <ActivityRow
       attrs={{ 'data-subagent-group': total, 'data-subagent-group-done': done }}
@@ -175,11 +199,22 @@ export function SubagentGroupRow({
       }
     >
       <div className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
-        {group.members.map((member) => (
+        {shownMembers.map((member) => (
           <div key={member.id} data-block-id={member.id} data-subagent-group-member>
             {renderMember(member)}
           </div>
         ))}
+        {remaining > 0 ? (
+          <div data-subagent-group-more className="flex items-center gap-2 py-1 pl-1 text-[11.5px] text-ink-faint">
+            <button
+              type="button"
+              onClick={() => { setVisibleLimit((limit) => limit + batchLimit); }}
+              className="cursor-pointer rounded px-1.5 py-0.5 text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+            >
+              {locale === 'zh' ? `显示更多（剩余 ${remaining} 项）` : `Show more (${remaining} remaining)`}
+            </button>
+          </div>
+        ) : null}
       </div>
     </ActivityRow>
   );

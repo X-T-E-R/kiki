@@ -188,7 +188,8 @@ import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useLayerHistory } from '../lib/layerHistory';
-import { useCoarsePointer, useLayoutPreferences, usePhoneMode } from '../lib/layoutHooks';
+import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
+import { resolveControllerSubagentSearch } from '../lib/subagentSearch';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import {
   activeTerminalManager,
@@ -1313,23 +1314,7 @@ export function SessionActionsMenu({
 }
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
-
-/** Live media query (resize-aware) for overlay-vs-inline layout decisions. */
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window.matchMedia === 'function' ? window.matchMedia(query).matches : false,
-  );
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const list = window.matchMedia(query);
-    const onChange = (event: MediaQueryListEvent) => { setMatches(event.matches); };
-    setMatches(list.matches);
-
-    list.addEventListener('change', onChange);
-    return () => { list.removeEventListener('change', onChange); };
-  }, [query]);
-  return matches;
-}
+const EMPTY_TRAY_AGENT_NAMES: ReadonlyMap<string, string> = new Map();
 
 type ModelSource = ComposerModelSource;
 
@@ -4483,9 +4468,14 @@ boundExecution,
   const [btwSessionKeys, setBtwSessionKeys] = useState<ReadonlySet<string>>(() => new Set());
   const forestRaw = useMemo(() => {
     const raw = controller?.getForest() ?? sessionAgentForest(state);
+    if (btwSessionKeys.size === 0) return raw;
+    const prefix = `${sessionId}:`;
     let patchedById: Record<string, (typeof raw.byId)[string]> | undefined;
-    for (const [id, node] of Object.entries(raw.byId)) {
-      if (btwSessionKeys.has(`${sessionId}:${id}`) && node.branchSealed !== true && node.toolsLocked !== true) {
+    for (const key of btwSessionKeys) {
+      if (!key.startsWith(prefix)) continue;
+      const id = key.slice(prefix.length);
+      const node = raw.byId[id];
+      if (node !== undefined && node.branchSealed !== true && node.toolsLocked !== true) {
         patchedById ??= { ...raw.byId };
         patchedById[id] = {
           ...node,
@@ -5446,12 +5436,17 @@ boundExecution,
     [transcriptRowActions, composerEngine?.fork, handleBranchHead],
   );
   const trayAgentNames = useMemo(() => {
+    if (trayItems.length === 0 || forest === undefined) return EMPTY_TRAY_AGENT_NAMES;
     const names = new Map<string, string>();
-    if (forest !== undefined) {
-      for (const node of Object.values(forest.byId)) names.set(node.agentId, node.label);
+    for (const item of trayItems) {
+      const origin = item.originAgentId;
+      if (origin === undefined || names.has(origin)) continue;
+      const node = forest.byId[origin];
+      if (node !== undefined) names.set(origin, node.label);
     }
     return names;
-  }, [forest]);
+  }, [forest, trayItems]);
+  const searchSubagents = useMemo(() => resolveControllerSubagentSearch(controller), [controller]);
   // A Review action (rail, timeline record) takes the card over even with a
   // draft in it, then focuses the item once the tray has mounted.
   const [reviewRequest, setReviewRequest] = useState<{ readonly kind: 'approval' | 'question'; readonly id: string; readonly seq: number } | null>(null);
@@ -5922,6 +5917,7 @@ boundExecution,
                 onOpenSubagent={openAgent} onClose={closeRail}
                 onInspectMain={inspectMain} onOpenFile={openFileInPreview}
                 onReviewPending={reviewPending}
+                onSearchSubagents={searchSubagents}
                 sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
               /> : null,
             }}

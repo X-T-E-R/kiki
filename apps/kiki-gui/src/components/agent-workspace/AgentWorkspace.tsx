@@ -20,7 +20,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
-import type { PermissionMode, PromptSkillActivation } from '@kiki/protocol';
+import type { PermissionMode, PromptSkillActivation, SessionAgentCounts } from '@kiki/protocol';
+import { resolveControllerSubagentSearch, type SubagentSearchFn } from '../../lib/subagentSearch';
 import {
   beginPendingSubmissionFlight,
   buildPromptContent,
@@ -439,6 +440,8 @@ function AgentWorkspaceHeader({
   branchFolding = false,
   branchFoldPending = false,
   onFoldBranch,
+  agentCounts,
+  onSearchSubagents,
 }: {
   target: AgentWorkspaceTarget;
   workspaceId?: string;
@@ -473,19 +476,29 @@ function AgentWorkspaceHeader({
   branchFolding?: boolean;
   branchFoldPending?: boolean;
   onFoldBranch?: () => void;
+  agentCounts?: SessionAgentCounts;
+  onSearchSubagents?: SubagentSearchFn;
 }) {
   const { t, locale } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [familyOpen, setFamilyOpen] = useState(false);
   const [familyRunningOnly, setFamilyRunningOnly] = useState(false);
-  const related = useMemo(
-    () => relatedAgentNodes(forest, target.agentId),
-    [forest, target.agentId],
-  );
-  const runningChildrenCount = useMemo(
-    () => related.children.filter((node) => node.status === 'running' || node.status === 'background' || node.busy).length,
-    [related.children],
-  );
+  // Count direct running children without allocating or deduplicating siblings.
+  const runningChildrenCount = useMemo(() => {
+    const childIds = forest.byId[target.agentId]?.childIds;
+    if (childIds === undefined || childIds.length === 0) return 0;
+    const seen = new Set<string>();
+    let count = 0;
+    for (const id of childIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const child = forest.byId[id];
+      if (child !== undefined && (child.status === 'running' || child.status === 'background' || child.busy)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [forest, target.agentId]);
   const canUnlockInMenu = isBranch && !branchSealed && branchToolsLocked && onUnlockBranchTools !== undefined;
   const hasActionsMenu = freshContextAvailable || onLocateSpawn !== undefined || promote !== undefined || canUnlockInMenu;
   useEffect(() => {
@@ -539,6 +552,8 @@ function AgentWorkspaceHeader({
           onFilterRunningChange={setFamilyRunningOnly}
           onOpen={navigation.openAgent}
           title={tooltipText}
+          agentCounts={agentCounts}
+          onSearchSubagents={onSearchSubagents}
         />
         {runningChildrenCount > 0 ? (
           <button
@@ -991,7 +1006,13 @@ function ChildAgentWorkspace({
   const boundChildModel = normalizeSelectableModelAlias(
     agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model ?? capabilitiesProfile?.model,
   );
-  const displayName = selectedNode?.label ?? capabilitiesOwner?.branch_title ?? selectedSubagent?.name ?? agentId;
+  const displayName =
+    selectedNode?.label ??
+    capabilitiesOwner?.branch_title ??
+    selectedSubagent?.label ??
+    selectedSubagent?.name ??
+    agentId;
+  const searchSubagents = useMemo(() => resolveControllerSubagentSearch(controller), [controller]);
   const displayModel =
     boundChildModel ??
     (isBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefaultModel) : undefined);
@@ -1764,6 +1785,8 @@ function ChildAgentWorkspace({
         branchFolding={branchFolding}
         branchFoldPending={branchFoldPending}
         onFoldBranch={handleFoldBranch}
+        agentCounts={sessionState.agentCounts}
+        onSearchSubagents={searchSubagents}
       />}
       timeline={{
         state: timelineState,
@@ -1861,6 +1884,7 @@ function ChildAgentWorkspace({
           pendingInteractionCount: agentPendingInteractionCount, onJumpToSpawn: timelineActions.jumpToSpawn }}
         taskOwnerAgentId={agentId} onCancelTask={onCancelTask}
         onStopAgentTask={onStopAgentTask} onOpenSubagent={navigation.openAgent}
+        onSearchSubagents={searchSubagents}
         onClose={onCloseRail}
       />}
       railOpen={railOpen} railIsOverlay={railIsOverlay} onCloseRail={onCloseRail}

@@ -4,6 +4,7 @@
  */
 
 import type { ReactNode } from 'react';
+import type { SubagentSearchFn } from '../../lib/subagentSearch';
 
 import type {
   AgentForest,
@@ -66,5 +67,7 @@ export interface RailProps {
   onOpenFile?: (path: string) => void;
   /** Reserved memory chapter (see InspectorMemorySlot). */
   memory?: InspectorMemorySlot;
+  /** Optional server-backed subagent search (`controller.searchSubagents`). */
+  onSearchSubagents?: SubagentSearchFn;
   className?: string;
 }

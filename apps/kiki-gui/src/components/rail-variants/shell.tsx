@@ -46,25 +46,7 @@ export function useRailMode(): [RailMode, (next: RailMode) => void] {
 }
 
 /** Live media query, for surfaces the rail hides below a width. */
-export function useMediaQuery(query: string): boolean {
-  const queryList = (): MediaQueryList | null =>
-    typeof window.matchMedia === 'function' ? window.matchMedia(query) : null;
-  const [matches, setMatches] = useState(() => queryList()?.matches ?? false);
-  useEffect(() => {
-    const list = queryList();
-    if (list === null) return;
-    const onChange = (event: MediaQueryListEvent) => { setMatches(event.matches); };
-    setMatches(list.matches);
-    if (typeof list.addEventListener === 'function') {
-      list.addEventListener('change', onChange);
-      return () => { list.removeEventListener('change', onChange); };
-    }
-    list.addListener(onChange);
-    return () => { list.removeListener(onChange); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
-  return matches;
-}
+export { useMediaQuery } from '../../lib/layoutHooks';
 
 export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink';
 

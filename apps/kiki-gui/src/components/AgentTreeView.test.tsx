@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentRosterDescriptor } from '@kiki/session-core/session';
+import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentForest, type AgentRosterDescriptor } from '@kiki/session-core/session';
 import { CHILD_AGENT_ID, childFailureWireRecords, childRetryWireRecords, replayAgentWire } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
 import { AgentTreeView } from './AgentTreeView';
@@ -173,6 +173,64 @@ describe('AgentTreeView tool-count display', () => {
         });
       });
       expect(opened).toEqual([]);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
+
+  it('bounds mounted DOM nodes to <= 60 for a 10,000-subagent forest and keeps active agents visible first', async () => {
+    const byId: Record<string, AgentForest['byId'][string]> = {};
+    const childIds: string[] = [];
+    for (let i = 0; i < 10_000; i += 1) {
+      const id = `subagent_${String(i).padStart(5, '0')}`;
+      childIds.push(id);
+      const isRunning = i === 0 || i === 1;
+      byId[id] = {
+        agentId: id,
+        parentAgentId: 'main',
+        name: id,
+        label: `Worker ${String(i).padStart(5, '0')}`,
+        status: isRunning ? 'running' : 'completed',
+        busy: isRunning,
+        toolCallCount: 2,
+        childIds: [],
+      };
+    }
+    byId['main'] = {
+      agentId: 'main',
+      name: 'main',
+      label: 'Main',
+      status: 'running',
+      busy: true,
+      toolCallCount: 0,
+      childIds,
+    };
+    const forest: AgentForest = { byId, roots: [byId['main']!] };
+    const opened: string[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      const startMs = performance.now();
+      await act(async () => {
+        flushSync(() => {
+          root.render(
+            <I18nProvider>
+              <AgentTreeView forest={forest} onOpen={(id) => { opened.push(id); }} />
+            </I18nProvider>,
+          );
+        });
+      });
+      const renderMs = performance.now() - startMs;
+      expect(renderMs).toBeLessThan(2_000);
+      const mountedNodes = container.querySelectorAll('[data-agent-id]');
+      expect(mountedNodes.length).toBeGreaterThan(0);
+      expect(mountedNodes.length).toBeLessThanOrEqual(60);
+      const liveRow = container.querySelector<HTMLButtonElement>('[data-agent-id="subagent_00000"]');
+      expect(liveRow).not.toBeNull();
+      await act(async () => { liveRow?.click(); });
+      expect(opened).toEqual(['subagent_00000']);
     } finally {
       await act(async () => { root.unmount(); });
       container.remove();

@@ -13,6 +13,7 @@ import { resolveCatalogModel } from '@kiki/session-core/settings';
 import { formatThinkingEffort } from '../../lib/thinkingEffort';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
+import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 import { useOptionalConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
@@ -362,6 +363,70 @@ const FEED_SHOWN = 8;
 const FILE_MARK = { read: '·', edit: '~', write: '+' } as const;
 
 /**
+ * Zero-allocation summary scan used while ActivityFeed is folded: counts all
+ * entries and keeps only the newest single entry so cold open with 10,000+
+ * subagents never allocates or sorts 20,000 FeedEntry objects.
+ */
+function feedPreviewOf(blocks: readonly Block[], forest: AgentForest): { count: number; head: FeedEntry | undefined } {
+  let count = 0;
+  let head: FeedEntry | undefined;
+  const consider = (at: number, build: () => FeedEntry) => {
+    if (!Number.isFinite(at)) return;
+    count += 1;
+    if (head === undefined || at > head.at) {
+      head = build();
+    }
+  };
+  for (const block of blocks) {
+    if (block.kind === 'tool' && block.display !== undefined && block.startedAt !== undefined) {
+      const d = block.display;
+      if ((d.kind === 'file_io' && d.operation !== 'glob' && d.operation !== 'grep') || d.kind === 'diff') {
+        consider(block.startedAt, () => ({
+          kind: 'file',
+          key: block.id,
+          at: block.startedAt!,
+          path: d.path,
+          op: d.kind === 'diff' || d.operation === 'edit' ? 'edit' : d.operation === 'write' ? 'write' : 'read',
+          error: block.isError === true || block.status === 'error',
+        }));
+      } else if (d.kind === 'command') {
+        consider(block.startedAt, () => ({
+          kind: 'command',
+          key: block.id,
+          at: block.startedAt!,
+          command: d.command,
+          error: block.isError === true || block.status === 'error',
+        }));
+      }
+    } else if (block.kind === 'notice' && block.i18n !== undefined && block.i18n.key.startsWith('transcript.marker.compaction') && block.createdAt !== undefined) {
+      const at = Date.parse(block.createdAt);
+      consider(at, () => ({ kind: 'compaction', key: block.id, at, i18n: block.i18n! }));
+    }
+  }
+  for (const key in forest.byId) {
+    const node = forest.byId[key];
+    if (node === undefined || node.agentId === MAIN_AGENT_ID || node.parentAgentId !== MAIN_AGENT_ID) continue;
+    if (node.startedAt !== undefined) {
+      const started = Date.parse(node.startedAt);
+      consider(started, () => ({ kind: 'dispatch', key: `d:${node.agentId}`, at: started, agentId: node.agentId, label: node.label }));
+    }
+    if (node.endedAt !== undefined && (node.status === 'completed' || node.status === 'failed')) {
+      const ended = Date.parse(node.endedAt);
+      consider(ended, () => ({
+        kind: 'report',
+        key: `r:${node.agentId}`,
+        at: ended,
+        agentId: node.agentId,
+        label: node.label,
+        failed: node.status === 'failed',
+        summary: node.summary ?? node.error,
+      }));
+    }
+  }
+  return { count, head };
+}
+
+/**
  * 动态: one time-ordered stream of what the session did (files, commands,
  * dispatches, reports, compactions). Folded by default to its newest line.
  */
@@ -374,10 +439,13 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
   const { t, locale } = useI18n();
   const now = useNow();
   const [open, setOpen] = useState(false);
-  const [all, setAll] = useState(false);
-  const feed = useMemo(() => feedOf(blocks, forest), [blocks, forest]);
-  if (feed.length === 0) return null;
-  const shown = all ? feed : feed.slice(0, FEED_SHOWN);
+  const [visibleLimit, setVisibleLimit] = useState(FEED_SHOWN);
+  const preview = useMemo(() => (open ? undefined : feedPreviewOf(blocks, forest)), [open, blocks, forest]);
+  const feed = useMemo(() => (open ? feedOf(blocks, forest) : undefined), [open, blocks, forest]);
+  const totalCount = open ? (feed?.length ?? 0) : (preview?.count ?? 0);
+  const head = open ? feed?.[0] : preview?.head;
+  if (totalCount === 0 || head === undefined) return null;
+  const shown = open && feed !== undefined ? feed.slice(0, visibleLimit) : [];
   const line = (entry: FeedEntry): { mark: React.ReactNode; body: React.ReactNode; title: string; onClick?: () => void } => {
     switch (entry.kind) {
       case 'file': {
@@ -406,14 +474,13 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
       }
     }
   };
-  const head = feed[0]!;
   // The folded head reads the newest entry by its short name.
   const newest = head.kind === 'file'
     ? (head.path.split(/[\\/]/).filter(Boolean).pop() ?? head.path)
     : line(head).title.split('\n', 1)[0];
   return (
     <section data-inspector-recent="">
-      <FoldHead title={t('rail.feed.title')} count={feed.length} summary={newest} open={open} onToggle={() => { setOpen((v) => !v); }} />
+      <FoldHead title={t('rail.feed.title')} count={totalCount} summary={newest} open={open} onToggle={() => { setOpen((v) => !v); }} />
       {open ? (
         <ol className="mt-0.5">
           {shown.map((entry) => {
@@ -433,8 +500,8 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
               </li>
             );
           })}
-          {feed.length > shown.length ? (
-            <li><button type="button" onClick={() => { setAll(true); }} className={`ml-3 h-7 rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.feed.earlier', { count: feed.length - shown.length })}</button></li>
+          {totalCount > shown.length ? (
+            <li><button type="button" onClick={() => { setVisibleLimit((limit) => limit + getSubagentScaleConfig().settledRosterWindow); }} className={`ml-3 h-7 rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.feed.earlier', { count: totalCount - shown.length })}</button></li>
           ) : null}
         </ol>
       ) : null}

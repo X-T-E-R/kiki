@@ -27,7 +27,7 @@
  * between a main-agent and a subagent rail.
  */
 
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { Task } from '@kiki/protocol';
@@ -286,6 +286,7 @@ export function Rail({
   onResolveApproval,
   onOpenFile,
   memory,
+  onSearchSubagents,
   onClose,
   className,
 }: RailProps) {
@@ -317,12 +318,17 @@ export function Rail({
     () => (isRoutedChildPage ? mergeAgentViewIntoForest(forestProp, focusedAgentId, state) : forestProp),
     [forestProp, focusedAgentId, isRoutedChildPage, state],
   );
+  // Defer heavy team/branch/feed derivations so first-turn transcript paint is
+  // never blocked by 10,000-subagent rail scans.
+  const deferredForest = useDeferredValue(forest);
   // A session driven from outside Kiki names that client instead of a model.
   const externalDriver = useMemo(
     () => readExternalClientMark(session?.metadata)?.clientName,
     [session?.metadata],
   );
   const focusedNode = forest.byId[focusedAgentId];
+  const focusedFallbackLabel = subagent?.block?.label ?? subagent?.block?.name;
+  const focusedDisplayLabel = focusedNode?.label ?? (focusedFallbackLabel !== undefined && focusedFallbackLabel !== '' ? focusedFallbackLabel : focusedAgentId);
   const promote = usePromoteAgent(state.sessionId, subagent?.agentId);
   // The routed agent page (no onInspectMain) is already this agent's timeline.
   const show = railVisibility(focusedAgentId, onInspectMain === undefined ? focusedAgentId : MAIN_AGENT_ID);
@@ -356,12 +362,15 @@ export function Rail({
   }, [pending, subagent]);
   // Empty sections collapse entirely (header included) on every page.
   // Main lists the whole team; a subagent lists the agents under it.
-  const rosterCount = useMemo(() => descendantIds(forest, focusedAgentId).length, [forest, focusedAgentId]);
-  const showRoster = rosterCount > 0;
   const sessionBranches = useMemo(
-    () => collectSessionBranches(forest, waitingAgentIds),
-    [forest, waitingAgentIds],
+    () => collectSessionBranches(deferredForest, waitingAgentIds),
+    [deferredForest, waitingAgentIds],
   );
+  const localRosterCount = useMemo(() => descendantIds(deferredForest, focusedAgentId).length, [deferredForest, focusedAgentId]);
+  const rosterCount = focusedAgentId === MAIN_AGENT_ID && state.agentCounts !== undefined
+    ? Math.max(localRosterCount, Math.max(0, state.agentCounts.subagents - sessionBranches.all.length))
+    : localRosterCount;
+  const showRoster = rosterCount > 0;
   const branchFoldSummaries = useMemo(
     () => extractBranchFoldSummaries(state.blocks),
     [state.blocks],
@@ -406,16 +415,16 @@ export function Rail({
   };
   const subBlock = subagent?.block;
   // The timeline card can lag behind an authoritative runtime tree status;
-  // retain it only while the tree has no explicit status for this agent.
+  // retain a settled block status (e.g. completed/failed) even when the
+  // historical node fell outside a bounded roster window.
+  const subBlockIsLive = subBlock !== undefined && (subBlock.status === 'running' || subBlock.status === 'suspended');
   const subStatus = subagent === undefined
     ? undefined
     : nodeStatusKnown
       ? nodeStatus
-      : sessionExecuting === false
-        ? (nodeStatus ?? 'unknown')
-        : subBlock !== undefined && subBlock.status !== 'unknown'
-          ? subBlock.status
-          : (nodeStatus ?? subBlock?.status ?? 'unknown');
+      : subBlock !== undefined && subBlock.status !== 'unknown' && !(sessionExecuting === false && subBlockIsLive)
+        ? subBlock.status
+        : (nodeStatus ?? 'unknown');
   const startedIso = subagent === undefined ? undefined : (subBlock?.startedAt ?? focusedNode?.startedAt);
   const runStartedAt = subagent === undefined
     ? state.turnStartedAt
@@ -683,11 +692,13 @@ export function Rail({
         actions={terminateAllAction}
       >
         <AgentRoster
-          forest={forest}
+          forest={deferredForest}
           rootId={focusedAgentId}
           peekAgentId={peekAgentId}
           waitingAgentIds={waitingAgentIds}
           onSelect={onOpenSubagent}
+          agentCounts={focusedAgentId === MAIN_AGENT_ID ? state.agentCounts : undefined}
+          onSearchSubagents={onSearchSubagents}
         />
       </RailSection>
     </div>
@@ -733,7 +744,7 @@ export function Rail({
           </div>
         );
       })}
-      <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
+      <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
       {memory !== undefined ? (
         <RailSection title={memory.title} count={memory.count} defaultOpen={false} data-inspector-memory="">
           {memory.content}
@@ -799,7 +810,7 @@ export function Rail({
           <AgentPanelContainer
             key={`overview:${mode === 'cockpit' && !isRoutedChildPage ? state.sessionId : agentPanelKey}`}
             state={state}
-            forest={forest}
+            forest={deferredForest}
             agentId={focusedAgentId}
             visible={panelSlot.visible}
             part="overview"
@@ -814,7 +825,7 @@ export function Rail({
             scopeRootId={isRoutedChildPage ? focusedAgentId : MAIN_AGENT_ID}
             rootBusy={isRoutedChildPage ? busy : undefined}
             rootTurnStartedAt={isRoutedChildPage ? runStartedAt : undefined}
-            rootLabel={isRoutedChildPage ? (focusedNode?.label ?? focusedAgentId) : undefined}
+            rootLabel={isRoutedChildPage ? focusedDisplayLabel : undefined}
           />
         ) : renderOverview(null, null)}
       </div>
@@ -919,6 +930,7 @@ export function Rail({
           <RailCrumbs
             forest={forest}
             focusedAgentId={focusedAgentId}
+            fallbackLabel={focusedFallbackLabel}
             onSelect={selectAgent}
             close={railHeaderControls}
           />
@@ -934,8 +946,8 @@ export function Rail({
       <ProfileHead
         sessionId={state.sessionId}
         agentId={focusedAgentId}
-        label={focusedNode?.label ?? focusedAgentId}
-        fallbackModel={focusedNode?.model ?? (focusedAgentId === MAIN_AGENT_ID || isRoutedChildPage ? state.model : undefined)}
+        label={focusedDisplayLabel}
+        fallbackModel={focusedNode?.model ?? subagent?.block?.model ?? (focusedAgentId === MAIN_AGENT_ID || isRoutedChildPage ? state.model : undefined)}
         workspaceId={session?.workspace_id}
         cwd={session?.metadata.cwd}
         // Only the main is driven; a sub agent under it runs a real model.

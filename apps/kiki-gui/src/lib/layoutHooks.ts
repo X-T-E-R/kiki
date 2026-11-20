@@ -14,19 +14,80 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+interface MediaQueryChannel {
+  readonly media: MediaQueryList;
+  readonly listeners: Set<() => void>;
+  readonly onChange: () => void;
+  matches: boolean;
+  attached: boolean;
+}
+
+const mediaChannelsByImpl = new WeakMap<typeof window.matchMedia, Map<string, MediaQueryChannel>>();
+
+function getMediaQueryChannel(query: string): MediaQueryChannel | null {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return null;
+  const matchMediaImpl = window.matchMedia;
+  let byQuery = mediaChannelsByImpl.get(matchMediaImpl);
+  if (byQuery === undefined) {
+    byQuery = new Map();
+    mediaChannelsByImpl.set(matchMediaImpl, byQuery);
+  }
+  let channel = byQuery.get(query);
+  if (channel === undefined) {
+    const media = matchMediaImpl.call(window, query);
+    const listeners = new Set<() => void>();
+    const entry: MediaQueryChannel = {
+      media,
+      listeners,
+      matches: media.matches,
+      attached: false,
+      onChange: () => {
+        entry.matches = media.matches;
+        for (const listener of listeners) listener();
+      },
+    };
+    channel = entry;
+    byQuery.set(query, channel);
+  }
+  return channel;
+}
+
+function subscribeMediaQuery(query: string, listener: () => void): () => void {
+  const channel = getMediaQueryChannel(query);
+  if (channel === null) return () => {};
+  channel.listeners.add(listener);
+  if (!channel.attached) {
+    channel.matches = channel.media.matches;
+    if (typeof channel.media.addEventListener === 'function') {
+      channel.media.addEventListener('change', channel.onChange);
+    } else if (typeof channel.media.addListener === 'function') {
+      channel.media.addListener(channel.onChange);
+    }
+    channel.attached = true;
+  }
+  return () => {
+    channel.listeners.delete(listener);
+    if (channel.listeners.size === 0 && channel.attached) {
+      if (typeof channel.media.removeEventListener === 'function') {
+        channel.media.removeEventListener('change', channel.onChange);
+      } else if (typeof channel.media.removeListener === 'function') {
+        channel.media.removeListener(channel.onChange);
+      }
+      channel.attached = false;
+    }
+  };
+}
+
+function readMediaQuerySnapshot(query: string): boolean {
+  const channel = getMediaQueryChannel(query);
+  if (channel === null) return false;
+  return channel.attached ? channel.matches : channel.media.matches;
+}
+
 export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(query).matches : false,
-  );
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia(query);
-    const update = () => { setMatches(media.matches); };
-    update();
-    media.addEventListener('change', update);
-    return () => { media.removeEventListener('change', update); };
-  }, [query]);
-  return matches;
+  const subscribe = useCallback((listener: () => void) => subscribeMediaQuery(query, listener), [query]);
+  const getSnapshot = useCallback(() => readMediaQuerySnapshot(query), [query]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 export function useLayoutPreferences(): LayoutPreferences {

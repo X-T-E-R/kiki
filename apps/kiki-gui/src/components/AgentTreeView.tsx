@@ -3,16 +3,19 @@
  * this view over the same `buildAgentForest` result.
  */
 
-import { memo, useEffect, useMemo, useState, type CSSProperties, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
+import type { SessionAgentCounts } from '@kiki/protocol';
 import {
   agentChildren,
+  MAIN_AGENT_ID,
   type AgentForest,
   type AgentStatus,
   type AgentTreeNode,
 } from '@kiki/session-core/session';
+import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
 import { formatThinkingEffort } from '../lib/thinkingEffort';
 import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
@@ -226,6 +229,252 @@ const AgentTreeRow = memo(function AgentTreeRow({
   );
 });
 
+type FlattenedTreeRow =
+  | { readonly kind: 'node'; readonly node: AgentTreeNode; readonly depth: number }
+  | { readonly kind: 'hint'; readonly key: string; readonly depth: number; readonly shown: number; readonly total: number };
+
+function isLiveOrPinnedTreeNode(node: AgentTreeNode, selectedPath: ReadonlySet<string>): boolean {
+  return (
+    selectedPath.has(node.agentId) ||
+    node.busy ||
+    node.status === 'running' ||
+    node.status === 'suspended' ||
+    node.status === 'failed' ||
+    (node.isBranch === true && node.branchSealed !== true)
+  );
+}
+
+function buildSelectedAncestry(forest: AgentForest, selectedAgentId?: string): Set<string> {
+  const path = new Set<string>();
+  let current = selectedAgentId;
+  while (current !== undefined && !path.has(current)) {
+    path.add(current);
+    current = forest.byId[current]?.parentAgentId;
+  }
+  return path;
+}
+
+/**
+ * Flatten a potentially 10,000-node forest into a bounded display slice:
+ * active/waiting/failed/selected nodes always stay ahead of settled nodes,
+ * and settled siblings per parent are capped to `settledCap` (newest first).
+ */
+function flattenBoundedTree(
+  forest: AgentForest,
+  roots: readonly AgentTreeNode[],
+  collapsed: ReadonlySet<string>,
+  selectedAgentId: string | undefined,
+  settledCap: number,
+  agentCounts?: SessionAgentCounts,
+): readonly FlattenedTreeRow[] {
+  const selectedPath = buildSelectedAncestry(forest, selectedAgentId);
+  const result: FlattenedTreeRow[] = [];
+  const visited = new Set<string>();
+
+  const capChildren = (
+    parentId: string | undefined,
+    list: readonly AgentTreeNode[],
+  ): { readonly kept: readonly AgentTreeNode[]; readonly total: number; readonly truncated: boolean } => {
+    const active: AgentTreeNode[] = [];
+    const settled: AgentTreeNode[] = [];
+    for (const node of list) {
+      if (isLiveOrPinnedTreeNode(node, selectedPath)) active.push(node);
+      else settled.push(node);
+    }
+    const serverTotal = parentId === MAIN_AGENT_ID && agentCounts !== undefined
+      ? Math.max(list.length, agentCounts.subagents)
+      : list.length;
+    if (settled.length <= settledCap && serverTotal <= list.length) {
+      return { kept: list, total: serverTotal, truncated: false };
+    }
+    // Keep newest settled items (tail of dispatch order, newest first).
+    const recentSettled = settled.length > settledCap
+      ? settled.slice(settled.length - settledCap).reverse()
+      : settled;
+    const kept = [...active, ...recentSettled];
+    return {
+      kept,
+      total: serverTotal,
+      truncated: serverTotal > kept.length,
+    };
+  };
+
+  const stack: Array<FlattenedTreeRow> = [];
+  const rootSlice = capChildren(undefined, roots);
+  if (rootSlice.truncated) {
+    stack.push({ kind: 'hint', key: 'hint:__roots__', depth: 0, shown: rootSlice.kept.length, total: rootSlice.total });
+  }
+  for (let i = rootSlice.kept.length - 1; i >= 0; i -= 1) {
+    stack.push({ kind: 'node', node: rootSlice.kept[i]!, depth: 0 });
+  }
+
+  while (stack.length > 0) {
+    const entry = stack.pop()!;
+    if (entry.kind === 'hint') {
+      result.push(entry);
+      continue;
+    }
+    if (visited.has(entry.node.agentId)) continue;
+    visited.add(entry.node.agentId);
+    result.push(entry);
+    if (collapsed.has(entry.node.agentId) || entry.node.childIds.length === 0) continue;
+    const children: AgentTreeNode[] = [];
+    for (const childId of entry.node.childIds) {
+      const child = forest.byId[childId];
+      if (child !== undefined && !visited.has(child.agentId)) children.push(child);
+    }
+    if (children.length === 0) continue;
+    const childSlice = capChildren(entry.node.agentId, children);
+    if (childSlice.truncated) {
+      stack.push({
+        kind: 'hint',
+        key: `hint:${entry.node.agentId}`,
+        depth: entry.depth + 1,
+        shown: childSlice.kept.length,
+        total: childSlice.total,
+      });
+    }
+    for (let i = childSlice.kept.length - 1; i >= 0; i -= 1) {
+      stack.push({ kind: 'node', node: childSlice.kept[i]!, depth: entry.depth + 1 });
+    }
+  }
+
+  return result;
+}
+
+function BoundedVirtualTree({
+  forest,
+  roots,
+  selectedAgentId,
+  onOpen,
+  scrollRef: externalScrollRef,
+  viewportHeight = 420,
+  attrName = 'data-agent-tree',
+  attrValue = '',
+  agentCounts,
+}: {
+  forest: AgentForest;
+  roots: readonly AgentTreeNode[];
+  selectedAgentId?: string;
+  onOpen: (agentId: string) => void;
+  scrollRef?: RefObject<HTMLDivElement | null>;
+  viewportHeight?: number;
+  attrName?: 'data-agent-tree' | 'data-agent-subtree';
+  attrValue?: string;
+  agentCounts?: SessionAgentCounts;
+}) {
+  const { t, locale } = useI18n();
+  const scaleConfig = getSubagentScaleConfig();
+  const internalScrollRef = useRef<HTMLDivElement>(null);
+  const activeScrollRef = externalScrollRef ?? internalScrollRef;
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const rows = useMemo(
+    () => flattenBoundedTree(forest, roots, collapsed, selectedAgentId, scaleConfig.settledRosterWindow, agentCounts),
+    [forest, roots, collapsed, selectedAgentId, scaleConfig.settledRosterWindow, agentCounts],
+  );
+  const handleToggle = useCallback((agentId: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    });
+  }, []);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => activeScrollRef.current,
+    estimateSize: (index) => (rows[index]?.kind === 'hint' ? 28 : 52),
+    getItemKey: (index) => {
+      const row = rows[index];
+      if (row === undefined) return index;
+      return row.kind === 'hint' ? row.key : row.node.agentId;
+    },
+    overscan: 6,
+    initialRect: { width: 320, height: viewportHeight },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+
+  if (rows.length === 0) {
+    return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
+  }
+
+  const listAttrs = attrName === 'data-agent-subtree'
+    ? { 'data-agent-subtree': attrValue }
+    : { 'data-agent-tree': '' };
+
+  const listContent = (
+    <ul {...listAttrs} className="relative" style={{ height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map((item) => {
+        const row = rows[item.index]!;
+        if (row.kind === 'hint') {
+          return (
+            <li
+              key={row.key}
+              data-agent-tree-window-hint=""
+              className="flex items-center px-2 text-[11px] text-ink-faint"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: item.size,
+                paddingLeft: `${8 + Math.min(row.depth, 4) * 12}px`,
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              {locale === 'zh'
+                ? `显示最近 ${row.shown} 项 · 搜索可定位全部`
+                : `Showing latest ${row.shown} · Search to find any`}
+            </li>
+          );
+        }
+        return (
+          <AgentTreeRow
+            key={row.node.agentId}
+            forest={forest}
+            node={row.node}
+            depth={row.depth}
+            selectedAgentId={selectedAgentId}
+            onOpen={onOpen}
+            controlledExpanded={!collapsed.has(row.node.agentId)}
+            onToggle={() => { handleToggle(row.node.agentId); }}
+            flatStyle={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: item.size,
+              transform: `translateY(${item.start}px)`,
+            }}
+          />
+        );
+      })}
+    </ul>
+  );
+
+  if (externalScrollRef !== undefined) return listContent;
+  return (
+    <div ref={internalScrollRef} className="max-h-[min(60vh,520px)] overflow-y-auto overscroll-contain">
+      {listContent}
+    </div>
+  );
+}
+
 /**
  * One agent's children as a recursive tree (status dot, label, click to open;
  * rows auto-expand so deep nesting is visible). Used by the subagent rail to
@@ -242,8 +491,20 @@ export const AgentSubtreeView = memo(function AgentSubtreeView({
   selectedAgentId?: string;
   onOpen: (agentId: string) => void;
 }) {
-  const children = agentChildren(forest, agentId);
+  const children = useMemo(() => agentChildren(forest, agentId), [forest, agentId]);
   if (children.length === 0) return null;
+  if (children.length > getSubagentScaleConfig().virtualizeThreshold) {
+    return (
+      <BoundedVirtualTree
+        forest={forest}
+        roots={children}
+        selectedAgentId={selectedAgentId}
+        onOpen={onOpen}
+        attrName="data-agent-subtree"
+        attrValue={agentId}
+      />
+    );
+  }
   return (
     <ul data-agent-subtree={agentId} className="space-y-1">
       {children.map((child) => (
@@ -264,15 +525,29 @@ export const AgentTreeView = memo(function AgentTreeView({
   forest,
   selectedAgentId,
   onOpen,
+  agentCounts,
 }: {
   forest: AgentForest;
   selectedAgentId?: string;
   onOpen: (agentId: string) => void;
+  agentCounts?: SessionAgentCounts;
 }) {
   const { t } = useI18n();
   const roots = useMemo(() => forest.roots, [forest]);
+  const nodeCount = useMemo(() => Object.keys(forest.byId).length, [forest.byId]);
   if (roots.length === 0) {
     return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
+  }
+  if (nodeCount > getSubagentScaleConfig().virtualizeThreshold) {
+    return (
+      <BoundedVirtualTree
+        forest={forest}
+        roots={roots}
+        selectedAgentId={selectedAgentId}
+        onOpen={onOpen}
+        agentCounts={agentCounts}
+      />
+    );
   }
   return (
     <ul data-agent-tree className="space-y-1.5">
@@ -297,73 +572,28 @@ export function VirtualAgentTreeView({
   onOpen,
   scrollRef,
   viewportHeight = 320,
+  agentCounts,
 }: {
   forest: AgentForest;
   selectedAgentId?: string;
   onOpen: (agentId: string) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
   viewportHeight?: number;
+  agentCounts?: SessionAgentCounts;
 }) {
-  const { t } = useI18n();
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
-  const rows = useMemo(() => {
-    const result: { node: AgentTreeNode; depth: number }[] = [];
-    const visited = new Set<string>();
-    const stack = [...forest.roots].reverse().map((node) => ({ node, depth: 0 }));
-    while (stack.length > 0) {
-      const entry = stack.pop()!;
-      if (visited.has(entry.node.agentId)) continue;
-      visited.add(entry.node.agentId);
-      result.push(entry);
-      if (collapsed.has(entry.node.agentId)) continue;
-      for (let index = entry.node.childIds.length - 1; index >= 0; index -= 1) {
-        const child = forest.byId[entry.node.childIds[index]!];
-        if (child !== undefined) stack.push({ node: child, depth: entry.depth + 1 });
-      }
-    }
-    return result;
-  }, [forest, collapsed]);
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 52,
-    getItemKey: (index) => rows[index]?.node.agentId ?? index,
-    overscan: 5,
-    initialRect: { width: 320, height: viewportHeight },
-    useFlushSync: false,
-  });
-
-  if (rows.length === 0) {
-    return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
-  }
-  if (Object.keys(forest.byId).length <= 20) {
-    return <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />;
+  const nodeCount = useMemo(() => Object.keys(forest.byId).length, [forest.byId]);
+  if (nodeCount <= getSubagentScaleConfig().virtualizeThreshold) {
+    return <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} agentCounts={agentCounts} />;
   }
   return (
-    <ul data-agent-tree className="relative" style={{ height: virtualizer.getTotalSize() }}>
-      {virtualizer.getVirtualItems().map((item) => {
-        const row = rows[item.index]!;
-        return (
-          <AgentTreeRow
-            key={row.node.agentId}
-            forest={forest}
-            node={row.node}
-            depth={row.depth}
-            selectedAgentId={selectedAgentId}
-            onOpen={onOpen}
-            controlledExpanded={!collapsed.has(row.node.agentId)}
-            onToggle={() => {
-              setCollapsed((previous) => {
-                const next = new Set(previous);
-                if (next.has(row.node.agentId)) next.delete(row.node.agentId);
-                else next.add(row.node.agentId);
-                return next;
-              });
-            }}
-            flatStyle={{ position: 'absolute', top: 0, left: 0, width: '100%', height: item.size, transform: `translateY(${item.start}px)` }}
-          />
-        );
-      })}
-    </ul>
+    <BoundedVirtualTree
+      forest={forest}
+      roots={forest.roots}
+      selectedAgentId={selectedAgentId}
+      onOpen={onOpen}
+      scrollRef={scrollRef}
+      viewportHeight={viewportHeight}
+      agentCounts={agentCounts}
+    />
   );
 }
