@@ -10,7 +10,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
 import { BOT_SECTION } from '#/app/bot/configSection';
-import { Error2, ErrorCodes, toErrorPayload } from '#/errors';
+import { Error2, ErrorCodes, isError2, toErrorPayload } from '#/errors';
 import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
 import { IPersonaStore } from '#/app/persona/personaStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -335,7 +335,15 @@ export class RoomService extends Disposable implements IRoomService {
     let scanned = 0;
     let hasMore = false;
     while (threads.length < limit && scanned < 500) {
-      const page = await this.sessionIndex.listRecent({ workspaceIds: input.workspaceId === undefined ? undefined : [input.workspaceId], includeArchived: false, before, limit: Math.min(100, 500 - scanned) });
+      let page: Awaited<ReturnType<ISessionIndex['listRecent']>>;
+      try {
+        page = await this.sessionIndex.listRecent({ workspaceIds: input.workspaceId === undefined ? undefined : [input.workspaceId], includeArchived: false, before, limit: Math.min(100, 500 - scanned) });
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          return { threads, incomplete: 'scan_budget', nextCursor: undefined };
+        }
+        throw error;
+      }
       hasMore = page.nextCursor !== undefined;
       if (page.items.length === 0) break;
       for (const [index, summary] of page.items.entries()) {

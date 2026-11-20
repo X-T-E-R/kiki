@@ -51,7 +51,7 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
     reasons.push('user_input_elided');
     reasons.push('history_unavailable');
   }
-  if (input.notes === undefined || meta === undefined) reasons.push('notes_missing');
+  if (input.notes === undefined || meta === undefined || !input.notes.goal?.trim() || !input.notes.next?.trim()) reasons.push('notes_missing');
   if (meta !== undefined && (meta.reviewedWindowEpoch ?? -1) < input.windowEpoch) reasons.push('notes_previous_window');
   if (watermark < 0 || after.some((message) => message.origin?.kind === 'compaction_summary')) reasons.push('handoff_unreviewed');
   if (input.windowTokens !== undefined && input.windowTokens > 0) {
@@ -63,7 +63,10 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   if (input.instruction?.trim()) reasons.push('manual_instruction');
   if (postWatermarkUsers.length > 0) reasons.push(`user_input_since_notes:${postWatermarkUsers.length}`);
   const newTokens = after.reduce((sum, message) => sum + estimateMessage(message), 0);
-  if (newTokens > Math.max(16_000, input.threshold * 0.2)) {
+  const newContentLimit = input.strategy === 'auto'
+    ? Math.max(8_000, input.threshold * 0.08)
+    : Math.max(16_000, input.threshold * 0.2);
+  if (newTokens > newContentLimit) {
     reasons.push('new_content_large');
     if (meta !== undefined && meta.windowEpoch < input.windowEpoch) reasons.push('notes_not_advanced');
   }
@@ -71,7 +74,7 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   if (selection.elided && !input.notes?.goal && !input.notes?.directives) reasons.push('elided_goal_directives_missing');
   if (after.some((message) => message.content.some((part) => (part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url') && !isContinuableMediaPart(part)))) reasons.push('non_text_result');
   const blocking = reasons.some((reason) => !isDiagnosticReason(reason));
-  const preferSummary = input.strategy === 'auto' && reasons.includes('notes_not_advanced');
+  const preferSummary = input.strategy === 'auto' && reasons.length > 0;
   return { safe: !blocking, eligible: input.strategy !== 'summarize' && !blocking && !preferSummary, reasons };
 }
 

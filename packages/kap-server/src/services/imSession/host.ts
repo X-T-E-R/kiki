@@ -256,9 +256,16 @@ class NotificationSessionPorts implements ImSessionPorts {
     listPersonas: async () => (await this.core.accessor.get(IBotService).list()).map((persona) => ({
       id: persona.personaId, name: persona.name, ...(persona.homeSessionId === undefined ? {} : { homeSessionId: persona.homeSessionId }),
     })),
-    listSessions: async () => (await this.core.accessor.get(ISessionIndex).listRecent({ limit: 50 })).items.map((session) => ({
-      id: session.id, title: session.title ?? session.id, ...(session.personaId === undefined ? {} : { personaId: session.personaId }),
-    })),
+    listSessions: async () => {
+      try {
+        return (await this.core.accessor.get(ISessionIndex).listRecent({ limit: 50 })).items.map((session) => ({
+          id: session.id, title: session.title ?? session.id, ...(session.personaId === undefined ? {} : { personaId: session.personaId }),
+        }));
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) return [];
+        throw error;
+      }
+    },
     owns: async (sessionId: string) => (await this.core.accessor.get(ISessionIndex).get(sessionId)) !== undefined,
     ensureHome: async (personaId: string) => {
       const home = await this.core.accessor.get(IBotService).ensureHomeSession(personaId);

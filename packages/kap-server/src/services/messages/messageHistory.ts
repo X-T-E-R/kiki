@@ -4,6 +4,7 @@ import {
   AGENT_WIRE_RECORD_KEY,
   IAgentBlobService,
   IAgentContextMemoryService,
+  IAgentLifecycleService,
   IAgentScopeContext,
   IAppendLogStore,
   IBlobStore,
@@ -32,7 +33,6 @@ import { readWireContextProjection } from '@kiki/agent-core-v2/persistence/wireC
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { parseMediaBlobRef } from '@kiki/transcript';
 
-import { acquireSessionOperation } from '../../lib/sessionOperationLease';
 import type { Message, MessageRole } from '@kiki/protocol';
 import { toProtocolMessage } from './messageProjection';
 
@@ -237,10 +237,10 @@ export async function loadMessageHistoryEntries(
 ): Promise<readonly MessageHistoryEntry[]> {
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   if (summary === undefined) throw new SessionNotFoundError(sessionId);
-  const lease = await acquireSessionOperation(core, sessionId, 'operation');
-  try {
-    if (lease.handle === undefined) return [];
-    const agent = await ensureMainAgent(lease.handle);
+  const live = core.accessor.get(ISessionManager).get(sessionId);
+  if (live !== undefined) {
+    const agent = live.accessor.get(IAgentLifecycleService).get('main');
+    if (agent === undefined) return [];
     const transcript = await readTranscript(core, agent);
     const merged = mergeLiveTail(
       transcript,
@@ -257,8 +257,22 @@ export async function loadMessageHistoryEntries(
         message: toProtocolMessage(sessionId, index, contextMessage, summary.createdAt, createdAtMs),
       };
     });
+  }
+  const history = await loadColdMessageHistory(core, sessionId, summary);
+  try {
+    let previousMs = Number.NEGATIVE_INFINITY;
+    return history.messages.map((contextMessage, index) => {
+      const baseMs = history.createdAtMs[index] ?? summary.createdAt + index;
+      const createdAtMs = Math.max(previousMs + 1, baseMs);
+      previousMs = createdAtMs;
+      return {
+        index,
+        contextMessage,
+        message: toProtocolMessage(sessionId, index, contextMessage, summary.createdAt, createdAtMs),
+      };
+    });
   } finally {
-    await lease.dispose();
+    await history.dispose();
   }
 }
 

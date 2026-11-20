@@ -416,10 +416,16 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
           required.push('process');
         }
         const allowUnregisteredLocal = peerAudience(req) === undefined;
-        if (core.accessor.get(ISessionManager).get(session_id) !== undefined) {
-          operation = await acquireSessionOperation(core, session_id, 'operation');
-          if (operation.handle !== undefined) {
-            runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, required);
+        const isMutating = fsAction === 'mkdir' || fsAction === 'open' || fsAction === 'open-in' || fsAction === 'reveal';
+        const live = core.accessor.get(ISessionManager).get(session_id);
+        if (live !== undefined) {
+          if (isMutating) {
+            operation = await acquireSessionOperation(core, session_id, 'operation');
+            if (operation.handle !== undefined) {
+              runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, required);
+            }
+          } else {
+            runtimeFs = acquireSessionFs(core, live, runtimeId, required);
           }
         }
         if (runtimeFs === undefined) {
@@ -645,11 +651,9 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       let responseCleanup: ReturnType<typeof createDeferredCleanup> | undefined;
       try {
         const runtimeId = req.query.runtime_id ?? 'local';
-        if (core.accessor.get(ISessionManager).get(session_id) !== undefined) {
-          operation = await acquireSessionOperation(core, session_id, 'operation');
-          if (operation.handle !== undefined) {
-            runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, ['fs']);
-          }
+        const live = core.accessor.get(ISessionManager).get(session_id);
+        if (live !== undefined) {
+          runtimeFs = acquireSessionFs(core, live, runtimeId, ['fs']);
         }
         if (runtimeFs === undefined) {
           const cold = await acquireColdSessionFs(core, session_id, runtimeId, ['fs']);

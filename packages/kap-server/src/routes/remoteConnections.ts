@@ -274,6 +274,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const reason = controller.signal.reason;
       if (reason instanceof AdmissionError) return await reply.code(reason.status).send(errEnvelope(40101, reason.reason, req.id));
       if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));
+      if (error instanceof RPCError) return await reply.code(400).send(errEnvelope(40001, error.message, req.id));
       throw error;
     }
     finally { if (!streaming) cleanup(); }

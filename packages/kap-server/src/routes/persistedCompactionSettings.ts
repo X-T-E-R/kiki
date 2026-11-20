@@ -226,11 +226,11 @@ export async function readPersistedContextStrategy(
   if (agentId !== MAIN_AGENT_ID) {
     if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
     if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow };
-    return { strategy: config?.subagentContextStrategy ?? 'auto', source: 'subagent', shadow };
+    return { strategy: config?.subagentContextStrategy ?? 'summarize', source: 'subagent', shadow };
   }
   if (overrides.contextStrategyOverride !== null) return { strategy: overrides.contextStrategyOverride, source: 'session', shadow };
   if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
   if (modelStrategy !== undefined) return { strategy: modelStrategy, source: 'model', shadow };
   if (config?.contextStrategy !== undefined) return { strategy: config.contextStrategy, source: 'global', shadow };
-  return { strategy: 'auto', source: 'default', shadow };
+  return { strategy: 'summarize', source: 'default', shadow };
 }

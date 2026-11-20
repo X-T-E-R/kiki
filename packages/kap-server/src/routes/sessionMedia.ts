@@ -4,10 +4,13 @@ import type { FastifyReply } from 'fastify';
 
 import {
   agentScopeOf,
+  ErrorCodes,
   IBootstrapService,
   ISessionContext,
   ISessionMetadata,
   IWorkspaceService,
+  isError2,
+  SessionIndexReconcilePendingError,
   sessionScopeOf,
   workspacePersistenceScope,
   type SessionSummary,
@@ -33,7 +36,7 @@ import { z } from 'zod';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
-import { acquireSessionOperation, createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode, envelopeSchema, errEnvelope } from '@kiki/protocol';
@@ -114,12 +117,16 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         r.type(file.mediaType)
           .header('content-disposition', buildContentDisposition(file.name, file.mediaType))
           .header('accept-ranges', 'bytes')
+          .header('cache-control', opened.persistable ? 'private, max-age=31536000, immutable' : 'private, no-store')
           .header('etag', etag);
-        if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) {
+        const rawRange = pickHeader(req.headers, 'range');
+        if (rawRange === undefined && pickHeader(req.headers, 'if-none-match') === etag) {
           return r.code(304).send(null) as void;
         }
 
-        const range = parseRangeHeader(pickHeader(req.headers, 'range'), file.size);
+        const ifRange = pickHeader(req.headers, 'if-range');
+        const effectiveRange = ifRange === undefined || ifRange.trim() === etag ? rawRange : undefined;
+        const range = parseRangeHeader(effectiveRange, file.size);
         if (range !== null) {
           r.header('content-range', `bytes ${range.start}-${range.end}/${file.size}`)
             .header('content-length', range.length).code(206);
@@ -162,7 +169,14 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         await route.handler(req, reply);
       } catch (error) {
         if (reply.raw.destroyed) return;
-        if (error instanceof CanonicalEntityPreparingError) { reply.code(503).send(errEnvelope(ErrorCode.SESSION_BUSY, error.message, req.id)); return; }
+        if (
+          error instanceof CanonicalEntityPreparingError ||
+          error instanceof SessionIndexReconcilePendingError ||
+          (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING)
+        ) {
+          reply.code(503).send(errEnvelope(ErrorCode.SESSION_BUSY, error.message, req.id));
+          return;
+        }
         if (error instanceof ContentChangedError) { reply.code(409).send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id)); return; }
         requestLog(req)?.error({ err: error }, 'session media download failed');
         reply.code(500).send(errEnvelope(
@@ -281,6 +295,66 @@ async function isSessionMediaPersistable(
   }
 }
 
+function liveSessionOf(core: Scope, sessionId: string): {
+  readonly manager: ISessionManager;
+  readonly live: ReturnType<ISessionManager['get']>;
+} | undefined {
+  try {
+    const manager = core.accessor?.get(ISessionManager);
+    if (manager === undefined || typeof manager.isEphemeral !== 'function') return undefined;
+    return { manager, live: manager.get(sessionId) };
+  } catch {
+    return undefined;
+  }
+}
+
+function isLiveSessionPersistable(
+  manager: ISessionManager,
+  sessionId: string,
+  live: NonNullable<ReturnType<ISessionManager['get']>>,
+): boolean {
+  try {
+    if (manager.isEphemeral(sessionId)) return false;
+    const ctx = live.accessor.get(ISessionContext);
+    if (ctx.ephemeral || ctx.isPrivate?.() === true) return false;
+    const meta = live.accessor.get(ISessionMetadata);
+    if ((meta.isPrivate?.() ?? meta.snapshot().private) === true) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function openFromLiveSession(
+  core: Scope,
+  sessionId: string,
+  fileId: string,
+  manager: ISessionManager,
+  live: NonNullable<ReturnType<ISessionManager['get']>>,
+): Promise<{
+  readonly sessionExists: boolean;
+  readonly persistable: boolean;
+  readonly file?: SessionMediaFile;
+}> {
+  const persistable = isLiveSessionPersistable(manager, sessionId, live);
+  if (fileId.startsWith('blobref:')) {
+    const workspaceId = live.accessor.get(ISessionContext).workspaceId;
+    return {
+      sessionExists: true,
+      persistable,
+      file: await openPersistedToolMedia(core, sessionId, workspaceId, fileId),
+    };
+  }
+  const file =
+    await live.accessor.get(ISessionMediaStore).open(fileId) ??
+    await openStagedUpload(core, fileId, sessionId);
+  return { sessionExists: true, persistable, file };
+}
+
+async function getSessionSummaryOrThrowIfNotLive(core: Scope, sessionId: string): Promise<SessionSummary | undefined> {
+  return core.accessor.get(ISessionIndex).get(sessionId);
+}
+
 export async function openSessionMedia(
   core: Scope,
   sessionId: string,
@@ -308,19 +382,34 @@ export async function openSessionMedia(
       }
     }
   }
-  if (fileId.startsWith('blobref:')) {
-    const summary = await core.accessor.get(ISessionIndex).get(sessionId);
-    if (summary === undefined) return { sessionExists: false, persistable: false };
-    const persistable = await isSessionMediaPersistable(core, sessionId, summary);
-    return {
-      sessionExists: true,
-      persistable,
-      file: await openPersistedToolMedia(core, sessionId, summary.workspaceId, fileId),
-    };
+  const liveEntry = liveSessionOf(core, sessionId);
+  if (liveEntry?.live !== undefined) {
+    return openFromLiveSession(core, sessionId, fileId, liveEntry.manager, liveEntry.live);
   }
-  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  let summary: SessionSummary | undefined;
+  try {
+    summary = await getSessionSummaryOrThrowIfNotLive(core, sessionId);
+  } catch (error) {
+    if (
+      error instanceof SessionIndexReconcilePendingError ||
+      (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING)
+    ) {
+      const liveOnError = liveSessionOf(core, sessionId);
+      if (liveOnError?.live !== undefined) {
+        return openFromLiveSession(core, sessionId, fileId, liveOnError.manager, liveOnError.live);
+      }
+    }
+    throw error;
+  }
   if (summary !== undefined) {
     const persistable = await isSessionMediaPersistable(core, sessionId, summary);
+    if (fileId.startsWith('blobref:')) {
+      return {
+        sessionExists: true,
+        persistable,
+        file: await openPersistedToolMedia(core, sessionId, summary.workspaceId, fileId),
+      };
+    }
     const sessionScope = sessionScopeOf(
       workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
       summary.id,
@@ -336,28 +425,11 @@ export async function openSessionMedia(
       file: await store.open(fileId) ?? await openStagedUpload(core, fileId, sessionId),
     };
   }
-  if (core.accessor.get(ISessionManager).get(sessionId) === undefined) {
-    return { sessionExists: false, persistable: false };
+  const liveAfter = liveSessionOf(core, sessionId);
+  if (liveAfter?.live !== undefined) {
+    return openFromLiveSession(core, sessionId, fileId, liveAfter.manager, liveAfter.live);
   }
-  const operation = await acquireSessionOperation(core, sessionId, 'operation');
-  if (operation.handle === undefined) return { sessionExists: false, persistable: false, operation };
-  try {
-    let persistable = false;
-    try {
-      const ctx = operation.handle.accessor.get(ISessionContext);
-      const meta = operation.handle.accessor.get(ISessionMetadata);
-      persistable = !ctx.ephemeral && ctx.isPrivate?.() !== true && (meta.isPrivate?.() ?? meta.snapshot().private) !== true;
-    } catch {
-      persistable = false;
-    }
-    const file =
-      await operation.handle.accessor.get(ISessionMediaStore).open(fileId) ??
-      await openStagedUpload(core, fileId, sessionId);
-    return { sessionExists: true, persistable, file, operation };
-  } catch (error) {
-    await operation.dispose();
-    throw error;
-  }
+  return { sessionExists: false, persistable: false };
 }
 
 const SOURCE_ID_RE = /^[a-f0-9]{64}$/u;

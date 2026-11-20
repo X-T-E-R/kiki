@@ -38,7 +38,7 @@ concurrency:
 jobs:
   changes:
     name: Classify changed paths
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
     outputs:
       mobile: ${{ steps.filter.outputs.mobile }}
       android: ${{ steps.filter.outputs.android }}
@@ -93,7 +93,7 @@ jobs:
     name: Build installable debug APK
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu-hm"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       KIKI_SOURCE_SHA: ${{ github.sha }}
@@ -145,7 +145,7 @@ jobs:
     name: Run Gradle debug unit tests
     needs: changes
     if: needs.changes.outputs.android == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu-hm"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6

@@ -106,6 +106,7 @@ describe('host media preview', () => {
     expect(ranged.statusCode).toBe(206);
     expect(ranged.headers['content-type']).toContain('video/mp4');
     expect(ranged.headers['accept-ranges']).toBe('bytes');
+    expect(ranged.headers['cache-control']).toBe('private, no-store');
     expect(ranged.headers['content-range']).toBe(`bytes 0-3/${bytes.byteLength}`);
     expect([...ranged.rawPayload]).toEqual([...bytes.subarray(0, 4)]);
     const remoteRead = await app.inject({ url: `/media-preview/${data.preview_id}`, remoteAddress: '198.51.100.7' });

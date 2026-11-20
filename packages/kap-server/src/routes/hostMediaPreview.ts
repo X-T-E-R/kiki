@@ -3,9 +3,10 @@ import { createReadStream } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { IHostFileSystem, type Scope } from '@kiki/agent-core-v2';
+import { ErrorCodes, IHostFileSystem, isError2, SessionIndexReconcilePendingError, type Scope } from '@kiki/agent-core-v2';
 import { MEDIA_SNIFF_BYTES, sniffMediaFromMagic } from '@kiki/agent-core-v2/agent/media/file-type';
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import { ErrorCode } from '@kiki/protocol';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -18,6 +19,7 @@ import { peerAudience } from '../services/connections/audience';
 import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
 import { authenticatedAuthorization } from '../middleware/auth';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { CanonicalEntityPreparingError } from '../services/history/historyCanonicalReader';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { webPrincipal } from '../services/webAccess';
 import { openSessionMedia } from './sessionMedia';
@@ -85,6 +87,7 @@ interface SessionGrant {
   readonly fileId: string;
   readonly mime: string;
   readonly size: number;
+  readonly persistable: boolean;
   readonly expiresAt: number;
   readonly boundIp?: string;
   lastAccessedAt: number;
@@ -216,12 +219,25 @@ function sendError(error: unknown, reply: FastifyReply): unknown {
   } else if (code === 'EACCES' || code === 'EPERM') {
     status = 403;
     message = 'media_preview_forbidden';
+  } else if (
+    error instanceof CanonicalEntityPreparingError ||
+    error instanceof SessionIndexReconcilePendingError ||
+    (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING)
+  ) {
+    status = 503;
+    message = error instanceof Error ? error.message : 'session_busy';
   } else if (!(error instanceof Error)) {
     throw error;
   } else {
     throw error;
   }
-  const envelopeCode = status === 400 ? 40001 : status === 404 ? 40409 : status === 403 ? 40301 : status === 429 ? 42901 : 50000;
+  const envelopeCode =
+    status === 400 ? 40001 :
+    status === 404 ? 40409 :
+    status === 403 ? 40301 :
+    status === 429 ? 42901 :
+    status === 503 ? ErrorCode.SESSION_BUSY :
+    50000;
   return reply.code(status).type('application/json').send(errEnvelope(envelopeCode, message, reply.request.id));
 }
 
@@ -248,13 +264,22 @@ function unsatisfiableRange(raw: string | undefined, size: number): boolean {
   return start >= size;
 }
 
-function applyRange(reply: FastifyReply, raw: string | undefined, size: number): { readonly start: number; readonly end: number } | null | 'unsatisfiable' {
-  reply.header('accept-ranges', 'bytes').header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff');
-  if (unsatisfiableRange(raw, size)) {
+function applyRange(
+  reply: FastifyReply,
+  raw: string | undefined,
+  size: number,
+  cacheControl = 'private, no-store',
+  ifRange?: string,
+  etag?: string,
+): { readonly start: number; readonly end: number } | null | 'unsatisfiable' {
+  reply.header('accept-ranges', 'bytes').header('cache-control', cacheControl).header('x-content-type-options', 'nosniff');
+  if (etag !== undefined) reply.header('etag', etag);
+  const effectiveRaw = ifRange === undefined || (etag !== undefined && ifRange.trim() === etag) ? raw : undefined;
+  if (unsatisfiableRange(effectiveRaw, size)) {
     reply.code(416).header('content-range', `bytes */${size}`).header('content-length', 0);
     return 'unsatisfiable';
   }
-  const range = parseRangeHeader(raw, size);
+  const range = parseRangeHeader(effectiveRaw, size);
   if (range !== null) reply.code(206).header('content-range', `bytes ${range.start}-${range.end}/${size}`).header('content-length', range.length);
   else reply.code(200).header('content-length', size);
   return range === null ? null : { start: range.start, end: range.end };
@@ -320,6 +345,7 @@ export function registerHostMediaPreviewRoutes(
           fileId: grant.fileId,
           mime: grant.mime,
           size: grant.size,
+          persistable: grant.persistable,
           expiresAt,
           boundIp: grant.boundIp,
           lastAccessedAt: now,
@@ -394,7 +420,15 @@ export function registerHostMediaPreviewRoutes(
         if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
         const mime = await projectedPlaybackMime(opened.file);
         if (mime === undefined) throw new AdmissionError(400, 'media_preview_type_unsupported');
-        return issue(req, reply, { kind: 'session', sessionId, fileId, mime, size: opened.file.size, boundIp });
+        return issue(req, reply, {
+          kind: 'session',
+          sessionId,
+          fileId,
+          mime,
+          size: opened.file.size,
+          persistable: opened.persistable === true,
+          boundIp,
+        });
       } catch (error) {
         return sendError(error, reply);
       } finally {
@@ -457,7 +491,7 @@ async function sendHost(hostFs: { stat(path: string): Promise<{ isFile: boolean;
     const stat = await hostFs.stat(grant.path);
     if (!stat.isFile) throw new AdmissionError(404, 'media_preview_not_found');
     reply.type(grant.mime);
-    const range = applyRange(reply, pickHeader(req.headers, 'range'), stat.size);
+    const range = applyRange(reply, pickHeader(req.headers, 'range'), stat.size, 'private, no-store', pickHeader(req.headers, 'if-range'));
     if (range === 'unsatisfiable') {
       releaseStream();
       return reply.send('');
@@ -494,7 +528,9 @@ async function sendSession(core: Scope, transcriptService: TranscriptService | u
       if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
       const file = opened.file;
       reply.type(grant.mime);
-      const range = applyRange(reply, pickHeader(req.headers, 'range'), file.size);
+      const etag = `"${grant.sessionId}-${grant.fileId}-${file.size}"`;
+      const cacheControl = grant.persistable && opened.persistable !== false ? 'private, max-age=1800, immutable' : 'private, no-store';
+      const range = applyRange(reply, pickHeader(req.headers, 'range'), file.size, cacheControl, pickHeader(req.headers, 'if-range'), etag);
       if (range === 'unsatisfiable') return await reply.send('');
       const playback = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
       stream = playback;

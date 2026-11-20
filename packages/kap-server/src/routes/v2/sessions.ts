@@ -2,10 +2,12 @@
 import { createHash } from 'node:crypto';
 
 import {
+  ErrorCodes,
   ISessionIndex,
   ISessionIndexMirror,
   IWorkspaceAliases,
   IWorkspaceService,
+  isError2,
   setSessionArchivedBatch,
   type Scope,
   type SessionSummary,
@@ -642,6 +644,10 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
       );
       } catch (error) {
         if (signal.aborted) return;
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+          return;
+        }
         throw error;
       }
     }, req),
@@ -662,12 +668,21 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         success: { data: v2SessionsBatchResultSchema },
         errors: {
           [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+          [ErrorCode.SESSION_INDEX_BUILDING]: {},
         },
         description: `Batch-${action} sessions by id ({ ids }, ≤5000 unique). Per-item results — a missing session folds into its own item; cold sessions are patched without materialization.`,
         tags: ['v2-sessions'],
       },
       async (req, reply) => {
-        await runBatchArchive(core, action, req.body.ids, req.id, reply);
+        try {
+          await runBatchArchive(core, action, req.body.ids, req.id, reply);
+        } catch (error) {
+          if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+            reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+            return;
+          }
+          throw error;
+        }
       },
     );
     app.post(

@@ -75,7 +75,8 @@ describe('context strategy profile precedence', () => {
     expect(effective('child-1', resolveProfile('test'), 'summarize', undefined, 'native', 'auto')).toMatchObject({ strategy: 'fresh', source: 'profile' });
     expect(effective('child-model', undefined, 'summarize', { subagentContextStrategy: 'summarize' }, 'native', 'fresh')).toMatchObject({ strategy: 'fresh', source: 'model' });
     expect(effective('child-2', undefined, 'fresh')).toMatchObject({ strategy: 'summarize', source: 'subagent' });
-    expect(effective('child-3', undefined, 'summarize', {})).toMatchObject({ strategy: 'auto', source: 'subagent' });
+    expect(effective('child-3', undefined, 'summarize', {})).toMatchObject({ strategy: 'summarize', source: 'subagent' });
+    expect(effective('main', undefined, null, {})).toMatchObject({ strategy: 'summarize', source: 'default' });
     expect(effective('child-4', undefined, null, { subagentContextStrategy: 'fresh' })).toMatchObject({ strategy: 'fresh', source: 'subagent' });
     expect(effective('child-5', 'auto', null, {}, 'codex', 'fresh')).toMatchObject({ strategy: 'summarize', source: 'executor' });
     expect(effective('main', undefined, null)).toMatchObject({ strategy: 'auto', source: 'global' });

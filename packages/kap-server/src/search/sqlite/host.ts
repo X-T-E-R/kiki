@@ -569,7 +569,7 @@ export class SqliteSearchHost {
         return;
       }
       batch.offset += 1000;
-      if (status === 'backpressure' && batch.offset < total) {
+      if (status === 'backpressure') {
         batch.draining = true;
         return;
       }

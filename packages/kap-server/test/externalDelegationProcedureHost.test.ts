@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 
-import { ISessionExternalDelegationService, ISessionManager } from '@kiki/agent-core-v2';
+import {
+  IAgentLifecycleService,
+  IAgentProfileService,
+  ISessionExternalDelegationService,
+  ISessionManager,
+} from '@kiki/agent-core-v2';
 import Fastify from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,10 +14,6 @@ import {
   createSeatKlientDelegationAuth,
   registerSeatKlientDelegationRoutes,
 } from '../src/procedures/http';
-
-const ensureMainAgent = vi.hoisted(() => vi.fn());
-
-vi.mock('../src/transport/mainAgent', () => ({ ensureMainAgent }));
 
 const seat = {
   seatId: 'seat-1',
@@ -43,16 +44,36 @@ describe('ExternalDelegationProcedureHost', () => {
 
   const acquire = vi.fn();
   const release = vi.fn();
+  const lifecycleGet = vi.fn();
+  const lifecycleCreate = vi.fn();
+  let allowKikiSubagents = true;
+  const mainAgentHandle = {
+    id: 'main',
+    accessor: {
+      get(identifier: unknown) {
+        if (identifier === IAgentProfileService) return { data: () => ({ allowKikiSubagents }) };
+        throw new Error(`unexpected main agent token: ${String(identifier)}`);
+      },
+    },
+  };
   const core = { accessor: { get: (identifier: unknown) => identifier === ISessionManager ? { acquire } : undefined } } as never;
 
   beforeEach(() => {
     for (const method of Object.values(service)) method.mockReset();
     acquire.mockReset();
     release.mockReset();
+    lifecycleGet.mockReset();
+    lifecycleCreate.mockReset();
+    allowKikiSubagents = true;
+    lifecycleGet.mockReturnValue(mainAgentHandle);
+    lifecycleCreate.mockResolvedValue(mainAgentHandle);
     acquire.mockResolvedValue({
       handle: {
         accessor: {
           get(identifier: unknown) {
+            if (identifier === IAgentLifecycleService) {
+              return { get: lifecycleGet, create: lifecycleCreate };
+            }
             assert.equal(identifier, ISessionExternalDelegationService);
             return service;
           },
@@ -60,7 +81,6 @@ describe('ExternalDelegationProcedureHost', () => {
       },
       dispose: release,
     });
-    ensureMainAgent.mockResolvedValue(undefined);
   });
 
   it('injects seat authority and removes raw agent identifiers', async () => {
@@ -91,6 +111,27 @@ describe('ExternalDelegationProcedureHost', () => {
         configFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
       },
     }));
+  });
+
+  it('exercises real ensureMainAgent creation and harness delegation gating without mocking mainAgent', async () => {
+    lifecycleGet.mockReturnValueOnce(undefined);
+    service.dispatch.mockResolvedValue(dispatchView);
+    const host = new ExternalDelegationProcedureHost(core);
+
+    const output = await host.call({ ...seat, harnessAgentId: 'main' }, 'dispatch', {
+      target: 'named',
+      taskName: 'probe',
+      message: 'inspect',
+    });
+    expect(output.dispatchId).toBe('dispatch-1');
+    expect(lifecycleCreate).toHaveBeenCalledWith({ agentId: 'main' });
+
+    allowKikiSubagents = false;
+    await expect(host.call({ ...seat, harnessAgentId: 'main' }, 'dispatch', {
+      target: 'named',
+      taskName: 'probe',
+      message: 'inspect',
+    })).rejects.toThrow('Kiki harness delegation is disabled for this main profile');
   });
 
   it('keeps a procedure pinned until completion and releases on failure', async () => {

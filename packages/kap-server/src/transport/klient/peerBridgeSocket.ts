@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import type { KlientFrame } from '@kiki/klient/host';
-import { SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import {
   PEER_BRIDGE_CAPABILITY_CHUNKED_V1,
   peerBridgeAttachPayloadSchema,
@@ -19,6 +18,8 @@ export interface PeerBridgeReply {
 export interface PeerBridgeLimitsOptions {
   /** Override `KIKI_PEER_BRIDGE_MAX_RESPONSE_MB` for `tools_call` responses. Defaults to `16` MiB. */
   readonly maxToolsCallResponseBytes?: number;
+  /** Override maximum response bytes for chunked or single `read` responses. Defaults to `128` MiB. */
+  readonly maxReadResponseBytes?: number;
   /** Environment bag used when explicit overrides are omitted. Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv;
 }
@@ -26,6 +27,7 @@ export interface PeerBridgeLimitsOptions {
 export const DEFAULT_PEER_BRIDGE_CHUNK_BYTES = 64 * 1024;
 export const DEFAULT_PEER_BRIDGE_MAX_RESPONSE_MB = 16;
 export const PEER_BRIDGE_LIST_MAX_RESPONSE_BYTES = 1024 * 1024;
+export const PEER_BRIDGE_READ_MAX_RESPONSE_BYTES = 128 * 1024 * 1024;
 
 const MAX_CHUNKS_PER_RESPONSE = 65_536;
 
@@ -118,8 +120,22 @@ export function sliceUtf8Chunks(text: string, maxChunkBytes: number): string[] {
   return chunks;
 }
 
-function maxResponseBytes(operation: PeerBridgeOperation, maxToolsCallBytes: number): number {
-  if (operation === 'read') return SESSION_READ_BODY_BYTES;
+/** Resolve the maximum `read` response byte limit from option or default `128` MiB. */
+export function resolvePeerBridgeMaxReadBytes(
+  opts: PeerBridgeLimitsOptions = {},
+): number {
+  if (
+    opts.maxReadResponseBytes !== undefined &&
+    Number.isFinite(opts.maxReadResponseBytes) &&
+    opts.maxReadResponseBytes > 0
+  ) {
+    return Math.floor(opts.maxReadResponseBytes);
+  }
+  return PEER_BRIDGE_READ_MAX_RESPONSE_BYTES;
+}
+
+function maxResponseBytes(operation: PeerBridgeOperation, maxToolsCallBytes: number, maxReadBytes: number): number {
+  if (operation === 'read') return maxReadBytes;
   if (operation === 'tools_call') return maxToolsCallBytes;
   if (operation === 'tools_list') return 512 * 1024;
   if (operation === 'list') return PEER_BRIDGE_LIST_MAX_RESPONSE_BYTES;
@@ -179,6 +195,7 @@ export class PeerBridgeConnection {
   private peerCapabilities: ReadonlySet<string> = new Set();
   private readonly pending = new Map<string, PendingForward>();
   private readonly maxToolsCallBytes: number;
+  private readonly maxReadBytes: number;
   private closed = false;
 
   constructor(
@@ -188,6 +205,7 @@ export class PeerBridgeConnection {
     limits: PeerBridgeLimitsOptions = {},
   ) {
     this.maxToolsCallBytes = resolvePeerBridgeMaxToolsCallBytes(limits);
+    this.maxReadBytes = resolvePeerBridgeMaxReadBytes(limits);
   }
 
   isAttached(operation?: PeerBridgeOperation): boolean {
@@ -298,7 +316,7 @@ export class PeerBridgeConnection {
     const entry = this.pending.get(id);
     if (entry === undefined) return;
     const rawSize = Buffer.byteLength(JSON.stringify(frame.data ?? null), 'utf8');
-    if (rawSize > maxResponseBytes(entry.operation, this.maxToolsCallBytes)) {
+    if (rawSize > maxResponseBytes(entry.operation, this.maxToolsCallBytes, this.maxReadBytes)) {
       entry.settle({ error: new AdmissionError(502, 'bridge_response_too_large') });
       return;
     }
@@ -321,7 +339,7 @@ export class PeerBridgeConnection {
       return;
     }
     const { seq, total, status, chunk } = parsed.data;
-    const limit = maxResponseBytes(entry.operation, this.maxToolsCallBytes);
+    const limit = maxResponseBytes(entry.operation, this.maxToolsCallBytes, this.maxReadBytes);
     if (seq >= total || total > MAX_CHUNKS_PER_RESPONSE || total > limit) {
       entry.settle({ error: new AdmissionError(502, 'invalid_bridge_response') });
       return;

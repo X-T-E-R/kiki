@@ -173,6 +173,13 @@ describe('private usage export isolation', () => {
     expect(exported.items.every((item) => item.operation === 'delete')).toBe(true);
     expect(f.store.take(target.id, 100, 1_048_576)?.items.every((item) => item.operation === 'delete')).toBe(true);
   });
+
+  it('rejects control characters in retireSession identifiers before constructing SQL range bounds', async () => {
+    const f = await fixture();
+    expect(() => f.store.retireSession('ws\0inject', 's1')).toThrow('invalid-session-identifier');
+    expect(() => f.store.retireSession('ws-1', 's1\u0001')).toThrow('invalid-session-identifier');
+    expect(() => f.store.retireSession('ws-1', 's1\n')).toThrow('invalid-session-identifier');
+  });
 });
 
 describe('usage export explicit save consent and automatic upload', () => {

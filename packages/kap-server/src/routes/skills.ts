@@ -379,20 +379,11 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
       const { session_id } = req.params;
       const live = core.accessor.get(ISessionManager).get(session_id);
       if (live !== undefined) {
-        const operation = await acquireSessionOperation(core, session_id, 'operation');
-        try {
-          if (operation.handle === undefined) {
-            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
-            return;
-          }
-          const catalog = operation.handle.accessor.get(ISessionSkillCatalog);
-          await catalog.ready;
-          const skills = catalog.catalog.listSkills().map((skill) => toProtocolSkill(skill));
-          reply.send(okEnvelope({ skills }, req.id));
-          return;
-        } finally {
-          await operation.dispose();
-        }
+        const catalog = live.accessor.get(ISessionSkillCatalog);
+        await catalog.ready;
+        const skills = catalog.catalog.listSkills().map((skill) => toProtocolSkill(skill));
+        reply.send(okEnvelope({ skills }, req.id));
+        return;
       }
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
       if (summary === undefined) {

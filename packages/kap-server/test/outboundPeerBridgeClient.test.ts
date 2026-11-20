@@ -6,7 +6,7 @@ import type { KlientFrame } from '@kiki/klient/host';
 import type { RemoteConnectionManager } from '../src/services/connections/manager';
 import { OutboundPeerBridgeClient } from '../src/services/threadBridge/outboundPeerBridgeClient';
 import type { SpaceThreadBridge } from '../src/services/threadBridge/bridge';
-import { PeerBridgeConnection, PeerBridgeRegistry } from '../src/transport/klient/peerBridgeSocket';
+import { PEER_BRIDGE_READ_MAX_RESPONSE_BYTES, PeerBridgeConnection, PeerBridgeRegistry } from '../src/transport/klient/peerBridgeSocket';
 
 interface Frame {
   readonly type?: string;
@@ -477,6 +477,32 @@ describe('PeerBridge chunked_v1 framing and two-lane anti-HOL scheduler', () => 
     abortController.abort(new Error('caller_cancelled'));
     await expect(cancelled).rejects.toThrow('caller_cancelled');
     expect(sent.at(-1)).toEqual({ type: 'bridge_cancel', id: cancelId });
+    conn.dispose();
+  });
+
+  it('caps chunked read responses to a finite default ceiling and cleans up buffers on oversize rejection', async () => {
+    expect(Number.isFinite(PEER_BRIDGE_READ_MAX_RESPONSE_BYTES)).toBe(true);
+    expect(PEER_BRIDGE_READ_MAX_RESPONSE_BYTES).toBe(128 * 1024 * 1024);
+    const registry = new PeerBridgeRegistry();
+    const sent: KlientFrame[] = [];
+    const conn = new PeerBridgeConnection('grant-read-cap', registry, (frame) => {
+      sent.push(frame);
+      return true;
+    }, { maxReadResponseBytes: 4096 });
+    conn.receive({ type: 'bridge_attach', id: 'attach-read', data: { capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] } });
+
+    const oversizedRead = conn.forward('read', 'cred', {}, new AbortController().signal);
+    const reqId = sent.at(-1)!.id!;
+    conn.receive({ type: 'bridge_response_chunk', id: reqId, data: { seq: 0, total: 3, status: 200, chunk: 'r'.repeat(2500) } });
+    conn.receive({ type: 'bridge_response_chunk', id: reqId, data: { seq: 1, total: 3, chunk: 'r'.repeat(2500) } });
+    await expect(oversizedRead).rejects.toMatchObject({ status: 502, reason: 'bridge_response_too_large' });
+    conn.receive({ type: 'bridge_response_chunk', id: reqId, data: { seq: 2, total: 3, chunk: 'ignored-after-cleanup' } });
+    expect((conn as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0);
+
+    const smallRead = conn.forward('read', 'cred', {}, new AbortController().signal);
+    const okId = sent.at(-1)!.id!;
+    conn.receive({ type: 'bridge_response_chunk', id: okId, data: { seq: 0, total: 1, status: 200, chunk: JSON.stringify({ code: 0, msg: 'ok', data: { ok: true } }) } });
+    await expect(smallRead).resolves.toMatchObject({ status: 200, envelope: { code: 0, msg: 'ok', data: { ok: true } } });
     conn.dispose();
   });
 
