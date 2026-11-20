@@ -8631,6 +8631,52 @@ async function scenarioGuiPresetStates() {
   await page.emulateMedia({ colorScheme: 'light' });
   await page.unroute('**/api/**', interceptDenseCompact);
   await page.setViewportSize({ width: 1440, height: 900 });
+
+  // ── Preset 13: Unified Composer SSH + Mesh leases + human_controlling seat + port tunnel capsule ─
+  await page.goto(job().link('/s/session_preset_mesh_ssh'), { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+  const meshCapsuleToggle = page.locator('[data-composer-ssh-strip] [data-composer-ssh-toggle]');
+  await meshCapsuleToggle.waitFor({ timeout: 10_000 });
+  await page.waitForFunction(
+    () => (document.querySelector('[data-composer-ssh-toggle]')?.textContent ?? '').includes('GPU Worker 01 +3'),
+    null,
+    { timeout: 10_000 },
+  );
+  await meshCapsuleToggle.click();
+  await page.locator('[data-composer-ssh-list]').waitFor({ timeout: 5_000 });
+  await page.locator('[data-composer-mesh-takeover="human"]').waitFor({ timeout: 5_000 });
+  await page.locator('[data-composer-mesh-tunnel="tun-5173"]').waitFor({ timeout: 5_000 });
+  await page.waitForTimeout(150);
+  const meshHit = await assertPopoverUnoccluded('[data-composer-ssh-list]', 'preset-13-composer-mesh-ssh-capsule');
+  const meshCapsuleMetrics = await page.evaluate(() => {
+    const popup = document.querySelector('[data-composer-ssh-list]');
+    if (!popup) return { ok: false };
+    const scrollable = [...popup.querySelectorAll('*')].filter((el) => {
+      const oy = getComputedStyle(el).overflowY;
+      return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 2;
+    });
+    return {
+      ok: true,
+      summary: (document.querySelector('[data-composer-ssh-toggle]')?.textContent ?? '').trim(),
+      sshChips: popup.querySelectorAll('[data-composer-ssh-chip]').length,
+      meshNodes: popup.querySelectorAll('[data-composer-mesh-item^="node:"]').length,
+      meshSeats: popup.querySelectorAll('[data-composer-mesh-item^="seat:"]').length,
+      humanTakeoverMarks: popup.querySelectorAll('[data-composer-mesh-takeover="human"]').length,
+      portTunnels: popup.querySelectorAll('[data-composer-mesh-tunnel]').length,
+      tunnelText: (popup.querySelector('[data-composer-mesh-tunnel="tun-5173"]')?.textContent ?? '').trim(),
+      scrollableDescendantCount: scrollable.length,
+    };
+  });
+  console.log(`[check] preset-13 meshSshCapsule=${JSON.stringify({ ...meshCapsuleMetrics, inViewport: meshHit.inViewport })}`);
+  if (!meshCapsuleMetrics.ok || meshCapsuleMetrics.sshChips !== 1 || meshCapsuleMetrics.meshNodes !== 1 || meshCapsuleMetrics.meshSeats !== 1 || meshCapsuleMetrics.humanTakeoverMarks !== 1 || meshCapsuleMetrics.portTunnels !== 1) {
+    throw new Error(`preset-13 mesh/ssh capsule items mismatch: ${JSON.stringify(meshCapsuleMetrics)}`);
+  }
+  if (meshCapsuleMetrics.scrollableDescendantCount > 1) {
+    throw new Error(`preset-13 mesh/ssh popover has nested scroll containers: ${meshCapsuleMetrics.scrollableDescendantCount}`);
+  }
+  await shot('preset-13-composer-mesh-ssh-capsule');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-composer-ssh-list]').waitFor({ state: 'detached', timeout: 5_000 });
 }
 
 // ---------------------------------------------------------------------------

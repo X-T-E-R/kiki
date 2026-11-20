@@ -189,6 +189,7 @@ import { handleContextStrategy, resetContextStrategy } from './fixture-context-s
 import { handlePluginUsage, handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
+import { handleMesh } from './fixture-mesh.mjs';
 import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture-antigravity.mjs';
 import { handleGuiEntries } from './fixture-gui-entries.mjs';
 import { handleDurableAdmission } from './fixture-admission.mjs';
@@ -2923,6 +2924,8 @@ class FixtureServer {
   route(res, path, query, body, method, req) {
     // Native SSH surface (scripts/fixture-ssh.mjs) — ahead of the session tail routes.
     if ((path.startsWith('/ssh/') || /^\/sessions\/[^/:]+\/ssh\//.test(path)) && handleSsh(this, res, path, query, method, body)) return;
+    // Session Mesh leases, port tunnels, and takeover locks (scripts/fixture-mesh.mjs).
+    if (path.startsWith('/mesh/') && handleMesh(this, res, path, method, body)) return;
     // Browser connections (scripts/fixture-browser.mjs) — the browser REST domain.
     if (path.startsWith('/browser/') && handleBrowser(this, res, path, query, method, body)) return;
     // Web access (scripts/fixture-web-access.mjs) — the browser entry point surface.
@@ -5739,6 +5742,7 @@ class FixtureServer {
       case 'scenario':
         await this.loadScenario(body.name);
         this.ssh = undefined; // fixture-ssh.mjs reseeds from the scenario
+        this.mesh = undefined; // fixture-mesh.mjs reseeds from the scenario
         this.spaces = undefined; // fixture-spaces.mjs reseeds too
         this.webAccess = undefined; // fixture-web-access.mjs reseeds too
         return this.envelope(res, { active: body.name });

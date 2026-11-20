@@ -30,6 +30,7 @@ const WS_LABS = 'wd_preset_labs_000000000003';
 const SID = 'session_preset_persona_audio';
 const SID_DENSE = 'session_preset_dense_combined';
 const SID_COLD = 'session_preset_cold_preparing';
+const SID_MESH = 'session_preset_mesh_ssh';
 const AUDIO_FILE_ID = 'preset_audio_wav_01';
 
 const workspaces = [
@@ -203,6 +204,13 @@ const coldMessages = [
   assistantMsg(SID_COLD, ['冷开历史回复 2：准备就绪，等待用户触发冷转热发送。'], 29),
 ];
 
+const meshMessages = [
+  userMsg(SID_MESH, '核验底部统一 SSH + Mesh 租约与端口隧道胶囊的展开布局与人工接管标记。', 10),
+  assistantMsg(SID_MESH, [
+    '已将 `GPU Worker 01`、远端节点 `Mac Studio`、人工接管中的 `Claude Seat` 与本地回环隧道 `127.0.0.1:5173 → 3000` 归入同一个外部状态胶囊，点击胶囊可向上展开核对。',
+  ], 9),
+];
+
 export default {
   experimentalFlags: { native_ssh: true },
   workspaces,
@@ -255,6 +263,57 @@ export default {
     status: { 'host-01': 'ready', 'host-02': 'idle' },
     session: {
       [SID]: ['host-01', 'host-02'],
+      [SID_MESH]: ['host-01'],
+    },
+  },
+  mesh: {
+    sessions: {
+      [SID_MESH]: {
+        nodes: [
+          {
+            nodeId: 'node-mac-studio',
+            label: 'Mac Studio',
+            trustTier: 'trusted_personal',
+            capabilities: ['execute', 'read', 'send', 'port_tunnel', 'takeover'],
+            state: 'online',
+            platform: 'darwin',
+            pinnedAt: Date.now() - 120_000,
+            createdBySession: false,
+          },
+        ],
+        seats: [
+          {
+            seatId: 'seat-claude-01',
+            nodeId: 'node-mac-studio',
+            label: 'Claude Seat',
+            state: 'running',
+            pinnedAt: Date.now() - 90_000,
+            updatedAt: Date.now() - 15_000,
+            createdBySession: true,
+          },
+        ],
+        workspaceCopies: [],
+        portTunnels: [
+          {
+            tunnelId: 'tun-5173',
+            nodeId: 'node-mac-studio',
+            remoteHost: '127.0.0.1',
+            remotePort: 3000,
+            localHost: '127.0.0.1',
+            localPort: 5173,
+            healthy: true,
+            createdAt: Date.now() - 60_000,
+          },
+        ],
+      },
+    },
+    takeovers: {
+      'seat-claude-01': {
+        holder: 'human',
+        epoch: 3,
+        ttlMs: 300_000,
+        reason: 'Live review',
+      },
     },
   },
   mediaFiles: {
@@ -294,6 +353,13 @@ export default {
       metadata: { cwd: 'C:/fixture/kiki-app' },
       agent_config: { model: 'fixture/kiki-pro', profile: 'agent' },
       message_count: coldMessages.length,
+    }),
+    sessionRecord(SID_MESH, {
+      title: '统一 SSH + Mesh 租约与端口隧道胶囊核验',
+      workspace_id: WS_MAIN,
+      metadata: { cwd: 'C:/fixture/kiki-app' },
+      agent_config: { model: 'fixture/kiki-pro', profile: 'agent' },
+      message_count: meshMessages.length,
     }),
     ...extraSessions,
   ],
@@ -413,6 +479,11 @@ export default {
     [SID_COLD]: {
       epoch: 'cold:session_preset_cold_preparing',
       messages: coldMessages,
+      has_more: false,
+      tasks: [],
+    },
+    [SID_MESH]: {
+      messages: meshMessages,
       has_more: false,
       tasks: [],
     },
