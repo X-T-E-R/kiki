@@ -20,6 +20,11 @@ import {
   runScenarioS7LongRunningSoak,
   runScenarioS8MediaWeakNetStorm,
 } from './scenario-soak-and-media-weaknet.mjs';
+import {
+  resolveS9TierConfig,
+  runScenarioS9BrowserFlightRecorder,
+  seedS9ChaosExtensions,
+} from './scenario-s9-browser-flight-recorder.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -381,8 +386,8 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
 
   const readyMsg = await new Promise((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`Managed server boot timed out after 45s. stderr=${stderrLines.join(' | ')}`)),
-      45_000,
+      () => reject(new Error(`Managed server boot timed out after 120s. stderr=${stderrLines.join(' | ')}`)),
+      120_000,
     );
     child.once('message', (m) => {
       if (m?.ready) {
@@ -1739,23 +1744,28 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
 export async function runChaosScaleSuite(options = {}) {
   const startedAt = performance.now();
   const dir = path.resolve(options.dir ?? '/tmp/kiki-chaos-nvme');
-  const giantGiB = options.giantGiB ?? 3.1;
-  const subagentCount = options.subagentCount ?? 1520;
-  const concurrency = options.concurrency ?? 128;
-  const extremeConcurrency = options.extremeConcurrency ?? 1000;
+  const tier = options.tier === 'smoke' ? 'smoke' : 'full';
+  const s9TierConfig = resolveS9TierConfig(tier);
+  const giantGiB = options.giantGiB ?? (tier === 'smoke' ? s9TierConfig.giantGiB : 3.1);
+  const subagentCount = options.subagentCount ?? (tier === 'smoke' ? 80 : 1520);
+  const concurrency = options.concurrency ?? (tier === 'smoke' ? 16 : 128);
+  const extremeConcurrency = options.extremeConcurrency ?? (tier === 'smoke' ? 0 : 1000);
   const maxOldSpaceMb = options.maxOldSpaceMb ?? 2048;
   const existingCorpus = Boolean(options.existingCorpus);
   const runBrowser = options.runBrowser !== false;
   const s6Only = Boolean(options.s6Only);
   const s7Only = Boolean(options.s7Only);
   const s8Only = Boolean(options.s8Only);
+  const s9Only = Boolean(options.s9Only);
   const runS7S8 = Boolean(options.runS7S8);
-  const isolatedOnly = s6Only || s7Only || s8Only || runS7S8;
-  const runS6 = s6Only || Boolean(options.runS6);
-  const runS7 = s7Only || runS7S8 || Boolean(options.runS7);
-  const runS8 = s8Only || runS7S8 || Boolean(options.runS8);
+  const runAll = Boolean(options.runAll);
+  const isolatedOnly = s6Only || s7Only || s8Only || s9Only || runS7S8;
+  const runS6 = s6Only || runAll || Boolean(options.runS6);
+  const runS7 = s7Only || runS7S8 || runAll || Boolean(options.runS7);
+  const runS8 = s8Only || runS7S8 || runAll || Boolean(options.runS8);
+  const runS9 = s9Only || runAll || Boolean(options.runS9);
   const s7Cycles = options.s7Cycles ?? 200;
-  const tenKSubagentCount = options.tenKSubagentCount ?? 10_000;
+  const tenKSubagentCount = options.tenKSubagentCount ?? (tier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
   const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
   const progress = (msg) => process.stderr.write(`[ccp-chaos] ${msg}\n`);
 
@@ -1779,8 +1789,8 @@ export async function runChaosScaleSuite(options = {}) {
         dir,
         giantGiB,
         subagentCount,
-        heavySubagentMiB: options.heavySubagentMiB ?? 16,
-        backgroundSessionCount: options.backgroundSessionCount ?? 80,
+        heavySubagentMiB: options.heavySubagentMiB ?? (tier === 'smoke' ? 1 : 16),
+        backgroundSessionCount: options.backgroundSessionCount ?? (tier === 'smoke' ? 12 : 80),
         anthropicBaseUrl: twin.httpBaseUrl,
         openaiBaseUrl: twin.httpV1BaseUrl,
       });
@@ -1790,7 +1800,7 @@ export async function runChaosScaleSuite(options = {}) {
   );
 
   let tenKCorpus = null;
-  if (runS6) {
+  if (runS6 || runS9) {
     const existing10kState = path.join(corpus.homeDir, 'sessions', corpus.workspaceId, 'chaos_10k_subagents', 'state.json');
     if (options.reuse10kSession && fs.existsSync(existing10kState)) {
       const stateBytes = fs.statSync(existing10kState).size;
@@ -1839,6 +1849,18 @@ export async function runChaosScaleSuite(options = {}) {
     });
     progress(
       `Extreme media corpus ready in ${mediaCorpus.elapsedMs}ms: session=${mediaCorpus.sessionId}, imgs=${mediaCorpus.imageCount} (${mediaCorpus.giantImageCount} giant @ ${mediaCorpus.giantPngMiB} MiB), AV=${mediaCorpus.totalPlaybackAssets} (${mediaCorpus.videoCount} MP4 + ${mediaCorpus.audioCount} WAV)`,
+    );
+  }
+
+  let s9Corpus = null;
+  if (runS9) {
+    s9Corpus = seedS9ChaosExtensions({
+      dir,
+      corpus,
+      tierConfig: s9TierConfig,
+    });
+    progress(
+      `S9 full-stack corpus extensions ready in ${s9Corpus.elapsedMs}ms (tier=${s9TierConfig.tier}): sessions=${s9Corpus.seededSessionCount}, personas=${s9Corpus.personaIds.length}, media=${s9Corpus.mediaSessionId} (ogg=${s9Corpus.oggBytes}B, mp4=${s9Corpus.mp4Bytes}B)`,
     );
   }
 
@@ -1996,6 +2018,18 @@ export async function runChaosScaleSuite(options = {}) {
       persistCheckpoint();
     }
 
+    if (runS9 && s9Corpus && runBrowser) {
+      report.scenarios.S9_fullstackBrowserFlightRecorder = await runScenarioS9BrowserFlightRecorder({
+        server: mainServer,
+        corpus,
+        tenKCorpus,
+        s9Corpus,
+        tier,
+        progress,
+      });
+      persistCheckpoint();
+    }
+
     await mainServer.shutdown().catch(() => undefined);
     mainServer = null;
 
@@ -2004,6 +2038,7 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS6) checks.push(Boolean(report.scenarios.S6_tenKSubagentsScale?.passed));
       if (runS7) checks.push(Boolean(report.scenarios.S7_longRunningSoak?.passed));
       if (runS8) checks.push(Boolean(report.scenarios.S8_extremeMediaWeakNet?.passed));
+      if (runS9) checks.push(Boolean(report.scenarios.S9_fullstackBrowserFlightRecorder?.passed));
       report.overallPassed = checks.length > 0 && checks.every(Boolean);
     } else {
       report.overallPassed = Boolean(
@@ -2014,7 +2049,8 @@ export async function runChaosScaleSuite(options = {}) {
           (!runBrowser || report.scenarios.S5_frontendBrowserUx?.passed) &&
           (!runS6 || report.scenarios.S6_tenKSubagentsScale?.passed) &&
           (!runS7 || report.scenarios.S7_longRunningSoak?.passed) &&
-          (!runS8 || report.scenarios.S8_extremeMediaWeakNet?.passed),
+          (!runS8 || report.scenarios.S8_extremeMediaWeakNet?.passed) &&
+          (!runS9 || report.scenarios.S9_fullstackBrowserFlightRecorder?.passed),
       );
     }
   } finally {
@@ -2034,28 +2070,33 @@ if (isCliMain && !isServerWorker) {
   const args = process.argv.slice(2);
   const opts = {
     dir: '/tmp/kiki-chaos-nvme',
-    giantGiB: 3.1,
-    subagentCount: 1520,
-    concurrency: 128,
-    extremeConcurrency: 1000,
+    tier: 'full',
+    giantGiB: undefined,
+    subagentCount: undefined,
+    concurrency: undefined,
+    extremeConcurrency: undefined,
     maxOldSpaceMb: 2048,
     existingCorpus: false,
     runBrowser: true,
     s6Only: false,
     s7Only: false,
     s8Only: false,
+    s9Only: false,
     runS7S8: false,
+    runAll: false,
     runS6: false,
     runS7: false,
     runS8: false,
+    runS9: false,
     s7Cycles: 200,
     reuse10kSession: false,
-    tenKSubagentCount: 10_000,
+    tenKSubagentCount: undefined,
     s6StepTimeoutMs: 45_000,
     outPath: '/tmp/kiki-chaos-results.json',
   };
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--dir' && args[i + 1]) opts.dir = args[++i];
+    else if (args[i] === '--tier' && args[i + 1]) opts.tier = args[++i];
     else if (args[i] === '--giant-gib' && args[i + 1]) opts.giantGiB = Number(args[++i]);
     else if (args[i] === '--subagents' && args[i + 1]) opts.subagentCount = Number(args[++i]);
     else if (args[i] === '--concurrency' && args[i + 1]) opts.concurrency = Number(args[++i]);
@@ -2066,10 +2107,13 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s6-only') opts.s6Only = true;
     else if (args[i] === '--s7-only') opts.s7Only = true;
     else if (args[i] === '--s8-only') opts.s8Only = true;
+    else if (args[i] === '--s9-only') opts.s9Only = true;
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
+    else if (args[i] === '--run-all') opts.runAll = true;
     else if (args[i] === '--run-s6') opts.runS6 = true;
     else if (args[i] === '--run-s7') opts.runS7 = true;
     else if (args[i] === '--run-s8') opts.runS8 = true;
+    else if (args[i] === '--run-s9') opts.runS9 = true;
     else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--reuse-10k-session') opts.reuse10kSession = true;
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);

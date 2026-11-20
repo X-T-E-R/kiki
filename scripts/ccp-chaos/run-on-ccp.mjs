@@ -401,9 +401,13 @@ export async function runChaosOnCcp(options = {}) {
   const s6Only = Boolean(options.s6Only);
   const s7Only = Boolean(options.s7Only);
   const s8Only = Boolean(options.s8Only);
+  const s9Only = Boolean(options.s9Only);
   const runS7S8 = Boolean(options.runS7S8);
-  const isolatedOnly = s6Only || s7Only || s8Only || runS7S8;
-  const runS6 = s6Only || Boolean(options.runS6);
+  const runAll = Boolean(options.runAll);
+  const tier = options.tier === 'smoke' ? 'smoke' : 'full';
+  const isolatedOnly = s6Only || s7Only || s8Only || s9Only || runS7S8;
+  const runS6 = s6Only || runAll || Boolean(options.runS6);
+  const runS9 = s9Only || runAll || Boolean(options.runS9);
   const s7Cycles = options.s7Cycles ?? 200;
   const tenKSubagentCount = options.tenKSubagentCount ?? 10_000;
   const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
@@ -481,7 +485,7 @@ export async function runChaosOnCcp(options = {}) {
         '--idle-timeout',
         String(idleTimeoutMinutes),
         '--label',
-        s6Only ? 'kiki-chaos-10k-subagents' : 'kiki-chaos-scale-suite',
+        s9Only ? 'kiki-chaos-s9-browser' : s6Only ? 'kiki-chaos-10k-subagents' : 'kiki-chaos-scale-suite',
         '--idempotency-key',
         idemKey,
         '--follow',
@@ -714,23 +718,26 @@ export async function runChaosOnCcp(options = {}) {
 
     log(
       isolatedOnly
-        ? `Running targeted Chaos-Scale scenarios (s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}) on CCP Linux (keepRuntime=${keepRuntime})...`
-        : 'Running test hygiene, node --test, full S1-S5 Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...',
+        ? `Running targeted Chaos-Scale scenarios (tier=${tier}, s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}, s9=${s9Only || runS9}) on CCP Linux (keepRuntime=${keepRuntime})...`
+        : `Running test hygiene, node --test, full S1-S5${runAll ? '+S6-S9' : runS9 ? '+S9' : ''} Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...`,
     );
     const runnerFlags = [
       '--dir /tmp/kiki-chaos-nvme',
+      `--tier ${tier}`,
       `--giant-gib ${giantGiB}`,
       `--concurrency ${concurrency}`,
       `--extreme-concurrency ${extremeConcurrency}`,
       `--max-old-space-mb ${maxOldSpaceMb}`,
       ...(usedExistingCorpus ? ['--existing-corpus'] : []),
       ...(runBrowser ? [] : ['--no-browser']),
-      ...(s6Only ? ['--s6-only'] : runS6 ? ['--run-s6'] : []),
+      ...(runAll ? ['--run-all'] : []),
+      ...(s6Only ? ['--s6-only'] : options.runS6 ? ['--run-s6'] : []),
       ...(s7Only ? ['--s7-only'] : options.runS7 ? ['--run-s7'] : []),
       ...(s8Only ? ['--s8-only'] : options.runS8 ? ['--run-s8'] : []),
+      ...(s9Only ? ['--s9-only'] : options.runS9 ? ['--run-s9'] : []),
       ...(runS7S8 ? ['--run-s7-s8'] : []),
-      ...(s7Only || runS7S8 || options.runS7 ? [`--s7-cycles ${s7Cycles}`] : []),
-      ...(runS6 ? [`--tenk-subagents ${tenKSubagentCount}`, `--s6-step-timeout-ms ${s6StepTimeoutMs}`] : []),
+      ...(s7Only || runS7S8 || runAll || options.runS7 ? [`--s7-cycles ${s7Cycles}`] : []),
+      ...(runS6 || runS9 ? [`--tenk-subagents ${tenKSubagentCount}`, `--s6-step-timeout-ms ${s6StepTimeoutMs}`] : []),
       ...(syncCodeOnly || options.reuseWarmCorpus ? ['--reuse-10k-session'] : []),
       '--out /tmp/kiki-chaos-results.json',
     ].join(' ');
@@ -855,6 +862,7 @@ export async function runChaosOnCcp(options = {}) {
 
 export function parseCcpCliArgs(args) {
   const opts = {
+    tier: 'full',
     giantGiB: 3.1,
     concurrency: 128,
     extremeConcurrency: 1000,
@@ -865,10 +873,13 @@ export function parseCcpCliArgs(args) {
     s6Only: false,
     s7Only: false,
     s8Only: false,
+    s9Only: false,
     runS7S8: false,
+    runAll: false,
     runS6: false,
     runS7: false,
     runS8: false,
+    runS9: false,
     s7Cycles: 200,
     tenKSubagentCount: 10_000,
     s6StepTimeoutMs: 45_000,
@@ -879,7 +890,8 @@ export function parseCcpCliArgs(args) {
     idleTimeoutMinutes: 60,
   };
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '--giant-gib' && args[i + 1]) opts.giantGiB = Number(args[++i]);
+    if (args[i] === '--tier' && args[i + 1]) opts.tier = args[++i];
+    else if (args[i] === '--giant-gib' && args[i + 1]) opts.giantGiB = Number(args[++i]);
     else if (args[i] === '--concurrency' && args[i + 1]) opts.concurrency = Number(args[++i]);
     else if (args[i] === '--extreme-concurrency' && args[i + 1]) opts.extremeConcurrency = Number(args[++i]);
     else if (args[i] === '--max-old-space-mb' && args[i + 1]) opts.maxOldSpaceMb = Number(args[++i]);
@@ -889,10 +901,13 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--s6-only') opts.s6Only = true;
     else if (args[i] === '--s7-only') opts.s7Only = true;
     else if (args[i] === '--s8-only') opts.s8Only = true;
+    else if (args[i] === '--s9-only') opts.s9Only = true;
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
+    else if (args[i] === '--run-all') opts.runAll = true;
     else if (args[i] === '--run-s6') opts.runS6 = true;
     else if (args[i] === '--run-s7') opts.runS7 = true;
     else if (args[i] === '--run-s8') opts.runS8 = true;
+    else if (args[i] === '--run-s9') opts.runS9 = true;
     else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
     else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);
