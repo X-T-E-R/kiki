@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 import { createDecorator } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
@@ -6,7 +7,7 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IMemoryPersistence, type MemoryCommit, type MemoryObjectEdit, type MemoryReadView, type MemoryProvenance } from '#/persistence/interface/memoryPersistence';
 import { IMemoryScopes, type MemoryScope } from './memoryScopes';
-import { decodeMemoryEntry, type IMemoryStore, type MemoryEntry, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource, type MemoryStatus } from './memoryStore';
+import { decodeMemoryEntry, type IMemoryStore, type MemoryEntry, type MemoryJournalRecord, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource, type MemoryStatus } from './memoryStore';
 import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryHostApplicability, normalizeMemoryValidity, normalizeOriginHostId } from './memoryMetadata';
 import { isMemoryVisibleOnHost, resolveMemoryHostId } from './projectIdentityBindings';
 import { memoryQueryCursor, memoryQueryRequest } from './memoryQuery';
@@ -98,7 +99,15 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   readonly onDidChange = this.emitter.event;
   private readonly cursorSalt = randomUUID();
   private readonly queryViewCache = new Map<string, CachedQueryView>();
-  constructor(@IMemoryPersistence private readonly persistence: IMemoryPersistence, @IMemoryScopes private readonly scopes: IMemoryScopes) { super(); }
+  constructor(
+    @IMemoryPersistence private readonly persistence: IMemoryPersistence,
+    @IMemoryScopes private readonly scopes: IMemoryScopes,
+  ) { super(); }
+  private resolveHostId(explicit?: string): string {
+    const dbPath = (this.persistence as { readonly databasePath?: unknown }).databasePath;
+    const homeDir = typeof dbPath === 'string' ? dirname(dirname(dirname(dbPath))) : undefined;
+    return explicit ?? resolveMemoryHostId(undefined, homeDir);
+  }
   private async readBasesFor(scope: MemoryScope): Promise<readonly string[]> {
     return this.scopes.resolveReadBases !== undefined
       ? this.scopes.resolveReadBases(scope)
@@ -150,7 +159,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       }
     }
     const view = await this.persistence.read(allBases, undefined, { excludeTombstones: true, statuses: options?.statuses });
-    const hostId = options?.hostId ?? resolveMemoryHostId();
+    const hostId = this.resolveHostId(options?.hostId);
     const deduped = new Map<string, { readonly priority: number; readonly entry: MemoryEntry & { readonly scope: MemoryScope } }>();
     for (const object of view.objects) {
       if (object.entry === null) continue;
@@ -207,8 +216,17 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   async getMany(scope: MemoryScope, ids: readonly string[]): Promise<ReadonlyMap<string, MemoryEntry>> {
     return new Map((await this.pointView(scope, ids)).view.objects.flatMap((object) => object.entry === null || !ids.includes(object.id) ? [] : [[object.id, object.entry] as const]));
   }
-  async getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined> { return this.persistence.revision(await this.scopes.resolve(scope), id, revision); }
-  async provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance> { return this.persistence.provenance(await this.scopes.resolve(scope), id); }
+  async getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined> {
+    for (const base of await this.readBasesFor(scope)) {
+      const entry = await this.persistence.revision(base, id, revision);
+      if (entry !== undefined) return entry;
+    }
+    return undefined;
+  }
+  async provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance> {
+    const located = await this.pointView(scope, [id]);
+    return this.persistence.provenance(located.base, id);
+  }
   async ingest({ mutation, unit }: MemoryIngestCandidate): Promise<MemoryPutResult> {
     const locator = unit.locator?.replaceAll('\\', '/');
     const sessionDerived = locator?.startsWith('sessions/') || locator?.startsWith('memory/.dreams/session-corpus/');
@@ -299,9 +317,21 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     }
     const now = new Date().toISOString();
     const id = create || proposal ? `m_${randomUUID().replaceAll('-', '')}` : input.id!;
+    const resolvedApplicability = archive
+      ? old?.applicability
+      : input.applicability === undefined
+        ? (create ? undefined : old?.applicability)
+        : normalizeMemoryHostApplicability(input.applicability);
+    const explicitOriginHost = archive
+      ? old?.origin_host_id
+      : input.origin_host_id === undefined
+        ? (create ? undefined : old?.origin_host_id)
+        : normalizeOriginHostId(input.origin_host_id);
+    const resolvedOriginHost =
+      explicitOriginHost ?? (resolvedApplicability === 'machine-local' ? this.resolveHostId() : undefined);
     const entry: MemoryEntry = { id, type, title, body, basis, validity, pinned: archive ? old?.pinned ?? false : input.pinned ?? (create ? false : old?.pinned) ?? false,
-      applicability: archive ? old?.applicability : input.applicability === undefined ? (create ? undefined : old?.applicability) : normalizeMemoryHostApplicability(input.applicability),
-      origin_host_id: archive ? old?.origin_host_id : input.origin_host_id === undefined ? (create ? undefined : old?.origin_host_id) : normalizeOriginHostId(input.origin_host_id),
+      applicability: resolvedApplicability,
+      origin_host_id: resolvedOriginHost,
       status: input.pending ? 'pending' : archive ? 'archived' : 'active', created: create || proposal ? now : old?.created ?? now, updated: now, revision: newRevision(), source: input.source, reason: redactMemorySecrets(input.reason.trim()),
       supersedes: input.pending ? input.action === 'supersede' || proposal ? input.id : old?.supersedes : candidate?.status === 'pending' ? undefined : old?.supersedes,
       supersedes_revision: input.pending ? input.action === 'supersede' || proposal ? input.expectedRevision : old?.supersedes_revision : undefined,
@@ -334,9 +364,27 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const summary = pointSupported ? await this.persistence.scopeSummary!(base, input.action === 'create' ? title.toLowerCase() : undefined) : undefined;
     if (summary !== undefined && summary.generation !== view.generation) fail('revision_conflict', 'Memory commit generation changed; reread and reconcile');
     if (input.action === 'create') {
-      const hasDuplicateTitle = summary !== undefined
+      let hasDuplicateTitle = summary !== undefined
         ? summary.duplicateTitle
         : view.objects.some((object) => object.entry !== null && object.entry.status === 'active' && object.entry.title.toLowerCase() === title.toLowerCase());
+      if (!hasDuplicateTitle) {
+        const legacyBases = (await this.readBasesFor(original.scope)).filter((candidateBase) => candidateBase !== base);
+        for (const legacyBase of legacyBases) {
+          if (pointSupported) {
+            const legacySummary = await this.persistence.scopeSummary!(legacyBase, title.toLowerCase());
+            if (legacySummary.duplicateTitle) {
+              hasDuplicateTitle = true;
+              break;
+            }
+          } else {
+            const legacyView = await this.persistence.read([legacyBase], view.generation, { excludeTombstones: true, statuses: ['active'] });
+            if (legacyView.objects.some((object) => object.entry !== null && object.entry.status === 'active' && object.entry.title.toLowerCase() === title.toLowerCase())) {
+              hasDuplicateTitle = true;
+              break;
+            }
+          }
+        }
+      }
       if (hasDuplicateTitle) fail('duplicate_title', 'Similar memory already exists; update or supersede it');
     }
     const edits: MemoryObjectEdit[] = [];
@@ -401,11 +449,29 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       journal: [{ scope: base, operationId, action: 'delete', id, at: new Date().toISOString(), writer, before: JSON.stringify(old), beforeRevision: old.revision, afterRevision: null }], result: { operationId } });
     return operationId;
   }
-  async journal(scope: MemoryScope, id?: string): ReturnType<IMemoryStore['journal']> { return this.persistence.journal(await this.scopes.resolve(scope), id); }
+  async journal(scope: MemoryScope, id?: string): ReturnType<IMemoryStore['journal']> {
+    const bases = await this.readBasesFor(scope);
+    if (bases.length === 1) return this.persistence.journal(bases[0]!, id);
+    const lists = await Promise.all(bases.map((base) => this.persistence.journal(base, id)));
+    return lists.flat().toSorted((a, b) => a.at.localeCompare(b.at) || a.operationId.localeCompare(b.operationId));
+  }
   async undo(scope: MemoryScope, operationId: string | null): Promise<MemoryEntry | undefined> {
-    const records = (await this.journal(scope)).filter((record) => record.operationId === operationId);
-    if (records.length === 0) fail('not_found', 'Memory operation not found');
-    const { base, view } = await this.pointView(scope, records.map((record) => record.id));
+    const bases = await this.readBasesFor(scope);
+    let owningBase: string | undefined;
+    let records: readonly MemoryJournalRecord[] = [];
+    for (const candidateBase of bases) {
+      const found = (await this.persistence.journal(candidateBase)).filter((record) => record.operationId === operationId);
+      if (found.length > 0) {
+        owningBase = candidateBase;
+        records = found;
+        break;
+      }
+    }
+    if (records.length === 0 || owningBase === undefined) fail('not_found', 'Memory operation not found');
+    const view = this.persistence.readIds === undefined
+      ? await this.persistence.read([owningBase])
+      : await this.persistence.readIds(owningBase, records.map((record) => record.id));
+    const base = owningBase;
     const nextOperation = randomUUID();
     const edits = records.map((record): MemoryObjectEdit => {
       const current = view.objects.find((object) => object.id === record.id);
@@ -422,9 +488,11 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   }
   async previewForget(scope: MemoryScope, ids: readonly string[]): Promise<MemoryForgetPreview> {
     if (ids.length === 0 || ids.length > 1000) fail('invalid_input', 'Select between one and 1000 Memory objects');
-    const base = await this.scopes.resolve(scope);
     const related = new Set<string>();
-    for (const id of ids) for (const relatedId of (await this.persistence.provenance(base, id)).relatedObjectIds) related.add(relatedId);
+    for (const id of ids) {
+      const located = await this.pointView(scope, [id]);
+      for (const relatedId of (await this.persistence.provenance(located.base, id)).relatedObjectIds) related.add(relatedId);
+    }
     if (related.size > 1000) fail('invalid_input', 'Memory source lineage exceeds the forget batch limit');
     const { view } = await this.pointView(scope, [...related]);
     const targets = [...related].toSorted().map((id): MemoryForgetTarget => {
@@ -507,7 +575,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const selected = scopes.filter((scope) => request.scope === undefined || request.scope === scope.kind);
     const scopeBases = await Promise.all(selected.map(async (scope) => ({ scope, bases: await this.readBasesFor(scope) })));
     const generation = position.fingerprint === undefined ? undefined : Number(position.fingerprint);
-    const hostId = input.hostId ?? resolveMemoryHostId();
+    const hostId = this.resolveHostId(input.hostId);
     const cachedView = await this.loadQueryView(selected, scopeBases, request.statuses!, request.type, hostId, generation);
     signal?.throwIfAborted();
     const last = position.chunkHash === undefined ? undefined : JSON.parse(position.chunkHash) as [number, string, string, string];

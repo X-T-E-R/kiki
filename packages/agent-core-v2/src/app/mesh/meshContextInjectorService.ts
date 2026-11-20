@@ -8,6 +8,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IMeshLeaseStore } from './meshLeaseStore';
 
 export const MESH_CONTEXT_INJECTION_VARIANT = 'mesh_context';
+const MESH_CONTEXT_CLEARED_DISCLOSURE = '__mesh_context_cleared__';
 
 export interface IAgentMeshContextInjectorService {
   readonly _serviceBrand: undefined;
@@ -32,7 +33,16 @@ export class AgentMeshContextInjectorService
     this._register(
       injector.register<string>(MESH_CONTEXT_INJECTION_VARIANT, async ({ lastDisclosure }) => {
         const projection = await this.leaseStore.projectContext(this.session.sessionId);
-        if (projection.contextBlock === null) return undefined;
+        if (projection.contextBlock === null) {
+          if (lastDisclosure === undefined || lastDisclosure === MESH_CONTEXT_CLEARED_DISCLOSURE) {
+            return undefined;
+          }
+          const safeSession = this.session.sessionId.replaceAll('"', '').replaceAll(/[\r\n]/g, '');
+          return {
+            content: `<mesh-context session="${safeSession}" state="cleared" />`,
+            disclosure: MESH_CONTEXT_CLEARED_DISCLOSURE,
+          };
+        }
         if (lastDisclosure === projection.contextBlock) return undefined;
         return {
           content: projection.contextBlock,

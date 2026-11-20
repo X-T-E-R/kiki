@@ -1,4 +1,5 @@
 import { hostname } from 'node:os';
+import { createKimiDeviceId } from '@kiki/oauth';
 import {
   encodeWorkDirKey,
   isValidProjectId,
@@ -28,12 +29,16 @@ interface StoredProjectBindings {
   readonly bindings: Record<string, ProjectBindingRecord>;
 }
 
-/** Resolves the deterministic host identifier used for `applicability: "machine-local"` memory isolation. */
+/** Resolves the deterministic durable host identifier used for `applicability: "machine-local"` memory isolation. */
 export function resolveMemoryHostId(
   getEnv: (name: string) => string | undefined = (name) => process.env[name],
+  homeDir?: string,
 ): string {
   const explicit = getEnv('KIKI_HOST_ID')?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
+  if (homeDir !== undefined && homeDir.trim().length > 0) {
+    return createKimiDeviceId(homeDir);
+  }
   const localHost = hostname().trim().toLowerCase();
   return localHost.length > 0 ? localHost : 'local-host';
 }
@@ -41,6 +46,7 @@ export function resolveMemoryHostId(
 /** Per-machine binding index mapping local `wd_*` workspace keys to portable `prj_*` project IDs. */
 export class ProjectIdentityBindingIndex {
   private cache: Record<string, ProjectBindingRecord> | undefined;
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly storage: IFileSystemStorageService) {}
 
@@ -68,35 +74,39 @@ export class ProjectIdentityBindingIndex {
     options?: ResolveProjectIdentityOptions & { readonly hostId?: string },
   ): Promise<ProjectIdentity> {
     const identity = await resolveProjectIdentity(cwd, options);
-    const current = { ...(await this.load()) };
-    const workDirKey = encodeWorkDirKey(cwd);
-    const existing = current[workDirKey];
-    if (
-      existing !== undefined &&
-      existing.projectId === identity.projectId &&
-      existing.source === identity.source &&
-      existing.rootPath === cwd &&
-      (options?.hostId === undefined || existing.hostId === options.hostId)
-    ) {
+    const run = this.writeChain.then(async () => {
+      const current = { ...(await this.load()) };
+      const workDirKey = encodeWorkDirKey(cwd);
+      const existing = current[workDirKey];
+      if (
+        existing !== undefined &&
+        existing.projectId === identity.projectId &&
+        existing.source === identity.source &&
+        existing.rootPath === cwd &&
+        (options?.hostId === undefined || existing.hostId === options.hostId)
+      ) {
+        return identity;
+      }
+      current[workDirKey] = {
+        workDirKey,
+        projectId: identity.projectId,
+        source: identity.source,
+        rootPath: cwd,
+        ...(options?.hostId === undefined ? {} : { hostId: options.hostId }),
+        updatedAt: new Date().toISOString(),
+      };
+      const payload: StoredProjectBindings = { version: 1, bindings: current };
+      await this.storage.write(
+        BINDINGS_SCOPE,
+        BINDINGS_KEY,
+        encoder.encode(`${JSON.stringify(payload, null, 2)}\n`),
+        { atomic: true },
+      );
+      this.cache = current;
       return identity;
-    }
-    current[workDirKey] = {
-      workDirKey,
-      projectId: identity.projectId,
-      source: identity.source,
-      rootPath: cwd,
-      ...(options?.hostId === undefined ? {} : { hostId: options.hostId }),
-      updatedAt: new Date().toISOString(),
-    };
-    const payload: StoredProjectBindings = { version: 1, bindings: current };
-    await this.storage.write(
-      BINDINGS_SCOPE,
-      BINDINGS_KEY,
-      encoder.encode(`${JSON.stringify(payload, null, 2)}\n`),
-      { atomic: true },
-    );
-    this.cache = current;
-    return identity;
+    });
+    this.writeChain = run.catch(() => undefined);
+    return run;
   }
 
   async resolveCanonicalWorkspaceId(workspaceId: string): Promise<string> {
@@ -134,13 +144,13 @@ export function isMemoryPortableForSync(entry: HostScopedMemoryLike): boolean {
   return entry.host_applicability !== 'machine-local' && entry.applicability !== 'machine-local';
 }
 
-/** Returns whether a memory entry is visible on the given host (isolating `machine-local` entries to their originating host). */
+/** Returns whether a memory entry is visible on the given host (failing closed for `machine-local` entries with missing or foreign `origin_host_id`). */
 export function isMemoryVisibleOnHost(
   entry: HostScopedMemoryLike,
   currentHostId: string,
 ): boolean {
   if (isMemoryPortableForSync(entry)) return true;
-  if (entry.origin_host_id === undefined) return true;
+  if (entry.origin_host_id === undefined || entry.origin_host_id.trim().length === 0) return false;
   return entry.origin_host_id === currentHostId;
 }
 

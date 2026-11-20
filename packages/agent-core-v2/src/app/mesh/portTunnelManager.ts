@@ -9,6 +9,8 @@ export interface OpenLoopbackTunnelOptions {
   readonly remotePort: number;
   readonly localPort?: number;
   readonly probeTimeoutMs?: number;
+  readonly connectTimeoutMs?: number;
+  readonly idleTimeoutMs?: number;
 }
 
 export interface LoopbackTunnelHandle {
@@ -114,17 +116,39 @@ export class LoopbackPortTunnelManager {
     options: Required<Pick<OpenLoopbackTunnelOptions, 'nodeId' | 'remoteHost' | 'remotePort'>> & {
       readonly localPort?: number;
       readonly probeTimeoutMs?: number;
+      readonly connectTimeoutMs?: number;
+      readonly idleTimeoutMs?: number;
     },
   ): Promise<LoopbackTunnelHandle> {
+    const connectTimeoutMs = options.connectTimeoutMs ?? options.probeTimeoutMs ?? 5_000;
+    const idleTimeoutMs = options.idleTimeoutMs ?? 300_000;
+
+    await probeUpstreamDial(
+      this.dialRemote,
+      { nodeId: options.nodeId, remoteHost: options.remoteHost, remotePort: options.remotePort },
+      connectTimeoutMs,
+    );
+
     const sockets = new Set<Socket>();
     const server = createServer((clientSocket) => {
       sockets.add(clientSocket);
+      clientSocket.setTimeout(idleTimeoutMs);
+      clientSocket.once('timeout', () => clientSocket.destroy());
       clientSocket.once('close', () => sockets.delete(clientSocket));
-      const upstream = this.dialRemote({
-        nodeId: options.nodeId,
-        remoteHost: options.remoteHost,
-        remotePort: options.remotePort,
-      });
+      let upstream: Duplex;
+      try {
+        upstream = this.dialRemote({
+          nodeId: options.nodeId,
+          remoteHost: options.remoteHost,
+          remotePort: options.remotePort,
+        });
+      } catch {
+        clientSocket.destroy();
+        return;
+      }
+      if ('setTimeout' in upstream && typeof upstream.setTimeout === 'function') {
+        upstream.setTimeout(idleTimeoutMs, () => upstream.destroy());
+      }
       clientSocket.pipe(upstream);
       upstream.pipe(clientSocket);
       const teardown = (): void => {
@@ -204,6 +228,42 @@ export function probeTcpReady(host: string, port: number, timeoutMs = 1500): Pro
     socket.setTimeout(timeoutMs, () => finish(false));
     socket.once('connect', () => finish(true));
     socket.once('error', () => finish(false));
+  });
+}
+
+function probeUpstreamDial(
+  dialRemote: RemoteTunnelDialer,
+  target: { readonly nodeId: string; readonly remoteHost: string; readonly remotePort: number },
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolveProbe, rejectProbe) => {
+    let settled = false;
+    let stream: Duplex | undefined;
+    const finish = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (stream !== undefined && !stream.destroyed) stream.destroy();
+      if (err !== undefined) rejectProbe(err);
+      else resolveProbe();
+    };
+    const timer = setTimeout(() => {
+      finish(new Error(`Upstream tunnel connect timed out after ${timeoutMs}ms for ${target.nodeId}:${target.remotePort}`));
+    }, timeoutMs);
+    timer.unref?.();
+    try {
+      stream = dialRemote(target);
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if ('connecting' in stream && (stream as Socket).connecting === false) {
+      finish();
+      return;
+    }
+    stream.once('connect', () => finish());
+    stream.once('ready', () => finish());
+    stream.once('error', (err: Error) => finish(err));
   });
 }
 

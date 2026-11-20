@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -199,26 +200,30 @@ async function readExplicitProjectId(
   startDir: string,
   stopAtDir?: string,
 ): Promise<{ readonly projectId: string; readonly slug: string } | undefined> {
+  const homeKey = workspaceRootKey(homedir());
   let current = startDir;
-  const stopKey = stopAtDir === undefined ? undefined : workspaceRootKey(stopAtDir);
+  const stopKey = stopAtDir === undefined ? workspaceRootKey(startDir) : workspaceRootKey(stopAtDir);
   for (;;) {
-    const candidatePath = join(current, '.kiki', 'project.json');
-    try {
-      const text = await readFile(candidatePath, 'utf8');
-      const parsed = JSON.parse(text) as Record<string, unknown>;
-      const rawId =
-        typeof parsed['project_id'] === 'string'
-          ? parsed['project_id']
-          : typeof parsed['projectId'] === 'string'
-            ? parsed['projectId']
-            : undefined;
-      const normalized = rawId === undefined ? undefined : normalizeExplicitProjectId(rawId);
-      if (normalized !== undefined) return normalized;
-    } catch {
-    }
-    if (stopKey !== undefined && workspaceRootKey(current) === stopKey) return undefined;
+    const currentKey = workspaceRootKey(current);
     const parent = dirname(current);
-    if (parent === current) return undefined;
+    const isFsRoot = parent === current;
+    if (!isFsRoot && currentKey !== homeKey) {
+      const candidatePath = join(current, '.kiki', 'project.json');
+      try {
+        const text = await readFile(candidatePath, 'utf8');
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        const rawId =
+          typeof parsed['project_id'] === 'string'
+            ? parsed['project_id']
+            : typeof parsed['projectId'] === 'string'
+              ? parsed['projectId']
+              : undefined;
+        const normalized = rawId === undefined ? undefined : normalizeExplicitProjectId(rawId);
+        if (normalized !== undefined) return normalized;
+      } catch {
+      }
+    }
+    if (currentKey === stopKey || isFsRoot) return undefined;
     current = parent;
   }
 }

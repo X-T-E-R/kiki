@@ -161,13 +161,19 @@ export class MemoryScopes implements IMemoryScopes {
   }
 
   private async autoBindFromCatalog(workspaceId: string): Promise<string> {
-    this.autoBindAttempted.add(workspaceId);
     const catalog = await this.workspaces.load();
     const match = catalog?.workspaces.find((workspace) => workspace.id === workspaceId);
-    if (match === undefined || match.root.trim().length === 0) return workspaceId;
+    if (match === undefined || match.root.trim().length === 0) {
+      this.autoBindAttempted.add(workspaceId);
+      return workspaceId;
+    }
     const identity = await resolveProjectIdentity(match.root);
-    if (!isValidProjectId(identity.projectId)) return workspaceId;
+    if (!isValidProjectId(identity.projectId)) {
+      this.autoBindAttempted.add(workspaceId);
+      return workspaceId;
+    }
     const bound = await this.bindings.bindWorkspace(match.root);
+    this.autoBindAttempted.add(workspaceId);
     return bound.projectId;
   }
 

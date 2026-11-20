@@ -12,6 +12,7 @@ import {
 } from '@kiki/protocol';
 
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { StaleEpochError } from './humanTakeover';
 
 const LEASE_SCOPE = 'mesh';
 const LEASE_KEY = 'session-leases.json';
@@ -20,6 +21,7 @@ const decoder = new TextDecoder();
 
 export const MESH_CONTEXT_MAX_BYTES = 2048;
 export const DEFAULT_COALESCE_WINDOW_MS = 1500;
+export const DEFAULT_SESSION_LEASE_TTL_MS = 3_600_000;
 
 interface StoredLeaseBook {
   readonly version: 1;
@@ -39,7 +41,9 @@ export interface IMeshLeaseStore {
     sessionId: string,
     kind: 'node' | 'seat' | 'workspace_copy' | 'port_tunnel',
     id: string,
+    expectedEpoch?: number,
   ): Promise<MeshSessionLease>;
+  renewLease?(sessionId: string, ttlMs?: number, expectedEpoch?: number): Promise<MeshSessionLease>;
   projectContext(sessionId: string): Promise<MeshContextProjection>;
 }
 
@@ -78,7 +82,13 @@ export class MeshLeaseStore implements IMeshLeaseStore {
 
   async getLease(sessionId: string): Promise<MeshSessionLease> {
     await this.load();
-    return this.sessions.get(sessionId) ?? emptyLease(sessionId, this.now());
+    const existing = this.sessions.get(sessionId);
+    if (existing === undefined) return emptyLease(sessionId, this.now());
+    if (existing.expiresAt !== undefined && existing.expiresAt <= this.now()) {
+      this.sessions.delete(sessionId);
+      return emptyLease(sessionId, this.now());
+    }
+    return existing;
   }
 
   async listLeasedSessionIds(): Promise<readonly string[]> {
@@ -134,19 +144,37 @@ export class MeshLeaseStore implements IMeshLeaseStore {
     sessionId: string,
     kind: 'node' | 'seat' | 'workspace_copy' | 'port_tunnel',
     id: string,
+    expectedEpoch?: number,
   ): Promise<MeshSessionLease> {
-    return this.mutate(sessionId, (lease) => {
-      switch (kind) {
-        case 'node':
-          return { ...lease, nodes: lease.nodes.filter((item) => item.nodeId !== id) };
-        case 'seat':
-          return { ...lease, seats: lease.seats.filter((item) => item.seatId !== id) };
-        case 'workspace_copy':
-          return { ...lease, workspaceCopies: lease.workspaceCopies.filter((item) => item.copyId !== id) };
-        case 'port_tunnel':
-          return { ...lease, portTunnels: lease.portTunnels.filter((item) => item.tunnelId !== id) };
-      }
-    });
+    return this.mutate(
+      sessionId,
+      (lease) => {
+        switch (kind) {
+          case 'node':
+            return { ...lease, nodes: lease.nodes.filter((item) => item.nodeId !== id) };
+          case 'seat':
+            return { ...lease, seats: lease.seats.filter((item) => item.seatId !== id) };
+          case 'workspace_copy':
+            return { ...lease, workspaceCopies: lease.workspaceCopies.filter((item) => item.copyId !== id) };
+          case 'port_tunnel':
+            return { ...lease, portTunnels: lease.portTunnels.filter((item) => item.tunnelId !== id) };
+        }
+      },
+      expectedEpoch,
+    );
+  }
+
+  async renewLease(
+    sessionId: string,
+    ttlMs = DEFAULT_SESSION_LEASE_TTL_MS,
+    expectedEpoch?: number,
+  ): Promise<MeshSessionLease> {
+    const clampedTtl = Math.max(1000, Math.min(86_400_000, Math.floor(ttlMs)));
+    return this.mutate(
+      sessionId,
+      (lease, ts) => ({ ...lease, expiresAt: ts + clampedTtl }),
+      expectedEpoch,
+    );
   }
 
   async projectContext(sessionId: string): Promise<MeshContextProjection> {
@@ -164,17 +192,28 @@ export class MeshLeaseStore implements IMeshLeaseStore {
   private mutate(
     sessionId: string,
     updater: (lease: MeshSessionLease, ts: number) => MeshSessionLease,
+    expectedEpoch?: number,
   ): Promise<MeshSessionLease> {
     const run = this.writeChain.then(async () => {
       await this.load();
       const ts = this.now();
-      const current = this.sessions.get(sessionId) ?? emptyLease(sessionId, ts);
+      const existing = this.sessions.get(sessionId);
+      const current =
+        existing !== undefined && (existing.expiresAt === undefined || existing.expiresAt > ts)
+          ? existing
+          : emptyLease(sessionId, ts);
+      const currentEpoch = current.epoch ?? 0;
+      if (expectedEpoch !== undefined && currentEpoch !== expectedEpoch) {
+        throw new StaleEpochError(sessionId, expectedEpoch, currentEpoch);
+      }
       const updated = updater(current, ts);
       const next: MeshSessionLease = {
         ...updated,
         sessionId,
         revision: current.revision + 1,
+        epoch: currentEpoch + 1,
         updatedAt: ts,
+        expiresAt: updated.expiresAt ?? ts + DEFAULT_SESSION_LEASE_TTL_MS,
       };
       if (isLeaseEmpty(next)) {
         this.sessions.delete(sessionId);
@@ -212,7 +251,7 @@ export function renderMeshContext(
   maxBytes: number = MESH_CONTEXT_MAX_BYTES,
 ): string | null {
   if (isLeaseEmpty(lease)) return null;
-  const header = `<mesh-context session="${escapeAttr(lease.sessionId)}" rev="${lease.revision}">`;
+  const header = `<mesh-context session="${escapeAttr(lease.sessionId)}">`;
   const footer = '</mesh-context>';
 
   const candidateLines: string[] = [];
@@ -254,10 +293,20 @@ export function renderMeshContext(
         ? `${header}\n${kept.join('\n')}\n${overflowLine}\n${footer}`
         : `${header}\n${overflowLine}\n${footer}`;
       if (Buffer.byteLength(truncated, 'utf8') <= maxBytes) return truncated;
-      return `${header}\n${footer}`.slice(0, maxBytes);
+      return truncateUtf8(`${header}\n${footer}`, maxBytes);
     }
   }
   return `${header}\n${kept.join('\n')}\n${footer}`;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.byteLength <= maxBytes) return value;
+  let end = Math.max(0, maxBytes);
+  while (end > 0 && (bytes[end]! & 0b1100_0000) === 0b1000_0000) {
+    end -= 1;
+  }
+  return bytes.subarray(0, end).toString('utf8');
 }
 
 export interface MeshStateTransition {
@@ -325,6 +374,7 @@ function emptyLease(sessionId: string, updatedAt: number): MeshSessionLease {
   return {
     sessionId,
     revision: 0,
+    epoch: 0,
     updatedAt,
     nodes: [],
     seats: [],

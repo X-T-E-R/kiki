@@ -2,20 +2,45 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFile,
+  lstat,
   mkdir,
   readdir,
   readFile,
+  realpath,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { MeshWorkspaceCopyStrategy } from '@kiki/protocol';
 
 import type { ISessionApprovalService } from '#/session/approval/approval';
+import type { CasStagingStore } from './casStaging';
+import {
+  applyGitWipDelta,
+  exportGitWipDelta,
+  type GitWipDeltaApplyResult,
+  type GitWipDeltaExportResult,
+} from './gitDeltaSync';
 import type { HumanTakeoverManager } from './humanTakeover';
 import { evaluateMeshApproval, type MeshPermissionMode } from './meshApproval';
+
+/** Error raised with HTTP 409 semantics when source workspace files changed concurrently since the COW baseline. */
+export class WorkspaceSourceModifiedError extends Error {
+  readonly status = 409 as const;
+  readonly code = 'source_modified' as const;
+
+  constructor(
+    readonly copyId: string,
+    readonly conflictingFiles: readonly string[],
+  ) {
+    super(
+      `Source workspace modified concurrently for copy '${copyId}': ${conflictingFiles.slice(0, 5).join(', ')}`,
+    );
+    this.name = 'WorkspaceSourceModifiedError';
+  }
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -70,7 +95,9 @@ export interface ApplyWorkspaceCopyOptions {
   readonly takeoverManager?: HumanTakeoverManager;
   readonly targetId?: string;
   readonly overrideHumanLease?: boolean;
+  readonly expectedEpoch?: number;
   readonly deleteRemoved?: boolean;
+  readonly forceOverwriteSource?: boolean;
 }
 
 /**
@@ -223,11 +250,15 @@ export class WorkspaceCopyManager {
 
   async apply(copyId: string, options: ApplyWorkspaceCopyOptions = {}): Promise<WorkspaceCopyApplyResult> {
     const record = await this.requireCopy(copyId);
-    if (options.takeoverManager !== undefined) {
-      options.takeoverManager.assertWritable(options.targetId ?? record.nodeId, {
-        overrideHumanLease: options.overrideHumanLease,
-      });
-    }
+    const checkTakeover = (): void => {
+      if (options.takeoverManager !== undefined) {
+        options.takeoverManager.assertWritable(options.targetId ?? record.nodeId, {
+          overrideHumanLease: options.overrideHumanLease,
+          expectedEpoch: options.expectedEpoch,
+        });
+      }
+    };
+    checkTakeover();
     const approval = await evaluateMeshApproval({
       operation: 'cow_apply',
       permissionMode: options.permissionMode ?? 'auto',
@@ -239,21 +270,45 @@ export class WorkspaceCopyManager {
     if (approval.decision !== 'approved') {
       throw new Error(approval.feedback ?? `Workspace copy apply rejected (${approval.decision})`);
     }
+    checkTakeover();
 
     const currentStatus = await this.status(copyId);
+    const touchedPaths = [
+      ...currentStatus.added,
+      ...currentStatus.modified,
+      ...(options.deleteRemoved === false ? [] : currentStatus.deleted),
+    ];
+
+    if (options.forceOverwriteSource !== true) {
+      const conflicts: string[] = [];
+      for (const relPath of touchedPaths) {
+        const dstFile = await assertContainedPath(record.sourceRoot, relPath);
+        const currentSourceHash = await hashFileIfExists(dstFile);
+        const baselineHash = record.baseInventory[relPath];
+        if (currentSourceHash !== baselineHash) {
+          conflicts.push(relPath);
+        }
+      }
+      if (conflicts.length > 0) {
+        throw new WorkspaceSourceModifiedError(copyId, conflicts.toSorted());
+      }
+    }
+
     const appliedFiles: string[] = [];
     const deletedFiles: string[] = [];
 
     for (const relPath of [...currentStatus.added, ...currentStatus.modified]) {
-      const srcFile = join(record.copyPath, relPath);
-      const dstFile = join(record.sourceRoot, relPath);
+      const srcFile = await assertContainedPath(record.copyPath, relPath);
+      const dstFile = await assertContainedPath(record.sourceRoot, relPath);
       await mkdir(dirname(dstFile), { recursive: true });
+      await assertContainedPath(record.sourceRoot, relPath);
       await copyFile(srcFile, dstFile);
       appliedFiles.push(relPath);
     }
     if (options.deleteRemoved !== false) {
       for (const relPath of currentStatus.deleted) {
-        await rm(join(record.sourceRoot, relPath), { force: true });
+        const dstFile = await assertContainedPath(record.sourceRoot, relPath);
+        await rm(dstFile, { force: true });
         deletedFiles.push(relPath);
       }
     }
@@ -271,6 +326,51 @@ export class WorkspaceCopyManager {
       deletedFiles,
       approvalVia: approval.via === 'yolo_auto_approve' ? 'yolo_auto_approve' : 'session_approval_service',
     };
+  }
+
+  async exportWipDelta(
+    copyId: string,
+    casStaging?: CasStagingStore,
+  ): Promise<GitWipDeltaExportResult & { readonly bundleBase64: string; readonly stagedSha256?: string }> {
+    const record = await this.requireCopy(copyId);
+    const wipId = `${copyId}-${randomUUID().slice(0, 8)}`;
+    const bundlePath = join(this.metaDir, `${wipId}.bundle`);
+    try {
+      const exported = await exportGitWipDelta(record.copyPath, bundlePath, wipId);
+      const bundleBytes = await readFile(exported.bundlePath);
+      const staged = casStaging === undefined ? undefined : await casStaging.stageBytes(bundleBytes);
+      return {
+        ...exported,
+        bundleBase64: bundleBytes.toString('base64'),
+        ...(staged === undefined ? {} : { stagedSha256: staged.sha256 }),
+      };
+    } finally {
+      await rm(bundlePath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  async applyWipDelta(
+    copyId: string,
+    input: { readonly wipId: string; readonly bundleBase64: string },
+    casStaging?: CasStagingStore,
+  ): Promise<GitWipDeltaApplyResult> {
+    const record = await this.requireCopy(copyId);
+    const bytes = Buffer.from(input.bundleBase64, 'base64');
+    let bundlePath: string;
+    let cleanupTemp = false;
+    if (casStaging !== undefined) {
+      const staged = await casStaging.stageBytes(bytes);
+      bundlePath = staged.blobPath;
+    } else {
+      bundlePath = join(this.metaDir, `apply-${randomUUID().slice(0, 8)}.bundle`);
+      await writeFile(bundlePath, bytes);
+      cleanupTemp = true;
+    }
+    try {
+      return await applyGitWipDelta(record.sourceRoot, bundlePath, input.wipId, record.copyPath);
+    } finally {
+      if (cleanupTemp) await rm(bundlePath, { force: true }).catch(() => undefined);
+    }
   }
 
   async removeCopy(copyId: string): Promise<boolean> {
@@ -392,6 +492,60 @@ function prefixLines(text: string, prefix: string): string {
     .split(/\r?\n/)
     .map((line) => `${prefix}${line}`)
     .join('\n');
+}
+
+async function assertContainedPath(rootDir: string, relPath: string): Promise<string> {
+  const normalizedRel = relPath.replaceAll('\\', '/');
+  if (
+    normalizedRel === '' ||
+    normalizedRel.startsWith('/') ||
+    isAbsolute(relPath) ||
+    normalizedRel.split('/').some((seg) => seg === '..' || seg === '.')
+  ) {
+    throw new Error(`Unsafe workspace copy path '${relPath}'`);
+  }
+  const realRoot = await realpath(rootDir);
+  const candidate = resolve(realRoot, relPath);
+  const relFromRoot = relative(realRoot, candidate);
+  if (relFromRoot.startsWith('..') || isAbsolute(relFromRoot)) {
+    throw new Error(`Path '${relPath}' escapes workspace root '${rootDir}'`);
+  }
+  let probe = candidate;
+  for (;;) {
+    try {
+      const info = await lstat(probe);
+      if (info.isSymbolicLink()) {
+        throw new Error(`Symbolic link '${relPath}' is not permitted in workspace copy apply`);
+      }
+      const realProbe = await realpath(probe);
+      const realRel = relative(realRoot, realProbe);
+      if (realRel.startsWith('..') || isAbsolute(realRel)) {
+        throw new Error(`Resolved path '${relPath}' escapes workspace root '${rootDir}'`);
+      }
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+  }
+  return candidate;
+}
+
+async function hashFileIfExists(filePath: string): Promise<string | undefined> {
+  try {
+    const info = await lstat(filePath);
+    if (info.isSymbolicLink()) {
+      throw new Error(`Refusing symlink target '${filePath}'`);
+    }
+    if (!info.isFile()) return undefined;
+    const bytes = await readFile(filePath);
+    return createHash('sha256').update(bytes).digest('hex');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 async function runCommand(

@@ -391,6 +391,7 @@ describe('multi-machine mesh foundation', () => {
         error: 'human_controlling',
         targetId: 'desktop-main',
         holder: 'human',
+        epoch: 1,
         expiresAt: 510_000,
       });
     }

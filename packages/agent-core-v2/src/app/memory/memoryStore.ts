@@ -230,6 +230,11 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     @IMemoryScopes private readonly scopes: IMemoryScopes,
   ) { super(); }
 
+  private resolveHostId(explicit?: string): string {
+    const root = (this.storage as { readonly root?: unknown }).root;
+    return explicit ?? resolveMemoryHostId(undefined, typeof root === 'string' ? root : undefined);
+  }
+
   private async serializedWrite<T>(base: string, action: () => Promise<T>, changesActive = true, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     const previous = this.writeQueues.get(base) ?? Promise.resolve();
@@ -348,7 +353,15 @@ export class MemoryStore extends Disposable implements IMemoryStore {
 
   async put(input: MemoryMutation): Promise<MemoryPutResult> {
     const scope = input.scope;
-    const base = await this.scopes.resolve(scope);
+    let base = await this.scopes.resolve(scope);
+    if (input.action !== 'create' && input.id !== undefined) {
+      for (const candidateBase of await this.readBasesFor(scope)) {
+        if ((await this.raw(candidateBase, input.id)) !== undefined) {
+          base = candidateBase;
+          break;
+        }
+      }
+    }
     return this.serializedWrite(base, async () => {
       let target = input.id === undefined ? undefined : await this.raw(base, input.id);
       const candidate = target === undefined ? undefined : decode(target.text);
@@ -403,10 +416,22 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       const now = new Date().toISOString();
       const superseded = input.action === 'supersede' ? target : old?.status === 'pending' && old.supersedes !== undefined && !input.pending ? await this.raw(base, old.supersedes) : undefined;
       if (old?.status === 'pending' && old.supersedes !== undefined && !input.pending && (superseded === undefined || revision(superseded.text) !== old.supersedes_revision)) throw new MemoryDomainError('revision_conflict', 'Memory revision conflict', 'Read the predecessor before approving the proposal.');
+      const resolvedApplicability = archive
+        ? preserved?.applicability
+        : input.applicability === undefined
+          ? (isCreate ? undefined : old?.applicability)
+          : normalizeMemoryHostApplicability(input.applicability);
+      const explicitOriginHost = archive
+        ? preserved?.origin_host_id
+        : input.origin_host_id === undefined
+          ? (isCreate ? undefined : old?.origin_host_id)
+          : normalizeOriginHostId(input.origin_host_id);
+      const resolvedOriginHost =
+        explicitOriginHost ?? (resolvedApplicability === 'machine-local' ? this.resolveHostId() : undefined);
       const entry: Omit<MemoryEntry, 'revision'> = {
         id, type, title, body, basis, validity, covered_by,
-        applicability: archive ? preserved?.applicability : input.applicability === undefined ? (isCreate ? undefined : old?.applicability) : normalizeMemoryHostApplicability(input.applicability),
-        origin_host_id: archive ? preserved?.origin_host_id : input.origin_host_id === undefined ? (isCreate ? undefined : old?.origin_host_id) : normalizeOriginHostId(input.origin_host_id),
+        applicability: resolvedApplicability,
+        origin_host_id: resolvedOriginHost,
         status: input.pending ? 'pending' : input.action === 'archive' ? 'archived' : 'active',
         pinned: archive ? preserved?.pinned ?? false : input.pinned ?? (isCreate ? false : old?.pinned) ?? false,
         created: isCreate || isProposal ? now : old?.created ?? now, updated: now,
@@ -467,7 +492,13 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   }
 
   async delete(scope: MemoryScope, id: string, expectedRevision: string, writer: MemoryWriter = 'user'): Promise<string> {
-    const base = await this.scopes.resolve(scope);
+    let base = await this.scopes.resolve(scope);
+    for (const candidateBase of await this.readBasesFor(scope)) {
+      if ((await this.raw(candidateBase, id)) !== undefined) {
+        base = candidateBase;
+        break;
+      }
+    }
     return this.serializedWrite(base, async () => {
       const target = await this.raw(base, id);
       if (target === undefined || revision(target.text) !== expectedRevision) throw new Error('Memory revision conflict');
@@ -529,7 +560,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     const sources: { scope: MemoryScope; base: string; key: string }[] = [];
     const directoryProof: unknown[] = [];
     const directoryChecks: (() => Promise<unknown>)[] = [];
-    const effectiveHostId = input.hostId ?? resolveMemoryHostId();
+    const effectiveHostId = this.resolveHostId(input.hostId);
     for (const scope of scopes) {
       if (request.scope !== undefined && scope.kind !== request.scope) continue;
       for (const base of await this.readBasesFor(scope)) {
@@ -674,7 +705,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   }
 
   async search(scopes: readonly MemoryScope[], query: string, type?: MemoryType, includeInactive = false): Promise<readonly (MemoryEntry & { score: number; scope: MemoryScope })[]> {
-    const hostId = resolveMemoryHostId();
+    const hostId = this.resolveHostId();
     const lists = await Promise.all(scopes.map((scope) => this.list(scope, includeInactive)));
     const entries = lists.flatMap((list, index) => list.map((entry) => ({ ...entry, scope: scopes[index]! })))
       .filter((entry) => (includeInactive || entry.status === 'active') && isMemoryVisibleOnHost(entry, hostId));

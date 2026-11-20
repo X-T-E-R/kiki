@@ -168,6 +168,30 @@ export interface CredentialEnvelopeMergeResult {
   readonly merged: CredentialsPoolSection;
   readonly applied: readonly string[];
   readonly skipped: readonly { readonly credentialId: string; readonly reason: string }[];
+  readonly conflictIds: readonly string[];
+}
+
+export interface CredentialMergeReceipt {
+  readonly appliedIds: readonly string[];
+  readonly skippedIds: readonly { readonly credentialId: string; readonly reason: string }[];
+  readonly conflictIds: readonly string[];
+  readonly revision: string;
+}
+
+/** Projects a merge result into a secret-free HTTP receipt containing only IDs and revision metadata. */
+export function sanitizeCredentialMergeReceipt(
+  result: CredentialEnvelopeMergeResult,
+  revision: string,
+): CredentialMergeReceipt {
+  return {
+    appliedIds: [...result.applied],
+    skippedIds: result.skipped.map((entry) => ({
+      credentialId: entry.credentialId,
+      reason: entry.reason,
+    })),
+    conflictIds: [...result.conflictIds],
+    revision,
+  };
 }
 
 function compareCredentialVersion(
@@ -188,14 +212,22 @@ export function mergeCredentialEnvelopes(
   envelopes: readonly EncryptedCredentialEnvelope[],
   identity: string,
   cipher: AgeX25519Cipher = loadNativeAgeX25519Cipher(),
+  pinnedMachineIds?: ReadonlySet<string>,
 ): CredentialEnvelopeMergeResult {
   const merged: Record<string, CredentialPoolEntry> = { ...localPool };
   const applied: string[] = [];
   const skipped: { readonly credentialId: string; readonly reason: string }[] = [];
+  const conflictIds: string[] = [];
   for (const envelope of envelopes) {
+    if (pinnedMachineIds?.has(envelope.credentialId) === true) {
+      skipped.push({ credentialId: envelope.credentialId, reason: 'local_machine_pinned' });
+      conflictIds.push(envelope.credentialId);
+      continue;
+    }
     const existing = merged[envelope.credentialId];
     if (existing !== undefined && effectiveCredentialSyncPolicy(existing) === 'machine') {
       skipped.push({ credentialId: envelope.credentialId, reason: 'local_machine_pinned' });
+      conflictIds.push(envelope.credentialId);
       continue;
     }
     let opened: { readonly credentialId: string; readonly entry: CredentialPoolEntry };
@@ -212,5 +244,5 @@ export function mergeCredentialEnvelopes(
     merged[opened.credentialId] = opened.entry;
     applied.push(opened.credentialId);
   }
-  return { merged, applied, skipped };
+  return { merged, applied, skipped, conflictIds };
 }

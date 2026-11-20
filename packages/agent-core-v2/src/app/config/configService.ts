@@ -471,6 +471,7 @@ export class ConfigService extends Disposable implements IConfigService {
       value: this.get<T>(domain),
       defaultValue: this.registry.defaultValue<T>(domain),
       userValue: this.homeRaw[domain] as T | undefined,
+      localValue: this.localRaw[domain] as T | undefined,
       memoryValue,
     };
   }

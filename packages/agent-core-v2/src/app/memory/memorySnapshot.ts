@@ -343,7 +343,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   private currentHostId(): string {
     try {
       const bootstrap = this.instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService));
-      return resolveMemoryHostId((name) => bootstrap.getEnv(name));
+      return resolveMemoryHostId((name) => bootstrap.getEnv(name), bootstrap.homeDir);
     } catch {
       return resolveMemoryHostId();
     }

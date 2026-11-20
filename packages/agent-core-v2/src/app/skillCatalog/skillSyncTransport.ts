@@ -22,6 +22,59 @@ export interface SkillRootTransportInfo {
   readonly branch?: string;
 }
 
+/** Strips embedded userinfo (`user:pass@` or `token@`) from git remote URLs before exposing them in sync plans. */
+export function sanitizeGitRemoteUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.username !== '' || parsed.password !== '') {
+        parsed.username = '';
+        parsed.password = '';
+        return parsed.toString();
+      }
+      return trimmed;
+    } catch {
+      return trimmed.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/@]+@/, '$1');
+    }
+  }
+  const scpMatch = /^([^:@/\s]+):[^@/\s]+@([^:/\s]+:.*)$/.exec(trimmed);
+  if (scpMatch !== null) {
+    return `${scpMatch[1]}@${scpMatch[2]}`;
+  }
+  return trimmed;
+}
+
+/** Evaluates skill sync exclusions (`_*`, `draft-*`, frontmatter `sync: false`, and platform `os` filters). */
+export function isSkillSyncExcluded(input: {
+  readonly name: string;
+  readonly frontmatter?: Readonly<Record<string, unknown>>;
+  readonly targetPlatform?: NodeJS.Platform;
+}): boolean {
+  if (input.name.startsWith('_') || input.name.startsWith('draft-')) return true;
+  if (isSyncConflictArtifact(input.name)) return true;
+  const fm = input.frontmatter;
+  if (fm === undefined) return false;
+  if (fm['sync'] === false || fm['sync'] === 'false') return true;
+  const osFilter = fm['os'];
+  if (osFilter !== undefined) {
+    const target = normalizePlatform(input.targetPlatform ?? process.platform);
+    const allowed = (Array.isArray(osFilter) ? osFilter : [osFilter])
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => normalizePlatform(item));
+    if (allowed.length > 0 && !allowed.includes(target)) return true;
+  }
+  return false;
+}
+
+function normalizePlatform(raw: string): string {
+  const lower = raw.trim().toLowerCase();
+  if (lower === 'windows' || lower === 'win' || lower === 'win32') return 'win32';
+  if (lower === 'macos' || lower === 'osx' || lower === 'mac' || lower === 'darwin') return 'darwin';
+  if (lower === 'linux') return 'linux';
+  return lower;
+}
+
 /** Detects whether a skill root is git-backed so sync uses git transport instead of blind file-tree overwrite. */
 export async function detectSkillRootTransport(
   rootPath: string,
@@ -34,7 +87,8 @@ export async function detectSkillRootTransport(
     return { transport: 'file_tree' };
   }
   const gitRoot = topLevel === undefined ? resolvedRoot : resolve(topLevel);
-  const remoteUrl = await gitRunner(gitRoot, ['remote', 'get-url', 'origin']);
+  const rawRemoteUrl = await gitRunner(gitRoot, ['remote', 'get-url', 'origin']);
+  const remoteUrl = rawRemoteUrl === undefined ? undefined : sanitizeGitRemoteUrl(rawRemoteUrl);
   const branch = await gitRunner(gitRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
   return {
     transport: 'git',

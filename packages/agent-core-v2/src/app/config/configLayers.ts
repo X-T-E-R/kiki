@@ -39,7 +39,11 @@ const MACHINE_KEY_PATTERN =
   /(?:^|_|-)(?:path|dir|root|bin|binary|executable|socket|port|host|hostname|listen|bind|address|cwd|home|gpu|cuda|metal|vulkan|hardware|device|display|workers|threads|heap|rss|memory_mb|driver|proxy|cert|key_file|identity_file)(?:$|_|-)/i;
 
 const SECRET_KEY_PATTERN =
-  /(?:apikey|accesskey|token|secret|password|authorization|privatekey)$/i;
+  /(?:apikey|accesskey|token|secret|password|authorization|privatekey|cookie|auth|credential|bearer|signature)$/i;
+
+const CUSTOM_HEADER_CONTAINER_PATTERN = /^custom[_-]?headers$/i;
+
+const SECRET_HEADER_VALUE_PATTERN = /^(?:bearer|basic|token)\s+\S+|^sk-[a-z0-9_-]{8,}/i;
 
 export function mergeConfigLayers(
   base: Record<string, unknown>,
@@ -125,9 +129,14 @@ export function classifyConfigSyncScope(
   registry?: Pick<IConfigRegistry, 'getSection'>,
 ): ConfigSyncScope {
   const camelDomain = snakeToCamel(domain);
-  for (const segment of keyPath) {
+  for (let i = 0; i < keyPath.length; i++) {
+    const segment = keyPath[i]!;
     const compact = segment.replaceAll(/[_-]/g, '').toLowerCase();
     if (SECRET_KEY_PATTERN.test(compact)) return 'machine';
+    const parent = i > 0 ? keyPath[i - 1]! : '';
+    if (CUSTOM_HEADER_CONTAINER_PATTERN.test(parent) && /(?:auth|token|secret|key|cookie|session|credential|bearer|signature|pass)/i.test(segment)) {
+      return 'machine';
+    }
     const snakeSegment = segment.replaceAll(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
     if (MACHINE_KEY_PATTERN.test(snakeSegment)) return 'machine';
   }
@@ -138,9 +147,13 @@ export function classifyConfigSyncScope(
   return 'machine';
 }
 
-function isMachineSpecificStringValue(value: unknown): boolean {
+function isMachineSpecificStringValue(value: unknown, path: readonly string[] = []): boolean {
   if (typeof value !== 'string') return false;
-  return /^(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|opt|var|etc|tmp|Volumes)\/)/.test(value.trim());
+  const trimmed = value.trim();
+  if (/^(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|opt|var|etc|tmp|Volumes)\/)/.test(trimmed)) return true;
+  const inCustomHeaders = path.some((segment) => CUSTOM_HEADER_CONTAINER_PATTERN.test(segment));
+  if (inCustomHeaders && SECRET_HEADER_VALUE_PATTERN.test(trimmed)) return true;
+  return false;
 }
 
 function filterConfigBySyncScope(
@@ -160,7 +173,7 @@ function filterConfigBySyncScope(
     }
     const baseScope = classifyConfigSyncScope(domain, path, registry);
     const effectiveScope: ConfigSyncScope =
-      baseScope === 'portable' && isMachineSpecificStringValue(value) ? 'machine' : baseScope;
+      baseScope === 'portable' && isMachineSpecificStringValue(value, path) ? 'machine' : baseScope;
     return effectiveScope === targetScope ? structuredClone(value) : undefined;
   };
   for (const [key, entry] of Object.entries(rawSnake)) {
