@@ -135,6 +135,21 @@ export function computeCorePctDelta(prevMap, nextMap, elapsedSec) {
   return Number(((totalCpuSec / elapsedSec) * 100).toFixed(2));
 }
 
+export async function sampleProcessTreeCpu(rootPid, windowMs = 10_000) {
+  const pidsBefore = [rootPid, ...listDescendantPids(rootPid)];
+  const prev = samplePidCpuTicks(pidsBefore);
+  const t0 = performance.now();
+  await new Promise((resolve) => setTimeout(resolve, windowMs));
+  const elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
+  const pidsAfter = [...new Set([rootPid, ...listDescendantPids(rootPid), ...pidsBefore])];
+  const next = samplePidCpuTicks(pidsAfter);
+  return {
+    totalCorePct: computeCorePctDelta(prev, next, elapsedSec),
+    processCount: next.size,
+    elapsedSec: Number(elapsedSec.toFixed(2)),
+  };
+}
+
 /**
  * Starts an external 100ms HTTP heartbeat probe to detect real main-thread stalls
  * independently of in-process timers.

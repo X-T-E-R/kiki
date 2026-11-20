@@ -897,17 +897,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         }
       };
       await collect('will_close', () => this.announceWillClose({ sessionId, handle, reason: 'exit' }), 'cleanup');
-      await collect('replay_checkpoints', () => {
+      await collect('replay_checkpoints', async () => {
         const activity = handle.accessor.get(ISessionActivityView).state();
         if (activity.busy || activity.pendingInteraction !== 'none') return;
-        void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
-          if (!saved) this.log.warn('session replay checkpoint was not saved during close', { sessionId });
-        }, (error: unknown) => {
-          this.log.warn('session replay checkpoint failed during close', {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
+        const saved = await this.saveReplayCheckpoints(sessionId, handle);
+        if (!saved) this.log.warn('session replay checkpoint was not saved during close', { sessionId });
       }, 'cleanup');
       await collect('checkpoint_scheduling', () => this.disposeCheckpointScheduling(sessionId), 'cleanup');
       let usageFallback: SessionUsageSummary | undefined;

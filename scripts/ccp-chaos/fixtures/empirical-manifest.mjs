@@ -219,16 +219,35 @@ export function writeCheckpointlessColdChildWire({
       time: baseTime + 11,
     });
 
+    const toolNames = ['Glob', 'Grep', 'Read', 'Write', 'Edit', 'Bash'];
     const perStepTarget = Math.max(1024, Math.floor((targetBytes - 4096) / stepCount));
+    let rng = 0x51a9c3d7 ^ stepCount;
+    const nextU32 = () => {
+      rng = (rng + 0x6d2b79f5) | 0;
+      let t = Math.imul(rng ^ (rng >>> 15), 1 | rng);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
+    };
     for (let s = 1; s <= stepCount; s += 1) {
       const ts = baseTime + s * 250;
       const stepUuid = `step-${agentId}-0-${s}`;
       const callId = `tc-${agentId}-0-${s}`;
-      const payloadTarget = Math.max(256, perStepTarget - 520);
-      const header = `step=${s}/${stepCount} agent=${agentId} marker=${distinctiveMarker} file=src/mod_${String(s).padStart(4, '0')}.ts\n`;
-      const repeatUnit = `row:${s}:${agentId}:checksum_${(s * 2654435761) >>> 0}\n`;
-      const repeats = Math.max(1, Math.floor((payloadTarget - header.length) / repeatUnit.length));
-      const toolOutput = header + repeatUnit.repeat(repeats);
+      const toolName = toolNames[(s - 1) % toolNames.length];
+      const payloadTarget = Math.max(256, perStepTarget - 560);
+      const chunks = [
+        `step=${s}/${stepCount} tool=${toolName} agent=${agentId} marker=${distinctiveMarker} file=src/mod_${String(s).padStart(4, '0')}.ts\n`,
+      ];
+      let accLen = chunks[0].length;
+      let lineIdx = 0;
+      while (accLen < payloadTarget) {
+        const h1 = nextU32().toString(16).padStart(8, '0');
+        const h2 = nextU32().toString(16).padStart(8, '0');
+        const line = `L${String(lineIdx).padStart(5, '0')}:${toolName}:mod_${String(s).padStart(4, '0')}:${h1}${h2}:val=${(nextU32() % 99991).toString()}\n`;
+        chunks.push(line);
+        accLen += line.length;
+        lineIdx += 1;
+      }
+      const toolOutput = chunks.join('');
 
       writeLine({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '0', step: s, uuid: stepUuid }, time: ts });
       writeLine({
@@ -238,14 +257,14 @@ export function writeCheckpointlessColdChildWire({
           turnId: '0',
           stepUuid,
           toolCallId: callId,
-          name: s % 3 === 0 ? 'Grep' : s % 3 === 1 ? 'Read' : 'Bash',
-          args: { path: `src/mod_${String(s).padStart(4, '0')}.ts`, step: s },
+          name: toolName,
+          args: { path: `src/mod_${String(s).padStart(4, '0')}.ts`, step: s, kind: toolName.toLowerCase() },
         },
         time: ts + 1,
       });
       writeLine({
         type: 'context.append_loop_event',
-        event: { type: 'tool.result', toolCallId: callId, result: { output: toolOutput, isError: false } },
+        event: { type: 'tool.result', turnId: '0', toolCallId: callId, result: { output: toolOutput, isError: false } },
         time: ts + 2,
       });
       writeLine({

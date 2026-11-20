@@ -608,13 +608,17 @@ export class SessionIndexProjector {
       });
     }
 
-    const retainFingerprints = (skipSessionIds?: ReadonlySet<string>): void => {
+    const retainFingerprints = (
+      skipSessionIds?: ReadonlySet<string>,
+      skipWorkspaceIds?: ReadonlySet<string>,
+    ): void => {
       if (this.fingerprintGeneration !== generation || this.fullInvalidationEpoch > invalidationEpoch) return;
       for (const [key, entry] of nextFingerprintCache) {
-        if (skipSessionIds !== undefined) {
+        if (skipSessionIds !== undefined || skipWorkspaceIds !== undefined) {
           const slash = key.indexOf('/');
+          const workspaceId = slash >= 0 ? key.slice(0, slash) : undefined;
           const sessionId = slash >= 0 ? key.slice(slash + 1) : key;
-          if (skipSessionIds.has(sessionId)) continue;
+          if (skipSessionIds?.has(sessionId) || (workspaceId !== undefined && skipWorkspaceIds?.has(workspaceId))) continue;
         }
         if ((this.keyInvalidationEpochs.get(key) ?? 0) > invalidationEpoch) continue;
         if ((this.fingerprintCache.get(key)?.sequence ?? 0) > sequence) continue;
@@ -628,14 +632,25 @@ export class SessionIndexProjector {
     };
     retainFingerprints();
     return async (skip?: { readonly sessionIds?: ReadonlySet<string>; readonly workspaceIds?: ReadonlySet<string> }) => {
-      const skipSessionIds = skip?.sessionIds;
       const skipWorkspaceIds = skip?.workspaceIds;
+      const effectiveSkipSessionIds = new Set<string>(skip?.sessionIds ?? []);
+      if (skipWorkspaceIds !== undefined && skipWorkspaceIds.size > 0) {
+        for (const workspaceId of skipWorkspaceIds) {
+          const wsSessionIds = currentWorkspaceSessions.get(workspaceId);
+          if (wsSessionIds !== undefined) {
+            for (const sid of wsSessionIds) effectiveSkipSessionIds.add(sid);
+          }
+          for (const key of this.fingerprintCache.keys()) {
+            if (key.startsWith(`${workspaceId}/`)) this.fingerprintCache.delete(key);
+          }
+        }
+      }
       const filteredOps =
-        (skipSessionIds === undefined || skipSessionIds.size === 0) &&
+        effectiveSkipSessionIds.size === 0 &&
         (skipWorkspaceIds === undefined || skipWorkspaceIds.size === 0)
           ? ops
           : ops.filter((op) => {
-              if ((op.collection === collection || op.collection === sources) && skipSessionIds?.has(op.key)) {
+              if ((op.collection === collection || op.collection === sources) && effectiveSkipSessionIds.has(op.key)) {
                 return false;
               }
               if ((op.collection === workspaces || op.collection === counters) && skipWorkspaceIds?.has(op.key)) {
@@ -655,7 +670,7 @@ export class SessionIndexProjector {
           sourceMaxMtimeMs,
         });
       }
-      retainFingerprints(skipSessionIds);
+      retainFingerprints(effectiveSkipSessionIds, skipWorkspaceIds);
       const result = { sessions, upserted, removed };
       if (upserted > 0 || removed > 0) {
         log.info('session index reconciliation repaired drift', { generation, ...result });

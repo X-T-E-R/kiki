@@ -158,6 +158,7 @@ export interface TargetSubscription {
   readonly transcriptGeneration?: number;
   readonly residencyLease?: SessionLease;
   readonly prevTranscriptSeeded?: boolean;
+  readonly transcriptOnly?: boolean;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -516,7 +517,7 @@ export class SessionEventBroadcaster {
     target: BroadcastTarget,
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
-    opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince; timing?: SessionViewTimingContext },
+    opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince; timing?: SessionViewTimingContext; transcriptOnly?: boolean },
   ): Promise<boolean> {
     if (this.closed) return false;
     const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, AbortController>();
@@ -563,6 +564,7 @@ export class SessionEventBroadcaster {
         transcriptGeneration: generation,
         residencyLease,
         prevTranscriptSeeded: prevSeeded,
+        transcriptOnly: opts?.transcriptOnly ?? (prev?.transcriptOnly === true && filter === undefined),
       });
       attached = { state, generation, prev, prevSeeded };
       if (transcriptGrades === undefined) {
@@ -2060,7 +2062,7 @@ export class SessionEventBroadcaster {
       for (const [target, sub] of targets) {
         if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
         try {
-          if (suppressedByTranscript(envelope, sub.transcriptGrades)) {
+          if (suppressedByTranscript(envelope, sub.transcriptGrades, sub.transcriptOnly === true)) {
             if (target.sendRosterHint !== undefined && (
               (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed' ||
                 event.type === 'turn.started' || event.type === 'turn.ended') && event.agentId !== MAIN_AGENT_ID ||
@@ -2255,13 +2257,6 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'goal.updated',
   'plan.revision',
   'context.spliced',
-  'context.append_message',
-  'context.append_loop_event',
-  'turn.prompt',
-  'llm.request',
-  'llm.tools_snapshot',
-  'profile.dynamic_snapshot',
-  'profile.bind',
   'agent.status.updated',
   'hook.result',
   'prompt.submitted',
@@ -2284,9 +2279,20 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'event.approval.resolved',
 ]);
 
+const TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'context.append_message',
+  'context.append_loop_event',
+  'turn.prompt',
+  'llm.request',
+  'llm.tools_snapshot',
+  'profile.dynamic_snapshot',
+  'profile.bind',
+]);
+
 function suppressedByTranscript(
   envelope: EventEnvelope,
   spec: TranscriptGradeSpec | undefined,
+  transcriptOnly = false,
 ): boolean {
   if (spec === undefined) return false;
   if (isGlobalEvent(envelope.type)) return false;
@@ -2298,7 +2304,8 @@ function suppressedByTranscript(
       : undefined;
   if (typeof agentId !== 'string') return false;
   if (gradeFor(spec, agentId) === 'off') return false;
-  return TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type);
+  if (TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type)) return true;
+  return transcriptOnly && TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES.has(envelope.type);
 }
 
 function interactionRequestedEvent(interaction: Interaction, sessionId: string): Event | undefined {

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { mkdir, open, readFile, readdir, rmdir, unlink, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rmdir, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
@@ -2152,5 +2152,135 @@ export async function* readLogicalBytes(
     yield* pinned.read(range, options);
   } finally {
     pinned.close();
+  }
+}
+
+const COLD_MARKER_DEFAULT_NEEDLES = ['ExitPlanMode', 'prompt.model_switch', '"parentReceiptManaged"'] as const;
+const coldMarkerCache = new Map<string, boolean>();
+const coldMarkerFlights = new Map<string, Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> }>>();
+
+function coldMarkerFileKey(wirePath: string, info: { readonly dev: number | bigint; readonly ino: number | bigint; readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number }): string {
+  const normalized = process.platform === 'win32' ? resolve(wirePath).toLowerCase() : resolve(wirePath);
+  return `${normalized}\0${String(info.dev)}:${String(info.ino)}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+export async function scanColdWireMarkers(
+  wirePath: string,
+  markers: readonly string[],
+  signal?: AbortSignal,
+  minSizeBytes = 1024 * 1024,
+): Promise<{ readonly size: number; readonly matches: ReadonlyMap<string, boolean> } | undefined> {
+  signal?.throwIfAborted();
+  const hasSegments = await stat(`${dirname(wirePath)}/wire.manifest.json`).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    },
+  );
+  if (hasSegments) return undefined;
+  const info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  signal?.throwIfAborted();
+  if (info === undefined || info.size <= minSizeBytes) return undefined;
+  const fileKey = coldMarkerFileKey(wirePath, info);
+  const allCached = new Map<string, boolean>();
+  let cacheComplete = true;
+  for (const marker of markers) {
+    if (marker.length === 0) {
+      allCached.set(marker, true);
+      continue;
+    }
+    const hit = coldMarkerCache.get(`${fileKey}\0${marker}`);
+    if (hit === undefined) {
+      cacheComplete = false;
+      break;
+    }
+    allCached.set(marker, hit);
+  }
+  if (cacheComplete) return { size: info.size, matches: allCached };
+
+  const existingFlight = coldMarkerFlights.get(fileKey);
+  if (existingFlight !== undefined && markers.every((m) => m.length === 0 || (COLD_MARKER_DEFAULT_NEEDLES as readonly string[]).includes(m))) {
+    const done = await existingFlight;
+    signal?.throwIfAborted();
+    const matches = new Map<string, boolean>();
+    for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
+    return { size: done.size, matches };
+  }
+
+  const scanSet = new Set<string>(COLD_MARKER_DEFAULT_NEEDLES);
+  for (const m of markers) {
+    if (m.length > 0) scanSet.add(m);
+  }
+  const needles = [...scanSet].map((marker) => ({ marker, buf: Buffer.from(marker, 'utf8'), found: false }));
+  const scanPromise = (async (): Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> }> => {
+    const maxNeedleLen = needles.reduce((acc, n) => Math.max(acc, n.buf.length), 1);
+    const overlap = Math.max(0, maxNeedleLen - 1);
+    const chunkSize = 1024 * 1024;
+    const buf = Buffer.allocUnsafe(chunkSize + overlap);
+    let stable = true;
+    const fh = await open(wirePath, 'r');
+    try {
+      let pos = 0;
+      let carry = 0;
+      while (pos < info.size) {
+        const toRead = Math.min(chunkSize, info.size - pos);
+        const { bytesRead } = await fh.read(buf, carry, toRead, pos);
+        if (bytesRead <= 0) break;
+        const windowLen = carry + bytesRead;
+        const slice = buf.subarray(0, windowLen);
+        let allFound = true;
+        for (const n of needles) {
+          if (!n.found) {
+            if (slice.indexOf(n.buf) !== -1) n.found = true;
+            else allFound = false;
+          }
+        }
+        if (allFound) break;
+        pos += bytesRead;
+        if (overlap > 0 && windowLen >= overlap) {
+          buf.copy(buf, 0, windowLen - overlap, windowLen);
+          carry = overlap;
+        } else {
+          carry = windowLen;
+        }
+      }
+      if (needles.some((n) => !n.found)) {
+        const after = await fh.stat();
+        stable = coldMarkerFileKey(wirePath, after) === fileKey;
+      }
+    } finally {
+      await fh.close();
+    }
+    const results = new Map<string, boolean>();
+    for (const n of needles) {
+      results.set(n.marker, n.found);
+      if (n.found || stable) {
+        if (coldMarkerCache.size >= 1024) {
+          const oldest = coldMarkerCache.keys().next().value;
+          if (oldest !== undefined) coldMarkerCache.delete(oldest);
+        }
+        coldMarkerCache.set(`${fileKey}\0${n.marker}`, n.found);
+      }
+    }
+    return { size: info.size, results };
+  })();
+
+  if (!coldMarkerFlights.has(fileKey)) {
+    coldMarkerFlights.set(fileKey, scanPromise);
+  }
+  try {
+    const done = await scanPromise;
+    signal?.throwIfAborted();
+    const matches = new Map<string, boolean>();
+    for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
+    return { size: done.size, matches };
+  } finally {
+    if (coldMarkerFlights.get(fileKey) === scanPromise) {
+      coldMarkerFlights.delete(fileKey);
+    }
   }
 }

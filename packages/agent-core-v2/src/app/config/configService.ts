@@ -541,6 +541,9 @@ export class ConfigService extends Disposable implements IConfigService {
     const relevantOverlays = overlays.filter(
       (overlay) => overlay.domains === undefined || overlay.domains.includes(domain),
     );
+    if (relevantOverlays.length > 0) {
+      return this.freshEffective()[domain];
+    }
     const accessed = new Set<string>();
     const getEnv = (name: string): string | undefined => {
       accessed.add(name);
@@ -554,18 +557,6 @@ export class ConfigService extends Disposable implements IConfigService {
         value = this.validateSection(domain, next, false, value);
       } catch {
       }
-    }
-    if (relevantOverlays.length > 0) {
-      const effective: ResolvedConfig = { ...this.validated, [domain]: value };
-      const validate = (targetDomain: string, nextValue: unknown): unknown =>
-        this.registry.validate(targetDomain, nextValue);
-      for (const overlay of relevantOverlays) {
-        try {
-          overlay.apply(effective, getEnv, validate);
-        } catch {
-        }
-      }
-      value = effective[domain];
     }
     const envNames = [...accessed].sort();
     this.domainCache.set(domain, {

@@ -744,6 +744,7 @@ export async function runChaosOnCcp(options = {}) {
     const runnerFlags = [
       '--dir /tmp/kiki-chaos-nvme',
       `--run-id ${runId}`,
+      `--build-id ${buildId}`,
       `--tier ${tier}`,
       `--giant-gib ${giantGiB}`,
       `--concurrency ${concurrency}`,
@@ -752,6 +753,8 @@ export async function runChaosOnCcp(options = {}) {
       ...(usedExistingCorpus ? ['--existing-corpus'] : []),
       ...(runBrowser ? [] : ['--no-browser']),
       ...(runAll ? ['--run-all'] : []),
+      ...(options.v23Smoke ? ['--v23-smoke'] : []),
+      ...(options.manifestPath ? [`--manifest "${options.manifestPath}"`] : []),
       ...(s6Only ? ['--s6-only'] : options.runS6 ? ['--run-s6'] : []),
       ...(s7Only ? ['--s7-only'] : options.runS7 ? ['--run-s7'] : []),
       ...(s8Only ? ['--s8-only'] : options.runS8 ? ['--run-s8'] : []),
@@ -863,6 +866,11 @@ export async function runChaosOnCcp(options = {}) {
       chaosReport: chaosResults,
       requiredStages,
     });
+    fs.writeFileSync(
+      path.join(outDir, 'manifest.json'),
+      `${JSON.stringify({ runId, buildId, requiredStages, tier }, null, 2)}\n`,
+      'utf8',
+    );
     fs.writeFileSync(path.join(outDir, 'verdict.json'), `${JSON.stringify({ runId, buildId, ...verdict }, null, 2)}\n`, 'utf8');
 
     fs.writeFileSync(
@@ -954,6 +962,8 @@ export function parseCcpCliArgs(args) {
     s10Only: false,
     runS7S8: false,
     runAll: false,
+    v23Smoke: false,
+    manifestPath: undefined,
     runS6: false,
     runS7: false,
     runS8: false,
@@ -984,6 +994,8 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--s10-only') opts.s10Only = true;
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-all') opts.runAll = true;
+    else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
+    else if (args[i] === '--manifest' && args[i + 1]) opts.manifestPath = args[++i];
     else if (args[i] === '--run-s6') opts.runS6 = true;
     else if (args[i] === '--run-s7') opts.runS7 = true;
     else if (args[i] === '--run-s8') opts.runS8 = true;

@@ -21,6 +21,9 @@ export class CpuWorkerService extends Disposable implements ICpuWorkerService {
     super();
     this.pool = createCpuPool(CpuWorkersConfigSchema.parse(config.get(CPU_WORKERS_SECTION) ?? {}));
     this._register(registerCpuPool(this.pool));
+    if (process.env['VITEST'] === undefined) {
+      this.pool.warm(1);
+    }
   }
 
   request<T>(operation: unknown, options?: CpuRequestOptions): Promise<T> {

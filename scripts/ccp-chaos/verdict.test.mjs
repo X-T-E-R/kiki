@@ -149,8 +149,10 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       preexistingSummaryOrSidecar: false,
       firstPaintMs: 145,
       controlBarSettleMs: 220,
-      responses: [{ status: 200, code: 0 }],
+      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
       rawPassCount: 1,
+      wireBytes: 80 * 1024 * 1024,
+      aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 2_800_000_000,
       auxiliaryTargetReadBytes: 128 * 1024,
       aggregateParseInputBytes: 512 * 1024,
@@ -158,16 +160,51 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(passLegacy.passed, true);
 
+    const failHttp404 = evaluateP01ColdChildGate({
+      lane: 'legacy',
+      wasColdBeforeOpen: true,
+      checkpoints: [],
+      firstPaintMs: 145,
+      controlBarSettleMs: 220,
+      responses: [{ path: '/api/sessions/s/transcript', status: 404, code: 40401 }],
+      rawPassCount: 1,
+      wireBytes: 80 * 1024 * 1024,
+      aggregateWireReadBytes: 80 * 1024 * 1024,
+      legacyScanBytesPerSec: 2_800_000_000,
+      aggregateParseInputBytes: 512 * 1024,
+      fullReplayMatches: true,
+    });
+    assert.equal(failHttp404.passed, false);
+    assert.equal(failHttp404.exitCode, EXIT_PRODUCT_FAIL);
+
+    const failMissingThroughputAndReplay = evaluateP01ColdChildGate({
+      lane: 'legacy',
+      wasColdBeforeOpen: true,
+      checkpoints: [],
+      firstPaintMs: 145,
+      controlBarSettleMs: 220,
+      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      rawPassCount: 1,
+      wireBytes: 80 * 1024 * 1024,
+      aggregateWireReadBytes: 80 * 1024 * 1024,
+      aggregateParseInputBytes: 0,
+    });
+    assert.equal(failMissingThroughputAndReplay.passed, false);
+    assert.equal(failMissingThroughputAndReplay.exitCode, EXIT_HARNESS_FAIL);
+
     const failSlowScan = evaluateP01ColdChildGate({
       lane: 'legacy',
       wasColdBeforeOpen: true,
       checkpoints: [],
       firstPaintMs: 180,
       controlBarSettleMs: 240,
-      responses: [{ status: 200, code: 0 }],
+      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
       rawPassCount: 1,
+      wireBytes: 80 * 1024 * 1024,
+      aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 800_000_000,
       aggregateParseInputBytes: 512 * 1024,
+      fullReplayMatches: true,
     });
     assert.equal(failSlowScan.passed, false);
     assert.equal(failSlowScan.exitCode, EXIT_PRODUCT_FAIL);
@@ -178,14 +215,31 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       checkpoints: [],
       firstPaintMs: 180,
       controlBarSettleMs: 240,
-      responses: [{ code: 40923, reason: 'history_canonical_preparing' }],
+      responses: [{ path: '/api/sessions/s/transcript/plan', status: 200, code: 40923, reason: 'history_canonical_preparing' }],
       rawPassCount: 1,
+      wireBytes: 80 * 1024 * 1024,
+      aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 2_500_000_000,
       aggregateParseInputBytes: 80 * 1024 * 1024,
+      fullReplayMatches: true,
     });
     assert.equal(failLegacyOverParse.passed, false);
     assert.ok(failLegacyOverParse.productFailures.some((f) => f.includes('40923')));
     assert.ok(failLegacyOverParse.productFailures.some((f) => f.includes('JSON-parsed')));
+
+    const failReopenMissingProof = evaluateP01ColdChildGate({
+      lane: 'reopen',
+      wasColdBeforeOpen: true,
+      productionCheckpointPublished: true,
+      fixtureBuiltCheckpoint: false,
+      firstPaintMs: 90,
+      controlBarSettleMs: 140,
+      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      aggregateWireReadBytes: 512 * 1024,
+      aggregateParseInputBytes: 256 * 1024,
+    });
+    assert.equal(failReopenMissingProof.passed, false);
+    assert.equal(failReopenMissingProof.exitCode, EXIT_HARNESS_FAIL);
 
     const failReopenFixtureCheat = evaluateP01ColdChildGate({
       lane: 'reopen',
@@ -194,9 +248,18 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       fixtureBuiltCheckpoint: true,
       firstPaintMs: 90,
       controlBarSettleMs: 140,
-      responses: [{ status: 200, code: 0 }],
+      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
       aggregateWireReadBytes: 512 * 1024,
       aggregateParseInputBytes: 256 * 1024,
+      summaryProof: {
+        sourceIdentity: '1:2',
+        generation: 'g1',
+        coveredByteOffset: 1024,
+        headSha256: 'aa',
+        tailSha256: 'bb',
+        formatVersion: 1,
+        verified: true,
+      },
     });
     assert.equal(failReopenFixtureCheat.passed, false);
     assert.equal(failReopenFixtureCheat.exitCode, EXIT_PRODUCT_FAIL);
@@ -216,6 +279,58 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(leak.passed, false);
     assert.equal(leak.exitCode, EXIT_PRODUCT_FAIL);
+
+    const emptyRolling = evaluateP02MainOnlyWsGate({
+      requiredStreamingChildren: 12,
+      activeStreamingChildren: 12,
+      controlClientChildBytes: 65536,
+      unsubscribedChildContentBytes: 0,
+      unsubscribedChildContentFrames: 0,
+      inboundBytesPerSecP99: 4096,
+      inboundBytesPerSecPeak: 8192,
+      inboundFramesPerSecP99: 4,
+      inboundFramesPerSecPeak: 8,
+      rolling5sWindows: [],
+    });
+    assert.equal(emptyRolling.passed, false);
+    assert.equal(emptyRolling.exitCode, EXIT_HARNESS_FAIL);
+
+    const emptyStages = evaluateCcpRunVerdict({
+      expectedRunId: 'r1',
+      expectedBuildId: 'b1',
+      remoteExitCode: 0,
+      receipt: { runId: 'r1', buildId: 'b1', stages: {} },
+      chaosReport: { runId: 'r1', overallPassed: true, skipped: 0 },
+      requiredStages: [],
+    });
+    assert.equal(emptyStages.passed, false);
+    assert.equal(emptyStages.exitCode, EXIT_HARNESS_FAIL);
+
+    const missingBuildId = evaluateCcpRunVerdict({
+      expectedRunId: 'r1',
+      expectedBuildId: '',
+      remoteExitCode: 0,
+      receipt: { runId: 'r1', buildId: '', stages: { chaos: { exitCode: 0 } } },
+      chaosReport: { runId: 'r1', overallPassed: true, skipped: 0 },
+      requiredStages: ['chaos'],
+    });
+    assert.equal(missingBuildId.passed, false);
+    assert.equal(missingBuildId.exitCode, EXIT_HARNESS_FAIL);
+
+    const idleMissingBrowser = evaluateIdleCpuGate({
+      recorderRafDisabled: true,
+      windows: Array.from({ length: 12 }, () => ({ serverCorePct: 0.4, survivingDescendants: 0 })),
+    });
+    assert.equal(idleMissingBrowser.passed, false);
+    assert.equal(idleMissingBrowser.exitCode, EXIT_HARNESS_FAIL);
+
+    const idleTooFewWindows = evaluateIdleCpuGate({
+      recorderRafDisabled: true,
+      headlessNoBrowser: true,
+      windows: [{ serverCorePct: 0.4, survivingDescendants: 0 }],
+    });
+    assert.equal(idleTooFewWindows.passed, false);
+    assert.equal(idleTooFewWindows.exitCode, EXIT_HARNESS_FAIL);
 
     const underproduced = evaluateP02MainOnlyWsGate({
       requiredStreamingChildren: 12,

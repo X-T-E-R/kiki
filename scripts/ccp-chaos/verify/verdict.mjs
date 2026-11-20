@@ -316,15 +316,37 @@ export function evaluateP01ColdChildGate(trial) {
   if (typeof trial.controlBarSettleMs !== 'number' || trial.controlBarSettleMs >= 500) {
     productFailures.push(`P0-1 control bar settle ${trial.controlBarSettleMs}ms >= 500ms`);
   }
-  const forbidden = (trial.responses ?? []).filter(
-    (r) => r.code === 50001 || r.code === 40923 || r.status === 'preparing' || r.reason === 'history_canonical_preparing',
-  );
-  if (forbidden.length > 0) {
-    productFailures.push(`P0-1 forbidden initial-open responses: ${JSON.stringify(forbidden)}`);
+  if (!Array.isArray(trial.responses) || trial.responses.length === 0) {
+    harnessFailures.push('P0-1 missing endpoint response receipts');
+  } else {
+    const forbidden = trial.responses.filter((r) => {
+      if (r.code === 50001 || r.code === 40923 || r.status === 'preparing' || r.reason === 'history_canonical_preparing') {
+        return true;
+      }
+      if (typeof r.status !== 'number' || r.status === 0 || r.status >= 400) {
+        return true;
+      }
+      const isLargeColdHooksObserve =
+        typeof r.path === 'string' &&
+        r.path.includes('/hooks') &&
+        r.path.includes('observe=true') &&
+        (trial.wireBytes ?? 0) > 8 * 1024 * 1024 &&
+        (r.code === 40901 || r.code === 'SESSION_BUSY');
+      if (isLargeColdHooksObserve) return false;
+      if (r.code !== undefined && r.code !== null && r.code !== 0) {
+        return true;
+      }
+      return false;
+    });
+    if (forbidden.length > 0) {
+      productFailures.push(`P0-1 forbidden or failed initial-open responses: ${JSON.stringify(forbidden)}`);
+    }
   }
 
-  if (typeof trial.aggregateParseInputBytes !== 'number') {
+  if (typeof trial.aggregateParseInputBytes !== 'number' || !Number.isFinite(trial.aggregateParseInputBytes)) {
     harnessFailures.push('P0-1 missing aggregateParseInputBytes attribution');
+  } else if (trial.aggregateParseInputBytes <= 0 && (trial.wireBytes ?? 1) > 0) {
+    harnessFailures.push('P0-1 unmeasured aggregateParseInputBytes (0B on non-empty wire)');
   } else if (trial.aggregateParseInputBytes > TWO_MIB) {
     productFailures.push(`P0-1 aggregate JSON-parsed input ${trial.aggregateParseInputBytes}B > 2 MiB (${lane})`);
   }
@@ -343,23 +365,22 @@ export function evaluateP01ColdChildGate(trial) {
     if (typeof trial.auxiliaryTargetReadBytes === 'number' && trial.auxiliaryTargetReadBytes > TWO_MIB) {
       productFailures.push(`P0-1 legacy lane auxiliary reads ${trial.auxiliaryTargetReadBytes}B > 2 MiB`);
     }
-    if (typeof trial.legacyScanBytesPerSec === 'number') {
-      if (trial.legacyScanBytesPerSec <= MIN_LEGACY_SCAN_BYTES_PER_SEC) {
-        productFailures.push(
-          `P0-1 legacy raw prefilter throughput ${(trial.legacyScanBytesPerSec / 1e9).toFixed(2)} GB/s <= 2.0 GB/s`,
-        );
-      }
-    } else if (typeof trial.aggregateWireReadBytes === 'number' && typeof trial.wireBytes === 'number') {
-      if (trial.aggregateWireReadBytes > trial.wireBytes + TWO_MIB) {
-        productFailures.push(
-          `P0-1 legacy wire read ${trial.aggregateWireReadBytes}B > single pass + 2 MiB (${trial.wireBytes + TWO_MIB}B)`,
-        );
-      }
-    } else if (typeof trial.aggregateWireReadBytes !== 'number') {
-      harnessFailures.push('P0-1 missing aggregateWireReadBytes attribution');
+    if (typeof trial.legacyScanBytesPerSec !== 'number' || !Number.isFinite(trial.legacyScanBytesPerSec)) {
+      harnessFailures.push('P0-1 legacy lane missing measured legacyScanBytesPerSec');
+    } else if (trial.legacyScanBytesPerSec <= MIN_LEGACY_SCAN_BYTES_PER_SEC) {
+      productFailures.push(
+        `P0-1 legacy raw prefilter throughput ${(trial.legacyScanBytesPerSec / 1e9).toFixed(2)} GB/s <= 2.0 GB/s`,
+      );
     }
-    if (trial.fullReplayMatches === false) {
-      productFailures.push('P0-1 legacy prefilter result disagreed with independent full replay');
+    if (typeof trial.aggregateWireReadBytes !== 'number' || !Number.isFinite(trial.aggregateWireReadBytes) || trial.aggregateWireReadBytes <= 0) {
+      harnessFailures.push('P0-1 legacy lane missing measured aggregateWireReadBytes');
+    } else if (typeof trial.wireBytes === 'number' && trial.aggregateWireReadBytes > trial.wireBytes + TWO_MIB) {
+      productFailures.push(
+        `P0-1 legacy wire read ${trial.aggregateWireReadBytes}B > single pass + 2 MiB (${trial.wireBytes + TWO_MIB}B)`,
+      );
+    }
+    if (trial.fullReplayMatches !== true) {
+      productFailures.push('P0-1 legacy prefilter result did not prove match with independent full replay');
     }
   } else if (lane === 'reopen') {
     if (trial.productionCheckpointPublished !== true) {
@@ -368,12 +389,14 @@ export function evaluateP01ColdChildGate(trial) {
     if (trial.fixtureBuiltCheckpoint === true || trial.firstReaderBuiltCheckpoint === true) {
       productFailures.push('P0-1 reopen lane failed: checkpoint was fixture-built or secretly built by first reader');
     }
-    if (typeof trial.aggregateWireReadBytes !== 'number') {
-      harnessFailures.push('P0-1 reopen lane missing aggregateWireReadBytes attribution');
+    if (typeof trial.aggregateWireReadBytes !== 'number' || !Number.isFinite(trial.aggregateWireReadBytes) || trial.aggregateWireReadBytes <= 0) {
+      harnessFailures.push('P0-1 reopen lane missing measured aggregateWireReadBytes attribution');
     } else if (trial.aggregateWireReadBytes > TWO_MIB) {
       productFailures.push(`P0-1 reopen lane aggregate raw target I/O ${trial.aggregateWireReadBytes}B > 2 MiB`);
     }
-    if (trial.summaryProof) {
+    if (!trial.summaryProof || typeof trial.summaryProof !== 'object') {
+      harnessFailures.push('P0-1 reopen lane missing required summaryProof');
+    } else {
       const p = trial.summaryProof;
       const missingFields = ['sourceIdentity', 'generation', 'coveredByteOffset', 'headSha256', 'tailSha256', 'formatVersion'].filter(
         (k) => p[k] === undefined || p[k] === null || p[k] === '',
@@ -381,7 +404,7 @@ export function evaluateP01ColdChildGate(trial) {
       if (missingFields.length > 0) {
         productFailures.push(`P0-1 reopen summary proof missing required fields: ${missingFields.join(', ')}`);
       }
-      if (p.verified === false) {
+      if (p.verified !== true) {
         productFailures.push('P0-1 reopen summary proof failed independent recomputation');
       }
     }
@@ -414,8 +437,13 @@ export function evaluateP02MainOnlyWsGate(report) {
     harnessFailures.push('P0-2 positive-control child_k delta subscriber received 0 bytes (child stream was silent)');
   }
 
-  // §10.2 rolling 5-second producer floors (evaluated when rollingBuckets are provided)
-  if (Array.isArray(report.rolling5sWindows)) {
+  // §10.2 rolling 5-second producer floors (REQUIRED — fail closed when missing or empty)
+  const minRollingWindows = report.minRollingWindows ?? 1;
+  if (!Array.isArray(report.rolling5sWindows) || report.rolling5sWindows.length < minRollingWindows) {
+    harnessFailures.push(
+      `P0-2 §10.2 missing rolling5sWindows evidence: got ${Array.isArray(report.rolling5sWindows) ? report.rolling5sWindows.length : 0} < required ${minRollingWindows}`,
+    );
+  } else {
     const minActive = Math.ceil(0.9 * N);
     const minStreaming = Math.ceil(N / 3);
     for (let i = 0; i < report.rolling5sWindows.length; i += 1) {
@@ -617,8 +645,9 @@ export function evaluateIdleCpuGate(idleReport) {
   const productFailures = [];
   const harnessFailures = [];
   const windows = idleReport?.windows;
-  if (!Array.isArray(windows) || windows.length < (idleReport?.requiredWindowCount ?? 1)) {
-    harnessFailures.push(`Idle CPU gate missing windows: got ${windows?.length ?? 0}`);
+  const requiredWindowCount = idleReport?.requiredWindowCount ?? 12;
+  if (!Array.isArray(windows) || windows.length < requiredWindowCount) {
+    harnessFailures.push(`Idle CPU gate missing windows: got ${windows?.length ?? 0} < required ${requiredWindowCount}`);
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, productFailures, harnessFailures };
   }
   if (idleReport.recorderRafDisabled !== true) {
@@ -626,11 +655,17 @@ export function evaluateIdleCpuGate(idleReport) {
   }
   for (let i = 0; i < windows.length; i += 1) {
     const w = windows[i];
-    if (typeof w.serverCorePct !== 'number' || w.serverCorePct > 2.0) {
+    if (typeof w.serverCorePct !== 'number' || !Number.isFinite(w.serverCorePct)) {
+      harnessFailures.push(`Idle window #${i + 1}: missing serverCorePct`);
+    } else if (w.serverCorePct > 2.0) {
       productFailures.push(`Idle window #${i + 1}: server+helpers CPU ${w.serverCorePct}% > 2.0%`);
     }
-    if (w.rendererPlusGpuCorePct !== undefined && w.rendererPlusGpuCorePct > 3.0) {
-      productFailures.push(`Idle window #${i + 1}: renderer+GPU CPU ${w.rendererPlusGpuCorePct}% > 3.0%`);
+    if (idleReport.headlessNoBrowser !== true) {
+      if (typeof w.rendererPlusGpuCorePct !== 'number' || !Number.isFinite(w.rendererPlusGpuCorePct)) {
+        harnessFailures.push(`Idle window #${i + 1}: missing rendererPlusGpuCorePct (visible browser required)`);
+      } else if (w.rendererPlusGpuCorePct > 3.0) {
+        productFailures.push(`Idle window #${i + 1}: renderer+GPU CPU ${w.rendererPlusGpuCorePct}% > 3.0%`);
+      }
     }
     if ((w.survivingDescendants ?? 0) > 0) {
       productFailures.push(`Idle window #${i + 1}: ${w.survivingDescendants} surviving workload descendant(s)`);
@@ -642,7 +677,7 @@ export function evaluateIdleCpuGate(idleReport) {
 
 /**
  * Evaluates a CCP / outer-runner receipt bundle (CRIT #1 + Astra §7).
- * Rejects stale/missing receipts, mismatched runId/buildId, or any failed stage.
+ * Rejects stale/missing receipts, mismatched runId/buildId, empty requiredStages, or any failed stage.
  */
 export function evaluateCcpRunVerdict({
   expectedRunId,
@@ -656,16 +691,22 @@ export function evaluateCcpRunVerdict({
   const harnessFailures = [];
 
   if (!expectedRunId) harnessFailures.push('Missing expectedRunId');
+  if (typeof expectedBuildId !== 'string' || expectedBuildId.trim().length === 0) {
+    harnessFailures.push('Missing expectedBuildId');
+  }
+  if (!Array.isArray(requiredStages) || requiredStages.length === 0) {
+    harnessFailures.push('requiredStages must be a non-empty array');
+  }
   if (!receipt || typeof receipt !== 'object') {
     harnessFailures.push('Missing remote run-receipt.json (cannot accept stale or absent receipt)');
   } else {
     if (receipt.runId !== expectedRunId) {
       harnessFailures.push(`Stale/mismatched run-receipt runId: got "${receipt.runId}", expected "${expectedRunId}"`);
     }
-    if (expectedBuildId && receipt.buildId && receipt.buildId !== expectedBuildId) {
-      harnessFailures.push(`Mismatched buildId: got "${receipt.buildId}", expected "${expectedBuildId}"`);
+    if (typeof receipt.buildId !== 'string' || receipt.buildId.trim().length === 0 || (expectedBuildId && receipt.buildId !== expectedBuildId)) {
+      harnessFailures.push(`Missing or mismatched buildId: got "${receipt.buildId}", expected "${expectedBuildId}"`);
     }
-    for (const stage of requiredStages) {
+    for (const stage of Array.isArray(requiredStages) ? requiredStages : []) {
       const st = receipt.stages?.[stage];
       if (!st || typeof st.exitCode !== 'number') {
         harnessFailures.push(`Missing fresh stage receipt for "${stage}"`);
@@ -679,7 +720,7 @@ export function evaluateCcpRunVerdict({
     }
   }
 
-  if (requiredStages.includes('chaos')) {
+  if (Array.isArray(requiredStages) && requiredStages.includes('chaos')) {
     if (!chaosReport || typeof chaosReport !== 'object') {
       harnessFailures.push('Missing downloaded chaos report JSON');
     } else {
@@ -691,6 +732,50 @@ export function evaluateCcpRunVerdict({
       }
       if ((chaosReport.skipped ?? 0) > 0) {
         harnessFailures.push(`Chaos report has skipped=${chaosReport.skipped} > 0`);
+      }
+      const sc = chaosReport.scenarios ?? {};
+      if (sc.p01?.trial) {
+        const v = evaluateP01ColdChildGate(sc.p01.trial);
+        productFailures.push(...v.productFailures);
+        harnessFailures.push(...v.harnessFailures);
+      }
+      if (Array.isArray(sc.p01?.trials)) {
+        for (const t of sc.p01.trials) {
+          const v = evaluateP01ColdChildGate(t);
+          productFailures.push(...v.productFailures);
+          harnessFailures.push(...v.harnessFailures);
+        }
+      }
+      if (sc.s10?.evidence) {
+        const v = evaluateS10Verdict(sc.s10.evidence, sc.s10.limits ?? {});
+        productFailures.push(...v.productFailures);
+        harnessFailures.push(...v.harnessFailures);
+      }
+      if (sc.s11?.graphEvidence) {
+        const g = verifyMeshGraph(sc.s11.graphEvidence);
+        if (!g.ok) productFailures.push(...g.failures);
+      }
+      if (sc.s11?.cronOutboxTrace) {
+        const c = evaluateP03CronOutboxRecovery(sc.s11.cronOutboxTrace);
+        productFailures.push(...c.productFailures);
+        harnessFailures.push(...c.harnessFailures);
+      }
+      if (sc.s12?.blindControl) {
+        const b = evaluateP04BlindMutationControl(sc.s12.blindControl);
+        productFailures.push(...b.productFailures);
+        harnessFailures.push(...b.harnessFailures);
+      }
+      if (Array.isArray(sc.s13?.cells)) {
+        for (const cell of sc.s13.cells) {
+          const c = evaluateP1TimeoutVsDetachCell(cell);
+          productFailures.push(...c.productFailures);
+          harnessFailures.push(...c.harnessFailures);
+        }
+      }
+      if (sc.s14?.idleReport) {
+        const idle = evaluateIdleCpuGate(sc.s14.idleReport);
+        productFailures.push(...idle.productFailures);
+        harnessFailures.push(...idle.harnessFailures);
       }
     }
   }
@@ -725,12 +810,16 @@ export function evaluateCcpRunVerdict({
 export function evaluateS10Verdict(evidence, limits = {}) {
   const productFailures = [];
   const harnessFailures = [];
+  const maxPromptAdmTextP95 = limits.promptAdmissionTextP95Ms ?? 250;
+  const maxPromptAdmTextP99 = limits.promptAdmissionTextP99Ms ?? 750;
+  const maxPromptAdmPngP95 = limits.promptAdmissionPngP95Ms ?? 500;
+  const maxPromptAdmPngP99 = limits.promptAdmissionPngP99Ms ?? 1500;
   const maxPromptAdmP95 = limits.promptAdmissionP95Ms ?? 500;
   const maxPromptAdmMax = limits.promptAdmissionMaxMs ?? 1500;
-  const maxSendP95 = limits.sendToReceiptP95Ms ?? 1000;
-  const maxSendMax = limits.sendToReceiptMaxMs ?? 2500;
-  const maxEldMax = limits.eldMaxMs ?? 500;
-  const maxEldP99 = limits.eldP99Ms ?? 150;
+  const maxSendP95 = limits.sendToReceiptP95Ms ?? 750;
+  const maxSendMax = limits.sendToReceiptMaxMs ?? 2000;
+  const maxEldP99 = limits.eldP99Ms ?? 50;
+  const maxEldMax = limits.eldMaxMs ?? 250;
   const minPeakChildren = limits.minPeakActiveChildren ?? 2;
   const minChildToolCalls = limits.minChildToolCalls ?? 4;
 
@@ -752,6 +841,22 @@ export function evaluateS10Verdict(evidence, limits = {}) {
     harnessFailures.push('S10 browser flight recorder missing or recorded 0 samples');
   }
 
+  if (evidence.textPromptAdmission) {
+    if ((evidence.textPromptAdmission.p95Ms ?? Infinity) > maxPromptAdmTextP95) {
+      productFailures.push(`S10 warm text prompt_admission p95 ${evidence.textPromptAdmission.p95Ms}ms > ${maxPromptAdmTextP95}ms`);
+    }
+    if ((evidence.textPromptAdmission.p99Ms ?? evidence.textPromptAdmission.maxMs ?? Infinity) > maxPromptAdmTextP99) {
+      productFailures.push(`S10 warm text prompt_admission p99 ${evidence.textPromptAdmission.p99Ms ?? evidence.textPromptAdmission.maxMs}ms > ${maxPromptAdmTextP99}ms`);
+    }
+  }
+  if (evidence.pngPromptAdmission) {
+    if ((evidence.pngPromptAdmission.p95Ms ?? Infinity) > maxPromptAdmPngP95) {
+      productFailures.push(`S10 warm PNG prompt_admission p95 ${evidence.pngPromptAdmission.p95Ms}ms > ${maxPromptAdmPngP95}ms`);
+    }
+    if ((evidence.pngPromptAdmission.p99Ms ?? evidence.pngPromptAdmission.maxMs ?? Infinity) > maxPromptAdmPngP99) {
+      productFailures.push(`S10 warm PNG prompt_admission p99 ${evidence.pngPromptAdmission.p99Ms ?? evidence.pngPromptAdmission.maxMs}ms > ${maxPromptAdmPngP99}ms`);
+    }
+  }
   if ((evidence.promptAdmission?.p95Ms ?? Infinity) > maxPromptAdmP95) {
     productFailures.push(`S10 prompt_admission p95 ${evidence.promptAdmission?.p95Ms}ms > ${maxPromptAdmP95}ms`);
   }
@@ -828,7 +933,9 @@ export function evaluateS10Verdict(evidence, limits = {}) {
 export function verifySavedBundle(bundleDir) {
   const manifestPath = path.join(bundleDir, 'manifest.json');
   const receiptPath = path.join(bundleDir, 'run-receipt.json');
-  const reportPath = path.join(bundleDir, 'chaos-report.json');
+  const reportPath = fs.existsSync(path.join(bundleDir, 'chaos-report.json'))
+    ? path.join(bundleDir, 'chaos-report.json')
+    : path.join(bundleDir, 'kiki-chaos-results.json');
   if (!fs.existsSync(manifestPath)) {
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, status: 'HARNESS_FAIL', productFailures: [], harnessFailures: [`Missing ${manifestPath}`] };
   }

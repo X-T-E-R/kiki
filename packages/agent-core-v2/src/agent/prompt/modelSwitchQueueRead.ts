@@ -20,7 +20,21 @@ import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wir
 const PREFIX = '\u0000model-switch:';
 const READ_BYTES = 8 * 1024 * 1024;
 const PROOF_BYTES = 64 * 1024;
+const WIRE_TYPE_HEAD = Buffer.from('{"type":"');
+const WIRE_PROMPT_PREFIX = Buffer.from('{"type":"prompt.');
+const MODEL_SWITCH_NEEDLE = Buffer.from('prompt.model_switch', 'utf8');
 const CHECKPOINT_STATE_NAMES = new Set([modelSwitchQueueKey.name, promptQueueKey.name]);
+
+function isNonPromptWireLine(bytes: Buffer): boolean {
+  let len = bytes.length;
+  if (len > 0 && bytes[len - 1] === 0x0d) len -= 1;
+  if (len < WIRE_TYPE_HEAD.length + 2 || bytes[len - 1] !== 0x7d) return false;
+  if (bytes.subarray(0, WIRE_TYPE_HEAD.length).equals(WIRE_TYPE_HEAD)) {
+    return len < WIRE_PROMPT_PREFIX.length || !bytes.subarray(0, WIRE_PROMPT_PREFIX.length).equals(WIRE_PROMPT_PREFIX);
+  }
+  const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(bytes.toString('utf8', 0, Math.min(256, len)))?.[1];
+  return type !== undefined && !type.startsWith('prompt.');
+}
 type SwitchState = ReturnType<typeof modelSwitchQueueKey.initial>;
 type QueueState = ReturnType<typeof promptQueueKey.initial>;
 interface Checkpoint {
@@ -82,6 +96,8 @@ export class PersistedModelSwitchReader {
   }
 
   async readReady(scope: string, signal?: AbortSignal) {
+    const fastEmpty = await this.tryFastEmptyScan(scope, signal);
+    if (fastEmpty) return [];
     for (;;) {
       signal?.throwIfAborted();
       try { return await this.read(scope, signal); }
@@ -90,6 +106,47 @@ export class PersistedModelSwitchReader {
       }
       await new Promise<void>((resolve) => { setImmediate(resolve); });
     }
+  }
+
+  private async tryFastEmptyScan(scope: string, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
+    const current = await this.source(scope);
+    signal?.throwIfAborted();
+    if (current.size <= READ_BYTES * 2) return false;
+    const cached = this.states.get(scope);
+    if (cached !== undefined && cached.complete && cached.switches.size === 0 && this.canAppend(cached.source, current) && current.size === cached.source.size) {
+      return true;
+    }
+    const overlap = MODEL_SWITCH_NEEDLE.length - 1;
+    let carry = Buffer.alloc(0);
+    for await (const raw of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: 0, end: current.size - 1 }, { chunkBytes: 1024 * 1024 })) {
+      signal?.throwIfAborted();
+      const chunk = Buffer.from(raw);
+      const combined = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+      if (combined.indexOf(MODEL_SWITCH_NEEDLE) !== -1) {
+        return false;
+      }
+      carry = overlap > 0 ? Buffer.from(combined.subarray(Math.max(0, combined.length - overlap))) : Buffer.alloc(0);
+    }
+    const after = await this.source(scope);
+    if (!this.canAppend(current, after) || after.size !== current.size) {
+      return false;
+    }
+    const proof = await this.prefixProof(scope, current.size);
+    this.states.delete(scope);
+    this.states.set(scope, {
+      source: after,
+      watermark: current.size,
+      proof,
+      switches: modelSwitchQueueKey.initial(),
+      queue: promptQueueKey.initial(),
+      offset: current.size,
+      pending: Buffer.alloc(0),
+      skip: false,
+      complete: true,
+    });
+    while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
+    return true;
   }
 
   private async checkpoint(scope: string, size: number, mtimeMs: number) {
@@ -222,14 +279,21 @@ export class PersistedModelSwitchReader {
           const newline = chunk.indexOf(10, start);
           const index = newline < 0 ? chunk.length : newline;
           const fragment = chunk.subarray(start, index);
-          if (!state.skip) state.pending = Buffer.concat([state.pending, fragment]);
-          if (state.pending.length >= 256) {
-            const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, 256))?.[1];
-            if (type !== undefined && !type.startsWith('prompt.')) { state.skip = true; state.pending = Buffer.alloc(0); }
-          }
-          if (index !== chunk.length) {
-            if (!state.skip) this.fold(state, state.pending);
-            state.pending = Buffer.alloc(0); state.skip = false;
+          if (state.pending.length === 0 && index !== chunk.length) {
+            if (!state.skip && fragment.length > 0 && !isNonPromptWireLine(fragment)) {
+              this.fold(state, fragment);
+            }
+            state.skip = false;
+          } else {
+            if (!state.skip) state.pending = state.pending.length === 0 ? Buffer.from(fragment) : Buffer.concat([state.pending, fragment]);
+            if (!state.skip && state.pending.length >= 256) {
+              const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, 256))?.[1];
+              if (type !== undefined && !type.startsWith('prompt.')) { state.skip = true; state.pending = Buffer.alloc(0); }
+            }
+            if (index !== chunk.length) {
+              if (!state.skip && state.pending.length > 0 && !isNonPromptWireLine(state.pending)) this.fold(state, state.pending);
+              state.pending = Buffer.alloc(0); state.skip = false;
+            }
           }
           if (index === chunk.length) break;
           start = index + 1;

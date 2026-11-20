@@ -16,6 +16,19 @@ function paethPredictor(a: number, b: number, c: number): number {
   return c;
 }
 
+export function trySniffPngSize(bytes: Uint8Array): { readonly width: number; readonly height: number } | undefined {
+  if (bytes.length < 24) return undefined;
+  for (let i = 0; i < 8; i += 1) {
+    if (bytes[i] !== PNG_SIG[i]) return undefined;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(8, false) !== 13 || view.getUint32(12, false) !== 0x49484452) return undefined;
+  const width = view.getUint32(16, false);
+  const height = view.getUint32(20, false);
+  if (width <= 0 || height <= 0) return undefined;
+  return { width, height };
+}
+
 export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: number; height: number } | undefined {
   if (bytes.length < 33) return undefined;
   for (let i = 0; i < 8; i += 1) {

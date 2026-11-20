@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildScreenshotPng } from '../fixtures/media.mjs';
@@ -7,6 +9,7 @@ import { startExternalHeartbeatWatchdog } from '../telemetry/process-tree.mjs';
 import { evaluateS10Verdict } from '../verify/verdict.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const AST_BUILD_SCRIPT = path.resolve(__dirname, '..', 'workloads', 'ast-build.mjs');
 
 function sleep(ms) {
@@ -224,6 +227,149 @@ function parsePromptAdmissionLatencies(homeDir, sinceMs) {
   return latencies;
 }
 
+async function openWs(WebSocket, endpoint, token) {
+  const wsUrl = `${endpoint.replace(/^http/u, 'ws')}/api/ws`;
+  const ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('WS open timeout')), 5_000);
+    ws.once('open', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    ws.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+  return ws;
+}
+
+/**
+ * Launches a real headless Playwright Chromium instance pointed at the live server
+ * while S10 children are streaming to witness FlightRecorder (CLS, rawLayoutShift,
+ * transcriptRootRemounts, consoleErrors, composer typing latency).
+ */
+async function startLiveBrowserFlightRecorder({ server, sessionId }) {
+  try {
+    const kapRequire = createRequire(path.join(REPO_ROOT, 'packages', 'kap-server', 'package.json'));
+    const { chromium } = kapRequire('playwright');
+    if (!chromium) return null;
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    const consoleErrors = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => consoleErrors.push(String(err)));
+
+    await page.addInitScript(({ token, sid }) => {
+      try {
+        localStorage.setItem('kiki_auth_token', token);
+        localStorage.setItem('kiki_last_session_id', sid);
+      } catch {}
+      window.__KIKI_S10_FLIGHT__ = {
+        cls: 0,
+        rawLayoutShift: 0,
+        sampleCount: 0,
+        transcriptRootRemounts: 0,
+        typingLatenciesMs: [],
+      };
+      try {
+        new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            const val = Number(entry.value || 0);
+            window.__KIKI_S10_FLIGHT__.rawLayoutShift += val;
+            if (!entry.hadRecentInput) window.__KIKI_S10_FLIGHT__.cls += val;
+          }
+        }).observe({ type: 'layout-shift', buffered: true });
+      } catch {}
+      const tick = () => {
+        window.__KIKI_S10_FLIGHT__.sampleCount += 1;
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }, { token: server.token, sid: sessionId });
+
+    const guiDistDir = path.join(REPO_ROOT, 'apps', 'kiki-gui', 'dist');
+    const hasGuiDist = fs.existsSync(path.join(guiDistDir, 'index.html'));
+    const mimeByExt = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.svg': 'image/svg+xml',
+      '.png': 'image/png',
+      '.json': 'application/json; charset=utf-8',
+      '.woff2': 'font/woff2',
+    };
+    const staticServer = createHttpServer((req, res) => {
+      const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+      if (urlPath === '/__kiki/local-server') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+        return;
+      }
+      if (!hasGuiDist) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<!doctype html><html><body><div id="transcript-root"></div><textarea id="composer"></textarea></body></html>');
+        return;
+      }
+      let file = path.normalize(path.join(guiDistDir, urlPath));
+      if (!file.startsWith(guiDistDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+        file = path.join(guiDistDir, 'index.html');
+      }
+      res.writeHead(200, { 'content-type': mimeByExt[path.extname(file)] ?? 'application/octet-stream' });
+      fs.createReadStream(file).pipe(res);
+    });
+    await new Promise((resolve) => staticServer.listen(0, '127.0.0.1', resolve));
+    const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
+    const targetUrl = `${webUrl}/s/${encodeURIComponent(sessionId)}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => undefined);
+    await page.waitForTimeout(400);
+
+    return {
+      browser,
+      page,
+      async sampleAndType(text) {
+        await page.evaluate(async (sample) => {
+          const input = document.querySelector('textarea, input[type="text"], [contenteditable="true"]');
+          if (!input || !('value' in input)) return;
+          input.focus();
+          const burst = sample.slice(0, 12);
+          let acc = '';
+          for (const ch of burst) {
+            const t0 = performance.now();
+            acc += ch;
+            input.value = acc;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            await new Promise((r) => requestAnimationFrame(() => r()));
+            const dt = Number((performance.now() - t0).toFixed(2));
+            if (window.__KIKI_S10_FLIGHT__) window.__KIKI_S10_FLIGHT__.typingLatenciesMs.push(dt);
+          }
+        }, text).catch(() => undefined);
+      },
+      async closeAndCollect() {
+        const snap = await page
+          .evaluate(() => window.__KIKI_S10_FLIGHT__ ?? null)
+          .catch(() => null);
+        await browser.close().catch(() => undefined);
+        await new Promise((resolve) => staticServer.close(() => resolve()));
+        return {
+          sampleCount: snap?.sampleCount ?? 0,
+          cls: Number((snap?.cls ?? 0).toFixed(5)),
+          rawLayoutShift: Number((snap?.rawLayoutShift ?? 0).toFixed(5)),
+          transcriptRootRemounts: snap?.transcriptRootRemounts ?? 0,
+          consoleErrors: consoleErrors.length,
+          consoleErrorSamples: consoleErrors.slice(0, 5),
+          composerTyping: summarize(snap?.typingLatenciesMs ?? []),
+        };
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Runs Scenario S10: Live Multi-Subagent Orchestrator Storm (Astra v2.3).
  */
@@ -241,21 +387,25 @@ export async function runScenarioS10LiveStorm({
     ? {
         turns: 600,
         seededSubagents: 600,
-        activeChildren: 8,
+        activeChildren: 12,
         stepsPerChild: 6,
         deltasPerStep: 110,
         cadenceMs: 14,
         workspaceFiles: 2_500,
         promptRounds: 6,
         limits: {
+          promptAdmissionTextP95Ms: 250,
+          promptAdmissionTextP99Ms: 750,
+          promptAdmissionPngP95Ms: 500,
+          promptAdmissionPngP99Ms: 1500,
           promptAdmissionP95Ms: 500,
           promptAdmissionMaxMs: 1500,
-          sendToReceiptP95Ms: 1000,
-          sendToReceiptMaxMs: 2500,
-          eldP99Ms: 150,
-          eldMaxMs: 500,
+          sendToReceiptP95Ms: 750,
+          sendToReceiptMaxMs: 2000,
+          eldP99Ms: 50,
+          eldMaxMs: 250,
           minPeakActiveChildren: 4,
-          minChildToolCalls: 16,
+          minChildToolCalls: 24,
           minOverlapBuckets: 1,
         },
       }
@@ -264,17 +414,21 @@ export async function runScenarioS10LiveStorm({
         seededSubagents: 80,
         activeChildren: 4,
         stepsPerChild: 5,
-        deltasPerStep: 24,
-        cadenceMs: 25,
+        deltasPerStep: 36,
+        cadenceMs: 20,
         workspaceFiles: 120,
         promptRounds: 4,
         limits: {
+          promptAdmissionTextP95Ms: 250,
+          promptAdmissionTextP99Ms: 750,
+          promptAdmissionPngP95Ms: 500,
+          promptAdmissionPngP99Ms: 1500,
           promptAdmissionP95Ms: 500,
           promptAdmissionMaxMs: 1500,
-          sendToReceiptP95Ms: 1000,
-          sendToReceiptMaxMs: 2500,
-          eldP99Ms: 150,
-          eldMaxMs: 500,
+          sendToReceiptP95Ms: 750,
+          sendToReceiptMaxMs: 2000,
+          eldP99Ms: 50,
+          eldMaxMs: 250,
           minPeakActiveChildren: 2,
           minChildToolCalls: 8,
           minOverlapBuckets: 1,
@@ -301,20 +455,13 @@ export async function runScenarioS10LiveStorm({
     subagents: cfg.seededSubagents,
   });
 
-  await server.resetWindow();
   const preMetrics = await server.metrics(true);
   const preTwin = twin.getStats();
 
-  // Start external 100ms heartbeat watchdog
-  const heartbeat = startExternalHeartbeatWatchdog({
-    url: `${server.endpoint}/api/health`,
-    headers: { authorization: `Bearer ${server.token}` },
-    intervalMs: 100,
-    timeoutMs: 2_000,
-  });
-
-  // Connect main-only WebSocket observer for P0-2 byte/frame isolation tracking
+  // Connect BOTH (1) main-only WS observer and (2) positive-control child-delta WS observer
   let wsMainOnly = null;
+  let wsControlChild = null;
+  const durablePromptReceipts = new Map();
   const wsTelemetry = {
     connected: false,
     baselineAcked: false,
@@ -327,46 +474,40 @@ export async function runScenarioS10LiveStorm({
     frameTypeCounts: Object.create(null),
     largestFrames: [],
   };
+  const controlTelemetry = {
+    connected: false,
+    childDeltaBytes: 0,
+    childDeltaFrames: 0,
+    childActivityBySec: new Map(),
+    childDeltaEvents: [],
+    completedChildIds: new Set(),
+  };
 
   if (WebSocket) {
     try {
-      const wsUrl = `${server.endpoint.replace(/^http/u, 'ws')}/api/ws`;
-      wsMainOnly = new WebSocket(wsUrl, {
-        headers: { authorization: `Bearer ${server.token}` },
-      });
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 4_000);
-        wsMainOnly.on('open', () => {
-          wsTelemetry.connected = true;
-          clearTimeout(timer);
-          wsMainOnly.send(
-            JSON.stringify({
-              id: `sub_filter_${runId}`,
-              type: 'subscribe',
-              payload: {
-                session_ids: [seeded.sessionId],
-                agent_filter: { [seeded.sessionId]: ['main'] },
-              },
-            }),
-          );
-          wsMainOnly.send(
-            JSON.stringify({
-              id: `sub_s10_${runId}`,
-              type: 'subscribe_v2',
-              payload: {
-                session_id: seeded.sessionId,
-                transcript: { main: 'delta', '*': 'off' },
-                transcript_coverage_version: 2,
-              },
-            }),
-          );
-          resolve();
-        });
-        wsMainOnly.on('error', () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      wsMainOnly = await openWs(WebSocket, server.endpoint, server.token);
+      wsTelemetry.connected = true;
+      wsMainOnly.send(
+        JSON.stringify({
+          id: `sub_filter_${runId}`,
+          type: 'subscribe',
+          payload: {
+            session_ids: [seeded.sessionId],
+            agent_filter: { [seeded.sessionId]: ['main'] },
+          },
+        }),
+      );
+      wsMainOnly.send(
+        JSON.stringify({
+          id: `sub_s10_${runId}`,
+          type: 'subscribe_v2',
+          payload: {
+            session_id: seeded.sessionId,
+            transcript: { main: 'delta', '*': 'off' },
+            transcript_coverage_version: 2,
+          },
+        }),
+      );
       wsMainOnly.on('message', (data) => {
         const raw = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
         const bytes = Buffer.byteLength(raw, 'utf8');
@@ -377,10 +518,24 @@ export async function runScenarioS10LiveStorm({
           msg = null;
         }
         const evType = msg?.type ?? msg?.event?.type ?? '';
-        if (!wsTelemetry.baselineAcked) {
-          if (evType === 'transcript.reset') {
-            wsTelemetry.baselineAcked = true;
+        // Track durable prompt receipts for send-to-receipt attribution
+        if (evType === 'transcript.ops' && Array.isArray(msg?.payload?.ops)) {
+          for (const op of msg.payload.ops) {
+            const pid = op?.prompt?.promptId ?? op?.turn?.promptId;
+            if (typeof pid === 'string' && !durablePromptReceipts.has(pid)) {
+              durablePromptReceipts.set(pid, performance.now());
+            }
           }
+        }
+        if (evType === 'prompt.submitted' || evType === 'prompt.queued' || evType === 'prompt.enqueued') {
+          const pid = msg?.payload?.promptId ?? msg?.payload?.prompt_id;
+          if (typeof pid === 'string' && !durablePromptReceipts.has(pid)) {
+            durablePromptReceipts.set(pid, performance.now());
+          }
+        }
+
+        if (!wsTelemetry.baselineAcked) {
+          if (evType === 'transcript.reset') wsTelemetry.baselineAcked = true;
           return;
         }
         const sec = Math.floor(performance.now() / 1000);
@@ -402,10 +557,67 @@ export async function runScenarioS10LiveStorm({
           wsTelemetry.unsubscribedChildContentFrames += 1;
         }
       });
+
+      wsControlChild = await openWs(WebSocket, server.endpoint, server.token);
+      controlTelemetry.connected = true;
+      wsControlChild.send(
+        JSON.stringify({
+          id: `sub_ctrl_${runId}`,
+          type: 'subscribe_v2',
+          payload: {
+            session_id: seeded.sessionId,
+            transcript: { '*': 'delta' },
+            transcript_coverage_version: 2,
+          },
+        }),
+      );
+      wsControlChild.on('message', (data) => {
+        const raw = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+        const bytes = Buffer.byteLength(raw, 'utf8');
+        let msg = null;
+        try {
+          msg = JSON.parse(raw);
+        } catch {
+          msg = null;
+        }
+        const evType = msg?.type ?? '';
+        const agentId = msg?.payload?.agent_id ?? msg?.payload?.agentId ?? null;
+        if (agentId && agentId !== 'main') {
+          const nowMs = performance.now();
+          if (evType === 'transcript.ops') {
+            const opCount = Array.isArray(msg?.payload?.ops) ? msg.payload.ops.length : 1;
+            controlTelemetry.childDeltaBytes += bytes;
+            controlTelemetry.childDeltaFrames += opCount;
+            controlTelemetry.childDeltaEvents.push({ tsMs: nowMs, childId: agentId, deltas: opCount, bytes });
+            const sec = Math.floor(nowMs / 1000);
+            if (!controlTelemetry.childActivityBySec.has(sec)) controlTelemetry.childActivityBySec.set(sec, new Set());
+            controlTelemetry.childActivityBySec.get(sec).add(agentId);
+            if (Array.isArray(msg?.payload?.ops) && msg.payload.ops.some((op) => op?.op === 'turn.end')) {
+              controlTelemetry.completedChildIds.add(agentId);
+            }
+          } else if (evType === 'subagent.completed') {
+            controlTelemetry.completedChildIds.add(agentId);
+          }
+        }
+      });
     } catch {
       wsMainOnly = null;
+      wsControlChild = null;
     }
   }
+
+  let browserDriver = null;
+  if (runBrowser) {
+    browserDriver = await startLiveBrowserFlightRecorder({ server, sessionId: seeded.sessionId });
+  }
+
+  await server.resetWindow();
+  const heartbeat = startExternalHeartbeatWatchdog({
+    url: `${server.endpoint}/api/health`,
+    headers: { authorization: `Bearer ${server.token}` },
+    intervalMs: 100,
+    timeoutMs: 2_000,
+  });
 
   // Trigger orchestrator storm on the live session
   const stormPrompt = [
@@ -427,40 +639,94 @@ export async function runScenarioS10LiveStorm({
     30_000,
   );
 
-  // Witness overlap & submit live text + PNG + busy steer prompts WHILE children are actively streaming!
-  const sendLatenciesMs = [];
-  const pngLatenciesMs = [];
+  // Sample true concurrent active native children inside kap-server PID every 250ms
   let peakActiveChildren = 0;
-  let overlapBucketsQualified = 0;
+  let activeMonitorStopped = false;
+  const concurrencySamples = [];
+  const activeMonitor = (async () => {
+    while (!activeMonitorStopped) {
+      let liveActive = 0;
+      if (typeof server.inspectLiveAgents === 'function') {
+        const snap = await server.inspectLiveAgents(seeded.sessionId).catch(() => null);
+        liveActive = Number(snap?.activeChildCount ?? 0);
+      }
+      const twinStreams = twin.getStats().counters.activeStreams ?? 0;
+      const concurrent = Math.max(liveActive, twinStreams);
+      if (concurrent > peakActiveChildren) peakActiveChildren = concurrent;
+      concurrencySamples.push({ tsMs: performance.now(), liveActive, twinStreams, concurrent });
+      await sleep(250);
+    }
+  })();
 
-  // Wait briefly for children to launch and become active
+  // Wait briefly for real concurrent children to become active before starting user sends
   const launchWaitDeadline = performance.now() + 15_000;
   while (performance.now() < launchWaitDeadline) {
-    const st = await apiJson(server.endpoint, server.token, 'GET', `/api/sessions/${encodeURIComponent(seeded.sessionId)}/status`, undefined, 10_000);
-    const activeSubs = Number(st.json?.data?.active_subagents ?? st.json?.data?.running_subagents ?? 0);
-    const twinNow = twin.getStats();
-    const activeStreams = twinNow.counters.activeStreams ?? 0;
-    const estActive = Math.max(activeSubs, activeStreams);
-    if (estActive > peakActiveChildren) peakActiveChildren = estActive;
-    if (estActive >= Math.min(2, cfg.activeChildren)) break;
-    await sleep(150);
+    if (peakActiveChildren >= Math.min(2, cfg.activeChildren)) break;
+    await sleep(120);
   }
 
-  // Generate real ~88 KB PNG screenshot + 2200x1400 PNG attachment
+  // Run concurrent background search + usage planes while user sends overlap active children
+  let backgroundQueriesCompleted = 0;
+  const runBgProbe = async (idx) => {
+    const [sRes, uRes] = await Promise.all([
+      apiJson(
+        server.endpoint,
+        server.token,
+        'POST',
+        '/api/search',
+        { query: `Historical orchestrator turn ${idx}`, limit: 10 },
+        8_000,
+      ),
+      apiJson(
+        server.endpoint,
+        server.token,
+        'GET',
+        `/api/usage/sessions/${encodeURIComponent(seeded.sessionId)}/accounting`,
+        undefined,
+        8_000,
+      ),
+    ]);
+    if (sRes.status === 200 || uRes.status === 200) backgroundQueriesCompleted += 1;
+  };
+
+  const textSendLatenciesMs = [];
+  const pngSendLatenciesMs = [];
+  const allSendLatenciesMs = [];
+  const uploadErrors = [];
+  let overlapBucketsQualified = 0;
+
   const png88k = buildScreenshotPng({ width: 1280, height: 720, seed: 77 });
   const pngLarge = buildScreenshotPng({ width: 2200, height: 1400, seed: 99 });
 
+  const waitDurableReceipt = async (promptId, sendT0, fallbackElapsedMs) => {
+    const deadline = performance.now() + 2_000;
+    while (performance.now() < deadline) {
+      if (durablePromptReceipts.has(promptId)) {
+        return roundMs(Math.max(fallbackElapsedMs, durablePromptReceipts.get(promptId) - sendT0));
+      }
+      await sleep(15);
+    }
+    return fallbackElapsedMs;
+  };
+
   for (let round = 0; round < cfg.promptRounds; round += 1) {
-    const stBefore = await apiJson(server.endpoint, server.token, 'GET', `/api/sessions/${encodeURIComponent(seeded.sessionId)}/status`, undefined, 10_000);
     const twinSnap = twin.getStats();
-    const activeSubs = Number(stBefore.json?.data?.active_subagents ?? stBefore.json?.data?.running_subagents ?? 0);
-    const activeNow = Math.max(activeSubs, twinSnap.counters.activeStreams ?? 0);
+    let liveActive = 0;
+    if (typeof server.inspectLiveAgents === 'function') {
+      const snap = await server.inspectLiveAgents(seeded.sessionId).catch(() => null);
+      liveActive = Number(snap?.activeChildCount ?? 0);
+    }
+    const activeNow = Math.max(liveActive, twinSnap.counters.activeStreams ?? 0);
     if (activeNow > peakActiveChildren) peakActiveChildren = activeNow;
-    if (activeNow >= 1 || (twinSnap.counters.anthropicRequests - preTwin.counters.anthropicRequests) >= 2) {
-      overlapBucketsQualified += 1;
+    if (activeNow >= 1) overlapBucketsQualified += 1;
+
+    void runBgProbe(round);
+    if (browserDriver) {
+      await browserDriver.sampleAndType(`Live overlap round ${round} (${runId})`);
     }
 
     const usePng = round % 2 === 1;
+    const promptId = usePng ? `p_s10_png_${runId}_${round}` : `p_s10_txt_${runId}_${round}`;
     let content = [
       {
         type: 'text',
@@ -470,98 +736,103 @@ export async function runScenarioS10LiveStorm({
 
     if (usePng) {
       const pngBuf = round === 1 ? png88k : pngLarge;
-      const uploadT0 = performance.now();
       const form = new FormData();
       form.append('file', new Blob([pngBuf], { type: 'image/png' }), `screenshot_${round}.png`);
       let uploadedRef = null;
+      let uploadStatus = 0;
       try {
         const upRes = await fetch(`${server.endpoint}/api/files`, {
           method: 'POST',
           headers: { authorization: `Bearer ${server.token}` },
           body: form,
         });
+        uploadStatus = upRes.status;
         const upJson = await upRes.json().catch(() => null);
         uploadedRef = upJson?.data?.file_id ?? upJson?.data?.id ?? null;
-      } catch {
-        uploadedRef = null;
+      } catch (err) {
+        uploadErrors.push(`round=${round}: ${String(err?.message ?? err)}`);
       }
-      if (uploadedRef) {
-        content = [
-          { type: 'image_url', image_url: { url: `kimi-file://${uploadedRef}` } },
-          ...content,
-        ];
-      } else {
-        content = [
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${pngBuf.toString('base64')}` } },
-          ...content,
-        ];
+      if (!uploadedRef) {
+        uploadErrors.push(`round=${round}: /api/files failed (status=${uploadStatus}), refusing inline data: fallback`);
+        continue;
       }
+      content = [
+        { type: 'image', source: { kind: 'file', file_id: uploadedRef } },
+        ...content,
+      ];
+      const sendT0 = performance.now();
       const sendRes = await apiJson(
         server.endpoint,
         server.token,
         'POST',
         `/api/sessions/${encodeURIComponent(seeded.sessionId)}/prompts`,
         {
-          prompt_id: `p_s10_png_${runId}_${round}`,
+          prompt_id: promptId,
           mode: round === 1 ? 'steer' : 'queue',
           content,
         },
         20_000,
       );
-      const totalMs = roundMs(performance.now() - uploadT0);
-      if (sendRes.status === 200) {
-        sendLatenciesMs.push(sendRes.elapsedMs);
-        pngLatenciesMs.push(totalMs);
+      if (sendRes.status === 200 && sendRes.json?.code === 0) {
+        const receiptMs = await waitDurableReceipt(promptId, sendT0, sendRes.elapsedMs);
+        pngSendLatenciesMs.push(receiptMs);
+        allSendLatenciesMs.push(receiptMs);
+      } else {
+        uploadErrors.push(`round=${round}: PNG prompt rejected status=${sendRes.status} code=${sendRes.json?.code} msg=${sendRes.json?.msg ?? ''}`);
       }
     } else {
+      const sendT0 = performance.now();
       const sendRes = await apiJson(
         server.endpoint,
         server.token,
         'POST',
         `/api/sessions/${encodeURIComponent(seeded.sessionId)}/prompts`,
         {
-          prompt_id: `p_s10_txt_${runId}_${round}`,
+          prompt_id: promptId,
           mode: 'steer',
           content,
         },
         20_000,
       );
-      if (sendRes.status === 200) {
-        sendLatenciesMs.push(sendRes.elapsedMs);
+      if (sendRes.status === 200 && sendRes.json?.code === 0) {
+        const receiptMs = await waitDurableReceipt(promptId, sendT0, sendRes.elapsedMs);
+        textSendLatenciesMs.push(receiptMs);
+        allSendLatenciesMs.push(receiptMs);
       }
     }
-    await sleep(300);
+    await sleep(250);
   }
 
-  // Wait for children & session to settle (up to 45s in smoke, 120s in full)
+  // Wait for children & session to settle
   const settleDeadline = performance.now() + (isFull ? 120_000 : 45_000);
   while (performance.now() < settleDeadline) {
     const st = await apiJson(server.endpoint, server.token, 'GET', `/api/sessions/${encodeURIComponent(seeded.sessionId)}/status`, undefined, 10_000);
     const twinNow = twin.getStats();
-    const activeSubs = Number(st.json?.data?.active_subagents ?? st.json?.data?.running_subagents ?? 0);
-    const activeStreams = twinNow.counters.activeStreams ?? 0;
-    const estActive = Math.max(activeSubs, activeStreams);
-    if (estActive > peakActiveChildren) peakActiveChildren = estActive;
     const busy =
       st.json?.data?.busy === true ||
       st.json?.data?.executing === true ||
-      activeSubs > 0 ||
-      activeStreams > 0;
+      (twinNow.counters.activeStreams ?? 0) > 0;
     if (!busy && performance.now() - startedAt > 2_000) break;
     await sleep(250);
   }
 
+  activeMonitorStopped = true;
+  await activeMonitor;
+
+  let flightRecorder = null;
+  if (browserDriver) {
+    flightRecorder = await browserDriver.closeAndCollect();
+  }
+
   try {
     wsMainOnly?.close();
-  } catch {
-    // ignore
-  }
+    wsControlChild?.close();
+  } catch {}
 
   const heartbeatSummary = heartbeat.stop();
   const postMetrics = await server.metrics(true);
   const postTwin = twin.getStats();
 
-  // Compute real tool calls executed during S10
   let totalChildToolCalls = 0;
   const toolBreakdown = {};
   for (const [toolName, stats] of Object.entries(postTwin.toolStats ?? {})) {
@@ -573,19 +844,66 @@ export async function runScenarioS10LiveStorm({
     }
   }
   const agentRunsInvoked = toolBreakdown.AgentRun ?? 0;
-  if (agentRunsInvoked > peakActiveChildren) {
-    peakActiveChildren = Math.min(cfg.activeChildren, agentRunsInvoked);
+
+  // Build rolling 5s producer windows from REAL observed child delta events
+  const rolling5sWindows = [];
+  if (controlTelemetry.childDeltaEvents.length > 0) {
+    const firstTs = controlTelemetry.childDeltaEvents[0].tsMs;
+    const lastTs = controlTelemetry.childDeltaEvents[controlTelemetry.childDeltaEvents.length - 1].tsMs;
+    const spanMs = Math.max(1_000, lastTs - firstTs);
+    const winMs = Math.min(5_000, spanMs);
+    for (let wsStart = firstTs; wsStart <= lastTs; wsStart += winMs) {
+      const wsEnd = wsStart + winMs;
+      const inWin = controlTelemetry.childDeltaEvents.filter((e) => e.tsMs >= wsStart && e.tsMs <= wsEnd);
+      if (inWin.length === 0) continue;
+      const byChild = new Map();
+      for (const ev of inWin) {
+        const rec = byChild.get(ev.childId) ?? { childId: ev.childId, deltas: 0, usefulBytes: 0, first: ev.tsMs, last: ev.tsMs };
+        rec.deltas += ev.deltas;
+        rec.usefulBytes += ev.bytes;
+        rec.last = Math.max(rec.last, ev.tsMs);
+        byChild.set(ev.childId, rec);
+      }
+      const perChildStreams = [...byChild.values()].map((c) => ({
+        childId: c.childId,
+        deltas: c.deltas,
+        usefulBytes: c.usefulBytes,
+        activeSeconds: Math.max(0.1, (c.last - c.first) / 1000),
+      }));
+      rolling5sWindows.push({
+        productiveChildren4s: byChild.size,
+        streamingChildren3s: byChild.size,
+        perChildStreams,
+      });
+    }
   }
 
   const parsedAdmission = parsePromptAdmissionLatencies(corpus.homeDir, wallStartMs);
   const promptAdmissionSummary =
-    parsedAdmission.length > 0 ? summarize(parsedAdmission) : summarize(sendLatenciesMs);
-  const sendToReceiptSummary = summarize(sendLatenciesMs);
+    parsedAdmission.length > 0 ? summarize(parsedAdmission) : summarize(allSendLatenciesMs);
+  const sendToReceiptSummary = summarize(allSendLatenciesMs);
+  const textPromptAdmissionSummary = textSendLatenciesMs.length > 0 ? summarize(textSendLatenciesMs) : null;
+  const pngPromptAdmissionSummary = pngSendLatenciesMs.length > 0 ? summarize(pngSendLatenciesMs) : null;
 
   const bytesPerSecArr = [...wsTelemetry.perSecBytes.values()].sort((a, b) => a - b);
   const framesPerSecArr = [...wsTelemetry.perSecFrames.values()].sort((a, b) => a - b);
   const p99Of = (arr) => (arr.length ? arr[Math.min(arr.length - 1, Math.floor(arr.length * 0.99))] : 0);
 
+  // Locate first completed real child directory for P0-1 Lane B reopen verification
+  let reopenCandidate = null;
+  const agentsDir = path.join(seeded.sessionDir, 'agents');
+  if (fs.existsSync(agentsDir)) {
+    for (const entry of fs.readdirSync(agentsDir)) {
+      if (entry === 'main' || entry.startsWith('sub_hist_')) continue;
+      const agentDir = path.join(agentsDir, entry);
+      if (fs.existsSync(path.join(agentDir, 'wire.jsonl'))) {
+        reopenCandidate = { sessionId: seeded.sessionId, childAgentId: entry, agentDir };
+        break;
+      }
+    }
+  }
+
+  const requiredStreaming = Math.min(2, cfg.activeChildren);
   const evidence = {
     runId,
     tier,
@@ -596,10 +914,15 @@ export async function runScenarioS10LiveStorm({
     totalChildToolCalls,
     toolBreakdown,
     overlapBucketsQualified,
+    backgroundQueriesCompleted,
+    uploadErrors,
+    browserRequired: Boolean(runBrowser),
+    flightRecorder,
     promptAdmission: promptAdmissionSummary,
+    textPromptAdmission: textPromptAdmissionSummary,
+    pngPromptAdmission: pngPromptAdmissionSummary,
     promptAdmissionRawSamples: parsedAdmission,
     sendToReceipt: sendToReceiptSummary,
-    pngSendToReceipt: summarize(pngLatenciesMs),
     eld: {
       p99Ms: postMetrics.eldP99Ms ?? 0,
       maxMs: postMetrics.eldMaxMs ?? 0,
@@ -615,37 +938,40 @@ export async function runScenarioS10LiveStorm({
     },
     p02MainOnlyWs: wsTelemetry.connected
       ? {
-          requiredStreamingChildren: Math.min(2, cfg.activeChildren),
-          activeStreamingChildren: Math.max(peakActiveChildren, agentRunsInvoked),
-          controlClientChildBytes: Math.max(1, (postTwin.counters.anthropicRequests - preTwin.counters.anthropicRequests) * 512),
+          requiredStreamingChildren: requiredStreaming,
+          activeStreamingChildren: peakActiveChildren,
+          controlClientChildBytes: controlTelemetry.childDeltaBytes,
+          controlClientChildFrames: controlTelemetry.childDeltaFrames,
           unsubscribedChildContentBytes: wsTelemetry.unsubscribedChildContentBytes,
           unsubscribedChildContentFrames: wsTelemetry.unsubscribedChildContentFrames,
           inboundBytesPerSecP99: p99Of(bytesPerSecArr),
           inboundBytesPerSecPeak: bytesPerSecArr.length ? bytesPerSecArr[bytesPerSecArr.length - 1] : 0,
           inboundFramesPerSecP99: p99Of(framesPerSecArr),
           inboundFramesPerSecPeak: framesPerSecArr.length ? framesPerSecArr[framesPerSecArr.length - 1] : 0,
+          rolling5sWindows,
+          minRollingWindows: 1,
           frameTypeCounts: wsTelemetry.frameTypeCounts,
           largestFrames: wsTelemetry.largestFrames,
         }
       : null,
-    browserRequired: false,
-    flightRecorder: null,
   };
 
   const verdict = evaluateS10Verdict(evidence, cfg.limits);
-  await server.closeSession(seeded.sessionId).catch(() => undefined);
+  if (uploadErrors.length > 0) {
+    verdict.productFailures.push(...uploadErrors.map((e) => `S10 PNG upload failed: ${e}`));
+    verdict.passed = false;
+    verdict.exitCode = 1;
+  }
 
   progress(
-    `S10 Finished (tier=${tier}, passed=${verdict.passed}, exitCode=${verdict.exitCode}, children=${peakActiveChildren}, tools=${totalChildToolCalls}, promptAdmP95=${promptAdmissionSummary.p95Ms}ms/max=${promptAdmissionSummary.maxMs}ms, eldP99=${evidence.eld.p99Ms}ms/max=${evidence.eld.maxMs}ms)`,
+    `S10 (${tier}) Result: passed=${verdict.passed} exitCode=${verdict.exitCode} peakChildren=${peakActiveChildren} childTools=${totalChildToolCalls} ctrlChildBytes=${controlTelemetry.childDeltaBytes} promptAdmP95=${promptAdmissionSummary.p95Ms}ms eldP99=${evidence.eld.p99Ms}ms eldMax=${evidence.eld.maxMs}ms`,
   );
 
   return {
-    passed: verdict.passed,
-    exitCode: verdict.exitCode,
-    status: verdict.status,
-    productFailures: verdict.productFailures,
-    harnessFailures: verdict.harnessFailures,
-    wallMs: roundMs(performance.now() - startedAt),
+    ...verdict,
+    limits: cfg.limits,
     evidence,
+    reopenCandidate,
+    elapsedMs: roundMs(performance.now() - startedAt),
   };
 }

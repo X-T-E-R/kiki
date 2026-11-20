@@ -106,6 +106,23 @@ export class CpuWorkerPool {
     return count;
   }
 
+  warm(count = WARM_WORKER_FLOOR): void {
+    if (this.closing !== undefined) return;
+    const target = Math.min(this.size, Math.max(0, Math.floor(count)));
+    while (this.liveWorkerCount < target && this.slots.length < this.size) {
+      const slot: Slot = {};
+      this.slots.push(slot);
+      try {
+        const worker = this.spawn(slot);
+        worker.unref();
+      } catch {
+        const idx = this.slots.indexOf(slot);
+        if (idx >= 0) this.slots.splice(idx, 1);
+        break;
+      }
+    }
+  }
+
   request<T>(operation: unknown, options: CpuRequestOptions = {}): Promise<T> {
     if (options.signal?.aborted) return Promise.reject(options.signal.reason);
     if (this.closing !== undefined) return Promise.reject(new CpuWorkerError('CPU_POOL_CLOSED', 'CPU worker pool is closed'));

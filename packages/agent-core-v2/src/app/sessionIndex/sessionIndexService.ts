@@ -298,10 +298,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       }
     } else {
       const entries = [...this.watchedSessions.entries()].slice(0, WATCH_BATCH_SIZE);
-      for (const [key] of entries) this.watchedSessions.delete(key);
-      if (!this.recoveryRequired && this.mirror.dirtyEpoch() === undefined) {
-        await this.mirror.drain();
-      }
       const requeue = (subset: readonly (readonly [string, { workspaceId: string; id: string }])[]): void => {
         for (const [key, value] of subset) this.watchedSessions.set(key, value);
         if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
@@ -309,6 +305,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.watchedSessions.clear();
         }
       };
+      for (const [key] of entries) this.watchedSessions.delete(key);
+      if (!this.recoveryRequired && this.mirror.dirtyEpoch() === undefined) {
+        try {
+          await this.mirror.drain();
+        } catch (error) {
+          requeue(entries);
+          throw error;
+        }
+      }
       const runBatch = async (
         batch: readonly (readonly [string, { workspaceId: string; id: string }])[],
         allowRetrySplit: boolean,
@@ -640,6 +645,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
               }
               await commit({ sessionIds: skipSessionIds, workspaceIds: skipWorkspaceIds });
               this.generation = baseline.generation;
+              if (skipWorkspaceIds.size > 0) this.watchInventory = true;
               this.scheduleWatchedReconcile();
               return true;
             }

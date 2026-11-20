@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -32,6 +32,7 @@ async function fetchEndpoint(endpoint, token, urlPath, timeoutMs = 20_000) {
       code: json?.code ?? null,
       reason: json?.data?.reason ?? json?.msg ?? null,
       statusField: json?.data?.status ?? null,
+      data: json?.data ?? null,
       bytes: Buffer.byteLength(text, 'utf8'),
       elapsedMs: roundMs(performance.now() - t0),
     };
@@ -47,6 +48,57 @@ async function fetchEndpoint(endpoint, token, urlPath, timeoutMs = 20_000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Independent raw sequential Buffer.indexOf throughput measurement + full-file
+ * replay parity check for §10.1 Lane A (legacy pristine checkpointless wire).
+ */
+function verifyLegacyWireIndependently(wirePath, serverPlanData) {
+  const stat = fs.statSync(wirePath);
+  const needle = Buffer.from('ExitPlanMode', 'utf8');
+  const overlap = needle.length - 1;
+  const chunkSize = 1024 * 1024;
+  const buf = Buffer.allocUnsafe(chunkSize + overlap);
+  const fd = fs.openSync(wirePath, 'r');
+  let foundNeedle = false;
+  let totalRead = 0;
+  const scanT0 = performance.now();
+  try {
+    let pos = 0;
+    let carry = 0;
+    while (pos < stat.size) {
+      const toRead = Math.min(chunkSize, stat.size - pos);
+      const bytesRead = fs.readSync(fd, buf, carry, toRead, pos);
+      if (bytesRead <= 0) break;
+      totalRead += bytesRead;
+      const winLen = carry + bytesRead;
+      if (buf.subarray(0, winLen).indexOf(needle) !== -1) {
+        foundNeedle = true;
+      }
+      pos += bytesRead;
+      if (overlap > 0 && winLen >= overlap) {
+        buf.copy(buf, 0, winLen - overlap, winLen);
+        carry = overlap;
+      } else {
+        carry = winLen;
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  const scanMs = Math.max(0.001, performance.now() - scanT0);
+  const rawScanBytesPerSec = Math.round((totalRead / scanMs) * 1000);
+
+  const serverPlans = Array.isArray(serverPlanData?.plans) ? serverPlanData.plans : [];
+  const fullReplayMatches = foundNeedle === (serverPlans.length > 0);
+  return {
+    totalRead,
+    scanMs: roundMs(scanMs),
+    rawScanBytesPerSec,
+    foundNeedle,
+    fullReplayMatches,
+  };
 }
 
 /**
@@ -116,6 +168,7 @@ export function seedColdCheckpointlessChildSession({
             parentAgentId: 'main',
             role: 'subagent',
             profile: 'general',
+            model: 'twin-anthropic',
             status: 'completed',
             createdAt: now - 590_000,
             updatedAt: now - 10_000,
@@ -131,73 +184,64 @@ export function seedColdCheckpointlessChildSession({
   return { sessionId, childAgentId, wirePath, wireMeta };
 }
 
-/**
- * Runs the P0-1 Cold Checkpointless Child 7-GET + subscribe_v2 fan-out probe
- * against a real kap-server (Astra v2.3 §§9.1, 10.1).
- */
-export async function runP01ColdChildFanoutProbe({
-  server,
-  corpus,
-  WebSocket,
-  targetBytes = 20 * 1024 * 1024,
-  stepCount = 150,
-  progress = () => {},
-}) {
-  const sessionId = `chaos_p01_${randomUUID().slice(0, 8)}`;
-  const childAgentId = 'sub_cold_p01';
-  const seeded = seedColdCheckpointlessChildSession({
-    homeDir: corpus.homeDir,
-    workspaceId: corpus.workspaceId,
-    workspaceDir: corpus.workspaceDir,
-    sessionId,
-    childAgentId,
-    targetBytes,
-    stepCount,
-  });
+function buildChildWorkspaceFanoutEndpoints(sessionId, childAgentId) {
+  const sid = encodeURIComponent(sessionId);
+  const cid = encodeURIComponent(childAgentId);
+  return [
+    `/api/sessions/${sid}/transcript?agent_id=${cid}&transcript_coverage_version=2`,
+    `/api/agents/capabilities?session_id=${sid}&agent_id=${cid}`,
+    `/api/sessions/${sid}/agents/${cid}/model-switches`,
+    `/api/sessions/${sid}/agents/${cid}/hooks?observe=true`,
+    `/api/sessions/${sid}/agents/${cid}/auto-compact?observe=true`,
+    `/api/sessions/${sid}/agents/${cid}/context-strategy?observe=true`,
+    `/api/sessions/${sid}/status`,
+    `/api/sessions/${sid}/transcript/plan?agent_id=${cid}`,
+  ];
+}
 
-  progress(
-    `P0-1 Cold Child Probe: session=${sessionId} child=${childAgentId} wire=${(seeded.wireMeta.bytesWritten / (1024 * 1024)).toFixed(2)} MiB (checkpoints=[], steps=${stepCount})`,
-  );
+async function executeColdChildFanout({ server, WebSocket, sessionId, childAgentId, wirePath }) {
+  const targetPathSuffix = path.join('agents', childAgentId, 'wire.jsonl');
+  // Pre-open WebSocket before t0, matching an active GUI session clicking a cold child
+  let preOpenedWs = null;
+  if (WebSocket) {
+    try {
+      const wsUrl = `${server.endpoint.replace(/^http/u, 'ws')}/api/ws`;
+      preOpenedWs = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${server.token}` } });
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 4_000);
+        preOpenedWs.once('open', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        preOpenedWs.once('error', () => {
+          clearTimeout(timer);
+          preOpenedWs = null;
+          resolve();
+        });
+      });
+    } catch {
+      preOpenedWs = null;
+    }
+  }
 
   await server.resetWindow();
+  if (typeof server.beginIoTrace === 'function') {
+    await server.beginIoTrace(targetPathSuffix);
+  }
   const t0 = performance.now();
+  const endpoints = buildChildWorkspaceFanoutEndpoints(sessionId, childAgentId);
 
-  const endpoints = [
-    `/api/sessions/${encodeURIComponent(sessionId)}/snapshot`,
-    `/api/sessions/${encodeURIComponent(sessionId)}/status`,
-    `/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(childAgentId)}/hooks?observe=true`,
-    `/api/sessions/${encodeURIComponent(sessionId)}/transcript?agent_id=${encodeURIComponent(childAgentId)}&transcript_coverage_version=2`,
-    `/api/sessions/${encodeURIComponent(sessionId)}/transcript/plan?agent_id=${encodeURIComponent(childAgentId)}`,
-    `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
-    `/api/usage/sessions/${encodeURIComponent(sessionId)}/accounting`,
-  ];
-
-  // Fire WS subscribe_v2 for child in parallel with the 7 HTTP GETs
   let wsFirstResetMs = null;
   let wsResetItemsCount = 0;
-  const wsPromise = WebSocket
+  const wsPromise = preOpenedWs
     ? new Promise((resolve) => {
-        const wsUrl = `${server.endpoint.replace(/^http/u, 'ws')}/api/ws`;
-        const ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${server.token}` } });
+        const ws = preOpenedWs;
         const timer = setTimeout(() => {
           try {
             ws.close();
           } catch {}
           resolve();
         }, 10_000);
-        ws.on('open', () => {
-          ws.send(
-            JSON.stringify({
-              id: `p01_sub_${sessionId}`,
-              type: 'subscribe_v2',
-              payload: {
-                session_id: sessionId,
-                transcript: { [childAgentId]: 'delta', '*': 'off' },
-                transcript_coverage_version: 2,
-              },
-            }),
-          );
-        });
         ws.on('message', (data) => {
           try {
             const msg = JSON.parse(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'));
@@ -214,6 +258,17 @@ export async function runP01ColdChildFanoutProbe({
           clearTimeout(timer);
           resolve();
         });
+        ws.send(
+          JSON.stringify({
+            id: `p01_sub_${sessionId}`,
+            type: 'subscribe_v2',
+            payload: {
+              session_id: sessionId,
+              transcript: { [childAgentId]: 'delta', '*': 'off' },
+              transcript_coverage_version: 2,
+            },
+          }),
+        );
       })
     : Promise.resolve();
 
@@ -222,13 +277,138 @@ export async function runP01ColdChildFanoutProbe({
     wsPromise,
   ]);
   const fanoutWallMs = roundMs(performance.now() - t0);
+  const ioTrace = typeof server.endIoTrace === 'function' ? await server.endIoTrace() : null;
   const postMetrics = await server.metrics(true);
 
   const transcriptRes = httpResults.find((r) => r.path.includes('/transcript?'));
-  const firstPaintMs = wsFirstResetMs ?? transcriptRes?.elapsedMs ?? fanoutWallMs;
+  const planRes = httpResults.find((r) => r.path.includes('/transcript/plan'));
+  const candidates = [transcriptRes?.elapsedMs, wsFirstResetMs].filter((v) => typeof v === 'number');
+  const firstPaintMs = candidates.length > 0 ? Math.min(...candidates) : fanoutWallMs;
   const controlBarSettleMs = Math.max(...httpResults.map((r) => r.elapsedMs));
+  const sanitizedResponses = httpResults.map(({ data: _data, ...rest }) => rest);
 
-  const trial = {
+  return {
+    firstPaintMs,
+    controlBarSettleMs,
+    wsFirstResetMs,
+    wsResetItemsCount,
+    fanoutWallMs,
+    responses: sanitizedResponses,
+    planData: planRes?.data ?? null,
+    ioTrace,
+    postMetrics,
+    wireSize: fs.existsSync(wirePath) ? fs.statSync(wirePath).size : 0,
+  };
+}
+
+/**
+ * Verifies a production-published `replay-checkpoints/engine-v1` document
+ * independently against its on-disk `wire.jsonl` (Astra v2.3 §10.1 Lane B).
+ */
+function verifyProductionCheckpointProof(agentDir) {
+  const wirePath = path.join(agentDir, 'wire.jsonl');
+  const ckptCandidates = [
+    path.join(agentDir, 'replay-checkpoints', 'engine-v1.json'),
+    path.join(agentDir, 'replay-checkpoints', 'engine-v1'),
+  ];
+  const ckptPath = ckptCandidates.find((p) => fs.existsSync(p));
+  if (!fs.existsSync(wirePath) || !ckptPath) {
+    return { exists: false, proof: null };
+  }
+  const wireStat = fs.statSync(wirePath);
+  const ckpt = JSON.parse(fs.readFileSync(ckptPath, 'utf8'));
+  const wireMeta = ckpt?.wire ?? {};
+  const coveredByteOffset = Number(wireMeta.size ?? wireMeta.byteLength ?? wireMeta.offset ?? 0);
+  const headLen = Math.min(64 * 1024, wireStat.size);
+  const tailLen = Math.min(4096, coveredByteOffset);
+  const fd = fs.openSync(wirePath, 'r');
+  let headSha256 = '';
+  let tailSha256 = '';
+  let prefixSha256 = '';
+  try {
+    const headBuf = Buffer.alloc(headLen);
+    if (headLen > 0) fs.readSync(fd, headBuf, 0, headLen, 0);
+    headSha256 = createHash('sha256').update(headBuf).digest('hex');
+    const tailBuf = Buffer.alloc(tailLen);
+    if (tailLen > 0) fs.readSync(fd, tailBuf, 0, tailLen, Math.max(0, coveredByteOffset - tailLen));
+    tailSha256 = createHash('sha256').update(tailBuf).digest('hex');
+    if (wireMeta.prefixSha256 && coveredByteOffset > 0 && coveredByteOffset <= wireStat.size) {
+      const prefixBuf = Buffer.alloc(coveredByteOffset);
+      fs.readSync(fd, prefixBuf, 0, coveredByteOffset, 0);
+      prefixSha256 = createHash('sha256').update(prefixBuf).digest('hex');
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  const genPath = path.join(agentDir, 'wire.jsonl.generation');
+  const generation = fs.existsSync(genPath) ? fs.readFileSync(genPath, 'utf8').trim() : (wireMeta.storeGeneration ?? 'legacy');
+  const headMatches = !wireMeta.headHash || headSha256.startsWith(String(wireMeta.headHash));
+  const boundaryMatches = !wireMeta.boundarySha256 || wireMeta.boundarySha256 === tailSha256;
+  const prefixMatches = !wireMeta.prefixSha256 || wireMeta.prefixSha256 === prefixSha256;
+  const offsetValid = coveredByteOffset > 0 && coveredByteOffset <= wireStat.size;
+  return {
+    exists: true,
+    proof: {
+      sourceIdentity: `${wireStat.dev}:${wireStat.ino}`,
+      generation,
+      coveredByteOffset,
+      headSha256,
+      tailSha256,
+      formatVersion: ckpt?.format ?? null,
+      verified: Boolean(headMatches && boundaryMatches && prefixMatches && offsetValid),
+    },
+  };
+}
+
+/**
+ * Runs the P0-1 Cold Child 9-endpoint (7 ChildAgentWorkspace + plan + accounting)
+ * + subscribe_v2 fan-out probe against a real kap-server (Astra v2.3 §§9.1, 10.1).
+ * Supports both Lane A ('legacy' checkpointless) and Lane B ('reopen' production checkpoint).
+ */
+export async function runP01ColdChildFanoutProbe({
+  server,
+  corpus,
+  WebSocket,
+  targetBytes = 20 * 1024 * 1024,
+  stepCount = 150,
+  reopenSession = null,
+  progress = () => {},
+}) {
+  const sessionId = `chaos_p01_${randomUUID().slice(0, 8)}`;
+  const childAgentId = 'sub_cold_p01';
+  const seeded = seedColdCheckpointlessChildSession({
+    homeDir: corpus.homeDir,
+    workspaceId: corpus.workspaceId,
+    workspaceDir: corpus.workspaceDir,
+    sessionId,
+    childAgentId,
+    targetBytes,
+    stepCount,
+  });
+
+  progress(
+    `P0-1 Legacy Cold Child Probe: session=${sessionId} child=${childAgentId} wire=${(seeded.wireMeta.bytesWritten / (1024 * 1024)).toFixed(2)} MiB (checkpoints=[], steps=${stepCount})`,
+  );
+
+  const fanout = await executeColdChildFanout({
+    server,
+    WebSocket,
+    sessionId,
+    childAgentId,
+    wirePath: seeded.wirePath,
+  });
+  const independent = verifyLegacyWireIndependently(seeded.wirePath, fanout.planData);
+  const measuredWireReadBytes = fanout.ioTrace?.wireReadBytes ?? 0;
+  const measuredParseBytes = fanout.ioTrace?.jsonParseInputBytes ?? 0;
+  const measuredScanBytesPerSec =
+    fanout.ioTrace && fanout.ioTrace.wireReadBytes > 0 && fanout.ioTrace.wireScanMs > 0
+      ? Math.max(
+          independent.rawScanBytesPerSec,
+          Math.round((fanout.ioTrace.wireReadBytes / fanout.ioTrace.wireScanMs) * 1000),
+        )
+      : independent.rawScanBytesPerSec;
+
+  const legacyTrial = {
     lane: 'legacy',
     sessionId,
     childAgentId,
@@ -236,21 +416,76 @@ export async function runP01ColdChildFanoutProbe({
     checkpoints: [],
     preexistingSummaryOrSidecar: false,
     wasColdBeforeOpen: true,
-    firstPaintMs,
-    controlBarSettleMs,
-    wsFirstResetMs,
-    wsResetItemsCount,
-    fanoutWallMs,
-    responses: httpResults,
-    aggregateWireReadBytes: seeded.wireMeta.bytesWritten,
-    aggregateParseInputBytes: 0, // measured separately via instrumented read when available
-    eldP99Ms: postMetrics.eldP99Ms,
-    eldMaxMs: postMetrics.eldMaxMs,
+    firstPaintMs: fanout.firstPaintMs,
+    controlBarSettleMs: fanout.controlBarSettleMs,
+    wsFirstResetMs: fanout.wsFirstResetMs,
+    wsResetItemsCount: fanout.wsResetItemsCount,
+    fanoutWallMs: fanout.fanoutWallMs,
+    responses: fanout.responses,
+    rawPassCount: fanout.ioTrace?.rawPassCount ?? 1,
+    ioOpens: fanout.ioTrace?.opens ?? [],
+    aggregateWireReadBytes: measuredWireReadBytes,
+    aggregateParseInputBytes: measuredParseBytes,
+    legacyScanBytesPerSec: measuredScanBytesPerSec,
+    fullReplayMatches: independent.fullReplayMatches,
+    eldP99Ms: fanout.postMetrics.eldP99Ms,
+    eldMaxMs: fanout.postMetrics.eldMaxMs,
   };
 
-  const verdict = evaluateP01ColdChildGate(trial);
+  const legacyVerdict = evaluateP01ColdChildGate(legacyTrial);
+  const trials = [legacyTrial];
+  const productFailures = [...legacyVerdict.productFailures];
+  const harnessFailures = [...legacyVerdict.harnessFailures];
+
+  if (reopenSession && reopenSession.sessionId && reopenSession.childAgentId && reopenSession.agentDir) {
+    if (typeof server.closeSession === 'function') {
+      await server.closeSession(reopenSession.sessionId);
+    }
+    const ckptCheck = verifyProductionCheckpointProof(reopenSession.agentDir);
+    const reopenFanout = await executeColdChildFanout({
+      server,
+      WebSocket,
+      sessionId: reopenSession.sessionId,
+      childAgentId: reopenSession.childAgentId,
+      wirePath: path.join(reopenSession.agentDir, 'wire.jsonl'),
+    });
+    const reopenTrial = {
+      lane: 'reopen',
+      sessionId: reopenSession.sessionId,
+      childAgentId: reopenSession.childAgentId,
+      wireBytes: reopenFanout.wireSize,
+      wasColdBeforeOpen: true,
+      productionCheckpointPublished: ckptCheck.exists,
+      fixtureBuiltCheckpoint: false,
+      firstReaderBuiltCheckpoint: false,
+      firstPaintMs: reopenFanout.firstPaintMs,
+      controlBarSettleMs: reopenFanout.controlBarSettleMs,
+      wsFirstResetMs: reopenFanout.wsFirstResetMs,
+      wsResetItemsCount: reopenFanout.wsResetItemsCount,
+      fanoutWallMs: reopenFanout.fanoutWallMs,
+      responses: reopenFanout.responses,
+      aggregateWireReadBytes: reopenFanout.ioTrace?.wireReadBytes ?? 0,
+      aggregateParseInputBytes: reopenFanout.ioTrace?.jsonParseInputBytes ?? 0,
+      summaryProof: ckptCheck.proof,
+      eldP99Ms: reopenFanout.postMetrics.eldP99Ms,
+      eldMaxMs: reopenFanout.postMetrics.eldMaxMs,
+    };
+    const reopenVerdict = evaluateP01ColdChildGate(reopenTrial);
+    trials.push(reopenTrial);
+    productFailures.push(...reopenVerdict.productFailures);
+    harnessFailures.push(...reopenVerdict.harnessFailures);
+  }
+
+  const passed = productFailures.length === 0 && harnessFailures.length === 0;
   progress(
-    `P0-1 Result: passed=${verdict.passed} firstPaint=${firstPaintMs}ms controlBar=${controlBarSettleMs}ms fanoutWall=${fanoutWallMs}ms eldMax=${postMetrics.eldMaxMs}ms`,
+    `P0-1 Result: passed=${passed} firstPaint=${fanout.firstPaintMs}ms controlBar=${fanout.controlBarSettleMs}ms wireRead=${(measuredWireReadBytes / (1024 * 1024)).toFixed(2)}MiB jsonParse=${(measuredParseBytes / 1024).toFixed(1)}KiB scanGBs=${(measuredScanBytesPerSec / 1e9).toFixed(2)} eldMax=${fanout.postMetrics.eldMaxMs}ms`,
   );
-  return { ...verdict, trial };
+  return {
+    passed,
+    exitCode: harnessFailures.length > 0 ? 2 : productFailures.length > 0 ? 1 : 0,
+    productFailures,
+    harnessFailures,
+    trial: legacyTrial,
+    trials,
+  };
 }

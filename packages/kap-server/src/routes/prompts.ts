@@ -466,7 +466,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       );
       const items = await withReplyCloseSignal(
         reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
-        (signal) => modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal),
+        async (signal) => {
+          if (transcriptService !== undefined && typeof transcriptService.hasColdWireMarker === 'function') {
+            const hasSwitch = await transcriptService.hasColdWireMarker(session_id, agent_id, 'prompt.model_switch', signal);
+            if (hasSwitch === false) return [];
+          }
+          return modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal);
+        },
         req as unknown as Parameters<typeof withReplyCloseSignal>[2],
       );
       reply.send(okEnvelope(items, req.id));

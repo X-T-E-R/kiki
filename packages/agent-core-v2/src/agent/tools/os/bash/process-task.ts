@@ -108,12 +108,12 @@ export class ProcessTask implements AgentTask {
     } finally {
       this.stopPromise = undefined;
     }
-    if (sink.signal.aborted && process.platform !== 'win32') {
+    if (process.platform !== 'win32') {
       try {
         this.stopPromise = this.proc.kill('SIGKILL');
         await this.stopPromise;
       } catch (error) {
-        stopError ??= error;
+        if (sink.signal.aborted) stopError ??= error;
       } finally {
         this.stopPromise = undefined;
       }

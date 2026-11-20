@@ -3,7 +3,7 @@ import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { Session as InspectorSession } from 'node:inspector/promises';
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
@@ -27,6 +27,11 @@ import {
 } from './scenario-s9-browser-flight-recorder.mjs';
 import { runScenarioS10LiveStorm } from './scenarios/s10-live-orchestrator-storm.mjs';
 import { runP01ColdChildFanoutProbe } from './scenarios/p01-cold-child-open.mjs';
+import { runScenarioS11Mesh256 } from './scenarios/s11-mesh-256-1024.mjs';
+import { runScenarioS12BlindHmacTrials } from './scenarios/s12-blind-hmac-trials.mjs';
+import { runScenarioS13ChaosFaults } from './scenarios/s13-chaos-faults.mjs';
+import { runScenarioS14IdleCpu } from './scenarios/s14-idle-cpu.mjs';
+import { listDescendantPids } from './telemetry/process-tree.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -179,7 +184,102 @@ if (isServerWorker) {
   );
   enableIndependentWorkerHeaps();
 
-  const [{ startServer }, { ISessionManager }] = await Promise.all([
+  let ioTrace = null;
+  const origFsOpen = fs.promises.open.bind(fs.promises);
+  const origCreateReadStream = fs.createReadStream.bind(fs);
+  const origJsonParse = JSON.parse.bind(JSON);
+  const matchTargetPath = (filePath, suffix) => {
+    if (!suffix || !filePath) return false;
+    const normP = String(filePath).replaceAll('\\', '/');
+    const normS = String(suffix).replaceAll('\\', '/');
+    return normP.endsWith(normS);
+  };
+  fs.promises.open = async (filePath, ...rest) => {
+    const handle = await origFsOpen(filePath, ...rest);
+    const state = ioTrace;
+    if (state !== null && matchTargetPath(filePath, state.targetPathSuffix)) {
+      state.wireOpenCount += 1;
+      const openRecord = { bytes: 0, caller: (new Error().stack ?? '').split('\n').slice(2, 12).map((s) => s.trim()).join(' <- ') };
+      state.opens.push(openRecord);
+      let handleBytes = 0;
+      let fileSize = 0;
+      try {
+        fileSize = (await handle.stat()).size;
+      } catch {}
+      const origRead = handle.read.bind(handle);
+      handle.read = async (...args) => {
+        const t0 = performance.now();
+        const res = await origRead(...args);
+        const dt = performance.now() - t0;
+        const n = typeof res?.bytesRead === 'number' ? res.bytesRead : 0;
+        state.wireReadBytes += n;
+        state.wireScanMs += dt;
+        handleBytes += n;
+        openRecord.bytes = handleBytes;
+        if (fileSize > 0 && handleBytes >= fileSize * 0.95 && handleBytes - n < fileSize * 0.95) {
+          state.fullPassCount += 1;
+        }
+        return res;
+      };
+    }
+    return handle;
+  };
+  fs.createReadStream = (filePath, ...rest) => {
+    const stream = origCreateReadStream(filePath, ...rest);
+    const state = ioTrace;
+    if (state !== null && matchTargetPath(filePath, state.targetPathSuffix)) {
+      state.wireOpenCount += 1;
+      let lastChunkTs = performance.now();
+      stream.on('data', (chunk) => {
+        const now = performance.now();
+        state.wireScanMs += Math.min(50, now - lastChunkTs);
+        lastChunkTs = now;
+        state.wireReadBytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(String(chunk), 'utf8');
+      });
+    }
+    return stream;
+  };
+  syncBuiltinESMExports();
+
+  const stopIoTrace = () => {
+    if (!ioTrace) return null;
+    JSON.parse = origJsonParse;
+    const out = {
+      targetPathSuffix: ioTrace.targetPathSuffix,
+      wireReadBytes: ioTrace.wireReadBytes,
+      wireOpenCount: ioTrace.wireOpenCount,
+      opens: ioTrace.opens,
+      rawPassCount: Math.max(1, ioTrace.fullPassCount),
+      wireScanMs: roundMs(ioTrace.wireScanMs),
+      jsonParseInputBytes: ioTrace.jsonParseInputBytes,
+      jsonParseCalls: ioTrace.jsonParseCalls,
+    };
+    ioTrace = null;
+    return out;
+  };
+  const startIoTrace = (targetPathSuffix) => {
+    stopIoTrace();
+    const state = {
+      targetPathSuffix: String(targetPathSuffix ?? ''),
+      wireReadBytes: 0,
+      wireOpenCount: 0,
+      opens: [],
+      fullPassCount: 0,
+      wireScanMs: 0,
+      jsonParseInputBytes: 0,
+      jsonParseCalls: 0,
+    };
+    ioTrace = state;
+    JSON.parse = (text, reviver) => {
+      if (typeof text === 'string') {
+        state.jsonParseInputBytes += Buffer.byteLength(text, 'utf8');
+        state.jsonParseCalls += 1;
+      }
+      return reviver === undefined ? origJsonParse(text) : origJsonParse(text, reviver);
+    };
+  };
+
+  const [{ startServer }, { ISessionManager, IAgentLifecycleService, ISessionActivityView, MAIN_AGENT_ID }] = await Promise.all([
     import(pathToFileURL(path.join(REPO_ROOT, 'packages/kap-server/src/start.ts')).href),
     import(pathToFileURL(path.join(REPO_ROOT, 'packages/agent-core-v2/src/index.ts')).href),
   ]);
@@ -321,6 +421,27 @@ if (isServerWorker) {
     } else if (msg.cmd === 'closeSession') {
       await server.core.accessor.get(ISessionManager).close(msg.sessionId).catch(() => undefined);
       process.send?.({ id: msg.id, ok: true });
+    } else if (msg.cmd === 'beginIoTrace') {
+      startIoTrace(msg.targetPathSuffix);
+      process.send?.({ id: msg.id, ok: true });
+    } else if (msg.cmd === 'endIoTrace') {
+      process.send?.({ id: msg.id, ioTrace: stopIoTrace() });
+    } else if (msg.cmd === 'inspectLiveAgents') {
+      const handle = server.core.accessor.get(ISessionManager).get(msg.sessionId);
+      if (!handle) {
+        process.send?.({ id: msg.id, activeChildCount: 0, liveChildCount: 0, busy: false });
+      } else {
+        const agents = handle.accessor.get(IAgentLifecycleService).list();
+        const children = agents.filter((a) => a.id !== MAIN_AGENT_ID);
+        const activity = handle.accessor.get(ISessionActivityView).state();
+        process.send?.({
+          id: msg.id,
+          activeChildCount: children.length,
+          liveChildCount: children.length,
+          busy: Boolean(activity.busy),
+          executing: Boolean(activity.executing),
+        });
+      }
     } else if (msg.cmd === 'shutdown') {
       clearInterval(tickTimer);
       eld.disable();
@@ -373,7 +494,6 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
       osHomeDir,
       extra: {
         KIKI_CHAOS_TSX_READY: '1',
-        KIKI_SEARCH_DISABLED: '1',
         ...extraEnv,
       },
     }),
@@ -469,6 +589,9 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
     stopHeapSampling: async () => rpc('stopHeapSampling'),
     gc: async () => rpc('gc'),
     closeSession: async (sessionId) => rpc('closeSession', { sessionId }),
+    beginIoTrace: async (targetPathSuffix) => rpc('beginIoTrace', { targetPathSuffix }),
+    endIoTrace: async () => (await rpc('endIoTrace')).ioTrace,
+    inspectLiveAgents: async (sessionId) => rpc('inspectLiveAgents', { sessionId }),
     shutdown: async () => {
       try {
         const res = await rpc('shutdown', {}, 15_000);
@@ -482,6 +605,12 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
     },
     sigkill: async () => {
       const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+      const descendants = listDescendantPids(child.pid);
+      for (const pid of descendants) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {}
+      }
       process.kill(child.pid, 'SIGKILL');
       return exited;
     },
@@ -664,6 +793,7 @@ async function runScenarioS1({ server, twin, corpus, createKlient, WebSocket, pr
     const subPage = await view.transcript.page({ agentId: corpus.heavySubagentId, pageSize: 20 });
     const subExpandMs = roundMs(performance.now() - subExpandT0);
     sub.close();
+    await server.closeSession(corpus.giantSessionId).catch(() => undefined);
 
     const wakeResult = await submitAndWaitTurn({
       endpoint: server.endpoint,
@@ -678,11 +808,11 @@ async function runScenarioS1({ server, twin, corpus, createKlient, WebSocket, pr
 
     return {
       passed:
-        (mainResetMs ?? coldOpenTotalMs) < 1000 &&
+        (mainResetMs ?? coldOpenTotalMs) < 800 &&
         threadReadMs < 1000 &&
         wakeResult.ok &&
         wakeResult.totalMs < 5000,
-      thresholds: { coldOpenTtfcMaxMs: 1000, subagentExpandTargetMs: 50, coldPromptWakeMaxMs: 5000 },
+      thresholds: { coldOpenTtfcMaxMs: 800, subagentExpandTargetMs: 50, coldPromptWakeMaxMs: 5000 },
       giantWireGiB: corpus.giantMainWireGiB,
       subagentCount: corpus.subagentCount,
       coldOpenTtfcMs: mainResetMs ?? coldOpenTotalMs,
@@ -1787,15 +1917,25 @@ export async function runChaosScaleSuite(options = {}) {
   const s9Only = Boolean(options.s9Only);
   const s10Only = Boolean(options.s10Only);
   const p01Only = Boolean(options.p01Only);
+  const s11Only = Boolean(options.s11Only);
+  const s12Only = Boolean(options.s12Only);
+  const s13Only = Boolean(options.s13Only);
+  const s14Only = Boolean(options.s14Only);
+  const v23Smoke = Boolean(options.v23Smoke);
   const runS7S8 = Boolean(options.runS7S8);
   const runAll = Boolean(options.runAll);
-  const isolatedOnly = s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || runS7S8;
+  const isolatedOnly =
+    s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || s11Only || s12Only || s13Only || s14Only || v23Smoke || runS7S8;
   const runS6 = s6Only || runAll || Boolean(options.runS6);
   const runS7 = s7Only || runS7S8 || runAll || Boolean(options.runS7);
   const runS8 = s8Only || runS7S8 || runAll || Boolean(options.runS8);
   const runS9 = s9Only || runAll || Boolean(options.runS9);
-  const runS10 = s10Only || runAll || Boolean(options.runS10);
-  const runP01 = p01Only || runAll || Boolean(options.runP01);
+  const runS10 = s10Only || v23Smoke || runAll || Boolean(options.runS10);
+  const runP01 = p01Only || v23Smoke || runAll || Boolean(options.runP01);
+  const runS11 = s11Only || v23Smoke || runAll || Boolean(options.runS11);
+  const runS12 = s12Only || v23Smoke || runAll || Boolean(options.runS12);
+  const runS13 = s13Only || v23Smoke || runAll || Boolean(options.runS13);
+  const runS14 = s14Only || v23Smoke || runAll || Boolean(options.runS14);
   const runId = options.runId ?? `chaos_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const s7Cycles = options.s7Cycles ?? 200;
   const tenKSubagentCount = options.tenKSubagentCount ?? (tier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
@@ -1816,7 +1956,7 @@ export async function runChaosScaleSuite(options = {}) {
         dir,
         anthropicBaseUrl: twin.httpBaseUrl,
         openaiBaseUrl: twin.httpV1BaseUrl,
-        enableSearch: false,
+        enableSearch: true,
       })
     : generateChaosCorpus({
         dir,
@@ -1826,6 +1966,7 @@ export async function runChaosScaleSuite(options = {}) {
         backgroundSessionCount: options.backgroundSessionCount ?? (tier === 'smoke' ? 12 : 80),
         anthropicBaseUrl: twin.httpBaseUrl,
         openaiBaseUrl: twin.httpV1BaseUrl,
+        enableSearch: true,
       });
   twin.setWorkspaceDir(corpus.workspaceDir);
   progress(
@@ -1913,6 +2054,7 @@ export async function runChaosScaleSuite(options = {}) {
   let mainServer = null;
   const report = {
     runId,
+    buildId: options.buildId ?? 'local',
     skipped: 0,
     timestamp: new Date().toISOString(),
     environment: {
@@ -2084,8 +2226,9 @@ export async function runChaosScaleSuite(options = {}) {
       persistCheckpoint();
     }
 
+    let s10ReopenCandidate = null;
     if (runS10) {
-      report.scenarios.S10_liveOrchestratorStorm = await runScenarioS10LiveStorm({
+      const s10Res = await runScenarioS10LiveStorm({
         server: mainServer,
         twin,
         corpus,
@@ -2094,47 +2237,127 @@ export async function runChaosScaleSuite(options = {}) {
         runBrowser,
         progress,
       });
+      s10ReopenCandidate = s10Res.reopenCandidate ?? null;
+      report.scenarios.S10_liveOrchestratorStorm = s10Res;
+      report.scenarios.s10 = s10Res;
       persistCheckpoint();
     }
 
     if (runP01) {
-      report.scenarios.P01_coldChildOpen = await runP01ColdChildFanoutProbe({
+      const p01Res = await runP01ColdChildFanoutProbe({
         server: mainServer,
         corpus,
         WebSocket,
         targetBytes: options.p01Bytes ?? (tier === 'full' ? 86_664_806 : 20 * 1024 * 1024),
         stepCount: options.p01Steps ?? 200,
+        reopenSession: s10ReopenCandidate,
         progress,
       });
+      report.scenarios.P01_coldChildOpen = p01Res;
+      report.scenarios.p01 = p01Res;
+      persistCheckpoint();
+    }
+
+    if (runS11) {
+      const s11Res = await runScenarioS11Mesh256({
+        server: mainServer,
+        respawnServer: async () => {
+          mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb });
+          return mainServer;
+        },
+        corpus,
+        meshSessions: options.meshSessions ?? (tier === 'full' ? 256 : 6),
+        progress,
+      });
+      if (s11Res.activeServer) mainServer = s11Res.activeServer;
+      const { activeServer: _srv, ...s11Serializable } = s11Res;
+      report.scenarios.S11_mesh256 = s11Serializable;
+      report.scenarios.s11 = s11Serializable;
+      persistCheckpoint();
+    }
+
+    if (runS12) {
+      const s12Res = await runScenarioS12BlindHmacTrials({
+        workRoot: dir,
+        progress,
+      });
+      report.scenarios.S12_blindHmacControl = s12Res;
+      report.scenarios.s12 = s12Res;
+      persistCheckpoint();
+    }
+
+    if (runS13) {
+      const s13Res = await runScenarioS13ChaosFaults({
+        repoRoot: REPO_ROOT,
+        workRoot: dir,
+        progress,
+      });
+      report.scenarios.S13_chaosFaults = s13Res;
+      report.scenarios.s13 = s13Res;
+      persistCheckpoint();
+    }
+
+    if (runS14) {
+      const s14Res = await runScenarioS14IdleCpu({
+        serverPid: mainServer.pid,
+        settleSec: options.idleSettleSec ?? (tier === 'full' ? 30 : 3),
+        windowCount: options.idleWindows ?? (tier === 'full' ? 12 : 2),
+        windowSec: options.idleWindowSec ?? (tier === 'full' ? 10 : 3),
+        progress,
+      });
+      report.scenarios.S14_idleCpu = s14Res;
+      report.scenarios.s14 = s14Res;
       persistCheckpoint();
     }
 
     await mainServer.shutdown().catch(() => undefined);
     mainServer = null;
 
+    const exitCodes = [];
+    const recordCheck = (res) => {
+      if (!res) {
+        exitCodes.push(2);
+        return false;
+      }
+      if (typeof res.exitCode === 'number') exitCodes.push(res.exitCode);
+      else exitCodes.push(res.passed ? 0 : 1);
+      return Boolean(res.passed);
+    };
+
     if (isolatedOnly) {
       const checks = [];
-      if (runS6) checks.push(Boolean(report.scenarios.S6_tenKSubagentsScale?.passed));
-      if (runS7) checks.push(Boolean(report.scenarios.S7_longRunningSoak?.passed));
-      if (runS8) checks.push(Boolean(report.scenarios.S8_extremeMediaWeakNet?.passed));
-      if (runS9) checks.push(Boolean(report.scenarios.S9_fullstackBrowserFlightRecorder?.passed));
-      if (runS10) checks.push(Boolean(report.scenarios.S10_liveOrchestratorStorm?.passed));
-      if (runP01) checks.push(Boolean(report.scenarios.P01_coldChildOpen?.passed));
+      if (runS6) checks.push(recordCheck(report.scenarios.S6_tenKSubagentsScale));
+      if (runS7) checks.push(recordCheck(report.scenarios.S7_longRunningSoak));
+      if (runS8) checks.push(recordCheck(report.scenarios.S8_extremeMediaWeakNet));
+      if (runS9) checks.push(recordCheck(report.scenarios.S9_fullstackBrowserFlightRecorder));
+      if (runS10) checks.push(recordCheck(report.scenarios.S10_liveOrchestratorStorm));
+      if (runP01) checks.push(recordCheck(report.scenarios.P01_coldChildOpen));
+      if (runS11) checks.push(recordCheck(report.scenarios.S11_mesh256));
+      if (runS12) checks.push(recordCheck(report.scenarios.S12_blindHmacControl));
+      if (runS13) checks.push(recordCheck(report.scenarios.S13_chaosFaults));
+      if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
       report.overallPassed = checks.length > 0 && checks.every(Boolean);
     } else {
-      report.overallPassed = Boolean(
-        report.scenarios.S1_giantColdSession?.passed &&
-          report.scenarios.S2a_concurrencyChaosStorm128?.passed &&
-          report.scenarios.S3_enospcAndSigkill?.passed &&
-          report.scenarios.S4_multiSpaceAndPairing?.passed &&
-          (!runBrowser || report.scenarios.S5_frontendBrowserUx?.passed) &&
-          (!runS6 || report.scenarios.S6_tenKSubagentsScale?.passed) &&
-          (!runS7 || report.scenarios.S7_longRunningSoak?.passed) &&
-          (!runS8 || report.scenarios.S8_extremeMediaWeakNet?.passed) &&
-          (!runS9 || report.scenarios.S9_fullstackBrowserFlightRecorder?.passed) &&
-          (!runS10 || report.scenarios.S10_liveOrchestratorStorm?.passed),
-      );
+      const checks = [
+        recordCheck(report.scenarios.S1_giantColdSession),
+        recordCheck(report.scenarios.S2a_concurrencyChaosStorm128),
+        recordCheck(report.scenarios.S3_enospcAndSigkill),
+        recordCheck(report.scenarios.S4_multiSpaceAndPairing),
+      ];
+      if (runBrowser) checks.push(recordCheck(report.scenarios.S5_frontendBrowserUx));
+      if (runS6) checks.push(recordCheck(report.scenarios.S6_tenKSubagentsScale));
+      if (runS7) checks.push(recordCheck(report.scenarios.S7_longRunningSoak));
+      if (runS8) checks.push(recordCheck(report.scenarios.S8_extremeMediaWeakNet));
+      if (runS9) checks.push(recordCheck(report.scenarios.S9_fullstackBrowserFlightRecorder));
+      if (runS10) checks.push(recordCheck(report.scenarios.S10_liveOrchestratorStorm));
+      if (runP01) checks.push(recordCheck(report.scenarios.P01_coldChildOpen));
+      if (runS11) checks.push(recordCheck(report.scenarios.S11_mesh256));
+      if (runS12) checks.push(recordCheck(report.scenarios.S12_blindHmacControl));
+      if (runS13) checks.push(recordCheck(report.scenarios.S13_chaosFaults));
+      if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
+      report.overallPassed = checks.every(Boolean);
     }
+    report.exitCode = report.overallPassed ? 0 : exitCodes.includes(2) ? 2 : 1;
   } finally {
     if (mainServer) await mainServer.shutdown().catch(() => undefined);
     await twin.close().catch(() => undefined);
@@ -2166,7 +2389,16 @@ if (isCliMain && !isServerWorker) {
     s9Only: false,
     s10Only: false,
     p01Only: false,
+    s11Only: false,
+    s12Only: false,
+    s13Only: false,
+    s14Only: false,
+    v23Smoke: false,
     p01Bytes: undefined,
+    meshSessions: undefined,
+    idleSettleSec: undefined,
+    idleWindows: undefined,
+    idleWindowSec: undefined,
     runS7S8: false,
     runAll: false,
     runS6: false,
@@ -2174,7 +2406,13 @@ if (isCliMain && !isServerWorker) {
     runS8: false,
     runS9: false,
     runS10: false,
+    runP01: false,
+    runS11: false,
+    runS12: false,
+    runS13: false,
+    runS14: false,
     runId: undefined,
+    buildId: undefined,
     s7Cycles: 200,
     reuse10kSession: false,
     tenKSubagentCount: undefined,
@@ -2197,7 +2435,16 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s9-only') opts.s9Only = true;
     else if (args[i] === '--s10-only') opts.s10Only = true;
     else if (args[i] === '--p01-only') opts.p01Only = true;
+    else if (args[i] === '--s11-only') opts.s11Only = true;
+    else if (args[i] === '--s12-only') opts.s12Only = true;
+    else if (args[i] === '--s13-only') opts.s13Only = true;
+    else if (args[i] === '--s14-only') opts.s14Only = true;
+    else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
     else if (args[i] === '--p01-bytes' && args[i + 1]) opts.p01Bytes = Number(args[++i]);
+    else if (args[i] === '--mesh-sessions' && args[i + 1]) opts.meshSessions = Number(args[++i]);
+    else if (args[i] === '--idle-settle-sec' && args[i + 1]) opts.idleSettleSec = Number(args[++i]);
+    else if (args[i] === '--idle-windows' && args[i + 1]) opts.idleWindows = Number(args[++i]);
+    else if (args[i] === '--idle-window-sec' && args[i + 1]) opts.idleWindowSec = Number(args[++i]);
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-all') opts.runAll = true;
     else if (args[i] === '--run-s6') opts.runS6 = true;
@@ -2205,7 +2452,30 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--run-s8') opts.runS8 = true;
     else if (args[i] === '--run-s9') opts.runS9 = true;
     else if (args[i] === '--run-s10') opts.runS10 = true;
+    else if (args[i] === '--run-p01') opts.runP01 = true;
+    else if (args[i] === '--run-s11') opts.runS11 = true;
+    else if (args[i] === '--run-s12') opts.runS12 = true;
+    else if (args[i] === '--run-s13') opts.runS13 = true;
+    else if (args[i] === '--run-s14') opts.runS14 = true;
+    else if (args[i] === '--manifest' && args[i + 1]) {
+      const m = JSON.parse(fs.readFileSync(args[++i], 'utf8'));
+      if (m.tier) opts.tier = m.tier;
+      if (typeof m.p01Bytes === 'number') opts.p01Bytes = m.p01Bytes;
+      if (typeof m.meshSessions === 'number') opts.meshSessions = m.meshSessions;
+      if (Array.isArray(m.scenarios)) {
+        for (const sc of m.scenarios) {
+          if (sc === 's10') opts.runS10 = true;
+          else if (sc === 'p01') opts.runP01 = true;
+          else if (sc === 's11') opts.runS11 = true;
+          else if (sc === 's12') opts.runS12 = true;
+          else if (sc === 's13') opts.runS13 = true;
+          else if (sc === 's14') opts.runS14 = true;
+        }
+        opts.v23Smoke = true;
+      }
+    }
     else if (args[i] === '--run-id' && args[i + 1]) opts.runId = args[++i];
+    else if (args[i] === '--build-id' && args[i + 1]) opts.buildId = args[++i];
     else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--reuse-10k-session') opts.reuse10kSession = true;
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
@@ -2215,6 +2485,6 @@ if (isCliMain && !isServerWorker) {
   const report = await runChaosScaleSuite(opts);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (!report.overallPassed) {
-    process.exitCode = 1;
+    process.exitCode = report.exitCode || 1;
   }
 }

@@ -1,7 +1,7 @@
 import '#/_base/utils/fsWatchGuard';
 import { watch as fsWatch, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, posix, relative, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from 'node:path';
 
 import { FSWatcher } from 'chokidar';
 
@@ -142,14 +142,14 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
       const errPath = typeof error === 'object' && error !== null && 'path' in error
         ? (error as { readonly path?: unknown }).path
         : undefined;
-      if (
-        (code === 'EPERM' || code === 'EACCES' || code === 'ENOENT') &&
-        typeof errPath === 'string' &&
-        errPath.length > 0 &&
-        errPath !== this.root
-      ) {
-        void this.watcher.unwatch(errPath);
-      }
+    if (
+      (code === 'EPERM' || code === 'EACCES' || code === 'ENOENT') &&
+      typeof errPath === 'string' &&
+      errPath.length > 0 &&
+      !isSameWatchPath(errPath, this.root)
+    ) {
+      void this.watcher.unwatch(errPath);
+    }
       this.readiness.reject(error);
       this.reportError(this.root, error, 'chokidar');
     });
@@ -464,6 +464,12 @@ function clampToRoot(root: string, absPath: string): string {
   const rel = relative(root, absPath);
   if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return absPath;
   return root;
+}
+
+function isSameWatchPath(left: string, right: string): boolean {
+  const a = resolve(left);
+  const b = resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function mapChokidarEvent(eventName: string, absPath: string): HostFsChange | undefined {
