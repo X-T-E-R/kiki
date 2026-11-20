@@ -23,11 +23,38 @@ export const LEGACY_DISABLED_TEST_ALLOWLIST = new Set([
   'packages/node-sdk/test/session-plan-compact-usage-resume.test.ts',
 ]);
 
+export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set([
+  'packages/kap-server/test/documentPreview.officeRender.test.ts',
+  'packages/kap-server/test/externalClientBindings.test.ts',
+  'packages/kap-server/test/externalDelegationRouteProjection.test.ts',
+  'packages/kap-server/test/externalDelegationSeats.test.ts',
+  'packages/kap-server/test/prompts.delivery.integration.ts',
+  'packages/kap-server/test/prompts.integration.ts',
+  'packages/kap-server/test/prompts.lifecycle.integration.ts',
+  'packages/kap-server/test/prompts.media.integration.ts',
+  'packages/kap-server/test/prompts.queue.integration.ts',
+  'packages/kap-server/test/services/imSession/visibleReply.test.ts',
+]);
+
 const TEST_FILE_RE = /\.(?:test|spec|integration|e2e)\.[cm]?[jt]sx?$/u;
+const INTEGRATION_TEST_FILE_RE = /\.integration\.[cm]?[jt]sx?$/u;
 const DISABLED_TEST_RE = /^\s*(?:it|test|describe)\.(?:skip|todo)\s*\(/u;
-const INTRA_MONOREPO_MOCK_RE = /\bvi\.mock\s*\(\s*['"`]((?:#\/|@kiki\/|\.\.?\/)[^'"`]+)['"`]/u;
+const INTRA_MONOREPO_MOCK_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\s*['"`]((?:#\/|@kiki\/|@nb-corp\/|\.\.?\/)[^'"`]+)['"`]/u;
+const EXEMPT_MOCK_WRAPPER_RE = /(?:\{\s*spy\s*:\s*true\s*\}|\bimportOriginal\b|\(\s*original\s*\)\s*=>)/u;
 const WEAK_ASSERTION_RE = /\bexpect\.anything\s*\(\s*\)/u;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
+
+function isExemptMockWindow(lines, index) {
+  const collected = [lines[index]];
+  if (!lines[index].trimEnd().endsWith(';')) {
+    for (let j = index + 1; j < Math.min(lines.length, index + 3); j += 1) {
+      if (INTRA_MONOREPO_MOCK_RE.test(lines[j])) break;
+      collected.push(lines[j]);
+      if (lines[j].trimEnd().endsWith(';')) break;
+    }
+  }
+  return EXEMPT_MOCK_WRAPPER_RE.test(collected.join('\n'));
+}
 
 const registeredContracts = [];
 
@@ -317,6 +344,35 @@ export function scanDisabledTests(repoRoot = DEFAULT_ROOT, { allowlist = LEGACY_
   return { violations, legacyExempted };
 }
 
+export function scanIntraMonorepoMocks(
+  repoRoot = DEFAULT_ROOT,
+  { allowlist = LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST, roots = ['packages', 'apps', 'scripts'] } = {},
+) {
+  const violations = [];
+  const legacyExempted = [];
+  for (const sub of roots) {
+    const dir = path.join(repoRoot, sub);
+    const files = walkFiles(dir, (abs, name) => {
+      if (!TEST_FILE_RE.test(name)) return false;
+      const rel = toPosix(path.relative(repoRoot, abs));
+      return rel.startsWith('packages/kap-server/test/') || INTEGRATION_TEST_FILE_RE.test(name);
+    });
+    for (const abs of files) {
+      const rel = toPosix(path.relative(repoRoot, abs));
+      const lines = fs.readFileSync(abs, 'utf8').split(/\r?\n/u);
+      for (let i = 0; i < lines.length; i += 1) {
+        const mockMatch = INTRA_MONOREPO_MOCK_RE.exec(lines[i]);
+        if (!mockMatch) continue;
+        if (isExemptMockWindow(lines, i)) continue;
+        const hit = { file: rel, line: i + 1, target: mockMatch[1], text: lines[i].trim() };
+        if (allowlist.has(rel)) legacyExempted.push(hit);
+        else violations.push(hit);
+      }
+    }
+  }
+  return { violations, legacyExempted };
+}
+
 export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffText } = {}) {
   let rawDiff = diffText;
   if (rawDiff === undefined) {
@@ -331,8 +387,10 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
 
   let currentFile = null;
   let currentLine = 0;
+  const rawLines = rawDiff.split(/\r?\n/u);
 
-  for (const rawLine of rawDiff.split(/\r?\n/u)) {
+  for (let idx = 0; idx < rawLines.length; idx += 1) {
+    const rawLine = rawLines[idx];
     if (rawLine.startsWith('+++ b/')) {
       currentFile = rawLine.slice('+++ b/'.length).trim();
       continue;
@@ -348,12 +406,20 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
       const added = rawLine.slice(1);
       const mockMatch = INTRA_MONOREPO_MOCK_RE.exec(added);
       if (mockMatch) {
-        mockViolations.push({
-          file: currentFile,
-          line: currentLine,
-          target: mockMatch[1],
-          text: added.trim(),
-        });
+        const addedWindow = [added];
+        for (let look = idx + 1; look < Math.min(rawLines.length, idx + 3); look += 1) {
+          if (rawLines[look].startsWith('+') && !rawLines[look].startsWith('+++')) {
+            addedWindow.push(rawLines[look].slice(1));
+          }
+        }
+        if (!isExemptMockWindow(addedWindow, 0)) {
+          mockViolations.push({
+            file: currentFile,
+            line: currentLine,
+            target: mockMatch[1],
+            text: added.trim(),
+          });
+        }
       }
       if (WEAK_ASSERTION_RE.test(added)) {
         weakAssertionViolations.push({
@@ -434,11 +500,13 @@ export function runTestHygieneCheck({ repoRoot = DEFAULT_ROOT, baseRef, diffText
   }
 
   const disabled = scanDisabledTests(repoRoot, { roots: scanRoots });
+  const intraMonorepoMocks = scanIntraMonorepoMocks(repoRoot, { roots: scanRoots });
   const diffRatchet = checkDiffMockRatchet({ repoRoot, baseRef, diffText });
 
   const ok =
     contractFailures.length === 0 &&
     disabled.violations.length === 0 &&
+    intraMonorepoMocks.violations.length === 0 &&
     diffRatchet.mockViolations.length === 0 &&
     diffRatchet.disabledAddedViolations.length === 0;
 
@@ -450,6 +518,7 @@ export function runTestHygieneCheck({ repoRoot = DEFAULT_ROOT, baseRef, diffText
     contractsChecked,
     contractFailures,
     disabledTests: disabled,
+    intraMonorepoMocks,
     diffRatchet,
   };
 }
@@ -470,13 +539,16 @@ if (isMain) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     process.stdout.write(
-      `[test-hygiene] ok=${report.ok} flags=${report.discoveredFlagsCount} routes=${report.discoveredRoutesCount} contracts=${report.contractsChecked} contractFailures=${report.contractFailures.length} unexemptedDisabled=${report.disabledTests.violations.length} legacyDisabled=${report.disabledTests.legacyExempted.length} diffMocks=${report.diffRatchet.mockViolations.length}\n`,
+      `[test-hygiene] ok=${report.ok} flags=${report.discoveredFlagsCount} routes=${report.discoveredRoutesCount} contracts=${report.contractsChecked} contractFailures=${report.contractFailures.length} unexemptedDisabled=${report.disabledTests.violations.length} legacyDisabled=${report.disabledTests.legacyExempted.length} unexemptedTreeMocks=${report.intraMonorepoMocks.violations.length} legacyTreeMocks=${report.intraMonorepoMocks.legacyExempted.length} diffMocks=${report.diffRatchet.mockViolations.length}\n`,
     );
     for (const f of report.contractFailures) {
       process.stderr.write(`  [SUNSET] ${f.file}:${f.line} ${f.reason}\n`);
     }
     for (const d of report.disabledTests.violations) {
       process.stderr.write(`  [DISABLED] ${d.file}:${d.line} ${d.text}\n`);
+    }
+    for (const m of report.intraMonorepoMocks.violations) {
+      process.stderr.write(`  [TREE-MOCK] ${m.file}:${m.line} intra-monorepo mock "${m.target}"\n`);
     }
     for (const m of report.diffRatchet.mockViolations) {
       process.stderr.write(`  [VI.MOCK] ${m.file}:${m.line} intra-monorepo mock "${m.target}"\n`);

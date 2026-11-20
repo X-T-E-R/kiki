@@ -10,7 +10,7 @@ jobs:
   signed-apk:
     name: Verify persistent Android signing (no publication)
     environment: release
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       KIKI_SOURCE_SHA: ${{ github.sha }}

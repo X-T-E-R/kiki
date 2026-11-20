@@ -257,7 +257,7 @@ for await (const line of stdinLines) {
             ? 'The stream was interrupted. Please continue the task you were working on.'
             : input.message.content.startsWith('complete-response-stale-network-issue')
               ? 'There was a network issue connecting to the server, please try again.'
-              : 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.31.221:61924->198.18.20.91:443: wsarecv: A connection attempt failed';
+              : 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.1.10:61924->198.18.20.91:443: wsarecv: A connection attempt failed';
     const resultResponse = input.message.content === 'complete-response-stale-network-issue-empty-response'
       ? ''
       : input.message.content === 'complete-response-stale-network-issue-mismatched-response'

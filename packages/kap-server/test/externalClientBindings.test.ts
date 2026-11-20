@@ -9,7 +9,7 @@ vi.mock('node:fs/promises', async importOriginal => {
   return { ...original, realpath: async (path: string) => canonicalAliases.get(path) ?? original.realpath(path) };
 });
 vi.mock('@kiki/agent-core-v2', () => {
-  const names = ['IBootstrapService', 'IAtomicDocumentStore', 'ISessionManager', 'ISessionMetadata',
+  const names = ['IBootstrapService', 'IAtomicDocumentStore', 'ISessionIndex', 'ISessionManager', 'ISessionMetadata',
     'IAgentLifecycleService', 'IAgentToolRegistryService', 'IAgentToolPolicyService',
     'IAgentToolExecutorService', 'IAgentPermissionModeService', 'ISessionContext', 'ISessionInteractionService',
     'IWorkAdmissionService'];
@@ -28,11 +28,6 @@ vi.mock('@kiki/agent-core-v2/app/memory/memoryStore', () => ({ IMemoryStore: 'IM
 vi.mock('@kiki/agent-core-v2/agent/tools/history/historyTools', () => ({ IHistoryArchive: 'IHistoryArchive' }));
 vi.mock('@kiki/agent-core-v2/agent/tools/history/historyListTool', () => ({ IHistoryDirectory: 'IHistoryDirectory' }));
 vi.mock('../src/lib/sessionOperationLease', () => ({ withSessionOperation: vi.fn() }));
-vi.mock('../src/externalClients/access', async importOriginal => ({
-  ...await importOriginal<typeof import('../src/externalClients/access')>(),
-  ExternalClientAccess: class {},
-  externalClientSeeds: () => ['history', 'directory', 'memory'].map(id => ({ id, value: id })),
-}));
 
 import { ExternalClientHost } from '../src/externalClients/host';
 import { connectionInputSchema, connectionSchema, sessionSchema } from '../src/externalClients/contracts';
@@ -110,8 +105,29 @@ beforeEach(async () => {
     onWillCreateSession: (listener: (event: unknown) => void) => { will.push(listener); return { dispose() {} }; },
     onDidCreateSession: (listener: (event: unknown) => void) => { did.push(listener); return { dispose() {} }; },
   };
+  const archiveSearch = vi.fn(async () => ({ hits: [] }));
+  const directoryList = vi.fn(async () => ({ items: [] }));
+  const memoryGet = vi.fn(async () => ({ id: 'm1' }));
   const core = { accessor: { get: (id: string) => ({
     IAtomicDocumentStore: documents, IBootstrapService: { homeDir: home, scope: () => 'credentials' }, ISessionManager: manager,
+    ISessionIndex: {
+      get: async (sessionId: string) => sessionId === 'session_example'
+        ? { id: sessionId, workspaceId: 'wd_example' }
+        : sessionId === 'session_foreign'
+          ? { id: sessionId, workspaceId: 'wd_other' }
+          : undefined,
+    },
+    IHistoryArchive: { _serviceBrand: undefined, search: archiveSearch, readTurn: vi.fn(async () => ({})) },
+    IHistoryDirectory: { _serviceBrand: undefined, list: directoryList },
+    IMemoryStore: {
+      _serviceBrand: undefined, onDidChange: () => ({ dispose() {} }),
+      get: memoryGet, list: vi.fn(async () => []), inventory: vi.fn(async () => []),
+      query: vi.fn(async () => ({ items: [] })), search: vi.fn(async () => []),
+      put: vi.fn(async (input: unknown) => input), delete: vi.fn(async () => undefined),
+      journal: vi.fn(async () => []), undo: vi.fn(async () => undefined),
+      listPersonaEntries: vi.fn(async () => []), deletePersonaNamespaces: vi.fn(async () => undefined),
+      importLorebook: vi.fn(async () => undefined),
+    },
     IWorkAdmissionService: { run: <T>(_kind: string, fn: () => Promise<T>) => fn(), acquire: () => ({ run: <T>(fn: () => Promise<T>) => fn(), dispose() {} }) },
   } as Record<string, unknown>)[id] } } as unknown as Scope;
   host = new ExternalClientHost(core);
@@ -159,7 +175,14 @@ describe('external client access and session binding', () => {
     await create({ sessionId: 'session_example', workDir: workspace, mainAgentBinding: { driver: 'external' } });
     expect(changed).toHaveBeenCalledWith(connection.id);
     subscription.dispose();
-    expect(seeds).toEqual({ history: 'history', directory: 'directory', memory: 'memory' });
+    expect(Object.keys(seeds).sort()).toEqual(['IHistoryArchive', 'IHistoryDirectory', 'IMemoryStore']);
+    const wrappedArchive = seeds['IHistoryArchive'] as { search: (query: { workspaceId?: string; sessionId?: string; peer?: boolean }) => Promise<unknown> };
+    await expect(wrappedArchive.search({ workspaceId: 'wd_example', sessionId: 'session_example' })).resolves.toEqual({ hits: [] });
+    await expect(wrappedArchive.search({ workspaceId: 'wd_other', sessionId: 'session_foreign' })).rejects.toMatchObject({ code: 'history_unavailable' });
+    await expect(wrappedArchive.search({ workspaceId: 'wd_example', sessionId: 'session_example', peer: true })).rejects.toMatchObject({ code: 'history_unavailable' });
+    const wrappedMemory = seeds['IMemoryStore'] as { get: (scope: { kind: string; workspaceId?: string }, id: string) => Promise<unknown>; deletePersonaNamespaces: () => Promise<unknown> };
+    await expect(wrappedMemory.get({ kind: 'global' }, 'm1')).resolves.toBeUndefined();
+    await expect(wrappedMemory.deletePersonaNamespaces()).rejects.toMatchObject({ code: 'memory_unavailable' });
     const [record] = await host.store.sessions(connection.id);
     expect(sessionSchema.parse(record)).toMatchObject({ workspace, permissionMode: 'review', profileFile: 'profiles/example.md', workspaceId: 'wd_example' });
     expect(record?.sessionRef).toMatch(/^ext_[A-Za-z0-9_-]+$/);

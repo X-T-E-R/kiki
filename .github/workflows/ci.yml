@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu-hm"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
 
   test:
     if: ${{ inputs.test_mode == '' || inputs.test_mode == 'partitioned' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,7 +103,7 @@ jobs:
 
   test-media-preview:
     if: ${{ inputs.test_mode == '' || inputs.test_mode == 'partitioned' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -118,11 +118,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install media preview test tools
         run: |
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          cat /etc/apt/apt-mirrors.txt
-          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
-          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg
-          apt-cache policy ffmpeg
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+              cat /etc/apt/apt-mirrors.txt
+            fi
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg
+            apt-cache policy ffmpeg
+          fi
           ffmpeg -version
       - run: pnpm install --frozen-lockfile
       - name: Build host auth binding
@@ -180,7 +184,7 @@ jobs:
         run: node scripts/ci-test-partition.mjs run full --shard=${{ matrix.shard }}/5
 
   test-node-packages:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -217,7 +221,7 @@ jobs:
   # pi-tui's suite runs on node:test (not vitest), so the root `pnpm run test`
   # does not execute it; it needs its own job.
   test-pi-tui:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -236,7 +240,7 @@ jobs:
   # sharded root run above; this job reruns it on the legacy v1 engine, which
   # the extension selects through the rollback env var.
   test-vscode-legacy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -275,7 +279,7 @@ jobs:
       - run: pnpm run test -- --testTimeout=30000
 
   docs-governance:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -294,7 +298,7 @@ jobs:
         run: node scripts/check-repo-meta.mjs
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -311,7 +315,7 @@ jobs:
       - run: pnpm run sherif
 
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu-hm"]') || 'ubuntu-24.04' }}
 
     steps:
       - uses: actions/checkout@v4
