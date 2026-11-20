@@ -209,7 +209,7 @@ describe('session playback of a persisted blobref', () => {
     });
     const elapsedMs = performance.now() - t0;
     expect(ranged.statusCode).toBe(206);
-    expect(ranged.headers['cache-control']).toBe('private, max-age=1800, immutable');
+    expect(ranged.headers['cache-control']).toMatch(/^private, max-age=(?:179\d|1800)$/u);
     expect([...ranged.rawPayload]).toEqual([...audio.subarray(0, 4)]);
     expect(elapsedMs).toBeLessThan(100);
     expect(acquireSpy).not.toHaveBeenCalled();
@@ -240,7 +240,7 @@ describe('session playback of a persisted blobref', () => {
       headers: { range: 'bytes=0-3' },
     });
     expect(blobRanged.statusCode).toBe(206);
-    expect(blobRanged.headers['cache-control']).toBe('private, max-age=1800, immutable');
+    expect(blobRanged.headers['cache-control']).toMatch(/^private, max-age=(?:179\d|1800)$/u);
     expect([...blobRanged.rawPayload]).toEqual([...audio.subarray(0, 4)]);
     expect(acquireSpy).not.toHaveBeenCalled();
   });

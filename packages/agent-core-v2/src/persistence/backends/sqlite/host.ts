@@ -48,7 +48,7 @@ export class QueryStoreWorker {
       if (pending === undefined || response.id !== this.serial) return;
       this.active = undefined;
       if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
-      if ('error' in response) pending.reject(Object.assign(new Error(response.error.message), { code: response.error.code, committed: response.error.committed }));
+      if ('error' in response) pending.reject(Object.assign(new Error(response.error.message), { code: response.error.code, errcode: response.error.errcode, committed: response.error.committed }));
       else pending.resolve(response.result);
       this.pump();
     });

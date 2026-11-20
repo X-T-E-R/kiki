@@ -1,8 +1,12 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
+  IAgentLifecycleService,
   IBootstrapService,
   IHostFileSystem,
   ISessionContext,
@@ -11,6 +15,7 @@ import {
   ISessionMetadata,
   SessionIndexBuildingError,
   SessionIndexReconcilePendingError,
+  getLiveSessionById,
   sessionScopeOf,
   workspacePersistenceScope,
   type Scope,
@@ -32,6 +37,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerHostMediaPreviewRoutes } from '../src/routes/hostMediaPreview';
 import { createAuthHook } from '../src/middleware/auth';
 import type { IAuthTokenService } from '../src/services/auth/authTokenService';
+import { startServer } from '../src/start';
+import { authHeaders } from './helpers/auth';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -193,7 +201,7 @@ describe('session media playback', () => {
     expect(ranged.statusCode).toBe(206);
     expect(ranged.headers['content-type']).toContain('video/mp4');
     expect(ranged.headers['content-range']).toBe(`bytes 0-3/${mp4Bytes.byteLength}`);
-    expect(ranged.headers['cache-control']).toBe('private, max-age=1800, immutable');
+    expect(ranged.headers['cache-control']).toMatch(/^private, max-age=(?:179\d|1800)$/u);
     const etag = ranged.headers['etag'];
     expect(typeof etag).toBe('string');
     expect([...ranged.rawPayload]).toEqual([...mp4Bytes.subarray(0, 4)]);
@@ -266,7 +274,7 @@ describe('session media playback', () => {
     });
     const elapsedMs = performance.now() - t0;
     expect(ranged.statusCode).toBe(206);
-    expect(ranged.headers['cache-control']).toBe('private, max-age=1800, immutable');
+    expect(ranged.headers['cache-control']).toMatch(/^private, max-age=(?:179\d|1800)$/u);
     expect([...ranged.rawPayload]).toEqual([...wavBytes.subarray(0, 12)]);
     expect(elapsedMs).toBeLessThan(100);
     expect(acquireSpy).not.toHaveBeenCalled();
@@ -565,6 +573,159 @@ describe('session media playback', () => {
     });
     expect(differentIp.statusCode).toBe(403);
   });
+
+  it('caps max-age to remaining grant TTL, keeps active streams alive past expiry, and fails closed on indeterminate cold privacy', async () => {
+    const indeterminateSummary: SessionSummary = {
+      id: 'session-a',
+      workspaceId: 'ws-a',
+      cwd: '/example/workspace',
+      createdAt: 1,
+      updatedAt: 2,
+      archived: false,
+    };
+    const indeterminate = await createMediaHarness({
+      indexGet: async (id) => id === 'session-a' ? indeterminateSummary : undefined,
+    });
+    const indetOpened = await indeterminate.app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-a/media-playback',
+      payload: { file_id: indeterminate.clipFileId },
+    });
+    expect(indetOpened.statusCode).toBe(200);
+    const indetId = (indetOpened.json().data as { preview_id: string }).preview_id;
+    const indetRange = await indeterminate.app.inject({ url: `/media-preview/${indetId}`, headers: { range: 'bytes=0-3' } });
+    expect(indetRange.statusCode).toBe(206);
+    expect(indetRange.headers['cache-control']).toBe('private, no-store');
+
+    const now = Date.now;
+    let fakeNow = 1_700_000_000_000;
+    Date.now = () => fakeNow;
+    let streamStarted!: () => void;
+    const started = new Promise<void>((resolve) => { streamStarted = resolve; });
+    let finishStream!: () => void;
+    const gate = new Promise<void>((resolve) => { finishStream = resolve; });
+    let holdFirst = false;
+    const liveHandle = makeSessionHandle({
+      fileId: 'file-a',
+      isPrivate: false,
+      streamFactory: async function* () {
+        if (holdFirst) {
+          holdFirst = false;
+          streamStarted();
+          await gate;
+        }
+        yield mp4Bytes;
+      },
+    });
+    try {
+      const { app } = await createMediaHarness({
+        liveSessions: new Map<string, unknown>([['session-a', liveHandle]]),
+      });
+      const base = await app.listen({ host: '127.0.0.1', port: 0 });
+      const minted = await fetch(`${base}/api/sessions/session-a/media-playback`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file_id: 'file-a' }),
+      });
+      expect(minted.status).toBe(200);
+      const id = ((await minted.json()) as { data: { preview_id: string } }).data.preview_id;
+
+      fakeNow += 1_000_000;
+      const midLife = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+      expect(midLife.statusCode).toBe(206);
+      expect(midLife.headers['cache-control']).toBe('private, max-age=800');
+
+      holdFirst = true;
+      const streaming = fetch(`${base}/media-preview/${id}`);
+      await started;
+      fakeNow += 2_000_000;
+      const concurrent = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+      expect(concurrent.statusCode).toBe(404);
+      finishStream();
+      const finished = await streaming;
+      expect(finished.status).toBe(200);
+      expect(new Uint8Array(await finished.arrayBuffer())).toEqual(mp4Bytes);
+      const afterIdle = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+      expect(afterIdle.statusCode).toBe(404);
+    } finally {
+      finishStream();
+      Date.now = now;
+    }
+  });
+
+  it('serves live audio range through real startServer DI while ISessionIndex reconciles and does not create main on GET messages', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-real-media-playback-'));
+    const cwd = join(home, 'workspace');
+    await mkdir(cwd);
+    await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n[cron]\nmanualTick = true\n');
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    try {
+      const createdRes = await fetch(`${base}/api/sessions`, {
+        method: 'POST',
+        headers: authHeaders(server, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ metadata: { cwd } }),
+      });
+      const created = await createdRes.json() as { code: number; data: { id: string } };
+      expect(created.code).toBe(0);
+      const sessionId = created.data.id;
+
+      const live = getLiveSessionById(server.core.accessor, sessionId)!;
+      expect(live).toBeDefined();
+      expect(live.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+
+      const msgRes = await fetch(`${base}/api/sessions/${sessionId}/messages`, { headers: authHeaders(server) });
+      expect(msgRes.status).toBe(200);
+      expect(await msgRes.json()).toMatchObject({ code: 0, data: { items: [], has_more: false } });
+      expect(live.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+
+      const fileId = 'f_a1b2c3d4e5f60718';
+      await live.accessor.get(ISessionMediaStore).materialize({
+        fileId,
+        name: 'voice.wav',
+        mimeType: 'audio/wav',
+        size: wavBytes.byteLength,
+        stream: () => Readable.from([wavBytes]),
+      });
+
+      const indexSpy = vi.spyOn(server.core.accessor.get(ISessionIndex), 'get').mockRejectedValue(
+        new SessionIndexReconcilePendingError('concurrent_changes', 1),
+      );
+      const manager = server.core.accessor.get(ISessionManager);
+      const lease = await manager.acquire?.(sessionId, 'operation');
+      try {
+        const t0 = performance.now();
+        const mintRes = await fetch(`${base}/api/sessions/${sessionId}/media-playback`, {
+          method: 'POST',
+          headers: authHeaders(server, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ file_id: fileId }),
+        });
+        expect(mintRes.status).toBe(200);
+        const minted = await mintRes.json() as { data: { preview_id: string; mime: string; size: number } };
+        expect(minted.data.mime).toBe('audio/wav');
+        const rangeRes = await fetch(`${base}/media-preview/${minted.data.preview_id}`, {
+          headers: { range: 'bytes=0-11' },
+        });
+        const elapsedMs = performance.now() - t0;
+        expect(rangeRes.status).toBe(206);
+        expect(rangeRes.headers.get('cache-control')).toMatch(/^private, max-age=(?:179\d|1800)$/u);
+        expect(elapsedMs).toBeLessThan(100);
+        expect(new Uint8Array(await rangeRes.arrayBuffer())).toEqual(wavBytes.subarray(0, 12));
+      } finally {
+        await lease?.dispose();
+        indexSpy.mockRestore();
+      }
+    } finally {
+      await server.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }, 30_000);
 });
 
 function failingByteStream(error: Error): AsyncIterable<Uint8Array> {

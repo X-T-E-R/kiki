@@ -27,7 +27,7 @@ export interface StoreRequest {
 
 export type StoreResponse =
   | { readonly id: number; readonly result: unknown }
-  | { readonly id: number; readonly error: { readonly message: string; readonly code?: string; readonly committed?: boolean } };
+  | { readonly id: number; readonly error: { readonly message: string; readonly code?: string; readonly errcode?: number; readonly committed?: boolean } };
 
 let entry: string | undefined;
 export function configureQueryStoreWorkerRuntime(path: string): void { entry = path; }

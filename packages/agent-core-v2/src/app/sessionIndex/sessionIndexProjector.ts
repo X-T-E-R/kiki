@@ -365,6 +365,7 @@ export class SessionIndexProjector {
       }
     }
     const ops: WriteOp[] = [];
+    const workspaceCountDeltas = new Map<string, { active: number; archived: number }>();
     let upserted = 0;
     let removed = 0;
     let sessions = 0;
@@ -553,27 +554,43 @@ export class SessionIndexProjector {
       if (!workspaceSourceEquals(previousWorkspace, nextWorkspace)) {
         ops.push({ kind: 'put', collection: workspaces, key: workspaceId, value: nextWorkspace });
       }
-      const currentCount = await queryStore.get<SessionWorkspaceCounts>(counters, workspaceId);
-      const count = changed === undefined ? {
-        active: nextWorkspace.activeSessionIds.length,
-        archived: nextWorkspace.archivedSessionIds.length,
-      } : { active: currentCount?.active ?? 0, archived: currentCount?.archived ?? 0 };
-      if (changed !== undefined) {
+      if (changed === undefined) {
+        const currentCount = await queryStore.get<SessionWorkspaceCounts>(counters, workspaceId);
+        const count = {
+          active: nextWorkspace.activeSessionIds.length,
+          archived: nextWorkspace.archivedSessionIds.length,
+        };
+        if (
+          currentCount === undefined ||
+          currentCount.active !== count.active ||
+          currentCount.archived !== count.archived
+        ) {
+          ops.push({ kind: 'put', collection: counters, key: workspaceId, value: count });
+        }
+        sessions += count.active + count.archived;
+      } else {
+        let deltaActive = 0;
+        let deltaArchived = 0;
         for (const sessionId of changedIds) {
           const old = oldSummaries.get(sessionId);
           const next = nextSummaries.get(sessionId);
-          if (old?.workspaceId === workspaceId) count[old.archived ? 'archived' : 'active'] -= 1;
-          if (next !== undefined) count[next.archived ? 'archived' : 'active'] += 1;
+          if (old?.workspaceId === workspaceId) {
+            if (old.archived) deltaArchived -= 1;
+            else deltaActive -= 1;
+          }
+          if (next !== undefined) {
+            if (next.archived) deltaArchived += 1;
+            else deltaActive += 1;
+          }
+        }
+        if (deltaActive !== 0 || deltaArchived !== 0) {
+          const existingDelta = workspaceCountDeltas.get(workspaceId) ?? { active: 0, archived: 0 };
+          workspaceCountDeltas.set(workspaceId, {
+            active: existingDelta.active + deltaActive,
+            archived: existingDelta.archived + deltaArchived,
+          });
         }
       }
-      if (
-        currentCount === undefined ||
-        currentCount.active !== count.active ||
-        currentCount.archived !== count.archived
-      ) {
-        ops.push({ kind: 'put', collection: counters, key: workspaceId, value: count });
-      }
-      sessions += count.active + count.archived;
     }
 
     const currentWorkspaceSet = new Set(currentWorkspaceIds);
@@ -623,8 +640,20 @@ export class SessionIndexProjector {
     };
     retainFingerprints();
     return async () => {
-      if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
-      await this.batchChunks(ops);
+      const commitOps: WriteOp[] = [...ops];
+      if (workspaceCountDeltas.size > 0) {
+        const freshCounts = await queryStore.getMany<SessionWorkspaceCounts>(counters, [...workspaceCountDeltas.keys()]);
+        for (const [workspaceId, delta] of workspaceCountDeltas) {
+          const base = freshCounts.get(workspaceId) ?? { active: 0, archived: 0 };
+          const nextCount: SessionWorkspaceCounts = {
+            active: Math.max(0, base.active + delta.active),
+            archived: Math.max(0, base.archived + delta.archived),
+          };
+          commitOps.push({ kind: 'put', collection: counters, key: workspaceId, value: nextCount });
+        }
+      }
+      if (commitOps.length > 0) await advanceSessionIndexRevision(queryStore);
+      await this.batchChunks(commitOps);
       const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (
         manifest?.seq === generation &&

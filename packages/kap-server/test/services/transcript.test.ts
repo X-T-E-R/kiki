@@ -8148,3 +8148,59 @@ it('bounds retainedColdTurns globally to 8 MiB and within the 32 MiB combined co
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('invalidates persisted format-26 EOF checkpoints under format 27 and recovers token_counting.measured contextTokens', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-transcript-ckpt27-'));
+  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const records: Record<string, unknown>[] = [
+    { type: 'metadata', protocol_version: '1.1', time: 1_000 },
+    { type: 'turn.prompt', turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: 'hello' }], time: 1_010 },
+    { type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1', time: 1_020 },
+    { type: 'token_counting.measured', tokens: 61_234, time: 1_050 },
+    { type: 'turn.ended', turnId: 1, reason: 'completed', time: 1_100 },
+  ];
+  await writeFixtureFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const stat = await fsPromises.stat(wirePath);
+  const checkpoints = new Map<string, unknown>([
+    ['s1:main', {
+      format: 26,
+      fingerprint: { size: stat.size, mtimeMs: stat.mtimeMs },
+      wireOffset: stat.size,
+      adapter: {},
+      reducer: {},
+      snapshot: {
+        agentId: 'main',
+        turns: [],
+        tasks: [],
+        interactions: [],
+        prompts: [],
+        meta: { agent: { contextTokens: 0 } },
+      },
+    }],
+  ]);
+  const queryStore = {
+    get: vi.fn(async (_collection: string, key: string) => checkpoints.get(key)),
+    put: vi.fn(async (_collection: string, key: string, value: unknown) => { checkpoints.set(key, value); }),
+    delete: vi.fn(async (_collection: string, key: string) => { checkpoints.delete(key); }),
+  };
+  const core = {
+    accessor: {
+      get: (token: unknown) => {
+        if (token === ISessionIndex) return { get: async (id: string) => id === 's1' ? { id: 's1', workspaceId: 'ws', updatedAt: 1 } : undefined };
+        if (token === IQueryStore) return queryStore;
+        if (token === ISessionManager) return {};
+        return undefined;
+      },
+    },
+  } as unknown as Scope;
+  const service = new TranscriptService({ homeDir: home, core });
+  const signal = new AbortController().signal;
+  try {
+    const cold = await service.readColdSnapshot('s1', 'main', undefined, signal);
+    expect(cold?.meta.agent?.contextTokens).toBe(61_234);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

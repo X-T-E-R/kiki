@@ -5151,4 +5151,57 @@ describe('FileSessionIndex (read model)', () => {
       enospcSpy.mockRestore();
     }
   });
+
+  it('preserves concurrent same-workspace mirror archive counts during reconcileWatched and enforces 60s cooldown on SQLITE_FULL errcode 13', async () => {
+    await seedSession('s-watch-a', { title: 'a-initial', createdAt: 1, updatedAt: 10, archived: false });
+    await seedSession('s-sibling-b', { title: 'b-initial', createdAt: 1, updatedAt: 11, archived: false });
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+    store.stopReconcileLoop();
+
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: false })).toBe(2);
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
+
+    await seedSession('s-watch-a', { title: 'a-updated', createdAt: 1, updatedAt: 20, archived: false });
+    const internals = store as unknown as {
+      projector: SessionIndexProjector;
+      watchedSessions: Map<string, { workspaceId: string; id: string }>;
+      reconcileWatched(): Promise<void>;
+      markDegraded(reason: string, error?: unknown): void;
+      doPrepare(deadlineMs?: number): Promise<unknown>;
+    };
+    internals.watchedSessions.set(`${workspaceId}\0s-watch-a`, { workspaceId, id: 's-watch-a' });
+
+    const originalPlan = internals.projector.planReconcile.bind(internals.projector);
+    const planSpy = vi.spyOn(internals.projector, 'planReconcile').mockImplementation(async (gen, opts) => {
+      const commit = await originalPlan(gen, opts);
+      await seedSession('s-sibling-b', { title: 'b-archived', createdAt: 1, updatedAt: 25, archived: true });
+      mirror.record(summary('s-sibling-b', { title: 'b-archived', updatedAt: 25, archived: true }));
+      await mirror.drain();
+      return commit;
+    });
+    try {
+      await internals.reconcileWatched();
+      expect((await store.get('s-watch-a'))?.title).toBe('a-updated');
+      expect((await store.get('s-sibling-b'))?.archived).toBe(true);
+      expect(await store.count({ workspaceIds: [workspaceId], includeArchived: false })).toBe(1);
+      expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
+    } finally {
+      planSpy.mockRestore();
+    }
+
+    const doPrepareSpy = vi.spyOn(internals, 'doPrepare');
+    try {
+      const sqliteFull = Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
+      internals.markDegraded('read model read failed', sqliteFull);
+      await expect(store.listRecent({ limit: 10 })).rejects.toThrow();
+      await expect(store.count({})).rejects.toThrow();
+      await store.prepare();
+      expect(doPrepareSpy).not.toHaveBeenCalled();
+    } finally {
+      doPrepareSpy.mockRestore();
+    }
+  });
 });

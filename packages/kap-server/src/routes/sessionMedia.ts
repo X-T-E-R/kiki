@@ -277,18 +277,14 @@ async function isSessionMediaPersistable(
 ): Promise<boolean> {
   try {
     const manager = core.accessor?.get(ISessionManager);
-    if (manager === undefined) return false;
+    if (manager === undefined || typeof manager.isEphemeral !== 'function') return false;
     if (manager.isEphemeral(sessionId)) return false;
     const live = manager.get(sessionId);
     if (live !== undefined) {
-      const ctx = live.accessor.get(ISessionContext);
-      if (ctx.ephemeral || ctx.isPrivate?.() === true) return false;
-      const meta = live.accessor.get(ISessionMetadata);
-      if ((meta.isPrivate?.() ?? meta.snapshot().private) === true) return false;
-      return true;
+      return isLiveSessionPersistable(manager, sessionId, live);
     }
     const resolved = summary ?? await core.accessor.get(ISessionIndex).get(sessionId);
-    if (resolved === undefined || resolved.private === true) return false;
+    if (resolved === undefined || resolved.private !== false) return false;
     return true;
   } catch {
     return false;
@@ -314,11 +310,15 @@ function isLiveSessionPersistable(
   live: NonNullable<ReturnType<ISessionManager['get']>>,
 ): boolean {
   try {
-    if (manager.isEphemeral(sessionId)) return false;
+    if (typeof manager.isEphemeral !== 'function' || manager.isEphemeral(sessionId)) return false;
     const ctx = live.accessor.get(ISessionContext);
-    if (ctx.ephemeral || ctx.isPrivate?.() === true) return false;
+    if (ctx.ephemeral !== false) return false;
+    const ctxPrivate = ctx.isPrivate?.();
+    if (ctxPrivate === true) return false;
     const meta = live.accessor.get(ISessionMetadata);
-    if ((meta.isPrivate?.() ?? meta.snapshot().private) === true) return false;
+    const metaPrivate = meta.isPrivate?.() ?? meta.snapshot().private;
+    if (metaPrivate === true) return false;
+    if (ctxPrivate !== false && metaPrivate !== false) return false;
     return true;
   } catch {
     return false;

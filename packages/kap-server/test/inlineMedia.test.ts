@@ -10,7 +10,7 @@ import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
 import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
-import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionIndex, ISessionManager, ISessionMediaStore as SessionMediaStoreToken, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
+import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionIndex, ISessionManager, ISessionMediaStore as SessionMediaStoreToken, ISessionMetadata, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
 import * as mainAgent from '../src/transport/mainAgent';
 import * as promptMedia from '../src/lib/promptMedia';
 import { registerSkillsRoutes } from '../src/routes/skills';
@@ -242,7 +242,7 @@ describe('canonical inline media original', () => {
     } finally { request.destroy(); validate.mockRestore(); }
   });
 
-  it('closes a cancelled session preview source and releases its operation without affecting the next download', async () => {
+  it('closes a cancelled session preview source without affecting the next download', async () => {
     const app = Fastify(); servers.push(app);
     installErrorHandler(app);
     app.addHook('onSend', async (_req, _reply, payload) => payload);
@@ -252,11 +252,8 @@ describe('canonical inline media original', () => {
     const gate = new Promise<void>((resolve) => { proceed = resolve; });
     let sourceClosed!: () => void;
     const closed = new Promise<void>((resolve) => { sourceClosed = resolve; });
-    let released!: () => void;
-    const disposed = new Promise<void>((resolve) => { released = resolve; });
     let slow = true;
     const bytes = new Uint8Array(1024);
-    const dispose = vi.fn(async () => { released(); });
     const file = { name: 'fixture.png', mediaType: 'image/png', size: bytes.byteLength,
       stream: async function* (range?: { start: number; end: number }) {
         try {
@@ -265,12 +262,19 @@ describe('canonical inline media original', () => {
         } finally { sourceClosed(); }
       },
     };
-    const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation').mockResolvedValue({
-      handle: { accessor: { get: () => ({ open: async () => file }) } }, dispose,
-    } as unknown as sessionOperation.SessionOperationLease);
+    const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation');
+    const liveSession = {
+      accessor: {
+        get: (token: unknown) => {
+          if (token === ISessionContext) return { workspaceId: 'ws1', ephemeral: false, isPrivate: () => false };
+          if (token === ISessionMetadata) return { isPrivate: () => false, snapshot: () => ({ private: false }) };
+          return { open: async () => file };
+        },
+      },
+    };
     const services = new Map<unknown, unknown>([
       [ISessionIndex, { get: async () => undefined }],
-      [ISessionManager, { get: () => ({}) }],
+      [ISessionManager, { isEphemeral: () => false, get: () => liveSession }],
     ]);
     const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
     await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], core); }, { prefix: '/api' });
@@ -284,13 +288,12 @@ describe('canonical inline media original', () => {
       await disconnected;
       proceed();
       await closed;
-      await disposed;
-      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(acquire).not.toHaveBeenCalled();
       slow = false;
       const normal = await fetch(`${base}/api/sessions/fixture/media/file`, { headers: { range: 'bytes=0-15' } });
       expect(normal.status).toBe(206);
       expect(new Uint8Array(await normal.arrayBuffer())).toEqual(bytes.subarray(0, 16));
-      await vi.waitFor(() => { expect(dispose).toHaveBeenCalledTimes(2); });
+      expect(acquire).not.toHaveBeenCalled();
       expect(app.server.listening).toBe(true);
     } finally {
       proceed();

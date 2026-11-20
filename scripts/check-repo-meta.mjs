@@ -1070,6 +1070,16 @@ export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
         'Enable the test in a self-contained harness or physically delete obsolete tests',
       );
     }
+    for (const mock of hygiene.intraMonorepoMocks.violations) {
+      addViolation(
+        errors,
+        'test-contract-hygiene',
+        mock.file,
+        mock.line,
+        `Unexempted intra-monorepo mock ("${mock.target}") violates real-seam test hygiene`,
+        'Test against the real production module via DI/Scope or remove the internal vi.mock',
+      );
+    }
   }
 
   return errors;

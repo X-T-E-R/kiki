@@ -733,21 +733,26 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
     }
   });
 
-  it('enforces vi.doMock/mock.module/@nb-corp intra-monorepo bans while exempting spy and importOriginal wrappers', () => {
+  it('enforces vi.doMock/mock.module/@nb-corp, multiline mocks, and importOriginal+vi.fn() bans while exempting spy and clean importOriginal wrappers', () => {
     const diff = [
       '+++ b/packages/kap-server/test/sample.test.ts',
-      '@@ -1,0 +1,6 @@',
+      '@@ -1,0 +1,10 @@',
       "+vi.doMock('../src/routes/sessionMedia', () => ({ openSessionMedia: () => null }));",
       "+mock.module('@nb-corp/nb-im', () => ({}));",
+      '+vi.mock(',
+      "+  '../src/routes/hostMediaPreview',",
+      '+  () => ({ registerHostMediaPreviewRoutes: () => {} }),',
+      '+);',
+      "+vi.mock('../src/externalClients/access', async (importOriginal) => ({ ...(await importOriginal()), open: vi.fn() }));",
       "+vi.mock('../src/services/history/logicalWireRead', { spy: true });",
       "+vi.mock('@nb-corp/nb-im', async (importOriginal) => ({ ...(await importOriginal()) }));",
       "+vi.mock('node:fs/promises', () => ({}));",
     ].join('\n');
     const ratchet = checkDiffMockRatchet({ diffText: diff });
-    assert.equal(ratchet.mockViolations.length, 2);
+    assert.equal(ratchet.mockViolations.length, 4);
     assert.deepEqual(
       ratchet.mockViolations.map((entry) => entry.target),
-      ['../src/routes/sessionMedia', '@nb-corp/nb-im'],
+      ['../src/routes/sessionMedia', '@nb-corp/nb-im', '../src/routes/hostMediaPreview', '../src/externalClients/access'],
     );
 
     const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-hygiene-tree-'));
@@ -758,7 +763,7 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
       fs.mkdirSync(otherIntegDir, { recursive: true });
       fs.writeFileSync(
         path.join(kapTestDir, 'bad.test.ts'),
-        "vi.mock('../src/routes/sessionMedia', () => ({}));\nvi.mock('../src/routes/ok', { spy: true });\n",
+        "vi.mock(\n  '../src/routes/sessionMedia',\n  () => ({}),\n);\nvi.mock('../src/routes/ok', { spy: true });\n",
       );
       fs.writeFileSync(
         path.join(otherIntegDir, 'bad.integration.ts'),

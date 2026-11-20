@@ -82,10 +82,12 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
 
 function isResourceExhaustionError(error: unknown): boolean {
   if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_DISK_FULL) return true;
-  const code = (error as { code?: unknown } | null)?.code;
+  const candidate = error as { code?: unknown; errcode?: unknown } | null;
+  const code = candidate?.code;
   if (code === 'ENOSPC' || code === 'SQLITE_FULL' || code === 'ERR_OUT_OF_MEMORY') return true;
+  if (typeof candidate?.errcode === 'number' && (candidate.errcode & 255) === 13) return true;
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  return /\b(?:ENOSPC|SQLITE_FULL|out of memory|heap limit)\b/iu.test(message);
+  return /\b(?:ENOSPC|SQLITE_FULL|database or disk is full|out of memory|heap limit)\b/iu.test(message);
 }
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -368,7 +370,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
     if (this._store.isDisposed || !this.readModelEnabled()) return this.status();
-    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return this.status();
+    if (this.recoveryRequired && (this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS || Date.now() < this.resourceExhaustionCooldownUntil)) {
+      return this.status();
+    }
     if (!this.recoveryRequired && this.mirror.dirtyEpoch() !== undefined) {
       await this.ensureDirtyCatchUp();
       return this.status();
@@ -468,6 +472,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private projectionRetryAt = 0;
+  private resourceExhaustionCooldownUntil = 0;
 
   private ensureProjection(fresh = false): Promise<boolean> {
     if (this.projectFlight === undefined && Date.now() < this.projectionRetryAt) return Promise.resolve(false);
@@ -689,6 +694,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     if (this.recoveryRequired) {
       this.recoveryAttempts = 0;
       this.nextPrepareRetryAt = 0;
+      this.resourceExhaustionCooldownUntil = 0;
       await this.prepare();
       return;
     }
@@ -724,6 +730,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private markReady(): void {
     if (this.recoveryRequired) return;
     this.recoveryAttempts = 0;
+    this.resourceExhaustionCooldownUntil = 0;
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
@@ -741,7 +748,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const resourceExhausted = isResourceExhaustionError(error);
     const retryDelay = exhausted || resourceExhausted ? RECOVERY_COOLDOWN_MS : DEGRADED_RETRY_MS;
     if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; next read can retry after ${RECOVERY_COOLDOWN_MS}ms cooldown`;
-    this.nextPrepareRetryAt = Date.now() + retryDelay;
+    const retryAt = Date.now() + retryDelay;
+    this.nextPrepareRetryAt = retryAt;
+    if (resourceExhausted) this.resourceExhaustionCooldownUntil = Math.max(this.resourceExhaustionCooldownUntil, retryAt);
     if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), retryDelay);
     else this.log.error('session index automatic recovery exhausted; waiting for read after cooldown', {
       attempts: this.recoveryAttempts,
@@ -870,7 +879,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const readRevision = this.readModelRevision;
     if (!this.readModelEnabled()) return legacy();
     if (this.recoveryRequired) {
-      if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare(true);
+      if (Date.now() >= this.resourceExhaustionCooldownUntil && (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0)) {
+        this.kickPrepare(true);
+      }
       throw new SessionIndexBuildingError();
     }
     if (this.mirror.dirtyEpoch() !== undefined) {
@@ -929,6 +940,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private kickPrepare(requested = false): void {
     if (this.prepareFlight !== undefined || this.state === 'preparing') return;
+    if (Date.now() < this.resourceExhaustionCooldownUntil) return;
     if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
       if (!requested || this.state !== 'degraded' || Date.now() < this.nextPrepareRetryAt) return;
       this.recoveryAttempts = 0;

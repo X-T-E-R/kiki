@@ -16,12 +16,10 @@ import {
   ISessionManager,
   IWireService,
   createContextTranscriptReducer,
-  ensureMainAgent,
   followSessionLifecycles,
   type ContextMessage,
   type ContextTranscript,
   type IAgentScopeHandle,
-  type ISessionScopeHandle,
   type Scope,
   type SessionSummary,
   type WireRecord,
@@ -284,47 +282,22 @@ async function openMessageHistory(
 ): Promise<ReadMessageHistory> {
   signal?.throwIfAborted();
   const manager = core.accessor.get(ISessionManager);
-  if (manager.acquireLive === undefined) throw new Error('live session operation leases are unavailable');
-  const lease = await manager.acquireLive(sessionId, 'messages-read');
-  if (lease !== undefined) {
-    try {
-      signal?.throwIfAborted();
-      const active = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt, signal);
+  const live = manager.get(sessionId);
+  if (live !== undefined) {
+    const agent = live.accessor.get(IAgentLifecycleService).get('main');
+    if (agent !== undefined) {
+      const entry = await refreshMessageHistoryCache(core, agent, sessionId, summary.createdAt, signal);
       return {
-        ...active,
-        hydrate: (messages) => rehydrate(active.agent, messages),
-        dispose: async () => { await lease.dispose(); },
+        createdAt: summary.createdAt,
+        messages: entry.messages,
+        createdAtMs: entry.createdAtMs,
+        explicitIndexes: entry.explicitIndexes,
+        hydrate: (messages) => rehydrate(agent, messages),
+        dispose: async () => {},
       };
-    } catch (error) {
-      await lease.dispose();
-      throw error;
     }
   }
   return loadColdMessageHistory(core, sessionId, summary, signal);
-}
-
-async function loadActiveMessageHistory(
-  core: Scope,
-  session: ISessionScopeHandle,
-  sessionId: string,
-  createdAt: number,
-  signal?: AbortSignal,
-): Promise<{
-  readonly agent: IAgentScopeHandle;
-  readonly createdAt: number;
-  readonly messages: readonly ContextMessage[];
-  readonly createdAtMs: readonly number[];
-  readonly explicitIndexes: ReadonlyMap<string, number>;
-}> {
-  const agent = await ensureMainAgent(session);
-  const entry = await refreshMessageHistoryCache(core, agent, sessionId, createdAt, signal);
-  return {
-    agent,
-    createdAt,
-    messages: entry.messages,
-    createdAtMs: entry.createdAtMs,
-    explicitIndexes: entry.explicitIndexes,
-  };
 }
 
 async function loadColdMessageHistory(

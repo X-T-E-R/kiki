@@ -629,8 +629,8 @@ A partial update changes only the fields you send. `POST /api/config` with `{ "m
 | `zero_output_continuation` | `boolean` | `false` | Send one explicit `Continue.` user message when a normal completion has no thinking text, visible text, or tool call |
 | `reserved_context_size` | `integer` | `50000` | Tokens reserved above the automatic compaction point for model output |
 | `auto_compact` | `string` | — | Global default compaction point as a percentage of the model's usable context (e.g. `"85%"`). This layer does not accept token counts; model, profile, and session settings use positive integer tokens |
-| `context_strategy` | `string` | `"auto"` | Global default compaction strategy for the main agent: `auto`, `summarize`, or `fresh` |
-| `subagent_context_strategy` | `string` | `"auto"` | Global default compaction strategy for subagents when neither the profile nor the model specifies `context_strategy`: `auto`, `summarize`, or `fresh` |
+| `context_strategy` | `string` | `"summarize"` | Global default compaction strategy for the main agent: `auto`, `summarize`, or `fresh` |
+| `subagent_context_strategy` | `string` | `"summarize"` | Global default compaction strategy for subagents when neither the profile nor the model specifies `context_strategy`: `auto`, `summarize`, or `fresh` |
 | `compaction_trigger_ratio` | `number` | `0.85` | Legacy trigger ratio, used only when no `auto_compact` is set at any layer |
 | `compaction_soft_context_size` | `integer` | `0` | Legacy absolute token ceiling, used only when no `auto_compact` is set at any layer |
 | `compaction_max_attempts` | `integer` | `3` | Maximum compaction-loop summary attempts, including the initial attempt; stream interruptions and overflow recovery share this budget. The requester separately handles OAuth/projection recovery and opt-in pre-output infinite retries |
