@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AutoCompactStatus, ContextStrategyStatus } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { ContextMeter, type ContextMeterAutoCompact } from './ContextMeter';
 import type { ContextStrategyHandle } from './useContextStrategy';
@@ -46,6 +47,10 @@ function handle(initial: ContextStrategyStatus | undefined, overrides: Partial<C
 }
 
 async function render(strategy: ContextStrategyHandle | undefined, onCompact = vi.fn()) {
+  for (const { root: prevRoot, container: prevContainer } of mounted.splice(0)) {
+    await act(async () => { prevRoot.unmount(); });
+    prevContainer.remove();
+  }
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -63,7 +68,7 @@ async function render(strategy: ContextStrategyHandle | undefined, onCompact = v
     root.render(<I18nProvider><ContextMeter used={300_000} limit={550_000} autoCompact={autoCompact} onCompact={onCompact} /></I18nProvider>);
   });
   await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
-  return container;
+  return withPortalQueries(container);
 }
 
 const click = async (element: Element | null) => {

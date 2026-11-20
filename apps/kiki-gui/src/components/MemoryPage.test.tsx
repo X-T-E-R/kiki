@@ -714,7 +714,10 @@ describe('MemoryPage scope switcher', () => {
     await click(container, '[data-memory-kind="workspace"]');
     expect(scopeKind(container)).toBe('workspace');
     await click(container, '#memory-workspace-picker');
-    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(120);
+    // SearchableSelect virtualizes >40 options via @tanstack/react-virtual.
+    const visibleOptions = document.querySelectorAll('[data-select-panel] [data-option-value]').length;
+    expect(visibleOptions).toBeGreaterThan(0);
+    expect(visibleOptions).toBeLessThan(120);
     await typeCombobox(container, 'docs');
     expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(1);
     await click(container, '[data-option-value="wd_042"]');

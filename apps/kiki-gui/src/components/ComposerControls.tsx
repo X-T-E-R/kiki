@@ -21,6 +21,7 @@
  */
 
 import { createContext, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type UIEvent, type RefObject } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { DeferredAppendTiming, FsSearchHit, PermissionMode } from '@kiki/protocol';
@@ -31,17 +32,24 @@ import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import {
+  COMPOSER_FLOATING_GROUP,
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
   hasOpenOwnedFloatingPortal,
+  notifyFloatingGroupOpen,
+  owningModalId,
   registerOverlay,
+  resolveFloatingOwners,
+  subscribeFloatingGroup,
 } from '../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { OptionalCapabilityRows } from './capabilities/optionalCapabilityUi';
 import type { OverrideSource } from './capabilities/pluginUsage';
 import { QUIET_BUTTON, StatusDot } from './capabilities/primitives';
 import {
   heldByConversation,
-  heldCount,
   mcpRowMatches,
   overrideForSwitch,
   type McpOverride,
@@ -215,6 +223,8 @@ export function ComposerPanelOrigin({ children, className }: { children: React.R
   return <div ref={ref} className={className}>{children}</div>;
 }
 
+const handledPopoverKeyEvents = new WeakSet<Event>();
+
 /**
  * Shared popover dismissal: overlay registration (so the global Escape never
  * aborts the turn under an open panel), a pointerdown outside the root, and
@@ -226,9 +236,17 @@ export function usePopoverDismiss(
   close: (refocus?: boolean) => void,
   rootRef: RefObject<HTMLElement | null>,
   overlayId: string,
+  panelRef?: RefObject<HTMLElement | null>,
 ) {
   const closeRef = useRef(close);
   closeRef.current = close;
+  const isComposerGroup = overlayId.startsWith('composer-');
+  useEffect(() => {
+    if (!isComposerGroup) return undefined;
+    return subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, overlayId, () => {
+      closeRef.current(false);
+    });
+  }, [isComposerGroup, overlayId]);
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (root === null) return;
@@ -241,21 +259,23 @@ export function usePopoverDismiss(
   }, [overlayId, rootRef]);
   useEffect(() => {
     if (!open) return;
+    if (isComposerGroup) {
+      notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, overlayId, rootRef.current);
+    }
     const release = registerOverlay(overlayId);
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current !== null && !containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId)) {
+      const inRoot = rootRef.current !== null && containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId);
+      const inPanel = panelRef?.current !== null && panelRef?.current !== undefined
+        && containsOrOwnsFloatingTarget(panelRef.current, event.target, overlayId);
+      if (!inRoot && !inPanel) {
         closeRef.current();
       }
     };
-    // Focus outside the root (e.g. the panel opened by pointer and focus
-    // went back to the page): the document still hears Escape. In-panel
-    // Escape is handled (and stopped) by the root's own key handler first,
-    // and any open nested portal (AnchoredPopover / SearchableSelect) owns
-    // Escape before this outer surface does.
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.key !== 'Escape' || event.defaultPrevented || handledPopoverKeyEvents.has(event)) return;
       if (
         containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId) ||
+        (panelRef?.current !== null && panelRef?.current !== undefined && containsOrOwnsFloatingTarget(panelRef.current, event.target, overlayId)) ||
         hasOpenOwnedFloatingPortal(overlayId)
       ) {
         return;
@@ -270,13 +290,13 @@ export function usePopoverDismiss(
       document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open, overlayId, rootRef]);
+  }, [open, overlayId, rootRef, panelRef, isComposerGroup]);
   return (event: KeyboardEvent<HTMLElement>) => {
-    if (!open || event.key !== 'Escape' || event.defaultPrevented) return;
-    if (
-      !containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId) ||
-      hasOpenOwnedFloatingPortal(overlayId)
-    ) {
+    if (!open || event.key !== 'Escape' || event.defaultPrevented || handledPopoverKeyEvents.has(event.nativeEvent)) return;
+    const inSurface =
+      containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId) ||
+      (panelRef?.current !== null && panelRef?.current !== undefined && containsOrOwnsFloatingTarget(panelRef.current, event.target, overlayId));
+    if (!inSurface || hasOpenOwnedFloatingPortal(overlayId)) {
       return;
     }
     event.preventDefault();
@@ -291,8 +311,9 @@ export function usePopover(
   close: (refocus?: boolean) => void,
   rootRef: RefObject<HTMLDivElement | null>,
   overlayId: string,
+  panelRef?: RefObject<HTMLElement | null>,
 ) {
-  const onDismissKeyDown = usePopoverDismiss(open, close, rootRef, overlayId);
+  const onDismissKeyDown = usePopoverDismiss(open, close, rootRef, overlayId, panelRef);
 
   return (event: KeyboardEvent<HTMLDivElement>) => {
     if (!open) return;
@@ -301,10 +322,15 @@ export function usePopover(
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (event.defaultPrevented || handledPopoverKeyEvents.has(event.nativeEvent)) return;
       // Text fields own their own arrow keys (caret movement).
       if ((event.target as HTMLElement).tagName === 'INPUT') return;
+      handledPopoverKeyEvents.add(event.nativeEvent);
       event.preventDefault();
-      const localRows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
+      const panelRows = [...(panelRef?.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
+      const localRows = panelRows.length > 0
+        ? panelRows
+        : [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
       const rows = localRows.length > 0
         ? localRows
         : [...document.querySelectorAll<HTMLElement>(`[${FLOATING_OWNER_ATTRIBUTE}="${overlayId}"] [data-menu-row]:not(:disabled)`)];
@@ -1113,6 +1139,7 @@ export function AddMenu({
   const { t, locale } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const open = view !== 'closed';
   const [query, setQuery] = useState('');
   // Whether the current sub-view was entered from the root (Back returns
@@ -1133,8 +1160,24 @@ export function AddMenu({
     setQuery('');
     onViewChange('root');
   };
-  const popoverKeyDown = usePopover(open, close, rootRef, 'composer-add');
-  useComposerPanelAnchor(rootRef, open ? view : false);
+  useEffect(() => {
+    if (!open || view === 'root' || !drilledRef.current) return;
+    const onEscapeCapture = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || handledPopoverKeyEvents.has(event)) return;
+      if (hasOpenOwnedFloatingPortal('composer-add')) return;
+      handledPopoverKeyEvents.add(event);
+      event.preventDefault();
+      event.stopPropagation();
+      if (query !== '' && document.activeElement instanceof HTMLElement && document.activeElement.dataset['addSearch'] !== undefined) {
+        setQuery('');
+        return;
+      }
+      back();
+    };
+    window.addEventListener('keydown', onEscapeCapture, true);
+    return () => { window.removeEventListener('keydown', onEscapeCapture, true); };
+  }, [open, view, query]);
+  const popoverKeyDown = usePopover(open, close, rootRef, 'composer-add', panelRef);
   useEffect(() => {
     if (!open) setQuery('');
   }, [open]);
@@ -1271,16 +1314,6 @@ export function AddMenu({
     return out;
   }, [open, extensions, extensionIndex, needle]);
 
-  const enabledPluginCount = useMemo(() => {
-    if (plugins === undefined) return 0;
-    let count = 0;
-    for (let i = 0; i < plugins.items.length; i += 1) {
-      if (plugins.items[i]!.enabled) count += 1;
-    }
-    return count;
-  }, [plugins]);
-  const heldMcpCount = useMemo(() => (mcp === undefined ? 0 : heldCount(mcp.items)), [mcp]);
-
   const onShowSkills = skills?.onShow;
   const onShowPlugins = plugins?.onShow;
   const onShowMcp = mcp?.onShow;
@@ -1292,23 +1325,31 @@ export function AddMenu({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view]);
 
-  // Opening (or changing view) focuses the view's first stop.
-  useEffect(() => {
-    if (!open) return;
-    const root = rootRef.current;
-    if (root === null) return;
+  const focusAddMenuView = useCallback((panel: HTMLElement | null) => {
+    if (panel === null) return;
     // The search field is a keyboard affordance. On touch, focusing it raises
     // the software keyboard over the menu on every open; the rows are what a
     // thumb is after, and the field still takes focus when tapped.
     const field =
       view === 'mode'
-        ? root.querySelector<HTMLElement>('[data-goal-objective]')
-        : isCoarsePointer() ? null : root.querySelector<HTMLElement>('[data-add-search]');
-    (field ?? root.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [data-menu-row]:not([data-add-back])') ?? root.querySelector<HTMLElement>('[data-menu-row]'))?.focus();
-  }, [open, view]);
+        ? panel.querySelector<HTMLElement>('[data-goal-objective]')
+        : isCoarsePointer() ? null : panel.querySelector<HTMLElement>('[data-add-search]');
+    (field ?? panel.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [data-menu-row]:not([data-add-back])') ?? panel.querySelector<HTMLElement>('[data-menu-row]'))?.focus();
+  }, [view]);
+
+  const attachAddPanelRef = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    if (node !== null) focusAddMenuView(node);
+  }, [focusAddMenuView]);
+
+  // Opening (or changing view) focuses the view's first stop.
+  useEffect(() => {
+    if (!open) return;
+    focusAddMenuView(panelRef.current ?? rootRef.current);
+  }, [open, view, focusAddMenuView]);
 
   const firstRow = () =>
-    rootRef.current?.querySelector<HTMLElement>('[data-menu-row]:not([data-add-back]):not(:disabled):not([aria-disabled="true"])') ?? null;
+    (panelRef.current ?? rootRef.current)?.querySelector<HTMLElement>('[data-menu-row]:not([data-add-back]):not(:disabled):not([aria-disabled="true"])') ?? null;
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Keys an IME is using (Enter commits a candidate, Escape cancels it,
@@ -1319,13 +1360,16 @@ export function AddMenu({
     const target = event.target as HTMLElement;
     const inSearch = target.dataset['addSearch'] !== undefined;
     if (event.key === 'Escape') {
+      if (handledPopoverKeyEvents.has(event.nativeEvent)) return;
       if (inSearch && query !== '') {
+        handledPopoverKeyEvents.add(event.nativeEvent);
         event.preventDefault();
         event.stopPropagation();
         setQuery('');
         return;
       }
       if (view !== 'root' && drilledRef.current) {
+        handledPopoverKeyEvents.add(event.nativeEvent);
         event.preventDefault();
         event.stopPropagation();
         back();
@@ -1360,7 +1404,7 @@ export function AddMenu({
         return;
       }
       // Typing on a row goes to the view's search field.
-      const search = rootRef.current?.querySelector<HTMLInputElement>('[data-add-search]');
+      const search = (panelRef.current ?? rootRef.current)?.querySelector<HTMLInputElement>('[data-add-search]');
       if (search !== null && search !== undefined && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
         search.focus();
       }
@@ -1603,34 +1647,6 @@ export function AddMenu({
               ssh.count > 0 ? <span className="text-[12px] text-ink-faint tabular-nums">{ssh.count}</span> : undefined, { 'data-add-menu-ssh': '' })
           : null}
       </div>
-      {extensions !== undefined && extensions.items.length > 0 ? (
-        <div role="group" aria-label={locale === 'zh' ? '工作台与扩展' : 'Extensions'} data-add-menu-extensions className="mt-1 border-t border-hairline pt-1">
-          <GroupLabel>{locale === 'zh' ? '工作台与扩展' : 'Extensions'}</GroupLabel>
-          {extensions.items.map((item) => {
-            const isBusy = extensions.busyKey === item.key;
-            return (
-              <button
-                key={item.key}
-                type="button"
-                role="menuitem"
-                data-menu-row
-                data-add-extension={item.key}
-                data-plugin-composer-slot={item.key}
-                disabled={extensions.disabled || isBusy}
-                title={item.tooltip ?? item.label}
-                onClick={() => { close(); item.onTrigger(); }}
-                className={MENU_ROW_CLASS}
-              >
-                {isBusy ? <Spinner label={item.label} /> : <Icon name={item.iconName} size={14} className="shrink-0 text-ink-soft" />}
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                {item.badgeText !== undefined && item.badgeText !== '' ? (
-                  <span className="shrink-0 font-mono text-[11px] text-ink-faint tabular-nums">{item.badgeText}</span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
       {runMode !== undefined || permission !== undefined || onRebuild !== undefined || timing !== undefined ? (
         <div role="group" aria-label={t('composer.addMenu.sessionGroup')} className="mt-1 border-t border-hairline pt-1">
           <GroupLabel>{t('composer.addMenu.sessionGroup')}</GroupLabel>
@@ -1638,21 +1654,6 @@ export function AddMenu({
             ? drillRow('permission', <Icon name="lock" size={14} className="shrink-0 text-ink-soft" />, t('composer.permAria'),
                 <span className="text-[12px] text-ink-faint">{t((permissionModeDef(permission.value) ?? PERMISSION_MODES[0]!).labelKey)}</span>,
                 { 'data-add-menu-permission': '' })
-            : null}
-          {plugins !== undefined
-            ? drillRow('plugins', <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.plugins'),
-                enabledPluginCount > 0
-                  ? <span className="text-[12px] text-ink-faint tabular-nums">{enabledPluginCount}</span>
-                  : undefined, { 'data-add-menu-plugins': '' })
-            : null}
-          {optional !== undefined
-            ? drillRow('optional', <MenuIcon d="M2.5 3.5h7M2.5 6h7M2.5 8.5h4" />, t('composer.addMenu.optional'), undefined, { 'data-add-menu-optional': '' })
-            : null}
-          {mcp !== undefined
-            ? drillRow('mcp', <McpIcon />, t('composer.addMenu.mcp'),
-                heldMcpCount > 0
-                  ? <span className="text-[12px] text-ink-faint tabular-nums">{heldMcpCount}</span>
-                  : undefined, { 'data-add-menu-mcp': '' })
             : null}
           {runMode !== undefined
             ? drillRow('mode', <MenuIcon d="M2.5 4h7M2.5 8h7M4.5 2.5v3M7.5 6.5v3" />, t('composer.addMenu.mode'),
@@ -1857,28 +1858,80 @@ export function AddMenu({
         </svg>
       </button>
       {open ? (
-        <div
-          data-add-panel={resolvedView}
-          role={resolvedView === 'mode' ? 'dialog' : 'menu'}
-          aria-label={
-            resolvedView === 'ssh' ? t('composer.ssh.heading')
-              : resolvedView === 'mode' ? t('composer.runModeHeading')
-              : resolvedView === 'timing' ? t('composer.sendTimingAria')
-              : resolvedView === 'skills' ? t('composer.addMenu.skills')
-              : resolvedView === 'plugins' ? t('composer.addMenu.plugins')
-              : resolvedView === 'optional' ? t('composer.addMenu.optional')
-              : resolvedView === 'mcp' ? t('composer.addMenu.mcp')
-              : resolvedView === 'mention' ? t('composer.addMenu.mention')
-              : resolvedView === 'permission' ? t('composer.permAria')
-              : t('composer.addMenuAria')
-          }
-          // Bounded by the room above the card (`--cp-max-h`) and laid out as
-          // a column: the header, search field and the note keep their height
-          // and the list takes what is left and scrolls. Without the flex
-          // column a tall list pushes the note past the cap, where it paints
-          // over the last row instead of the list shrinking under it.
-          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              const raw = eventDetails.event;
+              const nativeEvent = raw instanceof Event
+                ? raw
+                : (typeof raw === 'object' && raw !== null && 'nativeEvent' in raw && (raw as { nativeEvent: unknown }).nativeEvent instanceof Event
+                    ? (raw as { nativeEvent: Event }).nativeEvent
+                    : null);
+              if (nativeEvent !== null && handledPopoverKeyEvents.has(nativeEvent)) {
+                eventDetails.cancel();
+                return;
+              }
+              if (hasOpenOwnedFloatingPortal('composer-add')) {
+                eventDetails.cancel();
+                return;
+              }
+              if (query !== '' && document.activeElement instanceof HTMLElement && document.activeElement.dataset['addSearch'] !== undefined) {
+                if (nativeEvent !== null) handledPopoverKeyEvents.add(nativeEvent);
+                eventDetails.cancel();
+                setQuery('');
+                return;
+              }
+              if (view !== 'root' && drilledRef.current) {
+                if (nativeEvent !== null) handledPopoverKeyEvents.add(nativeEvent);
+                eventDetails.cancel();
+                back();
+                return;
+              }
+              if (nativeEvent !== null) handledPopoverKeyEvents.add(nativeEvent);
+              close(true);
+              return;
+            }
+            eventDetails.cancel();
+          }}
         >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="top"
+              align="start"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={attachAddPanelRef}
+                data-add-panel={resolvedView}
+                role={resolvedView === 'mode' ? 'dialog' : 'menu'}
+                aria-label={
+                  resolvedView === 'ssh' ? t('composer.ssh.heading')
+                    : resolvedView === 'mode' ? t('composer.runModeHeading')
+                    : resolvedView === 'timing' ? t('composer.sendTimingAria')
+                    : resolvedView === 'skills' ? t('composer.addMenu.skills')
+                    : resolvedView === 'plugins' ? t('composer.addMenu.plugins')
+                    : resolvedView === 'optional' ? t('composer.addMenu.optional')
+                    : resolvedView === 'mcp' ? t('composer.addMenu.mcp')
+                    : resolvedView === 'mention' ? t('composer.addMenu.mention')
+                    : resolvedView === 'permission' ? t('composer.permAria')
+                    : t('composer.addMenuAria')
+                }
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'composer-add',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                }}
+                className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
           {resolvedView === 'root' ? (
             <>
               {searchable ? searchField(t('composer.addMenu.search')) : null}
@@ -1950,25 +2003,12 @@ export function AddMenu({
               </div>
             </div>
           ) : null}
-        </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
-  );
-}
-
-/**
- * The MCP capability's own glyph (`CapabilityIcon`'s `mcp` mark: two plugs
- * meeting), drawn bare for the menu's drill row — the rows in this menu carry a
- * glyph, not a tile, and a second drawing of the same idea would be a second
- * thing to keep.
- */
-function McpIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
-      <path d="M5.5 10.5 3 13M10.5 5.5 13 3" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
-      <path d="m6.8 4.6 4.6 4.6-1.6 1.6a2.3 2.3 0 0 1-3.2 0L5.2 9.4a2.3 2.3 0 0 1 0-3.2z" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="m8.2 6 1.4-1.4M10 7.8l1.4-1.4" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -2046,18 +2086,23 @@ export function PermissionSelect({
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const current = permissionModeDef(value) ?? PERMISSION_MODES[0]!;
   const danger = current.tone === 'danger';
   const close = (refocus = false) => {
     onOpenChange(false);
     if (refocus) triggerRef.current?.focus();
   };
-  const onKeyDown = usePopover(open, close, rootRef, 'composer-mode');
-  useComposerPanelAnchor(rootRef, open);
+  const onKeyDown = usePopover(open, close, rootRef, 'composer-mode', panelRef);
+
+  const attachPermissionPanelRef = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    node?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
+  }, []);
 
   useEffect(() => {
     if (!open) return;
-    rootRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
+    panelRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
   }, [open]);
 
   return (
@@ -2084,38 +2129,74 @@ export function PermissionSelect({
         <span className="min-w-0 truncate @max-[28rem]/toolbar:sr-only">{t(current.labelKey)}</span>
       </button>
       {open ? (
-        <div data-permission-panel className={`anim-enter ${COMPOSER_PANEL_END} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-72 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}>
-          <p className={`shrink-0 ${POPOVER_LABEL_CLASS}`}>{t('composer.permAria')}</p>
-          <div role="listbox" aria-label={t('composer.permAria')} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {PERMISSION_MODES.map((mode) => {
-              const isCurrent = mode.id === value;
-              return (
-                <button
-                  key={mode.id}
-                  type="button"
-                  role="option"
-                  data-menu-row
-                  data-mode-row
-                  data-permission-mode={mode.id}
-                  aria-selected={isCurrent}
-                  onClick={() => {
-                    onChange(mode.id);
-                    close(true);
-                  }}
-                  className={`${MENU_ROW_CLASS} items-start ${isCurrent ? MENU_ROW_SELECTED_CLASS : ''}`}
-                >
-                  <Check on={isCurrent} />
-                  <span className="min-w-0 flex-1">
-                    <span className={`block font-medium ${mode.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>
-                      {t(mode.labelKey)}
-                    </span>
-                    <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(mode.hintKey)}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              close(true);
+              return;
+            }
+            eventDetails.cancel();
+          }}
+        >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="top"
+              align="end"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={attachPermissionPanelRef}
+                data-permission-panel
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'composer-mode',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                }}
+                className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-72 flex-col overflow-hidden p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
+                <p className={`shrink-0 ${POPOVER_LABEL_CLASS}`}>{t('composer.permAria')}</p>
+                <div role="listbox" aria-label={t('composer.permAria')} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                  {PERMISSION_MODES.map((mode) => {
+                    const isCurrent = mode.id === value;
+                    return (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        role="option"
+                        data-menu-row
+                        data-mode-row
+                        data-permission-mode={mode.id}
+                        aria-selected={isCurrent}
+                        onClick={() => {
+                          onChange(mode.id);
+                          close(true);
+                        }}
+                        className={`${MENU_ROW_CLASS} items-start ${isCurrent ? MENU_ROW_SELECTED_CLASS : ''}`}
+                      >
+                        <Check on={isCurrent} />
+                        <span className="min-w-0 flex-1">
+                          <span className={`block font-medium ${mode.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>
+                            {t(mode.labelKey)}
+                          </span>
+                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(mode.hintKey)}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
   );

@@ -7,14 +7,24 @@
  */
 
 import { memo, useEffect, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import type { SessionSeedMode } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { useCoarsePointer } from '../../lib/layoutHooks';
 import { isImeKeyEvent } from '../../lib/shortcuts';
-import { registerOverlay } from '../../lib/uiBusy';
+import {
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  owningModalId,
+  registerOverlay,
+  resolveFloatingOwners,
+} from '../../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { Icon } from '../icons';
 import { ActionSheet } from '../overlays/ActionSheet';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import type { ForkOriginSummary, TimelineOffshootItem } from './forkLineageModel';
 
 const SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'compact', 'fresh'];
@@ -53,6 +63,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
   const [branchTask, setBranchTask] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const branchInputRef = useRef<HTMLInputElement>(null);
   const handledSeqRef = useRef(0);
 
@@ -81,7 +92,10 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
       }
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || !containerRef.current?.contains(event.target)) {
+      if (
+        !(event.target instanceof Node)
+        || (!containerRef.current?.contains(event.target) && !panelRef.current?.contains(event.target))
+      ) {
         setOpen(false);
       }
     };
@@ -144,12 +158,43 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
       </button>
 
       {open && !coarse ? (
-        <div
-          role="dialog"
-          aria-label={t('fork.headerButtonAria')}
-          data-header-fork-popover
-          className="anim-pop absolute top-full right-0 z-40 mt-1.5 w-72 rounded-xl border border-hairline bg-paper p-2 shadow-[var(--shadow-popover)]"
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              setOpen(false);
+              triggerRef.current?.focus();
+              return;
+            }
+            eventDetails.cancel();
+          }}
         >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="end"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={panelRef}
+                role="dialog"
+                aria-label={t('fork.headerButtonAria')}
+                data-header-fork-popover
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'header-fork-popover',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                }}
+                className={`anim-enter w-72 max-h-[min(var(--available-height,calc(100dvh-24px)),calc(100dvh-24px))] overflow-y-auto overscroll-contain p-2 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
           {hasLineage ? (
             <div className="mb-2 border-b border-hairline pb-2">
               <div className="px-2 pb-1 text-[11px] font-medium tracking-wide text-ink-faint">
@@ -207,7 +252,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
               <div className="mb-1 px-1 text-[11px] font-medium text-ink-faint">
                 {t('transcript.branch.seedLabel')}
               </div>
-              <div className="grid grid-cols-3 gap-0.5 rounded-lg bg-surface p-0.5">
+              <div className="grid grid-cols-3 gap-0.5 rounded-lg bg-canvas/70 p-0.5">
                 {SEED_MODES.map((mode) => {
                   const selected = seed === mode;
                   return (
@@ -251,7 +296,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
             ) : null}
 
             {canBranch ? (
-              <div className="rounded-lg border border-hairline bg-surface/45 p-1.5">
+              <div className="rounded-lg border border-hairline bg-canvas/45 p-1.5">
                 <input
                   ref={branchInputRef}
                   type="text"
@@ -316,7 +361,10 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
               </button>
             ) : null}
           </div>
-        </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
 
       {coarse && open ? (

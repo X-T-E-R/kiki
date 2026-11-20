@@ -711,7 +711,7 @@ function ModelDraftRow({
                 searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
                 emptyText={t('st.providers.catalogEmpty')}
                 buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
-                panelClassName="anim-enter absolute left-0 top-full z-40 mt-1 w-[min(30rem,calc(100vw-48px))] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                panelClassName="w-[min(30rem,calc(100vw-48px))] max-h-[min(var(--available-height,360px),360px)]"
               />
               {selectedIsSuggestion ? (
                 <p data-model-suggestion className="text-[11px] font-medium text-accent-ink">

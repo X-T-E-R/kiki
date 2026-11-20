@@ -35,7 +35,6 @@ import { mapExecutorCapabilities, type ExecutorCapabilityPresentation } from '..
 import { useElapsedSince } from '../RelativeTime';
 import { useOptionalConnection } from '../../state/connection';
 import {
-  COMPOSER_PANEL_START,
   MENU_ROW_CLASS,
   MENU_ROW_SELECTED_CLASS,
   STATUS_SEGMENT_CLASS,
@@ -44,7 +43,7 @@ import {
   useComposerPanelAnchor,
 } from '../ComposerControls';
 import { ModelPicker } from '../ModelPicker';
-import { POPOVER_SURFACE_CLASS, type SearchableSelectOption } from '../SearchableSelect';
+import { type SearchableSelectOption } from '../SearchableSelect';
 import { SelectRowCheck } from '../select/selectPrimitives';
 import { useProviderGroupLabel } from '../modelSelectOptions';
 import { Icon } from '../icons';
@@ -547,7 +546,7 @@ export function ExecutionSelect({
         </div>
       ) : null}
       {supportsEffort && displayEfforts.length > 0 ? (
-        <div className="shrink-0 border-t border-hairline bg-surface/50 px-3 py-2.5">
+        <div className="shrink-0 border-t border-hairline bg-canvas/50 px-3 py-2.5">
           <p className="mb-1 text-[11.5px] font-medium text-ink-faint">
             {t('composer.execution.effortHeading')}
           </p>
@@ -619,7 +618,7 @@ export function ExecutionSelect({
         panelData={{ 'data-execution-panel': '' }}
         triggerIcon={(
           <Icon
-            name={isExternalClient ? 'external' : isNative ? 'agent' : 'terminal'}
+            name={isExternalClient ? 'external' : isNative ? 'cpu' : 'terminal'}
             size={14}
             className={`shrink-0 ${STATUS_SEGMENT_ICON_CLASS}`}
           />
@@ -632,7 +631,7 @@ export function ExecutionSelect({
           </span>
         ) : undefined}
         buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-[min(16rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
-        panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,28rem),28rem,calc(100dvh-120px))] w-[min(340px,calc(100vw-2rem))] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:flex-1 [&>[role=listbox]]:shrink`}
+        panelClassName="composer-floating-panel max-h-[min(var(--available-height,28rem),28rem,calc(100dvh-120px))] w-[min(340px,calc(100vw-2rem))] [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:flex-1 [&>[role=listbox]]:shrink"
         panelHeader={panelHeader}
         panelFooter={panelFooter}
         onChange={(next) => {

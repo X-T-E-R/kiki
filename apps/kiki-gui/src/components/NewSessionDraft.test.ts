@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { sessionCreateSchema, ErrorCode, type SessionCreate } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { ApiError, type NamedAgentProfile } from '../lib/client';
 import { Composer, buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import {
@@ -137,7 +138,7 @@ async function renderDraft(
 ): Promise<QueryClient> {
   const container = document.createElement('div');
   document.body.append(container);
-  containers.push(container);
+  containers.push(withPortalQueries(container));
   const root = createRoot(container);
   roots.push(root);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

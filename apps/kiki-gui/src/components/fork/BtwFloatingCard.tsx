@@ -139,7 +139,7 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
     <section
       data-btw-floating-card={agentId}
       aria-label={t('btw.tabTitle')}
-      className="anim-enter mx-auto mb-2 w-full max-w-[46rem] rounded-xl border border-hairline-strong bg-paper shadow-[var(--shadow-popover)]"
+      className="anim-enter mx-auto mb-2 w-full max-w-[46rem] rounded-xl border border-hairline-strong bg-paper shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_12px_32px_-12px_rgb(var(--kiki-shadow-ink)/0.28)]"
     >
       <div className="flex items-center gap-2 border-b border-hairline px-3 py-1.5">
         <Icon name="ask" size={14} className="shrink-0 text-ink-faint" />
@@ -182,7 +182,7 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
           {rows.map((row) =>
             row.role === 'user' ? (
               <div key={row.id} className="flex justify-end">
-                <span className="max-w-[85%] rounded-2xl bg-surface px-3 py-1 text-[12.5px] text-ink">
+                <span className="max-w-[85%] rounded-2xl bg-panel px-3 py-1 text-[12.5px] text-ink">
                   {row.text}
                 </span>
               </div>

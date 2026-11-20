@@ -12,13 +12,13 @@
  * more than the row it belongs to.
  */
 
-import { useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useMemo } from 'react';
+import { Tooltip } from '@base-ui/react/tooltip';
 
 import { floatingSurfaceZIndex } from '../../lib/uiBusy';
 
 import { useI18n } from '../../i18n';
-import { placeAnchored } from '../overlays/anchoredPosition';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { toolGroupCountLine } from './toolGroupText';
 import { toolGroupPreview, type ToolGroup } from './toolGroups';
 
@@ -44,38 +44,13 @@ export function GroupPreviewCard({
   readonly anchor: GroupPreviewAnchor;
 }) {
   const { t } = useI18n();
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const { counts } = group;
   const preview = toolGroupPreview(group);
   const width = Math.min(MAX_WIDTH, Math.max(200, anchor.clusterWidth));
-
-  // The card is placed from its measured size, so it waits one frame before
-  // it knows which side of the chip it can afford to sit on.
-  useLayoutEffect(() => {
-    const card = cardRef.current;
-    if (card === null) return undefined;
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver((entries) => {
-      const box = entries[0]?.contentRect;
-      if (box === undefined) return;
-      setSize((current) =>
-        current?.width === box.width && current.height === box.height
-          ? current
-          : { width: box.width, height: box.height });
-    });
-    observer.observe(card);
-    return () => { observer.disconnect(); };
-  }, []);
-
-  // The shared anchored placement: below the chip while it fits, flipped when
-  // the viewport is tighter, clamped inside the window — one rule for every
-  // floating surface in the app.
-  const place = (): { left: number; top: number } => {
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
-    const placed = placeAnchored(anchor.rect, { width, height: size?.height ?? 0 }, viewport, { gap: 6 });
-    return { left: placed.left, top: placed.top };
-  };
+  const virtualAnchor = useMemo(
+    () => ({ getBoundingClientRect: () => anchor.rect }),
+    [anchor.rect],
+  );
 
   const names = (list: readonly string[], label: string, more: number) => (
     <span className="flex min-w-0 items-baseline gap-1.5">
@@ -106,28 +81,42 @@ export function GroupPreviewCard({
     lines.push(names(preview.offNames, t('inspector.cap.stateOff'), counts.disabled - preview.offNames.length));
   }
 
-  return createPortal(
-    <div
-      ref={cardRef}
-      id={id}
-      role="tooltip"
-      data-capability-group-preview={group.key}
-      style={{ ...place(), width, zIndex: floatingSurfaceZIndex(null) }}
-      // The card is information, not a control: it is wider than the chip and
-      // lands over its neighbours, so it must never take a click that was
-      // aimed at the cluster underneath. Entering it still cancels the
-      // close timer so a reader who moves toward it keeps it open.
-      className="anim-enter pointer-events-none fixed space-y-0.5 rounded-lg border border-hairline bg-panel px-2.5 py-2 text-[11.5px] leading-4 text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-    >
-      {lines.map((line, index) => (
-        <p key={index} className="flex min-w-0 items-baseline gap-1.5">
-          {line}
-          {index === lines.length - 1 ? (
-            <span className="ml-auto shrink-0 text-ink-faint">{t('inspector.cap.previewHint')}</span>
-          ) : null}
-        </p>
-      ))}
-    </div>,
-    document.body,
+  return (
+    <Tooltip.Provider>
+      <Tooltip.Root open>
+        <Tooltip.Portal>
+          <Tooltip.Positioner
+            anchor={virtualAnchor}
+            side="bottom"
+            align="start"
+            sideOffset={6}
+            collisionPadding={8}
+            positionMethod="fixed"
+            className="pointer-events-none"
+            style={{ zIndex: floatingSurfaceZIndex(null) }}
+          >
+            <Tooltip.Popup
+              id={id}
+              role="tooltip"
+              data-capability-group-preview={group.key}
+              style={{ width }}
+              // The card is information, not a control: it is wider than the chip and
+              // lands over its neighbours, so it must never take a click that was
+              // aimed at the cluster underneath.
+              className={`anim-enter pointer-events-none space-y-0.5 px-2.5 py-2 text-[11.5px] leading-4 text-ink outline-none ${POPOVER_SURFACE_CLASS}`}
+            >
+              {lines.map((line, index) => (
+                <p key={index} className="flex min-w-0 items-baseline gap-1.5">
+                  {line}
+                  {index === lines.length - 1 ? (
+                    <span className="ml-auto shrink-0 text-ink-faint">{t('inspector.cap.previewHint')}</span>
+                  ) : null}
+                </p>
+              ))}
+            </Tooltip.Popup>
+          </Tooltip.Positioner>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
   );
 }

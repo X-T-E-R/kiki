@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { AgentCapabilitiesResponse } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import type { KikiClient } from '../lib/client';
 import { applyCompactionProgress, COMPACTION_RECHECK_MS, reconcileCompactionProgress, seedCompactionProgress, useCompactionProgress, type CompactionProgress, type CompactionProgressEvent } from './useCompactionProgress';
 import {
@@ -133,10 +134,11 @@ describe('canonical current-agent cumulative usage', () => {
       });
       return pending.promise;
     });
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const queryClient = new QueryClient();
     await act(async () => {
       root.render(
@@ -200,10 +202,11 @@ describe('canonical current-agent cumulative usage', () => {
       signals.push(options.signal);
       return id === 'session_a' ? first.promise : second.promise;
     });
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const usage = {
       input_tokens: 0,
       output_tokens: 0,
@@ -271,10 +274,11 @@ describe('canonical current-agent cumulative usage', () => {
       cost_usd_estimated: 0.01,
       cost_unknown: false,
     });
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     await act(async () => {
       root.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} sessionId="session_a" /></MemoryRouter></I18nProvider>);
     });
@@ -307,10 +311,11 @@ describe('canonical current-agent cumulative usage', () => {
       .mockResolvedValueOnce(accounting)
       .mockResolvedValue({ ...accounting, complete: true, freshness: 'current', tokens_unknown: true });
     try {
-      const container = document.createElement('div');
-      document.body.append(container);
-      containers.push(container);
-      root = createRoot(container);
+      const rawContainer = document.createElement('div');
+      document.body.append(rawContainer);
+      containers.push(rawContainer);
+      root = createRoot(rawContainer);
+      const container = withPortalQueries(rawContainer);
       await act(async () => { root!.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} usageScope="session" sessionId="session_a" /></MemoryRouter></I18nProvider>); });
       expect(canonicalMocks.read).not.toHaveBeenCalled();
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
@@ -344,10 +349,11 @@ describe('canonical current-agent cumulative usage', () => {
     };
     canonicalMocks.read.mockImplementation((sessionId: string) => Promise.resolve({ ...accounting, subject: { session_id: sessionId, scope: 'session' } }));
     try {
-      const container = document.createElement('div');
-      document.body.append(container);
-      containers.push(container);
-      root = createRoot(container);
+      const rawContainer = document.createElement('div');
+      document.body.append(rawContainer);
+      containers.push(rawContainer);
+      root = createRoot(rawContainer);
+      const container = withPortalQueries(rawContainer);
       await act(async () => { root!.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} usageScope="session" sessionId="session_a" /></MemoryRouter></I18nProvider>); });
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
       await act(async () => { await vi.advanceTimersByTimeAsync(250); });
@@ -385,10 +391,11 @@ describe('canonical current-agent cumulative usage', () => {
       client: { getSession: canonicalMocks.read },
       klient: { global: { agentPanel: { read: agentRead } } },
     };
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const queryClient = new QueryClient();
     await act(async () => {
       root.render(
@@ -449,10 +456,11 @@ describe('canonical current-agent cumulative usage', () => {
         });
         return live.promise;
       });
-      const container = document.createElement('div');
-      document.body.append(container);
-      containers.push(container);
-      root = createRoot(container);
+      const rawContainer = document.createElement('div');
+      document.body.append(rawContainer);
+      containers.push(rawContainer);
+      root = createRoot(rawContainer);
+      const container = withPortalQueries(rawContainer);
       const queryClient = new QueryClient();
       await act(async () => {
         root!.render(
@@ -531,10 +539,11 @@ describe('canonical current-agent cumulative usage', () => {
           totalTokens: null, totalCostUsd: null, usageComplete: false, usagePartial: true, costPartial: true,
         }))
         .mockResolvedValue(canonicalResponse('child_7', updated));
-      const container = document.createElement('div');
-      document.body.append(container);
-      containers.push(container);
-      root = createRoot(container);
+      const rawContainer = document.createElement('div');
+      document.body.append(rawContainer);
+      containers.push(rawContainer);
+      root = createRoot(rawContainer);
+      const container = withPortalQueries(rawContainer);
       const queryClient = new QueryClient();
       await act(async () => {
         root!.render(
@@ -584,10 +593,11 @@ describe('canonical current-agent cumulative usage', () => {
       signal = options.signal;
       return pending.promise;
     });
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const queryClient = new QueryClient();
     await act(async () => {
       root.render(
@@ -628,10 +638,11 @@ describe('canonical current-agent cumulative usage', () => {
       klient: { global: { agentPanel: { read: canonicalMocks.read } } },
     };
     canonicalMocks.read.mockReturnValue(pending.promise);
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const queryClient = new QueryClient();
     await act(async () => {
       root.render(
@@ -677,10 +688,11 @@ describe('ContextMeter interaction', () => {
     { used: 76_200, effectiveLimit: undefined, expected: '15% · 76.2k' },
     { used: 76_200, effectiveLimit: 300_000, expected: '25% · 76.2k' },
   ])('shows current used tokens next to the detail header percentage: $expected', async ({ used, effectiveLimit, expected }) => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const autoCompact = effectiveLimit === undefined ? undefined : {
       status: { tokens: 250_000, source: 'legacy' as const, effectiveMaxContextTokens: effectiveLimit, reservedContextTokens: 50_000 },
       running: false,
@@ -714,10 +726,11 @@ describe('ContextMeter interaction', () => {
 
   it('opens details without compacting, then compacts only from the panel action', async () => {
     const onCompact = vi.fn();
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -748,10 +761,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('renders the ring with a level data attribute and warns amber at exactly 50%', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -768,10 +782,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('renders danger red above 80%', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -788,10 +803,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('can open details below when embedded in a top header', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -804,15 +820,16 @@ describe('ContextMeter interaction', () => {
       container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
     });
 
-    expect(container.querySelector('[data-context-details]')?.className).toContain('top-full');
+    expect(container.querySelector('[data-context-details]')?.getAttribute('data-side')).toBe('bottom');
     await act(async () => { root.unmount(); });
   });
 
   it('closes the detail card on an outside pointer and on Escape from anywhere', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     await act(async () => {
       root.render(<I18nProvider><ContextMeter used={8_000} limit={32_000} /></I18nProvider>);
     });
@@ -842,10 +859,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('shows the lifetime session usage and cost in the detail card', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -883,10 +901,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('never shows placeholder zeros when the usage read failed', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -915,10 +934,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('keeps the numbers and marks them incomplete when one agent’s usage was skipped', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -949,10 +969,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('titles agent-scoped usage as the agent and hides the unpriced cost row', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -988,10 +1009,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('links to the prefetched session view on /usage when sessionId is set', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -1027,10 +1049,11 @@ describe('ContextMeter interaction', () => {
   });
 
   it('renders the estimated system/tools/messages breakdown from context', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
 
     await act(async () => {
       root.render(
@@ -1257,10 +1280,11 @@ describe('manual compaction progress', () => {
   });
 
   it('shows queue, execution, completion and real failure without disabling an unrelated active turn', async () => {
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     const onCompact = vi.fn();
     const draw = async (compaction?: CompactionProgress) => {
       await act(async () => { root.render(<I18nProvider><ContextBreakdownProvider value={undefined} compaction={compaction}><ContextMeter used={80_000} limit={100_000} onCompact={onCompact} /></ContextBreakdownProvider></I18nProvider>); });
@@ -1298,10 +1322,11 @@ describe('manual compaction progress', () => {
         },
       },
     };
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
+    const rawContainer = document.createElement('div');
+    document.body.append(rawContainer);
+    containers.push(rawContainer);
+    const root = createRoot(rawContainer);
+    const container = withPortalQueries(rawContainer);
     try {
       await act(async () => {
         root.render(

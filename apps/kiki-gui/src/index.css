@@ -103,8 +103,8 @@
    * stacks keep the Latin identity and land Chinese on deliberate Song-style
    * serif (display) and system sans (body/mono) faces. */
   --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
-  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
+  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', monospace;
   /* Mono text is copied and typed back: JetBrains Mono's contextual
    * alternates fuse `--`, `->`, `!=` into one glyph (`--short` read as
    * `—short`), so mono shows every character as typed. Tailwind feeds this to
@@ -179,6 +179,10 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+#root {
+  isolation: isolate;
 }
 
 /* The app is one fixed frame of inner scrollers; the document itself never
@@ -289,13 +293,23 @@ body {
 }
 
 /* ---- scrollbars: thin warm neutral ---- */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-scrollbar) transparent;
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar) transparent;
+  }
 }
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
+}
+::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-scrollbar);
@@ -2126,6 +2140,7 @@ input[data-add-search]:focus-visible {
  * activity-row bleed, so its hover wash and right edge match its neighbours. */
 .thinking-row[data-streaming='true'] {
   overflow: hidden;
+  contain: layout style paint;
 }
 /* The band is a 300px gradient at the start of a full-width layer, and the
  * layer is what moves. Sliding it with `transform` keeps the sweep on the
@@ -2137,6 +2152,7 @@ input[data-add-search]:focus-visible {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  will-change: transform;
   background: linear-gradient(
     90deg,
     transparent 0%,
@@ -2144,6 +2160,10 @@ input[data-add-search]:focus-visible {
     transparent 100%
   ) no-repeat 0 0 / 300px 100%;
   animation: kiki-thinking-sweep 2.6s ease-out infinite;
+}
+:root[data-kiki-doc-hidden='true'] .thinking-row[data-streaming='true']::after,
+:is([hidden], details:not([open]) > :not(summary)) .thinking-row[data-streaming='true']::after {
+  animation-play-state: paused;
 }
 @keyframes kiki-thinking-sweep {
   0% {

@@ -1020,6 +1020,94 @@ function checkWorkspaceSyncAndHygiene(root, boundaries, inventory, errors) {
   }
 }
 
+const GUI_RUNTIME_CSS_VAR_PREFIXES = [
+  '--available-',
+  '--anchor-',
+  '--transform-origin',
+  '--shiki-',
+  '--cp-',
+  '--kiki-',
+  '--tw-',
+];
+
+const GUI_ALLOWED_PORTAL_FILES = new Set([
+  'apps/kiki-gui/src/components/agent-workspace/AgentWorkspace.tsx',
+  'apps/kiki-gui/src/components/mediaPreview.tsx',
+  'apps/kiki-gui/src/components/NewSessionPage.tsx',
+  'apps/kiki-gui/src/components/SessionView.tsx',
+  'apps/kiki-gui/src/components/WorkPage.tsx',
+  'apps/kiki-gui/src/components/overlays/ActionSheet.tsx',
+]);
+
+function checkGuiCssAndOverlayRatchet(root, inventory, errors) {
+  const guiFiles = inventory.allFiles.filter(
+    (rel) => rel.startsWith('apps/kiki-gui/src/') && /\.(?:css|ts|tsx)$/.test(rel) && !/\.test\.(?:ts|tsx)$/.test(rel),
+  );
+  if (guiFiles.length === 0) return;
+
+  const definedVars = new Set();
+  const parsedFiles = [];
+  for (const rel of guiFiles) {
+    const abs = join(root, rel);
+    if (!existsSync(abs)) continue;
+    const raw = readFileSync(abs, 'utf8');
+    parsedFiles.push({ rel, raw });
+    if (rel.endsWith('.css')) {
+      for (const m of raw.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)) definedVars.add(m[1]);
+    } else {
+      for (const m of raw.matchAll(/['"](--[a-zA-Z0-9-]+)['"]\s*:/g)) definedVars.add(m[1]);
+      for (const m of raw.matchAll(/\[(--[a-zA-Z0-9-]+):/g)) definedVars.add(m[1]);
+      for (const m of raw.matchAll(/setProperty\(\s*['"](--[a-zA-Z0-9-]+)['"]/g)) definedVars.add(m[1]);
+    }
+  }
+
+  for (const { rel, raw } of parsedFiles) {
+    const lines = raw.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line || /^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;
+      for (const m of line.matchAll(/var\(\s*(--[a-zA-Z0-9-]+)/g)) {
+        const name = m[1];
+        if (definedVars.has(name)) continue;
+        if (GUI_RUNTIME_CSS_VAR_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+        addViolation(
+          errors,
+          'gui-css-token-ratchet',
+          rel,
+          i + 1,
+          `Undefined CSS custom property "${name}" referenced via var(${name})`,
+          `Define "${name}" in apps/kiki-gui/src/index.css or replace it with an existing theme token`,
+        );
+      }
+      if (!rel.endsWith('.css')) {
+        if (/(?:className|CLASS|SURFACE|PILL|CHIP|PANEL)\b/.test(line) || !/(?:id|htmlFor)\s*=/.test(line)) {
+          const deadMatch = line.match(/(?:^|[\s`'"{(])(bg-(?:surface|hover)(?:\/\d+)?)(?=$|[\s`'"})])/);
+          if (deadMatch && !/(?:id|htmlFor)\s*=\s*['"]bg-surface/.test(line)) {
+            addViolation(
+              errors,
+              'gui-css-token-ratchet',
+              rel,
+              i + 1,
+              `Dead Tailwind utility "${deadMatch[1]}" has no matching theme token`,
+              `Replace "${deadMatch[1]}" with an active surface token (bg-canvas, bg-paper, bg-panel, or bg-ink/[0.05])`,
+            );
+          }
+        }
+        if (/\bcreatePortal\s*\(/.test(line) && !GUI_ALLOWED_PORTAL_FILES.has(rel)) {
+          addViolation(
+            errors,
+            'gui-floating-portal-ratchet',
+            rel,
+            i + 1,
+            `Raw createPortal() in "${rel}" bypasses @base-ui/react floating primitives`,
+            `Migrate this floating surface to @base-ui/react Popover/Dialog/Menu Portal or register a layout slot explicitly`,
+          );
+        }
+      }
+    }
+  }
+}
+
 export function formatViolation(error) {
   return `[${error.rule}] ${error.file}:${error.line} — ${error.message}. Fix: ${error.fix}.`;
 }
@@ -1044,6 +1132,9 @@ export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
   checkDocWordBudgets(repoRoot, budgets, inventory, errors);
   await checkPkgBoundaryGraph(repoRoot, boundaries, inventory, errors);
   checkWorkspaceSyncAndHygiene(repoRoot, boundaries, inventory, errors);
+  if (options.boundaries === undefined && options.trackedFiles === undefined) {
+    checkGuiCssAndOverlayRatchet(repoRoot, inventory, errors);
+  }
   if (
     options.boundaries === undefined &&
     options.trackedFiles === undefined &&

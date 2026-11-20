@@ -202,7 +202,7 @@ export function DiscoveryTourTag() {
               width: anchorRect.width + 12,
               height: anchorRect.height + 12,
             }}
-            className="rounded-[var(--radius-card)] ring-2 ring-accent shadow-[0_0_0_9999px_rgba(0,0,0,0.28)] transition-all duration-200 animate-pulse"
+            className="rounded-xl ring-2 ring-accent shadow-[0_0_0_9999px_rgba(0,0,0,0.28)] transition-all duration-200 animate-pulse"
           />
         </div>
       ) : null}

@@ -19,13 +19,17 @@ import { agentProfileCatalogQueryKey, type AgentProfileCatalogMode } from '../..
 import { resolveProfileIcon } from '../../lib/profileIcon';
 import { isImeKeyEvent } from '../../lib/shortcuts';
 import {
+  COMPOSER_FLOATING_GROUP,
   FLOATING_OWNER_ATTRIBUTE,
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
+  notifyFloatingGroupOpen,
   owningModalId,
   registerOverlay,
   resolveFloatingOwners,
+  subscribeFloatingGroup,
 } from '../../lib/uiBusy';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { useConnection } from '../../state/connection';
 import {
   MENU_ROW_CLASS,
@@ -381,7 +385,7 @@ export function ProfileSelect({
   const triggerIconName = resolveProfileIcon({
     profile: hasFile ? resolvedFileName : choice.profile,
     executor: choice.executor,
-    main: !isCustomProfile && !hasFile,
+    main: selectedProfileMeta?.main === true || (!isCustomProfile && !hasFile),
     hasFile,
     description: hasFile ? resolvedFile.description : selectedProfileMeta?.description,
   });
@@ -501,6 +505,13 @@ export function ProfileSelect({
     );
   };
 
+  useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'composer-profile-select', () => {
+    setOpen(false);
+  }), []);
+  useEffect(() => {
+    if (open) notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, 'composer-profile-select', triggerRef.current);
+  }, [open]);
+
   return (
     <div ref={rootRef} className="relative min-w-0" data-profile-select>
       <button
@@ -595,7 +606,7 @@ export function ProfileSelect({
             });
           }}
         >
-          <Popover.Portal container={portalInModal ? undefined : rootRef}>
+          <Popover.Portal>
             <Popover.Positioner
               anchor={triggerRef}
               side="top"
@@ -603,7 +614,7 @@ export function ProfileSelect({
               sideOffset={6}
               collisionPadding={8}
               positionMethod="fixed"
-              style={{ zIndex: portalInModal ? floatingSurfaceZIndex(triggerRef.current) : 50 }}
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
             >
               <Popover.Popup
                 ref={panelRef}
@@ -614,8 +625,7 @@ export function ProfileSelect({
                 finalFocus={false}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: 'composer-profile-select',
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]:
-                    resolveFloatingOwners(triggerRef.current) ?? 'composer-profile-select',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
                   ...(portalInModal ? { [MODAL_ESCAPE_ATTRIBUTE]: modalOwnerId } : undefined),
                 }}
                 onKeyDown={(e) => {
@@ -627,8 +637,7 @@ export function ProfileSelect({
                   }
                   handleCompositeMenuKeyDown(e, panelRef.current);
                 }}
-                className="composer-floating-panel anim-enter flex max-h-[min(var(--available-height,calc(100dvh-120px)),28rem,calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg"
-                style={{ backgroundColor: 'var(--color-paper)' }}
+                className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,calc(100dvh-120px)),28rem,calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden text-ink outline-none ${POPOVER_SURFACE_CLASS}`}
               >
           {fileForm.open ? (
             <div data-execution-file-form className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -730,7 +739,7 @@ export function ProfileSelect({
             </div>
           ) : (
             <>
-              <div className="shrink-0 border-b border-hairline p-2">
+              <div className="shrink-0 border-b border-hairline px-3 py-2">
                 <input
                   ref={searchInputRef}
                   type="text"
@@ -739,13 +748,13 @@ export function ProfileSelect({
                   onChange={(e) => { setQuery(e.target.value); }}
                   placeholder={t('composer.profile.searchPlaceholder')}
                   aria-label={t('composer.execution.filterAria')}
-                  className="w-full rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12.5px] text-ink outline-none focus-visible:border-selected-ink placeholder:text-ink-faint"
+                  className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
                 />
               </div>
 
-              <div className={`${SELECT_SCROLL_LIST_CLASS} space-y-2 p-1`}>
+              <div className={`${SELECT_SCROLL_LIST_CLASS} space-y-2 p-1.5`}>
                 {retainedUnavailableExternal ? (
-                  <div data-execution-restore={choice.executor} className="mx-1 my-1 space-y-1 px-2.5 py-1.5 rounded border border-hairline bg-surface/40">
+                  <div data-execution-restore={choice.executor} className="mx-1 my-1 space-y-1 rounded border border-hairline bg-canvas/50 px-2.5 py-1.5">
                     <p className="text-[11.5px] leading-snug text-ink-faint">
                       {t(
                         currentExecutorItem?.status === 'unavailable'

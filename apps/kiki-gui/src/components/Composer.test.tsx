@@ -14,6 +14,7 @@ import { createViewState, projectAgentTranscriptView } from '@kiki/session-core/
 import { emptySnapshot, userTurnSnapshot } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import type { HostFileDrop } from '../host';
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { PERMISSION_MODES } from '../lib/permissionModes';
@@ -307,7 +308,8 @@ async function renderComposer(
   };
   await rerender(props);
   await settleMany(2);
-  return { container, root, queryClient: client, rerender };
+  const queryable = withPortalQueries(container);
+  return { container: queryable, root, queryClient: client, rerender };
 }
 
 /** Let react-query promises land and the re-render flush, on a macrotask cadence. */
@@ -1718,7 +1720,7 @@ describe('Composer permission chip', () => {
   const trigger = (container: HTMLDivElement) =>
     container.querySelector<HTMLButtonElement>('[data-mode-select] > button')!;
   const rows = (container: HTMLDivElement) =>
-    [...container.querySelectorAll<HTMLElement>('[data-mode-select] [role="option"]')];
+    [...container.querySelectorAll<HTMLElement>('[data-permission-panel] [role="option"]')];
 
   it('shows the current mode and lists every wire mode with its hint', async () => {
     const { container } = await renderComposer({ permissionMode: 'auto' });
@@ -1848,16 +1850,18 @@ describe('Composer run mode (Normal / Plan / Goal)', () => {
 
   it('shows the plan gate only inside Plan and only with a gate handler', async () => {
     const onChangePlanGate = vi.fn();
-    const { container } = await renderComposer({ planMode: true, planGate: 'free', onChangePlanGate });
-    await openPlanPanel(container);
-    const gate = runRow(container, 'planGate');
+    const first = await renderComposer({ planMode: true, planGate: 'free', onChangePlanGate });
+    await openPlanPanel(first.container);
+    const gate = runRow(first.container, 'planGate');
     expect(gate.getAttribute('aria-checked')).toBe('true');
     await click(gate);
     expect(onChangePlanGate).toHaveBeenCalledWith('gated');
+    await act(async () => { first.root.unmount(); });
 
     const normal = await renderComposer({ planGate: 'free', onChangePlanGate });
     await openPlanPanel(normal.container);
     expect(normal.container.querySelector('[data-mode-switch="planGate"]')).toBeNull();
+    await act(async () => { normal.root.unmount(); });
 
     const bare = await renderComposer({ planMode: true });
     await openPlanPanel(bare.container);
@@ -2620,9 +2624,9 @@ describe('Composer file drops', () => {
 });
 
 describe('Composer footer hints', () => {
-  it('teaches an empty draft and steps aside once typing starts', async () => {
+  it('omits permanent desktop shortcut footer hints for a clean status line', async () => {
     const empty = await renderComposer({ value: '' });
-    expect(empty.container.querySelector('[data-composer-hints]')).not.toBeNull();
+    expect(empty.container.querySelector('[data-composer-hints]')).toBeNull();
 
     const typed = await renderComposer({ value: 'hello' });
     expect(typed.container.querySelector('[data-composer-hints]')).toBeNull();
@@ -2745,7 +2749,7 @@ describe('Composer slash skill catalog', () => {
     if (checkPreview) expect(container.querySelector('[data-skill-preview]')?.textContent ?? container.textContent).toContain(checkPreview);
     if (checkEmptyHint) {
       const empty = await renderComposer({ workspaceId: 'wd_fixture_0123456789ab' });
-      expect(empty.container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
+      expect(empty.container.querySelector('[data-composer-hints]')).toBeNull();
     }
   });
 
@@ -3261,7 +3265,7 @@ async function renderStatefulComposer(
       </QueryClientProvider>,
     );
   });
-  return { container, root };
+  return { container: withPortalQueries(container), root };
 }
 
 describe('Composer ＋ menu', () => {
@@ -3513,17 +3517,13 @@ describe('Composer input history', () => {
     expect(textarea.value).toBe('/');
   });
 
-  it('shows the history hint on an empty draft only when history exists', async () => {
+  it('omits permanent history hint noise on an empty draft', async () => {
     const bare = await renderStatefulComposer({ sessionId: 's_hint' });
-    expect(
-      bare.container.querySelector('[data-composer-hints]')?.textContent,
-    ).not.toContain('history');
+    expect(bare.container.querySelector('[data-composer-hints]')).toBeNull();
 
     pushInputHistory('s_hint', 'older prompt');
     const seeded = await renderStatefulComposer({ sessionId: 's_hint' });
-    expect(seeded.container.querySelector('[data-composer-hints]')?.textContent).toContain(
-      '↑ for history',
-    );
+    expect(seeded.container.querySelector('[data-composer-hints]')).toBeNull();
   });
 });
 
@@ -4130,26 +4130,12 @@ describe('Composer restored selection diagnostics', () => {
     expect(listModels).toHaveBeenCalledTimes(1);
   });
 
-  it('clamps upward AddMenu anchor variables inside the viewport even when the card sits near or past innerHeight', async () => {
-    const prevInnerHeight = window.innerHeight;
-    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
-    try {
-      const { container } = await renderComposer({ value: '' });
-      const card = container.querySelector<HTMLElement>('[data-composer-card]')!;
-      const menuRoot = container.querySelector<HTMLElement>('[data-add-menu]')!;
-      vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
-        x: 200, y: 977, left: 200, top: 977, right: 960, bottom: 1063, width: 760, height: 86, toJSON() { return {}; },
-      });
-      vi.spyOn(menuRoot, 'getBoundingClientRect').mockReturnValue({
-        x: 212, y: 1023, left: 212, top: 1023, right: 240, bottom: 1051, width: 28, height: 28, toJSON() { return {}; },
-      });
-      await openAddMenu(container);
-      // panelBottomEdge = min(977 - 6, 900 - 8) = 892 -> --cp-bottom = 1051 - 892 = 159px (keeps panel bottom <= 892 < 900).
-      expect(menuRoot.style.getPropertyValue('--cp-bottom')).toBe('159px');
-      expect(Number.parseInt(menuRoot.style.getPropertyValue('--cp-max-h'), 10)).toBeLessThanOrEqual(780);
-    } finally {
-      Object.defineProperty(window, 'innerHeight', { configurable: true, value: prevInnerHeight });
-    }
+  it('portals upward AddMenu via Base UI Popover.Portal so card bottom bounds never clip it', async () => {
+    const { container } = await renderComposer({ value: '' });
+    await openAddMenu(container);
+    const panel = document.querySelector<HTMLElement>('[data-add-panel]');
+    expect(panel).not.toBeNull();
+    expect(panel?.closest('[data-composer-card]')).toBeNull();
   });
 
   it('keeps a removed model visible, blocks sending, and keeps the input and reselect path usable', async () => {
@@ -4694,9 +4680,10 @@ describe('Composer send-timing menu', () => {
   });
 
   it('names a non-default configured timing on the plain row and omits send-now without steer handler', async () => {
-    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'tasks_done', onSendNow: vi.fn() });
-    await hoverOpen(container);
-    expect(rowLabels(container)[0]).toBe('SendDefault timing: after tasks');
+    const first = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'tasks_done', onSendNow: vi.fn() });
+    await hoverOpen(first.container);
+    expect(rowLabels(first.container)[0]).toBe('SendDefault timing: after tasks');
+    await act(async () => { first.root.unmount(); });
 
     const withoutSteer = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle' });
     await hoverOpen(withoutSteer.container);
@@ -5443,9 +5430,9 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
       expect(shelf!.querySelector('[title="src/components/Composer.tsx"][data-chip-variant="shelf"]')).not.toBeNull();
       expect(shelf!.querySelector('[data-quote-chip][data-chip-variant="shelf"]')).not.toBeNull();
 
-      // All 3 plugin slots are cleanly available inside `+` (AddMenu) Extensions!
+      // Plugin panel slots live exclusively in top-right WorkspacePanelsControl, not duplicated inside `+` (AddMenu).
       await openAddMenu(container);
-      expect(container.querySelectorAll('[data-add-menu-extensions] [data-add-extension]').length).toBe(3);
+      expect(container.querySelectorAll('[data-add-menu-extensions] [data-add-extension]').length).toBe(0);
     } finally {
       connectionScope.pluginSlots = false;
       fetchSpy.mockRestore();

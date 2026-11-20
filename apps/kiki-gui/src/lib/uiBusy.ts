@@ -165,3 +165,52 @@ export function hasOpenOwnedFloatingPortal(ownerId: string | undefined): boolean
   }
   return false;
 }
+
+/** Shared coordination group for composer toolbar and shelf floating surfaces. */
+export const COMPOSER_FLOATING_GROUP = 'composer';
+
+type FloatingGroupListener = (activeId: string, keepOpen: ReadonlySet<string>) => void;
+const floatingGroupListeners = new Map<string, Map<string, FloatingGroupListener>>();
+
+/** Subscribe a floating surface to close whenever a sibling in the same group opens. */
+export function subscribeFloatingGroup(
+  group: string,
+  memberId: string,
+  onOtherOpen: () => void,
+): () => void {
+  let members = floatingGroupListeners.get(group);
+  if (members === undefined) {
+    members = new Map();
+    floatingGroupListeners.set(group, members);
+  }
+  const listener: FloatingGroupListener = (activeId, keepOpen) => {
+    if (activeId !== memberId && !keepOpen.has(memberId)) onOtherOpen();
+  };
+  members.set(memberId, listener);
+  return () => {
+    const current = floatingGroupListeners.get(group);
+    if (current === undefined) return;
+    current.delete(memberId);
+    if (current.size === 0) floatingGroupListeners.delete(group);
+  };
+}
+
+/** Announce that `memberId` opened, closing all non-ancestor siblings in `group`. */
+export function notifyFloatingGroupOpen(
+  group: string,
+  memberId: string,
+  anchor?: Element | null,
+): void {
+  const members = floatingGroupListeners.get(group);
+  if (members === undefined) return;
+  const keepOpen = new Set<string>([memberId]);
+  const owners = anchor === undefined ? undefined : resolveFloatingOwners(anchor);
+  if (owners !== undefined) {
+    for (const id of owners.split(/\s+/)) {
+      if (id !== '') keepOpen.add(id);
+    }
+  }
+  for (const [id, listener] of Array.from(members.entries())) {
+    if (!keepOpen.has(id)) listener(memberId, keepOpen);
+  }
+}
