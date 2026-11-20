@@ -128,7 +128,7 @@ async function readPersistedCompactionOverrides(
     flight = (async (): Promise<PersistedCompactionOverrides> => {
       const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, OVERRIDE_NAMES, workers);
       const autoCompactOverrides: Record<string, number> = {
-        ...((checkpoint?.states.get(autoCompactOverrideKey.name) as Record<string, number> | undefined) ?? {}),
+        ...(checkpoint?.states.get(autoCompactOverrideKey.name) as Record<string, number> | undefined),
       };
       let contextStrategyOverride = (checkpoint?.states.get(contextStrategyOverrideKey.name) as ContextStrategy | null | undefined) ?? null;
       const start = checkpoint !== undefined ? checkpoint.offset : 0;
@@ -223,7 +223,7 @@ export async function readPersistedAutoCompact(
 ): Promise<ResolvedAutoCompact | undefined> {
   const [profile, overrides] = await Promise.all([
     readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, metadata, signal,
-      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true }),
     readPersistedCompactionOverrides(core, workspaceId, sessionId, agentId, signal),
   ]);
   if (isExternalProfile(profile, metadata)) return undefined;
@@ -282,7 +282,7 @@ export async function readPersistedContextStrategy(
 ): Promise<ContextStrategyStatus> {
   const [profile, overrides] = await Promise.all([
     readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, metadata, signal,
-      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true }),
     readPersistedCompactionOverrides(core, workspaceId, sessionId, agentId, signal),
   ]);
   if (isExternalProfile(profile, metadata)) {

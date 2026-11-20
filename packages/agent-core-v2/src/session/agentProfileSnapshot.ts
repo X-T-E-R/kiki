@@ -52,6 +52,7 @@ export interface PersistedAgentProfileSnapshot extends Omit<PersistedProfileFiel
 
 export interface PersistedAgentProfileReadOptions {
   readonly inlineByteBudget?: number;
+  readonly skipRequestAndMcp?: boolean;
 }
 
 export const PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET = 8 << 20;
@@ -67,6 +68,7 @@ interface PersistedAgentProfileCacheEntry {
   readonly size: number;
   readonly mtimeMs: number;
   readonly usedCheckpoint: boolean;
+  readonly hasRequestAndMcp: boolean;
   readonly checkpointToken: string;
   readonly metadataKey: string;
   readonly snapshot: PersistedAgentProfileSnapshot | undefined;
@@ -145,21 +147,30 @@ export async function readPersistedAgentProfileSnapshot(
   }
   signal?.throwIfAborted();
   const inlineByteBudget = options?.inlineByteBudget;
-  const usesCheckpoint = inlineByteBudget !== undefined && size > inlineByteBudget;
+  const skipRequestAndMcp = options?.skipRequestAndMcp === true;
+  const exceedsBudget = inlineByteBudget !== undefined && size > inlineByteBudget;
+  const usesCheckpoint = exceedsBudget || (skipRequestAndMcp && ckptStat.distinguishable && ckptStat.token !== 'none');
   const checkpointToken = usesCheckpoint ? ckptStat.token : 'full';
   const metadataKey = persistedMetadataKey(metadata);
   const cache = persistedAgentProfileCache(core);
   const cached = cache.get(scope);
   if (cached !== undefined) {
     const checkpointValid = !cached.usedCheckpoint || (ckptStat.distinguishable && cached.checkpointToken === ckptStat.token);
-    if (cached.size === size && cached.mtimeMs === mtimeMs && cached.metadataKey === metadataKey && checkpointValid) {
+    const requestCompatible = skipRequestAndMcp || cached.hasRequestAndMcp;
+    if (cached.size === size && cached.mtimeMs === mtimeMs && cached.metadataKey === metadataKey && checkpointValid && requestCompatible) {
       cache.delete(scope);
       cache.set(scope, cached);
       return cached.snapshot;
     }
-    cache.delete(scope);
+    if (!requestCompatible) {
+      cache.delete(scope);
+    } else if (cached.size !== size || cached.mtimeMs !== mtimeMs || cached.metadataKey !== metadataKey || !checkpointValid) {
+      cache.delete(scope);
+    }
   }
-  const flightKey = usesCheckpoint ? `${scope}:budget:${inlineByteBudget}:ckpt:${checkpointToken}` : scope;
+  const flightKey = usesCheckpoint
+    ? `${scope}:budget:${inlineByteBudget ?? 'none'}:skip:${skipRequestAndMcp ? '1' : '0'}:ckpt:${checkpointToken}`
+    : scope;
   const flights = persistedAgentProfileFlightMap(core);
   let flight = flights.get(flightKey);
   if (
@@ -180,19 +191,25 @@ export async function readPersistedAgentProfileSnapshot(
       const checkpoint = usesCheckpoint
         ? await readPersistedAgentCheckpoint(docs, storage, scope, size, mtimeMs, new Set([profileKey.name, profileActiveToolsKey.name]), workers)
         : undefined;
-      if (usesCheckpoint &&
-        (checkpoint === undefined || !checkpoint.states.has(profileKey.name) || !checkpoint.states.has(profileActiveToolsKey.name) || size - checkpoint.offset > inlineByteBudget)) {
+      const validCheckpoint =
+        checkpoint !== undefined &&
+        checkpoint.states.has(profileKey.name) &&
+        checkpoint.states.has(profileActiveToolsKey.name) &&
+        (inlineByteBudget === undefined || size - checkpoint.offset <= inlineByteBudget);
+      if (exceedsBudget && !validCheckpoint) {
         const fallback = metadataSnapshot(metadata);
         return fallback === undefined ? undefined : { ...fallback, wireCoverage: 'unscanned' };
       }
-      const snapshot = await scanPersistedAgentProfileSnapshot(appendLog, storage, scope, checkpoint, size)
+      const effectiveCheckpoint = validCheckpoint ? checkpoint : undefined;
+      const snapshot = await scanPersistedAgentProfileSnapshot(appendLog, storage, scope, effectiveCheckpoint, size, skipRequestAndMcp)
         .then((value) => value ?? metadataSnapshot(metadata))
         .catch(() => metadataSnapshot(metadata));
-      if (!usesCheckpoint) {
+      if (effectiveCheckpoint === undefined) {
         cachePersistedAgentProfile(cache, scope, {
           size,
           mtimeMs,
           usedCheckpoint: false,
+          hasRequestAndMcp: !skipRequestAndMcp,
           checkpointToken: 'full',
           metadataKey,
           snapshot,
@@ -204,6 +221,7 @@ export async function readPersistedAgentProfileSnapshot(
             size,
             mtimeMs,
             usedCheckpoint: true,
+            hasRequestAndMcp: false,
             checkpointToken: ckptStat.token,
             metadataKey,
             snapshot,
@@ -249,9 +267,10 @@ async function scanPersistedAgentProfileSnapshot(
   scope: string,
   checkpoint: Awaited<ReturnType<typeof readPersistedAgentCheckpoint>>,
   size: number,
+  skipRequestAndMcp = false,
 ): Promise<PersistedAgentProfileSnapshot | undefined> {
   const records = typeof storage.readStream === 'function'
-    ? filteredProfileRecords(storage, appendLog, scope, checkpoint?.offset ?? 0, size)
+    ? filteredProfileRecords(storage, appendLog, scope, checkpoint?.offset ?? 0, size, skipRequestAndMcp)
     : appendLog.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY);
   let state = structuredClone(checkpoint?.states.get(profileKey.name) ?? profileKey.initial()) as ProfileModelState;
   let activeToolNames = checkpoint?.states.get(profileActiveToolsKey.name) as readonly string[] | undefined;
@@ -345,7 +364,9 @@ async function* filteredProfileRecords(
   scope: string,
   start: number,
   size: number,
+  skipRequestAndMcp = false,
 ): AsyncIterable<WireRecord> {
+  if (start >= size) return;
   await appendLog.flush(scope, AGENT_WIRE_RECORD_KEY).catch(() => undefined);
   const decoder = new TextDecoder();
   let pending = '';
@@ -354,13 +375,13 @@ async function* filteredProfileRecords(
     const head = line.slice(0, 96);
     if (!PROFILE_LINE_MARKERS.some((marker) => head.includes(marker))) return;
     if (head.includes(`"type":"${LlmRequest.type}"`)) {
-      if (Buffer.byteLength(line) <= PERSISTED_AGENT_PROFILE_REQUEST_PARSE_MAX_BYTES) lastRequest = line;
+      if (!skipRequestAndMcp && Buffer.byteLength(line) <= PERSISTED_AGENT_PROFILE_REQUEST_PARSE_MAX_BYTES) lastRequest = line;
       return;
     }
+    if (skipRequestAndMcp && head.includes(`"type":"${McpToolsDiscovered.type}"`)) return;
     const record = parseProfileLine(line);
     if (record !== undefined) yield record;
   };
-  if (start >= size) return;
   let yieldedAt = performance.now();
   for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 }, { chunkBytes: 1024 * 1024 })) {
     pending += decoder.decode(chunk, { stream: true });

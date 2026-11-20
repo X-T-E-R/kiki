@@ -353,7 +353,7 @@ async function decodesAsImage(bytes: Buffer, mimeType: string): Promise<boolean>
   const active = decodingImages.get(key);
   if (active !== undefined) return active;
   const copy = Uint8Array.from(bytes).buffer;
-  const decoding = runCpuTask<boolean>({ type: 'image.decode', bytes: copy, mimeType }, { transferList: [copy] });
+  const decoding = runCpuTask<boolean>({ type: 'image.decode', bytes: copy, mimeType }, { transferList: [copy], priority: 'high' });
   decodingImages.set(key, decoding);
   try {
     const verdict = await decoding;

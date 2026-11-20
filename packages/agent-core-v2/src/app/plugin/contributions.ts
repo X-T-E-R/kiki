@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import {
   asrProviderDefinitionSchema, harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginGuiSlotDeclarationSchema, pluginHttpRouteDeclarationSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
-  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginGuiSlotContribution, type PluginGuiSlotDeclaration, type PluginHttpRouteDeclaration, type PluginHttpRouteDescriptor, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
+  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginGuiSlotContribution, type PluginHttpRouteDescriptor, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
 } from '@kiki/protocol';
 import { satisfies, validRange } from 'semver';
 import { z } from 'zod';

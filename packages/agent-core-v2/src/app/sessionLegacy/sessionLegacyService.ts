@@ -78,6 +78,7 @@ export class SessionLegacyService implements ISessionLegacyService {
     const [profile, projection] = await Promise.all([
       readPersistedAgentProfileSnapshot(this.profileHost, summary.workspaceId, sessionId, 'main', metadata?.agents?.['main'], undefined, {
         inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+        skipRequestAndMcp: true,
       }),
       this.statusReader.read(summary.workspaceId, sessionId, metadata?.agents?.['main']),
     ]);
@@ -158,7 +159,7 @@ export class SessionLegacyService implements ISessionLegacyService {
       model_name: modelName,
       thinking_level: profile?.getModel() ? profile.getEffectiveThinkingLevel() : '',
       permission: agent?.accessor.get(IAgentPermissionModeService).mode ?? session.accessor.get(IConfigService).get<string>('defaultPermissionMode') ?? 'auto',
-      plan_mode: planData != null,
+      plan_mode: planData !== null && planData !== undefined,
       context_tokens: tokens,
       max_context_tokens: maxTokens > 0 ? maxTokens : undefined,
       context_usage: maxTokens > 0 ? Math.min(1, tokens / maxTokens) : 0,

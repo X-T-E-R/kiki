@@ -34,7 +34,7 @@ export async function encodeCooperativeJson(value: unknown): Promise<Uint8Array>
   let fragments: string[] = [];
   let chars = 0;
   let bytes = 0;
-  let deadline = performance.now() + 4;
+  let deadline = performance.now() + 2;
   let steps = 0;
 
   const flushFragments = (): void => {
@@ -106,9 +106,9 @@ export async function encodeCooperativeJson(value: unknown): Promise<Uint8Array>
         emitValue(entry);
       }
     }
-    if ((++steps & 511) === 0 && performance.now() >= deadline) {
+    if ((++steps & 127) === 0 && performance.now() >= deadline) {
       await new Promise<void>((resolve) => { setImmediate(resolve); });
-      deadline = performance.now() + 4;
+      deadline = performance.now() + 2;
     }
   }
 
@@ -122,7 +122,7 @@ export async function encodeCooperativeJson(value: unknown): Promise<Uint8Array>
     offset += chunk.length;
     if (performance.now() >= deadline) {
       await new Promise<void>((resolve) => { setImmediate(resolve); });
-      deadline = performance.now() + 4;
+      deadline = performance.now() + 2;
     }
   }
   return result;

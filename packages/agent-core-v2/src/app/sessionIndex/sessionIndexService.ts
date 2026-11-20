@@ -1111,7 +1111,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private async withOwnUpdatedAt(summary: SessionSummary, signal?: AbortSignal): Promise<SessionSummary> {
     if (summary.ownUpdatedAt !== undefined) return summary;
-    const result = await abortable(readSessionSummaryResult(this.docs, this.sessionsScope, summary.workspaceId, summary.id, this.log), signal);
+    const result = await abortable(readSessionSummaryResult(this.docs, this.sessionsScope, summary.workspaceId, summary.id, this.log, this.storage), signal);
     if (result.kind !== 'found' || result.summary.ownUpdatedAt === undefined) return summary;
     const current = this.mirror.pending().find((entry) => entry.id === summary.id);
     const original = current === undefined ? result.summary : {
@@ -1370,7 +1370,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         const results = await Promise.all(workspaceIds.slice(offset, offset + POINT_PROBE_CONCURRENCY).map((workspaceId) =>
           knownWorkspaceIds === undefined
             ? probeSessionSummaryResult(this.storage, this.docs, this.sessionsScope, workspaceId, id, this.log)
-            : readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log),
+            : readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log, this.storage),
         ));
         for (const result of results) {
           if (result.kind === 'error') throw result.error;
@@ -1425,7 +1425,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId, this.log);
         const results = await mapBounded(sessionIds, POINT_PROBE_CONCURRENCY, async (sessionId) => ({
           sessionId,
-          result: await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, sessionId, this.log),
+          result: await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, sessionId, this.log, this.storage),
         }));
         for (const { sessionId, result } of results) {
           if (result.kind === 'found') collected.set(sessionId, result.summary);
@@ -1438,7 +1438,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       const workspaceId = changedWorkspace ?? collected.get(id)?.workspaceId;
       collected.delete(id);
       if (workspaceId === undefined || workspaceIds !== undefined && !workspaceIds.includes(workspaceId)) continue;
-      const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log);
+      const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log, this.storage);
       if (result.kind === 'found') collected.set(id, result.summary);
     }
     return [...collected.values()];

@@ -1,6 +1,7 @@
 import { basename, sep } from 'node:path';
 
 import { FORKED_FROM_KEY, parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { readCachedColdSessionMeta } from '#/session/sessionMetadata/coldSessionMetaRead';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -313,7 +314,7 @@ export async function probeSessionSummaryResult(
     }
     return { kind: 'error', error };
   }
-  return readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+  return readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log, storage);
 }
 
 export async function readSessionSummaryResult(
@@ -322,9 +323,10 @@ export async function readSessionSummaryResult(
   workspaceId: string,
   sessionId: string,
   log?: ILogService,
+  storage?: IFileSystemStorageService,
 ): Promise<SessionSummaryReadResult> {
   if (!isSessionDirectoryEntry(sessionId)) return { kind: 'missing' };
-  const metadata = await readSessionMetadataResult(docs, sessionsScope, workspaceId, sessionId, log);
+  const metadata = await readSessionMetadataResult(docs, sessionsScope, workspaceId, sessionId, log, storage);
   if (metadata.kind !== 'found') return metadata;
   try {
     return {
@@ -392,12 +394,15 @@ export async function readSessionMetadataResult(
   workspaceId: string,
   sessionId: string,
   log?: ILogService,
+  storage?: IFileSystemStorageService,
 ): Promise<SessionMetadataReadResult> {
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
   const directPath = `${base}/${META_KEY}`;
   let current: Record<string, unknown> | undefined;
   try {
-    current = await docs.get<Record<string, unknown>>(base, META_KEY);
+    current = storage !== undefined
+      ? (await readCachedColdSessionMeta(storage, docs, base)) as unknown as Record<string, unknown> | undefined
+      : await docs.get<Record<string, unknown>>(base, META_KEY);
   } catch (error) {
     warnUnreadableMetadata(log, directPath, error);
     return { kind: 'error', error };
@@ -424,7 +429,7 @@ export async function mapBounded<T, R>(
   if (items.length === 0) return [];
   const workerCount = Math.min(Math.max(1, Math.trunc(concurrency)), items.length);
   const yieldEvery = resolveMapYieldEvery();
-  const settled = new Array<R | undefined>(items.length);
+  const settled = Array.from<R | undefined>({ length: items.length });
   let cursor = 0;
   let completed = 0;
   await Promise.all(

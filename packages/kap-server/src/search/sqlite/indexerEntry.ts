@@ -36,7 +36,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   if (!writer) {
     report({ type: 'ready', pid: process.pid, writer: false });
     const elected = await new Promise<boolean>((resolve) => {
-      const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 1000);
+      const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 15_000);
       let election: NodeJS.Timeout | undefined;
       let electionDelay = 2000;
       const onMessage = (message: IndexerRequest): void => { if (message.type === 'close') finish(false); };
@@ -85,9 +85,26 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   let opened = false;
   let lastBatchMs = 0;
   let lastLogAt = 0;
+  let lastStatusAt = 0;
+  let lastStatfsAt = 0;
+  let lastStatfsFree = Infinity;
   let releaseReader: (() => void) | undefined;
-  const status = (): void => {
+  const checkMemoryBudget = (): ReturnType<typeof process.memoryUsage> => {
     const memory = process.memoryUsage();
+    if (memory.rss > hardMb * MiB) {
+      try { index?.clearInflightOnBudgetExit(); } catch {}
+      try { index?.close(); } catch {}
+      index = undefined;
+      releaseLease();
+      process.stderr.write(`search indexer memory_budget rss=${memory.rss} limit=${hardMb * MiB}\n`);
+      process.exit(MEMORY_BUDGET_EXIT);
+    }
+    nearSoft = memory.rss > (softMb - 32) * MiB;
+    return memory;
+  };
+  const status = (): void => {
+    const memory = checkMemoryBudget();
+    lastStatusAt = Date.now();
     if (index) {
       const snapshot = index.syncStatus;
       report({ type: 'status', rss: memory.rss, heapUsed: memory.heapUsed,
@@ -100,15 +117,10 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         process.stderr.write(`search indexer status rss=${memory.rss} heap=${memory.heapUsed} wal=${snapshot.walBytes} docs=${snapshot.documents} pending=${pending.size}\n`);
       }
     }
-    if (memory.rss > hardMb * MiB) {
-      try { index?.clearInflightOnBudgetExit(); } catch {}
-      try { index?.close(); } catch {}
-      index = undefined;
-      releaseLease();
-      process.stderr.write(`search indexer memory_budget rss=${memory.rss} limit=${hardMb * MiB}\n`);
-      process.exit(MEMORY_BUDGET_EXIT);
-    }
-    nearSoft = memory.rss > (softMb - 32) * MiB;
+  };
+  const maybeStatus = (minIntervalMs = 500): void => {
+    if (Date.now() - lastStatusAt >= minIntervalMs) status();
+    else checkMemoryBudget();
   };
   const setInventory = (revision: number, sessions: Map<string, SqliteSessionInput>, reconcile: boolean): void => {
     activeRevision = revision;
@@ -165,8 +177,12 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         const entry = pending.entries().next().value;
         if (!entry) break;
         const [id, work] = entry;
-        const free = await statfs(path).then((value) => value.bavail * value.bsize).catch(() => Infinity);
-        if (free < 2 * 1024 * MiB) {
+        const now = Date.now();
+        if (now - lastStatfsAt >= 5_000) {
+          lastStatfsFree = await statfs(path).then((value) => value.bavail * value.bsize).catch(() => Infinity);
+          lastStatfsAt = now;
+        }
+        if (lastStatfsFree < 2 * 1024 * MiB) {
           report({ type: 'error', message: 'disk_low' });
           break;
         }
@@ -176,17 +192,21 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         lastBatchMs = Date.now() - started;
         const missing = !index.db.prepare('SELECT 1 FROM sessions WHERE id=?').get(id);
         report({ type: 'synced', sessionId: id, revision: work.revision, missing });
-        status();
+        maybeStatus(500);
         if (pending.size || targeted.size) await new Promise<void>((resolve) => setImmediate(resolve));
       }
       if (!targeted.size && !pending.size && !inventory && activeRevision > completedRevision) {
         completedRevision = activeRevision;
+        status();
         report({ type: 'inventory_synced', revision: completedRevision });
       }
     } catch (error) {
       lastDrainError = error instanceof Error ? error.message : String(error);
       report({ type: 'error', message: lastDrainError });
-    } finally { syncing = false; }
+    } finally {
+      syncing = false;
+      if (!stopped && index && !targeted.size && !pending.size && !inventory) status();
+    }
   };
   const openOptions = {
     isStopped: () => stopped,
@@ -273,31 +293,42 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     releaseLease();
     return;
   }
+  const prevSelfcheck = (index.db.prepare("SELECT v FROM meta WHERE k='selfcheck'").get() as { v: string } | undefined)?.v;
   index.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
   report({ type: 'ready', pid: process.pid, writer: true });
   opened = true;
   status();
-  setImmediate(() => {
-    if (stopped || !index) return;
-    try {
-      const check = index.db.prepare('PRAGMA quick_check').get() as { quick_check: string };
-      if (check.quick_check !== 'ok') throw new Error(`SQLITE_CORRUPT: ${check.quick_check}`);
-    } catch (error) {
-      index.close();
-      index = undefined;
-      void recover(error).then(() => drain()).catch((failure: unknown) => {
-        report({ type: 'error', message: String(failure) });
-      });
-    }
-  });
+  const dbBytesOnBoot = (() => { try { return statSync(path).size; } catch { return 0; } })();
+  if (prevSelfcheck !== 'passed' || dbBytesOnBoot <= 16 * MiB) {
+    setImmediate(() => {
+      if (stopped || !index) return;
+      try {
+        const check = index.db.prepare('PRAGMA quick_check').get() as { quick_check: string };
+        if (check.quick_check !== 'ok') throw new Error(`SQLITE_CORRUPT: ${check.quick_check}`);
+      } catch (error) {
+        index.close();
+        index = undefined;
+        void recover(error).then(() => drain()).catch((failure: unknown) => {
+          report({ type: 'error', message: String(failure) });
+        });
+      }
+    });
+  }
   const timer = setInterval(() => {
     if (Date.now() - lastHeartbeat > 120_000) {
       process.stderr.write('search indexer heartbeat timed out\n');
       process.exit(87);
     }
-    status();
-    if ((targeted.size || pending.size || inventory) && !syncing && !rebuilding) void drain();
-  }, 1000);
+    const busy = syncing || rebuilding || targeted.size > 0 || pending.size > 0 || inventory !== undefined;
+    if (busy) {
+      maybeStatus(1_000);
+      if ((targeted.size || pending.size || inventory) && !syncing && !rebuilding) void drain();
+    } else if (Date.now() - lastStatusAt >= 60_000) {
+      status();
+    } else {
+      checkMemoryBudget();
+    }
+  }, 15_000);
   process.on('disconnect', () => process.exit(0));
   await new Promise<void>((resolve) => {
     process.on('message', (message: IndexerRequest) => {

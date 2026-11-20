@@ -28,7 +28,6 @@ import {
   project,
   projectStrict,
   summarizeProjectionRepairs,
-  type OnAnomaly,
   type ProjectionAnomaly,
 } from './projection';
 

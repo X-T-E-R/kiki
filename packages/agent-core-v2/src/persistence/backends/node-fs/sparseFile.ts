@@ -378,7 +378,7 @@ function hookSparseMarkerExit(): void {
   if (sparseMarkerExitHooked) return;
   sparseMarkerExitHooked = true;
   const flushSync = (): void => {
-    for (const markerPath of [...PENDING_SPARSE_MARKER_UNLINKS]) {
+    for (const markerPath of Array.from(PENDING_SPARSE_MARKER_UNLINKS)) {
       try {
         unlinkSync(markerPath);
         PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
@@ -395,7 +395,7 @@ function hookSparseMarkerExit(): void {
 
 async function flushPendingSparseMarkerUnlinks(): Promise<void> {
   if (PENDING_SPARSE_MARKER_UNLINKS.size === 0) return;
-  for (const markerPath of [...PENDING_SPARSE_MARKER_UNLINKS]) {
+  for (const markerPath of Array.from(PENDING_SPARSE_MARKER_UNLINKS)) {
     try {
       await unlink(markerPath);
       PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
@@ -639,7 +639,7 @@ export async function queryWin32ProcessCreationFileTime(
     if (raw === 'dead') return 'dead';
     if (raw === 'denied' || raw === undefined || raw.length === 0) return 'unknown';
     return BigInt(raw);
-  } catch (error) {
+  } catch {
     if (signal?.aborted) throw signal.reason;
     return 'unknown';
   }
@@ -702,7 +702,7 @@ export async function allocatedFileBytes(filePath: string, signal?: AbortSignal)
       const [raw] = await runWin32Command(`size\t${encodePath(filePath)}`, signal);
       const parsed = Number(raw);
       return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
-    } catch (error) {
+    } catch {
       if (signal?.aborted) throw signal.reason;
       const info = await stat(filePath).catch(() => undefined);
       return info?.size;

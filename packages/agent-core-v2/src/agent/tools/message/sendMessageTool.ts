@@ -883,7 +883,6 @@ export class SendMessageTool implements ISendMessageTool {
 
     const effectiveInputMime = isOggContainer(input.bytes) ? 'application/ogg' : input.mimeType;
     const alreadySupportedEverywhere = !needsOggOpus && (
-      voiceChannels.length === 0 ||
       voiceChannels.every((ch) => channelAcceptsVoiceMime(ch, effectiveInputMime))
     );
     if (alreadySupportedEverywhere && effectiveInputMime !== 'audio/ogg' && effectiveInputMime !== 'audio/opus' && effectiveInputMime !== 'application/ogg') {

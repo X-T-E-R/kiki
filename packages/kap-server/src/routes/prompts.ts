@@ -92,6 +92,7 @@ import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
 import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { PersistedModelSwitchReader } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
+import { ICpuWorkerService } from '@kiki/agent-core-v2/app/cpuWorker/cpuWorkerService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
@@ -455,10 +456,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         (agent_id !== MAIN_AGENT_ID && !Object.hasOwn(metadata?.agents ?? {}, agent_id))) {
         throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agent_id} does not exist`);
       }
+      let cpuWorkers: ICpuWorkerService | undefined;
+      try { cpuWorkers = core.accessor.get(ICpuWorkerService); } catch { cpuWorkers = undefined; }
       modelSwitchReader ??= new PersistedModelSwitchReader({
         docs: core.accessor.get(IAtomicDocumentStore),
         storage: core.accessor.get(IFileSystemStorageService),
         files: core.accessor.get(IHostFileSystem),
+        workers: cpuWorkers,
       });
       const sessionScope = sessionScopeOf(
         workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),

@@ -373,7 +373,7 @@ export async function searchSessionSubagents(
   let searchIndex: string[] | undefined;
   if (q !== '' && coldRoster !== undefined) {
     if (coldRoster.searchIndex === undefined) {
-      const index = new Array<string>(coldRoster.subagents.length);
+      const index = Array.from<string>({ length: coldRoster.subagents.length });
       for (let i = 0; i < coldRoster.subagents.length; i += 1) {
         index[i] = subagentSearchBlob(coldRoster.subagents[i]!);
       }
@@ -695,14 +695,14 @@ function snapshotSubagentOrdinal(subagent: SnapshotSubagent): number | undefined
 function orderSnapshotSubagents(subagents: readonly SnapshotSubagent[]): SnapshotSubagent[] {
   const length = subagents.length;
   if (length <= 1) return [...subagents];
-  const entries = new Array<{
+  const entries = Array.from<{
     readonly subagent: SnapshotSubagent;
     readonly index: number;
     readonly active: boolean;
     readonly openBranch: boolean;
     readonly recency: number | undefined;
     readonly ordinal: number | undefined;
-  }>(length);
+  }>({ length });
   for (let index = 0; index < length; index += 1) {
     const subagent = subagents[index]!;
     entries[index] = {
@@ -727,7 +727,7 @@ function orderSnapshotSubagents(subagents: readonly SnapshotSubagent[]): Snapsho
     }
     return left.index - right.index;
   });
-  const ordered = new Array<SnapshotSubagent>(length);
+  const ordered = Array.from<SnapshotSubagent>({ length });
   for (let index = 0; index < length; index += 1) ordered[index] = entries[index]!.subagent;
   return ordered;
 }

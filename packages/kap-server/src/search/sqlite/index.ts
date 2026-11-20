@@ -435,9 +435,20 @@ export class SqliteSearchIndex {
     const id = await identity(session.dir);
     if (id === undefined) return this.removeSession(session.id);
     const db = this.db;
-    const { title, branchAgents } = await sessionMetaInfo(session.dir, this.indexSubagents);
-    const existing = db.prepare('SELECT title,identity,dir FROM sessions WHERE id=?').get(session.id) as
-      { title: string; identity: string; dir: string } | undefined;
+    const existing = this.stmt('SELECT workspace_id,title,identity,dir,updated_at FROM sessions WHERE id=?').get(session.id) as
+      { workspace_id: string; title: string; identity: string; dir: string; updated_at: number } | undefined;
+    const fastMetaUnchanged =
+      existing !== undefined &&
+      existing.identity === id &&
+      existing.dir === session.dir &&
+      existing.workspace_id === session.workspaceId &&
+      existing.updated_at === session.updatedAt &&
+      !this.indexSubagents &&
+      session.title !== undefined &&
+      existing.title === session.title;
+    const { title, branchAgents } = fastMetaUnchanged
+      ? { title: existing.title, branchAgents: EMPTY_BRANCH_AGENTS }
+      : await sessionMetaInfo(session.dir, this.indexSubagents);
     if (existing !== undefined && (existing.identity !== id || existing.dir !== session.dir)) {
       db.exec('BEGIN');
       try {
@@ -448,23 +459,32 @@ export class SqliteSearchIndex {
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
     }
-    db.exec('BEGIN');
-    try {
-      const inserted = existing === undefined || existing.identity !== id || existing.dir !== session.dir;
-      this.stmt('INSERT INTO sessions(id,workspace_id,title,dir,identity,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,title=excluded.title,dir=excluded.dir,identity=excluded.identity,updated_at=excluded.updated_at')
-        .run(session.id, session.workspaceId, title, session.dir, id, session.updatedAt);
-      if (inserted) this.cachedSessions += 1;
-      if (existing === undefined || existing.title !== title || existing.identity !== id) {
-        if (existing !== undefined && existing.identity === id) {
-          const oldTitle = this.stmt("SELECT id FROM docs WHERE session_id=? AND role='title'")
-            .get(session.id) as { id: number } | undefined;
-          if (oldTitle) this.deleteDocs('id', oldTitle.id);
-          this.bumpGeneration();
+    const rowUnchanged =
+      existing !== undefined &&
+      existing.identity === id &&
+      existing.dir === session.dir &&
+      existing.workspace_id === session.workspaceId &&
+      existing.updated_at === session.updatedAt &&
+      existing.title === title;
+    if (!rowUnchanged) {
+      db.exec('BEGIN');
+      try {
+        const inserted = existing === undefined || existing.identity !== id || existing.dir !== session.dir;
+        this.stmt('INSERT INTO sessions(id,workspace_id,title,dir,identity,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,title=excluded.title,dir=excluded.dir,identity=excluded.identity,updated_at=excluded.updated_at')
+          .run(session.id, session.workspaceId, title, session.dir, id, session.updatedAt);
+        if (inserted) this.cachedSessions += 1;
+        if (existing === undefined || existing.title !== title || existing.identity !== id) {
+          if (existing !== undefined && existing.identity === id) {
+            const oldTitle = this.stmt("SELECT id FROM docs WHERE session_id=? AND role='title'")
+              .get(session.id) as { id: number } | undefined;
+            if (oldTitle) this.deleteDocs('id', oldTitle.id);
+            this.bumpGeneration();
+          }
+          if (title) this.insertDoc(null, session.id, -1, 0, 'title', session.updatedAt, undefined, undefined, title);
         }
-        if (title) this.insertDoc(null, session.id, -1, 0, 'title', session.updatedAt, undefined, undefined, title);
-      }
-      db.exec('COMMIT');
-    } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+    }
     const files = await wireFiles(session.dir, this.indexSubagents);
     for (const file of files) {
       if (this.options.isStopped?.()) return false;
@@ -473,7 +493,7 @@ export class SqliteSearchIndex {
     }
     if (this.walStuck) return pause();
     const paths = new Set(files.map((file) => file.path));
-    const stored = db.prepare('SELECT id,path,agent_id,policy FROM files WHERE session_id=?').all(session.id) as {
+    const stored = this.stmt('SELECT id,path,agent_id,policy FROM files WHERE session_id=?').all(session.id) as {
       id: number; path: string; agent_id: string; policy: string;
     }[];
     for (const file of stored) {
@@ -512,7 +532,7 @@ export class SqliteSearchIndex {
   private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
     const db = this.db;
     let st = await stat(path);
-    let file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
+    let file = this.stmt('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
     const policy = agentId === 'main' || this.indexSubagents ? 'full' : 'skip';
     if (policy === 'skip') {
       if (file?.policy === 'quarantined') {
@@ -530,7 +550,7 @@ export class SqliteSearchIndex {
       }
       return;
     }
-    const failure = db.prepare('SELECT strikes FROM file_failures WHERE path=?').get(path) as { strikes: number } | undefined;
+    const failure = this.stmt('SELECT strikes FROM file_failures WHERE path=?').get(path) as { strikes: number } | undefined;
     if (failure && failure.strikes >= 2) {
       if (!file) db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,'quarantined')")
         .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP));

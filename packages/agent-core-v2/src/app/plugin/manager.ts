@@ -19,7 +19,7 @@ import { parseManifest, type ParsedManifestResult } from './manifest';
 import { resolvePluginPrerequisites } from './prerequisites';
 import { currentPluginId, RENAMED_PLUGIN_IDS, resolveInstalledPluginId } from './renamedPlugins';
 import { resolveInstallSource } from './source';
-import { readInheritedInstalled, readInstalled, writeInstalled, type InstalledFile, type InstalledRecord } from './store';
+import { readInheritedInstalled, readInstalled, writeInstalled, type InstalledRecord } from './store';
 import type { PluginAgentRoot } from './types';
 import {
   normalizePluginId,

@@ -296,7 +296,7 @@ export async function readPersistedAgentPanelMetrics(
         const [facts, profile] = await Promise.all([
           readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
           readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
-            { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
+            { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true }),
         ]);
         const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
           && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
@@ -525,7 +525,7 @@ function invalidatePersistedMetrics(state: PersistedMetricsState, sourceKey?: st
     for (const read of state.reads) read.delete(sourceKey);
   } else if (sessionKey !== undefined) {
     const prefix = `${sessionKey}\0`;
-    for (const key of [...state.cache.keys()]) if (key.startsWith(prefix)) state.cache.delete(key);
+    for (const key of Array.from(state.cache.keys())) if (key.startsWith(prefix)) state.cache.delete(key);
     for (const read of state.reads) for (const key of read) if (key.startsWith(prefix)) read.delete(key);
   } else {
     state.cache.clear();

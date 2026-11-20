@@ -2282,7 +2282,7 @@ async function readBoundedGiantColdSessionStatus(
       MAIN_AGENT_ID,
       mainMetadata,
       undefined,
-      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true },
     ),
     readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined, { includeControls: true }),
   ]);
@@ -2408,7 +2408,7 @@ async function computeColdSessionBindingBase(
       MAIN_AGENT_ID,
       mainMetadata,
       signal,
-      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true },
     ),
     readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal, { includeControls: true }),
   ]);

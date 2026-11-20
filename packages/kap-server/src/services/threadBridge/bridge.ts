@@ -953,6 +953,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   }
   retry(): Promise<void> {
     if (this.lifetime.signal.aborted) return Promise.resolve();
+    if (this.state.outbox.length === 0 && (this.state.targets?.length ?? 0) === 0) return Promise.resolve();
     if (this.retryFlight !== undefined) return this.retryFlight;
     const flight = this.doRetry(); this.retryFlight = flight;
     void flight.finally(() => { if (this.retryFlight === flight) this.retryFlight = undefined; }).catch(() => {});

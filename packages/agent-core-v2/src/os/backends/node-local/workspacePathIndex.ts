@@ -110,7 +110,7 @@ export class WorkspacePathIndex {
     this.globCache.clear();
     this.fuzzyCache.clear();
     if (this.timer !== undefined) clearTimeout(this.timer);
-    this.timer = setTimeout(() => { this.timer = undefined; void this.refresh(); }, 50);
+    this.timer = setTimeout(() => { this.timer = undefined; void this.refresh(); }, 250);
     this.timer.unref();
   }
 
@@ -189,7 +189,7 @@ export class WorkspacePathIndex {
       const display = this.byPath.get(key)?.path ?? local;
       const entry = await this.cpu.request<WorkspacePathEntry | undefined>(
         { type: 'workspace.path', root: this.root, path: resolve(this.root, display) },
-        { signal: this.controller.signal, timeoutMs: 30_000 },
+        { signal: this.controller.signal, timeoutMs: 30_000, priority: 'low' },
       );
       if (this.disposed || !this.hasBaseSnapshot || epoch !== this.revision) return;
       if (entry?.kind === 'directory') {
@@ -201,7 +201,7 @@ export class WorkspacePathIndex {
         this.deletePathEntry(key);
         if ((this.directoryCounts.get(key) ?? 0) > 0) {
           const prefix = `${key}/`;
-          for (const existing of [...this.byPath.keys()]) {
+          for (const existing of Array.from(this.byPath.keys())) {
             if (existing.startsWith(prefix)) {
               const childDisplay = this.byPath.get(existing)?.path ?? existing;
               this.deletePathEntry(existing);
@@ -237,7 +237,10 @@ export class WorkspacePathIndex {
     }
     if (this.disposed || !this.watching) return;
     const revision = this.revision;
-    this.pending = this.cpu.request<WorkspacePathInventory>({ type: 'workspace.paths', root: this.root, limit: 250_000 }, { signal: this.controller.signal, timeoutMs: 120_000 })
+    this.pending = this.cpu.request<WorkspacePathInventory>(
+      { type: 'workspace.paths', root: this.root, limit: 250_000 },
+      { signal: this.controller.signal, timeoutMs: 120_000, priority: 'low' },
+    )
       .then(async inventory => {
         if (inventory.overflow) {
           if (this.disposed || revision !== this.revision) return;
@@ -323,14 +326,42 @@ export class WorkspacePathIndex {
     const matcher = picomatch(normalized, { dot: true, nocase: insensitive, basename: !normalized.includes('/') && normalized !== '*' });
     const depth = !normalized.includes('**') && (normalized === '*' || normalized.includes('/')) ? normalized.split('/').length : Infinity;
     const start = prefix === '' ? '' : `${prefix}/`;
-    const matches = this.current.entries.filter(entry => {
-      if (entry.kind !== 'file' || !(insensitive ? entry.path.toLowerCase().startsWith(start.toLowerCase()) : entry.path.startsWith(start))) return false;
-      const local = entry.path.slice(start.length);
-      return local.split('/').length <= depth && matcher(local);
-    }).toSorted((left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path))
-      .map(entry => resolve(this.root, entry.path));
-    if (this.globCache.size >= 32) this.globCache.delete(this.globCache.keys().next().value!);
-    this.globCache.set(key, matches);
+    const lowerStart = insensitive ? start.toLowerCase() : start;
+    const snapshot = this.current;
+    const entries = snapshot.entries;
+    const matchedEntries: WorkspacePathEntry[] = [];
+    let yieldedAt = performance.now();
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!;
+      if (entry.kind === 'file') {
+        const matchesPrefix = insensitive ? entry.path.toLowerCase().startsWith(lowerStart) : entry.path.startsWith(start);
+        if (matchesPrefix) {
+          const local = entry.path.slice(start.length);
+          if (local.split('/').length <= depth && matcher(local)) {
+            matchedEntries.push(entry);
+          }
+        }
+      }
+      if ((index & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
+        await yieldToEventLoop();
+        if (this.disposed) return undefined;
+        yieldedAt = performance.now();
+      }
+    }
+    matchedEntries.sort((left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path));
+    const matches: string[] = [];
+    for (let index = 0; index < matchedEntries.length; index++) {
+      matches.push(resolve(this.root, matchedEntries[index]!.path));
+      if ((index & 1023) === 1023 && performance.now() - yieldedAt >= 2.5) {
+        await yieldToEventLoop();
+        if (this.disposed) return undefined;
+        yieldedAt = performance.now();
+      }
+    }
+    if (this.current === snapshot) {
+      if (this.globCache.size >= 32) this.globCache.delete(this.globCache.keys().next().value!);
+      this.globCache.set(key, matches);
+    }
     return matches;
   }
 

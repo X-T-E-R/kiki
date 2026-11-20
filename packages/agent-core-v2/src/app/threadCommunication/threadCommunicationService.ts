@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { setImmediate as yieldToEventLoop, setTimeout as delay } from 'node:timers/promises';
 
 import { createKimiDeviceId } from '@kiki/oauth';
 
@@ -22,6 +22,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import { type PeerThreadOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, fromErrorPayload, isError2, toErrorPayload, type ErrorPayload } from '#/errors';
+import { isStorageError, StorageErrors } from '#/persistence/interface/storage';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
@@ -811,7 +812,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (requireCommunication && (!(await this.globalEnabled(caller)) || !(await this.workspaceEnabled(ref.workspaceId)))) {
       throw threadDisabled(ref.workspaceId);
     }
-    const summary = await this.sessions.get(ref.sessionId);
+    const summary = await this.sessions.get(ref.sessionId, ref.workspaceId);
     if (summary === undefined || summary.workspaceId !== ref.workspaceId) {
       throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${ref.sessionId}" does not exist.`);
     }
@@ -849,7 +850,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private async threadLabel(ref: ThreadRef): Promise<string> {
-    const summary = await this.sessions.get(ref.sessionId).catch(() => undefined);
+    const summary = await this.sessions.get(ref.sessionId, ref.workspaceId).catch(() => undefined);
     const title = summary?.workspaceId === ref.workspaceId ? summary.title : undefined;
     return title === undefined || title === '' ? ref.sessionId : `"${title}" (${ref.sessionId})`;
   }
@@ -1017,6 +1018,24 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     });
   }
 
+  private async resumeTargetSession(sessionId: string): Promise<ISessionScopeHandle | undefined> {
+    const retryDelaysMs = [100, 250, 500];
+    for (let attempt = 0;; attempt++) {
+      try {
+        return await waitWithSignal(this.sessionManager.resume(sessionId), this.mailboxController.signal);
+      } catch (error) {
+        const waitMs = retryDelaysMs[attempt];
+        const transient =
+          (isError2(error) && error.code === ErrorCodes.SESSION_BUSY) ||
+          isStorageError(error, StorageErrors.codes.STORAGE_LOCKED);
+        if (!transient || waitMs === undefined || this.closing || this.mailboxController.signal.aborted) {
+          throw error;
+        }
+        await delay(waitMs, undefined, { signal: this.mailboxController.signal, ref: false });
+      }
+    }
+  }
+
   private async deliverClaim(
     claim: ThreadDeliveryClaim,
   ): Promise<SendThreadMessageResult['delivery']> {
@@ -1043,7 +1062,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       const requireCommunication = message.producer.kind === 'room' ? message.producer.requireCommunication === true : !allowWhenDisabled;
       if (requireCommunication && !(await this.globalEnabled(message.target))) return 'pending';
       await this.requireThread(message.target, message.target, requireCommunication);
-      const session = await waitWithSignal(this.sessionManager.resume(message.target.sessionId), this.mailboxController.signal);
+      const session = await this.resumeTargetSession(message.target.sessionId);
       if (session === undefined) {
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
       }
@@ -1326,7 +1345,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async recordTerminalLifecycleChanges(refs: readonly ThreadRef[]): Promise<void> {
     for (const ref of refs) {
-      const summary = await this.sessions.get(ref.sessionId);
+      const summary = await this.sessions.get(ref.sessionId, ref.workspaceId);
       const reason =
         summary === undefined || summary.workspaceId !== ref.workspaceId
           ? 'deleted'

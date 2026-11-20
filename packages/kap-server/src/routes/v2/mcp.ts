@@ -13,7 +13,7 @@ import {
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
-import { errEnvelope, okEnvelope, ErrorCode } from '@kiki/protocol';
+import { okEnvelope, ErrorCode } from '@kiki/protocol';
 import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from '../_error';
 
 interface V2McpRouteHost {

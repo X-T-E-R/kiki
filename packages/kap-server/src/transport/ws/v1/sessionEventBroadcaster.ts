@@ -2389,6 +2389,9 @@ const TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES: ReadonlySet<string> = new Set([
   'llm.tools_snapshot',
   'profile.dynamic_snapshot',
   'profile.bind',
+  'task.restoration_settled',
+  'task.settlement_ready',
+  'prompt.outcome_committed',
 ]);
 
 function suppressedByTranscript(

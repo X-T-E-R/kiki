@@ -9,7 +9,6 @@ import {
   ITelemetryService,
   IWorkAdmissionService,
   ensureMainAgent,
-  isError2,
   ISessionMediaStore,
   sessionMediaOriginalsDir,
   type Scope,
@@ -34,7 +33,6 @@ import {
   sessionPromptFiles,
 } from '../lib/promptMedia';
 import { publishedInlineMediaReader } from '../services/publishedMedia';
-import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';

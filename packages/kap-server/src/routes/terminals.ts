@@ -3,7 +3,6 @@ import {
   ISessionIndex,
   ISessionManager,
   ISessionTerminalService,
-  isError2,
   Error2,
   type Scope,
 } from '@kiki/agent-core-v2';

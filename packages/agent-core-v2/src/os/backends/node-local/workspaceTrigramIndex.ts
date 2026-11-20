@@ -40,6 +40,7 @@ export class WorkspaceTrigramIndex {
   private latest?: WorkspacePathSnapshot;
   private rebuildRequested = false;
   private readonly updates = new Map<string, WorkspacePathEntry | undefined>();
+  private readonly eligibleCache = new WeakMap<WorkspacePathSnapshot, ReadonlySet<string>>();
   error?: unknown;
 
   constructor(private readonly root: string, cacheDir: string, private readonly cpu: ICpuWorkerService) {
@@ -78,7 +79,7 @@ export class WorkspaceTrigramIndex {
     this.pending = this.cpu.request<boolean>({ type: 'workspace.trigram.update', path: this.path, epoch, root: this.root,
       entries: updates.flatMap(([, entry]) => entry === undefined ? [] : [entry]),
       removed: updates.flatMap(([path, entry]) => entry === undefined ? [path] : []) },
-      { signal: this.controller.signal, timeoutMs: 30_000 }).then(accepted => {
+      { signal: this.controller.signal, timeoutMs: 30_000, priority: 'low' }).then(accepted => {
       if (!accepted) { this.revision = -1; return; }
       for (const [path, entry] of updates) if (this.updates.has(path) && this.updates.get(path) === entry) {
         this.updates.delete(path);
@@ -103,7 +104,7 @@ export class WorkspaceTrigramIndex {
     const epoch = randomUUID();
     this.epoch = undefined;
     this.pending = (async () => {
-      const options = { signal: this.controller.signal, timeoutMs: 120_000 };
+      const options = { signal: this.controller.signal, timeoutMs: 120_000, priority: 'low' as const };
       const started = await this.cpu.request<boolean>({ type: 'workspace.trigram.begin', path: this.path, epoch, owner: this.owner }, options);
       if (!started) return;
       for (let offset = 0; offset < files.length; offset += 64) {
@@ -142,7 +143,15 @@ export class WorkspaceTrigramIndex {
       return undefined;
     }
     if (paths === undefined || this.revision !== snapshot.revision) return undefined;
-    const eligible = new Set(snapshot.entries.filter(entry => entry.kind === 'file' && !entry.sensitive).map(entry => entry.path));
+    let eligible = this.eligibleCache.get(snapshot);
+    if (eligible === undefined) {
+      const next = new Set<string>();
+      for (const entry of snapshot.entries) {
+        if (entry.kind === 'file' && !entry.sensitive) next.add(entry.path);
+      }
+      this.eligibleCache.set(snapshot, next);
+      eligible = next;
+    }
     const candidates = [...new Set([...paths, ...this.dirtyPaths])].filter(path => eligible.has(path));
     return candidates.length > limit ? undefined : candidates;
   }

@@ -4,6 +4,7 @@ import type { AgentMeta, SessionMeta } from '@kiki/agent-core-v2/session/session
 import { IHookRulesRegistry } from '@kiki/agent-core-v2/features/externalHooks/app/hookRules';
 import { IHookRulesSession } from '@kiki/agent-core-v2/features/externalHooks/session/hookRules';
 import { IAgentHookRules } from '@kiki/agent-core-v2/features/externalHooks/agent/hookRules';
+import { ICpuWorkerService } from '@kiki/agent-core-v2/app/cpuWorker/cpuWorkerService';
 import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import {
   agentHooksInspectSchema,
@@ -118,7 +119,17 @@ async function readCachedPersistedHookInspection(
   const flightKey = `${agentScope}\0${resolvedSize}\0${mtime ?? ''}\0${metaStamp}`;
   const existingFlight = state.flights.get(flightKey);
   if (existingFlight !== undefined) return existingFlight;
-  const promise = readPersistedHookInspection(core.accessor.get(IAppendLogStore), agentScope, metadata, undefined, storage)
+  let cpuWorkers: ICpuWorkerService | undefined;
+  try { cpuWorkers = core.accessor.get(ICpuWorkerService); } catch { cpuWorkers = undefined; }
+  const promise = readPersistedHookInspection(
+    core.accessor.get(IAppendLogStore),
+    agentScope,
+    metadata,
+    undefined,
+    storage,
+    core.accessor.get(IAtomicDocumentStore),
+    cpuWorkers,
+  )
     .then(async (value) => {
       const [afterSize, afterMtime] = await Promise.all([
         logicalByteSize(storage, agentScope, 'wire.jsonl'),

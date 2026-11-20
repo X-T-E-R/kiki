@@ -13,7 +13,7 @@ import {
 import type { KimiHostIdentity } from '@kiki/oauth';
 
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode, errEnvelope, exportSessionParamsSchema, exportSessionRequestSchema } from '@kiki/protocol';
+import { ErrorCode, exportSessionParamsSchema, exportSessionRequestSchema } from '@kiki/protocol';
 import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 interface SessionExportRouteHost {

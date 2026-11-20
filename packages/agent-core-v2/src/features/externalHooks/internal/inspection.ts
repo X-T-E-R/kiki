@@ -5,9 +5,12 @@ import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 import { PermissionSetMode, permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import { ConfigUpdate, ProfileBind, profileKey } from '#/agent/profile/profileOps';
 import { event2FromRecord, type Event2Class } from '#/app/event/event2';
-import { readLogicalBytes } from '#/persistence/coldSegmentLog';
+import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
+import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { readPersistedAgentCheckpoint } from '#/session/persistedAgentCheckpoint';
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { subagentProfileName } from '#/session/agentLifecycle/subagentMetadata';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
@@ -30,11 +33,20 @@ const ALWAYS_PARSE_HOOK_TYPES = new Set<string>([
   HookObserved.type,
 ]);
 
+const HOOK_CHECKPOINT_KEYS = new Set<string>([
+  profileKey.name,
+  permissionModeKey.name,
+  hookStateKey.name,
+]);
+
 async function* filteredHookInspectionRecords(
   storage: IFileSystemStorageService,
   scope: string,
+  startOffset: number,
+  size: number | undefined,
   signal?: AbortSignal,
 ): AsyncIterable<WireRecord> {
+  if (size !== undefined && startOffset >= size) return;
   let pending = Buffer.alloc(0);
   let skip = false;
   let yieldedAt = performance.now();
@@ -62,7 +74,8 @@ async function* filteredHookInspectionRecords(
     }
     return undefined;
   };
-  for await (const raw of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, undefined, { chunkBytes: HOOK_SCAN_CHUNK_BYTES })) {
+  const range = startOffset > 0 && size !== undefined ? { start: startOffset, end: size - 1 } : undefined;
+  for await (const raw of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, range, { chunkBytes: HOOK_SCAN_CHUNK_BYTES })) {
     signal?.throwIfAborted();
     const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
     let start = 0;
@@ -118,13 +131,48 @@ export async function readPersistedHookInspection(
   metadata: AgentMeta | undefined,
   signal?: AbortSignal,
   storage?: IFileSystemStorageService,
+  docs?: IAtomicDocumentStore,
+  workers?: ICpuWorkerService,
 ): Promise<{ binding: HookBinding; clock: DeepReadonly<HooksState> }> {
   let profile = structuredClone(profileKey.initial());
   let clock = hookStateKey.initial();
   let permissionMode: string | undefined;
   let profileSeen = false;
+  let startOffset = 0;
+  let wireSize: number | undefined;
+  if (storage !== undefined && docs !== undefined && typeof storage.readStream === 'function') {
+    const [size, mtime] = await Promise.all([
+      logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY).catch(() => undefined),
+      storage.mtime(scope, AGENT_WIRE_RECORD_KEY).catch(() => undefined),
+    ]);
+    wireSize = size;
+    if (size !== undefined && size > 0) {
+      const checkpoint = await readPersistedAgentCheckpoint(
+        docs,
+        storage,
+        scope,
+        size,
+        mtime ?? 0,
+        HOOK_CHECKPOINT_KEYS,
+        workers,
+        signal,
+      ).catch(() => undefined);
+      if (
+        checkpoint !== undefined &&
+        checkpoint.states.has(profileKey.name) &&
+        checkpoint.states.has(hookStateKey.name)
+      ) {
+        profile = structuredClone(checkpoint.states.get(profileKey.name) as typeof profile);
+        clock = checkpoint.states.get(hookStateKey.name) as HooksState;
+        const ckptPerm = checkpoint.states.get(permissionModeKey.name);
+        if (typeof ckptPerm === 'string') permissionMode = ckptPerm;
+        profileSeen = true;
+        startOffset = checkpoint.offset;
+      }
+    }
+  }
   const records = storage !== undefined && typeof storage.readStream === 'function'
-    ? filteredHookInspectionRecords(storage, scope, signal)
+    ? filteredHookInspectionRecords(storage, scope, startOffset, wireSize, signal)
     : appendLog.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal });
   for await (const record of records) {
     if (record.type === PermissionSetMode.type) {
