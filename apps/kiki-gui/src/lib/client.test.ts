@@ -2488,5 +2488,33 @@ describe('KikiClient background preview lane and high-priority media bypass', ()
       await client.klient.close();
     }
   });
+
+  it('propagates CallOptions (AbortSignal and timeoutMs) through sessionView(sessionId).subagents', async () => {
+    const observedSignals: Array<AbortSignal | null | undefined> = [];
+    vi.stubGlobal('fetch', vi.fn((_input: string | URL, init?: RequestInit) => {
+      observedSignals.push(init?.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    }));
+
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const view = client.sessionView('s-subagents');
+      const controller = new AbortController();
+      const abortedRequest = view.subagents!({ q: 'alpha', limit: 10 }, { signal: controller.signal });
+      expect(observedSignals).toHaveLength(1);
+      expect(observedSignals[0]?.aborted).toBe(false);
+      controller.abort();
+      await expect(abortedRequest).rejects.toThrow();
+      expect(observedSignals[0]?.aborted).toBe(true);
+
+      const timedOutRequest = view.subagents!({ q: 'beta', limit: 10 }, { timeoutMs: 25 });
+      await expect(timedOutRequest).rejects.toMatchObject({ code: API_CODES.TIMEOUT });
+      expect(observedSignals[1]?.aborted).toBe(true);
+    } finally {
+      await client.klient.close();
+    }
+  });
 });
 

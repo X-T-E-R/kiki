@@ -348,9 +348,13 @@ function Resolve-LaunchTarget([string]$Root) {
 function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background) {
     $target = Resolve-LaunchTarget $Root
     $previousHome = $env:KIKI_HOME
+    $previousNoRedirect = $env:KIKI_NO_RELEASE_REDIRECT
     try {
         if ($LaunchHome) { $env:KIKI_HOME = $LaunchHome }
         elseif ((Split-Path -Leaf $target.Root) -eq 'Kiki-Dev') { $env:KIKI_HOME = $target.Root }
+        if ($null -ne $previousNoRedirect) {
+            Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
+        }
         $startParams = @{
             FilePath = $target.MainPath
             WorkingDirectory = $target.ReleasePath
@@ -363,6 +367,12 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
     }
     finally {
         $env:KIKI_HOME = $previousHome
+        if ($null -eq $previousNoRedirect) {
+            Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:KIKI_NO_RELEASE_REDIRECT = $previousNoRedirect
+        }
     }
 }
 

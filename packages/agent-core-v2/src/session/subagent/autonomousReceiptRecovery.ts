@@ -17,7 +17,10 @@ interface ReceiptCheckpoint {
 }
 const folds = new Map([...autonomousReceiptsKey.replayable.folds].filter(([event]) => event.durable).map(([event, fold]) => [event.type, { event, fold }]));
 const FOLD_SUBSTRINGS = [...folds.keys()].map((type) => Buffer.from(`"${type}"`));
-const TRIGGER_SUBSTRINGS = [Buffer.from('"parentReceiptManaged"')];
+const TRIGGER_SUBSTRINGS = [
+  Buffer.from('"parentReceiptManaged":false'),
+  Buffer.from('"parentReceiptManaged": false'),
+];
 const ACTIVE_ONLY_EVENT_TYPES = new Set<string>([
   ContextAppendLoopEvent.type,
   ContextAppendMessage.type,

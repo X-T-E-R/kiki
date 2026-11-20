@@ -808,14 +808,20 @@ impl BackendManager {
                         .ok()
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or_else(|| "32".to_string());
-                    let command = app
+                    let mut command = app
                         .shell()
                         .sidecar("kiki-server")
                         .map_err(|error| {
                             DesktopStartupFailure::plain(format!(
                                 "Cannot resolve the packaged Kiki backend: {error}"
                             ))
-                        })?
+                        })?;
+                    if release_redirect::has_redirect_guard_env() {
+                        command = command
+                            .env_clear()
+                            .envs(release_redirect::inherited_env_without_redirect_guard());
+                    }
+                    let command = command
                         .args(args)
                         .env("UV_THREADPOOL_SIZE", &threadpool_size)
                         .env("KIKI_HOME", &runtime.kiki_home)

@@ -53,21 +53,27 @@ pub(crate) struct RedirectPlan {
 /// and `<RuntimeRoot>/current.json` points to a different, valid release, spawn the promoted
 /// executable with the exact original arguments and exit this process immediately.
 ///
-/// Must run at the very beginning of `run()`, before single-instance locking, window creation,
-/// or sidecar startup.
+/// Consumes and clears any inherited `KIKI_NO_RELEASE_REDIRECT` loop-breaker from the current
+/// process environment so `kiki-server` and descendant processes never inherit it.
+///
+/// Must run at the very beginning of `run()`, single-threaded, before single-instance locking,
+/// window creation, or sidecar startup.
 pub fn maybe_redirect_to_current_release() {
     let Ok(current_exe) = env::current_exe() else {
+        clear_redirect_guard_env();
         return;
     };
     let current_dir = env::current_dir().ok();
     let args: Vec<OsString> = env::args_os().collect();
     let no_redirect_env = env::var_os(NO_RELEASE_REDIRECT_ENV);
-    let Some(plan) = resolve_redirect(
+    let plan = resolve_redirect(
         &current_exe,
         current_dir.as_deref(),
         &args,
         no_redirect_env.as_deref(),
-    ) else {
+    );
+    clear_redirect_guard_env();
+    let Some(plan) = plan else {
         return;
     };
     match build_redirect_command(&plan).spawn() {
@@ -79,6 +85,29 @@ pub fn maybe_redirect_to_current_release() {
             );
         }
     }
+}
+
+pub fn has_redirect_guard_env() -> bool {
+    env::var_os(NO_RELEASE_REDIRECT_ENV).is_some()
+}
+
+pub fn inherited_env_without_redirect_guard() -> Vec<(OsString, OsString)> {
+    filter_env_without_redirect_guard(env::vars_os())
+}
+
+pub(crate) fn clear_redirect_guard_env() {
+    if env::var_os(NO_RELEASE_REDIRECT_ENV).is_some() {
+        env::remove_var(NO_RELEASE_REDIRECT_ENV);
+    }
+}
+
+pub(crate) fn filter_env_without_redirect_guard<I>(vars: I) -> Vec<(OsString, OsString)>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    vars.into_iter()
+        .filter(|(key, _)| !env_key_matches(key, NO_RELEASE_REDIRECT_ENV))
+        .collect()
 }
 
 /// Resolve the executable path to use when launching sibling windows or creating shortcuts.
@@ -144,7 +173,9 @@ pub(crate) fn resolve_redirect(
     let normalized_exe = strip_windows_verbatim_prefix(current_exe);
     let layout = parse_release_layout(&normalized_exe)?;
     let target = resolve_promoted_release(&layout)?;
-    if target.release_id == layout.release_id {
+    if names_match(&target.release_id, &layout.release_id)
+        || paths_equal(&normalized_exe, &target.desktop_exe)
+    {
         return None;
     }
     let working_dir = current_dir.and_then(|cwd| {
@@ -193,12 +224,16 @@ pub(crate) fn is_valid_release_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 49
         && bytes[24] == b'-'
-        && bytes[..24]
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-        && bytes[25..]
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        && bytes[..24].iter().all(|byte| is_valid_release_hex_byte(*byte))
+        && bytes[25..].iter().all(|byte| is_valid_release_hex_byte(*byte))
+}
+
+fn is_valid_release_hex_byte(byte: u8) -> bool {
+    if cfg!(windows) {
+        byte.is_ascii_hexdigit()
+    } else {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    }
 }
 
 pub(crate) fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
@@ -346,6 +381,12 @@ fn names_match(actual: &str, expected: &str) -> bool {
     } else {
         actual == expected
     }
+}
+
+fn env_key_matches(key: &OsStr, expected: &str) -> bool {
+    key.to_str()
+        .map(|text| names_match(text, expected))
+        .unwrap_or(false)
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
@@ -756,12 +797,170 @@ mod tests {
         let Some(out_path) = env::var_os("KIKI_REDIRECT_PROBE_OUT") else {
             return;
         };
+        let before = env::var(NO_RELEASE_REDIRECT_ENV).ok();
+        let after = if env::var_os("KIKI_REDIRECT_PROBE_CONSUME").is_some() {
+            maybe_redirect_to_current_release();
+            env::var(NO_RELEASE_REDIRECT_ENV).ok()
+        } else {
+            before.clone()
+        };
+        let grandchild_saw_guard = if env::var_os("KIKI_REDIRECT_PROBE_CONSUME").is_some() {
+            let grandchild_out = env::var_os("KIKI_REDIRECT_GRANDCHILD_OUT");
+            if let Some(gc_path) = grandchild_out {
+                let status = Command::new(env::current_exe().unwrap())
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "release_redirect::tests::redirect_child_probe",
+                    ])
+                    .env("KIKI_REDIRECT_PROBE_OUT", &gc_path)
+                    .env_remove("KIKI_REDIRECT_PROBE_CONSUME")
+                    .env_remove("KIKI_REDIRECT_GRANDCHILD_OUT")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "grandchild probe failed with {status}");
+                let gc_report: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&gc_path).unwrap()).unwrap();
+                gc_report["noRedirectEnv"].as_str().map(str::to_string)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let payload = serde_json::json!({
             "cwd": strip_windows_verbatim_prefix(&env::current_dir().unwrap()).to_string_lossy(),
             "exe": strip_windows_verbatim_prefix(&env::current_exe().unwrap()).to_string_lossy(),
-            "noRedirectEnv": env::var(NO_RELEASE_REDIRECT_ENV).ok(),
+            "noRedirectEnv": before,
+            "noRedirectEnvAfterConsume": after,
+            "grandchildNoRedirectEnv": grandchild_saw_guard,
         });
         fs::write(out_path, payload.to_string()).unwrap();
+    }
+
+    #[test]
+    fn consumes_and_clears_redirect_guard_env_before_spawning_descendants() {
+        let rt = TempRuntime::new();
+        let out_path = rt.root.join("probe-consume.json");
+        let gc_out_path = rt.root.join("probe-grandchild.json");
+        let status = Command::new(env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "release_redirect::tests::redirect_child_probe",
+            ])
+            .env(NO_RELEASE_REDIRECT_ENV, "1")
+            .env("KIKI_REDIRECT_PROBE_OUT", &out_path)
+            .env("KIKI_REDIRECT_PROBE_CONSUME", "1")
+            .env("KIKI_REDIRECT_GRANDCHILD_OUT", &gc_out_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "consume probe failed with {status}");
+        let report: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+        assert_eq!(report["noRedirectEnv"].as_str(), Some("1"));
+        assert!(report["noRedirectEnvAfterConsume"].is_null());
+        assert!(report["grandchildNoRedirectEnv"].is_null());
+    }
+
+    #[test]
+    fn filters_redirect_guard_from_inherited_sidecar_env() {
+        let filtered = filter_env_without_redirect_guard(vec![
+            (OsString::from("KIKI_HOME"), OsString::from(r"C:\kiki")),
+            (OsString::from(NO_RELEASE_REDIRECT_ENV), OsString::from("1")),
+            (OsString::from("kiki_no_release_redirect"), OsString::from("1")),
+            (OsString::from("PATH"), OsString::from(r"C:\Windows")),
+        ]);
+        let keys: Vec<String> = filtered
+            .iter()
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        assert!(keys.iter().any(|k| k == "KIKI_HOME"));
+        assert!(keys.iter().any(|k| k == "PATH"));
+        assert!(!keys.iter().any(|k| k == NO_RELEASE_REDIRECT_ENV));
+        if cfg!(windows) {
+            assert!(!keys.iter().any(|k| k == "kiki_no_release_redirect"));
+        } else {
+            assert!(keys.iter().any(|k| k == "kiki_no_release_redirect"));
+        }
+    }
+
+    #[test]
+    fn handles_uppercase_hex_casing_and_junction_aliases_without_redundant_hop() {
+        let rt = TempRuntime::new();
+        let new_dir = rt.create_release(NEW_RELEASE_ID, b"new-gui", b"new-srv");
+        rt.write_current_release(NEW_RELEASE_ID);
+
+        if cfg!(windows) {
+            // Current release invoked with uppercase hex casing must short-circuit without spawning.
+            let upper_new_exe = rt
+                .root
+                .join("releases")
+                .join(NEW_RELEASE_ID.to_ascii_uppercase())
+                .join(DESKTOP_EXE_NAME);
+            assert!(
+                resolve_redirect(
+                    &upper_new_exe,
+                    Some(upper_new_exe.parent().unwrap()),
+                    &os_args(&["kiki-desktop.exe"]),
+                    None,
+                )
+                .is_none()
+            );
+
+            // Old release invoked with uppercase hex casing still redirects to the promoted release.
+            let old_hex_id = "cccccccccccccccccccccccc-dddddddddddddddddddddddd";
+            let _old_dir = rt.create_release(old_hex_id, b"old-gui", b"old-srv");
+            let upper_old_exe = rt
+                .root
+                .join("releases")
+                .join(old_hex_id.to_ascii_uppercase())
+                .join(DESKTOP_EXE_NAME);
+            let plan = resolve_redirect(
+                &upper_old_exe,
+                Some(upper_old_exe.parent().unwrap()),
+                &os_args(&["kiki-desktop.exe"]),
+                None,
+            )
+            .expect("uppercase old release on Windows should redirect to promoted release");
+            assert_eq!(plan.executable, strip_windows_verbatim_prefix(&new_dir.join(DESKTOP_EXE_NAME)));
+        }
+
+        // A distinct valid release ID directory aliased via junction (Windows) or symlink (Unix)
+        // to the promoted release must short-circuit via paths_equal without spawning.
+        let alias_dir = rt.root.join("releases").join(OLD_RELEASE_ID);
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&alias_dir)
+                .arg(&new_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "mklink /J failed with {status}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&new_dir, &alias_dir).unwrap();
+        }
+        let alias_exe = alias_dir.join(DESKTOP_EXE_NAME);
+        let plan = resolve_redirect(
+            &alias_exe,
+            Some(&alias_dir),
+            &os_args(&["kiki-desktop.exe"]),
+            None,
+        );
+        let _ = fs::remove_dir(&alias_dir).or_else(|_| fs::remove_file(&alias_dir));
+        assert!(
+            plan.is_none(),
+            "junction/symlink alias pointing to promoted release must not trigger a redundant hop"
+        );
     }
 
     #[test]
@@ -770,7 +969,11 @@ mod tests {
         assert!(is_valid_release_id(NEW_RELEASE_ID));
         assert!(!is_valid_release_id("11111111111111111111111-222222222222222222222222"));
         assert!(!is_valid_release_id("111111111111111111111111_222222222222222222222222"));
-        assert!(!is_valid_release_id("AAAAAAAAAAAAAAAAAAAAAAAA-BBBBBBBBBBBBBBBBBBBBBBBB"));
+        if cfg!(windows) {
+            assert!(is_valid_release_id("AAAAAAAAAAAAAAAAAAAAAAAA-BBBBBBBBBBBBBBBBBBBBBBBB"));
+        } else {
+            assert!(!is_valid_release_id("AAAAAAAAAAAAAAAAAAAAAAAA-BBBBBBBBBBBBBBBBBBBBBBBB"));
+        }
         assert!(!is_valid_release_id("11111111111111111111111g-222222222222222222222222"));
     }
 }

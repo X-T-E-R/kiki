@@ -145,6 +145,39 @@ describe('session history page lifecycle', () => {
     } finally { await klient.close(); }
   });
 
+  it('classifies /sessions/:id/subagents as a reading operation with readingTimeoutMs and uncapped body size', async () => {
+    let readingTimeout = 0;
+    const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 45);
+        init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Cancelled', 'AbortError')); }, { once: true });
+      });
+      return envelope({
+        items: [{
+          id: 'task_sub_1',
+          session_id: 's1',
+          kind: 'subagent',
+          agent_id: 'sub_1',
+          status: 'completed',
+          description: 'needle',
+        }],
+        total: 1,
+        matched: 1,
+        has_more: false,
+      });
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', timeoutMs: 5,
+      readingTimeoutMs: () => readingTimeout, fetch: fetchMock as typeof fetch });
+    try {
+      await expect(klient.session('s1').view.subagents!({ q: 'needle' })).resolves.toMatchObject({ matched: 1 });
+      readingTimeout = 10;
+      await expect(klient.session('s1').view.subagents!({ q: 'needle' })).rejects.toThrow('call timed out after 10ms');
+      readingTimeout = 0;
+      await expect(klient.session('s1').view.subagents!({ q: 'needle' })).resolves.toMatchObject({ matched: 1 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally { await klient.close(); }
+  });
+
   it('still rejects malformed JSON and invalid UTF-8 on uncapped history pages', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('{invalid json'))

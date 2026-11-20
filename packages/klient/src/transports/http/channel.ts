@@ -271,7 +271,9 @@ export class HttpChannel implements KlientChannel {
   }
 
   private requestJson<T>(path: string, options: HttpRestJsonOptions = {}): Promise<T> {
-    const reading = /\/klient\/session-view\//.test(path) || /\/transcript(?:\/(?:detail|details|ops|user-messages|plan))?$/.test(path);
+    const reading = /\/klient\/session-view\//.test(path)
+      || /\/transcript(?:\/(?:detail|details|ops|user-messages|plan))?$/.test(path)
+      || /\/sessions\/[^/]+\/subagents$/.test(path);
     const callOptions = reading ? { ...options, timeoutMs: options.timeoutMs ?? this.readingTimeoutMs() } : options;
     return this.performFetch(path, callOptions, async (response, acceptRequestId, signal) => {
       if (response.status === 404 && options.allowMissingRoute === true) {

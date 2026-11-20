@@ -875,7 +875,7 @@ export class KikiClient {
       snapshot: (options) => this.run(() => view.snapshot(options)),
       transcript: view.transcript,
       bootstrap: view.bootstrap?.bind(view),
-      subagents: view.subagents === undefined ? undefined : (options) => this.run(() => view.subagents!(options)),
+      subagents: view.subagents === undefined ? undefined : (input, options) => this.run(() => view.subagents!(input, options)),
       subscribe: (input, onSignal) => view.subscribe(input, onSignal),
     };
   }
