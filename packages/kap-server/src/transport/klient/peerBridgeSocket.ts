@@ -18,11 +18,23 @@ interface PendingForward {
 
 const DEFAULT_PEER_BRIDGE_OPERATIONS: readonly PeerBridgeOperation[] = ['list', 'read', 'send', 'wait', 'create', 'tools_list', 'tools_call'];
 
+const PEER_BRIDGE_MAX_RESPONSE_MB_ENV = 'KIKI_PEER_BRIDGE_MAX_RESPONSE_MB';
+const DEFAULT_TOOLS_CALL_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+function toolsCallMaxResponseBytes(): number {
+  const raw = process.env[PEER_BRIDGE_MAX_RESPONSE_MB_ENV]?.trim();
+  if (raw !== undefined && /^\d+$/.test(raw)) {
+    const mb = Number.parseInt(raw, 10);
+    if (mb > 0) return mb * 1024 * 1024;
+  }
+  return DEFAULT_TOOLS_CALL_MAX_RESPONSE_BYTES;
+}
+
 function maxResponseBytes(operation: PeerBridgeOperation): number {
   if (operation === 'read') return SESSION_READ_BODY_BYTES;
-  if (operation === 'tools_call') return 16 * 1024 * 1024;
+  if (operation === 'tools_call') return toolsCallMaxResponseBytes();
   if (operation === 'tools_list') return 512 * 1024;
-  if (operation === 'list') return 128 * 1024;
+  if (operation === 'list') return 1024 * 1024;
   return 16 * 1024;
 }
 

@@ -39,6 +39,8 @@ import type {
   Session,
   SessionSeedCarry,
   SessionSeedMode,
+  SessionSubagentsQuery,
+  SessionSubagentsResponse,
   SetSessionBranchToolsLockRequest,
   SetSessionBranchToolsLockResponse,
 } from '@kiki/protocol';
@@ -608,6 +610,11 @@ export interface AgentTranscriptResponse {
 
 export interface SessionTransport {
   getSession(sessionId: string): Promise<Session>;
+  searchSubagents?(
+    sessionId: string,
+    query?: SessionSubagentsQuery,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionSubagentsResponse>;
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult>;
   /** HTTP-only durable ingress reconciliation; absent on memory/legacy transports. */
   listDurableIngress?(sessionId: string, options?: { readonly agentId?: string; readonly cursor?: string }): Promise<PromptListResponse>;

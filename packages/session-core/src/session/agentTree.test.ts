@@ -2187,4 +2187,34 @@ describe('live agent status during partial history recovery', () => {
       executorId: "native",
     });
   });
+
+  it("builds a 10,000-subagent forest cleanly without quadratic overhead", () => {
+    const rows = Array.from({ length: 10_000 }, (_, index) =>
+      compactSnapshot({
+        id: `agent-${String(index).padStart(5, "0")}`,
+        parent_agent_id: "main",
+        profile: "worker",
+        label: `Worker ${index}`,
+        name_source: "user_label",
+        status: index < 2 ? "running" : "completed",
+        activity_status: index < 2 ? "running" : "completed",
+        status_source: "metadata",
+        live: index < 2,
+        created_at: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+        completed_at: index < 2 ? undefined : new Date(1_700_000_000_500 + index * 1000).toISOString(),
+      }),
+    );
+
+    const start = performance.now();
+    const forest = sessionAgentForestFromAgentSnapshots(
+      new Map([["main", snapshot()]]),
+      rows,
+    );
+    const elapsedMs = performance.now() - start;
+
+    expect(Object.keys(forest.byId)).toHaveLength(10_001);
+    expect(forest.byId["main"]?.childIds).toHaveLength(10_000);
+    expect(forest.byId["agent-09999"]?.label).toBe("Worker 9999");
+    expect(elapsedMs).toBeLessThan(250);
+  });
 });

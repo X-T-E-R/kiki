@@ -4,6 +4,19 @@ import { abortable } from '#/_base/utils/abort';
 import { Error2, ErrorCodes } from '#/errors';
 
 export const SESSION_RESTORE_TIMEOUT_MS = 60_000;
+export const SESSION_RESTORE_TIMEOUT_ENV = 'KIKI_SESSION_RESTORE_TIMEOUT_MS';
+
+export function resolveSessionRestoreTimeoutMs(configuredMs?: number): number {
+  if (configuredMs !== undefined && Number.isInteger(configuredMs) && configuredMs >= 5_000 && configuredMs <= 2_147_483_647) {
+    return configuredMs;
+  }
+  const raw = process.env[SESSION_RESTORE_TIMEOUT_ENV]?.trim();
+  if (raw !== undefined && raw.length > 0) {
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed >= 5_000 && parsed <= 2_147_483_647) return parsed;
+  }
+  return SESSION_RESTORE_TIMEOUT_MS;
+}
 
 export interface RestoreProgress {
   readonly phase: string;
@@ -49,12 +62,13 @@ export function throwIfRestoreAborted(): void {
   restoreSignal()?.throwIfAborted();
 }
 
-export function withRestoreDeadline<T>(action: () => Promise<T>): Promise<T> {
+export function withRestoreDeadline<T>(action: () => Promise<T>, timeoutMs?: number): Promise<T> {
   if (attempts.getStore() !== undefined) return action();
-  return withRestoreLifetime({ ownerManaged: false, signal: new AbortController().signal }, action);
+  return withRestoreLifetime({ ownerManaged: false, signal: new AbortController().signal }, action, timeoutMs);
 }
 
-export function withRestoreLifetime<T>(lifetime: RestoreLifetime, action: () => Promise<T>): Promise<T> {
+export function withRestoreLifetime<T>(lifetime: RestoreLifetime, action: () => Promise<T>, timeoutMs?: number): Promise<T> {
+  const effectiveTimeoutMs = resolveSessionRestoreTimeoutMs(timeoutMs);
   const deadline = new AbortController();
   const signal = AbortSignal.any([deadline.signal, lifetime.signal]);
   const inherited = attempts.getStore();
@@ -64,9 +78,9 @@ export function withRestoreLifetime<T>(lifetime: RestoreLifetime, action: () => 
       if (lifetime.ownerManaged) return;
       const phase = [...attempt.phases.values()].at(-1) ?? 'restore_queue';
       deadline.abort(new Error2(ErrorCodes.SESSION_BUSY,
-        `Session restoration timed out after ${SESSION_RESTORE_TIMEOUT_MS / 1000}s during ${phase}. Retry the saved message or cancel it.`,
+        `Session restoration timed out after ${effectiveTimeoutMs / 1000}s during ${phase}. Retry the saved message or cancel it.`,
         { details: { phase, elapsedMs: Date.now() - attempt.startedAt } }));
-    }, SESSION_RESTORE_TIMEOUT_MS);
+    }, effectiveTimeoutMs);
     timeout?.unref?.();
     try {
       signal.throwIfAborted();

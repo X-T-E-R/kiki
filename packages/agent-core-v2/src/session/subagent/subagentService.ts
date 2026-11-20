@@ -216,30 +216,56 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
 
   private async restoreReceipts(signal: AbortSignal): Promise<boolean> {
     const meta = await retryReceiptDiscovery(() => this.metadata.read(), signal);
+    const candidates = Object.entries(meta.agents ?? {}).filter(([agentId, agent]) =>
+      agentId !== MAIN_AGENT_ID &&
+      agent.parentAgentId !== null &&
+      agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] !== 'local' &&
+      this.agentLifecycle.get(agentId) === undefined,
+    );
+    if (candidates.length === 0) return true;
     let complete = true;
-    for (const [agentId, agent] of Object.entries(meta.agents ?? {})) {
-      signal.throwIfAborted();
-      if (agentId === MAIN_AGENT_ID || agent.parentAgentId === null ||
-        agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' || this.agentLifecycle.get(agentId) !== undefined) continue;
-      try {
-        await retryReceiptDiscovery(async () => {
-          const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents, signal);
-          signal.throwIfAborted();
-          if (Object.keys(pending).length === 0) return;
-          const parentId = agent.parentAgentId ?? MAIN_AGENT_ID;
-          if (this.agentLifecycle.get(parentId) === undefined) {
-            const parent = meta.agents?.[parentId];
-            await this.agentLifecycle.create({ agentId: parentId, delegator: parent?.delegator ?? (parent?.parentAgentId === undefined || parent.parentAgentId === null ? undefined : { kind: 'agent', agentId: parent.parentAgentId }) });
-          }
-          signal.throwIfAborted();
-          await this.agentLifecycle.create({ agentId, delegator: agent.delegator ?? { kind: 'agent', agentId: parentId } });
-        }, signal);
-      } catch (error) {
+    let cursor = 0;
+    let materializeChain: Promise<void> = Promise.resolve();
+    const enqueueMaterialize = (task: () => Promise<void>): Promise<void> => {
+      const next = materializeChain.then(task);
+      materializeChain = next.catch(() => {});
+      return next;
+    };
+    const workerCount = Math.min(16, candidates.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
         signal.throwIfAborted();
-        complete = false;
-        this.log.error('autonomous subagent receipt discovery failed', { agentId, error });
+        const index = cursor++;
+        if (index >= candidates.length) return;
+        const [agentId, agent] = candidates[index]!;
+        if (this.agentLifecycle.get(agentId) !== undefined) continue;
+        try {
+          await retryReceiptDiscovery(async () => {
+            const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents, signal);
+            signal.throwIfAborted();
+            if (Object.keys(pending).length === 0) return;
+            await enqueueMaterialize(async () => {
+              signal.throwIfAborted();
+              if (this.agentLifecycle.get(agentId) !== undefined) return;
+              const parentId = agent.parentAgentId ?? MAIN_AGENT_ID;
+              if (this.agentLifecycle.get(parentId) === undefined) {
+                const parent = meta.agents?.[parentId];
+                await this.agentLifecycle.create({ agentId: parentId, delegator: parent?.delegator ?? (parent?.parentAgentId === undefined || parent.parentAgentId === null ? undefined : { kind: 'agent', agentId: parent.parentAgentId }) });
+              }
+              signal.throwIfAborted();
+              if (this.agentLifecycle.get(agentId) === undefined) {
+                await this.agentLifecycle.create({ agentId, delegator: agent.delegator ?? { kind: 'agent', agentId: parentId } });
+              }
+            });
+          }, signal);
+        } catch (error) {
+          signal.throwIfAborted();
+          complete = false;
+          this.log.error('autonomous subagent receipt discovery failed', { agentId, error });
+        }
       }
-    }
+    });
+    await Promise.all(workers);
     return complete;
   }
 

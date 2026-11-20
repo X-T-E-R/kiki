@@ -68,4 +68,31 @@ require('node:zlib');
       'external dynamic import remains: zlib-sync',
     ]);
   });
+
+  it('ignores multi-line JSDoc block comments without leading stars such as highlight.js typedefs', () => {
+    writeFileSync(bundle, `
+/**
+@typedef {import('highlight.js').CallbackResponse} CallbackResponse
+@typedef {import('./relative-types').Highlighter} Highlighter
+require('never-executed-in-comment')
+*/
+const ok = require('node:fs');
+`);
+    expect(checkBundle(bundle)).toEqual([]);
+  });
+
+  it('still rejects executable requires after inline block comments or after strings/regexes containing /*', () => {
+    writeFileSync(bundle, `
+/* leading comment */ require('after-inline-block');
+const glob = 'src/*/*.js'; require('after-string-comment-token');
+const mime = \`image/*\`; require('after-template-comment-token');
+const re = /\\/\\*/; require('after-regex-comment-token');
+`);
+    expect(checkBundle(bundle)).toEqual([
+      'external require remains: after-inline-block',
+      'external require remains: after-string-comment-token',
+      'external require remains: after-template-comment-token',
+      'external require remains: after-regex-comment-token',
+    ]);
+  });
 });

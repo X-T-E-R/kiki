@@ -11,8 +11,10 @@ export const ColdCompactionConfigSchema = z
     initialDelayMs: z.number().int().min(0).max(2_147_483_647).default(600_000),
     sweepIntervalMs: z.number().int().min(1_000).max(2_147_483_647).default(300_000),
     minIdleAgeMs: z.number().int().min(0).max(2_147_483_647).default(1_800_000),
-    maxSessionsPerSweep: z.number().int().min(1).max(64).default(1),
+    maxSessionsPerSweep: z.number().int().min(1).max(1000).default(1),
     reclaimSparse: z.boolean().default(true),
+    zstdLevel: z.number().int().min(1).max(19).default(3),
+    segmentBytes: z.number().int().min(262_144).max(67_108_864).default(4_194_304),
   })
   .strict();
 
@@ -36,6 +38,8 @@ const bindings = envBindings(ColdCompactionConfigSchema, {
   minIdleAgeMs: { env: 'KIKI_COLD_COMPACTION_MIN_IDLE_AGE_MS', parse: integer },
   maxSessionsPerSweep: { env: 'KIKI_COLD_COMPACTION_MAX_SESSIONS_PER_SWEEP', parse: integer },
   reclaimSparse: { env: 'KIKI_COLD_COMPACTION_RECLAIM_SPARSE', parse: booleanFlag },
+  zstdLevel: { env: 'KIKI_COLD_COMPACTION_ZSTD_LEVEL', parse: integer },
+  segmentBytes: { env: 'KIKI_COLD_COMPACTION_SEGMENT_BYTES', parse: integer },
 });
 
 registerConfigSection(COLD_COMPACTION_SECTION, ColdCompactionConfigSchema, {

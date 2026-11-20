@@ -1,6 +1,7 @@
 export type {
   SessionViewFacade,
   SessionViewSignal,
+  SessionViewSubagentsInput,
   SessionViewSubscribeInput,
   SessionViewSubscription,
   SessionViewTranscriptCatchUpInput,

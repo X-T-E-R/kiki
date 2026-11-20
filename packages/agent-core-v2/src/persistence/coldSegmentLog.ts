@@ -50,6 +50,7 @@ import {
 } from '#/persistence/interface/storage';
 
 export const COLD_SEGMENT_BYTES = 8 * 1024 * 1024;
+export const MAX_COLD_SEGMENT_BYTES = 64 * 1024 * 1024;
 export const COLD_ZSTD_SEGMENT_BYTES = 4 * 1024 * 1024;
 export const COLD_DEFLATE_LEVEL = 6;
 export const COLD_ZSTD_LEVEL = 3;
@@ -318,8 +319,8 @@ function requireCut(sealedCut: number, size: number): void {
 }
 
 function requireSegmentBytes(segmentBytes: number): number {
-  if (!Number.isSafeInteger(segmentBytes) || segmentBytes < 1 || segmentBytes > COLD_SEGMENT_BYTES) {
-    throw new BugIndicatingError('cold segment size is outside 1..8MiB');
+  if (!Number.isSafeInteger(segmentBytes) || segmentBytes < 1 || segmentBytes > MAX_COLD_SEGMENT_BYTES) {
+    throw new BugIndicatingError('cold segment size is outside 1..64MiB');
   }
   return segmentBytes;
 }
@@ -555,7 +556,7 @@ function isManifest(value: unknown, key: string): ColdManifest | undefined {
   const generation = raw['generation'];
   const sealId = raw['sealId'];
   const listed = raw['segments'];
-  if (!Number.isSafeInteger(segmentBytes) || (segmentBytes as number) < 1 || (segmentBytes as number) > COLD_SEGMENT_BYTES) return undefined;
+  if (!Number.isSafeInteger(segmentBytes) || (segmentBytes as number) < 1 || (segmentBytes as number) > MAX_COLD_SEGMENT_BYTES) return undefined;
   if (!Number.isSafeInteger(sealedCut) || (sealedCut as number) < 0) return undefined;
   if (!Number.isSafeInteger(logicalSize) || (logicalSize as number) < (sealedCut as number)) return undefined;
   if (typeof generation !== 'string' || typeof sealId !== 'string' || !Array.isArray(listed)) return undefined;
@@ -1109,7 +1110,7 @@ async function verifyJournalCoversOrphanedSegments(
         }
         let plain: Uint8Array;
         try {
-          plain = await decompressBounded(compressed, item.codec, COLD_SEGMENT_BYTES, signal);
+          plain = await decompressBounded(compressed, item.codec, MAX_COLD_SEGMENT_BYTES, signal);
         } catch (error) {
           if (signal?.aborted) throw signal.reason;
           throw corrupted(scope, key, 'manifest-missing-on-sparse-journal', error);

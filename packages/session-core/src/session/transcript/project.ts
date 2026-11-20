@@ -1185,15 +1185,29 @@ function overlaySubagentBlock(block: SubagentBlock, snapshot: SnapshotSubagent):
   };
 }
 
+const snapshotSubagentsByIdCache = new WeakMap<readonly SnapshotSubagent[], Map<string, SnapshotSubagent>>();
+
 export function overlaySnapshotSubagentFields(
   blocks: readonly Block[],
   snapshotSubagents: readonly SnapshotSubagent[] | undefined,
 ): Block[] {
   if (snapshotSubagents === undefined || snapshotSubagents.length === 0) return blocks as Block[];
-  const byId = new Map<string, SnapshotSubagent>();
-  for (const subagent of snapshotSubagents) {
-    const id = snapshotSubagentAgentId(subagent);
-    if (id !== '') byId.set(id, subagent);
+  let hasSubagentBlock = false;
+  for (const block of blocks) {
+    if (block.kind === 'subagent') {
+      hasSubagentBlock = true;
+      break;
+    }
+  }
+  if (!hasSubagentBlock) return blocks as Block[];
+  let byId = snapshotSubagentsByIdCache.get(snapshotSubagents);
+  if (byId === undefined) {
+    byId = new Map<string, SnapshotSubagent>();
+    for (const subagent of snapshotSubagents) {
+      const id = snapshotSubagentAgentId(subagent);
+      if (id !== '') byId.set(id, subagent);
+    }
+    snapshotSubagentsByIdCache.set(snapshotSubagents, byId);
   }
   if (byId.size === 0) return [...blocks];
   return blocks.map((block) => {

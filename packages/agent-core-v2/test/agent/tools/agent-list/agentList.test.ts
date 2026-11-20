@@ -13,7 +13,7 @@ import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile'
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import type { AgentExecutionStatus } from '#/app/agentExecutor/agentExecutor';
 import { AgentListTool } from '#/agent/tools/agent-list/agentListTool';
-import { IAgentListTool, type AgentListOutput } from '#/agent/tools/agent-list/agent-list';
+import { IAgentListTool, type AgentListInput, type AgentListOutput } from '#/agent/tools/agent-list/agent-list';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
@@ -152,7 +152,7 @@ function makeTool(options: {
 
 async function listAgents(
   tool: IAgentListTool,
-  args: { include_finished?: boolean; raw?: boolean } = {},
+  args: Partial<AgentListInput> = {},
 ): Promise<AgentListOutput> {
   const result = await executeTool(tool, {
     turnId: 1,
@@ -332,7 +332,7 @@ describe('AgentListTool', () => {
     });
   });
 
-  it('reports how many entries were omitted past the 50-cap', async () => {
+  it('reports how many entries were omitted past the default 32-cap', async () => {
     const agents: Record<string, AgentMeta> = {};
     for (let index = 0; index < 51; index += 1) {
       const agentId = `child-${String(index).padStart(2, '0')}`;
@@ -341,10 +341,90 @@ describe('AgentListTool', () => {
     const tool = makeTool({ agents });
 
     const listed = await listAgents(tool);
-    expect(listed.omitted).toBe(1);
-    expect(listed.agents).toHaveLength(50);
+    expect(listed.omitted).toBe(19);
+    expect(listed.note).toContain('19 further children omitted');
+    expect(listed.agents).toHaveLength(32);
     expect(listed.agents[0]?.agent_id).toBe('child-00');
-    expect(listed.agents[49]?.agent_id).toBe('child-49');
+    expect(listed.agents[31]?.agent_id).toBe('child-31');
+  });
+
+  it('supports query filtering, explicit limit override, and [subagent].agentListLimit config', async () => {
+    const agents: Record<string, AgentMeta> = {};
+    for (let index = 0; index < 40; index += 1) {
+      const agentId = `child-${String(index).padStart(2, '0')}`;
+      agents[agentId] = childMeta({
+        name: index === 37 ? 'target-needle' : `worker-${index}`,
+        profile: index === 25 ? 'special-reviewer' : 'worker',
+      });
+    }
+    const tool = makeTool({ agents, subagentConfig: { agentListLimit: 10 } });
+
+    const configured = await listAgents(tool);
+    expect(configured.agents).toHaveLength(10);
+    expect(configured.omitted).toBe(30);
+
+    const byName = await listAgents(tool, { query: 'NEEDLE' });
+    expect(byName.agents.map((entry) => entry.agent_id)).toEqual(['child-37']);
+    expect(byName.omitted).toBeUndefined();
+
+    const byProfile = await listAgents(tool, { query: 'special-reviewer' });
+    expect(byProfile.agents.map((entry) => entry.agent_id)).toEqual(['child-25']);
+
+    const explicitLimit = await listAgents(tool, { limit: 5 });
+    expect(explicitLimit.agents).toHaveLength(5);
+    expect(explicitLimit.omitted).toBe(35);
+  });
+
+  it('caps 10,000 children cleanly with running and persistence_failed prioritized first', async () => {
+    const agents: Record<string, AgentMeta> = {};
+    for (let index = 0; index < 10_000; index += 1) {
+      const agentId = `subagent-${String(index).padStart(5, '0')}`;
+      agents[agentId] = {
+        ...childMeta({ name: `worker-${index}`, profile: 'worker' }),
+        createdAt: 1_000 + index,
+        completedAt: 2_000 + index,
+        status: 'completed',
+      };
+    }
+    agents['subagent-00003'] = {
+      ...childMeta({ name: 'active-alpha', profile: 'implementer' }),
+      createdAt: 1_003,
+    };
+    agents['subagent-00004'] = {
+      ...childMeta({ name: 'failed-persist', profile: 'worker' }),
+      createdAt: 1_004,
+    };
+    const tool = makeTool({
+      agents,
+      liveChildren: {
+        'subagent-00003': {
+          execution: { state: 'running', startedAt: 99_000 },
+        },
+        'subagent-00004': {
+          loop: {
+            state: 'running',
+            activeTurnId: 1,
+            finalizing: true,
+            pendingTurnIds: [],
+            hasPendingRequests: false,
+            persistenceFailure: { executionOutcome: 'completed', message: 'disk full' },
+          },
+        },
+      },
+    });
+
+    const start = performance.now();
+    const listed = await listAgents(tool, { include_finished: true });
+    const elapsedMs = performance.now() - start;
+
+    expect(listed.agents).toHaveLength(32);
+    expect(listed.omitted).toBe(10_000 - 32);
+    expect(listed.note).toBe(`${10_000 - 32} further children omitted; address known children by name or agent_id`);
+    const topTwoIds = listed.agents.slice(0, 2).map((entry) => entry.agent_id);
+    expect(topTwoIds).toContain('subagent-00003');
+    expect(topTwoIds).toContain('subagent-00004');
+    expect(listed.agents[2]?.agent_id).toBe('subagent-09999');
+    expect(elapsedMs).toBeLessThan(100);
   });
 
   it('hides finished children until include_finished is true', async () => {

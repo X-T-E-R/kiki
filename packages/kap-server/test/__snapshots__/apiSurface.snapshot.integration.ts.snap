@@ -834,6 +834,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/{session_id}/subagents",
+    ],
+    [
+      "GET",
       "/api/sessions/{session_id}/tasks",
     ],
     [

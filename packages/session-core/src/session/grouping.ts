@@ -418,21 +418,46 @@ export function readSubagentEndings(
     if (untaggedList === undefined) untaggedCardsByAgentId.set(node.subagentId, [{ card: node, index }]);
     else untaggedList.push({ card: node, index });
   });
+  const mergedLength = merged.length;
+  const breakerPrefix = new Int32Array(mergedLength + 1);
+  const definedTurnAt = new Array<string | undefined>(mergedLength);
+  const prevDefinedTurnIdx = new Int32Array(mergedLength);
+  const nextDefinedTurnIdx = new Int32Array(mergedLength);
+  const turnChangePrefix = new Int32Array(mergedLength);
+  let lastDefinedIdx = -1;
+  let lastDefinedTurn: string | undefined;
+  let turnChanges = 0;
+  for (let i = 0; i < mergedLength; i += 1) {
+    const mid = merged[i]!;
+    const isBreaker =
+      mid.kind === 'user' || mid.kind === 'assistant' || mid.kind === 'message' || mid.kind === 'question' || mid.kind === 'approval' ||
+      (mid.kind === 'notice' && (mid.externalText !== undefined || mid.tone !== 'neutral' || mid.executor === undefined || mid.executor.kind === 'compaction'));
+    breakerPrefix[i + 1] = breakerPrefix[i]! + (isBreaker ? 1 : 0);
+    const midTurn = mid.kind === 'history-fold' ? normTurn(mid.turnId) : normTurn(foldTurnId(mid));
+    definedTurnAt[i] = midTurn;
+    if (midTurn !== undefined) {
+      if (lastDefinedTurn !== undefined && midTurn !== lastDefinedTurn) turnChanges += 1;
+      lastDefinedTurn = midTurn;
+      lastDefinedIdx = i;
+    }
+    prevDefinedTurnIdx[i] = lastDefinedIdx;
+    turnChangePrefix[i] = turnChanges;
+  }
+  let nextDefinedIdx = -1;
+  for (let i = mergedLength - 1; i >= 0; i -= 1) {
+    if (definedTurnAt[i] !== undefined) nextDefinedIdx = i;
+    nextDefinedTurnIdx[i] = nextDefinedIdx;
+  }
   const isContiguousSameTurn = (cardIndex: number, noteIndex: number, turn: string | undefined): boolean => {
     const start = Math.min(cardIndex, noteIndex) + 1;
     const end = Math.max(cardIndex, noteIndex) - 1;
-    for (let i = start; i <= end; i += 1) {
-      const mid = merged[i]!;
-      if (mid.kind === 'user' || mid.kind === 'assistant' || mid.kind === 'message' || mid.kind === 'question' || mid.kind === 'approval') {
-        return false;
-      }
-      if (mid.kind === 'notice' && (mid.externalText !== undefined || mid.tone !== 'neutral' || mid.executor === undefined || mid.executor.kind === 'compaction')) {
-        return false;
-      }
-      const midTurn = mid.kind === 'history-fold' ? normTurn(mid.turnId) : normTurn(foldTurnId(mid));
-      if (midTurn !== undefined && turn !== undefined && midTurn !== turn) return false;
-    }
-    return true;
+    if (start > end) return true;
+    if (breakerPrefix[end + 1]! - breakerPrefix[start]! > 0) return false;
+    if (turn === undefined) return true;
+    const firstDef = nextDefinedTurnIdx[start]!;
+    if (firstDef === -1 || firstDef > end) return true;
+    const lastDef = prevDefinedTurnIdx[end]!;
+    return definedTurnAt[firstDef] === turn && turnChangePrefix[lastDef] === turnChangePrefix[firstDef];
   };
   const resolveTaskForNode = (node: DisplayNode): EndingTask | undefined => {
     let task = node.kind === 'system' && node.variant === 'task' && node.taskId !== undefined ? agentByTask.get(node.taskId) : undefined;
@@ -579,6 +604,16 @@ function gatherRows(
   forest: AgentForest | undefined,
   latestCardIdByAgent: ReadonlyMap<string, string>,
 ): DisplayNode[] {
+  let lastBlockingTailIndex = -1;
+  if (live !== undefined) {
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const rest = nodes[i]!;
+      if (rest.kind === 'history-fold' || normTurn(foldTurnId(rest)) === live) {
+        lastBlockingTailIndex = i;
+        break;
+      }
+    }
+  }
   const out: DisplayNode[] = [];
   let index = 0;
   while (index < nodes.length) {
@@ -592,7 +627,7 @@ function gatherRows(
         members.push(next);
         index += 1;
       }
-      const tail = nodes.slice(index).every((rest) => rest.kind !== 'history-fold' && normTurn(foldTurnId(rest)) !== live);
+      const tail = live !== undefined && index > lastBlockingTailIndex;
       out.push({ kind: 'media-run', id: `media-${members[0]!.id}`, turnId: turn, members, latest: turn !== undefined && turn === live && tail });
       continue;
     }

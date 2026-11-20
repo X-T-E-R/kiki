@@ -18,21 +18,23 @@ import {
 import type { SubagentTaskInfo } from '#/agent/task/types';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import {
-  directChildAgents,
-  type DirectChildAgent,
-} from '#/session/agentCollaboration/directChildren';
+  COLLABORATION_AGENT_TYPE_LABEL,
+  COLLABORATION_TASK_NAME_LABEL,
+} from '#/session/agentCollaboration/registry';
+import type { DirectChildAgent } from '#/session/agentCollaboration/directChildren';
+import { subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { isUnknownCapability } from '#/kosong/contract/capability';
 import {
   AGENT_LIST_TELEMETRY_FIELDS,
+  resolveAgentListLimit,
   resolveAgentListTelemetryFields,
   type AgentListTelemetryField,
 } from '#/session/subagent/configSection';
 
 import {
   IAgentListTool,
-  MAX_AGENT_LIST_ENTRIES,
   AgentListInputSchema,
   type AgentListEntry,
   type AgentListInput,
@@ -64,6 +66,8 @@ export class AgentListTool implements IAgentListTool {
       approvalRule: this.name,
       execute: async () => {
         const includeFinished = args.include_finished ?? false;
+        const limit = args.limit ?? resolveAgentListLimit(this.config?.current);
+        const query = args.query?.trim().toLowerCase() ?? '';
         const allowedFields = new Set<AgentListTelemetryField>(
           args.raw === true
             ? AGENT_LIST_TELEMETRY_FIELDS
@@ -72,58 +76,99 @@ export class AgentListTool implements IAgentListTool {
         const now = Date.now();
         const session = await this.metadata.read();
         const latestRuns = latestAgentRuns(this.tasks.list(false));
-        const entries = directChildAgents(session.agents, this.scope.agentId)
-          .map((child) => {
-            const live = this.lifecycle.get(child.agentId);
+        const agents = session.agents;
+        const callerAgentId = this.scope.agentId;
+        const top: RankedCandidate[] = [];
+        let totalMatched = 0;
+        if (agents !== undefined) {
+          for (const agentId in agents) {
+            if (!Object.hasOwn(agents, agentId)) continue;
+            const meta = agents[agentId]!;
+            if (subagentParentAgentId(meta) !== callerAgentId) continue;
+            const name = meta.labels?.[COLLABORATION_TASK_NAME_LABEL];
+            const profileName = meta.labels?.[COLLABORATION_AGENT_TYPE_LABEL] ?? meta.displayName;
+            if (query !== '') {
+              const matched =
+                agentId.toLowerCase().includes(query) ||
+                (name !== undefined && name.toLowerCase().includes(query)) ||
+                (profileName !== undefined && profileName.toLowerCase().includes(query));
+              if (!matched) continue;
+            }
+            const live = this.lifecycle.get(agentId);
             const loop = live?.accessor.get(IAgentLoopService)?.status();
             const execution = live?.accessor.get(IAgentExecutionService)?.status();
-            const task = latestRuns.get(child.agentId);
+            const task = latestRuns.get(agentId);
+            let status: AgentListStatus;
+            let fromOutcome = false;
+            let persistenceFailure: AgentListEntry['persistence_failure'];
             if (loop?.persistenceFailure !== undefined) {
-              return buildEntry({
-                child,
-                status: 'persistence_failed',
-                live,
-                execution,
-                task,
-                fromOutcome: false,
-                allowedFields,
-                now,
-                persistenceFailure: {
-                  turn_id: loop.activeTurnId,
-                  execution_outcome: loop.persistenceFailure.executionOutcome,
-                  message: loop.persistenceFailure.message,
-                },
-              });
+              status = 'persistence_failed';
+              persistenceFailure = {
+                turn_id: loop.activeTurnId,
+                execution_outcome: loop.persistenceFailure.executionOutcome,
+                message: loop.persistenceFailure.message,
+              };
+            } else {
+              const outcome = task === undefined || (task.status === 'running' && task.taskId === meta.taskId)
+                ? meta.status
+                : undefined;
+              const active = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
+              fromOutcome = !active && (outcome === 'completed' || outcome === 'cancelled' || outcome === 'failed');
+              status = active ? 'running'
+                : outcome === 'completed' ? 'completed'
+                : outcome === 'cancelled' ? 'interrupted'
+                : outcome === 'failed' ? 'errored'
+                : execution?.state === 'broken' ? 'errored'
+                : execution?.state === 'closed' ? 'interrupted'
+                : statusOf(task?.status);
             }
-            const outcome = task === undefined || task.status === 'running' && task.taskId === child.meta.taskId
-              ? child.meta.status
-              : undefined;
-            const active = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
-            const fromOutcome = !active && (outcome === 'completed' || outcome === 'cancelled' || outcome === 'failed');
-            const status = active ? 'running'
-              : outcome === 'completed' ? 'completed'
-              : outcome === 'cancelled' ? 'interrupted'
-              : outcome === 'failed' ? 'errored'
-              : execution?.state === 'broken' ? 'errored'
-              : execution?.state === 'closed' ? 'interrupted'
-              : statusOf(task?.status);
-            return buildEntry({
-              child,
+            if (!includeFinished && FINISHED_STATUSES.has(status)) continue;
+            totalMatched += 1;
+            const rank = status === 'running' || status === 'persistence_failed' ? 0 : FINISHED_STATUSES.has(status) ? 2 : 1;
+            const recency = rank === 0
+              ? (task?.startedAt ?? execution?.startedAt ?? meta.createdAt ?? -1)
+              : (meta.completedAt ?? task?.endedAt ?? task?.startedAt ?? meta.createdAt ?? -1);
+            const candidate: RankedCandidate = {
+              agentId,
+              name,
+              profileName,
+              meta,
               status,
+              rank,
+              recency,
               live,
               execution,
               task,
               fromOutcome,
-              allowedFields,
-              now,
-            });
-          })
-          .filter((entry) => includeFinished || !FINISHED_STATUSES.has(entry.status))
-          .sort(byRunningFirst);
-        const omitted = Math.max(0, entries.length - MAX_AGENT_LIST_ENTRIES);
+              persistenceFailure,
+            };
+            insertTopCandidate(top, candidate, limit);
+          }
+        }
+        const entries = top.map((candidate) => buildEntry({
+          child: {
+            agentId: candidate.agentId,
+            name: candidate.name,
+            profileName: candidate.profileName,
+            meta: candidate.meta,
+          },
+          status: candidate.status,
+          live: candidate.live,
+          execution: candidate.execution,
+          task: candidate.task,
+          fromOutcome: candidate.fromOutcome,
+          allowedFields,
+          now,
+          persistenceFailure: candidate.persistenceFailure,
+        }));
+        const omitted = Math.max(0, totalMatched - limit);
         const output: AgentListOutput =
           omitted > 0
-            ? { agents: entries.slice(0, MAX_AGENT_LIST_ENTRIES), omitted }
+            ? {
+                agents: entries,
+                omitted,
+                note: `${omitted} further children omitted; address known children by name or agent_id`,
+              }
             : { agents: entries };
         return { output: JSON.stringify(output), isError: false };
       },
@@ -332,8 +377,44 @@ function statusOf(status: AgentTaskStatus | undefined): AgentListStatus {
   return 'unknown';
 }
 
-function byRunningFirst(left: AgentListEntry, right: AgentListEntry): number {
-  const leftRunning = left.status === 'running' ? 0 : 1;
-  const rightRunning = right.status === 'running' ? 0 : 1;
-  return leftRunning - rightRunning;
+interface RankedCandidate {
+  readonly agentId: string;
+  readonly name: string | undefined;
+  readonly profileName: string | undefined;
+  readonly meta: DirectChildAgent['meta'];
+  readonly status: AgentListStatus;
+  readonly rank: number;
+  readonly recency: number;
+  readonly live: IAgentScopeHandle | undefined;
+  readonly execution: AgentExecutionStatus | undefined;
+  readonly task: SubagentTaskInfo | undefined;
+  readonly fromOutcome: boolean;
+  readonly persistenceFailure: AgentListEntry['persistence_failure'];
+}
+
+function compareRankedCandidates(left: RankedCandidate, right: RankedCandidate): number {
+  if (left.rank !== right.rank) return left.rank - right.rank;
+  if (left.recency !== right.recency) return right.recency - left.recency;
+  if (left.name !== undefined && right.name !== undefined) {
+    if (left.name !== right.name) return left.name < right.name ? -1 : 1;
+  } else if (left.name !== undefined) {
+    return -1;
+  } else if (right.name !== undefined) {
+    return 1;
+  }
+  return left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0;
+}
+
+function insertTopCandidate(top: RankedCandidate[], candidate: RankedCandidate, cap: number): void {
+  const length = top.length;
+  if (length >= cap && compareRankedCandidates(candidate, top[length - 1]!) >= 0) return;
+  let low = 0;
+  let high = length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (compareRankedCandidates(candidate, top[mid]!) < 0) high = mid;
+    else low = mid + 1;
+  }
+  top.splice(low, 0, candidate);
+  if (top.length > cap) top.pop();
 }

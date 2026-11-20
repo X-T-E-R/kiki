@@ -495,6 +495,7 @@ export interface HttpRestFacade {
     listTasks(sessionId: string, query?: { readonly status?: import('@kiki/protocol').TaskStatus; readonly page_size?: number; readonly offset?: number }): Promise<ListTasksResponse>;
     /** Read-only, incremental whole-session metadata. Drain next_page_token before interpreting coverage as complete. */
     listAgentTasks(sessionId: string, query?: import('../../contract/session/agent-tasks.js').ListAgentTasksQuery, options?: HttpRestRequestOptions): Promise<import('../../contract/session/agent-tasks.js').ListAgentTasksResponse>;
+    listSubagents(sessionId: string, query?: import('@kiki/protocol').SessionSubagentsQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').SessionSubagentsResponse>;
     getTask(sessionId: string, taskId: string, query?: GetTaskQuery): Promise<Task>;
     listSkills(sessionId: string): Promise<ListSkillsResponse>;
     activateSkill(

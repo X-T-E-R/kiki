@@ -1,4 +1,4 @@
-import type { SessionSnapshotResponse } from '@kiki/protocol';
+import { sessionSubagentsResponseSchema, type SessionSnapshotResponse, type SessionSubagentsResponse } from '@kiki/protocol';
 import type { z } from 'zod';
 import {
   applyContentSegment,
@@ -77,11 +77,19 @@ export interface SessionViewPlansInput {
   readonly cursor?: string;
 }
 
+export interface SessionViewSubagentsInput {
+  readonly q?: string;
+  readonly status?: string;
+  readonly agentId?: string;
+  readonly limit?: number;
+}
+
 export interface SessionViewFacade {
   snapshot(options?: CallOptions): Promise<SessionSnapshotResponse>;
   readonly transcript: SessionViewTranscriptFacade;
   userMessages?(input?: SessionViewUserMessagesInput, options?: CallOptions): Promise<TranscriptUserMessagesResponse>;
   plans?(input: SessionViewPlansInput, options?: CallOptions): Promise<TranscriptPlanResponse>;
+  subagents?(input?: SessionViewSubagentsInput, options?: CallOptions): Promise<SessionSubagentsResponse>;
   bootstrap?(
     input: Omit<SessionViewSubscribeInput, 'sessionCursor' | 'bootstrap'>,
     onSignal: (signal: SessionViewSignal) => void,
@@ -293,6 +301,14 @@ export function createSessionViewFacade(
         }
         const assembled = { agent_id: agentId, plans: hydrated };
         return validate ? parse('output', 'session.view.plans', transcriptPlanResponseSchema, assembled) : assembled;
+      },
+    }),
+    ...(channel?.subagents === undefined ? {} : {
+      async subagents(input: SessionViewSubagentsInput = {}, options?: CallOptions) {
+        const output = await channel.subagents!(sessionId, input, options);
+        return validate
+          ? parse('output', 'session.view.subagents', sessionSubagentsResponseSchema, output)
+          : output as SessionSubagentsResponse;
       },
     }),
     subscribe(input, onSignal) {

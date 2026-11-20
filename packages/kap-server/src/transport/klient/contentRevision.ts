@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 const revisions = new WeakMap<object, string>();
 const shortStringRevisions = new Map<string, string>();
 const primitiveRevisions = new Map<string, string>();
-const MAX_SHORT_STRING_CACHE = 4096;
+const MAX_SHORT_STRING_CACHE = 32768;
 const MAX_SHORT_STRING_LEN = 128;
 
 function hashShortString(value: string): string {
@@ -63,6 +63,13 @@ export function contentRevision(value: unknown): string {
   const revision = hash.digest('hex');
   revisions.set(value, revision);
   return revision;
+}
+
+export function contentRevisionOfArray(length: number, itemAt: (index: number) => unknown): string {
+  const hash = createHash('sha256');
+  hash.update(`array:${length}:`);
+  for (let index = 0; index < length; index += 1) hash.update(contentRevision(itemAt(index)));
+  return hash.digest('hex');
 }
 
 function hashShortStringKey(key: string): string {

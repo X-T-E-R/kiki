@@ -176,6 +176,7 @@ export class SessionManager implements ISessionManager {
     }
     this.resumeFailures.delete(sessionId);
     const lifetime: RestoreLifetime = { ownerManaged: options?.forExecutionControl === true, signal: this.restoreDisposal.signal };
+    const restoreTimeoutMs = this.residencyConfig().restoreTimeoutMs;
     const promise = this.serializeLifecycle(sessionId, () => withRestoreLifetime(lifetime, async () => {
       const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(undefined, { sessionId }, name, action);
       const live = this.sessions.get(sessionId);
@@ -194,7 +195,7 @@ export class SessionManager implements ISessionManager {
       } finally {
         releaseRestore();
       }
-    })).finally(() => this.pendingResumes.delete(sessionId));
+    }, restoreTimeoutMs)).finally(() => this.pendingResumes.delete(sessionId));
     this.pendingResumes.set(sessionId, { promise, lifetime });
     void promise.then(
       (handle) => {

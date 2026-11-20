@@ -10,6 +10,7 @@ import {
   IAgentContextMemoryService,
   IAtomicDocumentStore,
   IBootstrapService,
+  IConfigService,
   ISessionContext,
   ISessionIndex,
   ISessionManager,
@@ -25,6 +26,7 @@ import { z } from 'zod';
 
 import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { readAgentOutcome } from '@kiki/agent-core-v2/session/sessionMetadata/agentOutcomeStore';
+import { resolveSnapshotRosterLimits, resolveSubagentSearchLimit } from '@kiki/agent-core-v2/session/subagent/configSection';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
@@ -34,8 +36,12 @@ import {
   toRestContextBreakdown,
   ErrorCode,
   sessionSnapshotResponseSchema,
+  sessionSubagentsQuerySchema,
+  sessionSubagentsResponseSchema,
   type InFlightTurn,
   type SessionSnapshotResponse,
+  type SessionSubagentsQuery,
+  type SessionSubagentsResponse,
   type SnapshotSubagent,
 } from '@kiki/protocol';
 import {
@@ -45,7 +51,7 @@ import {
   projectHydratedMessageHistoryTail,
   rehydrateCold,
 } from '../services/messages/messageHistory';
-import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
+import { readColdSessionMeta, readColdSessionMetaBySessionId } from '../services/snapshot/coldSessionMeta';
 import { readColdMainWireProjection } from '../services/snapshot/coldSnapshotSource';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
@@ -82,7 +88,7 @@ interface SnapshotRouteHost {
       req: {
         id: string;
         params: { session_id: string };
-        query: { mode?: 'transcript' };
+        query: Record<string, unknown>;
       },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
@@ -129,6 +135,64 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
     }, req),
   );
   app.get(route.path, route.options, route.handler as Parameters<SnapshotRouteHost['get']>[2]);
+
+  const subagentsRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/sessions/{session_id}/subagents',
+      params: sessionIdParamSchema,
+      querystring: sessionSubagentsQuerySchema,
+      success: { data: sessionSubagentsResponseSchema },
+      errors: {
+        [ErrorCode.SESSION_NOT_FOUND]: {},
+        [ErrorCode.INTERNAL_ERROR]: {},
+      },
+      description: 'On-demand subagent search and lookup over ordered session roster without resuming cold sessions',
+      tags: ['sessions'],
+    },
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+      const { session_id } = req.params;
+      try {
+        const data = await searchSessionSubagents(core, broadcaster, session_id, req.query, { logger: app.log, requestId: req.id, signal });
+        if (signal.aborted) return;
+        reply.send(okEnvelope(data, req.id));
+      } catch (err) {
+        if (signal.aborted) return;
+        if (err instanceof SnapshotNotFoundError) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, req.id, err.stack));
+          return;
+        }
+        throw err;
+      }
+    }, req),
+  );
+  app.get(subagentsRoute.path, subagentsRoute.options, subagentsRoute.handler as Parameters<SnapshotRouteHost['get']>[2]);
+}
+
+function optionalConfig(core: Scope): IConfigService | undefined {
+  try {
+    return core.accessor.get(IConfigService);
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotRosterWindowFor(
+  subagents: readonly SnapshotSubagent[] | undefined,
+  config: IConfigService | undefined,
+): number {
+  const { activeLimit, settledLimit } = resolveSnapshotRosterLimits(config);
+  if (subagents === undefined || subagents.length === 0) return settledLimit;
+  let activeCount = 0;
+  for (const row of subagents) {
+    if (isSnapshotSubagentActive(row) || (row.is_branch === true && row.branch_sealed !== true)) {
+      activeCount += 1;
+      if (activeCount >= activeLimit) break;
+    } else {
+      break;
+    }
+  }
+  return activeCount + settledLimit;
 }
 
 export async function assembleBrowseSnapshot(
@@ -137,8 +201,11 @@ export async function assembleBrowseSnapshot(
   sessionId: string,
   timing: SessionViewTimingContext = {},
 ): Promise<SessionSnapshotResponse> {
-  return timeSessionViewPhase('snapshot', { sessionId, requestId: timing.requestId }, async () =>
-    boundedSessionSnapshot(await assembleBrowseSnapshotSource(core, broadcaster, sessionId, undefined, timing), ''), timing);
+  const config = optionalConfig(core);
+  return timeSessionViewPhase('snapshot', { sessionId, requestId: timing.requestId }, async () => {
+    const source = await assembleBrowseSnapshotSource(core, broadcaster, sessionId, undefined, timing);
+    return boundedSessionSnapshot(source, '', snapshotRosterWindowFor(source.subagents, config));
+  }, timing);
 }
 
 export async function assembleBrowseSnapshotSource(
@@ -181,7 +248,13 @@ export async function assembleBrowseSnapshotSource(
   };
 }
 
-type ColdBrowseRoster = { readonly sessionId: string; readonly subagents: SnapshotSubagent[]; readonly counts: ReturnType<typeof sessionAgentCounts> };
+type ColdBrowseRoster = {
+  readonly sessionId: string;
+  readonly subagents: SnapshotSubagent[];
+  readonly counts: ReturnType<typeof sessionAgentCounts>;
+  byId?: Map<string, SnapshotSubagent>;
+  searchIndex?: string[];
+};
 
 const coldBrowseRosters = new WeakMap<SessionMeta, ColdBrowseRoster>();
 
@@ -189,9 +262,135 @@ function coldBrowseRoster(sessionId: string, meta: SessionMeta): ColdBrowseRoste
   const cached = coldBrowseRosters.get(meta);
   if (cached?.sessionId === sessionId) return cached;
   const subagents = orderSnapshotSubagents(sessionAgentRoster(sessionId, meta));
-  const entry = { sessionId, subagents, counts: sessionAgentCounts(meta.agents, subagents) };
+  const entry: ColdBrowseRoster = { sessionId, subagents, counts: sessionAgentCounts(meta.agents, subagents) };
   coldBrowseRosters.set(meta, entry);
   return entry;
+}
+
+function subagentSearchBlob(row: SnapshotSubagent): string {
+  const parts: string[] = [row.id];
+  if (row.agent_id !== undefined && row.agent_id !== row.id) parts.push(row.agent_id);
+  if (row.label !== undefined && row.label !== '') parts.push(row.label);
+  if (row.description !== undefined && row.description !== '' && row.description !== row.label && row.description !== row.id) parts.push(row.description);
+  if (row.profile !== undefined && row.profile !== '') parts.push(row.profile);
+  if (row.model !== undefined && row.model !== '') parts.push(row.model);
+  if (row.output_preview !== undefined && row.output_preview !== '') parts.push(row.output_preview);
+  return parts.join('\n').toLowerCase();
+}
+
+function matchesSubagentStatus(row: SnapshotSubagent, status: string): boolean {
+  if (status === '') return true;
+  if (status === 'active') return isSnapshotSubagentActive(row);
+  if (status === 'branch') return row.is_branch === true;
+  const effective = (row.activity_status ?? row.status ?? '').toLowerCase();
+  return effective === status || (row.status ?? '').toLowerCase() === status;
+}
+
+function matchesSubagentQuery(row: SnapshotSubagent, query: string): boolean {
+  if (query === '') return true;
+  if (row.id.toLowerCase().includes(query)) return true;
+  if (row.agent_id !== undefined && row.agent_id !== row.id && row.agent_id.toLowerCase().includes(query)) return true;
+  if (row.label !== undefined && row.label.toLowerCase().includes(query)) return true;
+  if (row.description !== undefined && row.description.toLowerCase().includes(query)) return true;
+  if (row.profile !== undefined && row.profile.toLowerCase().includes(query)) return true;
+  if (row.model !== undefined && row.model.toLowerCase().includes(query)) return true;
+  if (row.output_preview !== undefined && row.output_preview.toLowerCase().includes(query)) return true;
+  return false;
+}
+
+export async function searchSessionSubagents(
+  core: Scope,
+  broadcaster: SessionEventBroadcaster,
+  sessionId: string,
+  query: SessionSubagentsQuery = {},
+  timing: SessionViewTimingContext = {},
+): Promise<SessionSubagentsResponse> {
+  timing.signal?.throwIfAborted();
+  const config = optionalConfig(core);
+  const limit = Math.min(500, Math.max(1, query.limit ?? resolveSubagentSearchLimit(config)));
+  const exactAgentId = query.agent_id?.trim() ?? '';
+  const q = query.q?.trim().toLowerCase() ?? '';
+  const status = query.status?.trim().toLowerCase() ?? '';
+  const fields = { sessionId, requestId: timing.requestId };
+  let subagents: readonly SnapshotSubagent[];
+  let coldRoster: ColdBrowseRoster | undefined;
+  const liveHandle = core.accessor.get(ISessionManager).get(sessionId);
+  if (liveHandle === undefined) {
+    const meta = await timeSessionViewPhase(
+      'snapshot_metadata',
+      fields,
+      () => readColdSessionMetaBySessionId(core, sessionId, async () =>
+        (await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId, undefined, timing.signal), timing))?.workspaceId),
+      timing,
+    );
+    timing.signal?.throwIfAborted();
+    if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
+    coldRoster = coldBrowseRoster(sessionId, meta);
+    subagents = coldRoster.subagents;
+  } else if ('accessor' in liveHandle && liveHandle.accessor !== undefined) {
+    const metadata = liveHandle.accessor.get(ISessionMetadata);
+    await timeSessionViewPhase('snapshot_metadata_ready', fields, () => metadata.ready, timing);
+    timing.signal?.throwIfAborted();
+    const state = await broadcaster.getSnapshotState(sessionId, {
+      captureMessages: false,
+      timing,
+      capture: async () => ({
+        meta: metadata.snapshot(),
+        runtime: new Map(liveHandle.accessor.get(IAgentLifecycleService).list().map((agent) =>
+          [agent.id, { ...agent.accessor.get(IAgentActivityView).state(), model: readBoundModel(agent) }] as const)),
+      }),
+    });
+    timing.signal?.throwIfAborted();
+    if (state.captured === undefined) throw new SnapshotNotFoundError(sessionId);
+    const candidates = sessionAgentRoster(sessionId, state.captured.meta, state.subagents, state.captured.runtime);
+    subagents = orderSnapshotSubagents(enrichSnapshotSubagents(candidates, state.captured.meta.agents,
+      broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id))));
+  } else {
+    const snapshot = await assembleSnapshotSource(core, broadcaster, sessionId, 'transcript', timing.signal, timing);
+    subagents = snapshot.subagents ?? [];
+  }
+  const total = subagents.length;
+  if (exactAgentId !== '') {
+    let hit: SnapshotSubagent | undefined;
+    if (coldRoster !== undefined) {
+      if (coldRoster.byId === undefined) {
+        const map = new Map<string, SnapshotSubagent>();
+        for (const row of coldRoster.subagents) map.set(row.agent_id ?? row.id, row);
+        coldRoster.byId = map;
+      }
+      hit = coldRoster.byId.get(exactAgentId);
+    } else {
+      hit = subagents.find((row) => row.agent_id === exactAgentId || row.id === exactAgentId);
+    }
+    if (hit !== undefined && matchesSubagentStatus(hit, status) && matchesSubagentQuery(hit, q)) {
+      return { items: [hit], total, matched: 1 };
+    }
+    return { items: [], total, matched: 0 };
+  }
+  if (q === '' && status === '') {
+    return { items: subagents.slice(0, limit), total, matched: total };
+  }
+  let searchIndex: string[] | undefined;
+  if (q !== '' && coldRoster !== undefined) {
+    if (coldRoster.searchIndex === undefined) {
+      const index = new Array<string>(coldRoster.subagents.length);
+      for (let i = 0; i < coldRoster.subagents.length; i += 1) {
+        index[i] = subagentSearchBlob(coldRoster.subagents[i]!);
+      }
+      coldRoster.searchIndex = index;
+    }
+    searchIndex = coldRoster.searchIndex;
+  }
+  const items: SnapshotSubagent[] = [];
+  let matched = 0;
+  for (let i = 0; i < total; i += 1) {
+    const row = subagents[i]!;
+    if (status !== '' && !matchesSubagentStatus(row, status)) continue;
+    if (q !== '' && !(searchIndex !== undefined ? searchIndex[i]!.includes(q) : matchesSubagentQuery(row, q))) continue;
+    matched += 1;
+    if (items.length < limit) items.push(row);
+  }
+  return { items, total, matched };
 }
 
 export async function assembleSnapshot(
@@ -203,14 +402,19 @@ export async function assembleSnapshot(
   timing: SessionViewTimingContext = {},
 ): Promise<SessionSnapshotResponse> {
   const context = { ...timing, signal: timing.signal ?? signal };
-  return timeSessionViewPhase('snapshot', { sessionId, requestId: context.requestId }, async () => boundedSessionSnapshot(
-    await assembleSnapshotSource(core, broadcaster, sessionId, mode, signal, context),
-    mode === 'transcript' ? '' : 'legacy',
-  ), context);
+  const config = optionalConfig(core);
+  return timeSessionViewPhase('snapshot', { sessionId, requestId: context.requestId }, async () => {
+    const source = await assembleSnapshotSource(core, broadcaster, sessionId, mode, signal, context);
+    return boundedSessionSnapshot(
+      source,
+      mode === 'transcript' ? '' : 'legacy',
+      snapshotRosterWindowFor(source.subagents, config),
+    );
+  }, context);
 }
 
-export function boundedSessionSnapshot(snapshot: SessionSnapshotResponse, id: string): SessionSnapshotResponse {
-  return { ...boundedEntity(snapshot, { kind: 'snapshot', id }, 128 * 1024), agent_counts: snapshot.agent_counts };
+export function boundedSessionSnapshot(snapshot: SessionSnapshotResponse, id: string, rosterWindow?: number): SessionSnapshotResponse {
+  return { ...boundedEntity(snapshot, { kind: 'snapshot', id }, 128 * 1024, undefined, 'head', rosterWindow), agent_counts: snapshot.agent_counts };
 }
 
 async function assembleSnapshotSource(
@@ -291,15 +495,12 @@ async function assembleColdSnapshot(
     facts,
     cursor.seq,
   );
-  const subagentCandidates = sessionAgentRoster(sessionId, meta);
-  const subagents = orderSnapshotSubagents(enrichSnapshotSubagents(
-    subagentCandidates,
-    meta.agents,
-    broadcaster.getMaterializedTranscriptToolCallCounts(
-      sessionId,
-      subagentCandidates.map((subagent) => subagent.id),
-    ),
-  ));
+  const coldRoster = coldBrowseRoster(sessionId, meta);
+  const subagentIds = coldRoster.subagents.map((subagent) => subagent.id);
+  const toolCallCounts = broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, subagentIds);
+  const subagents = toolCallCounts.size === 0
+    ? coldRoster.subagents
+    : orderSnapshotSubagents(enrichSnapshotSubagents(coldRoster.subagents, meta.agents, toolCallCounts));
   return {
     as_of_seq: cursor.seq,
     epoch: cursor.epoch,
@@ -461,9 +662,19 @@ function isSnapshotSubagentActive(subagent: SnapshotSubagent): boolean {
 
 function snapshotSubagentRecency(subagent: SnapshotSubagent): number | undefined {
   let latest: number | undefined;
-  for (const raw of [subagent.started_at, subagent.completed_at, subagent.created_at]) {
-    if (raw === undefined) continue;
-    const parsed = Date.parse(raw);
+  const started = subagent.started_at;
+  if (started !== undefined) {
+    const parsed = Date.parse(started);
+    if (Number.isFinite(parsed)) latest = parsed;
+  }
+  const completed = subagent.completed_at;
+  if (completed !== undefined) {
+    const parsed = Date.parse(completed);
+    if (Number.isFinite(parsed) && (latest === undefined || parsed > latest)) latest = parsed;
+  }
+  const created = subagent.created_at;
+  if (created !== undefined) {
+    const parsed = Date.parse(created);
     if (Number.isFinite(parsed) && (latest === undefined || parsed > latest)) latest = parsed;
   }
   return latest;
@@ -471,37 +682,54 @@ function snapshotSubagentRecency(subagent: SnapshotSubagent): number | undefined
 
 function snapshotSubagentOrdinal(subagent: SnapshotSubagent): number | undefined {
   const id = subagent.agent_id ?? subagent.id;
-  const match = /^agent-(\d+)$/u.exec(id);
-  if (match === null) return undefined;
-  const parsed = Number(match[1]);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
+  if (!id.startsWith('agent-') || id.length <= 6) return undefined;
+  let value = 0;
+  for (let index = 6; index < id.length; index += 1) {
+    const code = id.charCodeAt(index) - 48;
+    if (code < 0 || code > 9) return undefined;
+    value = value * 10 + code;
+  }
+  return Number.isSafeInteger(value) ? value : undefined;
 }
 
 function orderSnapshotSubagents(subagents: readonly SnapshotSubagent[]): SnapshotSubagent[] {
-  if (subagents.length <= 1) return [...subagents];
-  return subagents
-    .map((subagent, index) => ({
+  const length = subagents.length;
+  if (length <= 1) return [...subagents];
+  const entries = new Array<{
+    readonly subagent: SnapshotSubagent;
+    readonly index: number;
+    readonly active: boolean;
+    readonly openBranch: boolean;
+    readonly recency: number | undefined;
+    readonly ordinal: number | undefined;
+  }>(length);
+  for (let index = 0; index < length; index += 1) {
+    const subagent = subagents[index]!;
+    entries[index] = {
       subagent,
       index,
       active: isSnapshotSubagentActive(subagent),
       openBranch: subagent.is_branch === true && subagent.branch_sealed !== true,
       recency: snapshotSubagentRecency(subagent),
       ordinal: snapshotSubagentOrdinal(subagent),
-    }))
-    .toSorted((left, right) => {
-      if (left.active !== right.active) return left.active ? -1 : 1;
-      if (left.openBranch !== right.openBranch) return left.openBranch ? -1 : 1;
-      if (left.recency !== right.recency) {
-        if (left.recency === undefined) return 1;
-        if (right.recency === undefined) return -1;
-        return right.recency - left.recency;
-      }
-      if (left.ordinal !== undefined && right.ordinal !== undefined && left.ordinal !== right.ordinal) {
-        return right.ordinal - left.ordinal;
-      }
-      return left.index - right.index;
-    })
-    .map((entry) => entry.subagent);
+    };
+  }
+  entries.sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1;
+    if (left.openBranch !== right.openBranch) return left.openBranch ? -1 : 1;
+    if (left.recency !== right.recency) {
+      if (left.recency === undefined) return 1;
+      if (right.recency === undefined) return -1;
+      return right.recency - left.recency;
+    }
+    if (left.ordinal !== undefined && right.ordinal !== undefined && left.ordinal !== right.ordinal) {
+      return right.ordinal - left.ordinal;
+    }
+    return left.index - right.index;
+  });
+  const ordered = new Array<SnapshotSubagent>(length);
+  for (let index = 0; index < length; index += 1) ordered[index] = entries[index]!.subagent;
+  return ordered;
 }
 
 function readBoundModel(main: IAgentScopeHandle): string | undefined {
@@ -525,7 +753,8 @@ function enrichSnapshotSubagents(
     const terminalAt = meta?.completedAt;
     const currentOutcome = meta?.status !== undefined && terminalAt !== undefined &&
       Number.isFinite(terminalAt) &&
-      Date.parse(subagent.started_at ?? '') <= terminalAt &&
+      subagent.started_at !== undefined &&
+      Date.parse(subagent.started_at) <= terminalAt &&
       (subagent.completed_at === undefined || Date.parse(subagent.completed_at) <= terminalAt);
     const status = currentOutcome ? meta.status : subagent.status;
     return {
@@ -568,8 +797,10 @@ function enrichSnapshotSubagents(
   });
 }
 
-function firstNonEmpty(...values: readonly (string | undefined)[]): string | undefined {
-  return values.find((value) => value !== undefined && value.length > 0);
+function firstNonEmpty(primary: string | undefined, secondary: string | undefined): string | undefined {
+  if (primary !== undefined && primary.length > 0) return primary;
+  if (secondary !== undefined && secondary.length > 0) return secondary;
+  return undefined;
 }
 
 function attachCurrentPromptIdToInFlight(
@@ -612,10 +843,13 @@ export async function readBrowseSnapshotContent(
       if (meta === undefined) return undefined;
       timing.signal?.throwIfAborted();
       if (field === 'subagents') {
-        const rawCandidates = sessionAgentRoster(sessionId, meta);
-        const candidates = orderSnapshotSubagents(ref.source.id === 'legacy'
-          ? enrichSnapshotSubagents(rawCandidates, meta.agents, broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, rawCandidates.map((agent) => agent.id)))
-          : rawCandidates);
+        const candidates = ref.source.id === 'legacy'
+          ? (() => {
+            const rawCandidates = sessionAgentRoster(sessionId, meta);
+            return orderSnapshotSubagents(enrichSnapshotSubagents(rawCandidates, meta.agents,
+              broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, rawCandidates.map((agent) => agent.id))));
+          })()
+          : coldBrowseRoster(sessionId, meta).subagents;
         const index = ref.path[1];
         const receiptField = ref.path[2];
         if (typeof index === 'number' && (receiptField === 'output_preview' || receiptField === 'stop_reason')) {
@@ -630,8 +864,10 @@ export async function readBrowseSnapshotContent(
             const outcome = await readAgentOutcome(core.accessor.get(IAtomicDocumentStore),
               `sessions/${summary.workspaceId}/${sessionId}`, saved);
             timing.signal?.throwIfAborted();
-            candidates[index] = { ...candidate, output_preview: outcome.resultSummary ?? candidate.output_preview,
+            const patched = [...candidates];
+            patched[index] = { ...candidate, output_preview: outcome.resultSummary ?? candidate.output_preview,
               stop_reason: outcome.error ?? candidate.stop_reason };
+            return readContentSegment({ subagents: patched }, ref);
           }
         }
         return readContentSegment({ subagents: candidates }, ref);

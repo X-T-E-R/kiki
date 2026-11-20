@@ -2335,14 +2335,14 @@ it('copies a large structured invocation input including newly discovered prompt
 
 
 describe('automatic lightweight roster', () => {
-  const children: NonNullable<SessionSnapshotResponse['subagents']> = Array.from({ length: 706 }, (_, index) => ({
+  const children: NonNullable<SessionSnapshotResponse['subagents']> = Array.from({ length: 120 }, (_, index) => ({
     id: `child-${index}`, agent_id: `child-${index}`, session_id: session.id, kind: 'subagent',
     description: `Investigation ${index}`, label: `Investigation ${index}`, profile: 'researcher',
     model: 'fixture/model', status: 'completed', activity_status: 'completed', status_source: 'metadata',
     name_source: 'user_label', live: false, created_at: FIXED_AT,
   }));
-  const ref: import('@kiki/transcript').ContentRef = { source: { kind: 'snapshot', id: '' }, revision: 'inventory-v1', path: ['subagents'], kind: 'array', offset: 4, total: 706 };
-  const counts = { total: 707, subagents: 706, completed: 706, failed: 0, cancelled: 0, active: 0, idle: 0, unknown: 0 };
+  const ref: import('@kiki/transcript').ContentRef = { source: { kind: 'snapshot', id: '' }, revision: 'inventory-v1', path: ['subagents'], kind: 'array', offset: 4, total: 120 };
+  const counts = { total: 121, subagents: 120, completed: 120, failed: 0, cancelled: 0, active: 0, idle: 0, unknown: 0 };
   const initial: SessionSnapshotResponse = { as_of_seq: 1, epoch: 'e', session, in_flight_turn: null, messages: { items: [], has_more: false },
     pending_approvals: [], pending_questions: [], subagents: children.slice(0, 4), agent_counts: counts, contentRefs: [ref] };
 
@@ -2351,8 +2351,8 @@ describe('automatic lightweight roster', () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const content = vi.fn(async ({ ref: requested }: { ref: import('@kiki/transcript').ContentRef }) => {
       await gate;
-      const offset = Math.min(requested.offset + 20, 706);
-      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+      const offset = Math.min(requested.offset + 20, 120);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 120 ? { ...requested, offset } : undefined };
     });
     const { controller, view } = harness(undefined, content);
     vi.mocked(view.snapshot).mockResolvedValue(initial);
@@ -2360,25 +2360,25 @@ describe('automatic lightweight roster', () => {
     expect(controller.getState().agentCounts).toEqual(counts);
     expect(controller.getState().snapshotSubagents).toHaveLength(4);
     release();
-    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706), { timeout: 5000 });
+    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(120), { timeout: 5000 });
     expect(controller.getState().snapshotSubagents.map((row) => row.id)).toEqual(children.map((row) => row.id));
-    expect(controller.getForest()?.byId['child-633']).toMatchObject({ label: 'Investigation 633', status: 'completed', busy: false });
-    expect(content).toHaveBeenCalledTimes(Math.ceil((706 - 4) / 20));
+    expect(controller.getForest()?.byId['child-110']).toMatchObject({ label: 'Investigation 110', status: 'completed', busy: false });
+    expect(content).toHaveBeenCalledTimes(Math.ceil((120 - 4) / 20));
     expect(content.mock.calls.every(([input]) => input.ref.path.length === 1 && input.ref.path[0] === 'subagents')).toBe(true);
     expect(view.transcript.page).not.toHaveBeenCalled();
-    expect(controller.getAgentState('child-633').loaded).toBe(false);
+    expect(controller.getAgentState('child-110').loaded).toBe(false);
     expect(controller.getState().contentRefs).toEqual([]);
     controller.close();
   });
 
-  it('automatically reloads a changed root roster revision at offset64 and completes706 on the same attachment', async () => {
+  it('automatically reloads a changed root roster revision at offset64 and completes120 on the same attachment', async () => {
     const { RPCError } = await import('@kiki/klient/session-view');
     const freshRef = { ...ref, revision: 'inventory-v2' };
-    const freshRows = children.map((row) => row.id === 'child-633' ? { ...row, label: 'Recovered recorded name' } : row);
+    const freshRows = children.map((row) => row.id === 'child-110' ? { ...row, label: 'Recovered recorded name' } : row);
     const content = vi.fn(async ({ ref: requested }: { ref: import('@kiki/transcript').ContentRef }) => {
       if (requested.revision === ref.revision && requested.offset === 64) throw new RPCError(40922, 'Content changed; reload its preview before continuing.');
-      const offset = Math.min(requested.offset + 20, 706);
-      return { ref: requested, value: freshRows.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+      const offset = Math.min(requested.offset + 20, 120);
+      return { ref: requested, value: freshRows.slice(requested.offset, offset), contentRefs: [], next: offset < 120 ? { ...requested, offset } : undefined };
     });
     const { controller, view } = harness(undefined, content);
     const subscribe = vi.spyOn(view, 'subscribe');
@@ -2386,13 +2386,13 @@ describe('automatic lightweight roster', () => {
     controller.subscribe(() => { sizes.push(controller.getState().snapshotSubagents.length); });
     vi.mocked(view.snapshot).mockResolvedValueOnce(initial).mockResolvedValue({ ...initial, contentRefs: [freshRef] });
     await controller.open();
-    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706), { timeout: 2000 });
+    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(120), { timeout: 2000 });
     expect(view.snapshot).toHaveBeenCalledTimes(2);
     expect(subscribe).toHaveBeenCalledTimes(1);
     expect(sizes).toContain(64);
     expect(sizes.slice(sizes.indexOf(64)).every((size) => size >= 64)).toBe(true);
     expect(view.transcript.page).not.toHaveBeenCalled();
-    expect(controller.getForest()?.byId['child-633']).toMatchObject({ label: 'Recovered recorded name', status: 'completed', statusSource: 'metadata', nameSource: 'user_label', busy: false });
+    expect(controller.getForest()?.byId['child-110']).toMatchObject({ label: 'Recovered recorded name', status: 'completed', statusSource: 'metadata', nameSource: 'user_label', busy: false });
     expect(controller.getState().cursor).toEqual({ seq: 1, epoch: 'e' });
     expect(controller.getState().agentCounts).toEqual(counts);
     expect(controller.getState().contentRefs).toEqual([]);
@@ -2405,15 +2405,15 @@ describe('automatic lightweight roster', () => {
     let stale = true;
     const content = vi.fn(async ({ ref: requested }: { ref: import('@kiki/transcript').ContentRef }) => {
       if (stale) { stale = false; throw new RPCError(40922, 'Content changed'); }
-      const offset = Math.min(requested.offset + 20, 706);
-      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+      const offset = Math.min(requested.offset + 20, 120);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 120 ? { ...requested, offset } : undefined };
     });
     const { controller, view } = harness(undefined, content);
     vi.mocked(view.snapshot).mockImplementation(async () => ({ ...initial }));
     await controller.open();
-    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706), { timeout: 1000 });
+    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(120), { timeout: 1000 });
     expect(view.snapshot).toHaveBeenCalledTimes(2);
-    expect(content).toHaveBeenCalledTimes(37);
+    expect(content).toHaveBeenCalledTimes(7);
     controller.close();
   });
 
@@ -2424,8 +2424,8 @@ describe('automatic lightweight roster', () => {
     const content = vi.fn(async ({ ref: requested }: { ref: ContentRef }) => {
       if (requested.kind === 'text') return { ref: requested, value: 'ated', contentRefs: [] };
       if (requested.offset === 4) await gate;
-      const offset = Math.min(requested.offset + 20, 706);
-      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+      const offset = Math.min(requested.offset + 20, 120);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 120 ? { ...requested, offset } : undefined };
     });
     const { controller, view } = harness(undefined, content);
     vi.mocked(view.snapshot).mockResolvedValue({ ...initial, subagents: [{ ...children[0]!, label: 'hydr' }, ...children.slice(1, 4)], contentRefs: [ref, nested] });
@@ -2434,7 +2434,7 @@ describe('automatic lightweight roster', () => {
       await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(1));
       expect(await controller.loadContentSegment('main', nested)).toBe(true);
       finishRoot();
-      await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706));
+      await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(120));
       expect(content.mock.calls.filter(([input]) => input.ref.kind === 'array' && input.ref.offset === 4)).toHaveLength(1);
       expect(controller.getState().snapshotSubagents[0]?.label).toBe('hydrated');
       expect(controller.getState().contentRefs).toEqual([]);
@@ -2443,15 +2443,15 @@ describe('automatic lightweight roster', () => {
 
   it('retains the same-revision roster continuation across repeated shell refreshes during timeline reads', async () => {
     const content = vi.fn(async ({ ref: requested }: { ref: ContentRef }) => {
-      const offset = Math.min(requested.offset + 20, 706);
-      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+      const offset = Math.min(requested.offset + 20, 120);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 120 ? { ...requested, offset } : undefined };
     });
     const { controller, view, deliver } = harness(undefined, content);
     vi.mocked(view.snapshot).mockImplementation(async () => ({ ...initial }));
     await controller.open();
     deliver(resetEvent('main', emptySnapshot(), 1));
     try {
-      await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706));
+      await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(120));
       const reads = content.mock.calls.length;
       for (let seq = 2; seq <= 4; seq += 1) {
         controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 1, epoch: 'e' }, rosterAgentId: 'child-0', generation: 1 });
@@ -2460,7 +2460,7 @@ describe('automatic lightweight roster', () => {
       }
       expect(content).toHaveBeenCalledTimes(reads);
       expect(controller.getState().contentRefs).toEqual([]);
-      expect(controller.getState().snapshotSubagents).toHaveLength(706);
+      expect(controller.getState().snapshotSubagents).toHaveLength(120);
     } finally { controller.close(); }
   });
 
@@ -2470,8 +2470,8 @@ describe('automatic lightweight roster', () => {
     let revision = 0;
     const content = vi.fn(async ({ ref: requested }: { ref: import('@kiki/transcript').ContentRef }) => {
       if (changed) throw new RPCError(40922, 'Content changed');
-      const offset = Math.min(requested.offset + 20, 706);
-      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 706 ? { ...requested, offset } : undefined };
+      const offset = Math.min(requested.offset + 20, 120);
+      return { ref: requested, value: children.slice(requested.offset, offset), contentRefs: [], next: offset < 120 ? { ...requested, offset } : undefined };
     });
     const { controller, view } = harness(undefined, content);
     vi.mocked(view.snapshot).mockImplementation(async () => ({ ...initial, contentRefs: [{ ...ref, revision: `revision-${revision++}` }] }));
@@ -2485,7 +2485,7 @@ describe('automatic lightweight roster', () => {
     expect(retryRef).toBeDefined();
     if (retryRef === undefined) throw new Error('Missing roster retry reference');
     await controller.loadContentSegment('main', retryRef);
-    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(706));
+    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(120));
     expect(view.snapshot).toHaveBeenCalledTimes(4);
     controller.close();
   });
@@ -2558,6 +2558,66 @@ describe('automatic lightweight roster', () => {
     expect(content).toHaveBeenCalledTimes(1);
     expect(controller.getState().snapshotSubagents).toHaveLength(4);
     expect(controller.getState().contentRefs).toContainEqual(ref);
+    controller.close();
+  });
+
+  it('keeps large 10,000-subagent rosters bounded on open with zero content-segment drains and resolves hits via searchSubagents and direct focus', async () => {
+    const content = vi.fn(async () => ({ ref, value: [], contentRefs: [] }));
+    const { controller, view } = harness(undefined, content);
+    const outOfWindowHit: NonNullable<SessionSnapshotResponse['subagents']>[number] = {
+      id: 'child-9999',
+      agent_id: 'child-9999',
+      session_id: session.id,
+      kind: 'subagent',
+      description: 'Needle 9999',
+      label: 'Needle 9999',
+      profile: 'researcher',
+      model: 'fixture/model',
+      status: 'completed',
+      activity_status: 'completed',
+      status_source: 'metadata',
+      name_source: 'user_label',
+      live: false,
+      created_at: FIXED_AT,
+    };
+    const directFocusHit: NonNullable<SessionSnapshotResponse['subagents']>[number] = {
+      ...outOfWindowHit,
+      id: 'child-8888',
+      agent_id: 'child-8888',
+      description: 'Direct 8888',
+      label: 'Direct 8888',
+    };
+    const subagentsFn = vi.fn(async (input?: { q?: string; agentId?: string; limit?: number }) => {
+      if (input?.agentId === 'child-8888') {
+        return { items: [directFocusHit], total: 10_000, matched: 1 };
+      }
+      return { items: [outOfWindowHit], total: 10_000, matched: 1 };
+    });
+    (view as unknown as { subagents: typeof subagentsFn }).subagents = subagentsFn;
+
+    const largeRef: ContentRef = { source: { kind: 'snapshot', id: '' }, revision: 'inventory-10k', path: ['subagents'], kind: 'array', offset: 64, total: 10_000 };
+    const largeCounts = { total: 10_001, subagents: 10_000, completed: 10_000, failed: 0, cancelled: 0, active: 0, idle: 0, unknown: 0 };
+    vi.mocked(view.snapshot).mockResolvedValue({
+      ...initial,
+      subagents: children.slice(0, 64),
+      agent_counts: largeCounts,
+      contentRefs: [largeRef],
+    });
+
+    await controller.open();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(content).not.toHaveBeenCalled();
+    expect(controller.getState().agentCounts).toEqual(largeCounts);
+    expect(controller.getState().snapshotSubagents).toHaveLength(64);
+
+    const hits = await controller.searchSubagents('Needle 9999');
+    expect(subagentsFn).toHaveBeenCalledWith({ q: 'Needle 9999', status: undefined, limit: undefined }, { signal: undefined });
+    expect(hits.map((node) => node.agentId)).toEqual(['child-9999']);
+    expect(controller.getForest()?.byId['child-9999']).toMatchObject({ label: 'Needle 9999', status: 'completed' });
+
+    controller.setFocusedAgent('child-8888');
+    await vi.waitFor(() => expect(controller.getForest()?.byId['child-8888']?.label).toBe('Direct 8888'));
+    expect(subagentsFn).toHaveBeenCalledWith({ agentId: 'child-8888', limit: 1 });
     controller.close();
   });
 });

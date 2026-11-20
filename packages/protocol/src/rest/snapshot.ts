@@ -140,3 +140,18 @@ export const sessionSnapshotResponseSchema = z.object({
   pending_questions: z.array(questionRequestSchema),
 });
 export type SessionSnapshotResponse = z.infer<typeof sessionSnapshotResponseSchema>;
+
+export const sessionSubagentsQuerySchema = z.object({
+  q: z.string().optional(),
+  status: z.string().optional(),
+  agent_id: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+export type SessionSubagentsQuery = z.infer<typeof sessionSubagentsQuerySchema>;
+
+export const sessionSubagentsResponseSchema = z.object({
+  items: z.array(snapshotSubagentSchema),
+  total: z.number().int().nonnegative(),
+  matched: z.number().int().nonnegative(),
+});
+export type SessionSubagentsResponse = z.infer<typeof sessionSubagentsResponseSchema>;

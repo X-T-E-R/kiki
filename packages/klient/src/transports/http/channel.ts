@@ -170,6 +170,11 @@ export class HttpChannel implements KlientChannel {
       { agent_id: input.agentId, tool_call_id: input.toolCallId, cursor: input.cursor },
       { signal: options?.signal, timeoutMs: options?.timeoutMs },
     ),
+    subagents: (sessionId, input, options) => this.viewRequest(
+      `/api/sessions/${encodeURIComponent(sessionId)}/subagents`,
+      { q: input.q, status: input.status, agent_id: input.agentId, limit: input.limit },
+      { signal: options?.signal, timeoutMs: options?.timeoutMs },
+    ),
     subscribe: (sessionId, input, handler) => {
       if (this.closed) throw new Error('http closed');
       return this.socket.sessionViews.subscribe(sessionId, input, handler);

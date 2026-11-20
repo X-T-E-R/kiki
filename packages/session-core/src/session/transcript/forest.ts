@@ -290,11 +290,12 @@ function presentSnapshotText(value: string | undefined): string | undefined {
 export function overlayLiveSourcesWithSnapshotSubagents(
   live: readonly AgentLiveSource[],
   snapshotSubagents: readonly SnapshotSubagent[] | undefined,
+  precomputedRoster?: readonly AgentRosterDescriptor[],
 ): readonly AgentLiveSource[] {
-  if (snapshotSubagents === undefined || snapshotSubagents.length === 0) return live;
-  const rosterById = new Map(
-    rosterFromSnapshotSubagents(snapshotSubagents).map((entry) => [entry.agentId, entry] as const),
-  );
+  if (live.length === 0 || snapshotSubagents === undefined || snapshotSubagents.length === 0) return live;
+  const rosterEntries = precomputedRoster ?? rosterFromSnapshotSubagents(snapshotSubagents);
+  const rosterById = new Map<string, AgentRosterDescriptor>();
+  for (const entry of rosterEntries) rosterById.set(entry.agentId, entry);
   if (rosterById.size === 0) return live;
   return live.map((source) => {
     const snapshot = rosterById.get(source.subagentId);
@@ -425,11 +426,12 @@ export function sessionAgentForest(
   roster?: readonly AgentRosterDescriptor[],
   extraTasks?: readonly AgentTaskItem[],
 ): AgentForest {
+  const snapshotRoster = rosterFromSnapshotSubagents(state.snapshotSubagents);
   const live = overlayLiveSourcesWithSnapshotSubagents(
     liveSourcesFromSubagentBlocks(subagentBlocksFromState(state)),
     state.snapshotSubagents,
+    snapshotRoster,
   );
-  const snapshotRoster = rosterFromSnapshotSubagents(state.snapshotSubagents);
   return overlayForestDisplayFields(
     buildAgentForest(live, [...snapshotRoster, ...(roster ?? [])], [...taskItemsFromSessionTasks(state.tasks), ...(extraTasks ?? [])]),
     live,
@@ -638,17 +640,19 @@ export function sessionAgentForestFromAgentSnapshots(
   coldAgents?: ReadonlySet<string>,
   rosterCurrentAgents?: ReadonlySet<string>,
 ): AgentForest {
+  const snapshotRoster = rosterFromSnapshotSubagents(snapshotSubagents);
   const live = overlayLiveSourcesWithSnapshotSubagents(
     liveSourcesFromAgentSnapshots(snapshots),
     snapshotSubagents,
+    snapshotRoster,
   );
   const tasks: AgentTaskItem[] = [];
   const roster: AgentRosterDescriptor[] = [];
-  const liveById = new Map(live.map((entry) => [entry.subagentId, entry]));
+  const liveById = live.length === 0 ? undefined : new Map(live.map((entry) => [entry.subagentId, entry]));
   for (const [agentId, snapshot] of snapshots) {
     const meta = snapshot.meta.agent;
     const count = canonicalToolCallCountFields(snapshot);
-    const source = liveById.get(agentId);
+    const source = liveById?.get(agentId);
     const status = agentStatusFromMeta({ agent_id: agentId, items: snapshot.items, has_more: false, meta: snapshot.meta });
     roster.push({
       agentId,
@@ -673,19 +677,23 @@ export function sessionAgentForestFromAgentSnapshots(
       }),
     });
     const taskList = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
-    tasks.push(...taskItemsFromTranscriptTasks(taskList, agentId));
+    if (taskList.length > 0) tasks.push(...taskItemsFromTranscriptTasks(taskList, agentId));
   }
-  roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
+  for (const entry of snapshotRoster) roster.push(entry);
   const forest = overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);
   const byId = { ...forest.byId };
-  const snapshotRows = new Map((snapshotSubagents ?? []).map((row) => [snapshotSubagentAgentId(row), row]));
-  const liveIds = new Set((snapshotSubagents ?? []).filter((row) => row.live === true).map(snapshotSubagentAgentId));
+  const snapshotRows = new Map<string, SnapshotSubagent>();
+  const liveIds = new Set<string>();
   for (const row of snapshotSubagents ?? []) {
     const id = snapshotSubagentAgentId(row);
+    snapshotRows.set(id, row);
+    if (row.live === true) liveIds.add(id);
     const node = byId[id];
     if (node === undefined) continue;
-    byId[id] = { ...node, nameSource: row.name_source,
-      statusSource: node.status === (row.activity_status ?? row.status) ? row.status_source : undefined };
+    const nextStatusSource = node.status === (row.activity_status ?? row.status) ? row.status_source : undefined;
+    if (node.nameSource !== row.name_source || node.statusSource !== nextStatusSource) {
+      byId[id] = { ...node, nameSource: row.name_source, statusSource: nextStatusSource };
+    }
   }
   for (const [agentId, snapshot] of snapshots) {
     let node = byId[agentId];
@@ -784,8 +792,9 @@ export class SessionAgentForestQuery {
     this.validUntil = Infinity;
     const now = Date.now();
     for (const row of subagents ?? []) {
+      if (row.refreshing !== true) continue;
       const until = Date.parse(row.refreshing_until ?? '');
-      if (row.refreshing === true && until > now) this.validUntil = Math.min(this.validUntil, until);
+      if (until > now) this.validUntil = Math.min(this.validUntil, until);
     }
     return this.forest;
   }
@@ -800,12 +809,12 @@ function filterRosterToLiveOrPresent(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
 ): readonly AgentRosterDescriptor[] {
   if (snapshots.size === 0) return roster;
-  const presentIds = new Set<string>(snapshots.keys());
-  return roster.filter((entry) => entry.statusSource !== undefined || presentIds.has(entry.agentId) ||
+  const now = Date.now();
+  return roster.filter((entry) => entry.statusSource !== undefined || snapshots.has(entry.agentId) ||
     entry.isBranch === true || entry.branchSealed === true ||
     entry.status === 'failed' || entry.status === 'cancelled' || (
     entry.disposedAt === undefined &&
-    ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > Date.now()) ||
+    ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > now) ||
       entry.status === 'running' || entry.status === 'suspended' || entry.status === 'unknown')
   ));
 }

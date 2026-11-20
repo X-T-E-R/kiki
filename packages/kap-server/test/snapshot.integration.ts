@@ -385,8 +385,8 @@ describe('server-v2 snapshot route enrichment', () => {
       | undefined;
     registerSnapshotRoutes(
       {
-        get: (_path, _options, handler) => {
-          routeHandler = handler;
+        get: (path, _options, handler) => {
+          if (path === '/sessions/:session_id/snapshot') routeHandler = handler;
         },
       },
       {
@@ -1835,7 +1835,7 @@ describe('legacy snapshot message tail projection', () => {
     };
 
     let browse = await assembleBrowseSnapshot(core as never, browseBroadcaster as never, sessionId);
-    expect(browse.subagents).toHaveLength(64);
+    expect(browse.subagents).toHaveLength(66);
     expect(browse.subagents?.[0]?.id).toBe('agent-19');
     expect(browse.subagents?.[1]?.id).toBe('agent-7');
     expect(browse.subagents?.[2]?.id).toBe('agent-1433');
@@ -2779,6 +2779,108 @@ describe('cold session snapshot', () => {
     } finally {
       releaseRead();
       read.mockRestore();
+      spies.acquire.mockRestore();
+      spies.resume.mockRestore();
+      spies.workspaceAcquire.mockRestore();
+    }
+  });
+
+  it('serves cold 10,000-subagent snapshots bounded and answers GET /subagents search in-memory without resuming', async () => {
+    const sessionId = await createSession();
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const index = server!.core.accessor.get(ISessionIndex);
+    const indexed = await index.get(sessionId);
+    expect(indexed).toBeDefined();
+    await closeSessionById(server!.core.accessor, sessionId);
+
+    const scope = `sessions/${indexed!.workspaceId}/${sessionId}`;
+    const existing = await docs.get<Record<string, unknown>>(scope, 'state.json');
+    expect(existing).toBeDefined();
+    const agents: Record<string, unknown> = {
+      ...((existing!['agents'] as Record<string, unknown> | undefined) ?? {}),
+    };
+    const pad = 'x'.repeat(1600);
+    for (let i = 0; i < 10_000; i += 1) {
+      const id = `subagent-${String(i).padStart(5, '0')}`;
+      agents[id] = {
+        agentId: id,
+        parentAgentId: 'main',
+        displayName: i === 9999 ? 'needle-phoenix-target' : `worker-${i}`,
+        status: 'completed',
+        createdAt: 1_700_000_000_000 + i * 1000,
+        completedAt: 1_700_000_000_500 + i * 1000,
+        model: 'fixture/model',
+        resultSummary: i === 9999 ? 'final-needle-result' : pad,
+        labels: {
+          collaborationTaskName: i === 9999 ? 'needle-phoenix-target' : `worker-${i}`,
+          collaborationAgentType: 'worker',
+        },
+      };
+    }
+    await docs.set(scope, 'state.json', { ...existing!, agents });
+    await index.prepare();
+    await (index as unknown as { reconcileNow?: () => Promise<unknown> }).reconcileNow?.();
+
+    const spies = restorationSpies();
+    const docGetSpy = vi.spyOn(docs, 'get');
+    try {
+      const snapRes = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+        headers: authHeaders(server as RunningServer),
+      });
+      const snapBody = (await snapRes.json()) as { code: number; data: unknown };
+      expect(snapBody.code).toBe(0);
+      const snap = sessionSnapshotResponseSchema.parse(snapBody.data);
+      expect(snap.agent_counts?.subagents).toBe(10_000);
+      expect(snap.subagents).toHaveLength(64);
+      expect(snap.subagents?.[0]?.id).toBe('subagent-09999');
+      docGetSpy.mockClear();
+
+      const searchStart = performance.now();
+      const searchRes = await fetch(`${base}/api/sessions/${sessionId}/subagents?q=needle-phoenix&limit=10`, {
+        headers: authHeaders(server as RunningServer),
+      });
+      const searchElapsedMs = performance.now() - searchStart;
+      const searchBody = (await searchRes.json()) as {
+        code: number;
+        data: { items: Array<{ id: string; label?: string }>; total: number; matched: number };
+      };
+      expect(searchBody.code).toBe(0);
+      expect(searchBody.data.total).toBe(10_000);
+      expect(searchBody.data.matched).toBe(1);
+      expect(searchBody.data.items).toHaveLength(1);
+      expect(searchBody.data.items[0]?.id).toBe('subagent-09999');
+      expect(searchElapsedMs).toBeLessThan(250);
+
+      const warmSearchStart = performance.now();
+      const warmRes = await fetch(`${base}/api/sessions/${sessionId}/subagents?q=worker-5000&limit=10`, {
+        headers: authHeaders(server as RunningServer),
+      });
+      const warmSearchElapsedMs = performance.now() - warmSearchStart;
+      const warmBody = (await warmRes.json()) as {
+        code: number;
+        data: { items: Array<{ id: string }>; total: number; matched: number };
+      };
+      expect(warmBody.code).toBe(0);
+      expect(warmBody.data.items.map((item) => item.id)).toEqual(['subagent-05000']);
+
+      const exactRes = await fetch(`${base}/api/sessions/${sessionId}/subagents?agent_id=subagent-00042&limit=1`, {
+        headers: authHeaders(server as RunningServer),
+      });
+      const exactBody = (await exactRes.json()) as {
+        code: number;
+        data: { items: Array<{ id: string }>; total: number; matched: number };
+      };
+      expect(exactBody.code).toBe(0);
+      expect(exactBody.data.matched).toBe(1);
+      expect(exactBody.data.items.map((item) => item.id)).toEqual(['subagent-00042']);
+
+      const stateReadsAfterSnapshot = docGetSpy.mock.calls.filter(([s, k]) => s === scope && k === 'state.json');
+      expect(stateReadsAfterSnapshot).toHaveLength(0);
+      expect(warmSearchElapsedMs).toBeLessThan(50);
+      expect(spies.acquire).not.toHaveBeenCalled();
+      expect(spies.resume).not.toHaveBeenCalled();
+    } finally {
+      docGetSpy.mockRestore();
       spies.acquire.mockRestore();
       spies.resume.mockRestore();
       spies.workspaceAcquire.mockRestore();

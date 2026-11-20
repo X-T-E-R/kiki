@@ -278,6 +278,7 @@ export interface AgentHistoryCursor {
 
 interface DraftNode {
   agentId: string;
+  numericId: number;
   createdAt: string | undefined;
   parentAgentId: string | undefined;
   rosterParentAgentId: string | undefined;
@@ -313,21 +314,33 @@ interface DraftNode {
   toolCallCountKnown: boolean;
   toolCallCountAuthoritative: boolean;
   startedAt: string | undefined;
+  startedAtMs: number;
   endedAt: string | undefined;
   description: string | undefined;
   summary: string | undefined;
   error: string | undefined;
 }
 
+function agentNumericId(id: string): number {
+  if (!id.startsWith('agent-') || id.length <= 6) return -1;
+  let value = 0;
+  for (let index = 6; index < id.length; index += 1) {
+    const digit = id.charCodeAt(index) - 48;
+    if (digit < 0 || digit > 9) return -1;
+    value = value * 10 + digit;
+  }
+  return Number.isSafeInteger(value) ? value : -1;
+}
+
 export function compareAgentIds(a: string, b: string): number {
   if (a === b) return 0;
   if (a === MAIN_AGENT_ID) return -1;
   if (b === MAIN_AGENT_ID) return 1;
-  const na = /^agent-(\d+)$/.exec(a);
-  const nb = /^agent-(\d+)$/.exec(b);
-  if (na && nb) return Number(na[1]) - Number(nb[1]);
-  if (na) return -1;
-  if (nb) return 1;
+  const na = agentNumericId(a);
+  const nb = agentNumericId(b);
+  if (na >= 0 && nb >= 0) return na - nb;
+  if (na >= 0) return -1;
+  if (nb >= 0) return 1;
   return a < b ? -1 : 1;
 }
 
@@ -338,16 +351,18 @@ export function compareAgentIds(a: string, b: string): number {
  * agent-id order — `main` always leads a root list.
  */
 function compareDraftsByRecency(a: DraftNode, b: DraftNode): number {
-  if (a.agentId === MAIN_AGENT_ID || b.agentId === MAIN_AGENT_ID) {
-    return compareAgentIds(a.agentId, b.agentId);
-  }
-  const aTime = a.startedAt === undefined ? Number.NaN : Date.parse(a.startedAt);
-  const bTime = b.startedAt === undefined ? Number.NaN : Date.parse(b.startedAt);
+  if (a.agentId === MAIN_AGENT_ID) return b.agentId === MAIN_AGENT_ID ? 0 : -1;
+  if (b.agentId === MAIN_AGENT_ID) return 1;
+  const aTime = a.startedAtMs;
+  const bTime = b.startedAtMs;
   const aHas = Number.isFinite(aTime);
   const bHas = Number.isFinite(bTime);
   if (aHas && bHas && aTime !== bTime) return bTime - aTime;
   if (aHas !== bHas) return aHas ? -1 : 1;
-  return compareAgentIds(a.agentId, b.agentId);
+  if (a.numericId >= 0 && b.numericId >= 0) return a.numericId - b.numericId;
+  if (a.numericId >= 0) return -1;
+  if (b.numericId >= 0) return 1;
+  return a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0;
 }
 
 function createById(): Record<string, AgentTreeNode> {
@@ -500,12 +515,12 @@ export function stabilizeAgentForest(
     return stable;
   };
 
+  const nextIds = Object.keys(next.byId);
   for (const root of next.roots) stabilizeNode(root.agentId);
-  for (const agentId of Object.keys(next.byId)) stabilizeNode(agentId);
+  for (const agentId of nextIds) stabilizeNode(agentId);
 
   const roots = next.roots.map((root) => byId[root.agentId]!);
   const previousIds = Object.keys(previous.byId);
-  const nextIds = Object.keys(next.byId);
   const allNodesStable =
     previousIds.length === nextIds.length &&
     nextIds.every((agentId) => byId[agentId] === previous.byId[agentId]);
@@ -522,6 +537,7 @@ export function buildAgentForest(
   taskItems?: readonly AgentTaskItem[],
 ): AgentForest {
   const drafts = new Map<string, DraftNode>();
+  const now = Date.now();
 
   for (const task of latestTasksByAgent(taskItems ?? [])) {
     const agentId = taskAgentId(task)!;
@@ -532,7 +548,7 @@ export function buildAgentForest(
   for (const entry of roster ?? []) {
     if (!present(entry.agentId)) continue;
     const draft = ensureDraft(drafts, entry.agentId);
-    applyRoster(draft, entry);
+    applyRoster(draft, entry, now);
   }
 
   for (const block of subagentBlocks) {
@@ -799,6 +815,7 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
   if (existing !== undefined) return existing;
   const created: DraftNode = {
     agentId,
+    numericId: agentNumericId(agentId),
     createdAt: undefined,
     parentAgentId: undefined,
     rosterParentAgentId: undefined,
@@ -834,6 +851,7 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     toolCallCountKnown: false,
     toolCallCountAuthoritative: false,
     startedAt: undefined,
+    startedAtMs: Number.NaN,
     endedAt: undefined,
     description: undefined,
     summary: undefined,
@@ -841,6 +859,12 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
   };
   drafts.set(agentId, created);
   return created;
+}
+
+function setDraftStartedAtIfMissing(draft: DraftNode, value: string | undefined): void {
+  if (draft.startedAt !== undefined || value === undefined) return;
+  draft.startedAt = value;
+  draft.startedAtMs = Date.parse(value);
 }
 
 function applyToolCallCount(
@@ -880,7 +904,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   draft.thinkingEffortExplicit = task.thinkingEffortExplicit ?? task.thinking_effort_explicit ?? draft.thinkingEffortExplicit;
   draft.executorId = firstPresent(task.executorId, task.executor_id) ?? draft.executorId;
   draft.executorProtocol = firstPresent(task.executorProtocol, task.executor_protocol) ?? draft.executorProtocol;
-  draft.startedAt ??= startedAt;
+  setDraftStartedAtIfMissing(draft, startedAt);
   draft.endedAt ??= endedAt;
   draft.summary = draft.summary ?? firstPresent(task.summary, task.output_preview);
   draft.error = draft.error ?? firstPresent(task.error, task.stateReason, task.state_reason);
@@ -892,7 +916,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   }
 }
 
-function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
+function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor, now: number): void {
   draft.createdAt ??= firstPresent(entry.createdAt);
   const rosterParent = cleanId(entry.parentAgentId);
   if (rosterParent !== undefined) draft.rosterParentAgentId = rosterParent;
@@ -914,24 +938,28 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
     entry.toolCallCountKnown,
     entry.toolCallCountAuthoritative,
   );
-  const disposedAt = parseStatusTimestamp(entry.disposedAt);
+  const disposedAt = entry.disposedAt === undefined ? undefined : parseStatusTimestamp(entry.disposedAt);
   if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
     draft.disposedAt = disposedAt;
     invalidateDisposedRun(draft, disposedAt, STATUS_AUTHORITY.roster);
   }
-  const refreshingAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
-  const refreshing =
-    entry.refreshing === true && entry.disposedAt === undefined &&
-    (parseStatusTimestamp(entry.refreshingUntil) ?? 0) > Date.now() &&
-    (refreshingAt === undefined ||
+  let refreshing = false;
+  if (entry.refreshing === true && entry.disposedAt === undefined && (parseStatusTimestamp(entry.refreshingUntil) ?? 0) > now) {
+    const refreshingAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
+    refreshing =
+      refreshingAt === undefined ||
       ((draft.statusStartedAt === undefined || draft.statusStartedAt <= refreshingAt) &&
-        (draft.statusEndedAt === undefined || draft.statusEndedAt <= refreshingAt)));
+        (draft.statusEndedAt === undefined || draft.statusEndedAt <= refreshingAt));
+  }
   const status = normalizeStatus(entry.status, entry.detached === true);
   const authority = entry.statusSource === undefined ? STATUS_AUTHORITY.roster : 4;
   const metadataIdentityOnly = entry.statusSource === 'metadata' && status === 'unknown';
-  const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
-  const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
-  const inactive = entry.statusSource !== undefined && !metadataIdentityOnly && !inactiveIsOlder && (status === 'idle' || status === 'unknown');
+  let inactive = false;
+  if (entry.statusSource !== undefined && !metadataIdentityOnly && (status === 'idle' || status === 'unknown')) {
+    const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
+    const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
+    inactive = !inactiveIsOlder;
+  }
   const runtimeSubagentInactive =
     inactive &&
     status === 'idle' &&
@@ -972,7 +1000,7 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   draft.maxContextTokens = entry.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = entry.usage ?? draft.usage;
   if (entry.busy !== undefined) draft.busy = entry.busy;
-  draft.startedAt ??= firstPresent(entry.startedAt);
+  setDraftStartedAtIfMissing(draft, firstPresent(entry.startedAt));
   draft.endedAt ??= firstPresent(entry.endedAt);
   draft.summary = firstPresent(entry.summary) ?? draft.summary;
   draft.error = firstPresent(entry.error) ?? draft.error;
@@ -1029,7 +1057,7 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.maxContextTokens = block.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = block.usage ?? draft.usage;
   if (status !== undefined) draft.busy = isActiveStatus(status);
-  draft.startedAt ??= firstPresent(block.startedAt);
+  setDraftStartedAtIfMissing(draft, firstPresent(block.startedAt));
   draft.endedAt ??= firstPresent(block.endedAt);
   draft.summary = firstPresent(block.summary) ?? draft.summary;
   draft.error = firstPresent(block.error) ?? draft.error;
@@ -1208,6 +1236,7 @@ function clearRunFields(draft: DraftNode): void {
   draft.refreshing = undefined;
   draft.refreshingUntil = undefined;
   draft.startedAt = undefined;
+  draft.startedAtMs = Number.NaN;
   draft.endedAt = undefined;
   draft.summary = undefined;
   draft.error = undefined;
@@ -1228,7 +1257,7 @@ function applyStatus(
     return { accepted: false, newGeneration: false };
   }
   const comparableRuns = currentRank > 0 && nextRank > 0;
-  const currentStartedAt = parseStatusTimestamp(draft.startedAt);
+  const currentStartedAt = Number.isFinite(draft.startedAtMs) ? draft.startedAtMs : undefined;
   const startsAfterDisposal =
     isActiveStatus(status) &&
     nextStartedAt !== undefined &&

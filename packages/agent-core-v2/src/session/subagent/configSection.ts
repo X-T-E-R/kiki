@@ -71,11 +71,19 @@ export const SubagentConfigSchema = z.object({
 
   allowedTools: z.array(z.string()).optional(),
   agentListFields: z.array(z.enum(AGENT_LIST_TELEMETRY_FIELDS)).optional(),
+  agentListLimit: z.number().int().min(1).max(500).optional(),
+  snapshotSettledLimit: z.number().int().min(0).max(5000).optional(),
+  snapshotActiveLimit: z.number().int().min(16).max(5000).optional(),
+  searchLimit: z.number().int().min(1).max(500).optional(),
 });
 
 export const DEFAULT_MAX_DIRECT_CHILDREN = 16;
 export const DEFAULT_MAX_TOTAL_SUBAGENTS = 0;
 export const DEFAULT_SUBAGENT_PROFILE = 'general';
+export const DEFAULT_AGENT_LIST_LIMIT = 32;
+export const DEFAULT_SNAPSHOT_SETTLED_LIMIT = 64;
+export const DEFAULT_SNAPSHOT_ACTIVE_LIMIT = 256;
+export const DEFAULT_SUBAGENT_SEARCH_LIMIT = 32;
 
 export type DefaultSubagentTarget =
   | { readonly kind: 'generic' }
@@ -117,6 +125,10 @@ export function usesAutoModel(config: IConfigService, profile: { readonly modelS
 
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const SUBAGENT_TIMEOUT_ENV = 'KIKI_SUBAGENT_TIMEOUT_MS';
+export const AGENT_LIST_LIMIT_ENV = 'KIKI_SUBAGENT_LIST_LIMIT';
+export const SNAPSHOT_SETTLED_LIMIT_ENV = 'KIKI_SUBAGENT_SNAPSHOT_SETTLED_LIMIT';
+export const SNAPSHOT_ACTIVE_LIMIT_ENV = 'KIKI_SUBAGENT_SNAPSHOT_ACTIVE_LIMIT';
+export const SUBAGENT_SEARCH_LIMIT_ENV = 'KIKI_SUBAGENT_SEARCH_LIMIT';
 
 function parseTimeoutMsEnv(raw: string): number | undefined {
   const trimmed = raw.trim();
@@ -125,10 +137,23 @@ function parseTimeoutMsEnv(raw: string): number | undefined {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
+function parseIntRangeEnv(min: number, max: number): (raw: string) => number | undefined {
+  return (raw: string) => {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return undefined;
+    const parsed = Number(trimmed);
+    return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : undefined;
+  };
+}
+
 export const subagentEnvBindings: EnvBindings<SubagentConfig> = envBindings(
   SubagentConfigSchema,
   {
     timeoutMs: { env: SUBAGENT_TIMEOUT_ENV, parse: parseTimeoutMsEnv },
+    agentListLimit: { env: AGENT_LIST_LIMIT_ENV, parse: parseIntRangeEnv(1, 500) },
+    snapshotSettledLimit: { env: SNAPSHOT_SETTLED_LIMIT_ENV, parse: parseIntRangeEnv(0, 5000) },
+    snapshotActiveLimit: { env: SNAPSHOT_ACTIVE_LIMIT_ENV, parse: parseIntRangeEnv(16, 5000) },
+    searchLimit: { env: SUBAGENT_SEARCH_LIMIT_ENV, parse: parseIntRangeEnv(1, 500) },
   },
 );
 
@@ -141,6 +166,10 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
     maxTotalSubagents: DEFAULT_MAX_TOTAL_SUBAGENTS,
     defaultProfile: DEFAULT_SUBAGENT_PROFILE,
     allowedTools: [],
+    agentListLimit: DEFAULT_AGENT_LIST_LIMIT,
+    snapshotSettledLimit: DEFAULT_SNAPSHOT_SETTLED_LIMIT,
+    snapshotActiveLimit: DEFAULT_SNAPSHOT_ACTIVE_LIMIT,
+    searchLimit: DEFAULT_SUBAGENT_SEARCH_LIMIT,
   },
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,
@@ -161,6 +190,31 @@ export function resolveAgentListTelemetryFields(
   return (
     config?.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.agentListFields ??
     DEFAULT_AGENT_LIST_TELEMETRY_FIELDS
+  );
+}
+
+export function resolveAgentListLimit(config: IConfigService | undefined): number {
+  return (
+    config?.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.agentListLimit ??
+    DEFAULT_AGENT_LIST_LIMIT
+  );
+}
+
+export function resolveSnapshotRosterLimits(config: IConfigService | undefined): {
+  readonly activeLimit: number;
+  readonly settledLimit: number;
+} {
+  const section = config?.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
+  return {
+    activeLimit: section?.snapshotActiveLimit ?? DEFAULT_SNAPSHOT_ACTIVE_LIMIT,
+    settledLimit: section?.snapshotSettledLimit ?? DEFAULT_SNAPSHOT_SETTLED_LIMIT,
+  };
+}
+
+export function resolveSubagentSearchLimit(config: IConfigService | undefined): number {
+  return (
+    config?.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.searchLimit ??
+    DEFAULT_SUBAGENT_SEARCH_LIMIT
   );
 }
 

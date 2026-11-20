@@ -40,6 +40,7 @@ export interface SessionViewChannel {
   transcriptEntities?(sessionId: string, input: import('../contract/session/view.js').SessionViewTranscriptEntitiesInput, options?: CallOptions): Promise<unknown>;
   userMessages?(sessionId: string, input: { readonly agentId?: string; readonly cursor?: string }, options?: CallOptions): Promise<unknown>;
   plans?(sessionId: string, input: { readonly agentId: string; readonly toolCallId?: string; readonly cursor?: string }, options?: CallOptions): Promise<unknown>;
+  subagents?(sessionId: string, input: { readonly q?: string; readonly status?: string; readonly agentId?: string; readonly limit?: number }, options?: CallOptions): Promise<unknown>;
   subscribe(
     sessionId: string,
     input: SessionViewSubscribeInput,

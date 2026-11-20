@@ -221,6 +221,8 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
       return await this.withColdSessionLock(sessionId, workspaceId, preemptible, signal, async (sessionDir, effectiveSignal) => {
         const result = await compactRetainedSession(sessionDir, {
           ...options,
+          level: options.level ?? ((options.codec ?? 'zstd') === 'zstd' ? cfg.zstdLevel : undefined),
+          segmentBytes: options.segmentBytes ?? cfg.segmentBytes,
           reclaim: options.reclaim ?? cfg.reclaimSparse,
           signal: effectiveSignal,
         });

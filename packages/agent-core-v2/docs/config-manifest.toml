@@ -322,6 +322,8 @@ builtin_product_skills = true
 #     min_idle_age_ms <- KIKI_COLD_COMPACTION_MIN_IDLE_AGE_MS (custom parse)
 #     max_sessions_per_sweep <- KIKI_COLD_COMPACTION_MAX_SESSIONS_PER_SWEEP (custom parse)
 #     reclaim_sparse <- KIKI_COLD_COMPACTION_RECLAIM_SPARSE (custom parse)
+#     zstd_level <- KIKI_COLD_COMPACTION_ZSTD_LEVEL (custom parse)
+#     segment_bytes <- KIKI_COLD_COMPACTION_SEGMENT_BYTES (custom parse)
 # ##########################################################################
 
 [cold_compaction]
@@ -331,6 +333,8 @@ sweep_interval_ms = 300000
 min_idle_age_ms = 1800000
 max_sessions_per_sweep = 1
 reclaim_sparse = true
+zstd_level = 3
+segment_bytes = 4194304
 
 # ##########################################################################
 # computerControl (config.toml: computer_control)
@@ -1085,6 +1089,9 @@ voice_mode = "none"
 # sessionResidency (config.toml: session_residency)
 #   owner: src/app/sessionManager/configSection.ts
 #   scope: core
+#   hooks: stripEnv
+#   env:
+#     restore_timeout_ms <- KIKI_SESSION_RESTORE_TIMEOUT_MS (custom parse)
 # ##########################################################################
 
 [session_residency]
@@ -1095,6 +1102,7 @@ sweep_interval_ms = 30000
 # max_concurrent_restores: integer (adaptive default: CPU worker default: min(availableParallelism - 1, floor(totalmem / 4 / workerHeap)), at least 1)
 # max_queued_restores: integer (adaptive default: max(128, availableParallelism * 16))
 # max_resident_heap_bytes: integer (adaptive default: max(256 MiB, floor(totalmem / 8 / MiB) MiB), further bounded by 60% of the effective V8 heap)
+restore_timeout_ms = 60000
 
 # ##########################################################################
 # sessionTitle (config.toml: session_title)
@@ -1134,6 +1142,10 @@ plugins = []
 #   hooks: stripEnv
 #   env:
 #     timeout_ms <- KIKI_SUBAGENT_TIMEOUT_MS (custom parse)
+#     agent_list_limit <- KIKI_SUBAGENT_LIST_LIMIT (custom parse)
+#     snapshot_settled_limit <- KIKI_SUBAGENT_SNAPSHOT_SETTLED_LIMIT (custom parse)
+#     snapshot_active_limit <- KIKI_SUBAGENT_SNAPSHOT_ACTIVE_LIMIT (custom parse)
+#     search_limit <- KIKI_SUBAGENT_SEARCH_LIMIT (custom parse)
 # ##########################################################################
 
 [subagent]
@@ -1154,6 +1166,10 @@ max_total_subagents = 0
 default_profile = "general"
 allowed_tools = []
 # agent_list_fields: "model" | "thinking_effort" | "elapsed_ms" | "idle_ms" | "tool_call_count" | "context_tokens"[]
+agent_list_limit = 32
+snapshot_settled_limit = 64
+snapshot_active_limit = 256
+search_limit = 32
 
 # ##########################################################################
 # task

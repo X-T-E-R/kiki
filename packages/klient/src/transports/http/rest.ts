@@ -316,6 +316,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           { ...options, query: { page_size: input.page_size, page_token: input.page_token } },
         ));
       },
+      listSubagents: (sessionId, query = {}, options = {}) => transport.json<import('@kiki/protocol').SessionSubagentsResponse>(
+        `/sessions/${encodeURIComponent(sessionId)}/subagents`,
+        { ...options, query: { q: query.q, status: query.status, agent_id: query.agent_id, limit: query.limit } },
+      ),
       getTask: (sessionId: string, taskId: string, query = {}) => transport.json<Task>(
         `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
         {

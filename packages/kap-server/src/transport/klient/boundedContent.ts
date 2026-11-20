@@ -9,13 +9,14 @@ import {
   type ContentWindow,
 } from '@kiki/transcript';
 import { projectInlineToolMedia } from '../../services/inlineMedia';
-import { contentRevision } from './contentRevision';
+import { contentRevision, contentRevisionOfArray } from './contentRevision';
 const fieldRevisions = new WeakMap<object, Map<string, string>>();
 export const ENTITY_BYTES = 64 * 1024;
 export const TIMELINE_ENTITY_BYTES = 128 * 1024;
 const ARRAY_WINDOW = 4;
 const ROSTER_WINDOW = 64;
-const ROSTER_SEGMENT_LIMIT = 256;
+const ROSTER_SEGMENT_LIMIT = 2048;
+const ROSTER_PAGE_BYTES = 1024 * 1024;
 const OBJECT_WINDOW = 64;
 const ID_KEYS = /^(?:id|kind|state|status|role|op|.*Id|.*_id|mediaType|marker|interactionKind|type)$/u;
 const OPAQUE_FIELDS = new Set(['input', 'output', 'display', 'request', 'response', 'payload', 'content', 'customData', 'detail']);
@@ -59,10 +60,10 @@ function fieldRevision(entity: object, path: Path, through?: number): string {
       return [header['kind'], header['stepId'] ?? header['frameId'], header['ordinal']];
     }))
     : isRosterPath(path) && Array.isArray(selected)
-      ? contentRevision(selected.map((row) => {
-        const header = row as Record<string, unknown>;
+      ? contentRevisionOfArray(selected.length, (index) => {
+        const header = selected[index] as Record<string, unknown>;
         return header['agent_id'] ?? header['id'];
-      }))
+      })
       : contentRevision(selected);
   fields.set(key, revision);
   return revision;
@@ -80,12 +81,12 @@ function bindCuts(entity: object, source: ContentSource, cuts: readonly Cut[]): 
   }));
 }
 
-export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES, agentId?: string, structureDirection: StructureDirection = 'head'): T & ContentWindow {
+export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES, agentId?: string, structureDirection: StructureDirection = 'head', initialRosterWindow = ROSTER_WINDOW): T & ContentWindow {
   if (source.kind === 'todo') {
     if ((entity as ContentWindow).contentRefs !== undefined) return entity;
     if (maxBytes >= ENTITY_BYTES) return boundedTodo(entity, source, maxBytes);
   }
-  const result = projectAt(entity, [], source, entity, maxBytes, agentId, structureDirection);
+  const result = projectAt(entity, [], source, entity, maxBytes, agentId, structureDirection, initialRosterWindow);
   return { ...(result.value as T), contentRefs: result.refs.length === 0 ? undefined : result.refs };
 }
 
@@ -157,15 +158,85 @@ function isUserTextFrame(value: unknown): boolean {
 
 const USER_FRAME_PRESERVE_WINDOW = 32;
 
-function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string, structureDirection: StructureDirection = 'head'): { value: unknown; refs: ContentRef[] } {
+function jsonStringBytes(text: string): number {
+  let bytes = 2;
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit === 0x22 || unit === 0x5c || unit === 0x08 || unit === 0x0c || unit === 0x0a || unit === 0x0d || unit === 0x09) {
+      bytes += 2;
+    } else if (unit < 0x20) {
+      bytes += 6;
+    } else if (unit < 0x80) {
+      bytes += 1;
+    } else if (unit < 0x800) {
+      bytes += 2;
+    } else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+    } else if (unit >= 0xd800 && unit <= 0xdfff) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+function tryCompactFlatObject(value: unknown, maxBytes: number, textLimit: number): number | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const proto = Object.getPrototypeOf(value) as unknown;
+  if (proto !== Object.prototype && proto !== null) return undefined;
+  const record = value as Record<string, unknown>;
+  const kind = record['kind'];
+  if (kind === 'marker' || kind === 'tool') return undefined;
+  let totalKeys = 0;
+  let serializedKeys = 0;
+  let bytes = 2;
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    totalKeys += 1;
+    if (totalKeys > OBJECT_WINDOW || key.length > 160) return undefined;
+    const child = record[key];
+    if (child === undefined) continue;
+    const keyBytes = jsonStringBytes(key);
+    let valueBytes: number;
+    if (typeof child === 'string') {
+      valueBytes = jsonStringBytes(child);
+      if (valueBytes > textLimit && !ID_KEYS.test(key)) return undefined;
+    } else if (child === null) {
+      valueBytes = 4;
+    } else if (typeof child === 'boolean') {
+      valueBytes = child ? 4 : 5;
+    } else if (typeof child === 'number') {
+      valueBytes = Number.isFinite(child) ? String(child).length : 4;
+    } else {
+      return undefined;
+    }
+    bytes += (serializedKeys > 0 ? 1 : 0) + keyBytes + 1 + valueBytes;
+    serializedKeys += 1;
+    if (bytes + 20 > maxBytes) return undefined;
+  }
+  return bytes;
+}
+
+function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string, structureDirection: StructureDirection = 'head', initialRosterWindow = ROSTER_WINDOW): { value: unknown; refs: ContentRef[]; valueBytes?: number } {
   const media = agentId === undefined ? undefined : { source, entity, agentId };
   let textBytes = source.kind === 'turn' || source.kind === 'frame'
     ? 16 * 1024
     : source.kind === 'task'
       ? Math.max(CONTENT_PREVIEW_BYTES, Math.min(8 * 1024, maxBytes))
       : CONTENT_PREVIEW_BYTES;
+  if (media === undefined) {
+    const compactBytes = tryCompactFlatObject(value, maxBytes, Math.min(textBytes, CONTENT_PREVIEW_BYTES));
+    if (compactBytes !== undefined) return { value, refs: [], valueBytes: compactBytes };
+  }
   let arrayWindow = ARRAY_WINDOW;
-  let rosterWindow = ROSTER_WINDOW;
+  let rosterWindow = initialRosterWindow;
   let structureWindow = 8;
   let completeSendReceipts = true;
   let preserveUserFrames = true;
@@ -359,7 +430,7 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
   if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
   const structure = ref.kind === 'array' && isStructurePath(ref.path);
   const roster = ref.kind === 'array' && isRosterPath(ref.path);
-  const effectivePageBytes = roster && pageBytes <= CONTENT_PAGE_BYTES ? TIMELINE_ENTITY_BYTES * 2 : pageBytes;
+  const effectivePageBytes = roster && pageBytes <= CONTENT_PAGE_BYTES ? ROSTER_PAGE_BYTES : pageBytes;
   if (direction === 'backward' && !structure) throw new ContentChangedError();
   if (fieldRevision(entity, ref.path, structure ? ref.total : undefined) !== ref.revision) throw new ContentChangedError();
   let refs: ContentRef[] = [];
@@ -375,33 +446,55 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
   } else if (ref.kind === 'array') {
     if (!Array.isArray(selected) || (structure ? selected.length < ref.total : selected.length !== ref.total)) throw new ContentChangedError();
     const itemLimit = roster ? ROSTER_SEGMENT_LIMIT : structure && effectivePageBytes > CONTENT_PAGE_BYTES ? 256 : 20;
+    const halfPageBytes = effectivePageBytes / 2;
     if (direction === 'backward') {
       if (ref.offset <= 0 || ref.offset > ref.total) throw new ContentChangedError();
-      let values: unknown[] = [];
-      let reverseRefs: ContentRef[] = [];
+      const reversedValues: unknown[] = [];
+      const reversedRefGroups: ContentRef[][] = [];
+      let usedBytes = 23;
+      let refCount = 0;
       offset = ref.offset;
-      while (offset > 0 && values.length < itemLimit) {
+      while (offset > 0 && reversedValues.length < itemLimit) {
         const index = offset - 1;
         const child = projectAt(selected[index], [...ref.path, index], ref.source, entity, ENTITY_BYTES, agentId, 'tail');
-        const nextValues = [child.value, ...values];
-        const nextRefs = [...child.refs, ...reverseRefs];
-        if (values.length > 0 && jsonBytes({ values: nextValues, refs: nextRefs }) > effectivePageBytes / 2) break;
-        values = nextValues;
-        reverseRefs = nextRefs;
+        let deltaBytes = (child.valueBytes ?? jsonBytes(child.value)) + (reversedValues.length > 0 ? 1 : 0);
+        let nextRefCount = refCount;
+        for (const childRef of child.refs) {
+          deltaBytes += jsonBytes(childRef) + (nextRefCount > 0 ? 1 : 0);
+          nextRefCount += 1;
+        }
+        if (reversedValues.length > 0 && usedBytes + deltaBytes > halfPageBytes) break;
+        reversedValues.push(child.value);
+        if (child.refs.length > 0) reversedRefGroups.push(child.refs);
+        usedBytes += deltaBytes;
+        refCount = nextRefCount;
         offset = index;
       }
-      value = values;
-      refs = reverseRefs;
+      reversedValues.reverse();
+      value = reversedValues;
+      for (let groupIndex = reversedRefGroups.length - 1; groupIndex >= 0; groupIndex -= 1) {
+        refs.push(...reversedRefGroups[groupIndex]!);
+      }
       start = offset;
     } else {
       const values: unknown[] = [];
+      let usedBytes = 23;
+      let refCount = 0;
       offset = ref.offset;
       if (offset >= ref.total) throw new ContentChangedError();
       while (offset < ref.total && values.length < itemLimit) {
         const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
-        if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > effectivePageBytes / 2) break;
+        let deltaBytes = (child.valueBytes ?? jsonBytes(child.value)) + (values.length > 0 ? 1 : 0);
+        let nextRefCount = refCount;
+        for (const childRef of child.refs) {
+          deltaBytes += jsonBytes(childRef) + (nextRefCount > 0 ? 1 : 0);
+          nextRefCount += 1;
+        }
+        if (values.length > 0 && usedBytes + deltaBytes > halfPageBytes) break;
         values.push(child.value);
-        refs.push(...child.refs);
+        if (child.refs.length > 0) refs.push(...child.refs);
+        usedBytes += deltaBytes;
+        refCount = nextRefCount;
         offset += 1;
       }
       value = values;
@@ -411,13 +504,30 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     const entries = Object.entries(selected);
     if (entries.length !== ref.total || ref.offset >= entries.length) throw new ContentChangedError();
     const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    const halfPageBytes = effectivePageBytes / 2;
+    let usedBytes = 23;
+    let refCount = 0;
+    let serializedEntries = 0;
     offset = ref.offset;
     while (offset < entries.length && offset - ref.offset < OBJECT_WINDOW) {
       const [key, child] = entries[offset]!;
       const projected = projectAt(child, [...ref.path, key], ref.source, entity, ENTITY_BYTES, agentId);
-      if (offset > ref.offset && jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > effectivePageBytes / 2) break;
+      let deltaBytes = 0;
+      const omitsEntry = projected.value === undefined;
+      if (!omitsEntry) {
+        deltaBytes += jsonBytes(key) + 1 + (projected.valueBytes ?? jsonBytes(projected.value)) + (serializedEntries > 0 ? 1 : 0);
+      }
+      let nextRefCount = refCount;
+      for (const childRef of projected.refs) {
+        deltaBytes += jsonBytes(childRef) + (nextRefCount > 0 ? 1 : 0);
+        nextRefCount += 1;
+      }
+      if (offset > ref.offset && usedBytes + deltaBytes > halfPageBytes) break;
       values[key] = projected.value;
-      refs.push(...projected.refs);
+      if (projected.refs.length > 0) refs.push(...projected.refs);
+      usedBytes += deltaBytes;
+      refCount = nextRefCount;
+      if (!omitsEntry) serializedEntries += 1;
       offset += 1;
     }
     value = values;

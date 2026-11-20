@@ -19,6 +19,7 @@ import type {
   Session,
   SessionSeedMode,
   SessionSnapshotResponse,
+  SnapshotSubagent,
 } from '@kiki/protocol';
 import {
   AgentTranscript,
@@ -87,7 +88,7 @@ import { completeTranscriptTurnStructure, interactionToBlock } from './transcrip
 import { readMarkWins, refreshTurn, resolveItemCopies, resolveTurnCopies, turnGapOf, windowItemKey, type ReadMark } from './transcript/window';
 import { isSteerDeliveredBeforeCutTail, isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import type { DurableIngressItem, QueuedPromptMeta } from './transcript/types';
-import type { AgentForest } from './agentTree';
+import type { AgentForest, AgentTreeNode } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
 import { forgetUnconfirmedSubmission, preserveSubmission } from '../composer/submissionRecovery';
 
@@ -132,6 +133,8 @@ const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
  */
 const MAX_ROSTER_ROW_READS = 3;
 const MAX_ROSTER_REVISION_REFRESHES = 3;
+const AUTO_ROSTER_HYDRATE_MAX = 200;
+const AUTO_ROSTER_FLUSH_INTERVAL_MS = 100;
 
 export interface PublicationScheduler {
   schedule(callback: () => void): unknown;
@@ -518,7 +521,11 @@ export class SessionController {
   private rosterRefreshInFlight = false;
   private rosterReadQueued = false;
   private rosterReadInFlight = false;
+  private rosterReadController: AbortController | undefined;
+  private pendingRosterPublish = false;
+  private lastRosterFlushAt = 0;
   private rosterRevisionRefreshes = 0;
+  private readonly subagentLookupsInFlight = new Map<string, Promise<void>>();
   /** Turn-structure paths with a preview already in flight. The replacement read must not preview again. */
   private readonly turnStructureRefreshKeys = new Set<string>();
   private rosterRefreshQueuedCursor: SessionCursor | undefined;
@@ -1080,6 +1087,7 @@ export class SessionController {
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
+    this.abortAutomaticRosterRead();
     this.cancelAllFirstScreenSeeds();
     this.clearResyncTimer();
     this.clearRosterLeaseTimer();
@@ -1115,6 +1123,7 @@ export class SessionController {
   cancelParkedReads(): void {
     if (this.closed) return;
     this.isParked = true;
+    this.abortAutomaticRosterRead();
     this.olderLoads.cancelAll();
     this.cancelAllFirstScreenSeeds();
     const agents = new Set<string>([MAIN_AGENT_ID, ...this.timelines.keys()]);
@@ -1249,6 +1258,9 @@ export class SessionController {
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
+    this.abortAutomaticRosterRead();
+    this.pendingRosterPublish = false;
+    this.subagentLookupsInFlight.clear();
     this.agentViews.clear();
     this.visibilityDocument?.removeEventListener?.('visibilitychange', this.onVisibilityChange);
     this.clearResyncTimer();
@@ -1416,6 +1428,9 @@ export class SessionController {
     if (this.closed || agentId === this.focusedAgentId) return;
     this.focusedAgentId = agentId;
     this.refreshTranscriptGrades();
+    if (agentId !== undefined && agentId !== MAIN_AGENT_ID && !this.hasRosterRow(agentId) && this.hasTruncatedRoster()) {
+      void this.lookupMissingRosterAgent(agentId);
+    }
   }
 
   /**
@@ -1430,6 +1445,9 @@ export class SessionController {
     }
     this.agentViews.set(viewId, { agentId, grade });
     this.refreshTranscriptGrades();
+    if (agentId !== MAIN_AGENT_ID && !this.hasRosterRow(agentId) && this.hasTruncatedRoster()) {
+      void this.lookupMissingRosterAgent(agentId);
+    }
   }
 
   /** Change a retained view's demand; an unknown or released ID is a no-op. */
@@ -1770,18 +1788,190 @@ export class SessionController {
     }
   }
 
+  private abortAutomaticRosterRead(): void {
+    const controller = this.rosterReadController;
+    this.rosterReadController = undefined;
+    controller?.abort(new DOMException('Read cancelled', 'AbortError'));
+  }
+
+  private hasTruncatedRoster(): boolean {
+    if ((this.shell.agentCounts?.subagents ?? 0) > this.shell.snapshotSubagents.length) return true;
+    return this.latestSnapshot?.contentRefs?.some(
+      (entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents',
+    ) === true;
+  }
+
+  private flushSnapshotRoster(patched: SessionSnapshotResponse): void {
+    this.pendingRosterPublish = false;
+    this.lastRosterFlushAt = Date.now();
+    const contentRefs = stableContentRefs(
+      this.viewOf(MAIN_AGENT_ID).contentRefs,
+      [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])],
+    );
+    this.setSessionView({ ...this.sessionView(), snapshotSubagents: this.mergeRosterRows(patched), contentRefs }, false);
+    this.publishForest();
+    this.publish(MAIN_AGENT_ID);
+  }
+
+  private flushPendingRosterPublish(): void {
+    if (!this.pendingRosterPublish || this.closed) return;
+    const current = this.latestSnapshot;
+    this.pendingRosterPublish = false;
+    if (current === undefined) return;
+    this.flushSnapshotRoster(current);
+  }
+
+  private mergeSupplementalRosterRows(incoming: readonly SnapshotSubagent[]): boolean {
+    if (incoming.length === 0) return false;
+    const existing = this.shell.snapshotSubagents;
+    const byId = new Map<string, number>();
+    for (let index = 0; index < existing.length; index += 1) {
+      byId.set(snapshotSubagentAgentId(existing[index]!), index);
+    }
+    const next = [...existing];
+    let changed = false;
+    for (const row of incoming) {
+      const id = snapshotSubagentAgentId(row);
+      if (id === '') continue;
+      const priorIndex = byId.get(id);
+      if (priorIndex === undefined) {
+        byId.set(id, next.length);
+        next.push(row);
+        changed = true;
+      } else if (next[priorIndex] !== row) {
+        next[priorIndex] = row;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    this.setShell({ ...this.shell, version: this.shell.version + 1, snapshotSubagents: next }, false);
+    this.retireRequestedRosterAgents();
+    this.publishForest();
+    this.publish(MAIN_AGENT_ID);
+    return true;
+  }
+
+  private async lookupMissingRosterAgent(agentId: string): Promise<void> {
+    if (this.closed || this.isSuspended || agentId === '' || agentId === MAIN_AGENT_ID || this.hasRosterRow(agentId)) return;
+    const remoteSearch = this.view.subagents !== undefined || this.client.searchSubagents !== undefined;
+    if (!remoteSearch) return;
+    const inFlight = this.subagentLookupsInFlight.get(agentId);
+    if (inFlight !== undefined) return inFlight;
+    let run!: Promise<void>;
+    run = (async (): Promise<void> => {
+      try {
+        const response = this.view.subagents !== undefined
+          ? await this.view.subagents({ agentId, limit: 1 })
+          : await this.client.searchSubagents!(this.sessionId, { agent_id: agentId, limit: 1 });
+        if (this.closed || this.isSuspended) return;
+        this.mergeSupplementalRosterRows(response.items);
+      } catch {
+        // Best-effort metadata hydration for out-of-window agent navigation.
+      } finally {
+        if (this.subagentLookupsInFlight.get(agentId) === run) this.subagentLookupsInFlight.delete(agentId);
+      }
+    })();
+    this.subagentLookupsInFlight.set(agentId, run);
+    return run;
+  }
+
+  /**
+   * On-demand subagent search across the full session roster (including cold
+   * settled subagents outside the initial bounded snapshot window). Matched
+   * rows are merged into the controller's forest so selecting any result opens
+   * with complete metadata immediately.
+   */
+  async searchSubagents(
+    query: string,
+    options: { readonly status?: string; readonly limit?: number; readonly signal?: AbortSignal } = {},
+  ): Promise<readonly AgentTreeNode[]> {
+    if (this.closed) return [];
+    const q = query.trim();
+    const status = options.status?.trim();
+    const explicitLimit = options.limit === undefined ? undefined : Math.min(500, Math.max(1, options.limit));
+    const localLimit = explicitLimit ?? 32;
+    if (this.view.subagents !== undefined || this.client.searchSubagents !== undefined) {
+      const response = this.view.subagents !== undefined
+        ? await this.view.subagents(
+          { q: q === '' ? undefined : q, status: status === '' ? undefined : status, limit: explicitLimit },
+          { signal: options.signal },
+        )
+        : await this.client.searchSubagents!(
+          this.sessionId,
+          { q: q === '' ? undefined : q, status: status === '' ? undefined : status, limit: explicitLimit },
+          { signal: options.signal },
+        );
+      if (this.closed || options.signal?.aborted) return [];
+      this.mergeSupplementalRosterRows(response.items);
+      if (this.publishedForest === undefined) this.publishForest();
+      const forest = this.publishedForest;
+      const results: AgentTreeNode[] = [];
+      for (const row of response.items) {
+        const id = snapshotSubagentAgentId(row);
+        const node = forest?.byId[id];
+        if (node !== undefined) results.push(node);
+      }
+      return results;
+    }
+    if (this.publishedForest === undefined) this.publishForest();
+    const forest = this.publishedForest;
+    if (forest === undefined) return [];
+    const needle = q.toLowerCase();
+    const statusNeedle = status?.toLowerCase() ?? '';
+    const results: AgentTreeNode[] = [];
+    for (const node of Object.values(forest.byId)) {
+      if (node.agentId === MAIN_AGENT_ID) continue;
+      if (statusNeedle !== '') {
+        const matchesStatus = statusNeedle === 'active'
+          ? node.status === 'running' || node.status === 'suspended' || node.status === 'background'
+          : statusNeedle === 'branch'
+            ? node.isBranch === true
+            : node.status === statusNeedle;
+        if (!matchesStatus) continue;
+      }
+      if (needle !== '') {
+        const matched =
+          node.agentId.toLowerCase().includes(needle) ||
+          node.label.toLowerCase().includes(needle) ||
+          node.name.toLowerCase().includes(needle) ||
+          (node.description?.toLowerCase().includes(needle) ?? false) ||
+          (node.model?.toLowerCase().includes(needle) ?? false) ||
+          (node.summary?.toLowerCase().includes(needle) ?? false);
+        if (!matched) continue;
+      }
+      results.push(node);
+      if (results.length >= localLimit) break;
+    }
+    return results;
+  }
+
   private queueAutomaticRosterRead(): void {
     if (this.closed || this.isSuspended || this.isParked || !this.shell.loaded || this.shell.resyncing || this.rosterReadQueued || this.rosterReadInFlight || this.olderLoads.hasActive()) return;
     const ref = this.latestSnapshot?.contentRefs?.find((entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents');
-    if (ref === undefined || this.view.transcript.content === undefined || this.viewOf(MAIN_AGENT_ID).detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') return;
+    if (
+      ref === undefined ||
+      ref.total > AUTO_ROSTER_HYDRATE_MAX ||
+      this.view.transcript.content === undefined ||
+      this.viewOf(MAIN_AGENT_ID).detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error'
+    ) {
+      this.flushPendingRosterPublish();
+      return;
+    }
     this.rosterReadQueued = true;
     queueMicrotask(() => {
       this.rosterReadQueued = false;
-      if (this.closed || this.isSuspended || this.isParked || this.shell.resyncing || this.olderLoads.hasActive()) return;
+      if (this.closed || this.isSuspended || this.isParked || this.shell.resyncing || this.olderLoads.hasActive()) {
+        this.flushPendingRosterPublish();
+        return;
+      }
       this.rosterReadInFlight = true;
-      void this.loadContentSegment(MAIN_AGENT_ID, ref).then((advanced) => {
+      void this.loadContentSegmentInternal(MAIN_AGENT_ID, ref, true).then((advanced) => {
         this.rosterReadInFlight = false;
-        if (advanced || !this.latestSnapshot?.contentRefs?.some((current) => sameContentRef(current, ref))) this.queueAutomaticRosterRead();
+        if (advanced || !this.latestSnapshot?.contentRefs?.some((current) => sameContentRef(current, ref))) {
+          this.queueAutomaticRosterRead();
+        } else {
+          this.flushPendingRosterPublish();
+        }
       });
     });
   }
@@ -1896,6 +2086,7 @@ export class SessionController {
   ): void {
     if (this.closed || this.isSuspended) return;
     let wanted = false;
+    const missingForDirectLookup: string[] = [];
     for (const agentId of agentIds) {
       if (agentId === '' || agentId === MAIN_AGENT_ID) continue;
       if (this.hasRosterRow(agentId)) continue;
@@ -1904,8 +2095,14 @@ export class SessionController {
       if (!fresh && attempts > 0) continue;
       this.requestedRosterAgents.set(agentId, attempts + 1);
       wanted = true;
+      missingForDirectLookup.push(agentId);
     }
-    if (wanted) void this.refreshRoster(cursor ?? this.shell.cursor);
+    if (!wanted) return;
+    if (this.hasTruncatedRoster() && (this.view.subagents !== undefined || this.client.searchSubagents !== undefined)) {
+      for (const agentId of missingForDirectLookup) void this.lookupMissingRosterAgent(agentId);
+      return;
+    }
+    void this.refreshRoster(cursor ?? this.shell.cursor);
   }
 
   handleSubscribeRejected(generation?: number): void {
@@ -2010,6 +2207,8 @@ export class SessionController {
     this.resyncInFlight = true;
     this.resyncInFlightRewrite = rewrite;
     this.resyncGeneration += 1;
+    this.abortAutomaticRosterRead();
+    this.pendingRosterPublish = false;
     for (const { agentId } of this.storeTimelines) this.bumpHistoryGeneration(agentId);
     if (rewrite) this.rewriteResyncQueued = false;
     this.clearResyncTimer();
@@ -3696,7 +3895,11 @@ export class SessionController {
     return store.apply([{ op: 'turn.upsert', turn: header }]).accepted.length > 0;
   }
 
-  async loadContentSegment(agentId: string, ref: ContentRef): Promise<boolean> {
+  loadContentSegment(agentId: string, ref: ContentRef): Promise<boolean> {
+    return this.loadContentSegmentInternal(agentId, ref, false);
+  }
+
+  private async loadContentSegmentInternal(agentId: string, ref: ContentRef, backgroundAutoRoster: boolean): Promise<boolean> {
     const read = this.view.transcript.content?.bind(this.view.transcript);
     if (this.closed || read === undefined) return false;
     const key = `content:${JSON.stringify(ref)}`;
@@ -3709,10 +3912,11 @@ export class SessionController {
     const rootRosterRead = rosterRead && ref.kind === 'array' && ref.path.length === 1;
     const rosterBaseline = rootRosterRead ? this.latestSnapshot : undefined;
     if (rootRosterRead && !this.rosterReadInFlight) this.rosterRevisionRefreshes = 0;
+    if (backgroundAutoRoster && rootRosterRead) this.rosterReadController = controller;
     if (!rosterRead) this.contentControllers.set(requestKey, controller);
     const generation = this.generationOf(agentId);
     const run = (async (): Promise<boolean> => {
-      this.setDetailLoad(agentId, key, { status: 'loading' });
+      if (!backgroundAutoRoster) this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
         const baseline = this.contentEntity(agentId, ref.source);
         const refs = baseline?.contentRefs ?? [];
@@ -3728,11 +3932,23 @@ export class SessionController {
           const patched = applyContentSegment(current, segment);
           if (patched === current) return false;
           this.latestSnapshot = patched;
-          const contentRefs = stableContentRefs(this.viewOf(MAIN_AGENT_ID).contentRefs, [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])]);
-          this.setSessionView(rosterRead
-            ? { ...this.sessionView(), snapshotSubagents: this.mergeRosterRows(patched), contentRefs }
-            : { ...this.applyTranscriptShellSnapshot(patched), contentRefs });
-          this.publishForest();
+          if (backgroundAutoRoster && rootRosterRead) {
+            const hasMore = patched.contentRefs?.some(
+              (entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents',
+            ) === true;
+            if (!hasMore || (this.lastRosterFlushAt > 0 && Date.now() - this.lastRosterFlushAt >= AUTO_ROSTER_FLUSH_INTERVAL_MS)) {
+              this.flushSnapshotRoster(patched);
+            } else {
+              this.pendingRosterPublish = true;
+            }
+          } else {
+            this.pendingRosterPublish = false;
+            const contentRefs = stableContentRefs(this.viewOf(MAIN_AGENT_ID).contentRefs, [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])]);
+            this.setSessionView(rosterRead
+              ? { ...this.sessionView(), snapshotSubagents: this.mergeRosterRows(patched), contentRefs }
+              : { ...this.applyTranscriptShellSnapshot(patched), contentRefs });
+            this.publishForest();
+          }
         } else {
           const store = this.ensureAgentTranscript(agentId);
           let applied = false;
@@ -3762,6 +3978,7 @@ export class SessionController {
         if (rootRosterRead && error instanceof RPCError && error.code === 40922 &&
           !this.closed && !controller.signal.aborted && this.latestSnapshot === rosterBaseline &&
           this.rosterRevisionRefreshes < MAX_ROSTER_REVISION_REFRESHES) {
+          this.flushPendingRosterPublish();
           this.rosterRevisionRefreshes += 1;
           await this.refreshRoster(this.shell.cursor);
           if (!this.closed && !controller.signal.aborted && this.latestSnapshot !== rosterBaseline) {
@@ -3809,10 +4026,12 @@ export class SessionController {
             this.turnStructureRefreshKeys.delete(refreshKey);
           }
         }
+        if (rootRosterRead) this.flushPendingRosterPublish();
         if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next content segment') });
         return false;
       } finally {
         this.snapshotControllers.delete(controller);
+        if (this.rosterReadController === controller) this.rosterReadController = undefined;
         if (this.contentControllers.get(requestKey) === controller) this.contentControllers.delete(requestKey);
         const current = this.viewOf(agentId);
         if (!this.closed && !controller.signal.aborted && (rosterRead || this.generationOf(agentId) === generation) &&

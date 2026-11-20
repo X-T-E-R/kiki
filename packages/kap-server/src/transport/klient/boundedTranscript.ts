@@ -180,7 +180,17 @@ function nestedContentWindow(item: AgentTranscriptSnapshot['items'][number]): bo
 }
 
 const memoizedBoundedItems = new WeakMap<object, string>();
+const memoizedBoundedTasks = new WeakMap<object, AgentTranscriptSnapshot['tasks'][number]>();
 const memoizedJsonBytes = new WeakMap<object, number>();
+
+function boundedPageTask(task: AgentTranscriptSnapshot['tasks'][number]): AgentTranscriptSnapshot['tasks'][number] {
+  const hit = memoizedBoundedTasks.get(task);
+  if (hit !== undefined) return hit;
+  const projected = boundedEntity(task, { kind: 'task', id: task.taskId }, TASK_PAGE_SOURCE_BYTES);
+  memoizedBoundedTasks.set(task, projected);
+  memoizedBoundedTasks.set(projected, projected);
+  return projected;
+}
 
 function cachedEntityBytes(value: object): number {
   const hit = memoizedJsonBytes.get(value);
@@ -207,7 +217,7 @@ export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, a
   return {
     ...snapshot,
     items: snapshot.items.map((item) => boundedItem(item, agentId, direction)),
-    tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId }, TASK_PAGE_SOURCE_BYTES)),
+    tasks: snapshot.tasks.map(boundedPageTask),
     attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
     prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId }, undefined, agentId)),
     interactions: snapshot.interactions.map((value) => boundedEntity(value, { kind: 'interaction', id: value.interactionId })),
@@ -241,32 +251,76 @@ function boundedCollection<T extends object>(
   requiredOrder?: ReadonlyMap<string, number>,
   maxCollectionBytes?: number,
 ): T[] {
+  if (values.length === 0) return [];
   const selected = new Map<string, T>();
   const entityBytes = kind === 'todo' ? ENTITY_BYTES : 2048;
   const collectionBytes = maxCollectionBytes ?? (kind === 'todo' ? ENTITY_BYTES + 3 : GLOBAL_COLLECTION_BYTES);
-  const requiredValues = values.filter((value) => required.has(id(value)));
-  const orderedRequired = requiredOrder === undefined ? requiredValues : requiredValues.toSorted((left, right) =>
-    (requiredOrder.get(id(left)) ?? Number.MAX_SAFE_INTEGER) - (requiredOrder.get(id(right)) ?? Number.MAX_SAFE_INTEGER));
+  const requiredValues: T[] = [];
+  if (required.size > 0) {
+    for (const value of values) {
+      if (required.has(id(value))) requiredValues.push(value);
+    }
+  }
+  const orderedRequired = requiredOrder === undefined || requiredValues.length <= 1
+    ? requiredValues
+    : requiredValues.toSorted((left, right) =>
+      (requiredOrder.get(id(left)) ?? Number.MAX_SAFE_INTEGER) - (requiredOrder.get(id(right)) ?? Number.MAX_SAFE_INTEGER));
   let bytes = 2;
-  const candidates = priority === undefined
-    ? [...orderedRequired, ...values.filter((value) => !required.has(id(value))).toReversed()]
-    : [
-        ...orderedRequired.filter((value) => priority(value) === true),
-        ...values.filter((value) => !required.has(id(value)) && priority(value) === true),
-        ...orderedRequired.filter((value) => priority(value) !== true),
-        ...values.filter((value) => !required.has(id(value)) && priority(value) !== true).toReversed(),
-      ];
-  for (const value of candidates) {
-    if (maxItems !== undefined && selected.size >= maxItems) break;
-    if (!required.has(id(value)) && priority === undefined && selected.size >= 8) break;
+  const admit = (value: T, isRequired: boolean): boolean => {
+    if (maxItems !== undefined && selected.size >= maxItems) return false;
+    if (!isRequired && priority === undefined && selected.size >= 8) return false;
     const projected = (value as import('@kiki/transcript').ContentWindow).contentRefs !== undefined ? value
       : project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, entityBytes);
-    const size = jsonBytes(projected) + 1;
-    if (bytes + size > collectionBytes) continue;
+    const size = cachedEntityBytes(projected) + 1;
+    if (bytes + size > collectionBytes) return true;
     selected.set(id(value), projected);
     bytes += size;
+    return true;
+  };
+  if (priority === undefined) {
+    for (const value of orderedRequired) {
+      if (!admit(value, true)) break;
+    }
+    if ((maxItems === undefined || selected.size < maxItems) && selected.size < 8) {
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        const value = values[index]!;
+        if (required.has(id(value))) continue;
+        if (!admit(value, false)) break;
+      }
+    }
+  } else {
+    let full = false;
+    for (const value of orderedRequired) {
+      if (priority(value) !== true) continue;
+      if (!admit(value, true)) { full = true; break; }
+    }
+    if (!full) {
+      for (const value of values) {
+        if (required.has(id(value)) || priority(value) !== true) continue;
+        if (!admit(value, false)) { full = true; break; }
+      }
+    }
+    if (!full) {
+      for (const value of orderedRequired) {
+        if (priority(value) === true) continue;
+        if (!admit(value, true)) { full = true; break; }
+      }
+    }
+    if (!full) {
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        const value = values[index]!;
+        if (required.has(id(value)) || priority(value) === true) continue;
+        if (!admit(value, false)) break;
+      }
+    }
   }
-  return values.flatMap((value) => { const projected = selected.get(id(value)); return projected === undefined ? [] : [projected]; });
+  if (selected.size === 0) return [];
+  const result: T[] = [];
+  for (const value of values) {
+    const projected = selected.get(id(value));
+    if (projected !== undefined) result.push(projected);
+  }
+  return result;
 }
 
 function collectionCoverage(returned: number, total: number) { return { returned, total, hasMore: returned < total }; }
