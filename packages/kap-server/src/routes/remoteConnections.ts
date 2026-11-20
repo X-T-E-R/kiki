@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { z } from 'zod';
-import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, pairClaimInputSchema, pairCodeCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
+import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, connectionTrustUpdateInputSchema, meshCapabilitySchema, pairClaimInputSchema, pairCodeCreateInputSchema, peerTrustTierSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame, parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
@@ -29,13 +29,16 @@ function attachWebSharedConnection(request: object, id: string, manager: RemoteC
   if (!isWebSharedRecord(record, web)) throw new AdmissionError(403, 'connection_not_shared');
   return web!.attachConnection(id, close);
 }
-export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument): WebSocketServer {
+export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument, x25519Recipient: () => string | undefined = () => undefined): WebSocketServer {
   const pairingLimit = new PairingRateLimit();
   const respond = async <T>(requestId: string, reply: { code(status: number): unknown; send(value: unknown): unknown }, work: () => Promise<T>) => {
     try { return reply.send(okEnvelope(await work(), requestId)); }
     catch (error) { if (!(error instanceof AdmissionError)) throw error; reply.code(error.status); return reply.send(errEnvelope(40101, error.reason, requestId)); }
   };
-  app.get('/api/remote-connections/handshake', async (req, reply) => reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled, tlsFingerprint: tlsFingerprint(), platform: currentSpacePlatform(), capabilities: tlsFingerprint() === undefined ? ['handshake-mutual-proof-v1'] : ['tls-spki-pin-v1', 'handshake-mutual-proof-v1'] }, req.id)));
+  app.get('/api/remote-connections/handshake', async (req, reply) => {
+    const recipient = x25519Recipient();
+    return reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled, tlsFingerprint: tlsFingerprint(), platform: currentSpacePlatform(), capabilities: tlsFingerprint() === undefined ? ['handshake-mutual-proof-v1'] : ['tls-spki-pin-v1', 'handshake-mutual-proof-v1'], ...(recipient === undefined ? {} : { x25519Recipient: recipient }) }, req.id));
+  });
   app.post('/api/remote-connections/claim', { bodyLimit: 8192 }, async (req, reply) => respond(req.id, reply, async () => { const input = connectionClaimInputSchema.parse(req.body); return admission.claim(input.invitation, input.source); }));
   app.post('/api/remote-connections/provision', { bodyLimit: 8192 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -54,7 +57,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     return respond(req.id, reply, async () => {
       const created = await admission.createPairCode(pairCodeCreateInputSchema.parse(req.body ?? {}));
       const extras = hooks.current === undefined ? [] : await hooks.current.endpoints();
-      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations };
+      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations, trustTier: created.trustTier, meshCapabilities: created.meshCapabilities };
     });
   });
   app.post('/api/remote-connections/pair/claim', { bodyLimit: 8192 }, async (req, reply) => {
@@ -68,7 +71,24 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
           ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.sourceLabel, sourceWorkspaces: input.sourceWorkspaces ?? [], approvedOperations: claimed.bridgeOperations, requestedOperations: input.bridgeOperations })
           : [];
         const revokedBridgeIds = req.headers['x-kiki-pairing-rotation'] === '1' ? hooks.current?.revokedBridges?.(input.source) : undefined;
-        const result = { target: claimed.target, targetLabel: machineLabel(), grantId: claimed.grantId, revision: claimed.revision, peerToken: claimed.peerToken, revokedBridgeIds, bridge: bridge.length > 0 ? bridge : undefined };
+        const includeTrust = req.headers['x-kiki-mesh-metadata'] === '1' || input.includeTrustMetadata === true;
+        const recipient = x25519Recipient();
+        const result = {
+          target: claimed.target,
+          targetLabel: machineLabel(),
+          grantId: claimed.grantId,
+          revision: claimed.revision,
+          peerToken: claimed.peerToken,
+          revokedBridgeIds,
+          bridge: bridge.length > 0 ? bridge : undefined,
+          ...(includeTrust
+            ? {
+                trustTier: claimed.trustTier,
+                meshCapabilities: claimed.meshCapabilities,
+                ...(recipient === undefined ? {} : { x25519Recipient: recipient }),
+              }
+            : {}),
+        };
         return result;
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
@@ -82,9 +102,9 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   app.post('/api/remote-connections/inbound/peer-grant', { bodyLimit: 16384 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, async () => {
-      const input = z.object({ source: connectionIdentitySchema, label: z.string().min(1).max(128), sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(), requestBridge: z.boolean().optional(), bridgeOperations: bridgeOperationsSchema.optional() }).strict().parse(req.body);
+      const input = z.object({ source: connectionIdentitySchema, label: z.string().min(1).max(128), sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(), requestBridge: z.boolean().optional(), bridgeOperations: bridgeOperationsSchema.optional(), trustTier: peerTrustTierSchema.optional(), meshCapabilities: z.array(meshCapabilitySchema).optional() }).strict().parse(req.body);
       if (admission.unavailableReason !== undefined) throw new AdmissionError(403, admission.unavailableReason);
-      const claimed = await admission.approvePeer(input.source, input.label, input.requestBridge, input.bridgeOperations);
+      const claimed = await admission.approvePeer(input.source, input.label, input.requestBridge, input.bridgeOperations, input.trustTier, input.meshCapabilities);
       try {
         const bridge = claimed.allowBridge && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.label, sourceWorkspaces: input.sourceWorkspaces ?? [], approvedOperations: claimed.bridgeOperations, requestedOperations: input.bridgeOperations }) : [];
         return { peerToken: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision, target: claimed.target, targetLabel: machineLabel(), ...bridge.length > 0 ? { bridge } : {} };
@@ -139,6 +159,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   }));
   app.post('/api/remote-connections/inbound/invitations', async (req, reply) => respond(req.id, reply, async () => { const input = connectionInviteInputSchema.parse(req.body); return admission.invite(input.source, input.label, input.expiresInMs); }));
   app.post('/api/remote-connections/inbound/grants/:grantId/revoke', async (req, reply) => respond(req.id, reply, () => admission.revoke((req.params as { grantId: string }).grantId)));
+  app.patch('/api/remote-connections/inbound/grants/:grantId/trust', { bodyLimit: 4096 }, async (req, reply) => respond(req.id, reply, () => {
+    const input = connectionTrustUpdateInputSchema.parse(req.body);
+    return admission.setTrust((req.params as { grantId: string }).grantId, input.trustTier, input.meshCapabilities);
+  }));
   app.get('/api/remote-connections', async (req, reply) => {
     const records = manager.list();
     return reply.send(okEnvelope(webPrincipal(req) === undefined ? records : records.filter((record) => isWebSharedRecord(record, web)), req.id));

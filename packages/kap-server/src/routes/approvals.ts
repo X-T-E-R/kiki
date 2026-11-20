@@ -22,6 +22,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
+import { peerAudience } from '../services/connections/audience';
 
 interface ApprovalRouteHost {
   get(
@@ -132,6 +133,15 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
         const pendingApproval = interaction.listPending('approval').find((i) => i.id === approval_id);
         if (pendingApproval?.payload && (pendingApproval.payload as ApprovalRequest).ssh !== undefined) {
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Use the SSH-specific approval endpoint', req.id));
+          return;
+        }
+        if (
+          peerAudience(req) !== undefined &&
+          pendingApproval?.payload !== undefined &&
+          (pendingApproval.payload as ApprovalRequest).requireHumanInteraction === true
+        ) {
+          (reply as { code?: (status: number) => unknown }).code?.(403);
+          reply.send(errEnvelope(40301, 'local_owner_required', req.id));
           return;
         }
 

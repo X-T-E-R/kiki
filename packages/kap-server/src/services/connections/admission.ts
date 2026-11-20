@@ -1,17 +1,32 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
-import { PAIRING_CODE_ALPHABET, bridgeOperationsSchema, connectionGrantSchema, normalizePairingCode, type BridgeOperation, type ConnectionIdentity, type ConnectionGrant, type InboundStatus } from '@kiki/protocol';
+import {
+  DEFAULT_RESTRICTED_PEER_CAPABILITIES,
+  DEFAULT_TRUSTED_PERSONAL_CAPABILITIES,
+  PAIRING_CODE_ALPHABET,
+  bridgeOperationsSchema,
+  connectionGrantSchema,
+  meshCapabilitySchema,
+  normalizePairingCode,
+  peerTrustTierSchema,
+  type BridgeOperation,
+  type ConnectionIdentity,
+  type ConnectionGrant,
+  type InboundStatus,
+  type MeshCapability,
+  type PeerTrustTier,
+} from '@kiki/protocol';
 import { generateServerToken } from '../auth/persistentToken';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 
 const DEFAULT_PAIR_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait'];
 const DEFAULT_APPROVED_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create', 'tools'];
 const LAST_CONNECTED_AT_PERSIST_INTERVAL_MS = 5 * 60 * 1000;
-interface StoredGrant extends Omit<ConnectionGrant, 'activeLeases'> { digest: string; allowBridge?: boolean; bridgeOperations?: BridgeOperation[] }
-interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean; bridgeOperations?: BridgeOperation[]; failures: number; consumed: boolean; label: string }
+interface StoredGrant extends Omit<ConnectionGrant, 'activeLeases'> { digest: string; allowBridge?: boolean; bridgeOperations?: BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: MeshCapability[] }
+interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean; bridgeOperations?: BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: MeshCapability[]; failures: number; consumed: boolean; label: string }
 interface State { enabled: boolean; grants: StoredGrant[]; pairingCodes: PairingCode[] }
-export interface AdmittedPeer { id: string; revision: number; source: ConnectionIdentity; allowBridge: boolean; bridgeOperations?: readonly BridgeOperation[] }
-export interface PeerApproval { grantId: string; revision: number; peerToken: string; target: ConnectionIdentity; allowBridge: boolean; bridgeOperations: BridgeOperation[] }
+export interface AdmittedPeer { id: string; revision: number; source: ConnectionIdentity; allowBridge: boolean; bridgeOperations?: readonly BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: readonly MeshCapability[] }
+export interface PeerApproval { grantId: string; revision: number; peerToken: string; target: ConnectionIdentity; allowBridge: boolean; bridgeOperations: BridgeOperation[]; trustTier: PeerTrustTier; meshCapabilities: MeshCapability[] }
 export interface HandshakeProofInspection { status: 'approved' | 'revoked' | 'inbound_disabled' | 'invited'; proof: string }
 export class AdmissionError extends Error {
   constructor(readonly status: number, readonly reason: string) { super(reason); }
@@ -24,7 +39,9 @@ function readPairingCodes(value: unknown): PairingCode[] {
     const code = entry as Partial<PairingCode>;
     if (typeof code.digest !== 'string' || !/^[a-f0-9]{64}$/.test(code.digest) || typeof code.expiresAt !== 'number' || typeof code.allowBridge !== 'boolean' || typeof code.failures !== 'number' || typeof code.consumed !== 'boolean' || typeof code.label !== 'string') throw new Error('Invalid pairing code');
     const bridgeOperations = code.bridgeOperations === undefined ? undefined : bridgeOperationsSchema.parse(code.bridgeOperations);
-    return { digest: code.digest, expiresAt: code.expiresAt, allowBridge: code.allowBridge, bridgeOperations, failures: code.failures, consumed: code.consumed, label: code.label };
+    const trustTier = code.trustTier === undefined ? undefined : peerTrustTierSchema.parse(code.trustTier);
+    const meshCapabilities = code.meshCapabilities === undefined ? undefined : meshCapabilitySchema.array().parse(code.meshCapabilities);
+    return { digest: code.digest, expiresAt: code.expiresAt, allowBridge: code.allowBridge, bridgeOperations, trustTier, meshCapabilities, failures: code.failures, consumed: code.consumed, label: code.label };
   });
 }
 export function sameIdentity(a: ConnectionIdentity, b: ConnectionIdentity): boolean { return a.homeId === b.homeId && a.hostId === b.hostId && a.protocol === b.protocol; }
@@ -82,7 +99,7 @@ export class ConnectionAdmission {
     if (!this.status().enabled) return undefined;
     const entry = this.state.grants.find((grant) => grant.id === grantId && grant.status === 'approved');
     if (entry === undefined || !sameIdentity(entry.target, this.identity)) return undefined;
-    return { id: entry.id, revision: entry.revision, source: entry.source, allowBridge: entry.allowBridge !== false, bridgeOperations: entry.bridgeOperations === undefined ? undefined : [...entry.bridgeOperations] };
+    return { id: entry.id, revision: entry.revision, source: entry.source, allowBridge: entry.allowBridge !== false, bridgeOperations: entry.bridgeOperations === undefined ? undefined : [...entry.bridgeOperations], ...(entry.trustTier === undefined ? {} : { trustTier: entry.trustTier }), ...(entry.meshCapabilities === undefined ? {} : { meshCapabilities: [...entry.meshCapabilities] }) };
   }
   setEnabled(enabled: boolean): Promise<InboundStatus> {
     return this.change(async () => {
@@ -134,7 +151,7 @@ export class ConnectionAdmission {
     if (entry.status !== 'approved') throw new AdmissionError(401, 'connection_not_approved');
     if (!sameIdentity(entry.target, this.identity)) throw new AdmissionError(403, 'identity_changed');
     this.markConnected(entry);
-    return { id: entry.id, revision: entry.revision, source: entry.source, allowBridge: entry.allowBridge !== false, bridgeOperations: entry.bridgeOperations === undefined ? undefined : [...entry.bridgeOperations] };
+    return { id: entry.id, revision: entry.revision, source: entry.source, allowBridge: entry.allowBridge !== false, bridgeOperations: entry.bridgeOperations === undefined ? undefined : [...entry.bridgeOperations], ...(entry.trustTier === undefined ? {} : { trustTier: entry.trustTier }), ...(entry.meshCapabilities === undefined ? {} : { meshCapabilities: [...entry.meshCapabilities] }) };
   }
   inspectHandshakeProof(input: { grantId?: string; nonce?: string; proof?: string }): HandshakeProofInspection | undefined {
     const nonce = typeof input.nonce === 'string' ? input.nonce.trim().toLowerCase() : '';
@@ -192,7 +209,7 @@ export class ConnectionAdmission {
     const inspected = this.inspectHandshakeProof(input);
     return inspected?.status === 'approved' ? inspected.proof : undefined;
   }
-  createPairCode(input: { label?: string; expiresInMs?: number; allowBridge?: boolean; bridgeOperations?: readonly BridgeOperation[] } = {}): Promise<{ code: string; expiresAt: number; allowBridge: boolean; bridgeOperations: BridgeOperation[] }> {
+  createPairCode(input: { label?: string; expiresInMs?: number; allowBridge?: boolean; bridgeOperations?: readonly BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: readonly MeshCapability[] } = {}): Promise<{ code: string; expiresAt: number; allowBridge: boolean; bridgeOperations: BridgeOperation[]; trustTier: PeerTrustTier; meshCapabilities: MeshCapability[] }> {
     return this.change(async () => {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
@@ -204,10 +221,13 @@ export class ConnectionAdmission {
       const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
       const expiresAt = Date.now() + (input.expiresInMs ?? 600_000);
       const bridgeOperations = [...new Set(input.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)];
+      const trustTier: PeerTrustTier = input.trustTier ?? 'restricted_peer';
+      const defaultCaps = trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES;
+      const meshCapabilities = [...new Set(input.meshCapabilities ?? defaultCaps)];
       for (const entry of this.state.pairingCodes) if (!entry.consumed) entry.consumed = true;
-      this.state.pairingCodes.push({ digest: digest(code), expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations, failures: 0, consumed: false, label: input.label ?? '' });
+      this.state.pairingCodes.push({ digest: digest(code), expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations, trustTier, meshCapabilities, failures: 0, consumed: false, label: input.label ?? '' });
       if (this.state.pairingCodes.length > 32) this.state.pairingCodes = this.state.pairingCodes.slice(-32);
-      return { code, expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations };
+      return { code, expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations, trustTier, meshCapabilities };
     });
   }
   claimPair(raw: string, source: ConnectionIdentity, sourceLabel: string, requestBridge = true, bridgeOperations?: readonly BridgeOperation[]): Promise<PeerApproval> {
@@ -230,14 +250,16 @@ export class ConnectionAdmission {
       const peerToken = generateServerToken();
       const allowBridge = match.allowBridge && requestBridge;
       const approved = [...(match.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)];
-      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken), allowBridge: match.allowBridge, bridgeOperations: approved };
+      const trustTier: PeerTrustTier = match.trustTier ?? 'restricted_peer';
+      const meshCapabilities: MeshCapability[] = [...(match.meshCapabilities ?? (trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES))];
+      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken), allowBridge: match.allowBridge, bridgeOperations: approved, trustTier, meshCapabilities };
       await this.revokePrevious(source);
       this.state.grants.push(entry);
       const effectiveOperations = bridgeOperations === undefined ? [...approved] : approved.filter((op) => bridgeOperations.includes(op));
-      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: effectiveOperations };
+      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: effectiveOperations, trustTier, meshCapabilities };
     });
   }
-  approvePeer(source: ConnectionIdentity, label: string, allowBridge = true, bridgeOperations?: readonly BridgeOperation[]): Promise<PeerApproval> {
+  approvePeer(source: ConnectionIdentity, label: string, allowBridge = true, bridgeOperations?: readonly BridgeOperation[], trustTier: PeerTrustTier = 'restricted_peer', meshCapabilities?: readonly MeshCapability[]): Promise<PeerApproval> {
     return this.change(async () => {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
@@ -246,10 +268,11 @@ export class ConnectionAdmission {
       if (sameIdentity(source, this.identity)) throw new AdmissionError(409, 'identity_changed');
       const peerToken = generateServerToken();
       const approved = [...new Set(bridgeOperations ?? DEFAULT_APPROVED_BRIDGE_OPERATIONS)];
-      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label, createdAt: Date.now(), digest: digest(peerToken), allowBridge, bridgeOperations: approved };
+      const resolvedCaps = [...new Set(meshCapabilities ?? (trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES))];
+      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label, createdAt: Date.now(), digest: digest(peerToken), allowBridge, bridgeOperations: approved, trustTier, meshCapabilities: resolvedCaps };
       await this.revokePrevious(source);
       this.state.grants.push(entry);
-      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: [...approved] };
+      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: [...approved], trustTier, meshCapabilities: resolvedCaps };
     });
   }
   setBridgeOperations(id: string, operations: readonly BridgeOperation[]): Promise<void> {
@@ -257,6 +280,27 @@ export class ConnectionAdmission {
     return this.change(async () => {
       const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
       if (entry !== undefined) entry.bridgeOperations = next;
+    });
+  }
+  getGrantTrust(id: string): { readonly trustTier: PeerTrustTier; readonly meshCapabilities: readonly MeshCapability[] } | undefined {
+    const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
+    if (entry === undefined) return undefined;
+    const trustTier: PeerTrustTier = entry.trustTier ?? 'restricted_peer';
+    const meshCapabilities = entry.meshCapabilities ?? (trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES);
+    return { trustTier, meshCapabilities };
+  }
+  setTrust(id: string, trustTier: PeerTrustTier, meshCapabilities?: readonly MeshCapability[]): Promise<ConnectionGrant> {
+    const validatedTier = peerTrustTierSchema.parse(trustTier);
+    const defaultCaps = validatedTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES;
+    const resolvedCaps = meshCapabilitySchema.array().parse([...new Set(meshCapabilities ?? defaultCaps)]);
+    return this.change(async () => {
+      const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
+      if (entry === undefined) throw new AdmissionError(404, 'grant_not_found');
+      entry.trustTier = validatedTier;
+      entry.meshCapabilities = resolvedCaps;
+      entry.revision += 1;
+      const { digest: _, ...pub } = entry;
+      return { ...pub, activeLeases: this.leases.get(entry.id)?.size ?? 0 };
     });
   }
   attach(id: string, close: () => void): () => void {

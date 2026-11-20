@@ -53,6 +53,7 @@ export class SessionApprovalService implements ISessionApprovalService {
   }
 
   private yoloResponse(req: ApprovalRequest): ApprovalResponse | undefined {
+    if (req.requireHumanInteraction === true) return undefined;
     let yolo = false;
     try {
       yolo = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentLifecycleService)

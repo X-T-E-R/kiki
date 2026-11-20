@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { sliceUtf16 } from '#/_base/text/utf16';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
@@ -9,6 +10,7 @@ import { IMemoryStore, MemoryDomainError, memoryApplicability, memoryBasisSchema
 import type { MemoryScope } from '#/app/memory/memoryScopes';
 import { IAgentMemorySnapshot, type MemoryPersonaContext } from '#/app/memory/memorySnapshot';
 import { memoryResult, memoryResultReference, memoryTextFits } from '#/app/memory/memoryContext';
+import { isMemoryVisibleOnHost, resolveMemoryHostId } from '#/app/memory/projectIdentityBindings';
 import type { MemoryScoreDetails } from '#/app/memory/memoryRecall';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -42,6 +44,8 @@ const writeSchema = z.object({
     id: memoryCoveredBySchema.shape.id.describe("Retained entry that fully covers the target's current content and applicability; must not be the target itself."),
     expected_revision: memoryCoveredBySchema.shape.expected_revision.describe('Revision of the retained active entry whose full content was checked.'),
   }).optional().describe('For consolidation archive only: the retained same-scope active entry and its latest revision. The store checks this dependency again when applying the retirement.'),
+  applicability: z.enum(['portable', 'machine-local']).optional().describe('Set to machine-local for host-specific hardware/path notes that must not sync or surface on other machines; omit or set portable for cross-machine project guidance.'),
+  origin_host_id: z.string().min(1).max(128).optional().describe('Optional explicit host identifier for machine-local entries; automatically populated for the local host when omitted.'),
 }).strict();
 const searchSchema = z.object({
   raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
@@ -94,6 +98,15 @@ function available(snapshot: ICapabilitySnapshotService, session: ISessionContex
     }
   }
   return snapshot.toolAvailable(tool, session.workspaceId, session.sessionId);
+}
+
+function currentMemoryHostId(instantiation: IInstantiationService): string {
+  try {
+    const bootstrap = instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService));
+    return resolveMemoryHostId((name) => bootstrap.getEnv(name), bootstrap.homeDir);
+  } catch {
+    return resolveMemoryHostId();
+  }
 }
 
 function presentPolicy(instantiation: IInstantiationService): IOptionalCapabilityPolicy | undefined {
@@ -175,8 +188,13 @@ Archive is a state change: provide the target and reason, not a replacement body
           if (selected.length !== 1) return lookupFailure(selected.length > 1 ? 'ambiguous_target' : found.length > 0 ? 'scope_mismatch' : 'not_found', found);
           scope = selected[0]!.scope;
         }
+        const resolvedOriginHostId =
+          input.applicability === 'machine-local'
+            ? input.origin_host_id ?? currentMemoryHostId(this.instantiation)
+            : input.origin_host_id;
         const result = await this.store.put({ action: input.action, scope, type: input.type, title: input.title, body: input.body, reason: input.reason,
           id: input.id, expectedRevision: input.expected_revision, operationId: toolCallId === undefined ? undefined : JSON.stringify([this.session.sessionId, turnId, toolCallId]), basis: input.basis, validity: input.validity, covered_by: input.covered_by, signal,
+          applicability: input.applicability, origin_host_id: resolvedOriginHostId,
           source: { writer: 'agent', session: this.session.sessionId, turn: turnId }, pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review' });
         const outcome = result.outcome;
         const entry = result.entry;
@@ -234,9 +252,11 @@ Search returns complete stored units when they fit the response budget (24,000 U
       try {
         const persona = this.memorySnapshot.getPersona();
         if (input.scope !== undefined) resolveScope(input.scope, this.session, persona);
-        const page = await this.store.query(scopes(this.session, persona), input.cursor !== undefined ? { cursor: input.cursor } : {
+        const hostId = currentMemoryHostId(this.instantiation);
+        const page = await this.store.query(scopes(this.session, persona), input.cursor !== undefined ? { cursor: input.cursor, hostId } : {
           mode: input.mode, query: input.query, scope: input.scope, type: input.type, page_size: input.page_size,
           statuses: input.statuses ?? (input.include_superseded === true ? ['active', 'superseded'] : undefined),
+          hostId,
         }, signal);
         const items: Array<(ReturnType<typeof memoryResult> | ReturnType<typeof memoryResultReference>) & { score?: number; score_details?: MemoryScoreDetails }> = page.items.map((entry) => memoryResultReference(entry, entry.scope));
         const output = () => JSON.stringify({ ...page, items });
@@ -282,8 +302,10 @@ Check status and validity. Archived and superseded entries are history, not curr
         const requested = parsed.data.ids ?? [parsed.data.id!];
         const unique = [...new Set(requested)];
         const batched = unique.length > 1 ? await matchesMany(this.store, visible, unique) : undefined;
+        const hostId = currentMemoryHostId(this.instantiation);
         const items = await Promise.all(requested.map(async (id) => {
-          const found = batched === undefined ? await matches(this.store, visible, id) : batched.get(id) ?? [];
+          const found = (batched === undefined ? await matches(this.store, visible, id) : batched.get(id) ?? [])
+            .filter((candidate) => isMemoryVisibleOnHost(candidate.entry, hostId));
           if (found.length > 1) return { id, missing: true, ...JSON.parse(lookupFailure('ambiguous_target', found).output) };
           const item = found[0];
           if (item === undefined) return { id, missing: true, reason: 'not_found', recovery: 'Locate the ID in visible scopes; do not create a duplicate to bypass lookup.' };

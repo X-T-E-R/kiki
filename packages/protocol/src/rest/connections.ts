@@ -7,6 +7,7 @@ import {
   normalizePairingCode,
   parsePairingUri,
 } from '../pairing';
+import { meshCapabilitySchema, peerTrustTierSchema } from './mesh';
 
 export {
   PAIRING_CODE_ALPHABET,
@@ -52,6 +53,8 @@ export const connectionGrantSchema = z.object({
   status: z.enum(['invited', 'approved', 'revoked']), label: z.string().max(128),
   createdAt: z.number(), expiresAt: z.number().optional(), lastConnectedAt: z.number().optional(),
   activeLeases: z.number().int().nonnegative(),
+  trustTier: peerTrustTierSchema.optional(),
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
 });
 export type ConnectionGrant = z.infer<typeof connectionGrantSchema>;
 export const inboundStatusSchema = z.object({ enabled: z.boolean(), configuredEnabled: z.boolean(), unavailableReason: z.literal('dangerous_auth_bypass').optional(), identity: connectionIdentitySchema, grants: z.array(connectionGrantSchema) });
@@ -69,6 +72,8 @@ export const pairCodeCreateInputSchema = z.object({
   expiresInMs: z.number().int().min(60_000).max(3_600_000).default(600_000),
   allowBridge: z.boolean().default(true),
   bridgeOperations: bridgeOperationsSchema.optional(),
+  trustTier: peerTrustTierSchema.optional(),
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
 }).strict();
 export type PairCodeCreateInput = z.infer<typeof pairCodeCreateInputSchema>;
 export const pairCodeCreateOutputSchema = z.object({
@@ -78,6 +83,8 @@ export const pairCodeCreateOutputSchema = z.object({
   suggestedEndpoints: z.array(z.string()),
   tlsFingerprint: fingerprintSchema.optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
+  trustTier: peerTrustTierSchema.optional(),
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
 }).strict();
 export type PairCodeCreateOutput = z.infer<typeof pairCodeCreateOutputSchema>;
 export const connectionPairInputSchema = z.object({
@@ -98,8 +105,16 @@ export const pairClaimInputSchema = z.object({
   requestBridge: z.boolean().optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
   sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(),
+  x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
+  includeTrustMetadata: z.boolean().optional(),
 }).strict();
 export type PairClaimInput = z.infer<typeof pairClaimInputSchema>;
+
+export const connectionTrustUpdateInputSchema = z.object({
+  trustTier: peerTrustTierSchema,
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
+}).strict();
+export type ConnectionTrustUpdateInput = z.infer<typeof connectionTrustUpdateInputSchema>;
 export const sshConnectionConnectInputSchema = z.object({
   profile: sshRemoteProfileSchema,
   label: z.string().max(128).optional(),
@@ -137,9 +152,12 @@ export const remoteConnectionSchema = z.object({
   lastError: z.string().optional(), lastConnectedAt: z.number().optional(), activeLeases: z.number().int().nonnegative(),
   rttMs: z.number().int().nonnegative().optional(),
   summary: z.object({ value: spaceSummarySchema, lastSeen: z.number(), stale: z.boolean() }).optional(),
+  trustTier: peerTrustTierSchema.optional(),
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
+  x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
 });
 export type RemoteConnection = z.infer<typeof remoteConnectionSchema>;
 export const connectionBrokerInputSchema = z.object({ operation: z.string().min(1).max(128), params: z.record(z.string(), z.string()).optional(), query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).optional(), headers: z.object({ ifNoneMatch: z.string().max(1024).regex(/^[^\r\n]*$/).optional(), range: z.string().max(128).regex(/^bytes=\d*-\d*$/).optional() }).strict().optional(), body: z.unknown().optional() }).strict();
 export type ConnectionBrokerInput = z.infer<typeof connectionBrokerInputSchema>;
-export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean(), tlsFingerprint: fingerprintSchema.optional(), platform: spacePlatformSchema.optional(), capabilities: z.array(z.string().min(1).max(64)).max(64).optional() });
+export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean(), tlsFingerprint: fingerprintSchema.optional(), platform: spacePlatformSchema.optional(), capabilities: z.array(z.string().min(1).max(64)).max(64).optional(), x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional() });
 export type ConnectionHandshake = z.infer<typeof connectionHandshakeSchema>;

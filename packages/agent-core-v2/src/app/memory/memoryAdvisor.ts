@@ -5,6 +5,7 @@ import { toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -34,6 +35,7 @@ import {
 import { runMemoryAdvice } from './memoryAdvisorCatalog';
 import { advisorStatus, memoryAdviceKey, memoryAdviceRecommends, type MemoryAdvice } from './memoryAdvisorTypes';
 import { renderMemoryWorkingSet } from './memoryContext';
+import { resolveMemoryHostId } from './projectIdentityBindings';
 
 export interface IAgentMemoryAdvisor {
   readonly _serviceBrand: undefined;
@@ -70,6 +72,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     @IAgentUsageService private readonly usage: IAgentUsageService,
     @IEventBus events: IEventBus,
     @ILogService private readonly log: ILogService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {
     super();
     this._register(
@@ -343,6 +346,9 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       this.snapshot.advisorRequest ?? '',
       settings.budget,
       Math.min(1_000, settings.budget),
+      Date.now(),
+      undefined,
+      resolveMemoryHostId((name) => this.bootstrap.getEnv(name), this.bootstrap.homeDir),
     );
     const delivered = new Set(view.workset?.entries.map(memoryAdviceKey));
     return {

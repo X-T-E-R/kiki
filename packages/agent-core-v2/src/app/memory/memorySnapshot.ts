@@ -2,6 +2,7 @@ import { createDecorator, IInstantiationService } from '#/_base/di/instantiation
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -10,6 +11,7 @@ import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { memoryRequestDirects, memoryRequestIdentity, memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
+import { resolveMemoryHostId } from './projectIdentityBindings';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from './configSection';
 import { IMemoryStore, memoryApplicability, type MemoryEntry } from './memoryStore';
 import type { MemoryPublicScopeKind, MemoryScope } from './memoryScopes';
@@ -314,7 +316,8 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       const scopes = this.readScopes();
       const view = await store.snapshot(scopes, { statuses: ['active'] });
       const advice = settings.advisor?.mode === 'off' || (settings.advisor?.source === undefined && settings.advisor?.selector === undefined) ? undefined : this.advice;
-      const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget), Date.now(), advice);
+      const hostId = this.currentHostId();
+      const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget), Date.now(), advice, hostId);
       const previous = this.projectionView;
       const unchanged = (previous === undefined || JSON.stringify(previous.scopes) === JSON.stringify(scopes))
         && this.lastKnown.length > 0
@@ -335,6 +338,15 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     if (normalizeMemorySnapshotText(snapshot.text) === normalizeMemorySnapshotText(this.lastKnown)) return this.lastKnown;
     this.lastKnown = snapshot.text;
     return snapshot.text;
+  }
+
+  private currentHostId(): string {
+    try {
+      const bootstrap = this.instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService));
+      return resolveMemoryHostId((name) => bootstrap.getEnv(name), bootstrap.homeDir);
+    } catch {
+      return resolveMemoryHostId();
+    }
   }
 }
 

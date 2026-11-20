@@ -158,6 +158,7 @@ export const providerConfigResponseSchema = z.object({
   default_model: z.string().optional(),
   api_key: z.string().min(1).optional(),
   api_key_env: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   has_api_key: z.boolean(),
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
@@ -229,7 +230,7 @@ export const configResponseSchema = z.object({
   task_board: TaskBoardConfigSchema.optional(),
   retry: retryConfigResponseSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
-  origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']))).optional(),
+  origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']))).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 

@@ -40,6 +40,8 @@ export interface ApprovalRequest {
   readonly display: ToolInputDisplay;
   /** Permission-rule pattern that matches exactly this call (e.g. `Bash(git status)`); absent for external harness permissions. */
   readonly approvalRule?: string;
+  /** When true, never auto-approve even in `yolo` mode (used for interactive login flows requiring human credentials). */
+  readonly requireHumanInteraction?: boolean;
 }
 
 export type ApprovalDecision = 'approved' | 'rejected' | 'cancelled';

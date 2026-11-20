@@ -576,10 +576,15 @@ export class RemoteConnectionManager {
       }
       if (response.status === 401 || response.status === 403) {
         const refusal = await readConnectionRefusal(response, callSignal);
-        if (refusal?.code === 40301 && typeof refusal.msg === 'string' && (
-          (['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg))
-          || (['sessionCreate', 'fsSearch', 'draftFsSearch'].includes(operation) && refusal.msg === 'peer_workspace_not_registered')
-        )) {
+        if (
+          (refusal?.msg === 'mesh_capability_denied' && (refusal.code === 40101 || refusal.code === 40302)) ||
+          (refusal?.code === 40301 && typeof refusal.msg === 'string' && (
+            (['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg))
+            || (['sessionCreate', 'fsSearch', 'draftFsSearch'].includes(operation) && refusal.msg === 'peer_workspace_not_registered')
+            || (operation === 'approval' && refusal.msg === 'local_owner_required')
+            || operation === 'meshInboundExecute'
+          ))
+        ) {
           this.notePeerSuccess(id, epoch);
           return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
         }

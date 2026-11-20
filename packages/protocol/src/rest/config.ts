@@ -23,13 +23,13 @@ export const computerExecutorKindSchema = z.enum(['cua', 'windows-mcp']);
 export type ComputerExecutorKind = z.infer<typeof computerExecutorKindSchema>;
 export const computerControlConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
-  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
+  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
   usagePreference: computerUsagePreferenceSchema,
-  usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']),
+  usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']),
   appliesOn: z.literal('next-model-request'),
   toolsApplyOn: z.literal('next-step').optional(),
   connection: z.string().trim().min(1).optional(),
-  connectionSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
+  connectionSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
 }).strict();
 export const computerControlConfigPatchSchema = z.object({
   enabled: z.boolean().nullable().optional(),
@@ -41,9 +41,9 @@ export const branchUsagePreferenceSchema = z.enum(['conservative', 'balanced', '
 export type BranchUsagePreference = z.infer<typeof branchUsagePreferenceSchema>;
 export const branchConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
-  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
+  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
   usagePreference: branchUsagePreferenceSchema.optional(),
-  usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
+  usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
   appliesOn: z.literal('next-model-request').optional(),
   toolsApplyOn: z.literal('next-step').optional(),
 }).strict();
@@ -333,7 +333,7 @@ export const optionalCapabilityStateSchema = z.object({
   allowed: z.boolean(),
   host_locked: z.boolean(),
   default_on: z.boolean(),
-  origin: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory', 'unreadable']),
+  origin: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory', 'unreadable']),
   unresolved: z.boolean(),
 }).strict();
 export const optionalCapabilitiesResponseSchema = z.object({

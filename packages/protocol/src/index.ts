@@ -121,4 +121,6 @@ export * from './rest/cron';
 export * from './rest/model-switch';
 export * from './rest/runtime';
 export * from './rest/search';
+export * from './rest/mesh';
+export * from './rest/sync';
 export * from './pluginExtensions';

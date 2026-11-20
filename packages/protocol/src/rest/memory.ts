@@ -18,12 +18,14 @@ export const memoryEntrySchema = z.object({
   created: z.string(), updated: z.string(), source: z.object({ writer: z.enum(['user', 'agent', 'consolidator', 'import']), session: z.string().optional(), turn: z.number().optional(), step: z.string().optional() }),
   reason: z.string(), revision: z.string(), superseded_by: z.string().optional(), supersedes: z.string().optional(), supersedes_revision: z.string().optional(), pending_action: z.enum(['update', 'archive']).optional(),
   basis: memoryBasisSchema.optional(), validity: memoryValiditySchema.optional(), covered_by: memoryCoveredBySchema.optional(),
-  scope: memoryOwnerScopeSchema.optional(), target: memoryTargetSchema.optional(), applicability: z.enum(['expired', 'recheck', 'unrecorded']).optional(), complete: z.boolean().optional(),
+  scope: memoryOwnerScopeSchema.optional(), target: memoryTargetSchema.optional(), applicability: z.enum(['expired', 'recheck', 'unrecorded', 'portable', 'machine-local']).optional(), host_applicability: z.enum(['portable', 'machine-local']).optional(), origin_host_id: z.string().optional(), complete: z.boolean().optional(),
 });
 export const memoryPutBodySchema = z.object({
   action: z.enum(['create', 'update', 'supersede', 'archive']).optional(), type: memoryTypeSchema.optional(), title: z.string().min(1).max(200).optional(), body: z.string().min(1).max(1_500).optional(),
   reason: z.string().min(1), expected_revision: z.string().optional(), pinned: z.boolean().optional(), basis: memoryBasisSchema.optional(), validity: memoryValiditySchema.nullable().optional(),
   covered_by: z.object({ id: z.string(), expected_revision: z.string() }).strict().optional(),
+  applicability: z.enum(['portable', 'machine-local']).optional(),
+  origin_host_id: z.string().min(1).max(128).optional(),
 }).strict();
 export const memoryPutResultSchema = z.object({ entry: memoryEntrySchema, operationId: z.string().nullable(), outcome: z.enum(['applied', 'pending', 'unchanged']), warnings: z.array(z.string()).optional() });
 export const memoryCoverageSchema = z.object({ scopes: z.array(memoryOwnerScopeSchema), statuses: z.array(memoryStatusSchema), exhausted: z.boolean(), complete: z.boolean(), warnings: z.array(z.string()) });

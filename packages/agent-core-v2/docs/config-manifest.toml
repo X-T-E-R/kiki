@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (62 sections · 1 overlay(s))
+# Index (63 sections · 2 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
@@ -23,6 +23,7 @@
 #   coldCompaction                  src/app/coldCompaction/configSection.ts
 #   computerControl                 src/app/computer/configSection.ts
 #   cpuWorkers                      src/app/cpuWorker/configSection.ts
+#   credentials                     src/app/config/credentialPool.ts
 #   cron                            src/app/cron/configSection.ts
 #   defaultPermissionMode           src/agent/permissionMode/configSection.ts
 #   defaultPlanMode                 src/features/plan/configSection.ts
@@ -71,6 +72,7 @@
 #   tools                           src/agent/toolPolicy/configSection.ts
 #   workspaceInstance               src/workspace/workspaceInstance/configSection.ts
 #   worktree                        src/app/git/worktreeConfig.ts
+#   (overlay) credentialPoolOverlay  src/app/kosongConfig/credentialPoolOverlay.ts
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
@@ -364,6 +366,28 @@ usage_preference = "avoid"
 # max_queue: integer (adaptive default: max(128, default CPU workers * 16))
 # max_queued_bytes: integer (adaptive default: max(64 MiB, floor(totalmem / 128 / MiB) MiB))
 timeout_ms = 30000
+
+# ##########################################################################
+# credentials
+#   owner: src/app/config/credentialPool.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[credentials]
+
+# one [credentials."<name>"] table per entry:
+# [credentials."<name>"]
+  # kind: "api_key" | "bearer_token" | "oauth" | "env_ref" | "keyring_ref"
+  # sync_policy: "machine" | "keyring" | "env" | "synced"
+  # api_key: string
+  # secret: string
+  # env_var: string
+  # keyring_service: string
+  # keyring_account: string
+  # label: string
+  # updated_at: string
+  # revision: string
 
 # ##########################################################################
 # cron
@@ -955,6 +979,7 @@ enter_approval_timeout_ms = 60000
   # type: string
   # api_key: string
   # api_key_env: string
+  # credential_id: string
   # oauth: object
     # storage: "file" | "keyring"
     # key: string

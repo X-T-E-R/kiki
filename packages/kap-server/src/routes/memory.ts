@@ -1,4 +1,4 @@
-import { IAgentLifecycleService, IAgentMemoryAdvisor, ISessionManager, IConfigService, IMemoryAuthorityService, IMemoryStore, IMemorySelector, IWorkspaceService, MEMORY_SECTION, MemoryConfigSchema, MemoryDomainError, advisorStatus, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAgentMemoryAdvisor, IBootstrapService, ISessionManager, IConfigService, IMemoryAuthorityService, IMemoryStore, IMemorySelector, IWorkspaceService, MEMORY_SECTION, MemoryConfigSchema, MemoryDomainError, advisorStatus, isMemoryVisibleOnHost, memoryApplicability, memoryEnabled, resolveMemoryHostId, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
 import {
   memoryPutBodySchema,
   memorySettingsPatchSchema,
@@ -33,6 +33,10 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   const config = core.accessor.get(IConfigService);
   const store = () => core.accessor.get(IMemoryStore);
   const authority = () => core.accessor.get(IMemoryAuthorityService);
+  const currentHostId = (): string => {
+    const bootstrap = core.accessor.get(IBootstrapService);
+    return resolveMemoryHostId((name) => bootstrap.getEnv(name), bootstrap.homeDir);
+  };
   const add = (method: keyof MemoryRouteHost, route: ReturnType<typeof defineRoute>): void => {
     app[method](route.path, route.options, route.handler);
   };
@@ -91,7 +95,12 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/export', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => authority().exportMarkdown(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id));
+    await handle(req.id, reply, async () => {
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const entry = await store().get(scope, req.params.id);
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, currentHostId())) throw new Error('Memory not found');
+      return authority().exportMarkdown(scope, req.params.id);
+    });
   }));
   add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/import-preview', params: scopeParams, querystring: scopeQuery, body: z.object({ markdown: z.string().max(65_536), source_locator: z.string().trim().min(1).max(2_000), reason: z.string().trim().min(1).max(500) }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => authority().previewImport(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), { markdown: req.body.markdown, sourceLocator: req.body.source_locator, reason: req.body.reason }));
@@ -100,13 +109,21 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     await handle(req.id, reply, async () => authority().applyImport(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.preview_token, req.body.operation_id));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/provenance', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => authority().provenance(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id));
+    await handle(req.id, reply, async () => {
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const entry = await store().get(scope, req.params.id);
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, currentHostId())) throw new Error('Memory not found');
+      return authority().provenance(scope, req.params.id);
+    });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/revisions/{revision}', params: entryParams.extend({ revision: z.string().min(1).max(300) }), querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
+      const hostId = currentHostId();
       const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const current = await store().get(scope, req.params.id);
+      if (current !== undefined && !isMemoryVisibleOnHost(current, hostId)) throw new Error('Memory revision not found');
       const entry = await authority().getRevision(scope, req.params.id, req.params.revision);
-      if (entry === undefined) throw new Error('Memory revision not found');
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, hostId)) throw new Error('Memory revision not found');
       return { ...entry, scope, historical: true, complete: true };
     });
   }));
@@ -176,13 +193,30 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     await handle(req.id, reply, async () => {
       const target = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
       if (req.query.cursor !== undefined && req.query.page_size !== undefined) throw new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart Inbox to change its page size.');
-      const page = await store().query([target], req.query.cursor === undefined ? { mode: 'list', statuses: ['pending'], page_size: req.query.page_size } : { cursor: req.query.cursor });
+      const page = await store().query([target], req.query.cursor === undefined ? { mode: 'list', statuses: ['pending'], page_size: req.query.page_size, hostId: currentHostId() } : { cursor: req.query.cursor, hostId: currentHostId() });
       if (page.mode !== 'list' || page.coverage.statuses.length !== 1 || page.coverage.statuses[0] !== 'pending') throw new MemoryDomainError('cursor_invalidated', 'Cursor does not belong to Inbox', 'Restart Inbox with its own cursor.');
       return page;
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/journal', params: scopeParams, querystring: scopeQuery.extend({ id: z.string().optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => store().journal(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.query.id));
+    await handle(req.id, reply, async () => {
+      const hostId = currentHostId();
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const records = await store().journal(scope, req.query.id);
+      const visibleById = new Map<string, boolean>();
+      const visible = [];
+      for (const record of records) {
+        if (!isJournalBeforeVisible(record.before, hostId)) continue;
+        let allowed = visibleById.get(record.id);
+        if (allowed === undefined) {
+          const current = await store().get(scope, record.id);
+          allowed = current === undefined ? true : isMemoryVisibleOnHost(current, hostId);
+          visibleById.set(record.id, allowed);
+        }
+        if (allowed) visible.push(record);
+      }
+      return visible;
+    });
   }));
   add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/undo', params: scopeParams, querystring: scopeQuery, body: z.object({ operation_id: z.string().uuid() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => ({ entry: await store().undo(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.operation_id) ?? null }));
@@ -196,9 +230,11 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       const target = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
       if (req.query.cursor !== undefined && (['mode', 'query', 'type', 'page_size', 'statuses', 'include_inactive'] as const).some((key) => req.query[key] !== undefined)) throw new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the original query if its filters need changing.');
       const mode = req.query.mode ?? (req.query.query === undefined ? 'list' : 'search');
-      return store().query([target], req.query.cursor !== undefined ? { cursor: req.query.cursor } : {
+      const hostId = currentHostId();
+      return store().query([target], req.query.cursor !== undefined ? { cursor: req.query.cursor, hostId } : {
         mode, query: req.query.query, type: req.query.type, page_size: req.query.page_size,
         statuses: req.query.statuses ?? (req.query.include_inactive ? ['active', 'pending', 'superseded', 'archived'] : mode === 'list' ? ['active', 'pending'] : ['active']),
+        hostId,
       });
     });
   }));
@@ -206,7 +242,7 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     await handle(req.id, reply, async () => {
       const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
       const entry = await store().get(scope, req.params.id);
-      if (entry === undefined) throw new Error('Memory not found');
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, currentHostId())) throw new Error('Memory not found');
       return { ...entry, scope, target: { scope: scope.kind, id: entry.id, expected_revision: entry.revision }, applicability: memoryApplicability(entry), complete: true };
     });
   }));
@@ -215,10 +251,43 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       scope: await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id),
       action: req.params.id === 'new' ? 'create' : req.body.action, id: req.params.id === 'new' ? undefined : req.params.id,
       type: req.body.type, title: req.body.title, body: req.body.body, reason: req.body.reason,
-      expectedRevision: req.body.expected_revision, pinned: req.body.pinned, basis: req.body.basis, validity: req.body.validity, covered_by: req.body.covered_by, source: { writer: 'user' },
+      expectedRevision: req.body.expected_revision, pinned: req.body.pinned, basis: req.body.basis, validity: req.body.validity, covered_by: req.body.covered_by, applicability: req.body.applicability, origin_host_id: req.body.origin_host_id, source: { writer: 'user' },
     }));
   }));
   add('delete', defineRoute({ method: 'DELETE', path: '/memory/{scope}/{id}', params: entryParams, querystring: entryQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => ({ operation_id: await store().delete(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id, req.query.expected_revision ?? '') }));
   }));
+}
+
+function isJournalBeforeVisible(before: string | null, hostId: string): boolean {
+  if (before === null || before.trim() === '') return true;
+  if (before.trimStart().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(before) as { applicability?: unknown; origin_host_id?: unknown };
+      return isMemoryVisibleOnHost(
+        {
+          applicability: parsed.applicability === 'portable' || parsed.applicability === 'machine-local' ? parsed.applicability : undefined,
+          origin_host_id: typeof parsed.origin_host_id === 'string' ? parsed.origin_host_id : undefined,
+        },
+        hostId,
+      );
+    } catch {
+      return false;
+    }
+  }
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(before);
+  if (fm === null) return true;
+  let applicability: 'portable' | 'machine-local' | undefined;
+  let originHostId: string | undefined;
+  for (const rawLine of fm[1]!.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (trimmed.startsWith('applicability:')) {
+      const val = trimmed.slice('applicability:'.length).trim().replace(/^['"]|['"]$/g, '');
+      if (val === 'portable' || val === 'machine-local') applicability = val;
+    } else if (trimmed.startsWith('origin_host_id:')) {
+      const val = trimmed.slice('origin_host_id:'.length).trim().replace(/^['"]|['"]$/g, '');
+      if (val.length > 0) originHostId = val;
+    }
+  }
+  return isMemoryVisibleOnHost({ applicability, origin_host_id: originHostId }, hostId);
 }

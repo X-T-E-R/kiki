@@ -12,7 +12,11 @@ export const MAX_SKILL_SCAN_DEPTH = 8;
 export const MAX_CONCURRENT_SKILL_IO = 16;
 
 export function isSkillScanExcludedEntry(entryName: string): boolean {
-  return entryName === 'node_modules' || entryName.startsWith('.');
+  return (
+    entryName === 'node_modules' ||
+    entryName.startsWith('.') ||
+    entryName.includes('.sync-conflict-')
+  );
 }
 
 export class FileSkillDiscovery implements ISkillDiscovery {
@@ -108,7 +112,7 @@ export async function discoverFileSkills(
         const file = dirent.isFile() || (dirent.isSymbolicLink() && (await runIo(() => isFile(entryPath))));
         return { entry, skill: false, directory: false, file };
       }
-      const skill = await runIo(() => isFile(join(entryPath, 'SKILL.md')));
+      const skill = excluded ? false : await runIo(() => isFile(join(entryPath, 'SKILL.md')));
       return { entry, skill, directory: !excluded, file: false };
     });
     const directorySkills = new Set(inspected.filter((entry) => entry.skill).map((entry) => entry.entry));
@@ -147,7 +151,7 @@ export async function discoverFileSkills(
       }
 
       const parsedFlatSkills = await mapConcurrent(entries, MAX_CONCURRENT_SKILL_IO, async (entry) => {
-        if (!entry.endsWith('.md') || entry === 'SKILL.md' || !regularFiles.has(entry)) return undefined;
+        if (!entry.endsWith('.md') || entry === 'SKILL.md' || isSkillScanExcludedEntry(entry) || !regularFiles.has(entry)) return undefined;
         const skillName = entry.slice(0, -'.md'.length);
         if (directorySkills.has(skillName)) return undefined;
         const skillMdPath = join(dirPath, entry);
