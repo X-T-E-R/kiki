@@ -10,6 +10,7 @@ import type { FsWatchBridge } from './fsWatchBridge';
 import type { JournalLogger } from './sessionEventJournal';
 import { WsConnectionV1 } from './wsConnectionV1';
 import { selectWsBearerProtocol } from '../bearerProtocol';
+import { resolveWsPerMessageDeflate } from '../../../middleware/wireCompression';
 
 export const WS_PATH = '/api/ws';
 /** Bound parse work and memory for one inbound message; `ws` closes excess with 1009. */
@@ -32,6 +33,8 @@ export interface RegisterWsV1Options {
   readonly maxBackpressureRounds?: number;
   /** Heartbeat ping cadence override; `0` disables the heartbeat. */
   readonly heartbeatIntervalMs?: number;
+  /** Optional environment bag used to resolve WebSocket compression settings. */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketServer {
@@ -39,6 +42,7 @@ const wss = new WebSocketServer({
     noServer: true,
     handleProtocols: selectWsBearerProtocol,
     maxPayload: WS_V1_MAX_PAYLOAD_BYTES,
+    perMessageDeflate: resolveWsPerMessageDeflate({ env: opts.env }),
   });
   const { registry, broadcaster } = opts;
 

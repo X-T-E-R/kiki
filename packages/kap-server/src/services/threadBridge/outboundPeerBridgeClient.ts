@@ -4,6 +4,7 @@ import { isError2, ThreadMailboxBacklogError } from '@kiki/agent-core-v2';
 import { decodeJsonFrame, encodeJsonFrame, type KlientFrame } from '@kiki/klient/host';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import {
+  PEER_BRIDGE_CAPABILITY_CHUNKED_V1,
   bridgeCreateSchema,
   bridgeListSchema,
   bridgeReadSchema,
@@ -18,9 +19,155 @@ import { AdmissionError } from '../connections/admission';
 import type { ConnectionLease, RemoteConnectionManager } from '../connections/manager';
 import { peerFetch, pooledPinnedAgent, requirePinnedTls } from '../connections/peerTls';
 import { machineLabel } from '../connections/pairing';
+import { resolveWsPerMessageDeflate } from '../../middleware/wireCompression';
 import { ContentChangedError } from '../../transport/klient/boundedContent';
+import { resolvePeerBridgeChunkBytes, sliceUtf8Chunks } from '../../transport/klient/peerBridgeSocket';
 import { WS_BEARER_PROTOCOL_PREFIX } from '../../transport/ws/bearerProtocol';
 import type { SpaceThreadBridge } from './bridge';
+
+export interface OutboundPeerBridgeClientOptions {
+  /** Override `KIKI_PEER_BRIDGE_CHUNK_BYTES` for chunked `bridge_response_chunk` frames. Defaults to `65536`. */
+  readonly chunkBytes?: number;
+  /** Override `KIKI_PEER_BRIDGE_BULK_HWM_BYTES` for bulk lane `ws.bufferedAmount` pacing. Defaults to `262144`. */
+  readonly bulkHighWaterBytes?: number;
+  /** Environment bag used when explicit overrides are omitted. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+const DEFAULT_BULK_HIGH_WATER_BYTES = 256 * 1024;
+const BULK_BACKPRESSURE_POLL_MS = 5;
+
+function resolveBulkHighWaterBytes(override: number | undefined, env: NodeJS.ProcessEnv): number {
+  if (override !== undefined && Number.isFinite(override) && override >= 1024) {
+    return Math.floor(override);
+  }
+  const raw = env['KIKI_PEER_BRIDGE_BULK_HWM_BYTES'];
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number.parseInt(raw.trim(), 10);
+    if (Number.isFinite(parsed) && parsed >= 1024) return parsed;
+  }
+  return DEFAULT_BULK_HIGH_WATER_BYTES;
+}
+
+interface QueuedBulkTransfer {
+  readonly id: string;
+  readonly frames: readonly KlientFrame[];
+  index: number;
+  cancelled: boolean;
+  readonly isAborted: () => boolean;
+}
+
+class OutboundTwoLaneScheduler {
+  private readonly highQueue: KlientFrame[] = [];
+  private readonly bulkQueue: QueuedBulkTransfer[] = [];
+  private immediateHandle: ReturnType<typeof setImmediate> | undefined;
+  private backoffHandle: ReturnType<typeof setTimeout> | undefined;
+  private closed = false;
+
+  constructor(
+    private readonly ws: WebSocket,
+    private readonly bulkHighWaterBytes: number,
+  ) {}
+
+  enqueueHigh(frame: KlientFrame): boolean {
+    if (this.closed || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.highQueue.push(frame);
+    this.drainHigh();
+    return true;
+  }
+
+  enqueueBulk(id: string, frames: readonly KlientFrame[], isAborted: () => boolean): boolean {
+    if (this.closed || this.ws.readyState !== WebSocket.OPEN || frames.length === 0) return false;
+    this.bulkQueue.push({ id, frames, index: 0, cancelled: false, isAborted });
+    this.schedulePump();
+    return true;
+  }
+
+  cancel(id: string): void {
+    for (let i = this.bulkQueue.length - 1; i >= 0; i -= 1) {
+      const entry = this.bulkQueue[i]!;
+      if (entry.id === id) {
+        entry.cancelled = true;
+        this.bulkQueue.splice(i, 1);
+      }
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.immediateHandle !== undefined) {
+      clearImmediate(this.immediateHandle);
+      this.immediateHandle = undefined;
+    }
+    if (this.backoffHandle !== undefined) {
+      clearTimeout(this.backoffHandle);
+      this.backoffHandle = undefined;
+    }
+    this.highQueue.length = 0;
+    this.bulkQueue.length = 0;
+  }
+
+  private drainHigh(): void {
+    while (!this.closed && this.ws.readyState === WebSocket.OPEN && this.highQueue.length > 0) {
+      const frame = this.highQueue.shift()!;
+      try {
+        this.ws.send(encodeJsonFrame(frame));
+      } catch {
+        this.close();
+        return;
+      }
+    }
+  }
+
+  private schedulePump(): void {
+    if (this.closed || this.immediateHandle !== undefined || this.backoffHandle !== undefined) return;
+    if (this.highQueue.length === 0 && this.bulkQueue.length === 0) return;
+    this.immediateHandle = setImmediate(() => {
+      this.immediateHandle = undefined;
+      this.pumpOnce();
+    });
+  }
+
+  private pumpOnce(): void {
+    if (this.closed || this.ws.readyState !== WebSocket.OPEN) {
+      this.close();
+      return;
+    }
+    this.drainHigh();
+    if (this.closed || this.ws.readyState !== WebSocket.OPEN || this.bulkQueue.length === 0) return;
+
+    if (this.ws.bufferedAmount >= this.bulkHighWaterBytes) {
+      this.backoffHandle = setTimeout(() => {
+        this.backoffHandle = undefined;
+        this.pumpOnce();
+      }, BULK_BACKPRESSURE_POLL_MS);
+      this.backoffHandle.unref();
+      return;
+    }
+
+    while (this.bulkQueue.length > 0) {
+      const entry = this.bulkQueue.shift()!;
+      if (entry.cancelled || entry.isAborted() || entry.index >= entry.frames.length) continue;
+      const frame = entry.frames[entry.index]!;
+      entry.index += 1;
+      try {
+        this.ws.send(encodeJsonFrame(frame));
+      } catch {
+        this.close();
+        return;
+      }
+      if (entry.index < entry.frames.length && !entry.cancelled && !entry.isAborted()) {
+        this.bulkQueue.push(entry);
+      }
+      break;
+    }
+
+    if (this.highQueue.length > 0 || this.bulkQueue.length > 0) {
+      this.schedulePump();
+    }
+  }
+}
 
 interface StoredPeerCredential {
   readonly ownerToken: string;
@@ -85,6 +232,9 @@ function isEligiblePeerBridgeRecord(record: RemoteConnection): boolean {
 export class OutboundPeerBridgeClient {
   private readonly tunnels = new Map<string, ActivePeerTunnel>();
   private readonly subscriptions: Array<{ dispose(): void }> = [];
+  private readonly chunkBytes: number;
+  private readonly bulkHighWaterBytes: number;
+  private readonly env: NodeJS.ProcessEnv;
   private networkState: 'available' | 'lost' = 'available';
   private closed = false;
 
@@ -93,7 +243,12 @@ export class OutboundPeerBridgeClient {
     private readonly bridge: SpaceThreadBridge,
     private readonly shutdownSignal: AbortSignal,
     private readonly random: () => number = Math.random,
-  ) {}
+    opts: OutboundPeerBridgeClientOptions = {},
+  ) {
+    this.env = opts.env ?? process.env;
+    this.chunkBytes = resolvePeerBridgeChunkBytes(opts.chunkBytes, this.env);
+    this.bulkHighWaterBytes = resolveBulkHighWaterBytes(opts.bulkHighWaterBytes, this.env);
+  }
 
   start(): void {
     if (this.closed || this.shutdownSignal.aborted) return;
@@ -162,6 +317,8 @@ export class OutboundPeerBridgeClient {
     let connectController: AbortController | undefined;
     let socketLease: ConnectionLease | undefined;
     let socket: WebSocket | undefined;
+    let scheduler: OutboundTwoLaneScheduler | undefined;
+    let peerSupportsChunked = false;
     let registeredKey: string | undefined;
     let lastCredentialFingerprint: string | undefined;
     let credentialRefreshInFlight = false;
@@ -195,6 +352,10 @@ export class OutboundPeerBridgeClient {
 
     const teardownSocket = (): void => {
       clearTimers();
+      const activeScheduler = scheduler;
+      scheduler = undefined;
+      peerSupportsChunked = false;
+      activeScheduler?.close();
       const lease = socketLease; socketLease = undefined; lease?.release();
       connectController?.abort();
       connectController = undefined;
@@ -256,6 +417,9 @@ export class OutboundPeerBridgeClient {
     };
 
     const sendFrame = (ws: WebSocket, frame: KlientFrame): boolean => {
+      if (socket === ws && scheduler !== undefined) {
+        return scheduler.enqueueHigh(frame);
+      }
       if (ws.readyState !== WebSocket.OPEN) return false;
       try {
         ws.send(encodeJsonFrame(frame));
@@ -263,6 +427,35 @@ export class OutboundPeerBridgeClient {
       } catch {
         return false;
       }
+    };
+
+    const sendBridgeResponse = (
+      ws: WebSocket,
+      id: string,
+      status: number,
+      envelope: Record<string, unknown>,
+      isAborted: () => boolean,
+    ): void => {
+      if (socket !== ws || scheduler === undefined || ws.readyState !== WebSocket.OPEN) return;
+      if (peerSupportsChunked) {
+        const serializedEnvelope = JSON.stringify(envelope);
+        if (Buffer.byteLength(serializedEnvelope, 'utf8') > this.chunkBytes) {
+          const slices = sliceUtf8Chunks(serializedEnvelope, this.chunkBytes);
+          const total = slices.length;
+          const frames: KlientFrame[] = slices.map((chunk, seq) => ({
+            type: 'bridge_response_chunk',
+            id,
+            data: seq === 0 ? { seq, total, status, chunk } : { seq, total, chunk },
+          }));
+          scheduler.enqueueBulk(id, frames, isAborted);
+          return;
+        }
+      }
+      scheduler.enqueueHigh({
+        type: 'bridge_response',
+        id,
+        data: { status, envelope },
+      });
     };
 
     const handleInboundBridgeRequest = async (ws: WebSocket, frame: KlientFrame): Promise<void> => {
@@ -284,6 +477,7 @@ export class OutboundPeerBridgeClient {
       const controller = new AbortController();
       inflightRequests.set(id, controller);
       let detach = (): void => {};
+      const isAborted = (): boolean => controller.signal.aborted || this.shutdownSignal.aborted || stopped;
       try {
         if (token === '') throw new AdmissionError(401, 'invalid_bridge_credential');
         const grant = this.bridge.authorizeCredential(token);
@@ -297,38 +491,42 @@ export class OutboundPeerBridgeClient {
           : operation === 'tools_call' ? await this.bridge.inboundToolsCall(grant, bridgeToolsCallSchema.parse(body), signal)
           : await this.bridge.inboundWait(grant, bridgeWaitSchema.parse(body), signal);
         signal.throwIfAborted();
-        sendFrame(ws, {
-          type: 'bridge_response',
+        sendBridgeResponse(
+          ws,
           id,
-          data: { status: 200, envelope: okEnvelope({ identity: this.bridge.admission.identity, result }, id) },
-        });
+          200,
+          okEnvelope({ identity: this.bridge.admission.identity, result }, id) as unknown as Record<string, unknown>,
+          isAborted,
+        );
       } catch (error) {
-        if (controller.signal.aborted || this.shutdownSignal.aborted || stopped) return;
+        if (isAborted()) return;
         if (error instanceof ContentChangedError) {
-          sendFrame(ws, { type: 'bridge_response', id, data: { status: 409, envelope: errEnvelope(40922, error.message, id) } });
+          sendBridgeResponse(ws, id, 409, errEnvelope(40922, error.message, id) as unknown as Record<string, unknown>, isAborted);
           return;
         }
         if (error instanceof ThreadMailboxBacklogError) {
-          sendFrame(ws, { type: 'bridge_response', id, data: { status: 429, envelope: errEnvelope(42901, 'bridge_queue_or_rate_limit', id) } });
+          sendBridgeResponse(ws, id, 429, errEnvelope(42901, 'bridge_queue_or_rate_limit', id) as unknown as Record<string, unknown>, isAborted);
           return;
         }
         if (isError2(error)) {
-          sendFrame(ws, { type: 'bridge_response', id, data: { status: 403, envelope: errEnvelope(40301, error.message, id) } });
+          sendBridgeResponse(ws, id, 403, errEnvelope(40301, error.message, id) as unknown as Record<string, unknown>, isAborted);
           return;
         }
         if (error instanceof Error && error.name === 'ZodError') {
-          sendFrame(ws, { type: 'bridge_response', id, data: { status: 400, envelope: errEnvelope(40001, 'invalid_bridge_request', id) } });
+          sendBridgeResponse(ws, id, 400, errEnvelope(40001, 'invalid_bridge_request', id) as unknown as Record<string, unknown>, isAborted);
           return;
         }
         if (error instanceof AdmissionError) {
-          sendFrame(ws, { type: 'bridge_response', id, data: { status: error.status, envelope: errEnvelope(40101, error.reason, id) } });
+          sendBridgeResponse(ws, id, error.status, errEnvelope(40101, error.reason, id) as unknown as Record<string, unknown>, isAborted);
           return;
         }
-        sendFrame(ws, {
-          type: 'bridge_response',
+        sendBridgeResponse(
+          ws,
           id,
-          data: { status: 500, envelope: errEnvelope(50001, error instanceof Error ? error.message : 'bridge_internal_error', id) },
-        });
+          500,
+          errEnvelope(50001, error instanceof Error ? error.message : 'bridge_internal_error', id) as unknown as Record<string, unknown>,
+          isAborted,
+        );
       } finally {
         detach();
         if (inflightRequests.get(id) === controller) inflightRequests.delete(id);
@@ -439,11 +637,13 @@ export class OutboundPeerBridgeClient {
           agent: record.pinnedFingerprint === undefined ? undefined : pooledPinnedAgent(transport.endpoint, record.pinnedFingerprint),
           headers: { 'x-kiki-connection-grant': credential.grant },
           maxPayload: 16 * 1024 * 1024,
-          perMessageDeflate: false,
+          perMessageDeflate: resolveWsPerMessageDeflate({ env: this.env }),
           followRedirects: false,
           handshakeTimeout: 15_000,
         });
         socket = ws;
+        scheduler = new OutboundTwoLaneScheduler(ws, this.bulkHighWaterBytes);
+        peerSupportsChunked = false;
         const activeLease = lease;
         socketLease = activeLease;
         lease = undefined;
@@ -452,13 +652,15 @@ export class OutboundPeerBridgeClient {
 
         let lastInboundAt = Date.now();
         let attached = false;
+        let attachSentCapabilities = true;
         ws.once('open', () => {
           if (socket !== ws || stopped || paused) return;
           lastInboundAt = Date.now();
+          attachSentCapabilities = true;
           sendFrame(ws, {
             type: 'bridge_attach',
             id: randomUUID(),
-            data: {},
+            data: { capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] },
           });
           heartbeatTimer = setInterval(() => {
             if (socket !== ws || ws.readyState !== WebSocket.OPEN) return;
@@ -484,6 +686,8 @@ export class OutboundPeerBridgeClient {
           if (frame.type === 'bridge_attached') {
             if (attached) return;
             attached = true;
+            const caps = (frame.data as { capabilities?: unknown } | undefined)?.capabilities;
+            peerSupportsChunked = Array.isArray(caps) && caps.includes(PEER_BRIDGE_CAPABILITY_CHUNKED_V1);
             stableAttachmentTimer = setTimeout(() => {
               stableAttachmentTimer = undefined;
               if (socket === ws && ws.readyState === WebSocket.OPEN && attached) attempt = 0;
@@ -492,6 +696,16 @@ export class OutboundPeerBridgeClient {
             return;
           }
           if (frame.type === 'bridge_error') {
+            if (!attached && attachSentCapabilities && frame.code === 40001 && frame.msg === 'invalid_bridge_attach') {
+              attachSentCapabilities = false;
+              peerSupportsChunked = false;
+              sendFrame(ws, {
+                type: 'bridge_attach',
+                id: randomUUID(),
+                data: {},
+              });
+              return;
+            }
             teardownSocket();
             if (frame.code === 40301) {
               setAuthCooldown();
@@ -504,6 +718,7 @@ export class OutboundPeerBridgeClient {
             if (id !== '') {
               inflightRequests.get(id)?.abort();
               inflightRequests.delete(id);
+              scheduler?.cancel(id);
             }
             return;
           }

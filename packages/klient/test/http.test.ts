@@ -149,6 +149,7 @@ describe('http transport', () => {
     const channel = new HttpChannel({ endpoint: 'http://127.0.0.1:41001', token: 'old-token', fetch: fetcher });
     const pending = channel.call({}, 'example', 'write', ['one submission']);
     const failed = expect(pending).rejects.toMatchObject({ reason: 'transport.connection_changed' });
+    await Promise.resolve();
     channel.rebind({ endpoint: 'http://127.0.0.1:42002', token: 'new-token' });
     expect(fetcher.mock.calls[0]![1].signal.aborted).toBe(true);
     resolveOld(jsonResponse(okEnvelope({ generation: 'old' })));
@@ -948,6 +949,7 @@ describe('http transport', () => {
       timeoutMs: 0,
       signal: controller.signal,
     });
+    await Promise.resolve();
     controller.abort(new Error('caller cancelled'));
     await expect(call).rejects.toThrow('aborted');
     expect(signals[1]?.aborted).toBe(true);
@@ -1030,6 +1032,7 @@ describe('http transport', () => {
         signal: caller.signal,
       }).catch((error: unknown) => error);
       await Promise.resolve();
+      await Promise.resolve();
       caller.abort(new Error('caller cancelled'));
       const cancelledFailure = await cancelled;
       expect(cancelledFailure).toMatchObject({ name: 'AbortError', message: 'body cancelled' });
@@ -1037,6 +1040,7 @@ describe('http transport', () => {
 
       const closing = channel.call({}, 'service', 'bodyClosed', [], { timeoutMs: 0 })
         .catch((error: unknown) => error);
+      await Promise.resolve();
       await Promise.resolve();
       await channel.close();
       const closingFailure = await closing;

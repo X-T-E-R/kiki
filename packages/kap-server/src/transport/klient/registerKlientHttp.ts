@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import type { Scope } from '@kiki/agent-core-v2';
 import { HTTP_REQUEST_BODY_LIMIT_BYTES } from '@kiki/klient/http';
 import {
@@ -6,6 +7,7 @@ import {
   encodeJsonFrame,
   eventSourceFromTarget,
   isTransportScope,
+  parseKlientBatchEnvelope,
   parseKlientCallRequest,
   RPCError,
   scopeRefFromProcedure,
@@ -17,6 +19,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
+import { resolveWsPerMessageDeflate } from '../../middleware/wireCompression';
 import { TerminalHttpConnection } from './terminalHttp';
 import { PeerBridgeConnection, type PeerBridgeRegistry } from './peerBridgeSocket';
 import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent } from '../../services/connections/audience';
@@ -27,11 +30,13 @@ import { selectWsBearerProtocol } from '../ws/bearerProtocol';
 import { registerSessionViewHttp, SessionViewHttpConnection, type SessionViewHttpOptions } from './sessionViewHttp';
 
 export const KLIENT_CALL_PATH = '/api/klient/call';
+export const KLIENT_BATCH_PATH = '/api/klient/batch';
 export const KLIENT_EVENTS_PATH = '/api/klient/events';
 export const KLIENT_HTTP_MAX_PAYLOAD_BYTES = 8 << 20;
 export const KLIENT_CALL_BODY_LIMIT_BYTES = HTTP_REQUEST_BODY_LIMIT_BYTES;
 export const KLIENT_WS_HEARTBEAT_INTERVAL_MS = 10_000;
 export const KLIENT_WS_SILENCE_TIMEOUT_MS = 90_000;
+export const DEFAULT_KLIENT_BATCH_MAX = 32;
 
 export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxPayloadBytes?: number;
@@ -39,6 +44,22 @@ export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly peerBridgeRegistry?: PeerBridgeRegistry;
   readonly heartbeatIntervalMs?: number;
   readonly silenceTimeoutMs?: number;
+  /** Override `KIKI_KLIENT_BATCH_MAX` for `POST /api/klient/batch`. Defaults to `32`. */
+  readonly maxBatchSize?: number;
+  /** Optional environment bag used for compression, batch, and PeerBridge limits. */
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+function resolveBatchMax(override: number | undefined, env: NodeJS.ProcessEnv): number {
+  if (override !== undefined && Number.isFinite(override) && override >= 1) {
+    return Math.floor(override);
+  }
+  const raw = env['KIKI_KLIENT_BATCH_MAX'];
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number.parseInt(raw.trim(), 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+  return DEFAULT_KLIENT_BATCH_MAX;
 }
 
 interface KlientFailureTarget {
@@ -104,12 +125,95 @@ export function registerKlientHttp(
     }
   });
 
+  const env = opts.env ?? process.env;
+  const maxBatchSize = resolveBatchMax(opts.maxBatchSize, env);
+  const perMessageDeflate = resolveWsPerMessageDeflate({ env });
+
+  app.post(KLIENT_BATCH_PATH, { bodyLimit: KLIENT_CALL_BODY_LIMIT_BYTES }, async (req, reply) => {
+    let items: ReturnType<typeof parseKlientBatchEnvelope>;
+    try {
+      items = parseKlientBatchEnvelope(req.body, maxBatchSize);
+    } catch (error) {
+      return reply.send(errorEnvelope(error, req.id));
+    }
+
+    const controller = new AbortController();
+    const stream = new PassThrough();
+    stream.on('error', () => {});
+    const abort = (): void => {
+      if (!reply.raw.writableEnded) {
+        controller.abort();
+        if (!stream.destroyed) stream.destroy();
+      }
+    };
+    reply.raw.once('close', abort);
+    if (reply.raw.destroyed || reply.raw.writableEnded) {
+      controller.abort();
+      reply.raw.off('close', abort);
+      return;
+    }
+
+    reply.raw.socket?.setNoDelay(true);
+    reply.type('application/x-ndjson; charset=utf-8');
+    reply.header('cache-control', 'no-cache');
+    reply.header('x-accel-buffering', 'no');
+
+    const isPeer = peerAudience(req) !== undefined;
+    const isWeb = webPrincipal(req) !== undefined;
+
+    const writeLine = (id: string, envelope: unknown): void => {
+      if (controller.signal.aborted || stream.destroyed || stream.writableEnded || reply.raw.destroyed) return;
+      stream.write(`${JSON.stringify({ id, envelope })}\n`);
+    };
+
+    const tasks = items.map(async (item) => {
+      let target: KlientFailureTarget | undefined;
+      try {
+        const { procedure, params } = parseKlientCallRequest(item.raw);
+        target = { scope: procedure.scope, service: procedure.service, method: procedure.method };
+        if ((isPeer && !isPeerProcedureAllowed(procedure)) || (isWeb && !isWebProcedureAllowed(procedure))) {
+          throw new RPCError(40301, 'local_owner_required');
+        }
+        const data = await dispatcher.call(
+          scopeRefFromProcedure(procedure),
+          procedure.service,
+          procedure.method,
+          params,
+          { signal: controller.signal },
+        );
+        writeLine(item.id, okEnvelope(data, req.id));
+      } catch (error) {
+        if (controller.signal.aborted && (reply.raw.destroyed || reply.raw.writableEnded)) return;
+        if (!(error instanceof RPCError) && !controller.signal.aborted) {
+          req.log.error(
+            { request_id: req.id, event_type: 'klient_call_failed', ...target, error: failureIdentity(error) },
+            'klient http batch call failed',
+          );
+        }
+        writeLine(item.id, errorEnvelope(error, req.id));
+      }
+    });
+
+    void Promise.allSettled(tasks).finally(() => {
+      reply.raw.off('close', abort);
+      if (!stream.destroyed && !stream.writableEnded) stream.end();
+    });
+
+    return reply.send(stream);
+  });
+
   const wss = new WebSocketServer({
     noServer: true,
     handleProtocols: selectWsBearerProtocol,
     maxPayload: opts.maxPayloadBytes ?? KLIENT_HTTP_MAX_PAYLOAD_BYTES,
+    perMessageDeflate,
   });
-  const peerServer = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol, maxPayload: BROKER_WS_MESSAGE_BYTES, perMessageDeflate: false });
+  const peerServer = new WebSocketServer({
+    noServer: true,
+    handleProtocols: selectWsBearerProtocol,
+    maxPayload: BROKER_WS_MESSAGE_BYTES,
+    perMessageDeflate,
+  });
   const connections = new Set<KlientHttpConnection>();
   for (const server of [wss, peerServer]) server.on('connection', (socket, request) => {
     const audience = peerAudience(request);
@@ -154,7 +258,12 @@ class KlientHttpConnection {
     this.sessionViews = new SessionViewHttpConnection(opts.sessionViewBroadcaster,
       (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error),
       { core: scope, service: opts.sessionViewTranscriptService, logger: app.log });
-    this.peerBridge = new PeerBridgeConnection(peer ? peerGrantId : undefined, opts.peerBridgeRegistry, (frame) => this.sendChecked(frame));
+    this.peerBridge = new PeerBridgeConnection(
+      peer ? peerGrantId : undefined,
+      opts.peerBridgeRegistry,
+      (frame) => this.sendChecked(frame),
+      { env: opts.env },
+    );
     const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? KLIENT_WS_HEARTBEAT_INTERVAL_MS;
     const silenceTimeoutMs = opts.silenceTimeoutMs ?? KLIENT_WS_SILENCE_TIMEOUT_MS;
     this.heartbeat = setInterval(() => {
@@ -177,7 +286,7 @@ class KlientHttpConnection {
     this.lastInboundAt = Date.now();
     const frame = decodeJsonFrame(rawDataToString(data));
     if (frame === undefined) return;
-    if ((this.peer && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
+    if ((this.peer && frame.type !== 'bridge_response_chunk' && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
     if (this.sessionViews.receive(frame) || this.terminals.receive(frame) || this.peerBridge.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {

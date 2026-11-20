@@ -26,10 +26,13 @@ import {
   encodeJsonFrame,
   scopeKindOf,
   type KlientFrame,
+  type KlientProcedure,
 } from '../codec.js';
+import type { KlientBatchLine } from '../../host.js';
 
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 500;
+const DEFAULT_MAX_BATCH_SIZE = 24;
 const WS_BEARER_PROTOCOL_PREFIX = 'kimi-code.bearer.';
 export const HTTP_TRANSPORT_TIMEOUT_REASON = 'transport.timeout';
 
@@ -64,6 +67,12 @@ export interface HttpChannelOptions {
   readonly readingTimeoutMs?: () => number;
   /** Observes the event socket's lifecycle, for connection diagnostics. */
   readonly onSocketDiagnostic?: (event: HttpSocketDiagnostic) => void;
+  /** Coalesce concurrent `call()` requests in the same microtask into `POST /api/klient/batch`. Defaults to `true`. */
+  readonly batch?: boolean;
+  /** Maximum number of `call()` requests coalesced into one batch HTTP request. Defaults to `24`. */
+  readonly maxBatchSize?: number;
+  /** Coalescing window in milliseconds; `0` (default) flushes via `queueMicrotask`. */
+  readonly batchWindowMs?: number;
 }
 
 /**
@@ -89,6 +98,20 @@ export type HttpSocketDiagnostic =
 
 interface ActiveCall {
   readonly controller: AbortController;
+}
+
+interface QueuedBatchCall {
+  readonly id: string;
+  readonly procedure: KlientProcedure;
+  readonly params: unknown[];
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+  readonly connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>;
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: unknown) => void;
+  settled: boolean;
+  abortCleanup?: () => void;
+  timeoutHandle?: ReturnType<typeof setTimeout>;
 }
 
 interface ActiveListen {
@@ -117,6 +140,14 @@ export class HttpChannel implements KlientChannel {
   private readonly readingTimeoutMs: () => number;
   private readonly socket: HttpEventSocket;
   private readonly activeCalls = new Set<ActiveCall>();
+  private readonly batchEnabled: boolean;
+  private readonly maxBatchSize: number;
+  private readonly batchWindowMs: number;
+  private batchSupported = true;
+  private batchCallSeq = 0;
+  private readonly batchQueue: QueuedBatchCall[] = [];
+  private batchFlushScheduled = false;
+  private batchFlushTimer: ReturnType<typeof setTimeout> | undefined;
   readonly rest: HttpRestFacade;
   private closed = false;
 
@@ -460,6 +491,9 @@ export class HttpChannel implements KlientChannel {
     this.fetchImpl = options.fetch ?? fetchImpl.bind(globalThis);
     this.defaultTimeoutMs = options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
     this.readingTimeoutMs = options.readingTimeoutMs ?? (() => 0);
+    this.batchEnabled = options.batch !== false;
+    this.maxBatchSize = Math.max(1, Math.floor(options.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE));
+    this.batchWindowMs = Math.max(0, options.batchWindowMs ?? 0);
     this.socket = new HttpEventSocket({
       endpoint,
       eventsUrl: options.eventsUrl,
@@ -480,15 +514,441 @@ export class HttpChannel implements KlientChannel {
     args: unknown[],
     options?: CallOptions,
   ): Promise<unknown> {
+    if (this.closed) return Promise.reject(new Error('http closed'));
+    if (this.suspended) {
+      return Promise.reject(
+        new RPCError(-1, 'Connection blocked pending identity verification', undefined, 'transport.connection_blocked', undefined, undefined, 'transport'),
+      );
+    }
+    const procedure = createProcedure(scope, service, method);
+    const params = trimTrailingUndefined(args);
+    if (!this.batchEnabled || !this.batchSupported) {
+      return this.dispatchSingleCall(procedure, params, options);
+    }
+    if (options?.signal?.aborted === true) {
+      return Promise.reject(options.signal.reason ?? createAbortError());
+    }
+    const connection = this.connection;
+    const timeoutMs = options?.timeoutMs ?? this.defaultTimeoutMs;
+    const id = `b${++this.batchCallSeq}`;
+    return new Promise<unknown>((resolve, reject) => {
+      const item: QueuedBatchCall = {
+        id,
+        procedure,
+        params,
+        timeoutMs,
+        signal: options?.signal,
+        connection,
+        resolve,
+        reject,
+        settled: false,
+      };
+      if (options?.signal !== undefined) {
+        const onQueuedAbort = (): void => {
+          if (item.settled) return;
+          item.settled = true;
+          item.abortCleanup = undefined;
+          const idx = this.batchQueue.indexOf(item);
+          if (idx !== -1) this.batchQueue.splice(idx, 1);
+          reject(options.signal!.reason ?? createAbortError());
+        };
+        options.signal.addEventListener('abort', onQueuedAbort, { once: true });
+        item.abortCleanup = () => { options.signal!.removeEventListener('abort', onQueuedAbort); };
+      }
+      this.batchQueue.push(item);
+      if (this.batchQueue.length >= this.maxBatchSize) {
+        this.cancelScheduledBatchFlush();
+        this.flushBatchQueue();
+        return;
+      }
+      this.scheduleBatchFlush();
+    });
+  }
+
+  private dispatchSingleCall(
+    procedure: KlientProcedure,
+    params: unknown[],
+    options?: CallOptions,
+  ): Promise<unknown> {
     return this.requestJson('/api/klient/call', {
       method: 'POST',
-      body: {
-        procedure: createProcedure(scope, service, method),
-        params: trimTrailingUndefined(args),
-      },
+      body: { procedure, params },
       timeoutMs: options?.timeoutMs,
       signal: options?.signal,
     });
+  }
+
+  private scheduleBatchFlush(): void {
+    if (this.batchFlushScheduled) return;
+    this.batchFlushScheduled = true;
+    if (this.batchWindowMs === 0) {
+      queueMicrotask(() => {
+        if (!this.batchFlushScheduled) return;
+        this.batchFlushScheduled = false;
+        this.flushBatchQueue();
+      });
+      return;
+    }
+    this.batchFlushTimer = setTimeout(() => {
+      this.batchFlushTimer = undefined;
+      this.batchFlushScheduled = false;
+      this.flushBatchQueue();
+    }, this.batchWindowMs);
+  }
+
+  private cancelScheduledBatchFlush(): void {
+    this.batchFlushScheduled = false;
+    if (this.batchFlushTimer !== undefined) {
+      clearTimeout(this.batchFlushTimer);
+      this.batchFlushTimer = undefined;
+    }
+  }
+
+  private drainQueuedBatch(errorFactory: () => Error): void {
+    this.cancelScheduledBatchFlush();
+    const drained = this.batchQueue.splice(0);
+    for (const item of drained) {
+      item.abortCleanup?.();
+      item.abortCleanup = undefined;
+      if (item.settled) continue;
+      item.settled = true;
+      item.reject(errorFactory());
+    }
+  }
+
+  private flushBatchQueue(): void {
+    if (this.batchQueue.length === 0) return;
+    const rawItems = this.batchQueue.splice(0, this.maxBatchSize);
+    if (this.batchQueue.length > 0) this.scheduleBatchFlush();
+
+    const active: QueuedBatchCall[] = [];
+    for (const item of rawItems) {
+      item.abortCleanup?.();
+      item.abortCleanup = undefined;
+      if (item.settled) continue;
+      if (this.closed) {
+        item.settled = true;
+        item.reject(new Error('http closed'));
+        continue;
+      }
+      if (item.connection !== this.connection) {
+        item.settled = true;
+        item.reject(new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
+        continue;
+      }
+      if (this.suspended) {
+        item.settled = true;
+        item.reject(new RPCError(-1, 'Connection blocked pending identity verification', undefined, 'transport.connection_blocked', undefined, undefined, 'transport'));
+        continue;
+      }
+      if (item.signal?.aborted === true) {
+        item.settled = true;
+        item.reject(item.signal.reason ?? createAbortError());
+        continue;
+      }
+      active.push(item);
+    }
+
+    if (active.length === 0) return;
+    if (active.length === 1 || !this.batchSupported) {
+      for (const item of active) this.forwardToSingleCall(item);
+      return;
+    }
+
+    const body = JSON.stringify({
+      calls: active.map((item) => ({
+        id: item.id,
+        procedure: item.procedure,
+        params: item.params,
+      })),
+    });
+    if (new TextEncoder().encode(body).byteLength > HTTP_REQUEST_BODY_LIMIT_BYTES) {
+      for (const item of active) this.forwardToSingleCall(item);
+      return;
+    }
+    void this.dispatchBatch(active, body, active[0]!.connection);
+  }
+
+  private forwardToSingleCall(item: QueuedBatchCall): void {
+    this.dispatchSingleCall(item.procedure, item.params, {
+      timeoutMs: item.timeoutMs,
+      signal: item.signal,
+    }).then(
+      (value) => {
+        if (item.settled) return;
+        item.settled = true;
+        item.resolve(value);
+      },
+      (error: unknown) => {
+        if (item.settled) return;
+        item.settled = true;
+        item.reject(error);
+      },
+    );
+  }
+
+  private async dispatchBatch(
+    items: readonly QueuedBatchCall[],
+    body: string,
+    connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>,
+  ): Promise<void> {
+    const batchController = new AbortController();
+    const activeCall: ActiveCall = { controller: batchController };
+    this.activeCalls.add(activeCall);
+    const pending = new Map<string, QueuedBatchCall>();
+    const startedAt = performance.now();
+    let phase: HttpTimeoutDetails['phase'] = 'headers';
+    let requestId = ulid();
+
+    const cleanupItem = (item: QueuedBatchCall): void => {
+      if (item.timeoutHandle !== undefined) {
+        clearTimeout(item.timeoutHandle);
+        item.timeoutHandle = undefined;
+      }
+      item.abortCleanup?.();
+      item.abortCleanup = undefined;
+    };
+
+    const maybeAbortBatch = (): void => {
+      if (pending.size === 0 && !batchController.signal.aborted) {
+        batchController.abort();
+      }
+    };
+
+    const rejectRemaining = (factory: () => Error): void => {
+      for (const item of pending.values()) {
+        cleanupItem(item);
+        if (item.settled) continue;
+        item.settled = true;
+        item.reject(factory());
+      }
+      pending.clear();
+    };
+
+    const fallbackToIndividual = (): void => {
+      this.batchSupported = false;
+      const remaining = [...pending.values()];
+      pending.clear();
+      for (const item of remaining) {
+        cleanupItem(item);
+        if (item.settled) continue;
+        this.forwardToSingleCall(item);
+      }
+    };
+
+    for (const item of items) {
+      pending.set(item.id, item);
+      if (item.signal !== undefined) {
+        const onAbort = (): void => {
+          if (item.settled) return;
+          pending.delete(item.id);
+          cleanupItem(item);
+          item.settled = true;
+          item.reject(item.signal!.reason ?? createAbortError());
+          maybeAbortBatch();
+        };
+        if (item.signal.aborted) {
+          onAbort();
+          continue;
+        }
+        item.signal.addEventListener('abort', onAbort, { once: true });
+        item.abortCleanup = () => { item.signal!.removeEventListener('abort', onAbort); };
+      }
+      if (item.timeoutMs > 0) {
+        item.timeoutHandle = setTimeout(() => {
+          if (item.settled) return;
+          pending.delete(item.id);
+          cleanupItem(item);
+          item.settled = true;
+          item.reject(this.transportTimeoutError({
+            method: 'POST',
+            path: '/api/klient/batch',
+            phase,
+            timeoutMs: item.timeoutMs,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            request_id: requestId,
+          }));
+          maybeAbortBatch();
+        }, item.timeoutMs);
+      }
+    }
+
+    if (pending.size === 0) {
+      this.activeCalls.delete(activeCall);
+      return;
+    }
+
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const root = connection.endpoint.replace(/\/+$/u, '');
+      const locationOrigin = (globalThis as { readonly location?: { readonly origin?: string } }).location?.origin;
+      const url = root === ''
+        ? new URL('/api/klient/batch', locationOrigin ?? 'http://localhost')
+        : new URL(`${root}/api/klient/batch`);
+      const headers = new Headers({
+        accept: 'application/x-ndjson, application/json',
+        'content-type': 'application/json',
+        'x-request-id': requestId,
+      });
+      if (connection.token !== undefined) headers.set('authorization', `Bearer ${connection.token}`);
+
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url.toString(), {
+          method: 'POST',
+          body,
+          headers: Object.fromEntries(headers),
+          signal: batchController.signal,
+          redirect: 'error',
+        });
+      } catch (error) {
+        if (
+          error instanceof RPCError
+          && error.code === 40301
+          && connection === this.connection
+          && !this.closed
+          && !this.suspended
+          && pending.size > 0
+        ) {
+          fallbackToIndividual();
+          return;
+        }
+        if (connection !== this.connection) {
+          rejectRemaining(() => new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
+          return;
+        }
+        if (this.closed && batchController.signal.aborted) {
+          rejectRemaining(() => new Error('http closed', { cause: error }));
+          return;
+        }
+        if (pending.size === 0) return;
+        rejectRemaining(() => error instanceof RPCError
+          ? error
+          : new RPCError(-1, error instanceof Error ? error.message : 'Connection failed', undefined, 'transport.network', undefined, undefined, 'transport'));
+        return;
+      }
+
+      if (connection !== this.connection) {
+        void response.body?.cancel().catch(() => {});
+        rejectRemaining(() => new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
+        return;
+      }
+
+      if (response.status === 404 || response.status === 405 || response.status === 501) {
+        void response.body?.cancel().catch(() => {});
+        fallbackToIndividual();
+        return;
+      }
+
+      const headerRequestId = response.headers.get('x-request-id');
+      if (typeof headerRequestId === 'string' && isValid(headerRequestId)) requestId = headerRequestId;
+      phase = 'body';
+
+      const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+      if (!response.ok || (contentType.includes('application/json') && !contentType.includes('ndjson'))) {
+        try {
+          const envelope = await this.readEnvelope(response, batchController.signal);
+          rejectRemaining(() => new RPCError(
+            envelope.code === 0 ? response.status : envelope.code,
+            envelope.msg,
+            envelope.details,
+            envelope.reason,
+            envelope.request_id ?? requestId,
+            envelope.data,
+          ));
+        } catch (error) {
+          if (pending.size === 0) return;
+          rejectRemaining(() => error instanceof Error ? error : new RPCError(response.status, `HTTP ${response.status} — batch request failed`));
+        }
+        return;
+      }
+
+      if (response.body === null) {
+        rejectRemaining(() => new RPCError(response.status, `HTTP ${response.status} — empty batch stream`));
+        return;
+      }
+
+      const processLine = (rawLine: string): void => {
+        const trimmed = rawLine.trim();
+        if (trimmed.length === 0) return;
+        let parsed: KlientBatchLine;
+        try {
+          parsed = JSON.parse(trimmed) as KlientBatchLine;
+        } catch {
+          return;
+        }
+        if (parsed === null || typeof parsed !== 'object' || typeof parsed.id !== 'string') return;
+        const item = pending.get(parsed.id);
+        if (item === undefined || item.settled) return;
+        pending.delete(parsed.id);
+        cleanupItem(item);
+        item.settled = true;
+        const envelope = parsed.envelope;
+        if (envelope === null || typeof envelope !== 'object' || typeof envelope.code !== 'number' || typeof envelope.msg !== 'string') {
+          item.reject(new RPCError(response.status, 'Invalid batch response envelope'));
+          return;
+        }
+        if (envelope.code !== 0) {
+          item.reject(new RPCError(
+            envelope.code,
+            envelope.msg,
+            envelope.details,
+            envelope.reason,
+            envelope.request_id ?? requestId,
+            envelope.data,
+          ));
+          return;
+        }
+        item.resolve(envelope.data);
+      };
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffered = '';
+      for (;;) {
+        const chunk = await reader.read();
+        if (connection !== this.connection) {
+          void reader.cancel().catch(() => {});
+          rejectRemaining(() => new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
+          return;
+        }
+        if (chunk.done) break;
+        buffered += decoder.decode(chunk.value, { stream: true });
+        let newlineIndex = buffered.indexOf('\n');
+        while (newlineIndex !== -1) {
+          const line = buffered.slice(0, newlineIndex);
+          buffered = buffered.slice(newlineIndex + 1);
+          processLine(line);
+          newlineIndex = buffered.indexOf('\n');
+        }
+      }
+      buffered += decoder.decode();
+      if (buffered.length > 0) processLine(buffered);
+
+      if (pending.size > 0) {
+        if (connection !== this.connection) {
+          rejectRemaining(() => new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
+        } else if (this.closed) {
+          rejectRemaining(() => new Error('http closed'));
+        } else {
+          rejectRemaining(() => new RPCError(-1, 'Batch stream ended before call completed', undefined, 'transport.network', requestId, undefined, 'transport'));
+        }
+      }
+    } catch (error) {
+      if (connection !== this.connection) {
+        rejectRemaining(() => new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
+      } else if (this.closed && batchController.signal.aborted) {
+        rejectRemaining(() => new Error('http closed', { cause: error }));
+      } else if (pending.size > 0) {
+        rejectRemaining(() => error instanceof RPCError
+          ? error
+          : new RPCError(-1, error instanceof Error ? error.message : 'Batch stream failed', undefined, 'transport.network', requestId, undefined, 'transport'));
+      }
+    } finally {
+      reader?.releaseLock();
+      for (const item of pending.values()) cleanupItem(item);
+      this.activeCalls.delete(activeCall);
+    }
   }
 
   stream(scope: ScopeRef, service: string, method: string, args: unknown[]): AsyncIterable<unknown> {
@@ -523,6 +983,7 @@ export class HttpChannel implements KlientChannel {
     if (this.closed || this.suspended) return;
     this.suspended = true;
     this.connection = { ...this.connection };
+    this.drainQueuedBatch(() => new RPCError(-1, 'Connection changed while the operation was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
     for (const call of this.activeCalls) call.controller.abort();
     this.socket.suspend();
   }
@@ -535,6 +996,8 @@ export class HttpChannel implements KlientChannel {
     const wsUrl = toWebSocketUrl(endpoint);
     this.connection = { endpoint, token: connection.token };
     this.suspended = false;
+    this.batchSupported = true;
+    this.drainQueuedBatch(() => new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport'));
     for (const call of this.activeCalls) call.controller.abort();
     this.socket.rebind(wsUrl, connection.token);
   }
@@ -542,6 +1005,7 @@ export class HttpChannel implements KlientChannel {
   close(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.closed = true;
+    this.drainQueuedBatch(() => new Error('http closed'));
     for (const call of this.activeCalls) call.controller.abort();
     this.activeCalls.clear();
     this.socket.close();
@@ -1158,6 +1622,12 @@ function toWebSocketUrl(endpoint: string): string {
   url.search = '';
   url.hash = '';
   return url.toString();
+}
+
+function createAbortError(): Error {
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
 }
 
 function isAbortError(error: unknown): boolean {
