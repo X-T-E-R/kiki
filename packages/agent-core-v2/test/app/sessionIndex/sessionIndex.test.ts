@@ -5094,4 +5094,61 @@ describe('FileSessionIndex (read model)', () => {
       pumping = false;
     }
   });
+
+  it('commits clean watched sessions without throwing concurrent_changes when a hot session mutates mid-batch, resets recoveryAttempts, and backs off >=60s on ENOSPC', async () => {
+    await seedSession('s-hot', { title: 'hot-initial', createdAt: 1, updatedAt: 10 });
+    await seedSession('s-cold', { title: 'cold-initial', createdAt: 1, updatedAt: 11 });
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+    store.stopReconcileLoop();
+
+    await seedSession('s-hot', { title: 'hot-disk', createdAt: 1, updatedAt: 20 });
+    await seedSession('s-cold', { title: 'cold-disk', createdAt: 1, updatedAt: 21 });
+
+    const internals = store as unknown as {
+      projector: SessionIndexProjector;
+      watchedSessions: Map<string, { workspaceId: string; id: string }>;
+      reconcileWatched(): Promise<void>;
+      recoveryAttempts: number;
+      nextReconcileRetryAt: number;
+    };
+    internals.recoveryAttempts = 2;
+    internals.watchedSessions.set(`${workspaceId}\0s-hot`, { workspaceId, id: 's-hot' });
+    internals.watchedSessions.set(`${workspaceId}\0s-cold`, { workspaceId, id: 's-cold' });
+
+    const originalPlan = internals.projector.planReconcile.bind(internals.projector);
+    let mutatedHot = false;
+    const planSpy = vi.spyOn(internals.projector, 'planReconcile').mockImplementation(async (gen, opts) => {
+      const commit = await originalPlan(gen, opts);
+      if (!mutatedHot && opts?.changedSessions?.some((entry) => entry.id === 's-hot')) {
+        mutatedHot = true;
+        mirror.record(summary('s-hot', { title: 'hot-live-mirror', updatedAt: 30 }));
+        await mirror.drain();
+      }
+      return commit;
+    });
+    try {
+      await expect(internals.reconcileWatched()).resolves.toBeUndefined();
+      expect((await store.get('s-cold'))?.title).toBe('cold-disk');
+      expect((await store.get('s-hot'))?.title).toBe('hot-live-mirror');
+      expect(internals.watchedSessions.has(`${workspaceId}\0s-hot`)).toBe(true);
+      expect(internals.watchedSessions.has(`${workspaceId}\0s-cold`)).toBe(false);
+      expect(internals.recoveryAttempts).toBe(0);
+    } finally {
+      planSpy.mockRestore();
+    }
+
+    const beforeEnospc = Date.now();
+    const enospcSpy = vi.spyOn(internals.projector, 'planReconcile').mockRejectedValueOnce(
+      Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }),
+    );
+    try {
+      await expect(store.reconcileNow()).rejects.toThrow('ENOSPC');
+      expect(internals.nextReconcileRetryAt - beforeEnospc).toBeGreaterThanOrEqual(59_000);
+    } finally {
+      enospcSpy.mockRestore();
+    }
+  });
 });

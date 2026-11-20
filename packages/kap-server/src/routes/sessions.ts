@@ -1302,11 +1302,20 @@ export function registerSessionsRoutes(
       method: 'POST', path: '/sessions::delete-archived',
       body: z.object({}).strict(),
       success: { data: deleteArchivedSessionsResponseSchema },
+      errors: { [ErrorCode.SESSION_INDEX_BUILDING]: {} },
       description: 'Permanently delete all archived conversations in the connected home',
       tags: ['sessions'],
     },
     async (req, reply) => {
-      reply.send(okEnvelope(await deleteArchivedSessions(core), req.id));
+      try {
+        reply.send(okEnvelope(await deleteArchivedSessions(core), req.id));
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+          return;
+        }
+        throw error;
+      }
     },
   );
   app.post(deleteAllArchivedRoute.path, deleteAllArchivedRoute.options, deleteAllArchivedRoute.handler as Parameters<SessionRouteHost['post']>[2]);

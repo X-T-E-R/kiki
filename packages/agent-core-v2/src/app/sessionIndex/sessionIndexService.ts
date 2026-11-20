@@ -19,7 +19,7 @@ import {
   type Page,
   type QueryFilter,
 } from '#/persistence/interface/queryStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 
 import {
   CHILD_SESSION_KIND,
@@ -78,6 +78,14 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted === true && error === signal.reason) return true;
   if (!(error instanceof Error)) return false;
   return error.name === 'AbortError' || (error as { code?: unknown }).code === 'ABORT_ERR';
+}
+
+function isResourceExhaustionError(error: unknown): boolean {
+  if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_DISK_FULL) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 'ENOSPC' || code === 'SQLITE_FULL' || code === 'ERR_OUT_OF_MEMORY') return true;
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return /\b(?:ENOSPC|SQLITE_FULL|out of memory|heap limit)\b/iu.test(message);
 }
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -253,6 +261,14 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.watchDebounce.cancelAndSet(() => {
       this.watchScheduled = false;
       this.watchFlight = this.reconcileWatched().catch((error: unknown) => {
+        if (isResourceExhaustionError(error)) {
+          if (this.watchRetryDelayMs < RECONCILE_RETRY_MAX_MS) {
+            this.log.warn('session index watched reconciliation paused after resource exhaustion', { error: String(error) });
+          }
+          this.watchRetryDelayMs = RECONCILE_RETRY_MAX_MS;
+          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, Date.now() + RECONCILE_RETRY_MAX_MS);
+          return;
+        }
         if (this.watchRetryDelayMs === WATCH_BATCH_MS && !(error instanceof SessionIndexReconcilePendingError)) {
           this.log.warn('session index watched reconciliation failed', { error: String(error) });
         }
@@ -283,42 +299,70 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     } else {
       const entries = [...this.watchedSessions.entries()].slice(0, WATCH_BATCH_SIZE);
       for (const [key] of entries) this.watchedSessions.delete(key);
-      const changedIds = new Set(entries.map(([, value]) => value.id));
       if (!this.recoveryRequired && this.mirror.dirtyEpoch() === undefined) {
         await this.mirror.drain();
       }
-      let conflicted = false;
-      const subscription = this.mirror.onDidChange(({ id }) => {
-        if (changedIds.has(id)) conflicted = true;
-      });
-      try {
-        this.checkReconcileActive(0);
-        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-        if (manifest === undefined || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
-          throw new SessionIndexReconcilePendingError('uninitialized', 0);
-        }
-        const commit = await this.projector.planReconcile(manifest.seq, { reuseFingerprints: true, changedSessions: entries.map(([, value]) => value) });
-        this.checkReconcileActive(0);
-        await this.mirror.runExclusive(async () => {
-          this.checkReconcileActive(0);
-          const current = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-          if (current?.seq !== manifest.seq || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined || conflicted) {
-            throw new SessionIndexReconcilePendingError('concurrent_changes', 1);
-          }
-          const result = await commit();
-          if (result.inventoryRequired === true) this.watchInventory = true;
-        });
-      } catch (error) {
-        for (const [key, value] of entries) this.watchedSessions.set(key, value);
+      const requeue = (subset: readonly (readonly [string, { workspaceId: string; id: string }])[]): void => {
+        for (const [key, value] of subset) this.watchedSessions.set(key, value);
         if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
           this.watchInventory = true;
           this.watchedSessions.clear();
         }
-        throw error;
-      } finally {
-        subscription.dispose();
-      }
+      };
+      const runBatch = async (
+        batch: readonly (readonly [string, { workspaceId: string; id: string }])[],
+        allowRetrySplit: boolean,
+      ): Promise<void> => {
+        if (batch.length === 0) return;
+        const batchIds = new Set(batch.map(([, value]) => value.id));
+        const conflictedIds = new Set<string>();
+        const subscription = this.mirror.onDidChange(({ id }) => {
+          if (batchIds.has(id)) conflictedIds.add(id);
+        });
+        let splitClean: (readonly [string, { workspaceId: string; id: string }])[] | undefined;
+        try {
+          this.checkReconcileActive(0);
+          const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          if (manifest === undefined || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
+            throw new SessionIndexReconcilePendingError('uninitialized', 0);
+          }
+          const commit = await this.projector.planReconcile(manifest.seq, { reuseFingerprints: true, changedSessions: batch.map(([, value]) => value) });
+          this.checkReconcileActive(0);
+          await this.mirror.runExclusive(async () => {
+            this.checkReconcileActive(0);
+            const current = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+            if (current?.seq !== manifest.seq || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
+              throw new SessionIndexReconcilePendingError('concurrent_changes', 1);
+            }
+            if (conflictedIds.size > 0) {
+              for (const [, value] of batch) this.projector.invalidateFingerprint(value.workspaceId, value.id);
+              const conflicted = batch.filter(([, value]) => conflictedIds.has(value.id));
+              requeue(conflicted);
+              const clean = batch.filter(([, value]) => !conflictedIds.has(value.id));
+              if (allowRetrySplit && clean.length > 0) {
+                splitClean = clean;
+              } else if (clean.length > 0) {
+                requeue(clean);
+              }
+              return;
+            }
+            const result = await commit();
+            if (result.inventoryRequired === true) this.watchInventory = true;
+          });
+        } catch (error) {
+          for (const [, value] of batch) this.projector.invalidateFingerprint(value.workspaceId, value.id);
+          requeue(batch);
+          throw error;
+        } finally {
+          subscription.dispose();
+        }
+        if (splitClean !== undefined) {
+          await runBatch(splitClean, false);
+        }
+      };
+      await runBatch(entries, true);
     }
+    this.recoveryAttempts = 0;
     this.watchRetryDelayMs = WATCH_BATCH_MS;
   }
 
@@ -361,8 +405,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     this.state = 'preparing';
     this.emitStatusIfChanged();
+    let attemptedRecovery = false;
     try {
       if (this.recoveryRequired) {
+        attemptedRecovery = true;
         this.recoveryAttempts++;
         this.recoveryTimer.cancel();
         this.log.info('session index recovery started', { attempt: this.recoveryAttempts });
@@ -409,6 +455,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         await this.mirror.drain();
       }
     } catch (error) {
+      if (
+        attemptedRecovery &&
+        error instanceof SessionIndexReconcilePendingError &&
+        error.details?.['reason'] === 'concurrent_changes'
+      ) {
+        this.recoveryAttempts = Math.max(0, this.recoveryAttempts - 1);
+      }
       this.markDegraded('prepare failed', error);
     }
     return this.status();
@@ -578,6 +631,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.generation = baseline.generation;
           return true;
         });
+      } catch (error) {
+        if (isResourceExhaustionError(error)) {
+          this.nextReconcileRetryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          this.reconcileRetryDelayMs = RECONCILE_RETRY_MAX_MS;
+          this.reconcileRetryTimer.cancel();
+        }
+        throw error;
       } finally {
         subscription.dispose();
         if (!committed) {
@@ -601,6 +661,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       }
       if (committed) {
         if (request === this.reconcileRequest) {
+          this.recoveryAttempts = 0;
           this.reuseReconcileFingerprints = true;
           this.nextReconcileRetryAt = 0;
           this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
@@ -662,6 +723,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private markReady(): void {
     if (this.recoveryRequired) return;
+    this.recoveryAttempts = 0;
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
@@ -676,9 +738,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.degradedCount += 1;
     this.recoveryRequired = true;
     const exhausted = this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS;
+    const resourceExhausted = isResourceExhaustionError(error);
+    const retryDelay = exhausted || resourceExhausted ? RECOVERY_COOLDOWN_MS : DEGRADED_RETRY_MS;
     if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; next read can retry after ${RECOVERY_COOLDOWN_MS}ms cooldown`;
-    this.nextPrepareRetryAt = Date.now() + (exhausted ? RECOVERY_COOLDOWN_MS : DEGRADED_RETRY_MS);
-    if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), DEGRADED_RETRY_MS);
+    this.nextPrepareRetryAt = Date.now() + retryDelay;
+    if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), retryDelay);
     else this.log.error('session index automatic recovery exhausted; waiting for read after cooldown', {
       attempts: this.recoveryAttempts,
       retryAfterMs: RECOVERY_COOLDOWN_MS,

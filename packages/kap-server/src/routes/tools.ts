@@ -7,6 +7,7 @@ import {
   IAgentToolPolicyService,
   getAgentToolContributions,
   getLiveSessionById,
+  isError2,
   platformDefaultDisabledTools,
   Error2,
   type Scope,
@@ -60,11 +61,23 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
       path: '/tools',
       querystring: listToolsQuerySchema,
       success: { data: listToolsResponseSchema },
+      errors: {
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
+      },
       description: 'List available tools',
       tags: ['tools'],
     },
     async (req, reply) => {
-      const agent = await resolveEffectiveAgent(core, req.query.session_id);
+      let agent: Awaited<ReturnType<typeof resolveEffectiveAgent>>;
+      try {
+        agent = await resolveEffectiveAgent(core, req.query.session_id);
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+          return;
+        }
+        throw error;
+      }
       if (agent === undefined) {
         reply.send(okEnvelope({ tools: [] }, req.id));
         return;
@@ -116,11 +129,23 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
       method: 'GET',
       path: '/mcp/runtime/servers',
       success: { data: listMcpServersResponseSchema },
+      errors: {
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
+      },
       description: 'List live MCP server connections',
       tags: ['tools'],
     },
     async (req, reply) => {
-      const agent = await resolveEffectiveAgent(core, undefined);
+      let agent: Awaited<ReturnType<typeof resolveEffectiveAgent>>;
+      try {
+        agent = await resolveEffectiveAgent(core, undefined);
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+          return;
+        }
+        throw error;
+      }
       const servers =
         agent === undefined
           ? []
@@ -141,6 +166,7 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
       success: { data: restartMcpServerResultSchema },
       errors: {
         [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
       description: 'Restart an MCP server by ID',
       tags: ['tools'],
@@ -164,7 +190,16 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
         return;
       }
 
-      const agent = await resolveEffectiveAgent(core, undefined);
+      let agent: Awaited<ReturnType<typeof resolveEffectiveAgent>>;
+      try {
+        agent = await resolveEffectiveAgent(core, undefined);
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+          return;
+        }
+        throw error;
+      }
       if (agent === undefined) {
         reply.send(mcpServerNotFound(parsed.id, req.id));
         return;
