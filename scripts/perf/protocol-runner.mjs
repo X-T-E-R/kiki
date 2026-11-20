@@ -77,8 +77,8 @@ function createReadOnlyPerfModelCatalog(homeDir) {
     protocol: 'openai_responses',
     effective_protocol: 'openai_responses',
     protocol_source: 'model',
-    endpoint_source: 'config',
-    auth_source: 'config',
+    endpoint_source: 'provider',
+    auth_source: 'provider',
     support_efforts: ['low', 'medium', 'high'],
     default_effort: 'high',
   }));
@@ -125,7 +125,7 @@ function createReadOnlyPerfModelCatalog(homeDir) {
     effective_base_url: 'https://example.test/v1',
     default_model: aliases[0] ?? 'mock-fast',
     has_api_key: true,
-    status: 'ready',
+    status: 'connected',
     models: aliases,
     model_source: 'static',
   };
