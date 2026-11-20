@@ -13,7 +13,7 @@
  * borrowing the routed agent's data.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { AgentForest, ApprovalBlock, QuestionBlock, SessionController, SessionViewState } from '@kiki/session-core/session';
@@ -111,6 +111,8 @@ interface CachedPanelSourceRevision {
 }
 
 const METRICS_SETTLE_THROTTLE_MS = 200;
+/** Cap idle settle continuation reads so a permanently partial row never polls or spins forever. */
+const IDLE_SETTLE_MAX_POLLS = 6;
 
 function usePanelSourceRevisions(
   controller: SessionController | undefined,
@@ -546,14 +548,19 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const currentRevisions = useRef(revisions);
   currentRevisions.current = revisions;
   const [, updateMetrics] = useState(0);
-  const metricsSettle = useQuery({
-    queryKey: panelMetricsSettleKey(
+  const queryClient = useQueryClient();
+  const settleQueryKey = useMemo(
+    () => panelMetricsSettleKey(
       state.sessionId,
       settleOwner,
       activeRequestIds,
       activeRequestToken,
       serverId,
     ),
+    [state.sessionId, settleOwner, activeRequestIds, activeRequestToken, serverId],
+  );
+  const metricsSettle = useQuery({
+    queryKey: settleQueryKey,
     queryFn: ({ signal, queryKey }) => {
       const ids = [...queryKey[3]];
       const requested = new Map(ids.map((id) => [id, revisions.get(id) ?? '']));
@@ -589,9 +596,11 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     // sources stay cached until their revision changes; hidden panels stop.
     enabled: canSettle && requestIds.length > 0 && !settleBlocked,
     staleTime: Number.POSITIVE_INFINITY,
-    refetchInterval: (current) => canSettle && !settleBlocked && current.state.status === 'success'
-      ? panelMetricsContinuationDelay(current.state.data?.metrics, requestIds, current.state.dataUpdateCount)
-      : false,
+    refetchInterval: (current) => {
+      if (!canSettle || settleBlocked || current.state.status !== 'success') return false;
+      if (!active && current.state.dataUpdateCount >= IDLE_SETTLE_MAX_POLLS) return false;
+      return panelMetricsContinuationDelay(current.state.data?.metrics, requestIds, current.state.dataUpdateCount);
+    },
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     retry: false,
@@ -651,13 +660,18 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       metrics[id] = projectedAgentPanelMetrics(metric, projected);
     }
   }
+  const settleUpdateCount = queryClient.getQueryState(settleQueryKey)?.dataUpdateCount ?? 0;
+  const idleSettleExhausted = !active && metricsSettle.status === 'success' && settleUpdateCount >= IDLE_SETTLE_MAX_POLLS;
   const usage = metrics[agentId] ?? UNKNOWN_AGENT_PANEL_METRICS;
+  const displayUsage = idleSettleExhausted && usage.usageComplete === false
+    ? { ...usage, usageComplete: undefined }
+    : usage;
   const treeTokensCovered = showsTree && !rosterIncomplete && ids.every((id) => {
     const row = metrics[id];
     return row !== undefined && !isUnsettledPanelMetrics(row) && row.usagePartial !== true && panelTotalTokens(row) !== null;
   });
   const treeComplete = treeTokensCovered && ids.every((id) => metrics[id]?.costPartial !== true);
-  const treeCounting = showsTree && (rosterLoading || requestIds.length > 0 && !metricsSettle.isError);
+  const treeCounting = showsTree && !idleSettleExhausted && (rosterLoading || requestIds.length > 0 && !metricsSettle.isError);
   const tree = sumAgentTreeMetrics(ids, metrics);
   const canonical = useCanonicalSessionUsage(metricsWanted && visible && isSessionTree && !treeTokensCovered, state.sessionId);
   const matchedSession = isSessionTree && sessionState.session?.id === state.sessionId && sessionState.session.private !== true
@@ -891,7 +905,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     </>;
   }
   const facts = overviewFacts({
-    t, agentId, state, agentState: currentAgentState, forest, usage, metrics, ids, treeComplete, treeCounting, tree, treeCacheRate,
+    t, agentId, state, agentState: currentAgentState, forest, usage: displayUsage, metrics, ids, treeComplete, treeCounting, tree, treeCacheRate,
     compactPoint: autoCompact?.status?.tokens,
     canShowTreeScope,
     cockpitUsesTree: isSessionRoot || hasSubtree,

@@ -94,7 +94,7 @@ export const NeedsYouList = memo(function NeedsYouList({
   onInspect: (agentId: string) => void;
 }) {
   const { t, locale } = useI18n();
-  const now = useNow();
+  const now = useNow(30_000, items.length > 0);
   const { sending, decide, canDecide } = useDecide(onResolveApproval);
   const [showAll, setShowAll] = useState(false);
   const ordered = useMemo(
@@ -264,7 +264,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
     description: profile?.description,
   });
   return (
-    <div data-rail-profile-head className="min-w-0">
+    <div data-rail-profile-head className="min-h-[44px] min-w-0">
       <div className="flex min-w-0 items-center gap-1.5">
         <Icon name={profileIcon} size={14} className="shrink-0 text-ink-soft" />
         <button
@@ -437,8 +437,8 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
   onOpenAgent: (agentId: string) => void;
 }) {
   const { t, locale } = useI18n();
-  const now = useNow();
   const [open, setOpen] = useState(false);
+  const now = useNow(30_000, open);
   const [visibleLimit, setVisibleLimit] = useState(FEED_SHOWN);
   const preview = useMemo(() => (open ? undefined : feedPreviewOf(blocks, forest)), [open, blocks, forest]);
   const feed = useMemo(() => (open ? feedOf(blocks, forest) : undefined), [open, blocks, forest]);

@@ -787,7 +787,7 @@ export function Sidebar({
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
-  const { client, scopeId } = useConnection();
+  const { client, scopeId, wsStatus } = useConnection();
   const { t, tp, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
@@ -1691,7 +1691,10 @@ export function Sidebar({
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => client.listEphemeralSessions({ before_id: pageParam, page_size: 50 }),
     getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
-    refetchInterval: 15_000,
+    refetchInterval: (query) =>
+      wsStatus === 'open'
+        ? ((query.state.data?.pages[0]?.items.length ?? 0) > 0 ? 60_000 : false)
+        : 15_000,
     enabled: inert !== true,
   });
   const ephemeralSessions = useMemo(

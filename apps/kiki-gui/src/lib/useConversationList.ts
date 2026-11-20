@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
 import { dedupeSessions, isPinnedSession, mergeConversationItems, mergeSessionActivity, type ConversationWorkspace, type SessionListData, type SessionSortOrder } from '@kiki/session-core/sessions';
@@ -14,9 +14,10 @@ export const SESSION_EVENT_READ_INTERVAL_MS = 250;
 
 /** The logical sidebar source; sessions retain their independent load-more cursor. */
 export function useConversationList(sessions: readonly Session[], order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []) {
-  const { client } = useConnection();
+  const { client, wsStatus } = useConnection();
   const queryClient = useQueryClient();
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
+  const wsOpen = wsStatus === 'open';
   const roomsQuery = useQuery({
     queryKey: ROOM_ITEMS_QUERY_KEY,
     queryFn: () => {
@@ -25,9 +26,17 @@ export function useConversationList(sessions: readonly Session[], order: Session
       return rest.rooms.listItems();
     },
     staleTime: 15_000,
-    refetchInterval: 15_000,
+    refetchInterval: wsOpen ? false : 15_000,
     retry: false,
   });
+  const prevWsOpenRef = useRef(wsOpen);
+  useEffect(() => {
+    const wasOpen = prevWsOpenRef.current;
+    prevWsOpenRef.current = wsOpen;
+    if (wsOpen && !wasOpen) {
+      void queryClient.invalidateQueries({ queryKey: ROOM_ITEMS_QUERY_KEY });
+    }
+  }, [wsOpen, queryClient]);
   useEffect(() => {
     const subscription = client.klient.events.on('room.changed', (event) => {
       if (event.deleted) forgetRoomSeen(event.roomId);
@@ -52,7 +61,9 @@ export function useConversationList(sessions: readonly Session[], order: Session
       lastStart.set(sessionId, Date.now());
       void client.getSession(sessionId).then((fresh) => {
         if (disposed) return;
-        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
+        startTransition(() => {
+          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
+        });
         // A session pinned elsewhere may sit outside every loaded page; the
         // pinned read is the only list that can bring it in.
         const pinnedReads = queryClient.getQueriesData<SessionListData>({ queryKey: PINNED_SESSIONS_QUERY_KEY });

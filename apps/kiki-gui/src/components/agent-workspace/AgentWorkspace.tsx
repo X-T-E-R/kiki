@@ -14,7 +14,7 @@
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
@@ -66,7 +66,7 @@ import { useConnection } from '../../state/connection';
 import { usePromoteAgent, type PromoteAgentAction } from '../../lib/usePromoteAgent';
 import { NavBackButton } from '../NavBackButton';
 import { useMediaQuery } from '../../lib/layoutHooks';
-import { AgentBreadcrumb, AgentFamilyPopover, relatedAgentNodes } from '../AgentBreadcrumb';
+import { AgentBreadcrumb, AgentFamilyPopover } from '../AgentBreadcrumb';
 import {
   EMPTY_SLOTS,
   useOptionalConversationShell,
@@ -697,7 +697,7 @@ interface WorkspaceCompositionProps extends AgentWorkspaceProps {
   readonly mediaPreviewProvider?: ComponentType<ComponentProps<typeof OwnedMediaPreviewProvider>>;
 }
 
-export function AgentWorkspace(props: WorkspaceCompositionProps) {
+export const AgentWorkspace = memo(function AgentWorkspace(props: WorkspaceCompositionProps) {
   const ambientSlots = useOptionalConversationShell()?.slots;
   const { scopeId } = useConnection();
   const previousScopeIdRef = useRef(scopeId);
@@ -738,7 +738,7 @@ export function AgentWorkspace(props: WorkspaceCompositionProps) {
       <ChildAgentWorkspace key={JSON.stringify([scopeId, props.target.sessionId, props.target.agentId])} {...props} />
     </ExecutorLabelProvider>
   );
-}
+});
 
 function ChildAgentWorkspace({
   target,

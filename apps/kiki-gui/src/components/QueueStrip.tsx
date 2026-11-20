@@ -908,7 +908,7 @@ export function QueueStrip({
             type="button"
             data-content-continuation-action=""
             disabled={promptContinuation.status?.status === 'loading'}
-            onClick={() => { void promptContinuation.onRequest(); }}
+            onClick={() => { promptContinuation.onRequest(); }}
             title={
               promptContinuation.status?.status === 'error'
                 ? t('queue.recordsFailed')

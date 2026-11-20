@@ -238,6 +238,8 @@ export const InspectorOverview = memo(function InspectorOverview({
             ) : null}
           </p>
         </div>
+      ) : renderLayout !== undefined && (figureCells.length > 0 || workLine.length > 0) ? (
+        <div aria-hidden className="h-[52px]" />
       ) : null}
 
       {figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial ? (

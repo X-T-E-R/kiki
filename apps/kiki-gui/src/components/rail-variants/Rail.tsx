@@ -293,7 +293,7 @@ function useLazyPanelSlot() {
   return { slotRef, visible, mounted };
 }
 
-export function Rail({
+export const Rail = memo(function Rail({
   state,
   forest: forestProp,
   selectedAgentId,
@@ -639,7 +639,7 @@ export function Rail({
     <div
       id="rail-todos"
       data-rail-section="todos"
-      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty]):not(:has([data-rail-todos],[data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
+      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-notes-state=loading]]:hidden [&_[data-agent-hooks-state=loading]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty],[data-agent-notes-state=loading]):not(:has([data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty],[data-agent-notes-state=loading]):not(:has([data-rail-todos],[data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
     >
       <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
       <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
@@ -731,7 +731,7 @@ export function Rail({
   // conversation's settings. One hairline above the group, then one folded
   // row each, side by side — never a fold inside another fold.
   const tailSection = (
-    <div data-inspector-tail className={`${SECTION} mt-auto space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
+    <div data-inspector-tail className={`${SECTION} mt-auto space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [contain:layout_style]`}>
       <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
       {!isRoutedChildPage ? <EnvironmentBlock sessionId={state.sessionId} /> : null}
       <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
@@ -795,7 +795,7 @@ export function Rail({
       aria-labelledby="rail-overview-title"
       className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
     >
-      <div data-rail-overview-well className={mode === 'default' ? 'min-h-[124px]' : undefined}>
+      <div data-rail-overview-well className={mode === 'default' ? 'min-h-[172px]' : undefined}>
         {panelSlot.mounted ? (
           <AgentPanelContainer
             key={`overview:${mode === 'cockpit' && !isRoutedChildPage ? state.sessionId : agentPanelKey}`}
@@ -1028,4 +1028,4 @@ export function Rail({
       </aside>
     </div>
   );
-}
+});

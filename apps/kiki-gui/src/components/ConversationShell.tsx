@@ -32,6 +32,7 @@
 
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useId,
@@ -43,6 +44,8 @@ import {
   type ReactNode,
 } from 'react';
 import { Outlet, useMatch } from 'react-router-dom';
+
+const MemoOutlet = memo(Outlet);
 
 import { SeatFileDropContext, type SeatFileDrop } from './seatFileDrop';
 import { ToastAnchor } from './Toasts';
@@ -410,7 +413,7 @@ export function ConversationShell() {
               {/* <main>: the route's primary content landmark (the burst
                   proof's mutation observer also binds here). */}
               <main className="conversation-body">
-                <Outlet />
+                <MemoOutlet />
               </main>
               <div ref={seatElementRef} className="conversation-seat" data-composer-seat="">
                 {phase === 'hero' ? <HeroGlow className="hero-glow" /> : null}

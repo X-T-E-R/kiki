@@ -526,18 +526,37 @@ export const AgentRoster = memo(function AgentRoster({
       staticTotalHeight += row.kind === 'group' ? GROUP_HEIGHT : ROW_HEIGHT;
     }
   }
+  const stableViewport = model.displayTotal >= SEARCH_AT || model.counts.running > 0;
+  const listHeightClass = stableViewport ? 'h-[min(36dvh,288px)]' : 'max-h-[min(36dvh,288px)]';
   return (
-    <div data-agent-roster className="space-y-1.5">
+    <div data-agent-roster className="space-y-1.5 [contain:layout_style]">
       <div className="flex min-w-0 items-start gap-2">
         <div className="min-w-0 flex-1">
           <RosterSummary counts={model.counts} filter={activeFilter} onFilter={setFilter} />
         </div>
         {actions}
       </div>
+      {model.displayTotal >= SEARCH_AT ? (
+        <label className="relative block">
+          <span className="sr-only">{t('inspector.searchAgentsAria')}</span>
+          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" />
+          <input
+            type="search"
+            data-roster-search
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); }}
+            onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
+            placeholder={t('inspector.searchAgents')}
+            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
+          />
+        </label>
+      ) : null}
       {model.rows.length === 0 ? (
-        <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
-          {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
-        </p>
+        <div className={stableViewport ? listHeightClass : undefined}>
+          <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
+            {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
+          </p>
+        </div>
       ) : (
         <div
           ref={(node) => { scrollRef.current = node; listRef.current = node; }}
@@ -545,7 +564,7 @@ export const AgentRoster = memo(function AgentRoster({
           data-subagent-scroll
           aria-label={t('inspector.agentsAria')}
           role="list"
-          className="-mx-2 max-h-[min(36dvh,288px)] overflow-y-auto overscroll-contain pr-1"
+          className={`-mx-2 ${listHeightClass} overflow-y-auto overscroll-contain pr-1`}
         >
           {windowed ? (
             <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
@@ -578,30 +597,15 @@ export const AgentRoster = memo(function AgentRoster({
               ))}
             </div>
           )}
+          {model.settledTruncated ? (
+            <p data-roster-window-hint className="px-2 pt-1.5 text-[11px] text-ink-faint">
+              {locale === 'zh'
+                ? `显示最近 ${model.settledShown} 项 · 搜索可定位全部`
+                : `Showing latest ${model.settledShown} · Search to find any`}
+            </p>
+          ) : null}
         </div>
       )}
-      {model.displayTotal >= SEARCH_AT ? (
-        <label className="relative block">
-          <span className="sr-only">{t('inspector.searchAgentsAria')}</span>
-          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" />
-          <input
-            type="search"
-            data-roster-search
-            value={query}
-            onChange={(event) => { setQuery(event.target.value); }}
-            onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
-            placeholder={t('inspector.searchAgents')}
-            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
-          />
-        </label>
-      ) : null}
-      {model.settledTruncated ? (
-        <p data-roster-window-hint className="px-2 pt-0.5 text-[11px] text-ink-faint">
-          {locale === 'zh'
-            ? `显示最近 ${model.settledShown} 项 · 搜索可定位全部`
-            : `Showing latest ${model.settledShown} · Search to find any`}
-        </p>
-      ) : null}
     </div>
   );
 });
