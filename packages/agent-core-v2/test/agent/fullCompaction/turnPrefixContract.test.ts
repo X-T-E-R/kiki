@@ -154,6 +154,7 @@ describe('relay-v1 same-turn request prefix', () => {
 
   it('keeps the recorded system prompt and tool hashes across a relay window boundary', async () => {
     ctx = createTestAgent({ initialConfig: { worktree: { cleanup: { auto: false } } } });
+    await ctx.ready;
     ctx.configure({ modelCapabilities: { image_in: false, video_in: false, audio_in: false,
       thinking: false, tool_use: true, max_context_tokens: 128_000 } });
     ctx.context.append(

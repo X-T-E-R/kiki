@@ -385,6 +385,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           record,
           providerId,
           projection,
+          envKeys,
           capabilityResolvers,
         );
         if (result.managed === undefined) {
@@ -547,6 +548,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     record: ModelRecord,
     providerId: string | undefined,
     projection: ProviderListProjection | undefined,
+    envKeys: Set<string>,
     capabilityResolvers: Map<string, (wireName: string) => ModelCapability>,
   ): { readonly item: ModelCatalogItem; readonly managed?: CatalogModelOption['model'] } {
     const providerConfig = projection?.providerConfig;
@@ -572,6 +574,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           : providerConfig.type === undefined
             ? undefined
             : this.protocolRegistry.providerDefinition?.(providerConfig.type, routingModel.protocol);
+      if (routingModel.protocol !== undefined) {
+        for (const envName of providerEndpointEnvNames(providerConfig.type, adapter)) {
+          envKeys.add(envName);
+        }
+      }
       rawBaseUrl =
         routingModel.baseUrl === undefined && routingModel.protocol === undefined
           ? projection!.baseUrl

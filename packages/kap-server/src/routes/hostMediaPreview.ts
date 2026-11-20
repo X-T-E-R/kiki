@@ -295,7 +295,7 @@ export function registerHostMediaPreviewRoutes(
   const hostFs = core.accessor.get(IHostFileSystem);
   const sweep = (): void => {
     const now = Date.now();
-    for (const [id, grant] of grants) if (grant.expiresAt <= now) grants.delete(id);
+    for (const [id, grant] of grants) if (grant.activeStreams === 0 && grant.expiresAt <= now) grants.delete(id);
   };
   const timer = setInterval(sweep, 30_000);
   timer.unref();

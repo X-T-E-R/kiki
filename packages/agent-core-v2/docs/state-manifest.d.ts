@@ -3208,6 +3208,7 @@ export interface AgentStateSnapshot {
       readonly unmarkedOpaquePolicy?: 'retain' | 'omit';
     };
     readonly systemPrompt: string;
+    readonly renderGeneration: number | undefined;
     readonly promptFields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
       readonly values: Readonly<Record<string, string>>;
       readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {

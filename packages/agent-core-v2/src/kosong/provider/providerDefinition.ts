@@ -147,14 +147,20 @@ export function resolveProviderEndpoint(
 
 export function providerEndpointEnvNames(
   providerType: string | undefined,
-  definition: ProviderAdapterDefinition | undefined = providerType === undefined ? undefined : getProviderDefinition(providerType),
+  definition?: ProviderAdapterDefinition,
 ): readonly string[] {
   if (providerType === undefined || providerType === 'openai_decisions') return [];
   if (providerType === 'system_one') return ['TYPESAFE_API_KEY'];
-  if (definition === undefined) return [];
-  const endpoint = normalizeEndpointDeclaration(definition.endpoint) ?? aggregateTraitEndpoints(definition);
-  if (endpoint === undefined) return [];
-  return [...endpoint.apiKeyEnv, ...endpoint.baseUrlEnv];
+  const definitions = definition !== undefined ? [definition] : getProviderDefinitions(providerType);
+  if (definitions.length === 0) return [];
+  const envNames = new Set<string>();
+  for (const candidate of definitions) {
+    const endpoint = normalizeEndpointDeclaration(candidate.endpoint) ?? aggregateTraitEndpoints(candidate);
+    if (endpoint === undefined) continue;
+    for (const name of endpoint.apiKeyEnv) envNames.add(name);
+    for (const name of endpoint.baseUrlEnv) envNames.add(name);
+  }
+  return [...envNames];
 }
 
 interface AggregatedEndpointDeclaration {

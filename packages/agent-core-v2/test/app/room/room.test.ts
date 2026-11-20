@@ -147,6 +147,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false, personaRe
   botEnabled(): boolean;
   seedRoom(room: RoomDocument): Promise<void>;
   readonly documents: MemoryDocuments;
+  readonly logs: MemoryAppendLog;
   room: Promise<RoomDocument>;
 } {
   const documents = new MemoryDocuments(flatListing);
@@ -306,6 +307,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false, personaRe
     botEnabled: () => enabled,
     seedRoom: (value) => documents.set(`rooms/${value.id}`, 'room.json', value),
     documents,
+    logs,
     release: (messageId) => {
       const waiter = waiters.get(messageId);
       if (waiter === undefined) released.add(messageId);
@@ -1087,5 +1089,109 @@ describe('RoomService', () => {
       afterWarmMs: Number(afterWarmMs.toFixed(2)),
       warmPointerReads,
     });
+  });
+
+  it('serializes legacy log migration with delete so deleted rooms receive no stale log files', async () => {
+    const { service, documents, logs, room: roomPromise } = setup();
+    const room = await roomPromise;
+    const scope = `rooms/${room.id}`;
+    await documents.delete(scope, 'log-state.json');
+    for (const segKey of await documents.list(scope, 'log-segments/')) await documents.delete(scope, segKey);
+    for (const segKey of await documents.list(`${scope}/log-segments`)) await documents.delete(scope, `log-segments/${segKey}`);
+    for (const ptrKey of await documents.list(scope, 'log-pointers/')) await documents.delete(scope, ptrKey);
+    for (const ptrKey of await documents.list(`${scope}/log-pointers`)) await documents.delete(scope, `log-pointers/${ptrKey}`);
+
+    let releaseRead: (() => void) | undefined;
+    let enteredRead: (() => void) | undefined;
+    const readEntered = new Promise<void>((resolve) => { enteredRead = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const originalRead = logs.read.bind(logs);
+    logs.read = async function* <R>(s: string, k: string): AsyncIterable<R> {
+      enteredRead?.();
+      await readGate;
+      yield* originalRead<R>(s, k);
+    };
+
+    const logPromise = service.log(room.id);
+    await readEntered;
+    const deletePromise = service.delete(room.id);
+    await Promise.resolve();
+    releaseRead?.();
+    await Promise.all([logPromise, deletePromise]);
+
+    expect(await documents.get(scope, 'room.json')).toBeUndefined();
+    expect(await documents.get(scope, 'log-state.json')).toBeUndefined();
+    expect(await documents.list(`${scope}/log-segments`)).toEqual([]);
+    expect(await documents.list(`${scope}/log-pointers`)).toEqual([]);
+  });
+
+  it('aborts queued legacy log migration without writing files when delete completes first', async () => {
+    const { service, documents, room: roomPromise } = setup();
+    const room = await roomPromise;
+    const scope = `rooms/${room.id}`;
+    await documents.delete(scope, 'log-state.json');
+    for (const segKey of await documents.list(`${scope}/log-segments`)) await documents.delete(scope, `log-segments/${segKey}`);
+    for (const ptrKey of await documents.list(`${scope}/log-pointers`)) await documents.delete(scope, `log-pointers/${ptrKey}`);
+
+    let releaseDelete: (() => void) | undefined;
+    let enteredDelete: (() => void) | undefined;
+    const deleteEntered = new Promise<void>((resolve) => { enteredDelete = resolve; });
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    const originalDelete = documents.delete.bind(documents);
+    documents.delete = async (s: string, k: string): Promise<void> => {
+      if (s === scope && k === 'room.json') {
+        enteredDelete?.();
+        await deleteGate;
+      }
+      await originalDelete(s, k);
+    };
+
+    const deletePromise = service.delete(room.id);
+    await deleteEntered;
+    const logPromise = service.log(room.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseDelete?.();
+    await deletePromise;
+    await expect(logPromise).rejects.toThrow(/was not found/);
+
+    expect(await documents.get(scope, 'room.json')).toBeUndefined();
+    expect(await documents.get(scope, 'log-state.json')).toBeUndefined();
+    expect(await documents.list(`${scope}/log-segments`)).toEqual([]);
+    expect(await documents.list(`${scope}/log-pointers`)).toEqual([]);
+  });
+
+  it('deduplicates segment entries when retrying an append at an already-written seq', async () => {
+    const { service, documents, room: roomPromise } = setup();
+    const room = await roomPromise;
+    const scope = `rooms/${room.id}`;
+    const state = await documents.get<{ readonly nextSeq: number }>(scope, 'log-state.json');
+    expect(state).toBeDefined();
+    const nextSeq = state!.nextSeq;
+    const segmentKey = 'log-segments/00000000.json';
+    const existingSegment = await documents.get<{ readonly entries: Array<{ readonly seq: number; readonly entry: RoomLogEntry; readonly activitySeq: number }> }>(scope, segmentKey);
+    await documents.set(scope, segmentKey, {
+      entries: [
+        ...(existingSegment?.entries ?? []),
+        {
+          seq: nextSeq,
+          activitySeq: nextSeq,
+          entry: {
+            id: 'stale-interrupted-entry',
+            at: '2026-01-01T00:00:00Z',
+            kind: 'message',
+            from: 'user',
+            text: 'stale interrupted write',
+            mentions: [],
+          },
+        },
+      ],
+    });
+
+    const posted = await service.postUserMessage(room.id, { text: 'clean retry message' });
+    const updatedSegment = await documents.get<{ readonly entries: Array<{ readonly seq: number; readonly entry: RoomLogEntry }> }>(scope, segmentKey);
+    const matchingSeq = (updatedSegment?.entries ?? []).filter((record) => record.seq === nextSeq);
+    expect(matchingSeq).toHaveLength(1);
+    expect(matchingSeq[0]!.entry.id).toBe(posted.id);
+    expect(matchingSeq[0]!.entry.text).toBe('clean retry message');
   });
 });

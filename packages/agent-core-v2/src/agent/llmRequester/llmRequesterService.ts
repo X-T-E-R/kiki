@@ -263,6 +263,7 @@ interface TurnRequestConfig {
   readonly resolved: ProfileModelContext;
   readonly params: ModelRequestParams;
   readonly systemPrompt: string;
+  readonly renderGeneration: number | undefined;
   readonly promptFields: ResolvedPromptFieldOverrides;
   readonly promptPrepared: boolean;
   readonly cognition?: import('#/agent/cognition/cognitionConfig').CognitionBinding;
@@ -479,6 +480,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   invalidatePromptSnapshots(): number {
     const invalidated = this.turnConfigs.size;
     this.turnConfigs.clear();
+    this.promptCacheWindow = undefined;
     this.closeResponsesTransport();
     return invalidated;
   }
@@ -1361,7 +1363,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     });
     const windowKey = JSON.stringify([
       this.states.get(contextWindowEpochKey),
-      this.profile.data().renderGeneration,
+      turnConfig === undefined ? this.profile.data().renderGeneration : turnConfig.renderGeneration,
       this.profile.data().boundProfile?.promptBase?.promptDiagnostics?.binding_revision ?? this.profile.getCognitionSnapshot()?.bindingRevision ?? cognition.bindingRevision,
     ]);
     if (this.promptCacheWindow?.key !== windowKey) this.promptCacheWindow = new PromptCacheWindow(windowKey);
@@ -1432,6 +1434,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       snapshot = {
         ...snapshot,
         systemPrompt: this.profile.getSystemPrompt(),
+        renderGeneration: this.profile.data().renderGeneration,
         promptFields: this.profile.getPromptFieldSnapshot(),
         cognition: this.profile.getCognitionSnapshot(),
         promptPrepared: true,
@@ -1447,6 +1450,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         resolved,
         params: this.profile.resolveRequestParams(),
         systemPrompt: this.profile.getSystemPrompt(),
+        renderGeneration: this.profile.data().renderGeneration,
         promptFields: this.profile.getPromptFieldSnapshot(),
         cognition: this.profile.getCognitionSnapshot(),
         promptPrepared: preparePrompt,

@@ -17,6 +17,10 @@ import '#/kosong/provider/protocolAdapterRegistry';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import '#/kosong/provider/providers/standard.contrib';
 import {
+  providerEndpointEnvNames,
+  registerProviderDefinition,
+} from '#/kosong/provider/providerDefinition';
+import {
   IProviderService,
   type ProviderConfig,
   type ProvidersSection,
@@ -2543,6 +2547,59 @@ describe('provider model_hint_header', () => {
       const afterMutation = await catalog.listModels();
       expect(afterMutation).not.toBe(afterEnv);
       expect(afterMutation.find((item) => item.id === 'openrouter/model-00000')?.max_context_size).toBe(256_000);
+    } finally {
+      vi.unstubAllEnvs();
+      await host.dispose();
+    }
+  });
+
+  it('tracks multi-protocol endpoint env names and invalidates listModels cache on model-level protocol override env changes', async () => {
+    const providerType = 'multi_proto_env_cache_test';
+    registerProviderDefinition({
+      id: providerType,
+      baseProtocol: 'openai',
+      traits: [],
+      endpoint: { apiKeyEnv: 'MULTI_PROTO_OPENAI_KEY', baseUrlEnv: 'MULTI_PROTO_OPENAI_URL', defaultBaseUrl: 'https://openai.multi.example.test/v1' },
+    });
+    registerProviderDefinition({
+      id: providerType,
+      baseProtocol: 'anthropic',
+      traits: [],
+      endpoint: { apiKeyEnv: 'MULTI_PROTO_ANTHROPIC_KEY', baseUrlEnv: 'MULTI_PROTO_ANTHROPIC_URL', defaultBaseUrl: 'https://anthropic.multi.example.test/v1' },
+    });
+
+    expect(providerEndpointEnvNames(providerType)).toEqual([
+      'MULTI_PROTO_OPENAI_KEY',
+      'MULTI_PROTO_OPENAI_URL',
+      'MULTI_PROTO_ANTHROPIC_KEY',
+      'MULTI_PROTO_ANTHROPIC_URL',
+    ]);
+
+    const { host, catalog } = createHost({
+      providers: {
+        multi: { type: providerType },
+      },
+      models: {
+        'multi/ant': {
+          provider: 'multi',
+          protocol: 'anthropic',
+          model: 'claude-override',
+          maxContextSize: 200_000,
+        },
+      },
+    });
+    try {
+      const first = await catalog.listModels();
+      expect(first.find((item) => item.id === 'multi/ant')?.effective_protocol).toBe('anthropic');
+      expect(await catalog.listModels()).toBe(first);
+
+      vi.stubEnv('MULTI_PROTO_ANTHROPIC_URL', 'https://custom-ant.multi.example.test/v1');
+      const afterUrlChange = await catalog.listModels();
+      expect(afterUrlChange).not.toBe(first);
+
+      vi.stubEnv('MULTI_PROTO_ANTHROPIC_KEY', 'sk-ant-from-env');
+      const afterKeyChange = await catalog.listModels();
+      expect(afterKeyChange).not.toBe(afterUrlChange);
     } finally {
       vi.unstubAllEnvs();
       await host.dispose();

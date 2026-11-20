@@ -223,7 +223,7 @@ export class RoomService extends Disposable implements IRoomService {
       const item = await this.withRoomLock(listed.id, async (): Promise<RoomListItem | undefined> => {
         const room = await this.get(listed.id);
         if (room === undefined) return undefined;
-        const state = await this.ensureLogState(room.id);
+        const state = await this.ensureLogStateLocked(room.id);
         const last = state.updatedAt === undefined ? await this.readIndexedRecord(room.id, state.nextSeq - 1) : undefined;
         const activities = room.members.flatMap((member) => {
           const session = this.sessions.get(member.sessionId);
@@ -846,7 +846,7 @@ export class RoomService extends Disposable implements IRoomService {
       if (!current.members.some((member) => member.sessionId === work.member.sessionId)) return undefined;
       const cursor = current.cursors[work.member.sessionId];
       if (cursor === undefined) return current;
-      await this.ensureLogState(work.roomId);
+      await this.ensureLogStateLocked(work.roomId);
       const [sourcePointer, cursorPointer] = await Promise.all([
         this.documents.get<RoomLogPointer>(roomScope(work.roomId), roomLogPointerKey(work.sourceMessageId)),
         this.documents.get<RoomLogPointer>(roomScope(work.roomId), roomLogPointerKey(cursor)),
@@ -1247,16 +1247,25 @@ export class RoomService extends Disposable implements IRoomService {
     if (existing !== undefined) return existing;
     const flight = this.logStateFlights.get(roomId);
     if (flight !== undefined) return flight;
-    const migration = this.migrateLegacyLog(roomId).finally(() => {
+    const migration = this.withRoomLock(roomId, () => this.migrateLegacyLogLocked(roomId)).finally(() => {
       if (this.logStateFlights.get(roomId) === migration) this.logStateFlights.delete(roomId);
     });
     this.logStateFlights.set(roomId, migration);
     return migration;
   }
 
-  private async migrateLegacyLog(roomId: string): Promise<RoomLogState> {
+  private async ensureLogStateLocked(roomId: string): Promise<RoomLogState> {
+    const existing = await this.documents.get<RoomLogState>(roomScope(roomId), ROOM_LOG_STATE_KEY);
+    if (existing !== undefined) return existing;
+    return this.migrateLegacyLogLocked(roomId);
+  }
+
+  private async migrateLegacyLogLocked(roomId: string): Promise<RoomLogState> {
     const current = await this.documents.get<RoomLogState>(roomScope(roomId), ROOM_LOG_STATE_KEY);
     if (current !== undefined) return current;
+    if (await this.documents.get<RoomDocument>(roomScope(roomId), 'room.json') === undefined) {
+      invalid(`Room '${roomId}' was not found.`);
+    }
     const state = emptyRoomLogState();
     const segments = new Map<number, RoomLogRecord[]>();
     const pointers: Array<{ readonly key: string; readonly seq: number }> = [];
@@ -1310,14 +1319,14 @@ export class RoomService extends Disposable implements IRoomService {
   }
 
   private async appendIndexedEntry(roomId: string, entry: RoomLogEntry): Promise<void> {
-    const state = await this.ensureLogState(roomId);
+    const state = await this.ensureLogStateLocked(roomId);
     const seq = state.nextSeq;
     const previous = state.updatedAt === undefined ? await this.readIndexedRecord(roomId, seq - 1) : undefined;
     const activity = roomEntryIsActivity(entry);
     const activitySeq = (state.activitySeq ?? seq - 1) + Number(activity);
     const segmentKey = roomLogSegmentKey(seq);
     await this.documents.update<RoomLogSegment>(roomScope(roomId), segmentKey, (current) => ({
-      entries: [...(current?.entries ?? []), { seq, entry, activitySeq }],
+      entries: [...(current?.entries ?? []).filter((record) => record.seq < seq), { seq, entry, activitySeq }],
     }));
     await this.documents.set(roomScope(roomId), roomLogPointerKey(entry.id), { seq });
     this.rememberPointer(roomId, entry.id, seq);

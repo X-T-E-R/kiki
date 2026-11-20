@@ -337,6 +337,7 @@ describe('Agent config', () => {
       [emit] context.append_message          { "time": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Look up before config changes" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } }, "delivery": { "deliveryId": "<dlv-1>", "messageId": "<msg-1>", "turnId": 0, "stepId": "<uuid-2>", "step": 1, "deliveredAt": "<time>", "origin": "user" } }
       [emit] context.spliced                 { "time": "<time>", "start": 0, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "Look up before config changes" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } } ] }
       [wire] context.append_message          { "message": { "role": "user", "content": [ { "type": "text", "text": "Look up before config changes" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } }, "delivery": { "deliveryId": "<dlv-1>", "messageId": "<msg-1>", "turnId": 0, "stepId": "<uuid-2>", "step": 1, "deliveredAt": "<time>", "origin": "user" }, "time": "<time>" }
+      [wire] plugin.session_start            { "content": null, "time": "<time>" }
       [emit] turn.step.started               { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>" }
       [emit] agent.activity.updated          { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.append_loop_event       { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 } }
@@ -432,8 +433,8 @@ describe('Agent config', () => {
       [wire] prompt.completed            { "promptId": "<msg-1>", "finishedAt": "<time>", "reason": "completed", "time": "<time>" }
       [wire] prompt.accepted             { "promptId": "<msg-2>", "time": "<time>" }
       [emit] prompt.enqueued             { "time": "<time>", "schemaVersion": 1, "promptId": "<msg-2>", "userMessageId": "<msg-2>", "createdAt": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-2>" }, "alreadyMaterialized": false, "appendTiming": "agent_idle", "revision": 0, "queueIndex": 0, "retryStatus": "running" }
-      [emit] prompt.submitted            { "time": "<time>", "agentId": "main", "promptId": "<msg-2>", "userMessageId": "<msg-2>", "status": "running", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "createdAt": "<time>", "appendTiming": "agent_idle", "revision": 0 }
       [wire] prompt.outcome_committed    { "terminal": { "promptId": "<msg-1>", "turnId": 0, "state": "completed", "result": { "type": "completed", "steps": 2, "truncated": false } }, "time": "<time>" }
+      [emit] prompt.submitted            { "time": "<time>", "agentId": "main", "promptId": "<msg-2>", "userMessageId": "<msg-2>", "status": "running", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "createdAt": "<time>", "appendTiming": "agent_idle", "revision": 0 }
       [wire] prompt.enqueued             { "schemaVersion": 1, "promptId": "<msg-2>", "userMessageId": "<msg-2>", "createdAt": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-2>" }, "alreadyMaterialized": false, "appendTiming": "agent_idle", "revision": 0, "queueIndex": 0, "retryStatus": "running", "time": "<time>" }
       [wire] prompt.launch_committed     { "launchId": "<uuid-9>", "promptId": "<msg-2>", "revision": 0, "committedAt": "<time>", "time": "<time>" }
       [wire] turn.prompt                 { "turnId": 1, "promptId": "<msg-2>", "input": [ { "type": "text", "text": "Start a fresh turn" } ], "origin": { "kind": "user" }, "managed": true, "parentReceiptManaged": false, "time": "<time>" }
@@ -2266,6 +2267,10 @@ describe('subagent config section', () => {
       timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
       maxDirectChildren: 16,
       maxTotalSubagents: 0,
+      agentListLimit: 32,
+      searchLimit: 32,
+      snapshotActiveLimit: 256,
+      snapshotSettledLimit: 64,
       defaultProfile: DEFAULT_SUBAGENT_PROFILE,
       allowedTools: [],
     });

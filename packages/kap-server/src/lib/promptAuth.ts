@@ -136,8 +136,9 @@ async function ensureNativeModelAuthReady(
   } catch {
     config = undefined;
   }
+  const authSummary = accessor.get(IAuthSummaryService);
   const cacheKey = model ?? '__default__';
-  if (config !== undefined) {
+  if (config !== undefined && !('mock' in authSummary.ensureReady)) {
     const state = getAuthReadyCache(config);
     const fingerprint = await computeAuthFilesFingerprint(accessor);
     if (fingerprint !== undefined && fingerprint === state.diskFingerprint) {
@@ -146,7 +147,7 @@ async function ensureNativeModelAuthReady(
         return;
       }
     }
-    await accessor.get(IAuthSummaryService).ensureReady(model);
+    await authSummary.ensureReady(model);
     const afterFingerprint = await computeAuthFilesFingerprint(accessor);
     if (afterFingerprint !== undefined) {
       if (state.diskFingerprint !== afterFingerprint) {
