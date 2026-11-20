@@ -903,7 +903,7 @@ describe('paired peer surface parity and host boundaries', () => {
 
     await mkdir(join(legacyHome, 'server'), { recursive: true });
     const tlsPath = join(legacyHome, 'server', 'peer-tls.json');
-    await writeFile(tlsPath, JSON.stringify({ key: keyPem, cert: legacyCertPem }), 'utf8');
+    await writeFile(tlsPath, JSON.stringify({ key: keyPem, cert: legacyCertPem }), { encoding: 'utf8', mode: 0o600 });
 
     const repaired = await loadPeerTlsIdentity(legacyHome);
     expect(repaired.tlsFingerprint).toBe(expectedFp);

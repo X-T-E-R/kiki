@@ -1,3 +1,5 @@
+import { detachSlicedString } from '../lib/detachString';
+
 function collapseWs(s: string): string {
   return s.replaceAll(/\s+/g, ' ').trim();
 }
@@ -46,11 +48,11 @@ export function makeSnippet(
 
   if (hitAt === -1) {
     const head = collapseWs(text.slice(0, radius * 2));
-    return text.length > radius * 2 ? `${head}…` : head;
+    return detachSlicedString(text.length > radius * 2 ? `${head}…` : head);
   }
 
   const start = Math.max(0, hitAt - radius);
   const end = Math.min(text.length, hitAt + hitLen + radius);
   const window = collapseWs(text.slice(start, end));
-  return `${start > 0 ? '…' : ''}${window}${end < text.length ? '…' : ''}`;
+  return detachSlicedString(`${start > 0 ? '…' : ''}${window}${end < text.length ? '…' : ''}`);
 }

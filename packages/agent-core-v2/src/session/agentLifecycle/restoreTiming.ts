@@ -81,7 +81,11 @@ async function awaitRestoreOperation<T>(promise: Promise<T>, attempt: RestoreAtt
   try {
     return await abortable(promise, attempt.signal);
   } catch (error) {
-    if (attempt.lifetime.ownerManaged && attempt.signal.aborted) await Promise.allSettled([promise]);
+    if (attempt.lifetime.ownerManaged && attempt.signal.aborted) {
+      await Promise.allSettled([promise]);
+    } else {
+      void promise.catch(() => undefined);
+    }
     throw error;
   }
 }

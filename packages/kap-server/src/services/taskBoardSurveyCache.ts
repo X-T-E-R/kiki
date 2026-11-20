@@ -7,10 +7,13 @@ type Survey = Awaited<ReturnType<typeof surveyTasks>>;
 export type SurveyTaskApi = OwnWorkTaskApi & { surveyTasks: typeof surveyTasks };
 const TTL_MS = 30_000;
 const MAX_STORES = 32;
+const MAX_SURVEY_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_SINGLE_SURVEY_BYTES = 2 * 1024 * 1024;
 
 interface SurveySnapshot {
   readonly identity: string;
   pending: boolean;
+  estimatedBytes: number;
   readonly value: Promise<Survey>;
 }
 
@@ -25,6 +28,8 @@ interface SurveySnapshot {
 export function withTaskBoardSurveyCache(api: SurveyTaskApi): OwnWorkTaskApi {
   const snapshots = new LRUCache<string, SurveySnapshot>({
     max: MAX_STORES,
+    maxSize: MAX_SURVEY_CACHE_BYTES,
+    sizeCalculation: (entry) => entry.estimatedBytes,
     ttl: TTL_MS,
     ttlResolution: 0,
     perf: { now: () => Date.now() + 1 },
@@ -49,13 +54,18 @@ export function withTaskBoardSurveyCache(api: SurveyTaskApi): OwnWorkTaskApi {
       if (snapshot?.identity !== identity) snapshot = undefined;
       if (!snapshot || (!snapshot.pending && options.cursor === undefined)) {
         const value = api.surveyTasks({ root: options.root, includeArchived: true, depth: 'envelope' });
-        snapshot = { identity, pending: true, value };
+        snapshot = { identity, pending: true, estimatedBytes: 4096, value };
         const current = snapshot;
         snapshots.set(key, current, { ttl: 0 });
-        void value.then(() => {
+        void value.then((resolved) => {
           current.pending = false;
+          current.estimatedBytes = Math.max(1024, resolved.tasks.length * 512);
           if (snapshots.peek(key) === current) {
-            snapshots.set(key, current, { ttl: TTL_MS });
+            if (current.estimatedBytes > MAX_SINGLE_SURVEY_BYTES) {
+              snapshots.delete(key);
+            } else {
+              snapshots.set(key, current, { ttl: TTL_MS });
+            }
           }
         }, () => {
           if (snapshots.peek(key) === current) snapshots.delete(key);

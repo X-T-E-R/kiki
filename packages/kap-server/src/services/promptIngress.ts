@@ -9,6 +9,7 @@ import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaSt
 import { fileNotFoundError } from '@kiki/agent-core-v2/app/file/fileService';
 import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitReceipt } from '@kiki/protocol';
 import { assertPromptFileRefs, sessionPromptFiles } from '../lib/promptMedia';
+import { detachSlicedString } from '../lib/detachString';
 import { mapError } from '../transport/errors';
 import type { RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
@@ -277,7 +278,7 @@ export class PromptIngress {
       if (part.type === 'text') text += (text ? '\n' : '') + part.text.slice(0, 1024 - text.length);
       if (text.length >= 1024) break;
     }
-    return [{ type: 'text', text: text || '[Attachment]' }];
+    return [{ type: 'text', text: detachSlicedString(text || '[Attachment]') }];
   }
   private progressSnapshot(key: string): PromptItem['restore_progress'] {
     const progress = this.progress.get(key);

@@ -148,7 +148,7 @@
         "eslint/no-shadow": "off",
         "unicorn/prefer-event-target": "off",
         "jest/no-disabled-tests": "off",
-        "vitest/no-disabled-tests": "off",
+        "vitest/no-disabled-tests": "error",
         "eslint/no-control-regex": "off",
         "eslint/no-unused-vars": "off",
         "eslint/no-unsafe-optional-chaining": "off",
@@ -165,6 +165,15 @@
         "vitest/valid-describe-callback": "error",
         "vitest/no-standalone-expect": "error",
         "vitest/warn-todo": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/kaos/test/internal.test.ts"
+      ],
+      "plugins": ["vitest"],
+      "rules": {
+        "vitest/no-disabled-tests": "warn"
       }
     }
   ],
