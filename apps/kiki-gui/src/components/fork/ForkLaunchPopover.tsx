@@ -17,6 +17,7 @@ import {
   FLOATING_OWNER_ATTRIBUTE,
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
   owningModalId,
   registerOverlay,
   resolveFloatingOwners,
@@ -164,6 +165,10 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
           onOpenChange={(nextOpen, eventDetails) => {
             if (nextOpen) return;
             if (eventDetails.reason === 'escape-key') {
+              if (hasOpenOwnedFloatingPortal('header-fork-popover')) {
+                eventDetails.cancel();
+                return;
+              }
               setOpen(false);
               triggerRef.current?.focus();
               return;
@@ -190,7 +195,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
                 finalFocus={false}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: 'header-fork-popover',
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'header-fork-popover'),
                   [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
                 }}
                 className={`anim-enter w-72 max-h-[min(var(--available-height,calc(100dvh-24px)),calc(100dvh-24px))] overflow-y-auto overscroll-contain p-2 outline-none ${POPOVER_SURFACE_CLASS}`}

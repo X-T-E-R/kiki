@@ -36,6 +36,7 @@ import {
   FLOATING_OWNER_ATTRIBUTE,
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
   resolveFloatingOwners,
 } from '../lib/uiBusy';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
@@ -166,6 +167,10 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           onOpenChange={(nextOpen, eventDetails) => {
             if (nextOpen) return;
             if (eventDetails.reason === 'escape-key') {
+              if (hasOpenOwnedFloatingPortal('hero-workspace')) {
+                eventDetails.cancel();
+                return;
+              }
               setOpen(false);
               triggerRef.current?.focus();
               return;
