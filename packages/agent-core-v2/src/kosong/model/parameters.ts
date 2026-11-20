@@ -61,10 +61,26 @@ export function patchGenerationParameters(
   return next;
 }
 
+const EMPTY_GENERATION_PARAMETERS: ResolvedGenerationParameters = Object.freeze({
+  values: Object.freeze({}),
+  sources: Object.freeze({}),
+});
+
 export function resolveGenerationParameters(
   provider: ProviderConfig | undefined,
   model: ModelRecord,
 ): ResolvedGenerationParameters {
+  if (
+    provider?.defaults === undefined &&
+    model.parameters === undefined &&
+    model.overrides === undefined &&
+    model.maxCompletionTokens === undefined &&
+    model.serviceTier === undefined &&
+    model.defaultEffort === undefined &&
+    model.requestParams === undefined
+  ) {
+    return EMPTY_GENERATION_PARAMETERS;
+  }
   const values: GenerationParameters = {};
   const sources: Partial<Record<GenerationParameterKey, InspectionSource>> = {};
   const apply = (layer: GenerationParameters | undefined, detail: string): void => {

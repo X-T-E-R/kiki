@@ -1,7 +1,6 @@
 import {
   applyCustomRegistryProvider,
   fetchCustomRegistry,
-  removeCustomRegistryProvider,
   type CustomRegistryProviderEntry,
   type CustomRegistrySource,
   type ManagedKimiConfigShape,
@@ -15,7 +14,7 @@ import { isPlainObject } from '#/_base/utils/types';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
-import { type ModelsSection } from '#/kosong/model/model';
+import { type ModelRecord, type ModelsSection } from '#/kosong/model/model';
 import { type ProviderConfig, type ProvidersSection } from '#/kosong/provider/provider';
 import { modelsDevProviderModels, resolveModelsDevImport } from './modelsDev';
 
@@ -169,24 +168,26 @@ export class ModelsDevImportService implements IModelsDevImportService {
     provider.baseUrl = resolution.baseUrl;
     provider.apiKey = options.apiKey ?? existing?.apiKey;
     provider.requestIdentity = existing?.requestIdentity;
-    await config.replace(PROVIDERS_SECTION, { ...providers, [targetId]: provider });
 
     const records = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
-    const withoutTarget = Object.fromEntries(
-      Object.entries(records).filter(([, record]) => record.provider !== targetId),
-    );
-    await config.replace(MODELS_SECTION, withoutTarget);
-    const nextModels = { ...withoutTarget };
+    const nextModels: Record<string, ModelRecord> = {};
+    for (const [id, record] of Object.entries(records)) {
+      if (record.provider !== targetId) nextModels[id] = record;
+    }
     for (const model of models) {
       const id = `${targetId}/${model.id}`;
       nextModels[id] = { ...modelsDevModelToRecord(targetId, model), overrides: records[id]?.overrides };
     }
-    await config.replace(MODELS_SECTION, nextModels);
 
+    const sections: Record<string, unknown> = {
+      [PROVIDERS_SECTION]: { ...providers, [targetId]: provider },
+      [MODELS_SECTION]: nextModels,
+    };
     const firstModel = models[0];
-    if (firstModel !== undefined) {
-      await seedDefaultModelWhenUnset(config, `${targetId}/${firstModel.id}`);
+    if (firstModel !== undefined && isDefaultModelUnset(config)) {
+      sections[DEFAULT_MODEL_SECTION] = `${targetId}/${firstModel.id}`;
     }
+    await config.replaceSections(sections);
 
     const imported = await this.modelCatalog.getProvider(targetId);
     return { provider: imported, modelsImported: models.length };
@@ -217,14 +218,15 @@ export class ModelsDevImportService implements IModelsDevImportService {
         `custom registry at ${url} cannot be imported: ${truncateUpstreamMessage(err)}`,
       );
     }
-    if (Object.keys(entries).length === 0) {
+    const entryList = Object.values(entries);
+    if (entryList.length === 0) {
       throw new Error2(
         codes.REGISTRY_IMPORT_INVALID,
         `custom registry at ${url} has no importable providers`,
       );
     }
 
-    for (const entry of Object.values(entries)) {
+    for (const entry of entryList) {
       if (providers[entry.id]?.oauth !== undefined) {
         throw new Error2(
           codes.PROVIDER_OAUTH_MANAGED,
@@ -234,12 +236,9 @@ export class ModelsDevImportService implements IModelsDevImportService {
     }
 
     const previousModels = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
-    const removed = {
-      providers: { ...providers },
-      models: { ...previousModels },
-    } as ManagedKimiConfigShape;
-    const surviving = new Set(Object.values(entries).map((entry) => entry.id));
-    for (const [providerId, provider] of Object.entries(removed.providers)) {
+    const surviving = new Set(entryList.map((entry) => entry.id));
+    const removedProviderIds = new Set<string>(surviving);
+    for (const [providerId, provider] of Object.entries(providers)) {
       if (surviving.has(providerId)) continue;
       if (!isPlainObject(provider)) continue;
       if (provider['oauth'] !== undefined) continue;
@@ -249,22 +248,25 @@ export class ModelsDevImportService implements IModelsDevImportService {
         existingSource['kind'] === 'apiJson' &&
         existingSource['url'] === url
       ) {
-        removeCustomRegistryProvider(removed, providerId);
+        removedProviderIds.add(providerId);
       }
     }
-    for (const entry of Object.values(entries)) {
-      if (entry.id in removed.providers) {
-        removeCustomRegistryProvider(removed, entry.id);
+    const keptProviders: Record<string, ProviderConfig> = {};
+    for (const [providerId, provider] of Object.entries(providers)) {
+      if (!removedProviderIds.has(providerId)) keptProviders[providerId] = provider;
+    }
+    const keptModels: Record<string, ModelRecord> = {};
+    for (const [modelId, model] of Object.entries(previousModels)) {
+      if (model.provider === undefined || !removedProviderIds.has(model.provider)) {
+        keptModels[modelId] = model;
       }
     }
-    await config.replace(PROVIDERS_SECTION, removed.providers as ProvidersSection);
-    await config.replace(MODELS_SECTION, (removed.models ?? {}) as ModelsSection);
 
     const applied = {
-      providers: removed.providers,
-      models: removed.models,
+      providers: keptProviders,
+      models: keptModels,
     } as ManagedKimiConfigShape;
-    for (const entry of Object.values(entries)) {
+    for (const entry of entryList) {
       applyCustomRegistryProvider(applied, entry, source);
     }
     const nextModels = (applied.models ?? {}) as ModelsSection;
@@ -273,20 +275,21 @@ export class ModelsDevImportService implements IModelsDevImportService {
         nextModels[id] = { ...model, overrides: previousModels[id].overrides };
       }
     }
-    await config.replace(PROVIDERS_SECTION, applied.providers as ProvidersSection);
-    await config.replace(MODELS_SECTION, nextModels);
-
-    const firstEntry = Object.values(entries)[0];
+    const sections: Record<string, unknown> = {
+      [PROVIDERS_SECTION]: applied.providers as ProvidersSection,
+      [MODELS_SECTION]: nextModels,
+    };
+    const firstEntry = entryList[0];
     const firstModelKey = firstEntry === undefined ? undefined : Object.keys(firstEntry.models)[0];
-    if (firstEntry !== undefined && firstModelKey !== undefined) {
-      await seedDefaultModelWhenUnset(config, `${firstEntry.id}/${firstModelKey}`);
+    if (firstEntry !== undefined && firstModelKey !== undefined && isDefaultModelUnset(config)) {
+      sections[DEFAULT_MODEL_SECTION] = `${firstEntry.id}/${firstModelKey}`;
     }
+    await config.replaceSections(sections);
 
-    const imported = [];
-    for (const entry of Object.values(entries)) {
-      imported.push(await this.modelCatalog.getProvider(entry.id));
-    }
-    const modelsImported = Object.values(entries).reduce(
+    const imported = await Promise.all(
+      entryList.map((entry) => this.modelCatalog.getProvider(entry.id)),
+    );
+    const modelsImported = entryList.reduce(
       (total, entry) => total + Object.keys(entry.models).length,
       0,
     );
@@ -294,10 +297,9 @@ export class ModelsDevImportService implements IModelsDevImportService {
   }
 }
 
-async function seedDefaultModelWhenUnset(config: IConfigService, alias: string): Promise<void> {
+function isDefaultModelUnset(config: IConfigService): boolean {
   const current = config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
-  if (current !== undefined && current.trim() !== '') return;
-  await config.replace(DEFAULT_MODEL_SECTION, alias);
+  return current === undefined || current.trim() === '';
 }
 
 function registryKeyFromExisting(

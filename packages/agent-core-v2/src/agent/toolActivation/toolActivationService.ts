@@ -202,16 +202,50 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
 
   private refreshConditionalRecords(): void {
     if (this.closing) return;
-    withToolPolicySnapshot(this.policyService, () => this.instantiationService.invokeFunction((accessor) => {
-      for (const record of this.contributions.items) {
-        if (!this.runtimeAllows(record) || record.options.when?.(accessor) === false ||
-          !isToolActive({ disallowedTools: this.toolPolicyGate.disabledTools }, record.options.name, record.options.source ?? 'builtin') ||
-          !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
-          this.deactivateRecord(record);
+    const records = this.contributions.items;
+    if (records.length === 0) return;
+    withToolPolicySnapshot(this.policyService, () => {
+      const data = this.profile.data();
+      const policy = {
+        tools: data.activeToolNames,
+        toolAllowPolicies: data.toolAllowPolicies,
+        disallowedTools: data.disallowedTools,
+        disabledToolGroups: data.disabledToolGroups,
+      };
+      const workspaceVeto = { disallowedTools: this.toolPolicyGate.disabledTools };
+      this.instantiationService.invokeFunction((accessor) => {
+        for (const record of records) {
+          const { id, options } = record;
+          const source = options.source ?? 'builtin';
+          const runtimeAllowed = this.runtimeAllows(record);
+          const workspaceAllowed = runtimeAllowed && isToolActive(workspaceVeto, options.name, source);
+          const policyActive = workspaceAllowed && this.policyService.isToolActiveForDisclosure(options.name, source);
+          const whenAllowed = policyActive ? (options.when?.(accessor) ?? true) : false;
+          if (!policyActive || !whenAllowed) {
+            this.deactivateRecord(record);
+            if (
+              !runtimeAllowed ||
+              !workspaceAllowed ||
+              options.name !== SEND_MESSAGE_TOOL_NAME ||
+              this.toolRegistry.resolve(options.name) !== undefined ||
+              !isSendMessageCapabilityAdmitted(accessor) ||
+              !this.isLegacyShippedMessageBinding(policy, options.name, source) ||
+              (options.when !== undefined && !options.when(accessor))
+            ) {
+              continue;
+            }
+          }
+          if (this.toolRegistry.resolve(options.name) !== undefined) continue;
+          const tool = accessor.get(id);
+          const registration = this.toolRegistry.register(tool, {
+            source: options.source,
+            disclosure: options.disclosure,
+          });
+          this.registrations.set(record, registration);
+          this._register(registration);
         }
-      }
-    }));
-    this.activateRecords(this.contributions.items);
+      });
+    });
   }
 
   private runtimeAllows(record: AgentToolContribution): boolean {

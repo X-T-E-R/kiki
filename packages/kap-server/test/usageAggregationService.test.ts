@@ -2628,4 +2628,43 @@ describe('SQLite Usage history source lifecycle', () => {
       changes.dispose();
     }
   });
+
+  it('handles 1,500 sessions and 2,000 subagents without quadratic invalidation or agent comparison stalls', async () => {
+    const changes = new Emitter<UsageSourceChange>();
+    const sessions: SessionSummary[] = [];
+    for (let i = 0; i < 1500; i += 1) {
+      sessions.push(summary(`s-${String(i).padStart(4, '0')}`, 'w'));
+    }
+    const subagents = ['main', ...Array.from({ length: 1999 }, (_, i) => `sub-${i}`)];
+    const f = fixture(
+      sessions,
+      {},
+      Date.now,
+      { sessionScanLimit: 200, sourceScanLimit: 64, deadlineMs: 5_000, preparationWaitMs: 100 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { ready: true, onDidChange: changes.event },
+    );
+    f.setAgentIds(subagents);
+    try {
+      const started = performance.now();
+      const response = await query(f.service);
+      const elapsedMs = performance.now() - started;
+
+      expect(response.reliability.complete).toBe(false);
+      expect(elapsedMs).toBeLessThan(2_000);
+
+      const invalidationStart = performance.now();
+      for (let i = 0; i < 500; i += 1) {
+        changes.fire(`w\0s-${String(i).padStart(4, '0')}`);
+      }
+      expect(performance.now() - invalidationStart).toBeLessThan(100);
+    } finally {
+      f.service.dispose();
+      changes.dispose();
+    }
+  });
 });

@@ -212,22 +212,52 @@ export function providerCredentialFields(
   return { api_key_env: resolveProviderApiKey(provider).envName };
 }
 
+export interface PrecomputedProtocolModelFields {
+  readonly effective?: ModelRecord;
+  readonly protocolSource?: ModelCatalogItem['protocol_source'];
+  readonly bindingOrigins?: Pick<ModelCatalogItem, 'endpoint_source' | 'endpoint_env' | 'auth_source' | 'auth_env'>;
+}
+
 export function toProtocolModel(
-  model: Model,
+  model: Pick<
+    Model,
+    | 'id'
+    | 'name'
+    | 'protocol'
+    | 'providerType'
+    | 'providerName'
+    | 'displayName'
+    | 'maxContextSize'
+    | 'autoCompact'
+    | 'contextStrategy'
+    | 'capabilities'
+    | 'alwaysThinking'
+    | 'supportEfforts'
+    | 'preferredThinkingEffort'
+    | 'overrides'
+    | 'defaultEffort'
+    | 'serviceTier'
+  >,
   record: ModelRecord,
   providerType?: string,
   provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
+  precomputed?: PrecomputedProtocolModelFields,
 ): ModelCatalogItem {
-  const effective = effectiveModelConfig(record, providerType ?? model.providerType);
-  const explained = explainModelProtocol(record, providerOf(providerType ?? model.providerType));
+  const effective = precomputed?.effective ?? effectiveModelConfig(record, providerType ?? model.providerType);
+  const protocolSource =
+    precomputed !== undefined && 'protocolSource' in precomputed
+      ? precomputed.protocolSource
+      : explainModelProtocol(record, providerOf(providerType ?? model.providerType))?.source;
+  const bindingOrigins =
+    precomputed?.bindingOrigins ?? modelBindingOriginFields(record, provider ?? providerOf(providerType ?? model.providerType));
   const effectiveCapabilities = modelCapabilityNames(model.capabilities);
   if (model.alwaysThinking) effectiveCapabilities.push('always_thinking');
   return {
     id: model.id,
     protocol: record.protocol,
     effective_protocol: model.protocol,
-    protocol_source: explained?.source,
-    ...modelBindingOriginFields(record, provider ?? providerOf(providerType ?? model.providerType)),
+    protocol_source: protocolSource,
+    ...bindingOrigins,
     provider_id: model.providerName,
     remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
@@ -312,14 +342,14 @@ export function modelBindingOriginFields(
 }
 
 function modelCapabilityNames(capabilities: ModelCapability): string[] {
-  return [
-    capabilities.image_in ? 'image_in' : undefined,
-    capabilities.video_in ? 'video_in' : undefined,
-    capabilities.audio_in ? 'audio_in' : undefined,
-    capabilities.thinking ? 'thinking' : undefined,
-    capabilities.tool_use ? 'tool_use' : undefined,
-    capabilities.dynamically_loaded_tools ? 'dynamically_loaded_tools' : undefined,
-  ].filter((capability): capability is string => capability !== undefined);
+  const out: string[] = [];
+  if (capabilities.image_in) out.push('image_in');
+  if (capabilities.video_in) out.push('video_in');
+  if (capabilities.audio_in) out.push('audio_in');
+  if (capabilities.thinking) out.push('thinking');
+  if (capabilities.tool_use) out.push('tool_use');
+  if (capabilities.dynamically_loaded_tools) out.push('dynamically_loaded_tools');
+  return out;
 }
 
 export function toProtocolProvider(
@@ -328,8 +358,9 @@ export function toProtocolProvider(
   models: Readonly<Record<string, ModelRecord>>,
   globalDefaultModel: string | undefined,
   credential: ProviderCredentialState,
+  precomputedModels?: string[],
 ): ProviderCatalogItem {
-  const providerModels = modelIdsForProvider(models, providerId);
+  const providerModels = precomputedModels ?? modelIdsForProvider(models, providerId);
   const defaultModel =
     provider.defaultModel ?? globalDefaultForProvider(models, globalDefaultModel, providerId);
   const key = providerCredentialFields(providerId, provider);
@@ -377,6 +408,23 @@ function imagePolicyToWire(config: ImagePolicyConfig | undefined): z.infer<typeo
     accepted_types: config.acceptedTypes === undefined ? undefined : [...config.acceptedTypes],
     convert_unsupported: config.convertUnsupported,
   };
+}
+
+export function groupModelIdsByProvider(
+  models: Readonly<Record<string, ModelRecord>>,
+): ReadonlyMap<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const [modelId, record] of Object.entries(models)) {
+    const providerId = record.provider;
+    if (providerId === undefined) continue;
+    let list = grouped.get(providerId);
+    if (list === undefined) {
+      list = [];
+      grouped.set(providerId, list);
+    }
+    list.push(modelId);
+  }
+  return grouped;
 }
 
 export function modelIdsForProvider(

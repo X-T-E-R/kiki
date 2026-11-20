@@ -110,9 +110,66 @@ function matchToolNameBlocks(text: string, pattern: RegExp): string[] {
   return names;
 }
 
+export const DEFERRED_TOOLS_ANNOUNCEMENT_LIMIT_ENV = 'KIKI_DEFERRED_TOOLS_ANNOUNCEMENT_LIMIT';
+export const DEFAULT_DEFERRED_TOOLS_ANNOUNCEMENT_LIMIT = 256;
+export const DEFERRED_TOOLS_ANNOUNCEMENT_MAX_CHARS_ENV = 'KIKI_DEFERRED_TOOLS_ANNOUNCEMENT_MAX_CHARS';
+export const DEFAULT_DEFERRED_TOOLS_ANNOUNCEMENT_MAX_CHARS = 32_768;
+
+function resolvePositiveAnnouncementLimit(envName: string, fallback: number): number {
+  const raw = process.env[envName]?.trim();
+  if (raw === undefined || raw.length === 0) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function resolveDeferredToolsAnnouncementLimit(): number {
+  return resolvePositiveAnnouncementLimit(
+    DEFERRED_TOOLS_ANNOUNCEMENT_LIMIT_ENV,
+    DEFAULT_DEFERRED_TOOLS_ANNOUNCEMENT_LIMIT,
+  );
+}
+
+export function resolveDeferredToolsAnnouncementMaxChars(): number {
+  return resolvePositiveAnnouncementLimit(
+    DEFERRED_TOOLS_ANNOUNCEMENT_MAX_CHARS_ENV,
+    DEFAULT_DEFERRED_TOOLS_ANNOUNCEMENT_MAX_CHARS,
+  );
+}
+
+export function selectBoundedDeferredTools<T extends ToolAnnouncementEntry>(
+  tools: readonly T[],
+  announced: ReadonlySet<string>,
+  maxTools: number = resolveDeferredToolsAnnouncementLimit(),
+  maxChars: number = resolveDeferredToolsAnnouncementMaxChars(),
+): { readonly selected: readonly T[]; readonly omitted: number } {
+  if (tools.length === 0) return { selected: [], omitted: 0 };
+  const safeMaxTools = Math.max(1, maxTools);
+  const safeMaxChars = Math.max(256, maxChars);
+  const ordered =
+    announced.size === 0
+      ? tools
+      : [
+          ...tools.filter((entry) => announced.has(entry.name)),
+          ...tools.filter((entry) => !announced.has(entry.name)),
+        ];
+  const selected: T[] = [];
+  let chars = 0;
+  for (const entry of ordered) {
+    if (selected.length >= safeMaxTools) break;
+    const lineChars = renderToolAnnouncement(entry).length + 1;
+    if (selected.length > 0 && chars + lineChars > safeMaxChars) break;
+    selected.push(entry);
+    chars += lineChars;
+  }
+  if (selected.length === tools.length) return { selected: tools, omitted: 0 };
+  selected.sort((a, b) => a.name.localeCompare(b.name));
+  return { selected, omitted: tools.length - selected.length };
+}
+
 export function renderLoadableToolsAnnouncement(
   added: readonly (string | ToolAnnouncementEntry)[],
   removed: readonly string[],
+  omittedCount = 0,
 ): string {
   const sections: string[] = [];
   if (added.length > 0) {
@@ -120,6 +177,11 @@ export function renderLoadableToolsAnnouncement(
   }
   if (removed.length > 0) {
     sections.push(`<tools_removed>\n${removed.join('\n')}\n</tools_removed>`);
+  }
+  if (omittedCount > 0) {
+    sections.push(
+      `(${omittedCount} additional deferred tools omitted due to prompt size cap; exact tool names remain loadable via ${SELECT_TOOLS_TOOL_NAME}.)`,
+    );
   }
   sections.push(
     `Use the ${SELECT_TOOLS_TOOL_NAME} tool with exact names to load full tool definitions before calling them. ` +

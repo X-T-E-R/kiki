@@ -75,12 +75,13 @@ import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   addSubagentBindingSchemaConstraints,
-  buildSubagentModelDescriptions,
   formatSubagentTimeoutDescription,
   normalizeSubagentBindingValue,
   resolveDefaultSubagentProfileName,
   resolveDefaultSubagentTarget,
   resolveSubagentTimeoutMs,
+  SUBAGENT_SECTION,
+  type SubagentConfig,
 } from '#/session/subagent/configSection';
 import {
   GENERIC_SUBAGENT_PROFILE,
@@ -104,6 +105,9 @@ import { SubagentTask, type SubagentHandle } from './subagent-task';
 import {
   compactProfileDescriptions,
   compactRouteDescriptions,
+  formatAdvertisedModelDescriptions,
+  resolveAgentRunAdvertisedProfilesLimit,
+  resolveAgentRunAdvertisedRoutesLimit,
 } from './subagentDescription';
 
 import AGENT_BACKGROUND_DISABLED_DESCRIPTION from './agent-background-disabled.md?raw';
@@ -192,21 +196,58 @@ export class SubagentTool implements ISubagentTool {
       ? '\n\nThis profile cannot create new subagents (can_spawn_subagents: false). Existing children may still be resumed.'
       : '\n\nallowed_subagents and deny_subagents constrain preset profile/route selection only. Preferred profiles are soft guidance, never permission or automatic fallback. profile_file supplies a new definition directly, not a preset selected by its name; it retains the existing tool, model, workspace and path constraints.';
     const targets = this.projectedTargets();
+    const profileLimit = resolveAgentRunAdvertisedProfilesLimit();
+    const routeLimit = resolveAgentRunAdvertisedRoutesLimit();
     const preferred = targets.profiles.filter((profile) =>
       evaluateSubagentDispatchDecision(this.catalog, own, profile.name).recommendationStatus === 'preferred');
-    const ordered = [...preferred, ...targets.profiles.filter((profile) => !preferred.includes(profile))];
-    this.advertised = this.profileDescriptions(ordered.slice(0, 8));
-    const typeLines = compactProfileDescriptions(ordered);
+    const preferredSet = new Set(preferred);
+    const ordered = [...preferred, ...targets.profiles.filter((profile) => !preferredSet.has(profile))];
+    this.advertised = this.profileDescriptions(ordered.slice(0, profileLimit));
+    const typeLines = compactProfileDescriptions(ordered, profileLimit);
     if (typeLines) {
       description += `\n\nAvailable profiles (pass via profile; preferred first):\n${typeLines}`;
-      if (ordered.length > 8) description += `\n${ordered.length - 8} more profiles omitted; use an exact profile name supplied by the user.`;
+      if (ordered.length > profileLimit) description += `\n${ordered.length - profileLimit} more profiles omitted; use an exact profile name supplied by the user.`;
     }
     description += '\n\nA profile model menu is non-exhaustive when restrict_models_to_menu is off. When on, only its original default and declared menu can bind, intersected with all other hard constraints. Static selection never falls back to the menu. Route/lease pins and resume model-change confirmation cannot expand this frozen menu.';
-    const routeLines = compactRouteDescriptions(targets.routes);
-    if (routeLines) description += `\n\nAvailable routes (pass via route):\n${routeLines}`;
-    const modelLines = buildSubagentModelDescriptions(targets.aliases.slice(0, 4));
+    const routeLines = compactRouteDescriptions(targets.routes, routeLimit);
+    if (routeLines) {
+      description += `\n\nAvailable routes (pass via route):\n${routeLines}`;
+      if (targets.routes.length > routeLimit) description += `\n${targets.routes.length - routeLimit} more routes omitted; use an exact route id supplied by the user.`;
+    }
+    const priorityAliases = this.collectPriorityModelAliases(own.modelAlias, ordered, targets.routes);
+    const modelLines = formatAdvertisedModelDescriptions(targets.aliases, priorityAliases);
     if (modelLines !== undefined) description += `\n\n${modelLines}`;
     return description;
+  }
+
+  private collectPriorityModelAliases(
+    callerModelAlias: string | undefined,
+    profiles: readonly AgentProfile[],
+    routes: readonly AgentProfileRouteCatalogEntry[],
+  ): readonly string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (alias: string | undefined): void => {
+      if (alias === undefined) return;
+      const trimmed = alias.trim();
+      if (trimmed.length === 0 || trimmed === 'auto' || trimmed === 'inherit') return;
+      const resolved = this.models.resolveId(trimmed) ?? trimmed;
+      if (seen.has(resolved)) return;
+      seen.add(resolved);
+      out.push(resolved);
+    };
+    add(this.models.getDefaultModel());
+    add(this.config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.defaultModel);
+    add(callerModelAlias);
+    for (const profile of profiles) {
+      add(profile.modelAlias);
+      for (const entry of profile.modelProfiles ?? []) add(entry.alias);
+      for (const preferred of profile.preferredModels ?? []) add(preferred);
+    }
+    for (const route of routes) {
+      add(route.modelAlias);
+    }
+    return out;
   }
 
   dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog {
@@ -226,7 +267,9 @@ export class SubagentTool implements ISubagentTool {
     const { caller } = this.dispatchCatalog();
     const profiles = this.projectedTargets().profiles;
     const preferred = profiles.filter((profile) => evaluateSubagentDispatchDecision(this.catalog, caller, profile.name).recommendationStatus === 'preferred');
-    return this.profileDescriptions([...preferred, ...profiles.filter((profile) => !preferred.includes(profile))].slice(0, 8));
+    const preferredSet = new Set(preferred);
+    const profileLimit = resolveAgentRunAdvertisedProfilesLimit();
+    return this.profileDescriptions([...preferred, ...profiles.filter((profile) => !preferredSet.has(profile))].slice(0, profileLimit));
   }
 
   private profileDescriptions(profiles: readonly AgentProfile[]): ReturnType<ISubagentTool['visibleProfileDescriptions']> {

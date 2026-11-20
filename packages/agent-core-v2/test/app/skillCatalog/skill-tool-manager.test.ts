@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
+import {
+  InMemorySkillCatalog,
+  MODEL_SKILL_LISTING_LIMIT_ENV,
+} from '#/app/skillCatalog/registry';
 import { type SkillCatalog, type SkillDefinition } from '#/app/skillCatalog/types';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import {
@@ -383,5 +386,36 @@ describe('ToolManager SkillTool workspace refresh', () => {
 
   it('exposes session skills after the main agent is created', () => {
     expect(tools.resolve('Skill')).toMatchObject({ name: 'Skill' });
+  });
+});
+
+describe('InMemorySkillCatalog scale bounds', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('bounds model skill listing for 1,200 skills while keeping project skills first and O(1) lookup', () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(stubSkill('project-first', { source: 'project', description: 'Top priority project skill' }));
+    for (let i = 0; i < 1200; i += 1) {
+      catalog.register(
+        stubSkill(`user-skill-${String(i).padStart(4, '0')}`, {
+          source: 'user',
+          description: `User skill description ${i}`,
+        }),
+      );
+    }
+
+    const listing = catalog.getModelSkillListing();
+    expect(listing).toContain('### Project');
+    expect(listing).toContain('- project-first: Top priority project skill');
+    expect(listing).toContain('... and 1073 more available skills omitted; invoke any known skill by its exact name via Skill.');
+    expect(Buffer.byteLength(listing, 'utf8')).toBeLessThanOrEqual(34 * 1024);
+    expect(catalog.getSkill('user-skill-1199')?.name).toBe('user-skill-1199');
+
+    vi.stubEnv(MODEL_SKILL_LISTING_LIMIT_ENV, '10');
+    const narrow = catalog.getModelSkillListing();
+    expect(narrow).toContain('- project-first: Top priority project skill');
+    expect(narrow).toContain('... and 1191 more available skills omitted; invoke any known skill by its exact name via Skill.');
   });
 });
