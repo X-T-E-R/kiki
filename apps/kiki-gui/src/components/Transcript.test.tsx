@@ -11419,4 +11419,104 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     await settleVirtualizer();
     expect(scroll.scrollTop).toBe(targetTop);
   });
+
+  it('preserves the visible anchor row offset when a mid-list stepsPartial turn hydrates into multiple rows above scrollTop while virtualNodes[0] stays unchanged', async () => {
+    const head = virtualBlocks(20, 'mid-hydrate-head');
+    const partialStub: Block = {
+      ...assistantBlock('partial-t20-stub', 'Partial stub for turn 20'),
+      turnId: 't20',
+    };
+    const tail = virtualBlocks(100, 'mid-hydrate-tail');
+    const initial = [...head, partialStub, ...tail];
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 6000);
+    await settleVirtualizer();
+    const before = currentVirtualAnchor(container);
+    const beforeTop = scroll.scrollTop;
+    expect(before.blockId).toMatch(/^mid-hydrate-tail-/);
+
+    const hydratedRows: Block[] = Array.from({ length: 12 }, (_, index) => ({
+      ...assistantBlock(`hydrated-t20-row-${index}`, `Hydrated step ${index} for turn 20`),
+      turnId: 't20',
+    }));
+    await renderSettled(root, virtualTranscript(transcriptState([...head, ...hydratedRows, ...tail])));
+    await settleVirtualizer();
+    const after = currentVirtualAnchor(container);
+    expect(after.blockId).toBe(before.blockId);
+    expect(Math.abs(after.offset - before.offset)).toBeLessThanOrEqual(1);
+    expect(scroll.scrollTop).toBeGreaterThan(beforeTop);
+  });
+
+  it('falls back to the first surviving row of the same turnId when the top visible partial stub splits into multiple rows', async () => {
+    const head = virtualBlocks(20, 'split-head');
+    const partialStub: Block = {
+      ...assistantBlock('split-t20-stub', 'Partial stub at viewport top'),
+      turnId: 't20',
+    };
+    const tail = virtualBlocks(80, 'split-tail');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([...head, partialStub, ...tail])));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    // Scroll directly onto row 20 (partialStub) + 12px inset.
+    await setTranscriptScroll(scroll, 24 + 20 * (120 + 16) + 12);
+    await settleVirtualizer();
+    const stubEl = container.querySelector<HTMLElement>('[data-block-id="split-t20-stub"]')!;
+    expect(stubEl).not.toBeNull();
+    const stubRow = stubEl.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    await setTranscriptScroll(scroll, virtualItemStart(stubRow) + 12);
+    await settleVirtualizer();
+    const before = currentVirtualAnchor(container);
+    expect(before.blockId).toBe('split-t20-stub');
+
+    const hydratedRows: Block[] = Array.from({ length: 8 }, (_, index) => ({
+      ...assistantBlock(`split-t20-row-${index}`, `Hydrated turn 20 row ${index}`),
+      turnId: 't20',
+    }));
+    await renderSettled(root, virtualTranscript(transcriptState([...head, ...hydratedRows, ...tail])));
+    await settleVirtualizer();
+    const after = currentVirtualAnchor(container);
+    expect(after.blockId).toBe('split-t20-row-0');
+    expect(Math.abs(after.offset - before.offset)).toBeLessThanOrEqual(1);
+  });
+
+  it('compensates async row height growth strictly above scrollTop without re-engaging stickToBottom', async () => {
+    const blocks = virtualBlocks(100, 'above-resize');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 5500);
+    await settleVirtualizer();
+    const before = currentVirtualAnchor(container);
+    const beforeTop = scroll.scrollTop;
+
+    const mountedRows = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')];
+    const aboveRow = mountedRows.find((row) => virtualItemStart(row) + row.offsetHeight <= scroll.scrollTop);
+    expect(aboveRow).toBeDefined();
+    const delta = 300;
+    await act(async () => {
+      resizeElement(aboveRow!, aboveRow!.offsetHeight + delta);
+    });
+    await settleVirtualizer();
+    const after = currentVirtualAnchor(container);
+    expect(after.blockId).toBe(before.blockId);
+    expect(Math.abs(after.offset - before.offset)).toBeLessThanOrEqual(1);
+    expect(scroll.scrollTop).toBe(beforeTop + delta);
+
+    // A subsequent trailing append must NOT yank the scrolled-up reader to bottom.
+    const compensatedTop = scroll.scrollTop;
+    await renderSettled(
+      root,
+      virtualTranscript({
+        ...transcriptState([...blocks, assistantBlock('above-resize-100', 'New streamed tail')]),
+        busy: true,
+      }),
+    );
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(compensatedTop);
+  });
 });

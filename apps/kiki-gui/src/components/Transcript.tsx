@@ -5988,8 +5988,13 @@ export const Transcript = memo(function Transcript({
     stickToBottomRef.current.state.lastScrollTop = targetTop;
     lastObservedScrollTopRef.current = targetTop;
   }, []);
-  const prevFirstKeyRef = useRef<string | undefined>(undefined);
-  const pendingPrependAnchorRef = useRef<{ readonly key: string; readonly offset: number } | null>(null);
+  const prevVirtualNodesRef = useRef<readonly TranscriptVirtualNode[] | null>(null);
+  const pendingPrependAnchorRef = useRef<{
+    readonly key: string;
+    readonly turnId?: string;
+    readonly memberId?: string;
+    readonly offset: number;
+  } | null>(null);
   const domAtEndBeforeRender =
     scrollRef.current !== null && scrollRef.current.isConnected && scrollRef.current.clientHeight > 0
       ? scrollRef.current.scrollHeight - scrollRef.current.clientHeight - scrollRef.current.scrollTop <= TRANSCRIPT_END_THRESHOLD
@@ -6000,11 +6005,12 @@ export const Transcript = memo(function Transcript({
     (!initialScrollDoneRef.current || domAtEndBeforeRender);
   const wasAtEndBeforeRender =
     initialScrollDoneRef.current ? followingEndNow : viewportAnchorRef.current.atEnd;
-  const nextFirstKey = virtualNodes.length > 0 ? virtualNodeKey(virtualNodes[0]) : undefined;
+  const prevVirtualNodes = prevVirtualNodesRef.current;
   if (
-    prevFirstKeyRef.current !== undefined &&
-    nextFirstKey !== undefined &&
-    prevFirstKeyRef.current !== nextFirstKey &&
+    prevVirtualNodes !== null &&
+    prevVirtualNodes !== virtualNodes &&
+    prevVirtualNodes.length > 0 &&
+    virtualNodes.length > 0 &&
     virtualizerRef.current !== null &&
     scrollRef.current !== null &&
     scrollRef.current.isConnected &&
@@ -6015,11 +6021,28 @@ export const Transcript = memo(function Transcript({
     const prevInstance = virtualizerRef.current;
     const currentOffset = prevInstance.scrollOffset ?? scrollRef.current.scrollTop;
     const topItem = prevInstance.getVirtualItemForOffset(currentOffset);
-    if (topItem !== undefined && typeof topItem.key === 'string') {
-      pendingPrependAnchorRef.current = { key: topItem.key, offset: currentOffset - topItem.start };
+    if (topItem !== undefined && typeof topItem.key === 'string' && topItem.index < prevVirtualNodes.length) {
+      let prefixChanged = virtualNodes.length <= topItem.index;
+      if (!prefixChanged) {
+        for (let i = 0; i <= topItem.index; i += 1) {
+          if (virtualNodeKey(prevVirtualNodes[i]) !== virtualNodeKey(virtualNodes[i])) {
+            prefixChanged = true;
+            break;
+          }
+        }
+      }
+      if (prefixChanged) {
+        const identity = anchorIdentityForNode(prevVirtualNodes[topItem.index]);
+        pendingPrependAnchorRef.current = {
+          key: topItem.key,
+          turnId: identity.turnId,
+          memberId: identity.memberId,
+          offset: currentOffset - topItem.start,
+        };
+      }
     }
   }
-  prevFirstKeyRef.current = nextFirstKey;
+  prevVirtualNodesRef.current = virtualNodes;
   const priorHistoryShapeRef = useRef({ resetVersion: state.transcriptResetVersion, length: virtualNodes.length });
   useInsertionEffect(() => {
     const prior = priorHistoryShapeRef.current;
@@ -6050,7 +6073,7 @@ export const Transcript = memo(function Transcript({
     scrollToFn: (offset, options, instance) => {
       const el = instance.scrollElement;
       if (el !== null && options?.behavior !== 'smooth') {
-        markProgrammaticScroll(Math.max(0, offset));
+        markProgrammaticScroll(Math.max(0, offset + (options?.adjustments ?? 0)));
       }
       elementScroll(offset, options, instance);
       if (el !== null && options?.behavior !== 'smooth') {
@@ -6171,10 +6194,29 @@ export const Transcript = memo(function Transcript({
       ? null
       : { startIndex: virtualizer.range.startIndex, endIndex: virtualizer.range.endIndex };
   const rangeKey = virtualizer.range === null ? 'empty' : `${virtualizer.range.startIndex}:${virtualizer.range.endIndex}`;
-  useLayoutEffect(
-    () => installTranscriptAnchoring(virtualizer, stickController),
-    [scrollElement, loaded, loadError, virtualizer, stickController],
-  );
+  useLayoutEffect(() => {
+    const cleanup = installTranscriptAnchoring(virtualizer, stickController);
+    const baseShouldAdjust = virtualizer.shouldAdjustScrollPositionOnItemSizeChange;
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {
+      if (
+        !visibleRef.current ||
+        measuredResetRef.current !== resetVersionRef.current ||
+        pendingResetRestoreRef.current !== null
+      ) {
+        return false;
+      }
+      if (!isFollowingBottom()) {
+        const scrollOffset = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
+        if (item.start + item.size <= scrollOffset) return true;
+        if (!instance.itemSizeCache.has(item.key) && item.start < scrollOffset) return true;
+      }
+      return baseShouldAdjust?.(item, delta, instance) ?? false;
+    };
+    return () => {
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange = baseShouldAdjust;
+      cleanup();
+    };
+  }, [scrollElement, loaded, loadError, virtualizer, stickController, isFollowingBottom]);
   // Keep `useStickToBottom` synchronized synchronously on non-programmatic
   // scroll events (wheel/scrollbar/keyboard or direct scrollTop moves) so no
   // 1ms timer window can misclassify an upward scroll as still following bottom.
@@ -6224,13 +6266,27 @@ export const Transcript = memo(function Transcript({
     const pendingPrepend = pendingPrependAnchorRef.current;
     if (pendingPrepend !== null) {
       pendingPrependAnchorRef.current = null;
-      if (!navRestorePendingRef.current && pendingResetRestoreRef.current === null && !isFollowingBottom()) {
-        const nextIndex = nodeIndexesRef.current.get(pendingPrepend.key);
+      if (
+        !navRestorePendingRef.current &&
+        pendingResetRestoreRef.current === null &&
+        rekeyedFoldAnchorRef.current === null &&
+        !isFollowingBottom()
+      ) {
+        let nextIndex = nodeIndexesRef.current.get(pendingPrepend.key);
+        let matchedByFallback = false;
+        if (nextIndex === undefined && pendingPrepend.memberId !== undefined) {
+          nextIndex = locateIndexFor(virtualNodesRef.current).blocks.get(pendingPrepend.memberId)?.index;
+          if (nextIndex !== undefined) matchedByFallback = true;
+        }
+        if (nextIndex === undefined && pendingPrepend.turnId !== undefined) {
+          nextIndex = locateIndexFor(virtualNodesRef.current).turns.get(pendingPrepend.turnId);
+          if (nextIndex !== undefined) matchedByFallback = true;
+        }
         if (nextIndex !== undefined) {
           const nextStart = virtualizer.measurementsCache[nextIndex]?.start
             ?? virtualizer.getOffsetForIndex(nextIndex, 'start')?.[0];
           if (nextStart !== undefined) {
-            const targetTop = Math.max(0, nextStart + pendingPrepend.offset);
+            const targetTop = Math.max(0, nextStart + (matchedByFallback ? Math.max(0, pendingPrepend.offset) : pendingPrepend.offset));
             virtualizer.scrollToOffset(targetTop, { align: 'start' });
             virtualizer.scrollOffset = scroll.scrollTop;
             viewportAnchorRef.current = captureTranscriptAnchor(virtualizer, false, virtualNodesRef.current, false);
@@ -6254,7 +6310,7 @@ export const Transcript = memo(function Transcript({
       }
       viewportAnchorRef.current = captureTranscriptAnchor(virtualizer, false, virtualNodesRef.current, true);
     }
-  }, [loaded, loadError, visible, scrollElement, virtualizer, virtualNodes.length, rangeKey, state.transcriptResetVersion, wasAtEndBeforeRender, isFollowingBottom, landAtEnd]);
+  }, [loaded, loadError, visible, scrollElement, virtualizer, virtualNodes, rangeKey, state.transcriptResetVersion, wasAtEndBeforeRender, isFollowingBottom, landAtEnd]);
   // ---- incomplete turns read their own structure while they are in view ----
   // A turn the window cut (its step list does not reach back to its opening)
   // reads its structure as soon as any of its rows is in the virtual window,

@@ -6323,7 +6323,10 @@ it('preserves missing-prefix and missing-suffix structure through cold and ancho
     expect(anchored?.items.find(item => item.kind === 'turn' && item.turnId === 't2')).toMatchObject({ prompt: 'saved prompt 2', stepsPartial: true });
     expect(await service.readAnchoredColdSnapshot('s1', 'main', 't2')).toEqual(anchored);
     expect(await service.readColdWindowTurn('s1', 'main', 't2')).toHaveProperty('stepsPartial', true);
-    expect(await service.readProjectedColdTurn('s1', 'main', 't2')).toBeUndefined();
+    const direct = await service.readProjectedColdTurn('s1', 'main', 't2');
+    expect(direct).toMatchObject({ turnId: 't2', prompt: 'saved prompt 2' });
+    expect(direct?.stepsPartial).toBeUndefined();
+    expect(direct?.steps).toHaveLength(8);
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
@@ -7643,6 +7646,204 @@ it('falls back to canonical replay when fitOlderColdWindow trims a 5 MiB turn.pr
     const full = await service.readColdSnapshot('s1', 'main');
     const fullT8 = full?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't8');
     expect(t8?.steps.flatMap((step) => step.frames)).toEqual(fullT8?.steps.flatMap((step) => step.frames));
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('hydrates a stepsPartial turn on a >40 MiB cold wire directly via ColdTurnByteSpan in <100ms with zero preparing slices', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-direct-span-40m-'));
+  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const padLine = `${JSON.stringify({ type: 'fixture.padding', padding: 'p'.repeat(512 << 10) })}\n`;
+  await writeFixtureFile(wirePath, padLine.repeat(82));
+  const tailRecords: object[] = [];
+  tailRecords.push({
+    type: 'turn.prompt',
+    turnId: 150,
+    promptId: 'prompt-150',
+    input: [{ type: 'text', text: 'target hydrated turn 150' }],
+    origin: { kind: 'user' },
+    time: 10_000,
+  });
+  for (let step = 0; step < 10; step += 1) {
+    tailRecords.push(
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 150, step: step + 1, uuid: `step-150-${step}` } },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 150, stepUuid: `step-150-${step}`, uuid: `frame-150-${step}`, part: { type: 'text', text: `step-${step}:${'b'.repeat(220 << 10)}` } } },
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 150, step: step + 1, uuid: `step-150-${step}` } },
+    );
+  }
+  tailRecords.push({ type: 'turn.ended', turnId: 150, reason: 'completed', time: 10_500 });
+  for (let turnId = 151; turnId <= 165; turnId += 1) {
+    tailRecords.push(
+      { type: 'turn.prompt', turnId, promptId: `prompt-${turnId}`, input: [{ type: 'text', text: `recent turn ${turnId}` }], origin: { kind: 'user' }, time: 11_000 + turnId },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `step-${turnId}` } },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId, stepUuid: `step-${turnId}`, uuid: `frame-${turnId}`, part: { type: 'text', text: `reply ${turnId}` } } },
+      { type: 'turn.ended', turnId, reason: 'completed', time: 11_100 + turnId },
+    );
+  }
+  await appendFixtureFile(wirePath, `${tailRecords.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const wireSize = (await fsPromises.stat(wirePath)).size;
+  expect(wireSize).toBeGreaterThan(40 << 20);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  const db = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+  const nav = new HistoryLocatorStore(db, service);
+  const locatorReadSpy = vi.spyOn(nav, 'readCanonicalEntity');
+  service.setHistoryLocatorReader(() => nav);
+  const signal = new AbortController().signal;
+  try {
+    const firstScreen = await service.readColdPageSnapshot('s1', 'main', (value) => value, signal, false, undefined, false, true, true);
+    const partialT150 = firstScreen?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't150');
+    expect(partialT150).toBeDefined();
+    expect(partialT150?.stepsPartial).toBe(true);
+
+    let preparingSlices = 0;
+    const startedAt = performance.now();
+    let hydrated: TranscriptTurn | undefined;
+    try {
+      hydrated = await service.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't150' }, signal) as TranscriptTurn | undefined;
+    } catch (error) {
+      if (error instanceof CanonicalEntityPreparingError) preparingSlices += 1;
+      throw error;
+    }
+    const elapsedMs = performance.now() - startedAt;
+    expect(preparingSlices).toBe(0);
+    expect(locatorReadSpy).not.toHaveBeenCalled();
+    expect(elapsedMs).toBeLessThan(100);
+    expect(hydrated).toMatchObject({ turnId: 't150', prompt: 'target hydrated turn 150' });
+    expect(hydrated?.stepsPartial).toBeUndefined();
+    expect(hydrated?.steps).toHaveLength(10);
+    expect(hydrated?.steps[0]?.frames[0]).toMatchObject({ kind: 'text', frameId: 'frame-150-0' });
+    expect(hydrated?.steps[9]?.frames[0]).toMatchObject({ kind: 'text', frameId: 'frame-150-9' });
+
+    const bytesAfterHydrate = service.memoryReport().coldReads.bytes;
+    const cachedFrame = await service.readCanonicalEntity(
+      's1',
+      'main',
+      { kind: 'frame', id: 'frame-150-9', turnId: 't150', stepId: 'step-150-9' },
+      signal,
+    );
+    expect(cachedFrame).toMatchObject({ kind: 'text', frameId: 'frame-150-9' });
+    expect(service.memoryReport().coldReads.bytes).toBe(bytesAfterHydrate);
+    expect(locatorReadSpy).not.toHaveBeenCalled();
+
+    const cappedService = new TranscriptService({
+      homeDir: home,
+      core: coldCore(),
+      coldTurnSpanLimits: { maxDirectTurnBytes: 64 << 10 },
+    });
+    const cappedNav = new HistoryLocatorStore(db, cappedService);
+    const cappedSpy = vi.spyOn(cappedNav, 'readCanonicalEntity');
+    cappedService.setHistoryLocatorReader(() => cappedNav);
+    try {
+      await cappedService.readColdPageSnapshot('s1', 'main', (value) => value, signal, false, undefined, false, true, true);
+      await expect(cappedService.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't150' }, signal))
+        .rejects.toBeInstanceOf(CanonicalEntityPreparingError);
+      expect(cappedSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      cappedService.dispose();
+    }
+
+    await appendFixtureFile(wirePath, `${JSON.stringify({ type: 'context.undo', count: 1, time: 12_000 })}\n`);
+    const undoneService = new TranscriptService({ homeDir: home, core: coldCore() });
+    const undoneNav = new HistoryLocatorStore(db, undoneService);
+    const undoneSpy = vi.spyOn(undoneNav, 'readCanonicalEntity');
+    undoneService.setHistoryLocatorReader(() => undoneNav);
+    try {
+      await undoneService.readColdPageSnapshot('s1', 'main', (value) => value, signal, false, undefined, false, true, true);
+      await expect(undoneService.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't150' }, signal))
+        .rejects.toBeInstanceOf(CanonicalEntityPreparingError);
+      expect(undoneSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      undoneService.dispose();
+    }
+  } finally {
+    service.dispose();
+    await db.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('does not starve neighboring compact turns into stepsPartial when one giant turn exceeds the first-screen loop budget', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-no-starvation-'));
+  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const records: object[] = [];
+  for (let turnId = 0; turnId < 39; turnId += 1) {
+    records.push(
+      { type: 'turn.prompt', turnId, promptId: `p-${turnId}`, input: [{ type: 'text', text: `question ${turnId}` }], origin: { kind: 'user' }, time: 1_000 + turnId },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `step-${turnId}` } },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId, stepUuid: `step-${turnId}`, uuid: `frame-${turnId}`, part: { type: 'text', text: `compact-${turnId}:${'c'.repeat(4 << 10)}` } } },
+      { type: 'turn.ended', turnId, reason: 'completed', time: 1_100 + turnId },
+    );
+  }
+  records.push(
+    { type: 'turn.prompt', turnId: 39, promptId: 'p-39', input: [{ type: 'text', text: 'giant turn 39' }], origin: { kind: 'user' }, time: 2_000 },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 39, step: 1, uuid: 'step-39' } },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 39, stepUuid: 'step-39', uuid: 'frame-39', part: { type: 'text', text: 'g'.repeat(2 << 20) } } },
+    { type: 'turn.ended', turnId: 39, reason: 'completed', time: 2_100 },
+  );
+  await writeFixtureFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const snapshot = await service.readColdPageSnapshot('s1', 'main', (value) => value, undefined, false, undefined, false, true, true);
+    const turns = (snapshot?.items ?? []).filter((item): item is TranscriptTurn => item.kind === 'turn');
+    expect(turns.map((turn) => turn.turnId)).toEqual(Array.from({ length: 20 }, (_, index) => `t${index + 20}`));
+    const giant = turns.find((turn) => turn.turnId === 't39');
+    expect(giant?.stepsPartial).toBe(true);
+    for (let turnId = 20; turnId <= 38; turnId += 1) {
+      const compact = turns.find((turn) => turn.turnId === `t${turnId}`);
+      expect(compact?.stepsPartial).toBeUndefined();
+      expect(compact?.steps).toHaveLength(1);
+      expect(compact?.steps[0]?.frames[0]).toMatchObject({ kind: 'text', frameId: `frame-${turnId}` });
+    }
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('does not re-scan from byte zero when a contiguous cold window contains a legitimate turnId gap', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-turn-gap-contiguous-'));
+  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const padLine = `${JSON.stringify({ type: 'fixture.padding', padding: 'q'.repeat(512 << 10) })}\n`;
+  await writeFixtureFile(wirePath, padLine.repeat(20));
+  const tailRecords: object[] = [];
+  for (const turnId of [5, 6, 7, 9, 10, 11, 12]) {
+    tailRecords.push(
+      { type: 'turn.prompt', turnId, promptId: `p-${turnId}`, input: [{ type: 'text', text: `turn ${turnId}` }], origin: { kind: 'user' }, time: 1_000 + turnId },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `step-${turnId}` } },
+      { type: 'context.append_loop_event', event: { type: 'assistant.delta', turnId, stepUuid: `step-${turnId}`, uuid: `frame-${turnId}`, delta: `body ${turnId}` } },
+      { type: 'turn.ended', turnId, reason: 'completed', time: 1_100 + turnId },
+    );
+  }
+  await appendFixtureFile(wirePath, `${tailRecords.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  const anchorSpy = vi.spyOn(service, 'readAnchoredColdSnapshot');
+  try {
+    const live = new AgentTranscript('main');
+    live.apply([{
+      op: 'reset',
+      agentId: 'main',
+      snapshot: {
+        items: [],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        toolCallCount: undefined,
+        toolCallCountKnown: false,
+        meta: {},
+        hasMoreOlder: true,
+      },
+    }]);
+    const full = await service.readFullAgentSnapshot('s1', 'main', live, undefined, (snapshot) => snapshot, 't9');
+    expect(anchorSpy).not.toHaveBeenCalled();
+    const turnIds = (full?.items ?? []).flatMap((item) => item.kind === 'turn' ? [item.turnId] : []);
+    expect(turnIds).toEqual(['t5', 't6', 't7', 't9', 't10', 't11', 't12']);
   } finally {
     service.dispose();
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
