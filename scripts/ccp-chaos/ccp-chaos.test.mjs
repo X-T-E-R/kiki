@@ -16,6 +16,7 @@ import {
 } from './check-test-hygiene.mjs';
 import { createContractTwinServer } from './contract-twin-server.mjs';
 import { generateChaosCorpus } from './corpus-generator.mjs';
+import { resolveAccountSources, resolveManifestPath } from './run-on-ccp.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
@@ -434,5 +435,52 @@ describe('Anti-Zombie Test Hygiene Gate (check-test-hygiene.mjs)', () => {
     const parsed = extractInlineContracts('packages/foo/bar.test.ts', "defineTestContract({ invariant: 'short', sunset: { kind: 'permanent' } })");
     assert.equal(parsed.length, 1);
     assert.equal(parsed[0].mechanism, '');
+  });
+});
+
+describe('CCP Manifest & Account Source Configuration (Zero-PII)', () => {
+  it('resolves manifest path and account sources from env/manifest with clean defaults when no private manifest exists', () => {
+    const examplePath = path.join(import.meta.dirname, 'corpus-manifest.example.json');
+    const example = JSON.parse(fs.readFileSync(examplePath, 'utf8'));
+    assert.equal(example.account_id, 'acc_00000000000000000000000000000000');
+    assert.equal(example.drive_folder_id, 'DRIVE_FOLDER_ID_EXAMPLE');
+    assert.equal(example.binding.drive_file_id, 'DRIVE_FILE_ID_EXAMPLE');
+
+    assert.equal(
+      resolveManifestPath({}),
+      path.join(import.meta.dirname, 'corpus-manifest.json'),
+    );
+    assert.equal(
+      resolveManifestPath({ KIKI_CHAOS_MANIFEST_PATH: '/custom/private/manifest.json' }),
+      '/custom/private/manifest.json',
+    );
+
+    assert.deepEqual(resolveAccountSources(null, {}), {});
+    assert.deepEqual(resolveAccountSources(example, {}), example.account_sources);
+
+    const merged = resolveAccountSources(
+      {
+        account_sources: {
+          acc_from_manifest: { runnerSourceId: 'src_m', driveFolderId: 'folder_m' },
+          acc_shared: { runnerSourceId: 'src_old', driveFolderId: 'folder_old' },
+        },
+      },
+      {
+        KIKI_CHAOS_ACCOUNT_SOURCES_JSON: JSON.stringify({
+          acc_shared: { runnerSourceId: 'src_env', driveFolderId: 'folder_env' },
+          acc_from_env: { runnerSourceId: 'src_e', driveFolderId: 'folder_e' },
+        }),
+      },
+    );
+    assert.deepEqual(merged, {
+      acc_from_manifest: { runnerSourceId: 'src_m', driveFolderId: 'folder_m' },
+      acc_shared: { runnerSourceId: 'src_env', driveFolderId: 'folder_env' },
+      acc_from_env: { runnerSourceId: 'src_e', driveFolderId: 'folder_e' },
+    });
+
+    assert.throws(
+      () => resolveAccountSources(null, { KIKI_CHAOS_ACCOUNT_SOURCES_JSON: '{bad-json' }),
+      /Invalid KIKI_CHAOS_ACCOUNT_SOURCES_JSON/u,
+    );
   });
 });

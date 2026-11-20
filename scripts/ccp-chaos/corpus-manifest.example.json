@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "description": "Example CCP chaos-scale NVMe corpus manifest (replace placeholders in local gitignored corpus-manifest.json)",
+  "account_id": "acc_00000000000000000000000000000000",
+  "runner_source_id": "src_0000000000000000000000000000000000000000000000000000000000000000",
+  "drive_folder_id": "DRIVE_FOLDER_ID_EXAMPLE",
+  "save_operation_id": "aop_0000000000000000000000000000000000000000000000000000000000000000",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "giant_wire_gib": 3.1,
+  "subagent_count": 1520,
+  "account_sources": {
+    "acc_00000000000000000000000000000000": {
+      "runnerSourceId": "src_0000000000000000000000000000000000000000000000000000000000000000",
+      "driveFolderId": "DRIVE_FOLDER_ID_EXAMPLE"
+    }
+  },
+  "binding": {
+    "drive_source": "ACCOUNT",
+    "relative_path": "kiki-chaos-corpus-v1.tar.zst",
+    "drive_file_id": "DRIVE_FILE_ID_EXAMPLE",
+    "drive_version": "1",
+    "drive_head_revision_id": "DRIVE_HEAD_REVISION_ID_EXAMPLE",
+    "size_bytes": 0
+  }
+}

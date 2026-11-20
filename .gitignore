@@ -88,3 +88,7 @@ handover.md
 *-mockup.html
 *-demo.html
 *-demos.html
+
+# Local private CCP chaos corpus manifest (use corpus-manifest.example.json in repo)
+scripts/ccp-chaos/corpus-manifest.json
+
