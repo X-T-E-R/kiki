@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { compressImageForModel, MAX_IMAGE_DECODE_BYTES } from '@kiki/agent-core-v2/agent/media/image-compress';
@@ -12,17 +13,62 @@ import { MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
 export const MEDIA_PREVIEW_BYTES = MEDIA_PREVIEW_MAX_BYTES;
 export const MEDIA_PREVIEW_EDGE = 768;
 
-const PREVIEW_RESULT_CACHE_MAX_ENTRIES = 256;
-const PREVIEW_RESULT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_PREVIEW_RESULT_CACHE_MAX_ENTRIES = 256;
+const DEFAULT_PREVIEW_RESULT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const DISK_CACHE_SUBDIR = ['cache', 'media-previews-v1'] as const;
 const DISK_CACHE_FORMAT_VERSION = 1;
-const DISK_CACHE_MAX_ENTRIES = 512;
-const DISK_CACHE_MAX_BYTES = 96 * 1024 * 1024;
+const DEFAULT_DISK_CACHE_MAX_ENTRIES = 512;
+const DEFAULT_DISK_CACHE_MAX_BYTES = 96 * 1024 * 1024;
+const DEFAULT_FFMPEG_TIMEOUT_MS = 10_000;
 let diskTempCounter = 0;
 let diskWritesSinceSweep = 0;
 const sweepingDirs = new Set<string>();
 
-/** Per-server bounded memory cache and single-flight deduplicator for rendered media previews. */
+function readPositiveIntEnv(name: string, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.min(max, parsed);
+}
+
+function defaultPreviewConcurrency(): number {
+  const workers = typeof availableParallelism === 'function' ? availableParallelism() : 4;
+  return Math.max(2, Math.min(8, Math.floor(workers / 2) || 2));
+}
+
+function configuredPreviewCacheMaxEntries(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PREVIEW_CACHE_MAX_ENTRIES', DEFAULT_PREVIEW_RESULT_CACHE_MAX_ENTRIES, 1, 65_536);
+}
+
+function configuredPreviewCacheMaxBytes(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PREVIEW_CACHE_MAX_BYTES', DEFAULT_PREVIEW_RESULT_CACHE_MAX_BYTES, 64 * 1024, 1024 * 1024 * 1024);
+}
+
+function configuredDiskCacheMaxEntries(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PREVIEW_DISK_CACHE_MAX_ENTRIES', DEFAULT_DISK_CACHE_MAX_ENTRIES, 1, 100_000);
+}
+
+function configuredDiskCacheMaxBytes(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PREVIEW_DISK_CACHE_MAX_BYTES', DEFAULT_DISK_CACHE_MAX_BYTES, 1024 * 1024, 4 * 1024 * 1024 * 1024);
+}
+
+function configuredPreviewConcurrency(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PREVIEW_CONCURRENCY', defaultPreviewConcurrency(), 1, 64);
+}
+
+function configuredFfmpegTimeoutMs(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PREVIEW_FFMPEG_TIMEOUT_MS', DEFAULT_FFMPEG_TIMEOUT_MS, 500, 120_000);
+}
+
+/** Optional capacity and decode-concurrency overrides for a media preview cache instance. */
+export interface MediaPreviewCacheOptions {
+  readonly maxEntries?: number;
+  readonly maxBytes?: number;
+  readonly maxConcurrency?: number;
+}
+
+/** Per-server bounded memory cache, decode concurrency gate, and single-flight deduplicator for rendered media previews. */
 export class MediaPreviewCache {
   private readonly cache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string }>();
   private cacheBytes = 0;
@@ -31,6 +77,67 @@ export class MediaPreviewCache {
     users: number;
     readonly promise: Promise<{ bytes: Uint8Array; mime: string }>;
   }>();
+  private activeComputes = 0;
+  private readonly computeWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
+  private readonly options: MediaPreviewCacheOptions;
+
+  constructor(options: MediaPreviewCacheOptions = {}) {
+    this.options = options;
+  }
+
+  private maxEntries(): number {
+    return this.options.maxEntries ?? configuredPreviewCacheMaxEntries();
+  }
+
+  private maxBytes(): number {
+    return this.options.maxBytes ?? configuredPreviewCacheMaxBytes();
+  }
+
+  private maxConcurrency(): number {
+    return this.options.maxConcurrency ?? configuredPreviewConcurrency();
+  }
+
+  runBounded<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(signal.reason ?? new Error('Media preview cancelled'));
+    }
+    const execute = async (): Promise<T> => {
+      this.activeComputes += 1;
+      try {
+        signal.throwIfAborted();
+        return await work();
+      } finally {
+        this.activeComputes -= 1;
+        this.pumpWaiters();
+      }
+    };
+    if (this.activeComputes < this.maxConcurrency()) {
+      return execute();
+    }
+    return new Promise<T>((resolve, reject) => {
+      const waiter = {
+        enter: () => {
+          signal.removeEventListener('abort', waiter.cancel);
+          resolve(execute());
+        },
+        cancel: () => {
+          const index = this.computeWaiters.indexOf(waiter);
+          if (index >= 0) this.computeWaiters.splice(index, 1);
+          signal.removeEventListener('abort', waiter.cancel);
+          reject(signal.reason ?? new Error('Media preview cancelled'));
+        },
+      };
+      this.computeWaiters.push(waiter);
+      signal.addEventListener('abort', waiter.cancel, { once: true });
+    });
+  }
+
+  private pumpWaiters(): void {
+    while (this.activeComputes < this.maxConcurrency() && this.computeWaiters.length > 0) {
+      const next = this.computeWaiters.shift();
+      next?.enter();
+    }
+  }
 
   get(key: string): { readonly bytes: Uint8Array; readonly mime: string } | undefined {
     const cached = this.cache.get(key);
@@ -41,7 +148,9 @@ export class MediaPreviewCache {
   }
 
   store(key: string, result: { readonly bytes: Uint8Array; readonly mime: string }): void {
-    if (result.bytes.byteLength > PREVIEW_RESULT_CACHE_MAX_BYTES) return;
+    const maxBytes = this.maxBytes();
+    const maxEntries = this.maxEntries();
+    if (result.bytes.byteLength > maxBytes) return;
     const previous = this.cache.get(key);
     if (previous !== undefined) {
       this.cache.delete(key);
@@ -49,7 +158,7 @@ export class MediaPreviewCache {
     }
     this.cache.set(key, result);
     this.cacheBytes += result.bytes.byteLength;
-    while (this.cache.size > PREVIEW_RESULT_CACHE_MAX_ENTRIES || this.cacheBytes > PREVIEW_RESULT_CACHE_MAX_BYTES) {
+    while (this.cache.size > maxEntries || this.cacheBytes > maxBytes) {
       const oldest = this.cache.keys().next().value;
       if (oldest === undefined) break;
       const entry = this.cache.get(oldest)!;
@@ -76,7 +185,7 @@ export class MediaPreviewCache {
             return diskHit;
           }
         }
-        const computed = await compute(controller.signal);
+        const computed = await this.runBounded(controller.signal, () => compute(controller.signal));
         this.store(key, computed);
         if (persistToDisk) {
           void writeDiskCachedPreview(key, computed);
@@ -156,7 +265,7 @@ export async function createMediaPreview(
       persistToDisk,
     );
   }
-  return computeMediaPreview(file, mediaType, signal);
+  return cache.runBounded(signal, () => computeMediaPreview(file, mediaType, signal));
 }
 
 function resolveDiskCacheEntryPath(key: string): { readonly dir: string; readonly filePath: string } | undefined {
@@ -217,9 +326,11 @@ async function writeDiskCachedPreview(
 async function sweepDiskPreviewCache(dir: string): Promise<void> {
   if (sweepingDirs.has(dir)) return;
   sweepingDirs.add(dir);
+  const maxEntries = configuredDiskCacheMaxEntries();
+  const maxBytes = configuredDiskCacheMaxBytes();
   try {
     const names = (await readdir(dir)).filter((name) => name.endsWith('.bin'));
-    if (names.length <= DISK_CACHE_MAX_ENTRIES / 2) return;
+    if (names.length <= maxEntries / 2) return;
     const infos: { readonly path: string; readonly size: number; readonly mtimeMs: number }[] = [];
     let totalBytes = 0;
     for (const name of names) {
@@ -229,11 +340,11 @@ async function sweepDiskPreviewCache(dir: string): Promise<void> {
       infos.push({ path, size: info.size, mtimeMs: info.mtimeMs });
       totalBytes += info.size;
     }
-    if (infos.length <= DISK_CACHE_MAX_ENTRIES && totalBytes <= DISK_CACHE_MAX_BYTES) return;
+    if (infos.length <= maxEntries && totalBytes <= maxBytes) return;
     infos.sort((left, right) => left.mtimeMs - right.mtimeMs);
     let remainingCount = infos.length;
     for (const entry of infos) {
-      if (remainingCount <= DISK_CACHE_MAX_ENTRIES && totalBytes <= DISK_CACHE_MAX_BYTES) break;
+      if (remainingCount <= maxEntries && totalBytes <= maxBytes) break;
       await rm(entry.path, { force: true }).catch(() => undefined);
       remainingCount -= 1;
       totalBytes -= entry.size;
@@ -305,7 +416,7 @@ function videoPoster(file: SessionMediaFile, signal: AbortSignal): Promise<Uint8
       else resolve(Buffer.concat(chunks, size));
     };
     const onAbort = () => finish(new Error('Media preview cancelled'));
-    const timer = setTimeout(() => finish(new MediaPreviewUnavailableError('Video preview timed out. Open or download the original.')), 10_000);
+    const timer = setTimeout(() => finish(new MediaPreviewUnavailableError('Video preview timed out. Open or download the original.')), configuredFfmpegTimeoutMs());
     signal.addEventListener('abort', onAbort, { once: true });
     child.on('error', () => finish(new MediaPreviewUnavailableError('Video previews require ffmpeg. Open or download the original.')));
     child.stdout.on('data', (chunk: Uint8Array) => {

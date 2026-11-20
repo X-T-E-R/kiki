@@ -8,10 +8,14 @@ const openSessionMedia = vi.hoisted(() => vi.fn());
 vi.mock('../src/routes/sessionMedia', () => ({ openSessionMedia }));
 
 import { registerHostMediaPreviewRoutes } from '../src/routes/hostMediaPreview';
+import { createAuthHook } from '../src/middleware/auth';
+import type { IAuthTokenService } from '../src/services/auth/authTokenService';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   vi.useRealTimers();
+  delete process.env['KIKI_MEDIA_PLAYBACK_MAX_GRANTS'];
+  delete process.env['KIKI_REMOTE_MEDIA_PLAYBACK'];
   openSessionMedia.mockReset();
   for (const cleanup of cleanups.splice(0).toReversed()) await cleanup();
 });
@@ -245,6 +249,129 @@ describe('session media playback', () => {
       releaseGate();
       unhandled.stop();
     }
+  });
+
+  it('supports more than 64 grants by default and never evicts an actively streaming grant when at capacity', async () => {
+    const { app } = appFor();
+    file();
+    const ids: string[] = [];
+    for (let i = 0; i < 80; i += 1) {
+      const res = await app.inject({ method: 'POST', url: '/api/sessions/session-a/media-playback', payload: { file_id: 'file-a' } });
+      expect(res.statusCode).toBe(200);
+      ids.push((res.json().data as { preview_id: string }).preview_id);
+    }
+    const firstStillValid = await app.inject({ url: `/media-preview/${ids[0]}`, headers: { range: 'bytes=0-3' } });
+    expect(firstStillValid.statusCode).toBe(206);
+
+    process.env['KIKI_MEDIA_PLAYBACK_MAX_GRANTS'] = '3';
+    const bounded = appFor().app;
+    let streamStarted!: () => void;
+    const streaming = new Promise<void>((resolve) => { streamStarted = resolve; });
+    let finishStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => { finishStream = resolve; });
+    let holdFirst = true;
+    openSessionMedia.mockImplementation(async () => ({
+      sessionExists: true,
+      operation: { dispose: vi.fn(async () => undefined) },
+      file: {
+        name: 'clip.mp4',
+        mediaType: 'video/mp4',
+        size: bytes.byteLength,
+        stream: async function* () {
+          if (holdFirst) {
+            holdFirst = false;
+            streamStarted();
+            await streamGate;
+          }
+          yield bytes;
+        },
+      },
+    }));
+    try {
+      const base = await bounded.listen({ host: '127.0.0.1', port: 0 });
+      const mint = async () => {
+        const response = await fetch(`${base}/api/sessions/session-a/media-playback`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ file_id: 'file-a' }),
+        });
+        expect(response.status).toBe(200);
+        return ((await response.json()) as { data: { preview_id: string } }).data.preview_id;
+      };
+      const g1 = await mint();
+      const g2 = await mint();
+      const g3 = await mint();
+      const activeFetch = fetch(`${base}/media-preview/${g1}`);
+      await streaming;
+      const g4 = await mint();
+      expect(g4).toBeTruthy();
+      finishStream();
+      const activeRes = await activeFetch;
+      expect(activeRes.status).toBe(200);
+      const afterEvictG1 = await bounded.inject({ url: `/media-preview/${g1}`, headers: { range: 'bytes=0-3' } });
+      expect(afterEvictG1.statusCode).toBe(206);
+      const afterEvictG2 = await bounded.inject({ url: `/media-preview/${g2}`, headers: { range: 'bytes=0-3' } });
+      expect(afterEvictG2.statusCode).toBe(404);
+      const afterEvictG3 = await bounded.inject({ url: `/media-preview/${g3}`, headers: { range: 'bytes=0-3' } });
+      expect(afterEvictG3.statusCode).toBe(206);
+    } finally {
+      finishStream();
+    }
+  });
+
+  it('enables IP-bound authenticated remote session Range streaming only when KIKI_REMOTE_MEDIA_PLAYBACK=true', async () => {
+    process.env['KIKI_REMOTE_MEDIA_PLAYBACK'] = 'true';
+    const hostFs = { realpath: vi.fn(async (path: string) => path), stat: vi.fn() };
+    const core = { accessor: { get: () => hostFs } } as unknown as Scope;
+    const app = Fastify();
+    app.setValidatorCompiler(() => () => true);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    app.addHook('onRequest', createAuthHook({ isValid: async (token: string) => token === 'owner-tok' } as IAuthTokenService));
+    registerHostMediaPreviewRoutes(app, core);
+    cleanups.push(() => app.close());
+    file();
+
+    const unauth = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-a/media-playback',
+      remoteAddress: '203.0.113.8',
+      payload: { file_id: 'file-a' },
+    });
+    expect(unauth.statusCode).toBe(401);
+
+    const hostRemote = await app.inject({
+      method: 'POST',
+      url: '/api/fs:media-preview',
+      headers: { authorization: 'Bearer owner-tok' },
+      remoteAddress: '203.0.113.8',
+      payload: { path: '/tmp/clip.mp4' },
+    });
+    expect(hostRemote.statusCode).toBe(403);
+
+    const minted = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-a/media-playback',
+      headers: { authorization: 'Bearer owner-tok' },
+      remoteAddress: '203.0.113.8',
+      payload: { file_id: 'file-a' },
+    });
+    expect(minted.statusCode, minted.body).toBe(200);
+    const id = (minted.json().data as { preview_id: string }).preview_id;
+
+    const sameIpRange = await app.inject({
+      url: `/media-preview/${id}`,
+      remoteAddress: '203.0.113.8',
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(sameIpRange.statusCode).toBe(206);
+    expect([...sameIpRange.rawPayload]).toEqual([...bytes.subarray(0, 4)]);
+
+    const differentIp = await app.inject({
+      url: `/media-preview/${id}`,
+      remoteAddress: '198.51.100.9',
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(differentIp.statusCode).toBe(403);
   });
 });
 

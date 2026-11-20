@@ -66,13 +66,90 @@ interface MultipartFileLike {
 type MultipartPartLike = MultipartFieldLike | MultipartFileLike;
 
 interface FilesReply {
+  readonly raw?: {
+    readonly destroyed?: boolean;
+    once(event: 'close', listener: () => void): unknown;
+    off?(event: 'close', listener: () => void): unknown;
+  };
   type(mime: string): FilesReply;
   header(name: string, value: string | number): FilesReply;
   code(status: number): FilesReply;
   send(payload: unknown): unknown;
 }
 
+const DEFAULT_UPLOAD_MAX_CONCURRENCY = 8;
+const DEFAULT_UPLOAD_MAX_QUEUE = 64;
+
+function readPositiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.min(max, parsed);
+}
+
+function configuredUploadMaxConcurrency(): number {
+  return readPositiveIntEnv('KIKI_FILES_UPLOAD_MAX_CONCURRENCY', DEFAULT_UPLOAD_MAX_CONCURRENCY, 1, 256);
+}
+
+function configuredUploadMaxQueue(): number {
+  return readPositiveIntEnv('KIKI_FILES_UPLOAD_MAX_QUEUE', DEFAULT_UPLOAD_MAX_QUEUE, 0, 1024);
+}
+
+class UploadConcurrencyGate {
+  private active = 0;
+  private readonly waiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
+
+  acquire(reply: FilesReply): Promise<(() => void) | 'rejected' | 'aborted'> {
+    if (reply.raw?.destroyed === true) return Promise.resolve('aborted');
+    const maxConcurrency = configuredUploadMaxConcurrency();
+    const release = () => {
+      this.active = Math.max(0, this.active - 1);
+      while (this.active < configuredUploadMaxConcurrency() && this.waiters.length > 0) {
+        const next = this.waiters.shift();
+        if (next !== undefined) {
+          this.active += 1;
+          next.enter();
+          return;
+        }
+      }
+    };
+    if (this.active < maxConcurrency) {
+      this.active += 1;
+      return Promise.resolve(release);
+    }
+    if (this.waiters.length >= configuredUploadMaxQueue()) {
+      return Promise.resolve('rejected');
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const onClose = () => {
+        if (settled) return;
+        settled = true;
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) this.waiters.splice(index, 1);
+        resolve('aborted');
+      };
+      const waiter = {
+        enter: () => {
+          if (settled) {
+            release();
+            return;
+          }
+          settled = true;
+          reply.raw?.off?.('close', onClose);
+          resolve(release);
+        },
+        cancel: onClose,
+      };
+      this.waiters.push(waiter);
+      reply.raw?.once('close', onClose);
+    });
+  }
+}
+
 export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
+  const uploadGate = new UploadConcurrencyGate();
   app.register(multipart, {
     limits: {
       fileSize: Number.MAX_SAFE_INTEGER,
@@ -90,6 +167,14 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
       tags: ['files'],
     },
     async (req, reply) => {
+      const filesReply = reply as unknown as FilesReply;
+      const lease = await uploadGate.acquire(filesReply);
+      if (lease === 'aborted') return;
+      if (lease === 'rejected') {
+        filesReply.code(429).send(errEnvelope(42901, 'too_many_uploads', req.id));
+        return;
+      }
+      let activeFileStream: Readable | undefined;
       try {
         const fastifyReq = req as unknown as FastifyRequestLike;
         const parts = fastifyReq.parts?.();
@@ -109,6 +194,7 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
         }
 
         const filePart = part;
+        activeFileStream = filePart.file;
         const source = Readable.from((async function* () {
           for await (const chunk of filePart.file) yield chunk;
           while (true) {
@@ -132,10 +218,14 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
           }));
           reply.send(okEnvelope(meta, req.id));
         } catch (error) {
-          sendMappedError(reply as unknown as FilesReply, req, error);
+          if (!filePart.file.destroyed) filePart.file.destroy();
+          sendMappedError(filesReply, req, error);
         }
       } catch (error) {
-        sendMappedError(reply as unknown as FilesReply, req, error);
+        if (activeFileStream !== undefined && !activeFileStream.destroyed) activeFileStream.destroy();
+        sendMappedError(filesReply, req, error);
+      } finally {
+        lease();
       }
     },
   );

@@ -138,7 +138,9 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         downloadStream.on('error', (error: unknown) => {
           requestLog(req)?.warn({ session_id, file_id, err: error }, 'session media stream error');
           downloadStream.destroy();
+          responseCleanup?.release();
         });
+        downloadStream.once('close', () => { responseCleanup?.release(); });
         r.raw.once('finish', () => { responseCleanup?.release(); });
         r.raw.once('close', () => { downloadStream.destroy(); responseCleanup?.release(); });
         return r.send(downloadStream) as void;

@@ -7,6 +7,22 @@ type PlaybackLoad =
   | { readonly status: 'fallback' | 'loading' | 'failed' }
   | { readonly status: 'ready'; readonly url: string; readonly mime: string; readonly fail: () => void };
 
+let remoteMediaPlaybackOverride: boolean | null = null;
+
+/** Override whether remote connections attempt Range playback grants (`null` restores `VITE_KIKI_REMOTE_MEDIA_PLAYBACK`). */
+export function configureRemoteMediaPlayback(enabled: boolean | null): void {
+  remoteMediaPlaybackOverride = enabled;
+}
+
+function isRemoteMediaPlaybackEnabled(): boolean {
+  if (remoteMediaPlaybackOverride !== null) return remoteMediaPlaybackOverride;
+  const env = (import.meta as { readonly env?: Readonly<Record<string, unknown>> }).env;
+  const raw = env?.['VITE_KIKI_REMOTE_MEDIA_PLAYBACK'];
+  if (typeof raw !== 'string') return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === 'true' || normalized === '1';
+}
+
 function unsupportedPlayback(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const { code, reason, message } = error as { code?: number; reason?: string; message?: string };
@@ -16,8 +32,10 @@ function unsupportedPlayback(error: unknown): boolean {
 
 /**
  * Owns one canonical session playback grant through its minting client. Remote
- * connections and unsupported routes retain the existing authenticated byte read;
- * other failures require retry. Teardown observes a pending mint for at most its
+ * connections use Range playback grants when `VITE_KIKI_REMOTE_MEDIA_PLAYBACK`
+ * is enabled (falling back cleanly if the server declines with 40301/404);
+ * otherwise remote connections and unsupported routes retain the existing
+ * authenticated byte read. Teardown observes a pending mint for at most its
  * 15-second request deadline, then revokes any late grant through that same client.
  */
 export function useSessionMediaPlayback(
@@ -27,15 +45,16 @@ export function useSessionMediaPlayback(
   remote: boolean,
   attempt: number,
 ): PlaybackLoad {
+  const remoteBlocked = remote && !isRemoteMediaPlaybackEnabled();
   const eligible = item.path === undefined && item.fileId !== undefined && sessionId !== undefined
     && (item.kind === 'video' || item.kind === 'audio' || /^(?:video|audio)\//i.test(item.mime ?? ''));
-  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, eligible, remote, attempt }),
-    [client, sessionId, item.fileId, eligible, remote, attempt]);
-  const initial: PlaybackLoad = !eligible || remote ? { status: 'fallback' } : { status: 'loading' };
+  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, eligible, remoteBlocked, attempt }),
+    [client, sessionId, item.fileId, eligible, remoteBlocked, attempt]);
+  const initial: PlaybackLoad = !eligible || remoteBlocked ? { status: 'fallback' } : { status: 'loading' };
   const [loaded, setLoaded] = useState<{ source: typeof source; load: PlaybackLoad }>({ source, load: initial });
 
   useEffect(() => {
-    if (!eligible || remote) { setLoaded({ source, load: { status: 'fallback' } }); return; }
+    if (!eligible || remoteBlocked) { setLoaded({ source, load: { status: 'fallback' } }); return; }
     if (client === undefined) return;
     const sessions = client.klient.rest?.sessions;
     if (sessions === undefined) { setLoaded({ source, load: { status: 'fallback' } }); return; }
@@ -82,7 +101,7 @@ export function useSessionMediaPlayback(
       // is revoked through the client that created it, rather than losing its ID.
       if (previewId !== undefined) controller.abort();
     };
-  }, [source, eligible, remote, client, sessionId, item.fileId]);
+  }, [source, eligible, remoteBlocked, client, sessionId, item.fileId]);
 
   return loaded.source === source ? loaded.load : initial;
 }
