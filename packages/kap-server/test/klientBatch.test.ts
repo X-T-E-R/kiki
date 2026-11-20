@@ -334,6 +334,31 @@ describe('POST /api/klient/batch end-to-end with HttpChannel', () => {
         expect(remotePaths).toEqual(['/api/klient/batch']);
         expect(slowAt).toBeGreaterThan(fastAt + 75);
 
+        brokerCalls.length = 0;
+        remotePaths.length = 0;
+        const [brokerMixedOk, brokerMixedDenied] = await Promise.allSettled([
+          channel.call({}, 'sessionIndex', 'count', [{}]),
+          channel.call({}, 'authTokenService', 'getToken', []),
+        ]);
+        expect(brokerMixedOk.status).toBe('fulfilled');
+        expect(brokerMixedDenied.status).toBe('rejected');
+        if (brokerMixedDenied.status === 'rejected') {
+          expect(brokerMixedDenied.reason).toMatchObject({ code: 40301, message: 'local_owner_required' });
+        }
+        expect(brokerCalls).toEqual([`/api/remote-connections/${connectionId}/call`]);
+        expect(remotePaths).toEqual(['/api/klient/batch']);
+
+        brokerCalls.length = 0;
+        remotePaths.length = 0;
+        const [allDeniedA, allDeniedB] = await Promise.allSettled([
+          channel.call({}, 'authTokenService', 'getToken', []),
+          channel.call({}, 'authTokenService', 'getToken', []),
+        ]);
+        expect(allDeniedA.status).toBe('rejected');
+        expect(allDeniedB.status).toBe('rejected');
+        expect(brokerCalls).toEqual([`/api/remote-connections/${connectionId}/call`]);
+        expect(remotePaths).toEqual([]);
+
         remotePaths.length = 0;
         const directPeer = new HttpChannel({
           endpoint: remoteEndpoint,

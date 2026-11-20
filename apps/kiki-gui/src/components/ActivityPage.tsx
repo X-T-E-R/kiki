@@ -56,10 +56,11 @@ import { PAGE_WIDTH, PageHeader, useWorkspaceScope } from './PageChrome';
 import { PERSONAS_QUERY_KEY } from './persona/usePersonas';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { segmentClass, WorkspaceScopeControl } from './WorkspaceScopeControl';
 
 type ActivityView = 'inbox' | 'comms';
-export const ACTIVITY_VIRTUALIZE_THRESHOLD = 60;
+export const ACTIVITY_VIRTUALIZE_THRESHOLD = getPickerScaleConfig().catalogVirtualizeThreshold;
 
 type FlatActivityRow =
   | {
@@ -596,7 +597,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
   const showRunning = filter === 'all' || filter === 'running';
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const windowed = view === 'inbox' && model.visibleItems.length > ACTIVITY_VIRTUALIZE_THRESHOLD;
+  const windowed = view === 'inbox' && model.visibleItems.length > getPickerScaleConfig().catalogVirtualizeThreshold;
   const markAllReadAction = (
     <button
       type="button"

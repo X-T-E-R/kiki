@@ -7,10 +7,11 @@ import { z } from 'zod';
 import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, pairClaimInputSchema, pairCodeCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
-import { decodeJsonFrame } from '@kiki/klient/host';
+import { decodeJsonFrame, parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
+import { RPCError } from '@kiki/klient';
 import { okEnvelope, errEnvelope } from '../envelope';
 import { AdmissionError, ConnectionAdmission, sameIdentity } from '../services/connections/admission';
-import { isPeerFrameAllowed, peerAudience } from '../services/connections/audience';
+import { isPeerFrameAllowed, isPeerProcedureAllowed, peerAudience } from '../services/connections/audience';
 import { BROKER_BODY_BYTES, BROKER_FS_READ_BODY_BYTES, BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, RemoteConnectionManager } from '../services/connections/manager';
 import { currentSpacePlatform, directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
@@ -183,10 +184,37 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         void batchReader?.cancel(err).catch(() => {});
         batchStream?.destroy(err);
       });
-      const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation);
+      const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps', 'subagents'].includes(input.operation);
       const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
-      const response = await manager.forward(id, input, lease.signal);
       if (input.operation === 'procedureBatch') {
+        const items = parseKlientBatchEnvelope(input.body, resolveKlientBatchMax());
+        const localLines: string[] = [];
+        const allowedCalls: unknown[] = [];
+        for (const item of items) {
+          try {
+            const { procedure } = parseKlientCallRequest(item.raw);
+            if (!isPeerProcedureAllowed(procedure)) {
+              localLines.push(`${JSON.stringify({ id: item.id, envelope: errEnvelope(40301, 'local_owner_required', req.id) })}\n`);
+            } else {
+              allowedCalls.push(item.raw);
+            }
+          } catch (itemError) {
+            const code = itemError instanceof RPCError ? itemError.code : 40001;
+            const message = itemError instanceof Error ? itemError.message : 'invalid klient batch call item';
+            localLines.push(`${JSON.stringify({ id: item.id, envelope: errEnvelope(code, message, req.id) })}\n`);
+          }
+        }
+        if (allowedCalls.length === 0) {
+          reply.raw.socket?.setNoDelay(true);
+          return await reply
+            .code(200)
+            .type('application/x-ndjson; charset=utf-8')
+            .header('cache-control', 'no-cache')
+            .header('x-accel-buffering', 'no')
+            .send(localLines.join(''));
+        }
+        const forwardedInput = localLines.length === 0 ? input : { ...input, body: { calls: allowedCalls } };
+        const response = await manager.forward(id, forwardedInput, lease.signal);
         if (response.status === 404 || response.status === 405 || response.status === 501) {
           await response.body?.cancel().catch(() => {});
           return await reply.code(response.status).send(errEnvelope(40401, 'batch_not_supported', req.id));
@@ -195,9 +223,14 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         if (response.ok && contentType.includes('application/x-ndjson') && response.body !== null) {
           const reader = response.body.getReader();
           batchReader = reader;
+          const prefixBytes = localLines.length > 0 ? Buffer.from(localLines.join(''), 'utf8') : undefined;
           const stream = Readable.from((async function* () {
             try {
               let total = 0;
+              if (prefixBytes !== undefined) {
+                total += prefixBytes.byteLength;
+                yield prefixBytes;
+              }
               for (;;) {
                 const next = await reader.read();
                 if (next.done) break;
@@ -222,7 +255,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
             .header('x-accel-buffering', 'no')
             .send(stream);
         }
+        const body = await readBoundedJsonBody(response, BROKER_BODY_BYTES, lease.signal);
+        return await reply.code(response.status).send(body);
       }
+      const response = await manager.forward(id, input, lease.signal);
       const cap = reading ? SESSION_READ_BODY_BYTES : input.operation === 'fsRead' ? BROKER_FS_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap, lease.signal);
       if (input.operation === 'pluginPanelDocument' && mintPanelDocument !== undefined && response.ok) {

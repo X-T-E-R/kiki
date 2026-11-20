@@ -29,6 +29,7 @@ export const CONNECTION_OPERATIONS = {
   transcriptPage: ['GET', '/sessions/{sessionId}/transcript'],
   transcriptDetail: ['GET', '/sessions/{sessionId}/transcript/detail'], transcriptDetails: ['GET', '/sessions/{sessionId}/transcript/details'],
   transcriptOps: ['GET', '/sessions/{sessionId}/transcript/ops'], transcriptPlan: ['GET', '/sessions/{sessionId}/transcript/plan'],
+  subagents: ['GET', '/sessions/{sessionId}/subagents'],
   procedure: ['POST', '/klient/call'],
   procedureBatch: ['POST', '/klient/batch'],
   prompts: ['GET', '/sessions/{sessionId}/prompts'], prompt: ['POST', '/sessions/{sessionId}/prompts'],

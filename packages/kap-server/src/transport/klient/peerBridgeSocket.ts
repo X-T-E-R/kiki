@@ -32,8 +32,7 @@ const MAX_CHUNKS_PER_RESPONSE = 65_536;
 interface PendingChunkBuffer {
   readonly total: number;
   status: number | undefined;
-  readonly chunks: Array<string | undefined>;
-  receivedCount: number;
+  readonly chunks: Map<number, string>;
   accumulatedBytes: number;
 }
 
@@ -322,24 +321,23 @@ export class PeerBridgeConnection {
       return;
     }
     const { seq, total, status, chunk } = parsed.data;
-    if (seq >= total || total > MAX_CHUNKS_PER_RESPONSE) {
+    const limit = maxResponseBytes(entry.operation, this.maxToolsCallBytes);
+    if (seq >= total || total > MAX_CHUNKS_PER_RESPONSE || total > limit) {
       entry.settle({ error: new AdmissionError(502, 'invalid_bridge_response') });
       return;
     }
-    const limit = maxResponseBytes(entry.operation, this.maxToolsCallBytes);
     const chunkBytes = Buffer.byteLength(chunk, 'utf8');
     let buffer = entry.chunkBuffer;
     if (buffer === undefined) {
       buffer = {
         total,
         status,
-        chunks: Array.from<string | undefined>({ length: total }),
-        receivedCount: 0,
+        chunks: new Map(),
         accumulatedBytes: 0,
       };
       entry.chunkBuffer = buffer;
     } else {
-      if (buffer.total !== total || buffer.chunks[seq] !== undefined) {
+      if (buffer.total !== total || buffer.chunks.has(seq)) {
         entry.settle({ error: new AdmissionError(502, 'invalid_bridge_response') });
         return;
       }
@@ -356,9 +354,8 @@ export class PeerBridgeConnection {
       entry.settle({ error: new AdmissionError(502, 'bridge_response_too_large') });
       return;
     }
-    buffer.chunks[seq] = chunk;
-    buffer.receivedCount += 1;
-    if (buffer.receivedCount < buffer.total) return;
+    buffer.chunks.set(seq, chunk);
+    if (buffer.chunks.size < buffer.total) return;
 
     if (buffer.status === undefined) {
       entry.settle({ error: new AdmissionError(502, 'invalid_bridge_response') });
@@ -366,7 +363,16 @@ export class PeerBridgeConnection {
     }
     let decodedEnvelope: unknown;
     try {
-      decodedEnvelope = JSON.parse(buffer.chunks.join(''));
+      const ordered: string[] = [];
+      for (let idx = 0; idx < buffer.total; idx += 1) {
+        const part = buffer.chunks.get(idx);
+        if (part === undefined) {
+          entry.settle({ error: new AdmissionError(502, 'invalid_bridge_response') });
+          return;
+        }
+        ordered.push(part);
+      }
+      decodedEnvelope = JSON.parse(ordered.join(''));
     } catch {
       entry.settle({ error: new AdmissionError(502, 'invalid_bridge_response') });
       return;

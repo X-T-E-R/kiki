@@ -42,6 +42,7 @@ REST transcriptDetail: GET /sessions/{sessionId}/transcript/detail
 REST transcriptDetails: GET /sessions/{sessionId}/transcript/details
 REST transcriptOps: GET /sessions/{sessionId}/transcript/ops
 REST transcriptPlan: GET /sessions/{sessionId}/transcript/plan
+REST subagents: GET /sessions/{sessionId}/subagents
 REST procedure: POST /klient/call
 REST procedureBatch: POST /klient/batch
 REST prompts: GET /sessions/{sessionId}/prompts
