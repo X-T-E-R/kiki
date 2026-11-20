@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import {
   AgentTaskPersistence,
@@ -363,6 +364,12 @@ class PersistedTasksReader {
     return task;
   }
 
+  private async readMetadata(taskId: string): Promise<AgentTaskInfo | undefined> {
+    if (!VALID_TASK_ID.test(taskId)) return undefined;
+    const raw = await this.persistence.readTaskMetadata(taskId);
+    return raw?.ownerAgentId !== undefined && raw.ownerAgentId !== this.ownerId ? undefined : raw;
+  }
+
   async list(
     limit: number,
     offset: number,
@@ -381,6 +388,7 @@ class PersistedTasksReader {
       const pageIds = ordered.slice(offset, end);
       const resolved = new Array<AgentTaskInfo | undefined>(pageIds.length);
       let cursor = 0;
+      let completed = 0;
       const workers = Array.from(
         { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
         async () => {
@@ -389,6 +397,8 @@ class PersistedTasksReader {
             try {
               resolved[index] = await this.read(pageIds[index]!);
             } catch {}
+            completed++;
+            if (completed % 64 === 0) await yieldToEventLoop();
           }
         },
       );
@@ -397,21 +407,39 @@ class PersistedTasksReader {
       return { items, hasMore: end < ordered.length, nextOffset: end };
     }
     const needed = offset + limit + 1;
-    const matched: AgentTaskInfo[] = [];
-    for (let batchStart = 0; batchStart < ordered.length && matched.length < needed; batchStart += PERSISTED_TASK_READ_CONCURRENCY) {
+    const matchedIds: string[] = [];
+    let batches = 0;
+    for (let batchStart = 0; batchStart < ordered.length && matchedIds.length < needed; batchStart += PERSISTED_TASK_READ_CONCURRENCY) {
       const batch = ordered.slice(batchStart, batchStart + PERSISTED_TASK_READ_CONCURRENCY);
       const resolved = await Promise.all(batch.map(async (id) => {
-        try { return await this.read(id); } catch { return undefined; }
+        try { return await this.readMetadata(id); } catch { return undefined; }
       }));
       for (const task of resolved) {
         if (task !== undefined && mapStatus(task.status) === status) {
-          matched.push(task);
-          if (matched.length >= needed) break;
+          matchedIds.push(task.taskId);
+          if (matchedIds.length >= needed) break;
         }
       }
+      batches++;
+      if (batches % 4 === 0) await yieldToEventLoop();
     }
-    const items = matched.slice(offset, offset + limit);
-    const hasMore = matched.length > offset + limit;
+    const pageIds = matchedIds.slice(offset, offset + limit);
+    const verified = new Array<AgentTaskInfo | undefined>(pageIds.length);
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
+      async () => {
+        while (cursor < pageIds.length) {
+          const index = cursor++;
+          try {
+            verified[index] = await this.read(pageIds[index]!);
+          } catch {}
+        }
+      },
+    );
+    await Promise.all(workers);
+    const items = verified.filter((task): task is AgentTaskInfo => task !== undefined);
+    const hasMore = matchedIds.length > offset + limit;
     return { items, hasMore, nextOffset: offset + limit };
   }
 }

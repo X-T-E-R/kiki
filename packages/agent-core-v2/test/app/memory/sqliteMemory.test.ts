@@ -2186,4 +2186,102 @@ describe('single Memory authority safe-boundary activation', () => {
     await store.put({ action: 'create', scope: global, type: 'feedback', title: 'CAFÉ', body: 'Preserve non-ASCII duplicate detection.', reason: 'Unicode check', source });
     await expect(store.put({ action: 'create', scope: global, type: 'feedback', title: 'café', body: 'Duplicate title with different Unicode case.', reason: 'Unicode check', source })).rejects.toMatchObject({ code: 'duplicate_title' });
   });
+
+  it('keeps active snapshots, keyset paging, indexed recall, and working-set rendering fast at 10,000 entries', async () => {
+    const scopeBase = pathFor(global);
+    const total = 10_000;
+    const activeCount = 250;
+    const chunkSize = 500;
+    const created = '2026-01-01T00:00:00.000Z';
+    let expectedGeneration = (await persistence.read([])).generation;
+    for (let start = 0; start < total; start += chunkSize) {
+      const end = Math.min(total, start + chunkSize);
+      const edits: Array<MemoryCommit['edits'][number]> = [];
+      for (let i = start; i < end; i++) {
+        const isNeedle = i === 7777;
+        const status = i < activeCount ? 'active' : 'archived';
+        const entry: MemoryEntry = {
+          id: `m_scale_${i.toString().padStart(5, '0')}`,
+          revision: `rev-${i}`,
+          type: 'reference',
+          status,
+          title: isNeedle ? 'Canary Needle Title' : `Historical memory entry ${i.toString().padStart(5, '0')}`,
+          body: isNeedle
+            ? 'Unique canary needle token for 10,000-entry recall benchmark.'
+            : `Archived operational note number ${i} covering routine deployment checks.`,
+          created,
+          updated: created,
+          pinned: false,
+          reason: 'Scale seed',
+          source,
+        };
+        edits.push({ scope: scopeBase, id: entry.id, revision: entry.revision, expectedRevision: null, entry });
+      }
+      const receipt = await persistence.commit({
+        operationId: randomUUID(),
+        request: `seed-10k-${start}`,
+        expectedGeneration,
+        edits,
+        result: { seeded: edits.length },
+      });
+      expectedGeneration = receipt.generation;
+    }
+
+    const activeStart = performance.now();
+    const activeView = await store.snapshot([global], { statuses: ['active'] });
+    const activeSnapshotMs = performance.now() - activeStart;
+    expect(activeView.entries).toHaveLength(activeCount);
+
+    const listP1 = await store.query([global], { mode: 'list', statuses: ['active', 'archived'], page_size: 20 });
+    expect(listP1.items).toHaveLength(20);
+    expect(listP1.next_cursor).toEqual(expect.any(String));
+
+    const listP2Start = performance.now();
+    const listP2 = await store.query([global], { cursor: listP1.next_cursor! });
+    const listP2Ms = performance.now() - listP2Start;
+    expect(listP2.items).toHaveLength(20);
+    expect(listP2.items[0]!.id).not.toBe(listP1.items[0]!.id);
+    expect(listP2Ms).toBeLessThan(100);
+
+    const searchCold = await store.query([global], {
+      mode: 'search',
+      query: 'canary needle token',
+      statuses: ['active', 'archived'],
+      page_size: 10,
+    });
+    expect(searchCold.items[0]?.id).toBe('m_scale_07777');
+
+    const searchWarmStart = performance.now();
+    const searchWarm = await store.query([global], {
+      mode: 'search',
+      query: 'canary needle token',
+      statuses: ['active', 'archived'],
+      page_size: 10,
+    });
+    const searchWarmMs = performance.now() - searchWarmStart;
+    expect(searchWarm.items.map((item) => item.id)).toEqual(searchCold.items.map((item) => item.id));
+    expect(searchWarmMs).toBeLessThan(50);
+
+    const allView = await store.snapshot([global]);
+    const directRanked = rankMemoryRecall(allView.entries, 'canary needle token').slice(0, 10);
+    expect(searchWarm.items.map((item) => item.id)).toEqual(directRanked.map((item) => item.id));
+
+    const worksetStart = performance.now();
+    const workset = renderMemoryWorkingSet(
+      { generation: allView.generation, entries: allView.entries.map((entry) => ({ ...entry, status: 'active' as const })) },
+      'operational note deployment checks',
+      8_000,
+      2_000,
+    );
+    const worksetMs = performance.now() - worksetStart;
+    expect(workset.entries.length).toBeGreaterThan(0);
+    expect(worksetMs).toBeLessThan(200);
+    console.log('memory-10k-scale', {
+      total,
+      activeSnapshotMs: Number(activeSnapshotMs.toFixed(2)),
+      listP2Ms: Number(listP2Ms.toFixed(2)),
+      searchWarmMs: Number(searchWarmMs.toFixed(2)),
+      worksetMs: Number(worksetMs.toFixed(2)),
+    });
+  }, 30_000);
 });

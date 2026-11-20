@@ -163,6 +163,7 @@ export interface PostBotMessageInput {
 export interface RoomLogOptions {
   readonly afterId?: string;
   readonly limit?: number;
+  readonly tail?: boolean;
 }
 
 export interface RoomLogResult {

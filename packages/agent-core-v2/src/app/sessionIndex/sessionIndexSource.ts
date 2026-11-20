@@ -1,5 +1,4 @@
 import { basename, sep } from 'node:path';
-import pLimit from 'p-limit';
 
 import { FORKED_FROM_KEY, parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
@@ -26,6 +25,19 @@ import type { SessionSourceFingerprint } from './sessionIndexModel';
 const META_SCOPE = 'session-meta';
 const META_KEY = 'state.json';
 const MTIME_SCAN_CONCURRENCY = 16;
+const DEFAULT_MAP_YIELD_EVERY = 64;
+
+function resolveMapYieldEvery(): number {
+  const raw = Number(process.env['KIKI_SESSION_INDEX_YIELD_EVERY']);
+  if (Number.isInteger(raw) && raw >= 1) return raw;
+  return DEFAULT_MAP_YIELD_EVERY;
+}
+
+function yieldImmediate(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
 
 export function parseTime(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -410,8 +422,25 @@ export async function mapBounded<T, R>(
   fn: (item: T) => Promise<R | undefined>,
 ): Promise<R[]> {
   if (items.length === 0) return [];
-  const limit = pLimit(Math.max(1, concurrency));
-  const settled = await limit.map(items, (item) => fn(item));
+  const workerCount = Math.min(Math.max(1, Math.trunc(concurrency)), items.length);
+  const yieldEvery = resolveMapYieldEvery();
+  const settled = new Array<R | undefined>(items.length);
+  let cursor = 0;
+  let completed = 0;
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= items.length) return;
+        settled[index] = await fn(items[index]!);
+        completed += 1;
+        if (completed % yieldEvery === 0) {
+          await yieldImmediate();
+        }
+      }
+    }),
+  );
   const out: R[] = [];
   for (const value of settled) {
     if (value !== undefined) out.push(value);
@@ -428,6 +457,19 @@ export async function sessionStateFingerprint(
 ): Promise<SessionSourceFingerprint> {
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
   const nestedScope = `${base}/${META_SCOPE}`;
+  if (storage.statMeta !== undefined) {
+    const readMeta = storage.statMeta.bind(storage);
+    const [directMeta, nestedMeta] = await Promise.all([
+      tolerantStat(() => readMeta(base, META_KEY), `${base}/${META_KEY}`, log),
+      tolerantStat(() => readMeta(nestedScope, META_KEY), `${nestedScope}/${META_KEY}`, log),
+    ]);
+    return {
+      directMtimeMs: directMeta?.mtimeMs ?? 0,
+      directSize: directMeta?.size ?? 0,
+      nestedMtimeMs: nestedMeta?.mtimeMs ?? 0,
+      nestedSize: nestedMeta?.size ?? 0,
+    };
+  }
   const [directMtimeMs, directSize, nestedMtimeMs, nestedSize] = await Promise.all([
     tolerantStat(() => storage.mtime(base, META_KEY), `${base}/${META_KEY}`, log),
     tolerantStat(() => storage.size(base, META_KEY), `${base}/${META_KEY}`, log),

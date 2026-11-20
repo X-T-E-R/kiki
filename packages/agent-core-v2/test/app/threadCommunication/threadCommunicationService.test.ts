@@ -1537,6 +1537,82 @@ describe('ThreadCommunicationService', () => {
       threads: [{ activities: [{ kind: 'terminal', reason: 'failed' }] }],
     });
   });
+
+  it('lists 50 threads from 10,000 sessions in O(page) and attaches/detaches 1,000 observed sessions in O(1)', async () => {
+    const total = 10_000;
+    const allSummaries: SessionSummary[] = Array.from({ length: total }, (_, index) =>
+      summary(`sess-${index.toString().padStart(5, '0')}`, `ws-${index % 25}`, 1_700_000_000_000 - index),
+    );
+    let listRecentCalls = 0;
+    let itemsScanned = 0;
+    ix.stub(ISessionIndex, {
+      get: async (sessionId: string) => allSummaries.find((item) => item.id === sessionId),
+      listRecent: async (options?: { limit?: number; cursor?: string }) => {
+        listRecentCalls += 1;
+        const offset = options?.cursor === undefined ? 0 : Number(options.cursor);
+        const limit = options?.limit ?? 50;
+        const items = allSummaries.slice(offset, offset + limit);
+        itemsScanned += items.length;
+        const nextOffset = offset + items.length;
+        return {
+          items,
+          nextCursor: nextOffset < allSummaries.length ? String(nextOffset) : undefined,
+        };
+      },
+    } as unknown as ISessionIndex);
+
+    const created = new Emitter<SessionCreatedEvent>();
+    const closed = new Emitter<SessionClosedEvent>();
+    const live = new Map<string, ISessionScopeHandle>();
+    ix.stub(ISessionManager, {
+      _serviceBrand: undefined,
+      resume,
+      list: () => [...live.values()],
+      get: (sessionId: string) => live.get(sessionId),
+      onDidCreateSession: created.event,
+      onDidForkSession: Event.None,
+      onDidArchiveSession: Event.None,
+      onDidCloseSession: closed.event,
+    } as unknown as ISessionManager);
+
+    const service = ix.get(IThreadCommunicationService);
+    const listStart = performance.now();
+    const page = await service.listThreads({ limit: 50 });
+    const listMs = performance.now() - listStart;
+    expect(page.threads).toHaveLength(50);
+    expect(page.nextCursor).toEqual(expect.any(String));
+    expect(listRecentCalls).toBe(1);
+    expect(itemsScanned).toBeLessThanOrEqual(100);
+    expect(listMs).toBeLessThan(100);
+
+    const lifecycleStart = performance.now();
+    const activities: Emitter<SessionActivityChangedEvent>[] = [];
+    for (let i = 0; i < 1_000; i++) {
+      const activity = new Emitter<SessionActivityChangedEvent>();
+      activities.push(activity);
+      const id = `obs-${i}`;
+      const handle = observedSessionHandle(id, `ws-${i % 10}`, activity);
+      live.set(id, handle);
+      created.fire({ sessionId: id, handle, source: 'resume' });
+    }
+    for (let i = 0; i < 1_000; i++) {
+      const id = `obs-${i}`;
+      live.delete(id);
+      closed.fire({ sessionId: id });
+    }
+    const lifecycleMs = performance.now() - lifecycleStart;
+    expect(lifecycleMs).toBeLessThan(200);
+    for (const activity of activities) activity.dispose();
+    created.dispose();
+    closed.dispose();
+    console.log('thread-comm-10k-scale', {
+      totalSessions: total,
+      listMs: Number(listMs.toFixed(2)),
+      listRecentCalls,
+      itemsScanned,
+      lifecycle1kMs: Number(lifecycleMs.toFixed(2)),
+    });
+  });
 });
 
 describe('agent harness mailbox teardown', () => {

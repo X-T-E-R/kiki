@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -143,7 +144,45 @@ const ROOM_LOG_SEGMENT_PREFIX = 'log-segments/';
 const ROOM_LOG_POINTER_PREFIX = 'log-pointers/';
 const ROOM_LOG_SEGMENT_SIZE = 64;
 const MAX_LOG_LIMIT = 500;
+const ROOM_IO_CONCURRENCY = 16;
+const ROOM_DELETE_CONCURRENCY = 32;
+const ROOM_YIELD_EVERY = 64;
+const ROOM_POINTER_CACHE_MAX_ROOMS = 64;
+const DEFAULT_ROOM_POINTER_CACHE_PER_ROOM = 2048;
+const ROOM_POINTER_CACHE_LIMIT_ENV = 'KIKI_ROOM_POINTER_CACHE_LIMIT';
 const ROOM_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+
+function resolveRoomPointerCacheLimit(): number {
+  const raw = process.env[ROOM_POINTER_CACHE_LIMIT_ENV];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_ROOM_POINTER_CACHE_PER_ROOM;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 64 && parsed <= 100_000
+    ? parsed
+    : DEFAULT_ROOM_POINTER_CACHE_PER_ROOM;
+}
+
+async function mapBounded<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  let completed = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await fn(items[index]!, index);
+        completed++;
+        if (completed % ROOM_YIELD_EVERY === 0) await yieldToEventLoop();
+      }
+    }),
+  );
+  return results;
+}
 
 export class RoomService extends Disposable implements IRoomService {
   declare readonly _serviceBrand: undefined;
@@ -153,6 +192,8 @@ export class RoomService extends Disposable implements IRoomService {
   private readonly runtimes = new Map<string, RoomRuntime>();
   private readonly locks = new Map<string, Promise<void>>();
   private readonly logStateFlights = new Map<string, Promise<RoomLogState>>();
+  private readonly pointerCache = new Map<string, Map<string, number>>();
+  private readonly pointerCachePerRoom = resolveRoomPointerCacheLimit();
 
   constructor(
     @IConfigService private readonly config: IConfigService,
@@ -170,7 +211,9 @@ export class RoomService extends Disposable implements IRoomService {
   async list(): Promise<readonly RoomDocument[]> {
     const index = await this.documents.get<RoomIndex>(ROOM_INDEX_SCOPE, ROOM_INDEX_KEY);
     if (index === undefined) return [];
-    const rooms = await Promise.all(index.rooms.map(async (entry) => this.documents.get<RoomDocument>(roomScope(entry.id), 'room.json')));
+    const rooms = await mapBounded(index.rooms, ROOM_IO_CONCURRENCY, async (entry) =>
+      this.documents.get<RoomDocument>(roomScope(entry.id), 'room.json'),
+    );
     return rooms.filter((room): room is RoomDocument => room !== undefined).map(normalizeRoom);
   }
 
@@ -221,16 +264,17 @@ export class RoomService extends Disposable implements IRoomService {
       for (const member of room.members) await this.leaveMember(room, member);
       await this.appendLogs.rewrite(roomScope(roomId), ROOM_LOG_KEY, []);
       for (const prefix of [ROOM_LOG_SEGMENT_PREFIX, ROOM_LOG_POINTER_PREFIX]) {
-        const keys = new Set([
+        const keys = [...new Set([
           ...await this.documents.list(roomScope(roomId), prefix),
           ...(await this.documents.list(`${roomScope(roomId)}/${prefix.slice(0, -1)}`)).map((key) => `${prefix}${key}`),
-        ]);
-        for (const key of keys) await this.documents.delete(roomScope(roomId), key);
+        ])];
+        await mapBounded(keys, ROOM_DELETE_CONCURRENCY, (key) => this.documents.delete(roomScope(roomId), key));
       }
       await this.documents.delete(roomScope(roomId), ROOM_LOG_STATE_KEY);
       await this.documents.delete(roomScope(roomId), 'room.json');
       await this.updateIndex((current) => ({ ...current, rooms: current.rooms.filter((entry) => entry.id !== roomId) }));
       this.runtimes.delete(roomId);
+      this.clearPointerCache(roomId);
       this.fire({ roomId, room, deleted: true });
     });
   }
@@ -632,15 +676,29 @@ export class RoomService extends Disposable implements IRoomService {
   async log(roomId: string, options: RoomLogOptions = {}): Promise<RoomLogResult> {
     await this.requireRoom(roomId);
     const limit = Math.min(Math.max(options.limit ?? MAX_LOG_LIMIT, 1), MAX_LOG_LIMIT);
-    const entries = await this.readIndexedLog(roomId, options.afterId, limit + 1);
-    const page = entries.slice(0, limit);
-    const lastId = page.at(-1)?.id ?? options.afterId;
-    const pointer = lastId === undefined ? undefined : await this.documents.get<RoomLogPointer>(roomScope(roomId), roomLogPointerKey(lastId));
-    const record = pointer === undefined ? undefined : await this.readIndexedRecord(roomId, pointer.seq);
+    if (options.tail === true && options.afterId === undefined) {
+      const state = await this.ensureLogState(roomId);
+      const records = await this.readIndexedTail(roomId, state, limit);
+      const lastRecord = records.at(-1);
+      return {
+        entries: records.map((record) => record.entry),
+        nextCursor: undefined,
+        lastSeq: lastRecord?.activitySeq ?? lastRecord?.seq ?? state.activitySeq ?? Math.max(0, state.nextSeq - 1),
+      };
+    }
+    const records = await this.readIndexedRecords(roomId, options.afterId, limit + 1);
+    const page = records.slice(0, limit);
+    const lastRecord = page.at(-1);
+    let lastSeq = lastRecord?.activitySeq ?? lastRecord?.seq;
+    if (lastSeq === undefined && options.afterId !== undefined) {
+      const seq = await this.lookupLogPointerSeq(roomId, options.afterId);
+      const record = seq === undefined ? undefined : await this.readIndexedRecord(roomId, seq);
+      lastSeq = record?.activitySeq ?? record?.seq;
+    }
     return {
-      entries: page,
-      nextCursor: entries.length > limit ? page.at(-1)?.id : undefined,
-      lastSeq: record?.activitySeq ?? record?.seq ?? 0,
+      entries: page.map((record) => record.entry),
+      nextCursor: records.length > limit ? lastRecord?.entry.id : undefined,
+      lastSeq: lastSeq ?? 0,
     };
   }
 
@@ -1049,34 +1107,126 @@ export class RoomService extends Disposable implements IRoomService {
     return record?.entry.kind === 'message' ? record.entry : undefined;
   }
 
+  private getCachedPointerSeq(roomId: string, id: string): number | undefined {
+    const roomMap = this.pointerCache.get(roomId);
+    if (roomMap === undefined) return undefined;
+    const seq = roomMap.get(id);
+    if (seq === undefined) return undefined;
+    roomMap.delete(id);
+    roomMap.set(id, seq);
+    this.pointerCache.delete(roomId);
+    this.pointerCache.set(roomId, roomMap);
+    return seq;
+  }
+
+  private rememberPointer(roomId: string, id: string, seq: number): void {
+    let roomMap = this.pointerCache.get(roomId);
+    if (roomMap === undefined) {
+      if (this.pointerCache.size >= ROOM_POINTER_CACHE_MAX_ROOMS) {
+        const oldestRoom = this.pointerCache.keys().next().value;
+        if (oldestRoom !== undefined) this.pointerCache.delete(oldestRoom);
+      }
+      roomMap = new Map();
+      this.pointerCache.set(roomId, roomMap);
+    } else {
+      this.pointerCache.delete(roomId);
+      this.pointerCache.set(roomId, roomMap);
+    }
+    if (roomMap.has(id)) {
+      roomMap.delete(id);
+    } else if (roomMap.size >= this.pointerCachePerRoom) {
+      const oldestId = roomMap.keys().next().value;
+      if (oldestId !== undefined) roomMap.delete(oldestId);
+    }
+    roomMap.set(id, seq);
+  }
+
+  private clearPointerCache(roomId: string): void {
+    this.pointerCache.delete(roomId);
+  }
+
+  private async lookupLogPointerSeq(roomId: string, id: string): Promise<number | undefined> {
+    const cached = this.getCachedPointerSeq(roomId, id);
+    if (cached !== undefined) return cached;
+    const pointer = await this.documents.get<RoomLogPointer>(roomScope(roomId), roomLogPointerKey(id));
+    if (pointer === undefined) return undefined;
+    this.rememberPointer(roomId, id, pointer.seq);
+    return pointer.seq;
+  }
+
   private async readIndexedLog(
     roomId: string,
     afterId?: string,
     limit = Number.MAX_SAFE_INTEGER,
   ): Promise<readonly RoomLogEntry[]> {
+    const records = await this.readIndexedRecords(roomId, afterId, limit);
+    return records.map((record) => record.entry);
+  }
+
+  private async readIndexedRecords(
+    roomId: string,
+    afterId?: string,
+    limit = Number.MAX_SAFE_INTEGER,
+  ): Promise<readonly RoomLogRecord[]> {
     const state = await this.ensureLogState(roomId);
     let firstSeq = 1;
     if (afterId !== undefined) {
-      const pointer = await this.documents.get<RoomLogPointer>(roomScope(roomId), roomLogPointerKey(afterId));
-      if (pointer !== undefined) firstSeq = pointer.seq + 1;
+      const seq = await this.lookupLogPointerSeq(roomId, afterId);
+      if (seq !== undefined) firstSeq = seq + 1;
     }
-    const entries: RoomLogEntry[] = [];
-    for (let seq = firstSeq; seq < state.nextSeq && entries.length < limit;) {
+    const records: RoomLogRecord[] = [];
+    let segmentsRead = 0;
+    for (let seq = firstSeq; seq < state.nextSeq && records.length < limit;) {
       const segment = await this.documents.get<RoomLogSegment>(
         roomScope(roomId),
         roomLogSegmentKey(seq),
       );
       if (segment === undefined) break;
+      segmentsRead++;
       for (const record of segment.entries) {
         if (record.seq < firstSeq) continue;
-        entries.push(record.entry);
-        if (entries.length >= limit) break;
+        this.rememberPointer(roomId, record.entry.id, record.seq);
+        records.push(record);
+        if (records.length >= limit) break;
       }
       const last = segment.entries.at(-1)?.seq;
       if (last === undefined || last < seq) break;
       seq = last + 1;
+      if (segmentsRead % 16 === 0) await yieldToEventLoop();
     }
-    return entries;
+    return records;
+  }
+
+  private async readIndexedTail(
+    roomId: string,
+    state: RoomLogState,
+    limit: number,
+  ): Promise<readonly RoomLogRecord[]> {
+    if (state.nextSeq <= 1 || limit <= 0) return [];
+    const lastSegment = roomLogSegmentNumber(state.nextSeq - 1);
+    const chunks: RoomLogRecord[][] = [];
+    let collected = 0;
+    let segmentsRead = 0;
+    for (let segmentNumber = lastSegment; segmentNumber >= 0 && collected < limit; segmentNumber--) {
+      const segment = await this.documents.get<RoomLogSegment>(
+        roomScope(roomId),
+        roomLogSegmentKeyFromNumber(segmentNumber),
+      );
+      segmentsRead++;
+      if (segment !== undefined && segment.entries.length > 0) {
+        const valid = segment.entries.filter((record) => record.seq < state.nextSeq);
+        if (valid.length > 0) {
+          chunks.push(valid);
+          collected += valid.length;
+        }
+      }
+      if (segmentsRead % 16 === 0) await yieldToEventLoop();
+    }
+    chunks.reverse();
+    const merged = chunks.flat();
+    const tail = merged.length > limit ? merged.slice(-limit) : merged;
+    for (const record of tail) this.rememberPointer(roomId, record.entry.id, record.seq);
+    return tail;
   }
 
   private async readIndexedRecord(roomId: string, seq: number): Promise<RoomLogRecord | undefined> {
@@ -1101,6 +1251,8 @@ export class RoomService extends Disposable implements IRoomService {
     if (current !== undefined) return current;
     const state = emptyRoomLogState();
     const segments = new Map<number, RoomLogRecord[]>();
+    const pointers: Array<{ readonly key: string; readonly seq: number }> = [];
+    let readCount = 0;
     for await (const entry of this.appendLogs.read<RoomLogEntry>(roomScope(roomId), ROOM_LOG_KEY)) {
       const seq = state.nextSeq;
       if (roomEntryIsActivity(entry)) {
@@ -1113,19 +1265,24 @@ export class RoomService extends Disposable implements IRoomService {
       const segment = segments.get(segmentNumber) ?? [];
       segment.push(record);
       segments.set(segmentNumber, segment);
-      await this.documents.set(roomScope(roomId), roomLogPointerKey(entry.id), { seq });
+      pointers.push({ key: roomLogPointerKey(entry.id), seq });
       if (entry.kind === 'message' && entry.idempotencyKey !== undefined) {
-        await this.documents.set(roomScope(roomId), roomLogPointerKey(entry.idempotencyKey), { seq });
+        pointers.push({ key: roomLogPointerKey(entry.idempotencyKey), seq });
       }
       state.nextSeq++;
       if (entry.kind === 'message') {
         if (entry.from === 'user') state.userMessages++;
         else state.botMessages++;
       }
+      readCount++;
+      if (readCount % ROOM_YIELD_EVERY === 0) await yieldToEventLoop();
     }
-    for (const [segmentNumber, entries] of segments) {
-      await this.documents.set(roomScope(roomId), roomLogSegmentKeyFromNumber(segmentNumber), { entries });
-    }
+    await mapBounded(pointers, ROOM_IO_CONCURRENCY, ({ key, seq }) =>
+      this.documents.set(roomScope(roomId), key, { seq }),
+    );
+    await mapBounded([...segments.entries()], ROOM_IO_CONCURRENCY, ([segmentNumber, entries]) =>
+      this.documents.set(roomScope(roomId), roomLogSegmentKeyFromNumber(segmentNumber), { entries }),
+    );
     await this.documents.set(roomScope(roomId), ROOM_LOG_STATE_KEY, state);
     return state;
   }
@@ -1155,8 +1312,10 @@ export class RoomService extends Disposable implements IRoomService {
       entries: [...(current?.entries ?? []), { seq, entry, activitySeq }],
     }));
     await this.documents.set(roomScope(roomId), roomLogPointerKey(entry.id), { seq });
+    this.rememberPointer(roomId, entry.id, seq);
     if (entry.kind === 'message' && entry.idempotencyKey !== undefined) {
       await this.documents.set(roomScope(roomId), roomLogPointerKey(entry.idempotencyKey), { seq });
+      this.rememberPointer(roomId, entry.idempotencyKey, seq);
     }
     await this.documents.set(roomScope(roomId), ROOM_LOG_STATE_KEY, {
       version: 1,

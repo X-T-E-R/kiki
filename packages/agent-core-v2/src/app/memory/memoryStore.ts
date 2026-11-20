@@ -136,7 +136,7 @@ export interface IMemoryStore {
   readonly onDidChange: Event<MemoryStoreChange>;
   prepare?(): Promise<void>;
   checkpoint?(): Promise<string>;
-  snapshot?(scopes: readonly MemoryScope[]): Promise<MemoryStoreSnapshot>;
+  snapshot?(scopes: readonly MemoryScope[], options?: { readonly statuses?: readonly MemoryStatus[] }): Promise<MemoryStoreSnapshot>;
   inventory(scope: MemoryScope): Promise<MemoryInventory>;
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
   get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined>;

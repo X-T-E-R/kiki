@@ -10,7 +10,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IMemoryPersistence, type MemoryObjectEdit, type MemoryProvenance } from '#/persistence/interface/memoryPersistence';
 import { MemoryAuthorityAccess, assertMemoryAuthorityWritable, type MemoryAuthorityState } from '#/persistence/memoryAuthority';
 import { IMemoryScopes, MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
-import { ILegacyMemoryStore, IMemoryStore, type MemoryEntry, type MemoryPutResult, type MemoryStoreChange, type MemoryStoreSnapshot } from './memoryStore';
+import { ILegacyMemoryStore, IMemoryStore, type MemoryEntry, type MemoryPutResult, type MemoryStatus, type MemoryStoreChange, type MemoryStoreSnapshot } from './memoryStore';
 import { ISqliteMemoryStore, memoryIngestSourceIds, type MemoryForgetPreview, type MemoryIngestCandidate } from './sqliteMemoryStore';
 import { IMemoryShadowImport } from './memoryShadowImport';
 import { MemoryDomainError } from './memoryMetadata';
@@ -121,10 +121,10 @@ export class MemoryAuthorityStore extends Disposable implements IMemoryStore {
     const state = await this.state();
     return `sqlite:${state.epoch}:${await this.sqliteStore().checkpoint()}`;
   }
-  private readonly takeSnapshot = async (scopes: readonly MemoryScope[]): Promise<MemoryStoreSnapshot> => {
+  private readonly takeSnapshot = async (scopes: readonly MemoryScope[], options?: { readonly statuses?: readonly MemoryStatus[] }): Promise<MemoryStoreSnapshot> => {
     const state = await this.state();
     if (state.backend !== 'sqlite') invalid('A fixed Memory commit view requires completed SQLite migration');
-    const snapshot = await this.sqliteStore().snapshot(scopes);
+    const snapshot = await this.sqliteStore().snapshot(scopes, options);
     return { ...snapshot, generation: `sqlite:${state.epoch}:${snapshot.generation}` };
   };
   get snapshot(): IMemoryStore['snapshot'] { return this.backend === 'sqlite' ? this.takeSnapshot : undefined; }
@@ -308,10 +308,12 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
           else issues.push({ scope: base, key: object.id, issue: 'unmatched_shadow_head' });
         }
       }
+      const objectsById = new Map(view.objects.map((object) => [object.id, object]));
       for (const entry of expected.values()) {
         if (rejected.has(entry.id)) continue;
-        if (!view.objects.some((object) => object.id === entry.id)) issues.push({ scope: base, key: entry.id, issue: 'legacy_head_missing' });
-        const preserved = view.objects.some((object) => object.id === entry.id && object.revision !== entry.revision);
+        const object = objectsById.get(entry.id);
+        if (object === undefined) issues.push({ scope: base, key: entry.id, issue: 'legacy_head_missing' });
+        const preserved = object !== undefined && object.revision !== entry.revision;
         const event = latest.get(entry.id);
         if (!preserved && event !== undefined && event.afterRevision !== entry.revision) issues.push({ scope: base, key: entry.id, issue: 'legacy_journal_head_mismatch' });
       }
@@ -370,8 +372,10 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
     if (states.some((state) => state.state === 'forgotten') || signatures.some(({ id, state }) => state.state === 'forgotten' && !retainedSource && (current === null || memorySourceUnitId(base, current.source, current.body, current.basis?.refs) !== id))) throw new MemoryDomainError('inactive_target', 'This exact Markdown source has been forgotten', 'Use a distinct new source; an old source cannot recreate forgotten Memory.');
     const related = new Set(states.flatMap((state) => state.state === 'registered' ? state.objectIds : []));
     if (related.size > 0) {
-      const view = await this.sqlite.snapshot([scope]);
-      const linked = view.entries.filter((entry) => related.has(entry.id));
+      const linkedMap = this.sqlite.getMany === undefined
+        ? new Map((await this.sqlite.snapshot([scope])).entries.filter((entry) => related.has(entry.id)).map((entry) => [entry.id, entry]))
+        : await this.sqlite.getMany(scope, [...related]);
+      const linked = [...linkedMap.values()];
       const active = linked.filter((entry) => entry.status === 'active');
       if (active.length > 1) invalid('This Markdown source has conflicting active successors');
       const current = active[0] ?? linked.find((entry) => entry.status === 'pending') ?? linked.find((entry) => entry.status === 'archived');
@@ -381,7 +385,7 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
     if (incoming.id !== 'new' && (current === null || current.revision !== incoming.revision)) return { incoming, current, action: 'update', canApply: false, issue: { code: 'revision_conflict', recovery: 'Export the current entry again, reconcile the complete content and preview that new file.' } };
     if (incoming.status !== 'active' || current !== null && current.status !== 'active') return { incoming, current, action: incoming.id === 'new' ? 'create' : 'update', canApply: false, issue: { code: 'inactive_target', recovery: 'Use the normal review or restoration controls for pending, replaced or archived entries before importing an edit.' } };
     if (incoming.id === 'new') {
-      const active = (await this.sqlite.snapshot([scope])).entries.filter((entry) => entry.status === 'active');
+      const active = (await this.sqlite.snapshot([scope], { statuses: ['active'] })).entries.filter((entry) => entry.status === 'active');
       const duplicate = active.find((entry) => entry.title.toLowerCase() === incoming.title.toLowerCase());
       if (duplicate !== undefined) return { incoming, current: duplicate, action: 'create', canApply: false, issue: { code: 'duplicate_title', recovery: 'Export the existing entry and reconcile its complete content instead of creating a duplicate title.' } };
       if (active.length >= 300) return { incoming, current: null, action: 'create', canApply: false, issue: { code: 'invalid_input', recovery: 'The scope is full; merge or retire existing entries before importing a new one.' } };

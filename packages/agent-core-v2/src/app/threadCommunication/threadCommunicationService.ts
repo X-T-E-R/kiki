@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import { createKimiDeviceId } from '@kiki/oauth';
 
@@ -197,6 +198,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private readonly observedSessions = new Map<string, DisposableStore>();
+  private readonly observedSessionKeysById = new Map<string, string>();
   private recovery: Promise<void> | undefined;
   private readonly detached = new Set<Promise<void>>();
   private readonly targetDrains = new Map<string, TargetDrainState>();
@@ -231,6 +233,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     this._register(toDisposable(async () => {
       for (const store of this.observedSessions.values()) await store.dispose();
       this.observedSessions.clear();
+      this.observedSessionKeysById.clear();
     }));
     this._register(this.followLifecycle(this.sessionManager));
   }
@@ -310,7 +313,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let hasMore = false;
     while (items.length < limit && scanned < 500 && bytes < (2 << 20)) {
       const page = await this.mailbox.readMessages({ group, before, generation, peerOnly: input.peerSessionId !== undefined,
-        limit: Math.min(20, limit - items.length) });
+        limit: Math.min(100, limit - items.length) });
       if (page.cursorExpired || generation !== undefined && page.history !== undefined && page.history.generation !== generation) {
         throw cursorError('Communication history coverage changed. Refresh from the first page.');
       }
@@ -387,7 +390,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const workspaceAdmission = new Map<string, boolean>();
     let before = decoded?.before;
     let terminal = false;
+    let pagesScanned = 0;
     while (threads.length <= limit && !terminal) {
+      input.signal?.throwIfAborted();
+      if (pagesScanned > 0) await yieldToEventLoop();
+      pagesScanned++;
       const page = await this.sessions.listRecent({
         workspaceIds: input.workspaceId === undefined ? undefined : [input.workspaceId],
         includeArchived: false,
@@ -395,14 +402,26 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         limit: MAX_LIST_LIMIT,
       });
       if (page.items.length === 0) break;
+      const uncachedWorkspaces: string[] = [];
+      const seenWorkspaces = new Set<string>();
+      for (const summary of page.items) {
+        if (!workspaceAdmission.has(summary.workspaceId) && !seenWorkspaces.has(summary.workspaceId)) {
+          seenWorkspaces.add(summary.workspaceId);
+          uncachedWorkspaces.push(summary.workspaceId);
+        }
+      }
+      for (let offset = 0; offset < uncachedWorkspaces.length; offset += 16) {
+        input.signal?.throwIfAborted();
+        const slice = uncachedWorkspaces.slice(offset, offset + 16);
+        const statuses = await Promise.all(slice.map((workspaceId) => this.workspaceEnabled(workspaceId)));
+        for (let index = 0; index < slice.length; index++) {
+          workspaceAdmission.set(slice[index]!, statuses[index]!);
+        }
+      }
       let lastScanned: string | undefined;
       for (const summary of page.items) {
         lastScanned = summary.id;
-        let enabled = workspaceAdmission.get(summary.workspaceId);
-        if (enabled === undefined) {
-          enabled = await this.workspaceEnabled(summary.workspaceId);
-          workspaceAdmission.set(summary.workspaceId, enabled);
-        }
+        const enabled = workspaceAdmission.get(summary.workspaceId) === true;
         const ownPrivateSession = summary.id === input.caller?.sessionId && summary.workspaceId === input.caller?.workspaceId;
         if (!enabled || summary.private === true && !ownPrivateSession) continue;
         threads.push(this.toThreadSummary(summary));
@@ -1261,6 +1280,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       }),
     );
     this.observedSessions.set(key, store);
+    this.observedSessionKeysById.set(ctx.sessionId, key);
   }
 
   private refForLifecycleSession(
@@ -1272,15 +1292,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       const ctx = session.accessor.get(ISessionContext);
       return { hostId: this.hostId, workspaceId: ctx.workspaceId, sessionId };
     }
-    const observed = [...this.observedSessions.keys()].find((key) => key.endsWith(`\u0000${sessionId}`));
+    const observed = this.observedSessionKeysById.get(sessionId);
     return observed === undefined ? undefined : parseThreadIdentity(observed);
   }
 
   private detachObservedSession(sessionId: string): ThreadRef | undefined {
-    const key = [...this.observedSessions.keys()].find((candidate) =>
-      candidate.endsWith(`\u0000${sessionId}`),
-    );
+    const key = this.observedSessionKeysById.get(sessionId);
     if (key === undefined) return undefined;
+    this.observedSessionKeysById.delete(sessionId);
     const store = this.observedSessions.get(key);
     this.observedSessions.delete(key);
     const result = store?.dispose();
