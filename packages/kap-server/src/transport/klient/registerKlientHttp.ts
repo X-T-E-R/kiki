@@ -4,11 +4,13 @@ import { HTTP_REQUEST_BODY_LIMIT_BYTES } from '@kiki/klient/http';
 import {
   createKlientDispatcher,
   decodeJsonFrame,
+  DEFAULT_KLIENT_BATCH_MAX,
   encodeJsonFrame,
   eventSourceFromTarget,
   isTransportScope,
   parseKlientBatchEnvelope,
   parseKlientCallRequest,
+  resolveKlientBatchMax,
   RPCError,
   scopeRefFromProcedure,
   type IDisposable,
@@ -36,7 +38,7 @@ export const KLIENT_HTTP_MAX_PAYLOAD_BYTES = 8 << 20;
 export const KLIENT_CALL_BODY_LIMIT_BYTES = HTTP_REQUEST_BODY_LIMIT_BYTES;
 export const KLIENT_WS_HEARTBEAT_INTERVAL_MS = 10_000;
 export const KLIENT_WS_SILENCE_TIMEOUT_MS = 90_000;
-export const DEFAULT_KLIENT_BATCH_MAX = 32;
+export { DEFAULT_KLIENT_BATCH_MAX, resolveKlientBatchMax };
 
 export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxPayloadBytes?: number;
@@ -48,18 +50,6 @@ export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxBatchSize?: number;
   /** Optional environment bag used for compression, batch, and PeerBridge limits. */
   readonly env?: NodeJS.ProcessEnv;
-}
-
-function resolveBatchMax(override: number | undefined, env: NodeJS.ProcessEnv): number {
-  if (override !== undefined && Number.isFinite(override) && override >= 1) {
-    return Math.floor(override);
-  }
-  const raw = env['KIKI_KLIENT_BATCH_MAX'];
-  if (raw !== undefined && raw.trim() !== '') {
-    const parsed = Number.parseInt(raw.trim(), 10);
-    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
-  }
-  return DEFAULT_KLIENT_BATCH_MAX;
 }
 
 interface KlientFailureTarget {
@@ -126,7 +116,7 @@ export function registerKlientHttp(
   });
 
   const env = opts.env ?? process.env;
-  const maxBatchSize = resolveBatchMax(opts.maxBatchSize, env);
+  const maxBatchSize = resolveKlientBatchMax(opts.maxBatchSize, env);
   const perMessageDeflate = resolveWsPerMessageDeflate({ env });
 
   app.post(KLIENT_BATCH_PATH, { bodyLimit: KLIENT_CALL_BODY_LIMIT_BYTES }, async (req, reply) => {
@@ -286,7 +276,7 @@ class KlientHttpConnection {
     this.lastInboundAt = Date.now();
     const frame = decodeJsonFrame(rawDataToString(data));
     if (frame === undefined) return;
-    if ((this.peer && frame.type !== 'bridge_response_chunk' && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
+    if ((this.peer && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
     if (this.sessionViews.receive(frame) || this.terminals.receive(frame) || this.peerBridge.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {

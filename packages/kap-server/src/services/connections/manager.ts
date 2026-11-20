@@ -11,7 +11,7 @@ import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import { AdmissionError, sameIdentity } from './admission';
 import { isPeerProcedureAllowed } from './audience';
-import { parseKlientCallRequest } from '@kiki/klient/host';
+import { parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
 
 interface Credential { ownerToken: string; grant: string; grantId: string; revision: number }
 interface VerifiedGuiSession {
@@ -538,6 +538,13 @@ export class RemoteConnectionManager {
     if (operation === 'procedure') {
       const { procedure } = parseKlientCallRequest(input.body);
       if (!isPeerProcedureAllowed(procedure)) throw new AdmissionError(403, 'local_owner_required');
+    }
+    if (operation === 'procedureBatch') {
+      const items = parseKlientBatchEnvelope(input.body, resolveKlientBatchMax());
+      for (const item of items) {
+        const { procedure } = parseKlientCallRequest(item.raw);
+        if (!isPeerProcedureAllowed(procedure)) throw new AdmissionError(403, 'local_owner_required');
+      }
     }
     const epoch = this.credentialEpoch(id);
     const callSignal = operation === 'spaceSummary' ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : signal;

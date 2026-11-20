@@ -74,7 +74,7 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['pluginMediaService', new Set(['sources', 'catalog', 'providers', 'capabilities', 'voices', 'jobs', 'job'])],
   ['agentPluginMediaService', new Set(['cancel', 'resume'])],
 ]);
-const PEER_FRAME_TYPES = ['ping', 'pong', 'view_attach', 'view_detach', 'bridge_attach', 'bridge_detach', 'bridge_response', 'unsubscribe', 'stream_cancel'] as const;
+const PEER_FRAME_TYPES = ['ping', 'pong', 'view_attach', 'view_detach', 'bridge_attach', 'bridge_detach', 'bridge_response', 'bridge_response_chunk', 'unsubscribe', 'stream_cancel'] as const;
 const PEER_EVENT_SERVICES = ['roomService', 'configService', 'sessionMetadata', 'sessionSkillCatalog'] as const;
 const peerEventServices = new Set<string>(PEER_EVENT_SERVICES);
 const PEER_NO_SERVICE_SUBSCRIBE_EVENTS = ['session', 'agent', 'workspace', 'config', 'sessions', 'workspaces'] as const;

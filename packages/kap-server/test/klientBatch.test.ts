@@ -3,9 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
 import { bootstrap, IConfigService, ISessionIndex, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
-import { createKlient, HttpChannel } from '@kiki/klient/http';
+import { createConnectionTransport, createKlient, HttpChannel } from '@kiki/klient/http';
+import { CONNECTION_PROTOCOL, connectionOperationPath, matchConnectionOperation, type ConnectionBrokerInput } from '@kiki/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
+import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
+import { ConnectionAdmission } from '../src/services/connections/admission';
+import { ConnectionAudience, isPeerFrameAllowed } from '../src/services/connections/audience';
+import type { RemoteConnectionManager } from '../src/services/connections/manager';
 import { registerKlientHttp } from '../src/transport/klient/registerKlientHttp';
 import { setWebPrincipal } from '../src/services/webAccess';
 
@@ -224,6 +229,143 @@ describe('POST /api/klient/batch end-to-end with HttpChannel', () => {
     } finally {
       spy.mockRestore();
       await app.close();
+      await scope.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('executes POST /api/klient/batch directly over createConnectionTransport broker and peer audience with streaming NDJSON and zero fallback', async () => {
+    expect(matchConnectionOperation('POST', '/api/klient/batch')).toEqual({ operation: 'procedureBatch', params: {} });
+    expect(isPeerFrameAllowed({ type: 'bridge_response_chunk' })).toBe(true);
+
+    const { homeDir, scope } = await createTestScope('kap-batch-broker-');
+    const sessionIndex = scope.accessor.get(ISessionIndex);
+    const originalGet = sessionIndex.get.bind(sessionIndex);
+    const spy = vi.spyOn(sessionIndex, 'get').mockImplementation(async (id: string) => {
+      const delayMs = id === 'broker-slow' ? 150 : 5;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return originalGet(id);
+    });
+
+    const targetIdentity = { homeId: '77777777-7777-4777-8777-777777777777', hostId: 'remote-host', protocol: CONNECTION_PROTOCOL } as const;
+    const sourceIdentity = { homeId: '88888888-8888-4888-8888-888888888888', hostId: 'local-host', protocol: CONNECTION_PROTOCOL } as const;
+    const admission = new ConnectionAdmission(homeDir, targetIdentity);
+    await admission.ready();
+    await admission.setEnabled(true);
+    const approved = await admission.approvePeer(sourceIdentity, 'Local Space', false);
+    const audience = new ConnectionAudience(admission, 'local-owner-secret', async () => false, () => 'main');
+
+    const remotePaths: string[] = [];
+    const remoteApp = Fastify({ logger: false });
+    remoteApp.addHook('onRequest', async (req, reply) => {
+      remotePaths.push(req.url);
+      const auth = req.headers.authorization;
+      const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      const ok = await audience.authorize(token, req, reply);
+      if (!ok) return reply;
+    });
+    registerKlientHttp(remoteApp, scope);
+
+    const brokerCalls: string[] = [];
+    const brokerApp = Fastify({ logger: false });
+    brokerApp.addHook('onRequest', async (req) => {
+      brokerCalls.push(req.url);
+    });
+
+    try {
+      await remoteApp.listen({ host: '127.0.0.1', port: 0 });
+      const { port: remotePort } = remoteApp.server.address() as { port: number };
+      const remoteEndpoint = `http://127.0.0.1:${remotePort}`;
+
+      const connectionId = '99999999-9999-4999-8999-999999999999';
+      const manager = {
+        list: () => [],
+        get: () => { throw new Error('unused'); },
+        lease: (_id: string, signal: AbortSignal) => ({ signal, release: () => {} }),
+        forward: async (_id: string, input: ConnectionBrokerInput, signal: AbortSignal) => {
+          const url = new URL(connectionOperationPath(input.operation as 'procedureBatch' | 'procedure', input.params), remoteEndpoint);
+          return fetch(url, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${approved.peerToken}`,
+              'x-kiki-connection-grant': approved.peerToken,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(input.body),
+            signal,
+          });
+        },
+        close: async () => {},
+      } as unknown as RemoteConnectionManager;
+      registerRemoteConnectionRoutes(brokerApp, admission, manager, 'broker-server', () => 'local-owner-secret');
+
+      await brokerApp.listen({ host: '127.0.0.1', port: 0 });
+      const { port: brokerPort } = brokerApp.server.address() as { port: number };
+      const brokerEndpoint = `http://127.0.0.1:${brokerPort}`;
+      const transport = createConnectionTransport({
+        endpoint: brokerEndpoint,
+        connectionId,
+      });
+
+      const channel = new HttpChannel({
+        endpoint: brokerEndpoint,
+        fetch: transport.fetch,
+        eventsUrl: transport.eventsUrl,
+      });
+      try {
+        const startedAt = performance.now();
+        let fastAt = 0;
+        let slowAt = 0;
+        const [slowRes, fastRes, countRes] = await Promise.all([
+          channel.call({}, 'sessionIndex', 'get', ['broker-slow']).then((val) => {
+            slowAt = performance.now() - startedAt;
+            return val;
+          }),
+          channel.call({}, 'sessionIndex', 'get', ['broker-fast']).then((val) => {
+            fastAt = performance.now() - startedAt;
+            return val;
+          }),
+          channel.call({}, 'sessionIndex', 'count', [{}]),
+        ]);
+        expect(slowRes).toBeUndefined();
+        expect(fastRes).toBeUndefined();
+        expect(typeof countRes).toBe('number');
+        expect(brokerCalls).toEqual([`/api/remote-connections/${connectionId}/call`]);
+        expect(remotePaths).toEqual(['/api/klient/batch']);
+        expect(slowAt).toBeGreaterThan(fastAt + 75);
+
+        remotePaths.length = 0;
+        const directPeer = new HttpChannel({
+          endpoint: remoteEndpoint,
+          token: approved.peerToken,
+        });
+        try {
+          const [peerOk, peerDenied] = await Promise.allSettled([
+            directPeer.call({}, 'sessionIndex', 'count', [{}]),
+            directPeer.call({}, 'authTokenService', 'getToken', []),
+          ]);
+          expect(peerOk.status).toBe('fulfilled');
+          expect(peerDenied.status).toBe('rejected');
+          if (peerDenied.status === 'rejected') {
+            expect(peerDenied.reason).toMatchObject({ code: 40301, message: 'local_owner_required' });
+          }
+          expect(remotePaths).toEqual(['/api/klient/batch']);
+        } finally {
+          await directPeer.close();
+        }
+
+        process.stdout.write(
+          `[klient-batch-broker] 3 concurrent brokered calls -> 1 POST /api/klient/batch (0 fallback); ` +
+          `fast=${fastAt.toFixed(1)}ms slow=${slowAt.toFixed(1)}ms (delta=${(slowAt - fastAt).toFixed(1)}ms)\n`,
+        );
+      } finally {
+        await channel.close();
+      }
+    } finally {
+      spy.mockRestore();
+      await admission.close();
+      await brokerApp.close();
+      await remoteApp.close();
       await scope.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

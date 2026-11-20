@@ -43,6 +43,7 @@ REST transcriptDetails: GET /sessions/{sessionId}/transcript/details
 REST transcriptOps: GET /sessions/{sessionId}/transcript/ops
 REST transcriptPlan: GET /sessions/{sessionId}/transcript/plan
 REST procedure: POST /klient/call
+REST procedureBatch: POST /klient/batch
 REST prompts: GET /sessions/{sessionId}/prompts
 REST prompt: POST /sessions/{sessionId}/prompts
 REST promptRead: GET /sessions/{sessionId}/prompts/{promptId}
@@ -164,6 +165,7 @@ REST memoryInbox: GET /memory/{scope}/inbox
 FRAME bridge_attach
 FRAME bridge_detach
 FRAME bridge_response
+FRAME bridge_response_chunk
 FRAME ping
 FRAME pong
 FRAME stream; requires an allowed service.method procedure

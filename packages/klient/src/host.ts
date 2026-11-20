@@ -51,6 +51,23 @@ export interface RawKlientBatchItem {
   readonly raw: unknown;
 }
 
+export const DEFAULT_KLIENT_BATCH_MAX = 32;
+
+export function resolveKlientBatchMax(
+  override?: number,
+  env: Record<string, string | undefined> = typeof process === 'undefined' ? {} : process.env,
+): number {
+  if (override !== undefined && Number.isFinite(override) && override >= 1) {
+    return Math.floor(override);
+  }
+  const raw = env['KIKI_KLIENT_BATCH_MAX'];
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number.parseInt(raw.trim(), 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+  return DEFAULT_KLIENT_BATCH_MAX;
+}
+
 export function parseKlientBatchEnvelope(
   value: unknown,
   maxBatchSize: number,
