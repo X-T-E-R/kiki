@@ -1945,20 +1945,41 @@ async function* readFromPinnedDenseHandle(
   const end = Math.min(requestedEnd, currentSize - 1);
   const chunkSize = Math.max(1024, options?.chunkBytes ?? DEFAULT_DENSE_READ_CHUNK_BYTES);
   let position = start;
-  while (position <= end) {
-    options?.signal?.throwIfAborted();
-    const toRead = Math.min(chunkSize, end - position + 1);
-    const buf = Buffer.allocUnsafe(toRead);
-    let bytesRead: number;
-    try {
-      ({ bytesRead } = await handle.read(buf, 0, toRead, position));
-    } catch (error) {
+  const startRead = (offset: number, length: number): Promise<{ readonly buf: Buffer; readonly bytesRead: number }> => {
+    const buf = Buffer.allocUnsafe(length);
+    return handle.read(buf, 0, length, offset).then(
+      ({ bytesRead }) => ({ buf, bytesRead }),
+      (error) => {
+        options?.signal?.throwIfAborted();
+        throw toStorageIoError(error, { path: filePath, op: 'read' });
+      },
+    );
+  };
+  let nextRead: Promise<{ readonly buf: Buffer; readonly bytesRead: number }> | undefined;
+  if (position <= end) {
+    const firstLen = Math.min(chunkSize, end - position + 1);
+    nextRead = startRead(position, firstLen);
+    position += firstLen;
+  }
+  try {
+    while (nextRead !== undefined) {
       options?.signal?.throwIfAborted();
-      throw toStorageIoError(error, { path: filePath, op: 'read' });
+      const current = nextRead;
+      nextRead = undefined;
+      const { buf, bytesRead } = await current;
+      options?.signal?.throwIfAborted();
+      if (bytesRead <= 0) break;
+      if (position <= end && bytesRead === buf.byteLength) {
+        const toRead = Math.min(chunkSize, end - position + 1);
+        nextRead = startRead(position, toRead);
+        position += toRead;
+      }
+      yield buf.subarray(0, bytesRead);
     }
-    if (bytesRead <= 0) break;
-    position += bytesRead;
-    yield buf.subarray(0, bytesRead);
+  } finally {
+    if (nextRead !== undefined) {
+      await nextRead.catch(() => undefined);
+    }
   }
 }
 
@@ -1982,6 +2003,11 @@ async function* readUnsealedWithGenerationGuard(
   }
 }
 
+interface PinnedSegmentCache {
+  readonly get: (segmentKey: string) => Uint8Array | undefined;
+  readonly set: (segmentKey: string, plain: Uint8Array) => void;
+}
+
 async function* readPinned(
   storage: IFileSystemStorageService,
   scope: string,
@@ -1989,6 +2015,7 @@ async function* readPinned(
   manifest: ColdManifest,
   range: StorageReadRange | undefined,
   options: StorageReadOptions | undefined,
+  segmentCache?: PinnedSegmentCache,
 ): AsyncIterable<Uint8Array> {
   const size = await storage.size(scope, key);
   if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
@@ -2001,6 +2028,7 @@ async function* readPinned(
   const end = Math.min(requestedEnd, size - 1);
   const needed = manifest.segments.filter((segment) => segment.logicalStart <= end && segment.logicalEnd > start);
   for (const segment of needed) {
+    if (segmentCache?.get(segment.key) !== undefined) continue;
     const expected = segment.logicalEnd - segment.logicalStart;
     if (expected < 1 || expected > manifest.segmentBytes) throw corrupted(scope, key, 'segment');
     const sized = await storage.size(scope, segment.key);
@@ -2009,7 +2037,11 @@ async function* readPinned(
   }
   for (const segment of needed) {
     options?.signal?.throwIfAborted();
-    const { plain } = await readAndVerifySegment(storage, scope, key, manifest, segment, options);
+    let plain = segmentCache?.get(segment.key);
+    if (plain === undefined) {
+      ({ plain } = await readAndVerifySegment(storage, scope, key, manifest, segment, options));
+      segmentCache?.set(segment.key, plain);
+    }
     const localStart = Math.max(0, start - segment.logicalStart);
     const localEnd = Math.min(plain.byteLength, end - segment.logicalStart + 1);
     for (const part of slices(plain, localStart, localEnd)) yield part;
@@ -2079,12 +2111,19 @@ export async function openPinnedLogicalRead(
     throw error;
   }
   let closed = false;
+  let cachedSegment: { readonly key: string; readonly plain: Uint8Array } | undefined;
+  const segmentCache: PinnedSegmentCache = {
+    get: (segmentKey) => (cachedSegment?.key === segmentKey ? cachedSegment.plain : undefined),
+    set: (segmentKey, plain) => {
+      if (!closed) cachedSegment = { key: segmentKey, plain };
+    },
+  };
   return {
     size,
     sealed: manifest !== undefined,
     read(range, options) {
       if (manifest !== undefined) {
-        return readPinned(storage, scope, key, manifest, range, options);
+        return readPinned(storage, scope, key, manifest, range, options, segmentCache);
       }
       if (denseHandle !== undefined && densePath !== undefined) {
         return readFromPinnedDenseHandle(denseHandle, densePath, range, options);
@@ -2094,6 +2133,7 @@ export async function openPinnedLogicalRead(
     close() {
       if (closed) return;
       closed = true;
+      cachedSegment = undefined;
       release();
     },
   };

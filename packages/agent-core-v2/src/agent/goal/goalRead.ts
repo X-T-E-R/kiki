@@ -21,7 +21,8 @@ interface GoalReadState {
   goal: GoalModelState;
 }
 
-const READ_BYTES = 8 * 1024 * 1024;
+const READ_BYTES = 128 * 1024 * 1024;
+const READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const READ_RECORDS = 50_000;
 const GOAL_RAW_SUBSTRINGS: readonly Uint8Array[] = [Buffer.from('"goal.'), Buffer.from('"forked"')];
 const silent = { silent: true, checkpoint() {}, clearCheckpoints() {}, undoToCheckpoint() {}, emit() {} };
@@ -103,6 +104,7 @@ export class PersistedGoalReader {
         for await (const record of this.logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
           startOffset: state.offset,
           endOffset: state.size,
+          chunkBytes: READ_CHUNK_BYTES,
           signal: sliceAbort.signal,
           rawSubstrings: GOAL_RAW_SUBSTRINGS,
           lineFilter: (line) => {

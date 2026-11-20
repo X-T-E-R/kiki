@@ -168,6 +168,11 @@ const INIT_RELEVANT_PREFIXES = [
   'runtime.set_binding',
 ].map(type => Buffer.from(`{"type":"${type}"`));
 const RECORD_JSON_HEAD = Buffer.from('{"type":"');
+const TODO_PREFIX_MAX = Math.max(
+  RECORD_JSON_HEAD.length,
+  ...TODO_RELEVANT_PREFIXES.map(prefix => prefix.length),
+  ...INIT_RELEVANT_PREFIXES.map(prefix => prefix.length),
+);
 const TODO_NOOP_RECORD: ContextRecord = { type: 'noop' };
 const coldRecordBytesCache = new WeakMap<object, number>();
 
@@ -191,22 +196,180 @@ function transcriptWindowRecord(line: Buffer): ContextRecord | undefined {
   return transcriptOpaqueHeaderRecord(line);
 }
 
-function transcriptTodoRecord(line: Buffer, checkInit: boolean): ContextRecord | undefined {
-  if (!hasClosedJsonObjectFrame(line)) return undefined;
-  if (line.length < RECORD_JSON_HEAD.length || !line.subarray(0, RECORD_JSON_HEAD.length).equals(RECORD_JSON_HEAD)) {
-    return undefined;
+function transcriptTodoPrefixSkippable(head: Buffer, checkInit: boolean): boolean {
+  if (head.length < RECORD_JSON_HEAD.length || !head.subarray(0, RECORD_JSON_HEAD.length).equals(RECORD_JSON_HEAD)) {
+    return false;
   }
   for (let index = 0; index < TODO_RELEVANT_PREFIXES.length; index += 1) {
     const prefix = TODO_RELEVANT_PREFIXES[index]!;
-    if (line.length >= prefix.length && line.subarray(0, prefix.length).equals(prefix)) return undefined;
+    if (head.length >= prefix.length && head.subarray(0, prefix.length).equals(prefix)) return false;
   }
   if (checkInit) {
     for (let index = 0; index < INIT_RELEVANT_PREFIXES.length; index += 1) {
       const prefix = INIT_RELEVANT_PREFIXES[index]!;
-      if (line.length >= prefix.length && line.subarray(0, prefix.length).equals(prefix)) return undefined;
+      if (head.length >= prefix.length && head.subarray(0, prefix.length).equals(prefix)) return false;
     }
   }
-  return TODO_NOOP_RECORD;
+  return true;
+}
+
+function transcriptTodoRecord(line: Buffer, checkInit: boolean): ContextRecord | undefined {
+  if (!hasClosedJsonObjectFrame(line)) return undefined;
+  return transcriptTodoPrefixSkippable(line, checkInit) ? TODO_NOOP_RECORD : undefined;
+}
+
+async function scanColdTodoWire(
+  wirePath: string,
+  signal: AbortSignal,
+  initState: { onlyInit: boolean; sawMetadata: boolean },
+  onRecord: (record: ContextRecord, span: { startByteOffset: number; endByteOffset: number; ordinal: number }) => void,
+): Promise<WireRecordsStreamResult | undefined> {
+  const opened = await openLogicalWire(wirePath, signal);
+  if (opened === undefined) return undefined;
+  const probeBuf = Buffer.allocUnsafe(TODO_PREFIX_MAX);
+  let probeLen = 0;
+  let mode: 'probe' | 'skip' | 'buffer' = 'probe';
+  let lineChunks: Buffer[] = [];
+  let lineChunksBytes = 0;
+  let lineStartOffset = 0;
+  let lineByteLen = 0;
+  let lastByte = -1;
+  let prevByte = -1;
+  let lineNumber = 0;
+  let recordCount = 0;
+  let bytesRead = 0;
+  let nextByteOffset = 0;
+  let incompleteReason: WireRecordsIncompleteReason | undefined;
+  let yieldedAt = performance.now();
+
+  const finishLine = (terminated: boolean): void => {
+    const endOffset = lineStartOffset + lineByteLen + (terminated ? 1 : 0);
+    const trimmedLen = lineByteLen > 0 && lastByte === 0x0d ? lineByteLen - 1 : lineByteLen;
+    if (trimmedLen === 0) {
+      nextByteOffset = endOffset;
+      return;
+    }
+    lineNumber += 1;
+    if (mode === 'probe') {
+      mode = transcriptTodoPrefixSkippable(probeBuf.subarray(0, probeLen), initState.onlyInit) ? 'skip' : 'buffer';
+    }
+    if (mode === 'skip') {
+      const closingByte = lastByte === 0x0d ? prevByte : lastByte;
+      if (trimmedLen >= 2 && closingByte === 0x7d) {
+        initState.onlyInit = false;
+        recordCount += 1;
+        nextByteOffset = endOffset;
+        return;
+      }
+      if (!terminated) {
+        incompleteReason = 'partial_tail';
+        return;
+      }
+      throw new Error(`wire.jsonl: corrupted line ${lineNumber} in ${wirePath}`);
+    }
+    const rawLine = lineChunks.length === 0
+      ? probeBuf.subarray(0, probeLen)
+      : lineChunks.length === 1
+        ? lineChunks[0]!
+        : Buffer.concat(lineChunks, lineChunksBytes);
+    const normalized = rawLine.length > 0 && rawLine[rawLine.length - 1] === 0x0d
+      ? rawLine.subarray(0, rawLine.length - 1)
+      : rawLine;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(normalized.toString('utf8'));
+    } catch (parseError) {
+      if (!terminated) {
+        incompleteReason = 'partial_tail';
+        return;
+      }
+      throw new Error(`wire.jsonl: corrupted line ${lineNumber} in ${wirePath}: ${String(parseError)}`, { cause: parseError });
+    }
+    if (parsed === null || typeof parsed !== 'object' || typeof (parsed as { type?: unknown }).type !== 'string') {
+      throw new Error('wire.jsonl: invalid record');
+    }
+    onRecord(parsed as ContextRecord, { startByteOffset: lineStartOffset, endByteOffset: endOffset, ordinal: recordCount });
+    recordCount += 1;
+    nextByteOffset = endOffset;
+  };
+
+  try {
+    for await (const rawChunk of opened.chunks()) {
+      signal.throwIfAborted();
+      const chunk = Buffer.from(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength);
+      bytesRead += chunk.byteLength;
+      let cursor = 0;
+      while (cursor < chunk.byteLength) {
+        const nl = chunk.indexOf(0x0a, cursor);
+        const segEnd = nl === -1 ? chunk.byteLength : nl;
+        const segLen = segEnd - cursor;
+        if (segLen > 0) {
+          if (segLen >= 2) {
+            prevByte = chunk[segEnd - 2]!;
+            lastByte = chunk[segEnd - 1]!;
+          } else {
+            prevByte = lastByte;
+            lastByte = chunk[segEnd - 1]!;
+          }
+          if (mode === 'probe') {
+            const take = Math.min(TODO_PREFIX_MAX - probeLen, segLen);
+            chunk.copy(probeBuf, probeLen, cursor, cursor + take);
+            probeLen += take;
+            if (probeLen === TODO_PREFIX_MAX) {
+              mode = transcriptTodoPrefixSkippable(probeBuf, initState.onlyInit) ? 'skip' : 'buffer';
+              if (mode === 'buffer') {
+                lineChunks.push(Buffer.from(probeBuf));
+                lineChunksBytes = TODO_PREFIX_MAX;
+                if (segLen > take) {
+                  lineChunks.push(Buffer.from(chunk.subarray(cursor + take, segEnd)));
+                  lineChunksBytes += segLen - take;
+                }
+              }
+            }
+          } else if (mode === 'buffer') {
+            lineChunks.push(Buffer.from(chunk.subarray(cursor, segEnd)));
+            lineChunksBytes += segLen;
+          }
+          lineByteLen += segLen;
+        }
+        if (nl === -1) break;
+        finishLine(true);
+        signal.throwIfAborted();
+        lineStartOffset = lineStartOffset + lineByteLen + 1;
+        lineByteLen = 0;
+        mode = 'probe';
+        probeLen = 0;
+        lastByte = -1;
+        prevByte = -1;
+        lineChunks = [];
+        lineChunksBytes = 0;
+        cursor = nl + 1;
+        if (performance.now() - yieldedAt >= 4) {
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+          signal.throwIfAborted();
+          yieldedAt = performance.now();
+        }
+      }
+      if (performance.now() - yieldedAt >= 4) {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        signal.throwIfAborted();
+        yieldedAt = performance.now();
+      }
+    }
+    if (lineByteLen > 0) {
+      finishLine(false);
+    }
+  } finally {
+    opened.close();
+  }
+  signal.throwIfAborted();
+  return {
+    recordCount,
+    bytesRead,
+    nextByteOffset,
+    complete: incompleteReason === undefined,
+    incompleteReason,
+  };
 }
 
 function estimateColdRecordWeight(entry: ColdWireRecord): number {
@@ -3635,57 +3798,65 @@ export class TranscriptService {
     const startedAt = Date.now();
     let complete = false;
     let readResult!: WireRecordsStreamResult;
-    try {
-      let nextByteOffset = 0;
-      let recordCount = 0;
-      let bytesRead = 0;
-      let oversizedRecord = false;
-      for (;;) {
-        signal.throwIfAborted();
-        const sliceStartOffset = nextByteOffset;
-        const sliceStartOrdinal = recordCount;
-        const sliceOversized: boolean = oversizedRecord;
-        const read: WireRecordsStreamResult = await this.coldTodoReads.run(signal, (owned) => this.wireRecordReader(wirePath, {
-          startByteOffset: sliceStartOffset === 0 ? undefined : sliceStartOffset,
-          startRecordOrdinal: sliceStartOrdinal,
-          chunkBytes: readLimits.chunkBytes,
-          maxBytes: sliceOversized ? undefined : todoSliceBytes,
-          maxRecords: sliceOversized ? 1 : readLimits.maxRecords,
-          maxLineBytes: sliceOversized ? undefined : readLimits.maxLineBytes,
-          signal: owned,
-          decodeRecord: (line) => transcriptTodoRecord(line, initState.onlyInit),
-          onRecord: (record, span) => {
-            if (record === TODO_NOOP_RECORD) {
-              initState.onlyInit = false;
-              return;
-            }
-            if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
-            if (initState.onlyInit) {
-              if (isWireInitOnlyRecord(record, span.ordinal)) {
-                if (span.ordinal === 0) initState.sawMetadata = true;
-              } else {
-                initState.onlyInit = false;
-              }
-            }
-            return reducer.apply(adapter.add(record, {
-              startByteOffset: span.startByteOffset,
-              endByteOffset: span.endByteOffset,
-              ordinal: span.ordinal,
-            }));
-          },
-        }), false);
-        bytesRead += read.bytesRead;
-        recordCount += read.recordCount;
-        readResult = { ...read, bytesRead, recordCount };
-        if (read.complete || read.incompleteReason === 'partial_tail') break;
-        const progressed = read.nextByteOffset > nextByteOffset;
-        if (!progressed && oversizedRecord) throw new Error('history_canonical_source_no_progress');
-        if (read.incompleteReason !== 'byte_budget' && read.incompleteReason !== 'record_budget' && read.incompleteReason !== 'line_budget') {
-          throw new Error(`history_canonical_source_incomplete:${read.incompleteReason ?? 'unknown'}`);
+    const applyTodoRecord = (record: ContextRecord, span: { startByteOffset: number; endByteOffset: number; ordinal: number }) => {
+      if (record === TODO_NOOP_RECORD) {
+        initState.onlyInit = false;
+        return;
+      }
+      if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
+      if (initState.onlyInit) {
+        if (isWireInitOnlyRecord(record, span.ordinal)) {
+          if (span.ordinal === 0) initState.sawMetadata = true;
+        } else {
+          initState.onlyInit = false;
         }
-        oversizedRecord = !progressed;
-        nextByteOffset = read.nextByteOffset;
-        await new Promise<void>((resolve) => { setImmediate(resolve); });
+      }
+      return reducer.apply(adapter.add(record, {
+        startByteOffset: span.startByteOffset,
+        endByteOffset: span.endByteOffset,
+        ordinal: span.ordinal,
+      }));
+    };
+    try {
+      const fastScan = this.deps.wireRecordReader === undefined && this.deps.coldReadLimits === undefined && !missingWire
+        ? await this.coldTodoReads.run(signal, (owned) => scanColdTodoWire(wirePath, owned, initState, applyTodoRecord), false)
+        : undefined;
+      if (fastScan !== undefined) {
+        readResult = fastScan;
+      } else {
+        let nextByteOffset = 0;
+        let recordCount = 0;
+        let bytesRead = 0;
+        let oversizedRecord = false;
+        for (;;) {
+          signal.throwIfAborted();
+          const sliceStartOffset = nextByteOffset;
+          const sliceStartOrdinal = recordCount;
+          const sliceOversized: boolean = oversizedRecord;
+          const read: WireRecordsStreamResult = await this.coldTodoReads.run(signal, (owned) => this.wireRecordReader(wirePath, {
+            startByteOffset: sliceStartOffset === 0 ? undefined : sliceStartOffset,
+            startRecordOrdinal: sliceStartOrdinal,
+            chunkBytes: readLimits.chunkBytes,
+            maxBytes: sliceOversized ? undefined : todoSliceBytes,
+            maxRecords: sliceOversized ? 1 : readLimits.maxRecords,
+            maxLineBytes: sliceOversized ? undefined : readLimits.maxLineBytes,
+            signal: owned,
+            decodeRecord: (line) => transcriptTodoRecord(line, initState.onlyInit),
+            onRecord: applyTodoRecord,
+          }), false);
+          bytesRead += read.bytesRead;
+          recordCount += read.recordCount;
+          readResult = { ...read, bytesRead, recordCount };
+          if (read.complete || read.incompleteReason === 'partial_tail') break;
+          const progressed = read.nextByteOffset > nextByteOffset;
+          if (!progressed && oversizedRecord) throw new Error('history_canonical_source_no_progress');
+          if (read.incompleteReason !== 'byte_budget' && read.incompleteReason !== 'record_budget' && read.incompleteReason !== 'line_budget') {
+            throw new Error(`history_canonical_source_incomplete:${read.incompleteReason ?? 'unknown'}`);
+          }
+          oversizedRecord = !progressed;
+          nextByteOffset = read.nextByteOffset;
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+        }
       }
       this.coldReadsCompleted += 1;
       this.coldReadBytes += readResult.bytesRead;

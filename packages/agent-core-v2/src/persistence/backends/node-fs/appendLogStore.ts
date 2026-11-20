@@ -265,18 +265,60 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       chunkBytes: options?.chunkBytes,
     })) {
       let cursor = 0;
-      if (pendingBytes === 0 && rawSubstrings !== undefined && rawSubstrings.length > 0) {
-        const lastNewline = chunk.lastIndexOf(0x0a);
-        if (lastNewline !== -1) {
-          const headBuf = Buffer.from(chunk.buffer, chunk.byteOffset, lastNewline + 1);
-          let matched = false;
-          for (let i = 0; i < rawSubstrings.length; i++) {
-            if (headBuf.includes(rawSubstrings[i]!)) {
-              matched = true;
-              break;
+      if (pendingBytes > 0) {
+        const firstNewline = chunk.indexOf(0x0a, 0);
+        if (firstNewline === -1) {
+          const tail = Buffer.from(chunk);
+          pendingChunks.push(tail);
+          pendingBytes += tail.byteLength;
+          continue;
+        }
+        const head = chunk.subarray(0, firstNewline);
+        const lineBytes = pendingBytes + head.byteLength + 1;
+        pendingChunks.push(head);
+        const merged = Buffer.concat(pendingChunks, pendingBytes + head.byteLength);
+        pendingChunks = [];
+        pendingBytes = 0;
+        cursor = firstNewline + 1;
+        lineNumber++;
+        const trimEnd = merged.byteLength > 0 && merged[merged.byteLength - 1] === 0x0d ? merged.byteLength - 1 : merged.byteLength;
+        if (trimEnd === 0) {
+          position += lineBytes;
+          options?.onPosition?.(position);
+        } else if (rawSubstrings !== undefined && rawSubstrings.length > 0 && !containsRawSubstring(merged, 0, trimEnd, rawSubstrings)) {
+          position += lineBytes;
+          options?.onPosition?.(position);
+          options?.signal?.throwIfAborted();
+        } else {
+          const line = merged.toString('utf8', 0, trimEnd);
+          if (lineFilter !== undefined && !lineFilter(line)) {
+            position += lineBytes;
+            options?.onPosition?.(position);
+            options?.signal?.throwIfAborted();
+          } else {
+            let record: R;
+            try {
+              record = JSON.parse(line) as R;
+            } catch (error) {
+              const corrupted = new AppendLogCorruptedError(scope, key, lineNumber, error);
+              if (onTruncate === undefined) throw corrupted;
+              onTruncate({ lineNumber, reason: 'corrupted', cause: corrupted });
+              return;
             }
+            position += lineBytes;
+            options?.onPosition?.(position);
+            options?.signal?.throwIfAborted();
+            options?.onRecordBytes?.(lineBytes);
+            yield record;
           }
-          if (!matched) {
+        }
+      }
+      if (rawSubstrings !== undefined && rawSubstrings.length > 0 && cursor < chunk.byteLength) {
+        const lastNewline = chunk.lastIndexOf(0x0a);
+        if (lastNewline >= cursor) {
+          const spanLen = lastNewline + 1 - cursor;
+          const headBuf = Buffer.from(chunk.buffer, chunk.byteOffset + cursor, spanLen);
+          if (!containsRawSubstring(headBuf, 0, spanLen, rawSubstrings)) {
             let skippedLines = 0;
             let nl = headBuf.indexOf(0x0a, 0);
             while (nl !== -1) {
@@ -284,7 +326,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
               nl = headBuf.indexOf(0x0a, nl + 1);
             }
             lineNumber += skippedLines;
-            position += lastNewline + 1;
+            position += spanLen;
             options?.onPosition?.(position);
             options?.signal?.throwIfAborted();
             cursor = lastNewline + 1;
@@ -293,30 +335,26 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       }
       let newlineIndex = chunk.indexOf(0x0a, cursor);
       while (newlineIndex !== -1) {
-        let lineBytes: number;
-        let line: string;
-        if (pendingBytes > 0) {
-          const head = chunk.subarray(cursor, newlineIndex);
-          lineBytes = pendingBytes + head.byteLength + 1;
-          pendingChunks.push(head);
-          const merged = Buffer.concat(pendingChunks, pendingBytes + head.byteLength);
-          pendingChunks = [];
-          pendingBytes = 0;
-          const trimEnd = merged.byteLength > 0 && merged[merged.byteLength - 1] === 0x0d ? merged.byteLength - 1 : merged.byteLength;
-          line = merged.toString('utf8', 0, trimEnd);
-        } else {
-          lineBytes = newlineIndex - cursor + 1;
-          const trimEnd = newlineIndex > cursor && chunk[newlineIndex - 1] === 0x0d ? newlineIndex - 1 : newlineIndex;
-          line = Buffer.from(chunk.buffer, chunk.byteOffset + cursor, trimEnd - cursor).toString('utf8');
-        }
+        const lineBytes = newlineIndex - cursor + 1;
+        const trimEnd = newlineIndex > cursor && chunk[newlineIndex - 1] === 0x0d ? newlineIndex - 1 : newlineIndex;
+        const rawLen = trimEnd - cursor;
         cursor = newlineIndex + 1;
         lineNumber++;
-        if (line.length === 0) {
+        if (rawLen === 0) {
           position += lineBytes;
           options?.onPosition?.(position);
           newlineIndex = chunk.indexOf(0x0a, cursor);
           continue;
         }
+        const lineBuf = Buffer.from(chunk.buffer, chunk.byteOffset + (cursor - lineBytes), rawLen);
+        if (rawSubstrings !== undefined && rawSubstrings.length > 0 && !containsRawSubstring(lineBuf, 0, rawLen, rawSubstrings)) {
+          position += lineBytes;
+          options?.onPosition?.(position);
+          options?.signal?.throwIfAborted();
+          newlineIndex = chunk.indexOf(0x0a, cursor);
+          continue;
+        }
+        const line = lineBuf.toString('utf8');
         if (lineFilter !== undefined && !lineFilter(line)) {
           position += lineBytes;
           options?.onPosition?.(position);
@@ -794,6 +832,14 @@ function takeEncodedBatch(pending: readonly PendingAppendEntry[]): {
     offset += line.byteLength;
   }
   return { batch, encoded };
+}
+
+function containsRawSubstring(buf: Buffer, start: number, end: number, needles: readonly Uint8Array[]): boolean {
+  const view = start === 0 && end === buf.byteLength ? buf : buf.subarray(start, end);
+  for (let i = 0; i < needles.length; i++) {
+    if (view.includes(needles[i]!)) return true;
+  }
+  return false;
 }
 
 function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
