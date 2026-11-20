@@ -138,6 +138,18 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
       if (mapped !== undefined) this.emitter.fire(mapped);
     });
     this.watcher.on('error', (error: unknown) => {
+      const code = watchErrorCode(error);
+      const errPath = typeof error === 'object' && error !== null && 'path' in error
+        ? (error as { readonly path?: unknown }).path
+        : undefined;
+      if (
+        (code === 'EPERM' || code === 'EACCES' || code === 'ENOENT') &&
+        typeof errPath === 'string' &&
+        errPath.length > 0 &&
+        errPath !== this.root
+      ) {
+        void this.watcher.unwatch(errPath);
+      }
       this.readiness.reject(error);
       this.reportError(this.root, error, 'chokidar');
     });

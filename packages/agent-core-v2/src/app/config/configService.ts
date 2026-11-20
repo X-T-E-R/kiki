@@ -314,6 +314,14 @@ export class ConfigService extends Disposable implements IConfigService {
         readonly value: ResolvedConfig;
       }
     | undefined;
+  private readonly domainCache = new Map<
+    string,
+    {
+      readonly envNames: readonly string[];
+      readonly envValues: readonly (string | undefined)[];
+      readonly value: unknown;
+    }
+  >();
   private readonly originsCache = new Map<string, {
     readonly inputs: readonly unknown[];
     readonly envNames: readonly string[];
@@ -457,7 +465,7 @@ export class ConfigService extends Disposable implements IConfigService {
 
   get<T = unknown>(domain: string): T {
     if (Object.prototype.hasOwnProperty.call(this.memory, domain)) return this.memory[domain] as T;
-    return this.freshEffective()[domain] as T;
+    return this.freshEffectiveDomain(domain) as T;
   }
 
   inspect<T = unknown>(domain: string): ConfigInspectValue<T> {
@@ -524,8 +532,53 @@ export class ConfigService extends Disposable implements IConfigService {
     return true;
   }
 
+  private freshEffectiveDomain(domain: string): unknown {
+    const cached = this.domainCache.get(domain);
+    if (cached !== undefined && this.envUnchanged(cached.envNames, cached.envValues)) {
+      return cached.value;
+    }
+    const overlays = this.registry.listEffectiveOverlays();
+    const relevantOverlays = overlays.filter(
+      (overlay) => overlay.domains === undefined || overlay.domains.includes(domain),
+    );
+    const accessed = new Set<string>();
+    const getEnv = (name: string): string | undefined => {
+      accessed.add(name);
+      return this.bootstrap.getEnv(name);
+    };
+    const section = this.registry.getSection(domain);
+    let value: unknown = this.validated[domain];
+    if (section?.env !== undefined) {
+      try {
+        const next = applySectionEnv(value, section.env, getEnv);
+        value = this.validateSection(domain, next, false, value);
+      } catch {
+      }
+    }
+    if (relevantOverlays.length > 0) {
+      const effective: ResolvedConfig = { ...this.validated, [domain]: value };
+      const validate = (targetDomain: string, nextValue: unknown): unknown =>
+        this.registry.validate(targetDomain, nextValue);
+      for (const overlay of relevantOverlays) {
+        try {
+          overlay.apply(effective, getEnv, validate);
+        } catch {
+        }
+      }
+      value = effective[domain];
+    }
+    const envNames = [...accessed].sort();
+    this.domainCache.set(domain, {
+      envNames,
+      envValues: envNames.map((name) => this.bootstrap.getEnv(name)),
+      value,
+    });
+    return value;
+  }
+
   private invalidateFresh(): void {
     this.freshCache = undefined;
+    this.domainCache.clear();
   }
 
   diagnostics(): readonly ConfigDiagnostic[] {

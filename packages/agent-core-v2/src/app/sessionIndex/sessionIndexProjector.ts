@@ -327,7 +327,7 @@ export class SessionIndexProjector {
   async planReconcile(
     generation: number,
     options?: { reuseFingerprints?: boolean; changedSessions?: readonly { workspaceId: string; id: string }[] },
-  ): Promise<() => Promise<ReconcileResult>> {
+  ): Promise<(skip?: { readonly sessionIds?: ReadonlySet<string>; readonly workspaceIds?: ReadonlySet<string> }) => Promise<ReconcileResult>> {
     const { storage, docs, queryStore, log, sessionsScope } = this.deps;
     if (this.fingerprintGeneration !== generation) {
       this.fingerprintCache.clear();
@@ -608,9 +608,14 @@ export class SessionIndexProjector {
       });
     }
 
-    const retainFingerprints = (): void => {
+    const retainFingerprints = (skipSessionIds?: ReadonlySet<string>): void => {
       if (this.fingerprintGeneration !== generation || this.fullInvalidationEpoch > invalidationEpoch) return;
       for (const [key, entry] of nextFingerprintCache) {
+        if (skipSessionIds !== undefined) {
+          const slash = key.indexOf('/');
+          const sessionId = slash >= 0 ? key.slice(slash + 1) : key;
+          if (skipSessionIds.has(sessionId)) continue;
+        }
         if ((this.keyInvalidationEpochs.get(key) ?? 0) > invalidationEpoch) continue;
         if ((this.fingerprintCache.get(key)?.sequence ?? 0) > sequence) continue;
         this.fingerprintCache.set(key, entry);
@@ -622,9 +627,24 @@ export class SessionIndexProjector {
       }
     };
     retainFingerprints();
-    return async () => {
-      if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
-      await this.batchChunks(ops);
+    return async (skip?: { readonly sessionIds?: ReadonlySet<string>; readonly workspaceIds?: ReadonlySet<string> }) => {
+      const skipSessionIds = skip?.sessionIds;
+      const skipWorkspaceIds = skip?.workspaceIds;
+      const filteredOps =
+        (skipSessionIds === undefined || skipSessionIds.size === 0) &&
+        (skipWorkspaceIds === undefined || skipWorkspaceIds.size === 0)
+          ? ops
+          : ops.filter((op) => {
+              if ((op.collection === collection || op.collection === sources) && skipSessionIds?.has(op.key)) {
+                return false;
+              }
+              if ((op.collection === workspaces || op.collection === counters) && skipWorkspaceIds?.has(op.key)) {
+                return false;
+              }
+              return true;
+            });
+      if (filteredOps.length > 0) await advanceSessionIndexRevision(queryStore);
+      await this.batchChunks(filteredOps);
       const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (
         manifest?.seq === generation &&
@@ -635,7 +655,7 @@ export class SessionIndexProjector {
           sourceMaxMtimeMs,
         });
       }
-      retainFingerprints();
+      retainFingerprints(skipSessionIds);
       const result = { sessions, upserted, removed };
       if (upserted > 0 || removed > 0) {
         log.info('session index reconciliation repaired drift', { generation, ...result });

@@ -22,6 +22,7 @@ export interface CpuRequestOptions {
   readonly timeoutMs?: number;
   readonly transferList?: readonly Transferable[];
   readonly bytes?: number;
+  readonly priority?: 'high' | 'normal';
 }
 
 export class CpuWorkerError extends Error {
@@ -74,6 +75,8 @@ export class CpuWorkerPool {
   private readonly detachedDraining: DetachedDraining[] = [];
   private readonly retiringExits = new Set<Promise<void>>();
   private readonly waiting: Pending[] = [];
+  private readonly highWaiting: Pending[] = [];
+  private consecutiveHigh = 0;
   private readonly maxQueue: number;
   private readonly maxQueuedBytes: number;
   private readonly maxDetachedDraining: number;
@@ -109,7 +112,7 @@ export class CpuWorkerPool {
     const timeoutMs = positiveInteger(options.timeoutMs ?? this.timeoutMs, 'timeoutMs');
     const bytes = options.bytes ?? options.transferList?.reduce((sum, value) => sum + (value instanceof ArrayBuffer ? value.byteLength : 0), 0) ?? 0;
     if (!Number.isSafeInteger(bytes) || bytes < 0) return Promise.reject(new RangeError('CPU request bytes must be a nonnegative safe integer'));
-    if (this.waiting.length >= this.maxQueue || this.queuedBytes + bytes > this.maxQueuedBytes) {
+    if (this.waiting.length + this.highWaiting.length >= this.maxQueue || this.queuedBytes + bytes > this.maxQueuedBytes) {
       return Promise.reject(new CpuWorkerError('CPU_QUEUE_FULL', 'CPU worker queue is full; retry after active work completes'));
     }
     const cancellation = new SharedArrayBuffer(4);
@@ -119,15 +122,32 @@ export class CpuWorkerPool {
       pending.abort = () => { this.cancel(pending, options.signal!.reason, false); };
       options.signal?.addEventListener('abort', pending.abort, { once: true });
       pending.timer = setTimeout(() => { this.cancel(pending, new CpuWorkerError('CPU_TIMEOUT', 'CPU worker request timed out'), true); }, timeoutMs);
-      this.waiting.push(pending);
+      if (options.priority === 'high') this.highWaiting.push(pending);
+      else this.waiting.push(pending);
       this.queuedBytes += bytes;
       this.pump();
     });
   }
 
+  private dequeueNext(): Pending | undefined {
+    if (this.highWaiting.length > 0 && (this.waiting.length === 0 || this.consecutiveHigh < 4)) {
+      this.consecutiveHigh += 1;
+      return this.highWaiting.shift();
+    }
+    if (this.waiting.length > 0) {
+      this.consecutiveHigh = 0;
+      return this.waiting.shift();
+    }
+    if (this.highWaiting.length > 0) {
+      this.consecutiveHigh += 1;
+      return this.highWaiting.shift();
+    }
+    return undefined;
+  }
+
   private pump(): void {
     if (this.closing !== undefined) return;
-    while (this.waiting.length > 0) {
+    while (this.highWaiting.length > 0 || this.waiting.length > 0) {
       let slot = this.slots.find((candidate) => candidate.worker !== undefined && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined)
         ?? this.slots.find((candidate) => candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined);
       if (slot === undefined) {
@@ -136,7 +156,7 @@ export class CpuWorkerPool {
         this.slots.push(slot);
       }
       this.clearIdleTimer(slot);
-      const pending = this.waiting.shift()!;
+      const pending = this.dequeueNext()!;
       this.queuedBytes -= pending.bytes;
       slot.active = pending;
       try {
@@ -369,6 +389,13 @@ export class CpuWorkerPool {
 
   private cancel(pending: Pending, error: unknown, hardTimeout: boolean): void {
     Atomics.store(pending.cancelFlag, 0, 1);
+    const highIndex = this.highWaiting.indexOf(pending);
+    if (highIndex >= 0) {
+      this.highWaiting.splice(highIndex, 1);
+      this.queuedBytes -= pending.bytes;
+      this.settle(pending, error);
+      return;
+    }
     const index = this.waiting.indexOf(pending);
     if (index >= 0) {
       this.waiting.splice(index, 1);
@@ -405,7 +432,7 @@ export class CpuWorkerPool {
     if (this.closing !== undefined) return this.closing;
     const error = new CpuWorkerError('CPU_POOL_CLOSED', 'CPU worker pool is closed');
     this.closing = Promise.resolve();
-    for (const pending of this.waiting.splice(0)) {
+    for (const pending of [...this.highWaiting.splice(0), ...this.waiting.splice(0)]) {
       Atomics.store(pending.cancelFlag, 0, 1);
       this.settle(pending, error);
     }

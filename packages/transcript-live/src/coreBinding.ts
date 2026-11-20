@@ -88,21 +88,8 @@ export function bindSessionTranscript(
   let seededAll = false;
   const isSeeded = (agentId: string): boolean => seededAll || seededAgents.has(agentId);
 
-  const toolFrameFor = (agentId: string, toolCallId: string) => {
-    const transcript = store.getAgent(agentId);
-    if (transcript === undefined) return undefined;
-    for (const item of transcript.getItems()) {
-      if (item.kind !== 'turn') continue;
-      for (const step of item.steps) {
-        for (const frame of step.frames) {
-          if (frame.kind === 'tool' && frame.toolCallId === toolCallId) {
-            return { turnId: item.turnId, stepId: step.stepId, frame };
-          }
-        }
-      }
-    }
-    return undefined;
-  };
+  const toolFrameFor = (agentId: string, toolCallId: string) =>
+    store.getAgent(agentId)?.getToolCall(toolCallId);
 
   const reducerFor = (agentId: string): TranscriptFactReducer => {
     let reducer = reducers.get(agentId);

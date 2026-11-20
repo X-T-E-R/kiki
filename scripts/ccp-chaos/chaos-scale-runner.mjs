@@ -25,6 +25,8 @@ import {
   runScenarioS9BrowserFlightRecorder,
   seedS9ChaosExtensions,
 } from './scenario-s9-browser-flight-recorder.mjs';
+import { runScenarioS10LiveStorm } from './scenarios/s10-live-orchestrator-storm.mjs';
+import { runP01ColdChildFanoutProbe } from './scenarios/p01-cold-child-open.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -520,13 +522,14 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 45_00
 
 async function submitAndWaitTurn({ endpoint, token, sessionId, content, promptId, timeoutMs = 60_000 }) {
   const t0 = performance.now();
+  const effectivePromptId = promptId ?? `p_${randomUUID().slice(0, 12)}`;
   const res = await apiJson(
     endpoint,
     token,
     'POST',
     `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
     {
-      prompt_id: promptId ?? `p_${randomUUID().slice(0, 12)}`,
+      prompt_id: effectivePromptId,
       content: Array.isArray(content) ? content : [{ type: 'text', text: content }],
     },
     timeoutMs,
@@ -536,6 +539,7 @@ async function submitAndWaitTurn({ endpoint, token, sessionId, content, promptId
     return {
       ok: false,
       stage: 'submit',
+      promptId: effectivePromptId,
       httpStatus: res.status,
       code: res.json?.code ?? res.networkError ?? 'http_error',
       msg: res.json?.msg ?? res.rawText,
@@ -546,32 +550,52 @@ async function submitAndWaitTurn({ endpoint, token, sessionId, content, promptId
 
   const deadline = performance.now() + timeoutMs;
   let lastStatus = null;
+  let observedBusyOrExplicitIdle = false;
   while (performance.now() < deadline) {
     const st = await apiJson(endpoint, token, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}/status`, undefined, 15_000);
     lastStatus = st.json?.data ?? null;
-    if (st.status !== 200) {
+    if (st.status !== 200 || !lastStatus || typeof lastStatus !== 'object') {
+      await sleep(80);
+      continue;
+    }
+    const hasBusySignal =
+      typeof lastStatus.busy === 'boolean' ||
+      typeof lastStatus.executing === 'boolean' ||
+      typeof lastStatus.main_turn_active === 'boolean' ||
+      typeof lastStatus.state === 'string' ||
+      typeof lastStatus.loop?.status === 'string';
+    if (!hasBusySignal) {
       await sleep(80);
       continue;
     }
     const isBusy =
-      lastStatus?.busy === true ||
-      lastStatus?.executing === true ||
-      lastStatus?.main_turn_active === true ||
-      lastStatus?.state === 'running' ||
-      lastStatus?.loop?.status === 'running';
-    if (!isBusy) {
-      return {
-        ok: true,
-        submitMs,
-        totalMs: roundMs(performance.now() - t0),
-        lastTurnReason: lastStatus?.last_turn_reason ?? lastStatus?.lastTurnReason ?? 'completed',
-      };
+      lastStatus.busy === true ||
+      lastStatus.executing === true ||
+      lastStatus.main_turn_active === true ||
+      lastStatus.state === 'running' ||
+      lastStatus.loop?.status === 'running';
+    if (isBusy) {
+      observedBusyOrExplicitIdle = true;
+      await sleep(50);
+      continue;
     }
-    await sleep(50);
+    const reason = lastStatus.last_turn_reason ?? lastStatus.lastTurnReason ?? null;
+    if (reason === null && !observedBusyOrExplicitIdle && performance.now() - t0 < 200) {
+      await sleep(50);
+      continue;
+    }
+    return {
+      ok: true,
+      promptId: effectivePromptId,
+      submitMs,
+      totalMs: roundMs(performance.now() - t0),
+      lastTurnReason: reason ?? (lastStatus.busy === false ? 'completed' : 'unknown'),
+    };
   }
   return {
     ok: false,
     stage: 'wait_settle',
+    promptId: effectivePromptId,
     code: 'settle_timeout',
     submitMs,
     totalMs: roundMs(performance.now() - t0),
@@ -1025,6 +1049,8 @@ async function runScenarioS2bExtreme1000({ server, twin, workspaceDir, extremeCo
   const latenciesMs = [];
   const profiles = ['WORKSPACE', 'HISTORY', 'MEMORY_TODO', 'THREAD'];
 
+  const profileCounts = Object.fromEntries(profiles.map((p) => [p, 0]));
+
   try {
     const midTimer = setTimeout(async () => {
       try {
@@ -1034,7 +1060,8 @@ async function runScenarioS2bExtreme1000({ server, twin, workspaceDir, extremeCo
 
     const turnPromises = sessionIds.map(async (sid, idx) => {
       const useTools = idx % 4 === 0;
-      const profile = profiles[idx % profiles.length];
+      const profile = profiles[Math.floor(idx / 4) % profiles.length];
+      if (useTools) profileCounts[profile] += 1;
       const text = useTools
         ? `[CHAOS_SCOPE:x1000_${sid}] [TOOLS:${profile}] Extreme 1000-way tool turn ${idx}.`
         : `[CHAOS_SCOPE:x1000_${sid}] Extreme 1000-way stream turn ${idx}.`;
@@ -1102,6 +1129,7 @@ async function runScenarioS2bExtreme1000({ server, twin, workspaceDir, extremeCo
       wallMs,
       throughputTurnsPerSec: Number((settled / (wallMs / 1000)).toFixed(2)),
       latencyMs: summarize(latenciesMs),
+      toolProfileCounts: profileCounts,
       errorBreakdown,
       rpcMetricsTimedOut,
       serverExitedUnderLoad: serverExitInfo !== null,
@@ -1757,13 +1785,18 @@ export async function runChaosScaleSuite(options = {}) {
   const s7Only = Boolean(options.s7Only);
   const s8Only = Boolean(options.s8Only);
   const s9Only = Boolean(options.s9Only);
+  const s10Only = Boolean(options.s10Only);
+  const p01Only = Boolean(options.p01Only);
   const runS7S8 = Boolean(options.runS7S8);
   const runAll = Boolean(options.runAll);
-  const isolatedOnly = s6Only || s7Only || s8Only || s9Only || runS7S8;
+  const isolatedOnly = s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || runS7S8;
   const runS6 = s6Only || runAll || Boolean(options.runS6);
   const runS7 = s7Only || runS7S8 || runAll || Boolean(options.runS7);
   const runS8 = s8Only || runS7S8 || runAll || Boolean(options.runS8);
   const runS9 = s9Only || runAll || Boolean(options.runS9);
+  const runS10 = s10Only || runAll || Boolean(options.runS10);
+  const runP01 = p01Only || runAll || Boolean(options.runP01);
+  const runId = options.runId ?? `chaos_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const s7Cycles = options.s7Cycles ?? 200;
   const tenKSubagentCount = options.tenKSubagentCount ?? (tier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
   const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
@@ -1802,10 +1835,22 @@ export async function runChaosScaleSuite(options = {}) {
   let tenKCorpus = null;
   if (runS6 || runS9) {
     const existing10kState = path.join(corpus.homeDir, 'sessions', corpus.workspaceId, 'chaos_10k_subagents', 'state.json');
+    let canReuse10k = false;
+    let existingTotalSubs = 0;
+    let existingStateBytes = 0;
     if (options.reuse10kSession && fs.existsSync(existing10kState)) {
-      const stateBytes = fs.statSync(existing10kState).size;
+      existingStateBytes = fs.statSync(existing10kState).size;
       const stateObj = JSON.parse(fs.readFileSync(existing10kState, 'utf8'));
-      const totalSubs = Math.max(0, Object.keys(stateObj.agents ?? {}).length - 1);
+      existingTotalSubs = Math.max(0, Object.keys(stateObj.agents ?? {}).length - 1);
+      if (existingTotalSubs >= tenKSubagentCount) {
+        canReuse10k = true;
+      } else {
+        progress(
+          `Cached 10k-subagent corpus has only ${existingTotalSubs} subagents < requested ${tenKSubagentCount}; rebuilding cleanly...`,
+        );
+      }
+    }
+    if (canReuse10k) {
       tenKCorpus = {
         rootDir: corpus.rootDir,
         homeDir: corpus.homeDir,
@@ -1813,14 +1858,14 @@ export async function runChaosScaleSuite(options = {}) {
         workspaceId: corpus.workspaceId,
         sessionId: 'chaos_10k_subagents',
         lightSessionId: 'chaos_bg_0001',
-        subagentCount: totalSubs,
-        coldHistoricalNeedleIds: ['subagent_00042', `subagent_${String(Math.max(2, Math.floor(totalSubs / 2))).padStart(5, '0')}`],
+        subagentCount: existingTotalSubs,
+        coldHistoricalNeedleIds: ['subagent_00042', `subagent_${String(Math.max(2, Math.floor(existingTotalSubs / 2))).padStart(5, '0')}`],
         familyPopoverTargetId: 'subagent_00001',
-        deepestInspectTargetId: `subagent_${String(totalSubs).padStart(5, '0')}`,
+        deepestInspectTargetId: `subagent_${String(existingTotalSubs).padStart(5, '0')}`,
         stateJsonPath: existing10kState,
-        stateJsonBytes: stateBytes,
-        stateJsonMiB: Number((stateBytes / (1024 * 1024)).toFixed(2)),
-        exceeds16MiBColdMetaCap: stateBytes > 16 * 1024 * 1024,
+        stateJsonBytes: existingStateBytes,
+        stateJsonMiB: Number((existingStateBytes / (1024 * 1024)).toFixed(2)),
+        exceeds16MiBColdMetaCap: existingStateBytes > 16 * 1024 * 1024,
         reusedExisting: true,
       };
       progress(`Reused existing 10k-subagent corpus: session=${tenKCorpus.sessionId}, subagents=${tenKCorpus.subagentCount}, state.json=${tenKCorpus.stateJsonMiB} MiB`);
@@ -1867,6 +1912,8 @@ export async function runChaosScaleSuite(options = {}) {
   const osHomeDir = path.join(dir, 'os-home');
   let mainServer = null;
   const report = {
+    runId,
+    skipped: 0,
     timestamp: new Date().toISOString(),
     environment: {
       platform: process.platform,
@@ -2019,12 +2066,44 @@ export async function runChaosScaleSuite(options = {}) {
     }
 
     if (runS9 && s9Corpus && runBrowser) {
+      // HIGH #3: Evict and reboot kap-server before S9 Drill 1 if earlier scenarios ran (e.g. S5 warmed chaos_giant_3g)
+      if (!isolatedOnly || runS6 || runS7 || runS8) {
+        progress('S9 Coldness Guard: restarting kap-server so chaos_giant_3g starts genuinely COLD for S9 Drill 1...');
+        await mainServer.closeSession(corpus.giantSessionId).catch(() => undefined);
+        await mainServer.shutdown().catch(() => undefined);
+        mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb });
+      }
       report.scenarios.S9_fullstackBrowserFlightRecorder = await runScenarioS9BrowserFlightRecorder({
         server: mainServer,
         corpus,
         tenKCorpus,
         s9Corpus,
         tier,
+        progress,
+      });
+      persistCheckpoint();
+    }
+
+    if (runS10) {
+      report.scenarios.S10_liveOrchestratorStorm = await runScenarioS10LiveStorm({
+        server: mainServer,
+        twin,
+        corpus,
+        WebSocket,
+        tier,
+        runBrowser,
+        progress,
+      });
+      persistCheckpoint();
+    }
+
+    if (runP01) {
+      report.scenarios.P01_coldChildOpen = await runP01ColdChildFanoutProbe({
+        server: mainServer,
+        corpus,
+        WebSocket,
+        targetBytes: options.p01Bytes ?? (tier === 'full' ? 86_664_806 : 20 * 1024 * 1024),
+        stepCount: options.p01Steps ?? 200,
         progress,
       });
       persistCheckpoint();
@@ -2039,6 +2118,8 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS7) checks.push(Boolean(report.scenarios.S7_longRunningSoak?.passed));
       if (runS8) checks.push(Boolean(report.scenarios.S8_extremeMediaWeakNet?.passed));
       if (runS9) checks.push(Boolean(report.scenarios.S9_fullstackBrowserFlightRecorder?.passed));
+      if (runS10) checks.push(Boolean(report.scenarios.S10_liveOrchestratorStorm?.passed));
+      if (runP01) checks.push(Boolean(report.scenarios.P01_coldChildOpen?.passed));
       report.overallPassed = checks.length > 0 && checks.every(Boolean);
     } else {
       report.overallPassed = Boolean(
@@ -2050,7 +2131,8 @@ export async function runChaosScaleSuite(options = {}) {
           (!runS6 || report.scenarios.S6_tenKSubagentsScale?.passed) &&
           (!runS7 || report.scenarios.S7_longRunningSoak?.passed) &&
           (!runS8 || report.scenarios.S8_extremeMediaWeakNet?.passed) &&
-          (!runS9 || report.scenarios.S9_fullstackBrowserFlightRecorder?.passed),
+          (!runS9 || report.scenarios.S9_fullstackBrowserFlightRecorder?.passed) &&
+          (!runS10 || report.scenarios.S10_liveOrchestratorStorm?.passed),
       );
     }
   } finally {
@@ -2082,12 +2164,17 @@ if (isCliMain && !isServerWorker) {
     s7Only: false,
     s8Only: false,
     s9Only: false,
+    s10Only: false,
+    p01Only: false,
+    p01Bytes: undefined,
     runS7S8: false,
     runAll: false,
     runS6: false,
     runS7: false,
     runS8: false,
     runS9: false,
+    runS10: false,
+    runId: undefined,
     s7Cycles: 200,
     reuse10kSession: false,
     tenKSubagentCount: undefined,
@@ -2108,12 +2195,17 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s7-only') opts.s7Only = true;
     else if (args[i] === '--s8-only') opts.s8Only = true;
     else if (args[i] === '--s9-only') opts.s9Only = true;
+    else if (args[i] === '--s10-only') opts.s10Only = true;
+    else if (args[i] === '--p01-only') opts.p01Only = true;
+    else if (args[i] === '--p01-bytes' && args[i + 1]) opts.p01Bytes = Number(args[++i]);
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-all') opts.runAll = true;
     else if (args[i] === '--run-s6') opts.runS6 = true;
     else if (args[i] === '--run-s7') opts.runS7 = true;
     else if (args[i] === '--run-s8') opts.runS8 = true;
     else if (args[i] === '--run-s9') opts.runS9 = true;
+    else if (args[i] === '--run-s10') opts.runS10 = true;
+    else if (args[i] === '--run-id' && args[i + 1]) opts.runId = args[++i];
     else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--reuse-10k-session') opts.reuse10kSession = true;
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);

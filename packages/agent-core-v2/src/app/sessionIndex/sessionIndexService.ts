@@ -620,6 +620,29 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             return false;
           }
           if (this.mirror.epoch() !== baseline.epoch || revision?.seq !== baseline.revision) {
+            const canMergeClean =
+              attempt === RECONCILE_MAX_ATTEMPTS - 1 &&
+              reuseFingerprints &&
+              mutated.size > 0 &&
+              knownMutationsOnly &&
+              this.forcedReconcileRequest < request &&
+              request === this.reconcileRequest;
+            if (canMergeClean) {
+              const skipSessionIds = new Set<string>();
+              const skipWorkspaceIds = new Set<string>();
+              for (const [id, workspaceId] of mutated) {
+                skipSessionIds.add(id);
+                if (workspaceId !== undefined) {
+                  skipWorkspaceIds.add(workspaceId);
+                  this.projector.invalidateFingerprint(workspaceId, id);
+                  this.watchedSessions.set(`${workspaceId}\0${id}`, { workspaceId, id });
+                }
+              }
+              await commit({ sessionIds: skipSessionIds, workspaceIds: skipWorkspaceIds });
+              this.generation = baseline.generation;
+              this.scheduleWatchedReconcile();
+              return true;
+            }
             wipeAllFingerprints = mutated.size === 0 || !knownMutationsOnly || this.forcedReconcileRequest > request;
             return false;
           }

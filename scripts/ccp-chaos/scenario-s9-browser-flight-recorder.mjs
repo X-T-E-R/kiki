@@ -6,7 +6,8 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import { computeChaosWorkDirKey } from './corpus-generator.mjs';
-import { generateSyntheticMp4, generateSyntheticPng } from './scenario-soak-and-media-weaknet.mjs';
+import { buildDecodableMp4 } from './fixtures/media.mjs';
+import { generateSyntheticPng } from './scenario-soak-and-media-weaknet.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const MiB = 1024 * 1024;
@@ -162,7 +163,7 @@ export function generateValidOggOpus(durationMs = 1600, { serial = 0x53390001 } 
 }
 
 export function generateValidSyntheticMp4(totalBytes = 192 * 1024) {
-  return generateSyntheticMp4(totalBytes);
+  return buildDecodableMp4({ durationSec: 2, minBytes: totalBytes });
 }
 
 // ---------------------------------------------------------------------------
@@ -888,10 +889,13 @@ export function buildFlightRecorderInitScript() {
     try {
       const lsObs = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          if (!entry.hadRecentInput && typeof entry.value === 'number') {
-            state.cls += entry.value;
-            if (state.clsEntries.length < 50 && entry.value > 0.001) {
-              state.clsEntries.push({ ts: Number(entry.startTime.toFixed(1)), value: Number(entry.value.toFixed(4)) });
+          if (typeof entry.value === 'number') {
+            state.rawLayoutShift = (state.rawLayoutShift || 0) + entry.value;
+            if (!entry.hadRecentInput) {
+              state.cls += entry.value;
+              if (state.clsEntries.length < 50 && entry.value > 0.001) {
+                state.clsEntries.push({ ts: Number(entry.startTime.toFixed(1)), value: Number(entry.value.toFixed(4)) });
+              }
             }
           }
         }
@@ -1001,6 +1005,7 @@ export function buildFlightRecorderInitScript() {
           frameCount: state.frameCount,
           fps: { mean: meanFps, p5: p5Fps, maxRafGapMs: Number(state.maxRafGapMs.toFixed(2)) },
           cls: Number(state.cls.toFixed(4)),
+          rawLayoutShift: Number((state.rawLayoutShift || 0).toFixed(4)),
           clsEntryCount: state.clsEntries.length,
           longTasks: {
             count: durations.length,
@@ -1030,12 +1035,35 @@ export function buildFlightRecorderInitScript() {
 // ---------------------------------------------------------------------------
 // Verdict Evaluator (Exported for Deterministic Unit Tests + Runtime Gating)
 // ---------------------------------------------------------------------------
-export function evaluateS9Verdict({ flightRecorder, pageErrors, http5xxResponses, drill1, drill2, drill3, serverHealth, tierConfig }) {
+export function evaluateS9Verdict({
+  flightRecorder,
+  pageErrors,
+  consoleErrors,
+  http5xxResponses,
+  drill1,
+  drill2,
+  drill3,
+  serverHealth,
+  tierConfig,
+  corpusSummary,
+}) {
   const breaches = [];
   const fb = flightRecorder?.breaches ?? {};
 
+  if (!flightRecorder || (flightRecorder.frameCount ?? 0) <= 0) {
+    breaches.push(`flightRecorder.inactive(frameCount=${flightRecorder?.frameCount ?? 0})`);
+  }
+  if ((flightRecorder?.cls ?? 0) > 0.02) {
+    breaches.push(`flightRecorder.cls=${flightRecorder.cls} > 0.02`);
+  }
+  if ((flightRecorder?.rawLayoutShift ?? 0) > 0.02) {
+    breaches.push(`flightRecorder.rawLayoutShift=${flightRecorder.rawLayoutShift} > 0.02`);
+  }
   if ((pageErrors?.length ?? 0) > 0) {
     breaches.push(`pageErrors=${pageErrors.length}`);
+  }
+  if ((consoleErrors?.length ?? 0) > 0) {
+    breaches.push(`consoleErrors=${consoleErrors.length}`);
   }
   if ((http5xxResponses?.length ?? 0) > 0) {
     breaches.push(`http5xxResponses=${http5xxResponses.length}`);
@@ -1071,6 +1099,19 @@ export function evaluateS9Verdict({ flightRecorder, pageErrors, http5xxResponses
     breaches.push(`floatingPopupNestedScrollables=${fb.floatingScrollableBreaches.length}`);
   }
 
+  // Corpus scale tier gate (HIGH #3)
+  if (corpusSummary && tierConfig) {
+    if ((corpusSummary.seededSessionCount ?? 0) < (tierConfig.sessionCount ?? 0)) {
+      breaches.push(`corpus.seededSessionCount=${corpusSummary.seededSessionCount ?? 0} < tier ${tierConfig.sessionCount}`);
+    }
+    if ((corpusSummary.subagentCount ?? 0) < (tierConfig.subagentCount ?? 0)) {
+      breaches.push(`corpus.subagentCount=${corpusSummary.subagentCount ?? 0} < tier ${tierConfig.subagentCount}`);
+    }
+    if (tierConfig.tier === 'full' && (corpusSummary.giantMainWireGiB ?? 0) < (tierConfig.giantGiB ?? 3.1) * 0.9) {
+      breaches.push(`corpus.giantMainWireGiB=${corpusSummary.giantMainWireGiB ?? 0} < tier ${tierConfig.giantGiB}`);
+    }
+  }
+
   // Drill 1 assertions
   if (!drill1 || drill1.error) {
     breaches.push(`drill1.error=${drill1?.error ?? 'missing'}`);
@@ -1082,6 +1123,12 @@ export function evaluateS9Verdict({ flightRecorder, pageErrors, http5xxResponses
     if (drill1.composerUsableAfterAllRounds !== true) {
       breaches.push('drill1.composerNotUsableWithoutReload');
     }
+    if (drill1.upwardScrollSnapBackCheck && drill1.upwardScrollSnapBackCheck.ok !== true) {
+      breaches.push(`drill1.upwardScrollSnapBackFailed=${drill1.upwardScrollSnapBackCheck.reason ?? 'snapped'}`);
+    }
+    if (drill1.upwardScrollSnapBackCheck?.skipped === true) {
+      breaches.push('drill1.upwardScrollSnapBackSkipped');
+    }
     if ((drill1.composerPopupSweep?.triggersClicked ?? 0) < 3) {
       breaches.push(`drill1.composerPopupSweep.triggersClicked=${drill1.composerPopupSweep?.triggersClicked ?? 0} < 3`);
     }
@@ -1090,11 +1137,17 @@ export function evaluateS9Verdict({ flightRecorder, pageErrors, http5xxResponses
     }
   }
 
-  // Drill 2 assertions
+  // Drill 2 assertions (HIGH #2)
   if (!drill2 || drill2.error) {
     breaches.push(`drill2.error=${drill2?.error ?? 'missing'}`);
   } else {
     const maxRangeMs = tierConfig?.mediaRangeMaxMs ?? 250;
+    if (drill2.concurrentTurnSubmitted !== true) {
+      breaches.push('drill2.concurrentTurnOverlapMissing');
+    }
+    if ((drill2.indexChurnStats?.ticks ?? drill2.indexChurnStats?.mutated ?? 0) <= 0) {
+      breaches.push('drill2.sessionIndexChurnZero');
+    }
     if (drill2.oggRangeProbe?.status !== 206) {
       breaches.push(`drill2.oggRangeProbe.status=${drill2.oggRangeProbe?.status ?? null} != 206`);
     }
@@ -1109,6 +1162,20 @@ export function evaluateS9Verdict({ flightRecorder, pageErrors, http5xxResponses
     }
     if ((drill2.mountedAudioCount ?? 0) < 1) {
       breaches.push('drill2.noMountedAudioElements');
+    }
+    if (drill2.browserMediaDecode) {
+      if (drill2.browserMediaDecode.audioErrorCount > 0) {
+        breaches.push(`drill2.audioDecodeErrorCount=${drill2.browserMediaDecode.audioErrorCount}`);
+      }
+      if (drill2.browserMediaDecode.audioReadyState < 2) {
+        breaches.push(`drill2.audioReadyState=${drill2.browserMediaDecode.audioReadyState} < 2`);
+      }
+      if (drill2.browserMediaDecode.audioSeeked !== true && drill2.browserMediaDecode.audioAdvanced !== true) {
+        breaches.push('drill2.audioDidNotAdvanceOrSeek');
+      }
+      if (drill2.browserMediaDecode.brokenImageCount > 0) {
+        breaches.push(`drill2.brokenImageCount=${drill2.browserMediaDecode.brokenImageCount}`);
+      }
     }
     if (drill2.attachmentPreviewOpened !== true) {
       breaches.push('drill2.attachmentPreviewDidNotOpen');
@@ -1613,7 +1680,7 @@ export async function runScenarioS9BrowserFlightRecorder({
         const scroller = document.querySelector('[data-transcript-scroll]');
         if (!scroller) return { ok: false, reason: 'no_scroller' };
         const maxScroll = scroller.scrollHeight - scroller.clientHeight;
-        if (maxScroll < 300) return { ok: true, skipped: true, maxScroll };
+        if (maxScroll < 300) return { ok: false, skipped: false, reason: 'insufficient_scroll_height', maxScroll };
         const target = Math.floor(maxScroll * 0.4);
         scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
         scroller.scrollTop = target;
@@ -1744,16 +1811,79 @@ export async function runScenarioS9BrowserFlightRecorder({
         { timeout: 15_000 },
       ).catch(() => undefined);
 
-      const audioState = await page.evaluate(() => {
+      const audioState = await page.evaluate(async () => {
         const audios = Array.from(document.querySelectorAll('[data-transcript-scroll] audio'));
-        return audios.map((a) => ({
-          src: a.getAttribute('src') || a.currentSrc || '',
-          readyState: a.readyState,
-          hasError: a.error !== null,
-        }));
+        const imgs = Array.from(document.querySelectorAll('[data-transcript-scroll] img'));
+        const brokenImageCount = imgs.filter((img) => img.complete && img.naturalWidth === 0).length;
+        let audioReadyState = 0;
+        let audioErrorCount = 0;
+        let audioAdvanced = false;
+        let audioSeeked = false;
+        const rows = [];
+        for (const a of audios) {
+          const src = a.getAttribute('src') || a.currentSrc || '';
+          if (a.error) audioErrorCount += 1;
+          if (src && a.readyState < 2) {
+            await new Promise((resolve) => {
+              const t = setTimeout(resolve, 4_000);
+              const done = () => {
+                clearTimeout(t);
+                a.removeEventListener('loadeddata', done);
+                a.removeEventListener('canplay', done);
+                a.removeEventListener('error', done);
+                resolve();
+              };
+              a.addEventListener('loadeddata', done);
+              a.addEventListener('canplay', done);
+              a.addEventListener('error', done);
+              try {
+                a.load();
+              } catch {}
+            });
+          }
+          if (a.error) audioErrorCount += 1;
+          if (a.readyState > audioReadyState) audioReadyState = a.readyState;
+          if (src && !a.error && a.readyState >= 2 && !audioSeeked) {
+            try {
+              a.muted = true;
+              await a.play().catch(() => undefined);
+              await new Promise((r) => setTimeout(r, 150));
+              if (a.currentTime > 0) audioAdvanced = true;
+              const target = Number.isFinite(a.duration) && a.duration > 0.5 ? Math.min(0.4, a.duration * 0.5) : 0.25;
+              const seekOk = await new Promise((resolve) => {
+                const t = setTimeout(() => resolve(false), 2_500);
+                a.addEventListener(
+                  'seeked',
+                  () => {
+                    clearTimeout(t);
+                    resolve(Math.abs(a.currentTime - target) <= 0.25);
+                  },
+                  { once: true },
+                );
+                a.currentTime = target;
+              });
+              if (seekOk) audioSeeked = true;
+              a.pause();
+            } catch {}
+          }
+          rows.push({
+            src,
+            readyState: a.readyState,
+            currentTime: Number(a.currentTime.toFixed(3)),
+            hasError: a.error !== null,
+          });
+        }
+        return { rows, audioReadyState, audioErrorCount, audioAdvanced, audioSeeked, brokenImageCount };
       });
-      drill2.mountedAudioCount = audioState.filter((a) => a.src.length > 0).length;
-      drill2.audioReadyUrls = audioState.map((a) => ({ ...a, src: a.src.slice(0, 120) }));
+      drill2.mountedAudioCount = audioState.rows.filter((a) => a.src.length > 0).length;
+      drill2.audioReadyUrls = audioState.rows.map((a) => ({ ...a, src: a.src.slice(0, 120) }));
+      drill2.browserMediaDecode = {
+        audioReadyState: audioState.audioReadyState,
+        audioErrorCount: audioState.audioErrorCount,
+        audioAdvanced: audioState.audioAdvanced,
+        audioSeeked: audioState.audioSeeked,
+        brokenImageCount: audioState.brokenImageCount,
+      };
 
       // Run timed Range 206 probes on real .ogg and .mp4 WHILE active turn streams + index churn runs
       const [oggProbe, mp4Probe] = await Promise.all([
@@ -2170,15 +2300,28 @@ export async function runScenarioS9BrowserFlightRecorder({
     topHeapAllocators: (heapSnap.topRetainers ?? []).slice(0, 15),
   };
 
+  const corpusSummary = {
+    giantSessionId: corpus.giantSessionId,
+    giantMainWireGiB: corpus.giantMainWireGiB,
+    seededSessionCount: s9Corpus.seededSessionCount,
+    personaCount: s9Corpus.personaIds.length,
+    subagentCount: tenKCorpus?.subagentCount ?? corpus.subagentCount,
+    mediaSessionId: s9Corpus.mediaSessionId,
+    oggBytes: s9Corpus.oggBytes,
+    mp4Bytes: s9Corpus.mp4Bytes,
+  };
+
   const verdict = evaluateS9Verdict({
     flightRecorder,
     pageErrors,
+    consoleErrors,
     http5xxResponses,
     drill1,
     drill2,
     drill3,
     serverHealth,
     tierConfig,
+    corpusSummary,
   });
   if (fatalError) {
     verdict.passed = false;

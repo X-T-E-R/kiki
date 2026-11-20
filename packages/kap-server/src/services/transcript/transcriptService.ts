@@ -1068,6 +1068,7 @@ export class TranscriptService {
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
   private readonly coldWindowFlights = new Map<string, ColdWindowFlight>();
   private readonly coldTodosFlights = new Map<string, ColdTodosFlight>();
+  private readonly coldWireMarkerCache = new Map<string, boolean>();
   private readonly coldTodosCache = new Map<string, { fingerprint: string; todos: readonly TranscriptTodo[]; verified: boolean }>();
   private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
   private readonly warnedRetainedTurns = new WeakMap<TranscriptTurn, 'not_found' | 'mismatch' | 'over_budget'>();
@@ -4529,6 +4530,66 @@ export class TranscriptService {
     return { workspaceId: summary.workspaceId, wirePath: join(
       this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, AGENTS_DIR, agentId, WIRE_FILE,
     ) };
+  }
+
+  async hasColdWireMarker(
+    sessionId: string,
+    agentId: string,
+    marker: string,
+    signal?: AbortSignal,
+  ): Promise<boolean | undefined> {
+    signal?.throwIfAborted();
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return undefined;
+    const wireDir = dirname(location.wirePath);
+    const hasSegments = await stat(join(wireDir, 'wire.manifest.json')).then(() => true, () => false);
+    if (hasSegments) return undefined;
+    const info = await stat(location.wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    if (info === undefined) return false;
+    const cacheKey = `${location.wirePath}\0${fileIdentity(info)}:${fileFingerprint(info)}\0${marker}`;
+    const cached = this.coldWireMarkerCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const needle = Buffer.from(marker, 'utf8');
+    if (needle.length === 0) return true;
+    const overlap = Math.max(0, needle.length - 1);
+    const chunkSize = 1024 * 1024;
+    const buf = Buffer.allocUnsafe(chunkSize + overlap);
+    let found = false;
+    const fh = await open(location.wirePath, 'r');
+    try {
+      let pos = 0;
+      let carry = 0;
+      while (pos < info.size) {
+        signal?.throwIfAborted();
+        const toRead = Math.min(chunkSize, info.size - pos);
+        const { bytesRead } = await fh.read(buf, carry, toRead, pos);
+        if (bytesRead <= 0) break;
+        const windowLen = carry + bytesRead;
+        if (buf.subarray(0, windowLen).indexOf(needle) !== -1) {
+          found = true;
+          break;
+        }
+        pos += bytesRead;
+        if (overlap > 0 && windowLen >= overlap) {
+          buf.copy(buf, 0, windowLen - overlap, windowLen);
+          carry = overlap;
+        } else {
+          carry = windowLen;
+        }
+      }
+    } finally {
+      await fh.close();
+    }
+    if (this.coldWireMarkerCache.size >= 512) {
+      const oldest = this.coldWireMarkerCache.keys().next().value;
+      if (oldest !== undefined) this.coldWireMarkerCache.delete(oldest);
+    }
+    this.coldWireMarkerCache.set(cacheKey, found);
+    return found;
   }
 
   async readColdTodos(

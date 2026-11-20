@@ -108,6 +108,16 @@ export class ProcessTask implements AgentTask {
     } finally {
       this.stopPromise = undefined;
     }
+    if (sink.signal.aborted && process.platform !== 'win32') {
+      try {
+        this.stopPromise = this.proc.kill('SIGKILL');
+        await this.stopPromise;
+      } catch (error) {
+        stopError ??= error;
+      } finally {
+        this.stopPromise = undefined;
+      }
+    }
     if (stopError !== undefined && !this.cleanupConfirmed) throw stopError;
     try {
       await this.disposeProcess();
@@ -121,13 +131,11 @@ export class ProcessTask implements AgentTask {
 
   async forceStop(): Promise<void> {
     if (this.cleanupConfirmed) return;
-    if (this.proc.exitCode === null || process.platform === 'win32') {
-      try {
-        this.stopPromise = this.proc.kill('SIGKILL');
-        await this.stopPromise;
-      } finally {
-        this.stopPromise = undefined;
-      }
+    try {
+      this.stopPromise = this.proc.kill('SIGKILL');
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = undefined;
     }
     await this.disposeProcess();
     this.cleanupConfirmed = true;

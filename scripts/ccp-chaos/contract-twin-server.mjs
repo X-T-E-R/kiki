@@ -1,6 +1,14 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import http from 'node:http';
 import http2 from 'node:http2';
+import {
+  checkRequiredToolSchemas,
+  detectS10Directive,
+  planS10ChildStep,
+  REQUIRED_CHILD_CHAIN_TOOLS,
+  REQUIRED_ORCHESTRATOR_TOOLS,
+} from './twin/chained-workload.mjs';
+import { streamPacedAnthropicResponse } from './twin/stream-writer.mjs';
 
 const ANTHROPIC_THREADS_BETA = 'message-threads-2026-08-12';
 const MAX_CACHE_CONTROL_BREAKPOINTS = 4;
@@ -1255,6 +1263,7 @@ export async function createContractTwinServer(options = {}) {
 
             const betaTokens = parseBetaTokens(extractHeader(req.headers, 'anthropic-beta'), body.betas);
             let effectiveMessages = body.messages;
+            let effectiveTools = Array.isArray(body.tools) ? body.tools : [];
             if (body.thread !== undefined || betaTokens.has(ANTHROPIC_THREADS_BETA)) {
               if (!body.thread || typeof body.thread !== 'object') {
                 const v = recordViolation(422, 'missing_thread_param', `Header ${ANTHROPIC_THREADS_BETA} sent without valid body.thread object`);
@@ -1287,6 +1296,9 @@ export async function createContractTwinServer(options = {}) {
                   return;
                 }
                 effectiveMessages = [...prevThread.messages, ...body.messages];
+                if (effectiveTools.length === 0 && Array.isArray(prevThread.tools)) {
+                  effectiveTools = prevThread.tools;
+                }
               } else {
                 const v = recordViolation(422, 'invalid_thread_type', `Unsupported thread.type "${String(body.thread.type)}"`);
                 sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
@@ -1323,13 +1335,145 @@ export async function createContractTwinServer(options = {}) {
               return;
             }
 
-            const toolSpec = detectToolProfile(promptText);
+            const effectivePromptText = extractAllPromptText({ messages: effectiveMessages });
+            const effectiveScopeKey = extractScopeKey(req.headers, { messages: effectiveMessages }, effectivePromptText || promptText);
+            const toolSpec = detectToolProfile(effectivePromptText || promptText);
+            const s10Directive = detectS10Directive(effectivePromptText || promptText);
             const declaredToolNames = new Set(
-              Array.isArray(body.tools)
-                ? body.tools.map((t) => (t && typeof t === 'object' ? t.name : null)).filter(Boolean)
-                : [],
+              effectiveTools.map((t) => (t && typeof t === 'object' ? t.name : null)).filter(Boolean),
             );
-            const prevStep = scopeToolStep.get(scopeKey) ?? 0;
+            const prevStep = scopeToolStep.get(effectiveScopeKey) ?? 0;
+
+            if (s10Directive?.kind === 'orchestrator_storm' && latestUser.toolResults.length === 0 && prevStep === 0) {
+              const preflight = checkRequiredToolSchemas(declaredToolNames, REQUIRED_ORCHESTRATOR_TOOLS);
+              if (!preflight.ok) {
+                const v = recordViolation(
+                  422,
+                  'missing_required_tool_schema',
+                  `S10 orchestrator missing required tools: ${preflight.missing.join(', ')}`,
+                  { missing: preflight.missing },
+                );
+                sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                return;
+              }
+              scopeToolStep.set(effectiveScopeKey, 1);
+              const astScriptMatch = /astScript=([^\s]+)/u.exec(promptText);
+              const astTargetMatch = /astTargetDir=([^\s]+)/u.exec(promptText);
+              const astScript = (astScriptMatch?.[1] ?? '').replace(/\.$/u, '');
+              const astTargetDir = (astTargetMatch?.[1] ?? '').replace(/\.$/u, '');
+              const calls = [];
+              for (let c = 0; c < s10Directive.children; c += 1) {
+                const needle = `NEEDLE_${String(c).padStart(4, '0')}`;
+                const bucket = `mod_${String(c % 20).padStart(2, '0')}`;
+                const targetFile = `s10-src/${bucket}/unit_${String(c).padStart(4, '0')}.ts`;
+                const childPrompt = [
+                  `[CHAOS_SCOPE:s10_child_${s10Directive.runId}_${c}]`,
+                  `[S10_CHILD:idx=${c},steps=${s10Directive.steps},deltas=${s10Directive.deltasPerStep},cadenceMs=${s10Directive.cadenceMs},runId=${s10Directive.runId},needle=${needle},targetFile=${targetFile},astScript=${astScript},astTargetDir=${astTargetDir}]`,
+                  `Execute real 6-stage tool workload for child ${c} on ${targetFile}.`,
+                ].join(' ');
+                const callId = `s10_orch_${s10Directive.runId}_c${c}_${msgSeq}`;
+                toolIdToName.set(callId, 'AgentRun');
+                if (!toolStats.AgentRun) toolStats.AgentRun = { invoked: 0, resultsOk: 0, resultsError: 0 };
+                toolStats.AgentRun.invoked += 1;
+                calls.push({
+                  id: callId,
+                  name: 'AgentRun',
+                  input: {
+                    profile: 'general',
+                    model_alias: 'twin-anthropic',
+                    effort: 'high',
+                    name: `s10_worker_${c}`,
+                    description: `S10 live workload child ${c}`,
+                    background: true,
+                    prompt: childPrompt,
+                  },
+                });
+              }
+              threadStore.set(messageId, {
+                messages: [
+                  ...effectiveMessages,
+                  {
+                    role: 'assistant',
+                    content: calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
+                  },
+                ],
+                createdAt: Date.now(),
+              });
+              await streamPacedAnthropicResponse(res, req, {
+                model: body.model,
+                messageId,
+                thinkingText: `Orchestrating ${calls.length} concurrent native background AgentRun workers for S10 run ${s10Directive.runId}.`,
+                toolCalls: calls,
+                targetDeltas: Math.min(80, s10Directive.deltasPerStep),
+                cadenceMs: s10Directive.cadenceMs,
+              });
+              return;
+            }
+
+            if (s10Directive?.kind === 'child_chain') {
+              const preflight = checkRequiredToolSchemas(declaredToolNames, REQUIRED_CHILD_CHAIN_TOOLS);
+              if (!preflight.ok) {
+                const v = recordViolation(
+                  422,
+                  'missing_required_tool_schema',
+                  `S10 child missing required tools: ${preflight.missing.join(', ')}`,
+                  { missing: preflight.missing },
+                );
+                sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                return;
+              }
+              const plannedStep = planS10ChildStep({
+                directive: s10Directive,
+                stepIndex: prevStep,
+                toolResults: latestUser.toolResults,
+                declaredToolNames,
+                workspaceDir,
+                seq: msgSeq,
+              });
+              scopeToolStep.set(effectiveScopeKey, prevStep + 1);
+              if (plannedStep.calls.length > 0) {
+                for (const c of plannedStep.calls) {
+                  toolIdToName.set(c.id, c.name);
+                  if (!toolStats[c.name]) toolStats[c.name] = { invoked: 0, resultsOk: 0, resultsError: 0 };
+                  toolStats[c.name].invoked += 1;
+                }
+                threadStore.set(messageId, {
+                  messages: [
+                    ...effectiveMessages,
+                    {
+                      role: 'assistant',
+                      content: plannedStep.calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
+                    },
+                  ],
+                  tools: effectiveTools,
+                  createdAt: Date.now(),
+                });
+                await streamPacedAnthropicResponse(res, req, {
+                  model: body.model,
+                  messageId,
+                  thinkingText: plannedStep.thinking,
+                  toolCalls: plannedStep.calls,
+                  targetDeltas: s10Directive.deltasPerStep,
+                  cadenceMs: s10Directive.cadenceMs,
+                });
+                return;
+              }
+              const finalText = plannedStep.replyText ?? `S10_CHILD_DONE [${messageId}]`;
+              threadStore.set(messageId, {
+                messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: finalText }] }],
+                tools: effectiveTools,
+                createdAt: Date.now(),
+              });
+              await streamPacedAnthropicResponse(res, req, {
+                model: body.model,
+                messageId,
+                thinkingText: plannedStep.thinking,
+                replyText: finalText,
+                targetDeltas: s10Directive.deltasPerStep,
+                cadenceMs: s10Directive.cadenceMs,
+              });
+              return;
+            }
 
             if (toolSpec && declaredToolNames.size > 0 && latestUser.toolResults.length === 0 && prevStep === 0) {
               const planned = planToolCalls({

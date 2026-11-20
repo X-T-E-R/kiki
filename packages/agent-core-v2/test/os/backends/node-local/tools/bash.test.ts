@@ -2231,3 +2231,107 @@ describe('single-long-line active stream drain (#69)', () => {
     expect(captured.length).toBe('BEGIN\n'.length + 60_000 + '\nEND\n'.length);
   });
 });
+
+describe('orphan grandchild cleanup after early root exit (process-task.ts:122)', () => {
+  it('calls proc.kill(SIGKILL) inside forceStop even when root exitCode is already non-null', async () => {
+    const signals: (NodeJS.Signals | undefined)[] = [];
+    let disposed = false;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const proc: IHostProcess = {
+      _serviceBrand: undefined,
+      stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
+      stdout,
+      stderr,
+      pid: 424242,
+      exitCode: 0,
+      wait: async () => 0,
+      kill: async (sig) => {
+        signals.push(sig);
+      },
+      dispose: async () => {
+        disposed = true;
+        stdout.destroy();
+        stderr.destroy();
+      },
+    };
+    const { ProcessTask } = await import('#/agent/tools/os/bash/process-task');
+    const task = new ProcessTask(proc, 'echo done &', 'orphan grandchild check');
+    await task.forceStop();
+    expect(signals).toEqual(['SIGKILL']);
+    expect(disposed).toBe(true);
+  });
+
+  it('kills a SIGTERM-ignoring grandchild spawned by an early-exiting parent within 2s on forceStop', async () => {
+    const { existsSync, readFileSync, writeFileSync } = await import('node:fs');
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { HostProcessService } = await import('#/os/backends/node-local/hostProcessService');
+    const { ProcessTask } = await import('#/agent/tools/os/bash/process-task');
+    const dir = await mkdtemp(join(tmpdir(), 'kiki-orphan-grandchild-'));
+    const pidFile = join(dir, 'grandchild.pid');
+    const gcScriptFile = join(dir, 'grandchild.cjs');
+    const parentScriptFile = join(dir, 'parent.cjs');
+    writeFileSync(
+      gcScriptFile,
+      [
+        'const fs = require("node:fs");',
+        'process.on("SIGTERM", () => {});',
+        `fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, String(process.pid));`,
+        `fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(
+      parentScriptFile,
+      [
+        'const fs = require("node:fs");',
+        'const { spawn } = require("node:child_process");',
+        `const gc = spawn(process.execPath, [${JSON.stringify(gcScriptFile)}], { stdio: "ignore", cwd: ${JSON.stringify(tmpdir())}, detached: process.platform === "win32" });`,
+        'gc.unref();',
+        `const deadline = Date.now() + 5000; while (!fs.existsSync(${JSON.stringify(pidFile)}) && Date.now() < deadline) {}`,
+        'process.exit(0);',
+      ].join('\n'),
+      'utf8',
+    );
+    const service = new HostProcessService();
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let grandchildPid: number | undefined;
+    try {
+      const proc = await service.spawn(process.execPath, [parentScriptFile], {
+        cwd: tmpdir(),
+        ownedProcessTree: true,
+      });
+      const task = new ProcessTask(proc, 'node spawn-orphan', 'orphan grandchild integration');
+      await vi.waitFor(() => {
+        expect(existsSync(pidFile)).toBe(true);
+      }, { timeout: 5_000 });
+      await proc.wait();
+      grandchildPid = Number(readFileSync(pidFile, 'utf8').trim());
+      expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true);
+      expect(isAlive(grandchildPid)).toBe(true);
+
+      const t0 = performance.now();
+      await task.forceStop();
+      await vi.waitFor(() => {
+        expect(isAlive(grandchildPid!)).toBe(false);
+      }, { timeout: 2_000, interval: 25 });
+      expect(performance.now() - t0).toBeLessThan(2_000);
+    } finally {
+      if (grandchildPid !== undefined && isAlive(grandchildPid)) {
+        try { process.kill(grandchildPid, 'SIGKILL'); } catch {}
+      }
+      await service.dispose();
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    }
+  });
+});
