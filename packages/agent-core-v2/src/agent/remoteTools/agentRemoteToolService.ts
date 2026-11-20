@@ -74,16 +74,18 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
   private closing = false;
 
   constructor(
-    @IRemoteSpaceToolBridgeService private readonly remoteBridge: IRemoteSpaceToolBridgeService,
+    @IRemoteSpaceToolBridgeService private readonly remoteBridge: IRemoteSpaceToolBridgeService | undefined,
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @ISessionContext private readonly session?: ISessionContext,
     @ISessionMediaStore private readonly attachmentStore?: ISessionMediaStore,
   ) {
     super();
-    this._register(this.remoteBridge.onDidChange(() => {
-      this.dirty = true;
-      void this.queueRefresh().catch(() => undefined);
-    }));
+    if (this.remoteBridge !== undefined) {
+      this._register(this.remoteBridge.onDidChange(() => {
+        this.dirty = true;
+        void this.queueRefresh().catch(() => undefined);
+      }));
+    }
     this._register(this.registry.registerPreparation(async () => {
       try {
         await this.refreshIfNeeded();
@@ -138,7 +140,7 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
   private async refresh(revision: number, signal?: AbortSignal): Promise<void> {
     if (this.closing || revision !== this.revision) return;
     let catalogs: readonly RemoteBorrowedSpaceCatalog[];
-    if (!this.remoteBridge.hasConnector()) {
+    if (this.remoteBridge === undefined || !this.remoteBridge.hasConnector()) {
       catalogs = [];
     } else {
       try {

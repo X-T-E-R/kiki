@@ -2451,5 +2451,42 @@ describe('KikiClient background preview lane and high-priority media bypass', ()
       await client.klient.close();
     }
   });
+
+  it('forwards sessionView(sessionId).subagents to GET /api/sessions/:sessionId/subagents', async () => {
+    const requestedUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      requestedUrls.push(`${url.pathname}${url.search}`);
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          items: [{
+            id: 'task_sub_42',
+            session_id: 'chaos_10k_subagents',
+            kind: 'subagent',
+            agent_id: 'subagent_00042',
+            status: 'completed',
+            description: 'Cold Archive Needle',
+          }],
+          total: 10000,
+          matched: 1,
+          has_more: false,
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const view = client.sessionView('chaos_10k_subagents');
+      expect(typeof view.subagents).toBe('function');
+      const result = await view.subagents!({ q: 'subagent_00042', limit: 32 });
+      expect(result.matched).toBe(1);
+      expect(result.items[0]?.agent_id).toBe('subagent_00042');
+      expect(requestedUrls).toEqual(['/api/sessions/chaos_10k_subagents/subagents?q=subagent_00042&limit=32']);
+    } finally {
+      await client.klient.close();
+    }
+  });
 });
 

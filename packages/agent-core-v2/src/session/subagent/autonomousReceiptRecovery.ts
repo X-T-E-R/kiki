@@ -17,6 +17,7 @@ interface ReceiptCheckpoint {
 }
 const folds = new Map([...autonomousReceiptsKey.replayable.folds].filter(([event]) => event.durable).map(([event, fold]) => [event.type, { event, fold }]));
 const FOLD_SUBSTRINGS = [...folds.keys()].map((type) => Buffer.from(`"${type}"`));
+const TRIGGER_SUBSTRINGS = [Buffer.from('"parentReceiptManaged"')];
 const ACTIVE_ONLY_EVENT_TYPES = new Set<string>([
   ContextAppendLoopEvent.type,
   ContextAppendMessage.type,
@@ -31,29 +32,50 @@ export async function readPendingAutonomousReceipts(scope: string, logs: IAppend
   ]);
   const checkpoint = saved?.generation === generation ? saved : undefined;
   let state = checkpoint === undefined ? autonomousReceiptsKey.initial() : autonomousReceiptsKey.replayable.schema.parse(checkpoint.state);
-  let through = checkpoint?.through ?? 0;
-  let records = 0;
-  for await (const record of logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
-    startOffset: through,
-    chunkBytes: 256 * 1024,
-    rawSubstrings: FOLD_SUBSTRINGS,
-    onPosition: (offset) => { through = offset; },
-    signal,
-  })) {
-    signal?.throwIfAborted();
-    const entry = folds.get(record.type);
-    if (entry !== undefined) {
-      if (state.active === undefined && ACTIVE_ONLY_EVENT_TYPES.has(record.type)) {
-        if (++records % 512 === 0) await setImmediate(undefined, { signal });
-        continue;
-      }
-      const event = event2FromRecord(entry.event, record);
-      if (event === undefined) throw new StorageError(StorageErrors.codes.STORAGE_CORRUPTED, 'Malformed autonomous receipt event', { details: { scope, type: record.type } });
-      state = produce(state, (draft) => entry.fold(draft, event, {
-        silent: true, emit: () => {}, checkpoint: () => {}, clearCheckpoints: () => {}, undoToCheckpoint: () => {},
-      }));
+  const startOffset = checkpoint?.through ?? 0;
+  let through = startOffset;
+  let needsFullFold = state.active !== undefined || Object.keys(state.pending).length > 0;
+  if (!needsFullFold) {
+    let scanned = 0;
+    for await (const _record of logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
+      startOffset,
+      chunkBytes: 256 * 1024,
+      rawSubstrings: TRIGGER_SUBSTRINGS,
+      onPosition: (offset) => { through = offset; },
+      signal,
+    })) {
+      needsFullFold = true;
+      break;
     }
-    if (++records % 512 === 0) await setImmediate(undefined, { signal });
+    if (!needsFullFold && ++scanned > 0) {
+      signal?.throwIfAborted();
+    }
+  }
+  if (needsFullFold) {
+    through = startOffset;
+    let records = 0;
+    for await (const record of logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
+      startOffset,
+      chunkBytes: 256 * 1024,
+      rawSubstrings: FOLD_SUBSTRINGS,
+      onPosition: (offset) => { through = offset; },
+      signal,
+    })) {
+      signal?.throwIfAborted();
+      const entry = folds.get(record.type);
+      if (entry !== undefined) {
+        if (state.active === undefined && ACTIVE_ONLY_EVENT_TYPES.has(record.type)) {
+          if (++records % 512 === 0) await setImmediate(undefined, { signal });
+          continue;
+        }
+        const event = event2FromRecord(entry.event, record);
+        if (event === undefined) throw new StorageError(StorageErrors.codes.STORAGE_CORRUPTED, 'Malformed autonomous receipt event', { details: { scope, type: record.type } });
+        state = produce(state, (draft) => entry.fold(draft, event, {
+          silent: true, emit: () => {}, checkpoint: () => {}, clearCheckpoints: () => {}, undoToCheckpoint: () => {},
+        }));
+      }
+      if (++records % 512 === 0) await setImmediate(undefined, { signal });
+    }
   }
   signal?.throwIfAborted();
   if ((checkpoint === undefined && through > 0) || (checkpoint !== undefined && through !== checkpoint.through)) {
