@@ -365,6 +365,13 @@ export class SessionIndexProjector {
       }
     }
     const ops: WriteOp[] = [];
+    const targetedChanges: {
+      readonly workspaceId: string;
+      readonly sessionId: string;
+      readonly nextSummary: SessionSummary | undefined;
+      readonly fingerprint: SessionSourceFingerprint | undefined;
+    }[] = [];
+    const targetedWorkspaceIds = new Set<string>();
     let upserted = 0;
     let removed = 0;
     let sessions = 0;
@@ -494,6 +501,18 @@ export class SessionIndexProjector {
         (sessionId) => (currentSessionOwners.get(sessionId) ?? 0) === 0,
       );
       const removedSet = new Set(removedIds);
+      if (changed !== undefined) {
+        if (changedIds.length > 0) targetedWorkspaceIds.add(workspaceId);
+        for (const sessionId of changedIds) {
+          targetedChanges.push({
+            workspaceId,
+            sessionId,
+            nextSummary: nextSummaries.get(sessionId),
+            fingerprint: fingerprintBySession.get(sessionId),
+          });
+        }
+        continue;
+      }
       const affectedIds = [...new Set([...changedIds, ...departedIds])];
       const oldSummaries =
         affectedIds.length === 0
@@ -516,9 +535,6 @@ export class SessionIndexProjector {
         await maybeYield();
         const oldSummary = oldSummaries.get(sessionId);
         const nextSummary = nextSummaries.get(sessionId);
-        if (changed !== undefined && oldSummary !== undefined && oldSummary.workspaceId !== workspaceId) {
-          return async () => ({ sessions: 0, upserted: 0, removed: 0, inventoryRequired: true });
-        }
         if (nextSummary === undefined) {
           const owners = currentSessionOwners.get(sessionId) ?? 0;
           if (oldSummary !== undefined && (removedSet.has(sessionId) || owners <= 1 && changedSet.has(sessionId))) {
@@ -554,18 +570,10 @@ export class SessionIndexProjector {
         ops.push({ kind: 'put', collection: workspaces, key: workspaceId, value: nextWorkspace });
       }
       const currentCount = await queryStore.get<SessionWorkspaceCounts>(counters, workspaceId);
-      const count = changed === undefined ? {
+      const count = {
         active: nextWorkspace.activeSessionIds.length,
         archived: nextWorkspace.archivedSessionIds.length,
-      } : { active: currentCount?.active ?? 0, archived: currentCount?.archived ?? 0 };
-      if (changed !== undefined) {
-        for (const sessionId of changedIds) {
-          const old = oldSummaries.get(sessionId);
-          const next = nextSummaries.get(sessionId);
-          if (old?.workspaceId === workspaceId) count[old.archived ? 'archived' : 'active'] -= 1;
-          if (next !== undefined) count[next.archived ? 'archived' : 'active'] += 1;
-        }
-      }
+      };
       if (
         currentCount === undefined ||
         currentCount.active !== count.active ||
@@ -598,13 +606,12 @@ export class SessionIndexProjector {
       ops.push({ kind: 'delete', collection: counters, key: workspaceId });
       ops.push({ kind: 'delete', collection: workspaces, key: workspaceId });
     }
-    const nextWorkspaceIds = changed === undefined ? currentWorkspaceIds : [...new Set([...previousWorkspaceIds, ...currentWorkspaceIds])].toSorted();
-    if (!sameStrings(previousWorkspaceIds, nextWorkspaceIds)) {
+    if (changed === undefined && !sameStrings(previousWorkspaceIds, currentWorkspaceIds)) {
       ops.push({
         kind: 'put',
         collection: workspaces,
         key: SESSION_SOURCE_ROOT_KEY,
-        value: { workspaceIds: nextWorkspaceIds } satisfies SessionSourceRoot,
+        value: { workspaceIds: currentWorkspaceIds } satisfies SessionSourceRoot,
       });
     }
 
@@ -623,8 +630,122 @@ export class SessionIndexProjector {
     };
     retainFingerprints();
     return async () => {
-      if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
-      await this.batchChunks(ops);
+      const commitOps: WriteOp[] = [...ops];
+      let commitUpserted = upserted;
+      let commitRemoved = removed;
+      if (changed !== undefined && targetedChanges.length > 0) {
+        const targetedIds = [...new Set(targetedChanges.map((entry) => entry.sessionId))];
+        const committedSummaries = await queryStore.getMany<SessionSummary>(collection, targetedIds);
+        const wsIds = [...targetedWorkspaceIds].toSorted();
+        const committedWorkspaces = await queryStore.getMany<SessionWorkspaceSource>(workspaces, wsIds);
+        const workspaceStates = new Map<
+          string,
+          {
+            readonly previous: SessionWorkspaceSource | undefined;
+            readonly sessionIds: Set<string>;
+            readonly activeSessionIds: Set<string>;
+            readonly archivedSessionIds: Set<string>;
+          }
+        >();
+        for (const workspaceId of wsIds) {
+          const previous = committedWorkspaces.get(workspaceId);
+          workspaceStates.set(workspaceId, {
+            previous,
+            sessionIds: new Set(previous?.sessionIds ?? []),
+            activeSessionIds: new Set(previous?.activeSessionIds ?? []),
+            archivedSessionIds: new Set(previous?.archivedSessionIds ?? []),
+          });
+        }
+        const deltaByWorkspace = new Map<string, { active: number; archived: number }>();
+        const bump = (workspaceId: string, field: 'active' | 'archived', by: number): void => {
+          const entry = deltaByWorkspace.get(workspaceId) ?? { active: 0, archived: 0 };
+          entry[field] += by;
+          deltaByWorkspace.set(workspaceId, entry);
+        };
+        for (const entry of targetedChanges) {
+          const committed = committedSummaries.get(entry.sessionId);
+          if (committed !== undefined && committed.workspaceId !== entry.workspaceId) {
+            return { sessions: 0, upserted: 0, removed: 0, inventoryRequired: true };
+          }
+          const wsState = workspaceStates.get(entry.workspaceId)!;
+          if (entry.nextSummary === undefined) {
+            if (committed !== undefined) {
+              commitOps.push({ kind: 'delete', collection, key: entry.sessionId });
+              commitOps.push({ kind: 'delete', collection: sources, key: entry.sessionId });
+              commitRemoved += 1;
+              bump(entry.workspaceId, committed.archived ? 'archived' : 'active', -1);
+            }
+            wsState.sessionIds.delete(entry.sessionId);
+            wsState.activeSessionIds.delete(entry.sessionId);
+            wsState.archivedSessionIds.delete(entry.sessionId);
+          } else {
+            if (committed === undefined) {
+              bump(entry.workspaceId, entry.nextSummary.archived ? 'archived' : 'active', 1);
+            } else if (committed.archived !== entry.nextSummary.archived) {
+              bump(entry.workspaceId, committed.archived ? 'archived' : 'active', -1);
+              bump(entry.workspaceId, entry.nextSummary.archived ? 'archived' : 'active', 1);
+            }
+            if (committed === undefined || !summaryEquals(committed, entry.nextSummary)) {
+              commitOps.push({
+                kind: 'put',
+                collection,
+                key: entry.sessionId,
+                value: withRecencyField(generation, entry.nextSummary),
+                columns: { [recencyColumn(generation)]: entry.nextSummary.updatedAt },
+              });
+              commitUpserted += 1;
+            }
+            if (entry.fingerprint !== undefined) {
+              commitOps.push({ kind: 'put', collection: sources, key: entry.sessionId, value: entry.fingerprint });
+            }
+            wsState.sessionIds.add(entry.sessionId);
+            wsState.activeSessionIds.delete(entry.sessionId);
+            wsState.archivedSessionIds.delete(entry.sessionId);
+            if (entry.nextSummary.archived) wsState.archivedSessionIds.add(entry.sessionId);
+            else wsState.activeSessionIds.add(entry.sessionId);
+          }
+        }
+        for (const [workspaceId, wsState] of workspaceStates) {
+          const nextWorkspace: SessionWorkspaceSource = {
+            sessionIds: [...wsState.sessionIds].toSorted(),
+            activeSessionIds: [...wsState.activeSessionIds].toSorted(),
+            archivedSessionIds: [...wsState.archivedSessionIds].toSorted(),
+          };
+          if (!workspaceSourceEquals(wsState.previous, nextWorkspace)) {
+            commitOps.push({ kind: 'put', collection: workspaces, key: workspaceId, value: nextWorkspace });
+          }
+        }
+        const nonZeroDeltaWorkspaces = [...deltaByWorkspace.entries()].filter(
+          ([, delta]) => delta.active !== 0 || delta.archived !== 0,
+        );
+        if (nonZeroDeltaWorkspaces.length > 0) {
+          const freshCounts = await queryStore.getMany<SessionWorkspaceCounts>(
+            counters,
+            nonZeroDeltaWorkspaces.map(([workspaceId]) => workspaceId),
+          );
+          for (const [workspaceId, delta] of nonZeroDeltaWorkspaces) {
+            const base = freshCounts.get(workspaceId) ?? { active: 0, archived: 0 };
+            const nextCount: SessionWorkspaceCounts = {
+              active: Math.max(0, base.active + delta.active),
+              archived: Math.max(0, base.archived + delta.archived),
+            };
+            commitOps.push({ kind: 'put', collection: counters, key: workspaceId, value: nextCount });
+          }
+        }
+        const freshRoot = await queryStore.get<SessionSourceRoot>(workspaces, SESSION_SOURCE_ROOT_KEY);
+        const freshRootIds = freshRoot?.workspaceIds ?? [];
+        const mergedRootIds = [...new Set([...freshRootIds, ...wsIds])].toSorted();
+        if (!sameStrings(freshRootIds, mergedRootIds)) {
+          commitOps.push({
+            kind: 'put',
+            collection: workspaces,
+            key: SESSION_SOURCE_ROOT_KEY,
+            value: { workspaceIds: mergedRootIds } satisfies SessionSourceRoot,
+          });
+        }
+      }
+      if (commitOps.length > 0) await advanceSessionIndexRevision(queryStore);
+      await this.batchChunks(commitOps);
       const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (
         manifest?.seq === generation &&
@@ -636,8 +757,8 @@ export class SessionIndexProjector {
         });
       }
       retainFingerprints();
-      const result = { sessions, upserted, removed };
-      if (upserted > 0 || removed > 0) {
+      const result = { sessions, upserted: commitUpserted, removed: commitRemoved };
+      if (commitUpserted > 0 || commitRemoved > 0) {
         log.info('session index reconciliation repaired drift', { generation, ...result });
       }
       return result;

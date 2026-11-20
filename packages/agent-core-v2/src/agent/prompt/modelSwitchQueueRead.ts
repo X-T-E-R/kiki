@@ -13,14 +13,25 @@ import {
   verifyReplayCheckpointWire,
   type ReplayCheckpointWire,
 } from '#/state/eventDispatcherService';
-import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
+import { logicalByteSize, openPinnedLogicalRead, type PinnedLogicalRead } from '#/persistence/coldSegmentLog';
 import { isWireRecord, AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
 
 const PREFIX = '\u0000model-switch:';
 const READ_BYTES = 8 * 1024 * 1024;
+const SCAN_CHUNK_BYTES = 4 * 1024 * 1024;
 const PROOF_BYTES = 64 * 1024;
+const PROMPT_DOT_NEEDLE = Buffer.from('prompt.');
+const CONTEXT_UNDO_NEEDLE = Buffer.from('context.undo');
 const CHECKPOINT_STATE_NAMES = new Set([modelSwitchQueueKey.name, promptQueueKey.name]);
+
+function isModelSwitchQueueRecordType(type: string): boolean {
+  return type.startsWith('prompt.') || type === 'executor.prompt.delivery' || type === 'context.undo';
+}
+
+function bufferContainsQueueNeedle(buf: Buffer, start = 0): boolean {
+  return buf.indexOf(PROMPT_DOT_NEEDLE, start) !== -1 || buf.indexOf(CONTEXT_UNDO_NEEDLE, start) !== -1;
+}
 type SwitchState = ReturnType<typeof modelSwitchQueueKey.initial>;
 type QueueState = ReturnType<typeof promptQueueKey.initial>;
 interface Checkpoint {
@@ -82,17 +93,43 @@ export class PersistedModelSwitchReader {
   }
 
   async readReady(scope: string, signal?: AbortSignal) {
-    for (;;) {
-      signal?.throwIfAborted();
-      try { return await this.read(scope, signal); }
-      catch (error) {
+    signal?.throwIfAborted();
+    const flight = this.flights.get(scope);
+    if (flight !== undefined) {
+      await flight.catch((error: unknown) => {
         if (!(error instanceof ModelSwitchQueuePreparingError)) throw error;
+      });
+    }
+    const pinned = await openPinnedLogicalRead(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, signal);
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        try { return await this.readWithPinned(scope, signal, pinned, true); }
+        catch (error) {
+          if (!(error instanceof ModelSwitchQueuePreparingError)) throw error;
+        }
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
       }
-      await new Promise<void>((resolve) => { setImmediate(resolve); });
+    } finally {
+      pinned.close();
     }
   }
 
-  private async checkpoint(scope: string, size: number, mtimeMs: number) {
+  private readWithPinned(scope: string, signal: AbortSignal | undefined, pinned: PinnedLogicalRead, drainAllSlices: boolean) {
+    signal?.throwIfAborted();
+    const flight = this.flights.get(scope);
+    if (flight !== undefined) return flight.then((list) => { signal?.throwIfAborted(); return list; });
+    const promise = this.readPage(scope, pinned, drainAllSlices, signal).catch((error: unknown) => {
+      if (!(error instanceof ModelSwitchQueuePreparingError) && !(signal?.aborted === true && error === signal.reason)) {
+        this.states.delete(scope);
+      }
+      throw error;
+    }).finally(() => { this.flights.delete(scope); });
+    this.flights.set(scope, promise);
+    return promise.then((list) => { signal?.throwIfAborted(); return list; });
+  }
+
+  private async checkpoint(scope: string, size: number, mtimeMs: number, pinned: PinnedLogicalRead) {
     const checkpoint = await this.host.docs.get<Checkpoint>(`${scope}/replay-checkpoints`, 'engine-v1');
     if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) return undefined;
     const digestRange = async (start: number, byteLength: number): Promise<string | undefined> => {
@@ -102,7 +139,7 @@ export class PersistedModelSwitchReader {
       const hash = createHash('sha256');
       let read = 0;
       if (start < byteLength) {
-        for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: byteLength - 1 })) {
+        for await (const chunk of pinned.read({ start, end: byteLength - 1 })) {
           hash.update(chunk);
           read += chunk.byteLength;
         }
@@ -115,7 +152,7 @@ export class PersistedModelSwitchReader {
       mtimeMs,
       headHash: async () => {
         const hash = createHash('sha256');
-        for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: 0, end: JOURNAL_HEAD_HASH_BYTES - 1 })) {
+        for await (const chunk of pinned.read({ start: 0, end: JOURNAL_HEAD_HASH_BYTES - 1 })) {
           hash.update(chunk);
         }
         return hash.digest('hex').slice(0, 32);
@@ -156,9 +193,13 @@ export class PersistedModelSwitchReader {
     }
   }
 
-  private async source(scope: string): Promise<Source> {
-    const size = await logicalByteSize(this.host.storage, scope, AGENT_WIRE_RECORD_KEY);
+  private async source(scope: string, pinned?: PinnedLogicalRead): Promise<Source> {
     const path = this.host.storage.pathFor?.(scope, AGENT_WIRE_RECORD_KEY);
+    if (pinned !== undefined && !pinned.sealed && path !== undefined && this.host.files !== undefined) {
+      const stat = await this.host.files.stat(path);
+      return { size: stat.size, mtimeMs: stat.mtimeMs ?? 0, identity: stat.ino };
+    }
+    const size = await logicalByteSize(this.host.storage, scope, AGENT_WIRE_RECORD_KEY);
     if (size !== undefined && path !== undefined && this.host.files !== undefined) {
       const stat = await this.host.files.stat(path);
       return { size: stat.size, mtimeMs: stat.mtimeMs ?? 0, identity: stat.ino };
@@ -176,14 +217,13 @@ export class PersistedModelSwitchReader {
     throw new ModelSwitchQueuePreparingError();
   }
 
-  private async prefixProof(scope: string, through: number) {
+  private async prefixProof(scope: string, through: number, pinned: PinnedLogicalRead) {
     const hash = createHash('sha256');
     const bytes = Math.min(through, PROOF_BYTES);
     for (const start of [0, Math.max(0, through - PROOF_BYTES)]) {
       let read = 0;
       if (bytes > 0) {
-        for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY,
-          { start, end: start + bytes - 1 }, { chunkBytes: PROOF_BYTES })) {
+        for await (const chunk of pinned.read({ start, end: start + bytes - 1 }, { chunkBytes: PROOF_BYTES })) {
           hash.update(chunk); read += chunk.length;
         }
       }
@@ -192,71 +232,133 @@ export class PersistedModelSwitchReader {
     return hash.digest('hex');
   }
 
-  private async readPage(scope: string) {
-    const source = await this.source(scope);
-    let state = this.states.get(scope);
-    const changed = state !== undefined && (!this.canAppend(state.source, source) || source.size < state.watermark ||
-      await this.prefixProof(scope, state.watermark) !== state.proof);
-    if (changed) state = undefined;
-    if (state === undefined) {
-      const proof = await this.prefixProof(scope, source.size);
-      const checkpoint = changed ? undefined : await this.checkpoint(scope, source.size, source.mtimeMs);
-      const offset = checkpoint?.offset ?? 0;
-      state = { source, watermark: source.size, proof, switches: checkpoint?.switches ?? modelSwitchQueueKey.initial(),
-        queue: checkpoint?.queue ?? promptQueueKey.initial(), offset,
-        pending: Buffer.alloc(0), skip: false, complete: checkpoint !== undefined && offset >= source.size };
-    } else if (state.complete && source.size > state.watermark) {
-      state.watermark = source.size;
-      state.proof = await this.prefixProof(scope, state.watermark);
-      state.complete = false;
-    }
-    this.states.delete(scope); this.states.set(scope, state);
-    while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
-    if (!state.complete && state.offset < state.watermark) {
-      const end = Math.min(state.watermark, state.offset + READ_BYTES) - 1;
-      for await (const raw of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: state.offset, end })) {
-        const chunk = Buffer.from(raw);
-        state.offset += chunk.length;
-        let start = 0;
-        for (;;) {
-          const newline = chunk.indexOf(10, start);
-          const index = newline < 0 ? chunk.length : newline;
-          const fragment = chunk.subarray(start, index);
-          if (!state.skip) state.pending = Buffer.concat([state.pending, fragment]);
-          if (state.pending.length >= 256) {
-            const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, 256))?.[1];
-            if (type !== undefined && !type.startsWith('prompt.')) { state.skip = true; state.pending = Buffer.alloc(0); }
+  private async readPage(scope: string, sharedPinned?: PinnedLogicalRead, drainAllSlices = false, signal?: AbortSignal) {
+    const ownedPinned = sharedPinned === undefined
+      ? await openPinnedLogicalRead(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, signal)
+      : undefined;
+    const pinned = sharedPinned ?? ownedPinned!;
+    try {
+      const source = await this.source(scope, pinned);
+      let state = this.states.get(scope);
+      const changed = state !== undefined && (!this.canAppend(state.source, source) || source.size < state.watermark ||
+        await this.prefixProof(scope, state.watermark, pinned) !== state.proof);
+      if (changed) state = undefined;
+      if (state === undefined) {
+        const proof = await this.prefixProof(scope, source.size, pinned);
+        const checkpoint = changed ? undefined : await this.checkpoint(scope, source.size, source.mtimeMs, pinned);
+        const offset = checkpoint?.offset ?? 0;
+        state = { source, watermark: source.size, proof, switches: checkpoint?.switches ?? modelSwitchQueueKey.initial(),
+          queue: checkpoint?.queue ?? promptQueueKey.initial(), offset,
+          pending: Buffer.alloc(0), skip: false, complete: checkpoint !== undefined && offset >= source.size };
+      } else if (state.complete && source.size > state.watermark) {
+        state.watermark = source.size;
+        state.proof = await this.prefixProof(scope, state.watermark, pinned);
+        state.complete = false;
+      }
+      this.states.delete(scope); this.states.set(scope, state);
+      while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
+      let yieldedAt = performance.now();
+      while (!state.complete && state.offset < state.watermark) {
+        signal?.throwIfAborted();
+        const end = Math.min(state.watermark, state.offset + READ_BYTES) - 1;
+        const streamOptions = end - state.offset + 1 > 256 * 1024 ? { chunkBytes: SCAN_CHUNK_BYTES } : undefined;
+        for await (const raw of pinned.read({ start: state.offset, end }, streamOptions)) {
+          const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+          state.offset += chunk.length;
+          let start = 0;
+          if (state.skip) {
+            const skipEnd = chunk.indexOf(10);
+            if (skipEnd < 0) continue;
+            state.skip = false;
+            start = skipEnd + 1;
+            if (start >= chunk.length) continue;
           }
-          if (index !== chunk.length) {
-            if (!state.skip) this.fold(state, state.pending);
-            state.pending = Buffer.alloc(0); state.skip = false;
+          if (state.pending.length === 0 && !bufferContainsQueueNeedle(chunk, start)) {
+            if (chunk[chunk.length - 1] !== 10) {
+              const lastNewline = chunk.lastIndexOf(10);
+              const tailStart = lastNewline < start ? start : lastNewline + 1;
+              const tail = chunk.subarray(tailStart);
+              if (tail.length >= 256) {
+                state.skip = true;
+              } else if (tail.length > 0) {
+                state.pending = Buffer.from(tail);
+              }
+            }
+            if (performance.now() - yieldedAt >= 4) {
+              await new Promise<void>((resolve) => { setImmediate(resolve); });
+              signal?.throwIfAborted();
+              yieldedAt = performance.now();
+            }
+            continue;
           }
-          if (index === chunk.length) break;
-          start = index + 1;
+          for (;;) {
+            const newline = chunk.indexOf(10, start);
+            const index = newline < 0 ? chunk.length : newline;
+            const fragment = chunk.subarray(start, index);
+            if (state.pending.length === 0 && !state.skip && index !== chunk.length) {
+              if (fragment.length > 0 && bufferContainsQueueNeedle(fragment)) {
+                const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(fragment.toString('utf8', 0, Math.min(256, fragment.length)))?.[1];
+                if (type === undefined || isModelSwitchQueueRecordType(type)) {
+                  this.fold(state, fragment);
+                }
+              }
+              start = index + 1;
+              continue;
+            }
+            if (!state.skip) state.pending = state.pending.length === 0 ? Buffer.from(fragment) : Buffer.concat([state.pending, fragment]);
+            if (!state.skip && state.pending.length >= 256) {
+              const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, 256))?.[1];
+              if (type !== undefined && !isModelSwitchQueueRecordType(type)) {
+                state.skip = true;
+                state.pending = Buffer.alloc(0);
+              }
+            }
+            if (index !== chunk.length) {
+              if (!state.skip && state.pending.length > 0) {
+                const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, Math.min(256, state.pending.length)))?.[1];
+                if (type === undefined || isModelSwitchQueueRecordType(type)) {
+                  this.fold(state, state.pending);
+                }
+              }
+              state.pending = Buffer.alloc(0);
+              state.skip = false;
+            }
+            if (index === chunk.length) break;
+            start = index + 1;
+          }
+          if (performance.now() - yieldedAt >= 4) {
+            await new Promise<void>((resolve) => { setImmediate(resolve); });
+            signal?.throwIfAborted();
+            yieldedAt = performance.now();
+          }
+        }
+        if (state.offset !== end + 1) throw new Error('Incomplete model switch queue source read');
+        if (!drainAllSlices) break;
+        if (signal?.aborted === true) throw signal.reason;
+      }
+      const after = await this.source(scope, pinned);
+      if (!this.canAppend(source, after) || after.size < state.watermark ||
+        await this.prefixProof(scope, state.watermark, pinned) !== state.proof) this.invalidate(scope);
+      const verified = await this.source(scope, pinned);
+      if (!this.canAppend(after, verified)) this.invalidate(scope);
+      state.source = verified;
+      if (state.offset >= state.watermark) {
+        state.complete = true;
+        if (!state.skip && state.pending.length > 0) {
+          try { this.fold(state, state.pending); }
+          catch (error) {
+            if (error instanceof SyntaxError && verified.size > state.watermark) throw new ModelSwitchQueuePreparingError();
+            throw error;
+          }
+          state.pending = Buffer.alloc(0);
         }
       }
-      if (state.offset !== end + 1) throw new Error('Incomplete model switch queue source read');
+      if (!state.complete) throw new ModelSwitchQueuePreparingError();
+      return [...state.switches.values()].map((entry) => ({ ...entry,
+        queueIndex: state.queue.order.indexOf(`${PREFIX}${entry.input.operationId}`),
+      }));
+    } finally {
+      ownedPinned?.close();
     }
-    const after = await this.source(scope);
-    if (!this.canAppend(source, after) || after.size < state.watermark ||
-      await this.prefixProof(scope, state.watermark) !== state.proof) this.invalidate(scope);
-    const verified = await this.source(scope);
-    if (!this.canAppend(after, verified)) this.invalidate(scope);
-    state.source = verified;
-    if (state.offset >= state.watermark) {
-      state.complete = true;
-      if (!state.skip && state.pending.length > 0) {
-        try { this.fold(state, state.pending); }
-        catch (error) {
-          if (error instanceof SyntaxError && verified.size > state.watermark) throw new ModelSwitchQueuePreparingError();
-          throw error;
-        }
-        state.pending = Buffer.alloc(0);
-      }
-    }
-    if (!state.complete) throw new ModelSwitchQueuePreparingError();
-    return [...state.switches.values()].map((entry) => ({ ...entry,
-      queueIndex: state.queue.order.indexOf(`${PREFIX}${entry.input.operationId}`),
-    }));
   }
 }

@@ -282,8 +282,16 @@ port.on('message', (request: StoreRequest) => {
     let response: StoreResponse;
     try { response = { id: request.id, result: await executeWithBusyRetry(request.operation) }; }
     catch (error) {
-      const value = error as Error & { code?: string };
-      response = { id: request.id, error: { message: value.message, code: value.name === 'AbortError' ? 'ABORT_ERR' : value.code, committed: request.operation.type === 'batch' ? false : undefined } };
+      const value = error as Error & { code?: string; errcode?: number };
+      response = {
+        id: request.id,
+        error: {
+          message: value.message,
+          code: value.name === 'AbortError' ? 'ABORT_ERR' : value.code,
+          errcode: typeof value.errcode === 'number' ? value.errcode : undefined,
+          committed: request.operation.type === 'batch' ? false : undefined,
+        },
+      };
     }
     cancellation = undefined;
     port.postMessage(response);

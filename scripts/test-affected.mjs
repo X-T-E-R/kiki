@@ -256,6 +256,10 @@ function focusedCommands(changes, selected, affected) {
   if (nativeTests.length > 0) {
     commands.push(command('selected node:test files', ['exec', 'node', '--test', '--test-concurrency=2', ...nativeTests]));
   }
+  const mtsTests = related.filter(path => /(?:^|\/)[^/]+\.test\.mts$/.test(path));
+  if (mtsTests.length > 0 && !selectedHasVitestProject) {
+    commands.push(command('selected Vitest .test.mts files', ['exec', 'vitest', 'run', '--maxWorkers=2', ...mtsTests]));
+  }
   const byName = new Set(affected.map(pkg => pkg.name));
   if (byName.has('@kiki/auth-native')) commands.push(command('auth-native node:test suite', ['--filter', '@kiki/auth-native', 'test']));
   if (byName.has('@kiki/pi-tui')) commands.push(command('pi-tui node:test suite', ['--filter', '@kiki/pi-tui', 'test']));

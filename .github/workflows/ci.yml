@@ -204,7 +204,11 @@ jobs:
           node --test scripts/ci-test-partition.test.mjs
           node scripts/ci-test-partition.mjs verify --shards=5
       - name: Test release pipeline contracts
-        run: node --test scripts/release-pipeline.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
+        run: node --test scripts/release-pipeline.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs apps/kimi-code/scripts/native/release-receipt.test.mjs
+      - name: Test script, chaos-hygiene, external-harness, and mobile node:test suites
+        run: |
+          node --test scripts/ccp-chaos/ccp-chaos.test.mjs scripts/test-affected.test.mjs scripts/external-harness/production-manifest.test.mjs scripts/external-harness/agy-cli-acp.test.mjs apps/kiki-gui/mobile/test/target.test.mjs apps/kiki-gui/mobile/test/android-artifact.test.mjs
+          pnpm --filter @kiki/gui run scripts:test
       - name: Test auth-native with its native runner
         run: pnpm --filter @kiki/auth-native test
       - name: Fetch locked sources for the offline Cargo vendor test
@@ -283,6 +287,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -295,6 +301,8 @@ jobs:
       - name: Test repository meta-governance and Nix workspace checkers
         run: node --test scripts/check-repo-meta.test.mjs scripts/check-nix-workspace.test.mjs
       - name: Check repository meta-governance gates
+        env:
+          KIKI_DIFF_BASE: ${{ github.base_ref && format('origin/{0}', github.base_ref) || '' }}
         run: node scripts/check-repo-meta.mjs
 
   lint:

@@ -1118,6 +1118,117 @@ function checkGuiCssAndOverlayRatchet(root, inventory, errors) {
   }
 }
 
+const PII_SCAN_EXTENSIONS = /\.(?:[cm]?[jt]sx?|md|json|ya?ml|toml|ps1|sh)$/iu;
+const ALLOWED_USER_NAMES = new Set([
+  'public', 'default', 'administrator', 'runneradmin', 'runner', 'user', 'users',
+  'alice', 'bob', 'carol', 'dave', 'dev', 'developer', 'test', 'tester', 'example',
+  'foo', 'bar', 'someone', 'me', 'name', 'you', 'yourname', 'username', 'owner',
+  'admin', 'demo', 'jane', 'john', 'kiki', 'guest', 'shared', 'ci', 'build', 'app',
+  'fixture', 'ada', 'sender', 'examplex', 'getlong', 'private',
+]);
+const WINDOWS_USER_PATH_RE = /\b[A-Za-z]:[/\\]Users[/\\]([A-Za-z0-9._-]{2,})[/\\]/gu;
+const MACOS_USER_PATH_RE = /(?:^|[\s"'`(])\/Users\/([A-Za-z0-9._-]{2,})\//gu;
+const NON_EXAMPLE_PRIVATE_LAN_RE = /\b192\.168\.(?!1\.(?:1|2|10|100)\b|0\.(?:0|1)\b)\d{1,3}\.\d{1,3}\b/gu;
+
+function checkTrackedPiiAndInternalHosts(repoRoot, inventory, errors) {
+  const candidateFiles =
+    inventory.trackedSet !== null
+      ? [...inventory.trackedSet].toSorted((a, b) => a.localeCompare(b))
+      : inventory.allFiles;
+  for (const rel of candidateFiles) {
+    if (!PII_SCAN_EXTENSIONS.test(rel)) continue;
+    if (rel === 'scripts/check-repo-meta.mjs' || rel === 'scripts/check-repo-meta.test.mjs') continue;
+    let text;
+    try {
+      text = readFileSync(join(repoRoot, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    const lines = text.split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      WINDOWS_USER_PATH_RE.lastIndex = 0;
+      let match;
+      while ((match = WINDOWS_USER_PATH_RE.exec(line)) !== null) {
+        if (!ALLOWED_USER_NAMES.has(match[1].toLowerCase())) {
+          addViolation(
+            errors,
+            'pii-and-internal-hosts',
+            rel,
+            index + 1,
+            `Tracked file contains non-placeholder Windows user profile path ("${match[0]}")`,
+            'Replace with a neutral placeholder such as C:/Users/alice/ or an environment variable',
+          );
+        }
+      }
+      MACOS_USER_PATH_RE.lastIndex = 0;
+      while ((match = MACOS_USER_PATH_RE.exec(line)) !== null) {
+        if (!ALLOWED_USER_NAMES.has(match[1].toLowerCase())) {
+          addViolation(
+            errors,
+            'pii-and-internal-hosts',
+            rel,
+            index + 1,
+            `Tracked file contains non-placeholder macOS user profile path ("${match[0].trim()}")`,
+            'Replace with a neutral placeholder such as /Users/alice/ or $HOME',
+          );
+        }
+      }
+      if (rel.startsWith('scripts/') && !rel.endsWith('.test.mjs')) {
+        NON_EXAMPLE_PRIVATE_LAN_RE.lastIndex = 0;
+        while ((match = NON_EXAMPLE_PRIVATE_LAN_RE.exec(line)) !== null) {
+          addViolation(
+            errors,
+            'pii-and-internal-hosts',
+            rel,
+            index + 1,
+            `Tracked script contains non-placeholder private LAN IP ("${match[0]}")`,
+            'Replace with a neutral placeholder IP such as 192.168.1.10 or RFC 5737 203.0.113.10',
+          );
+        }
+      }
+    }
+  }
+}
+
+function readMetaDiffText(repoRoot) {
+  const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (probe.status !== 0) return '';
+  const workingDiff = spawnSync('git', ['diff', '--unified=0', 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (workingDiff.status === 0 && workingDiff.stdout.trim().length > 0) {
+    return workingDiff.stdout;
+  }
+  const baseCandidates = [
+    process.env.KIKI_DIFF_BASE?.trim(),
+    process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF.trim()}` : '',
+    'HEAD~1',
+  ].filter((candidate) => Boolean(candidate));
+  for (const baseRef of baseCandidates) {
+    const verify = spawnSync('git', ['rev-parse', '--verify', '--quiet', baseRef], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (verify.status !== 0) continue;
+    const rangeDiff = spawnSync('git', ['diff', '--unified=0', `${baseRef}...HEAD`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (rangeDiff.status === 0) return rangeDiff.stdout;
+  }
+  return '';
+}
 export function formatViolation(error) {
   return `[${error.rule}] ${error.file}:${error.line} — ${error.message}. Fix: ${error.fix}.`;
 }
@@ -1145,12 +1256,13 @@ export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
   if (options.boundaries === undefined && options.trackedFiles === undefined) {
     checkGuiCssAndOverlayRatchet(repoRoot, inventory, errors);
   }
+  checkTrackedPiiAndInternalHosts(repoRoot, inventory, errors);
   if (
     options.boundaries === undefined &&
     options.trackedFiles === undefined &&
     existsSync(join(repoRoot, 'scripts', 'ccp-chaos', 'check-test-hygiene.mjs'))
   ) {
-    const hygiene = runTestHygieneCheck({ repoRoot, diffText: '' });
+    const hygiene = runTestHygieneCheck({ repoRoot, diffText: readMetaDiffText(repoRoot) });
     for (const failure of hygiene.contractFailures) {
       addViolation(
         errors,
@@ -1169,6 +1281,16 @@ export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
         disabled.line,
         `Unexempted disabled test (${disabled.text}) violates Zero-Skip Gate`,
         'Enable the test in a self-contained harness or physically delete obsolete tests',
+      );
+    }
+    for (const mock of [...hygiene.intraMonorepoMocks.violations, ...hygiene.diffRatchet.mockViolations]) {
+      addViolation(
+        errors,
+        'test-contract-hygiene',
+        mock.file,
+        mock.line,
+        `Unexempted intra-monorepo mock ("${mock.target}") violates real-seam test hygiene`,
+        'Test against the real production module via DI/Scope or remove the internal vi.mock',
       );
     }
   }

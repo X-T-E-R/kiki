@@ -454,3 +454,20 @@ void test('rule 8 [workspace-sync-and-hygiene] catches flake.nix drift and track
   assert.ok(hits.some((e) => e.file === 'design/landing-mockup.html'));
   for (const hit of hits) assertFormattedWithFix(hit, 'workspace-sync-and-hygiene');
 });
+
+void test('rule 9 [pii-and-internal-hosts] catches real user-profile paths and non-placeholder LAN IPs in scripts', async () => {
+  const { root, boundaries } = createCleanFixture();
+  write(root, 'docs/leak.md', 'See C:/Users/realperson99/secret/config.toml and /Users/realmacuser/work\n');
+  write(root, 'scripts/leak.mjs', 'const host = "192.168.77.88";\n');
+  write(root, 'docs/safe.md', 'See C:/Users/alice/project and /Users/bob/project\n');
+  write(root, 'scripts/safe.mjs', 'const host = "192.168.1.10";\n');
+
+  const errors = await checkRepoMeta(root, { boundaries, trackedFiles: null });
+  const hits = errors.filter((e) => e.rule === 'pii-and-internal-hosts');
+  assert.ok(hits.some((e) => e.file === 'docs/leak.md' && e.message.includes('realperson99')));
+  assert.ok(hits.some((e) => e.file === 'docs/leak.md' && e.message.includes('realmacuser')));
+  assert.ok(hits.some((e) => e.file === 'scripts/leak.mjs' && e.message.includes('192.168.77.88')));
+  assert.ok(!hits.some((e) => e.file === 'docs/safe.md'));
+  assert.ok(!hits.some((e) => e.file === 'scripts/safe.mjs'));
+  for (const hit of hits) assertFormattedWithFix(hit, 'pii-and-internal-hosts');
+});

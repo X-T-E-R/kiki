@@ -789,4 +789,45 @@ describe('relay gate fixtures', () => {
       await ctx.dispose();
     }
   });
+
+  it('rescues default unconfigured automatic summarize via safe relay after exhausting bounded terminal-stream retries', async () => {
+    let attempts = 0;
+    let firstFailure!: () => void;
+    const started = new Promise<void>(resolve => { firstFailure = resolve; });
+    const ctx = testAgent({
+      initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 3 } },
+      generate: async (_chat, _system, _tools, _history, callbacks) => {
+        attempts += 1;
+        await callbacks?.onMessagePart?.({ type: 'text', text: 'Discard this failed default summary.' });
+        const error = markProviderEventError(new APIStatusError(502, 'stream ended'), 'gateway_stream_terminal_error');
+        noteConfirmedRequestExecution(error);
+        attachErrorDetails(error, { upstream_retryable: false });
+        firstFailure();
+        throw error;
+      },
+    });
+    try {
+      await stalledWindow(ctx);
+      const service = ctx.get(IAgentFullCompactionService);
+      expect(service.getContextStrategy()).toMatchObject({ strategy: 'summarize', source: 'default' });
+      expect(service.begin({ source: 'auto' })).toBe(true);
+      const task = service.compacting!;
+      await started;
+      vi.useFakeTimers();
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await task.promise;
+      expect(attempts).toBe(3);
+      expect(result).toMatchObject({
+        strategy: 'relay',
+        fallbackFrom: 'summarize',
+        reasonCodes: expect.arrayContaining(['summarize_failed_relay_rescue']),
+      });
+      vi.useRealTimers();
+      expect(JSON.stringify(await ctx.persistedWireRecords())).not.toContain('Discard this failed default summary.');
+      await ctx.expectResumeMatches();
+    } finally {
+      vi.useRealTimers();
+      await ctx.dispose();
+    }
+  }, 30_000);
 });

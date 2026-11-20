@@ -328,7 +328,24 @@ describe('TranscriptService projection', () => {
     const verify = async (path: string) => (service as unknown as {
       verifyWireReceipt(path: string, info: unknown, signal: AbortSignal): Promise<boolean>;
     }).verifyWireReceipt(path, await fsPromises.stat(path), new AbortController().signal);
-    const streams = vi.spyOn(FileStorageService.prototype, 'readStream');
+    const observedRanges: Array<{ start: number; end: number }> = [];
+    const originalOpenLogicalWire = logicalWire.openLogicalWire;
+    const openSpy = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (wirePath, signal) => {
+      const opened = await originalOpenLogicalWire(wirePath, signal);
+      if (opened === undefined) return undefined;
+      return {
+        size: opened.size,
+        readAt: (position, length) => {
+          observedRanges.push({ start: position, end: position + length - 1 });
+          return opened.readAt(position, length);
+        },
+        chunks: () => {
+          observedRanges.push({ start: 0, end: opened.size - 1 });
+          return opened.chunks();
+        },
+        close: () => opened.close(),
+      };
+    });
     try {
       const path = join(home, 'wire.jsonl');
       for (const length of [0, 1, 200_000]) {
@@ -342,10 +359,10 @@ describe('TranscriptService projection', () => {
         await writeFixtureFile(join(home, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
           format, epoch: `example-${length}`, trusted: true, state: 'sealed', wire,
         }));
-        streams.mockClear();
+        observedRanges.length = 0;
         expect(await verify(path)).toBe(length > 0);
         if (length === 0) continue;
-        expect(streams.mock.calls.filter(([, key]) => key === 'wire.jsonl').map(([, , range]) => range))
+        expect(observedRanges)
           .toEqual([{ start: format === 1 ? 0 : bytes.byteLength - tail.byteLength, end: bytes.byteLength - 1 }]);
         await writeFixtureFile(path, bytes.subarray(0, bytes.byteLength - 2));
         expect(await verify(path)).toBe(false);
@@ -357,7 +374,7 @@ describe('TranscriptService projection', () => {
         expect(await verify(path)).toBe(false);
       }
     } finally {
-      streams.mockRestore(); service.dispose();
+      openSpy.mockRestore(); service.dispose();
       await rm(home, { recursive: true, force: true });
     }
   });
@@ -4372,7 +4389,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(25);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(27);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4382,7 +4399,74 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it('invalidates persisted format-26 EOF checkpoints under format 27 and recovers token_counting.measured contextTokens', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      await appendFile(wirePath, `${[
+        { type: 'turn.ended', turnId: 0, reason: 'completed', time: 5_500 },
+        { type: 'turn.prompt', turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: 'hello' }], time: 6_000 },
+        { type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1', time: 6_010 },
+        { type: 'token_counting.measured', tokens: 61_234, time: 6_050 },
+        { type: 'turn.ended', turnId: 1, reason: 'completed', time: 6_100 },
+        ...Array.from({ length: 300 }, (_, index) => ({ type: 'executor.runtime.update', kind: 'stable', index })),
+      ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+      const originalWire = await fsPromises.readFile(wirePath);
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const query = core.accessor.get(IQueryStore);
+      const key = 'ws\0s1\0main';
+      const starts: (number | undefined)[] = [];
+      const read = async () => {
+        const service = new TranscriptService({
+          homeDir: home,
+          core,
+          wireRecordReader: async (path, options) => {
+            starts.push(options.startByteOffset);
+            return streamWireRecords(path, options);
+          },
+        });
+        try { return await service.readColdSnapshot('s1', 'main'); }
+        finally { service.dispose(); }
+      };
+      try {
+        const expected = await read();
+        expect(expected?.meta.agent?.contextTokens).toBe(61_234);
+        const saved = await query.get<{
+          format: number;
+          nextByteOffset: number;
+          snapshot: AgentTranscriptSnapshot;
+        }>('__transcript_projection_checkpoint__', key);
+        expect(saved?.format).toBe(27);
+        expect(saved?.nextByteOffset).toBe(originalWire.byteLength);
+
+        const legacy = {
+          ...structuredClone(saved!),
+          format: 26,
+          snapshot: {
+            ...structuredClone(saved!.snapshot),
+            meta: {
+              ...structuredClone(saved!.snapshot.meta),
+              agent: saved!.snapshot.meta.agent === undefined
+                ? undefined
+                : { ...structuredClone(saved!.snapshot.meta.agent), contextTokens: 0 },
+            },
+          },
+        };
+        await query.put('__transcript_projection_checkpoint__', key, legacy);
+
+        const recovered = await read();
+        expect(recovered?.meta.agent?.contextTokens).toBe(61_234);
+        expect(starts).toEqual([undefined, undefined]);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(27);
+
+        const cached = await read();
+        expect(cached?.meta.agent?.contextTokens).toBe(61_234);
+        expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4485,7 +4569,7 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(25);
+        expect(checkpoint?.format).toBe(27);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary).toMatchObject({ state: 'failed',
           error: 'example_stream_reset: Example worker connection was reset.',
@@ -8148,3 +8232,72 @@ it('bounds retainedColdTurns globally to 8 MiB and within the 32 MiB combined co
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('preserves a long blocked-hook assistant message (>512 bytes before origin) on a trimmed cold first-screen turn', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-transcript-long-hook-'));
+  const wirePath = join(home, 'sessions', 'ws', 's-hook', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const longReason = `policy denied: ${'X'.repeat(1200)} tail-marker`;
+  const bigLoopPayload = 'L'.repeat(150_000);
+  const records: object[] = [
+    { type: 'metadata', protocol_version: '1.1', time: 1_000 },
+    { type: 'turn.prompt', turnId: 1, promptId: 'p-1', input: [{ type: 'text', text: 'first turn' }], origin: { kind: 'user' }, time: 1_100 },
+    { type: 'prompt.enqueued', promptId: 'p-blocked', message: [{ type: 'text', text: 'blocked follow-up' }], origin: { kind: 'user' }, mode: 'queue', queueIndex: 0, time: 1_150 },
+    { type: 'prompt.completed', promptId: 'p-blocked', reason: 'blocked', time: 1_160 },
+    {
+      type: 'context.append_message',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `<hook_result event="UserPromptSubmit">${longReason}</hook_result>` }],
+        toolCalls: [],
+        origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+      },
+      time: 1_170,
+    },
+  ];
+  for (let i = 1; i <= 14; i += 1) {
+    records.push({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 1, step: i, uuid: `step-${i}` },
+      time: 2_000 + i * 10,
+    });
+    records.push({
+      type: 'context.append_loop_event',
+      event: { type: 'tool.result', turnId: 1, stepUuid: `step-${i}`, uuid: `tr-${i}`, toolCallId: `call-${i}`, name: 'Read', output: bigLoopPayload, isError: false },
+      time: 2_000 + i * 10 + 5,
+    });
+  }
+  records.push({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 5_000 });
+  await writeFixtureFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const core = {
+    accessor: {
+      get: (token: unknown) => {
+        if (token === ISessionIndex) {
+          return { get: async (id: string) => id === 's-hook' ? { id, workspaceId: 'ws', updatedAt: 1 } : undefined };
+        }
+        if (token === ISessionManager) return {};
+        return undefined;
+      },
+    },
+  } as unknown as Scope;
+  const service = new TranscriptService({ homeDir: home, core });
+  try {
+    const snapshot = await service.readColdPageSnapshot(
+      's-hook',
+      'main',
+      (value) => value,
+      new AbortController().signal,
+      false,
+      undefined,
+      false,
+      true,
+      true,
+    );
+    const blocked = snapshot?.prompts.find((entry) => entry.promptId === 'p-blocked');
+    expect(blocked?.status).toBe('blocked');
+    expect(blocked?.error).toBe(longReason);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 30_000);

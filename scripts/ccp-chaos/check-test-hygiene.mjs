@@ -25,9 +25,10 @@ export const LEGACY_DISABLED_TEST_ALLOWLIST = new Set([
 
 export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set([
   'packages/kap-server/test/documentPreview.officeRender.test.ts',
-  'packages/kap-server/test/externalClientBindings.test.ts',
   'packages/kap-server/test/externalDelegationRouteProjection.test.ts',
   'packages/kap-server/test/externalDelegationSeats.test.ts',
+  'packages/kap-server/test/notifications.integration.ts',
+  'packages/kap-server/test/pluginOutboundIm.test.ts',
   'packages/kap-server/test/prompts.delivery.integration.ts',
   'packages/kap-server/test/prompts.integration.ts',
   'packages/kap-server/test/prompts.lifecycle.integration.ts',
@@ -39,21 +40,149 @@ export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set([
 const TEST_FILE_RE = /\.(?:test|spec|integration|e2e)\.[cm]?[jt]sx?$/u;
 const INTEGRATION_TEST_FILE_RE = /\.integration\.[cm]?[jt]sx?$/u;
 const DISABLED_TEST_RE = /^\s*(?:it|test|describe)\.(?:skip|todo)\s*\(/u;
-const INTRA_MONOREPO_MOCK_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\s*['"`]((?:#\/|@kiki\/|@nb-corp\/|\.\.?\/)[^'"`]+)['"`]/u;
-const EXEMPT_MOCK_WRAPPER_RE = /(?:\{\s*spy\s*:\s*true\s*\}|\bimportOriginal\b|\(\s*original\s*\)\s*=>)/u;
+const INTRA_MONOREPO_MOCK_GLOBAL_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\s*(?:import\s*\(\s*)?['"`]((?:#\/|@kiki\/|@nb-corp\/|\.\.?\/)[^'"`]+)['"`]/gu;
+const SPY_OPTION_RE = /,\s*\{\s*spy\s*:\s*true\s*\}\s*\)$/u;
+const IMPORT_ORIGINAL_FACTORY_RE = /,\s*(?:async\s*)?\(?\s*(?:importOriginal|original)\b/u;
+const FAKE_OVERRIDE_IN_FACTORY_RE = /\bvi\.fn\s*\(|\bclass\s*\{/u;
+const PURE_SPY_ON_EXPR_RE = /^vi\.spyOn\s*\(/u;
 const WEAK_ASSERTION_RE = /\bexpect\.anything\s*\(\s*\)/u;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 
-function isExemptMockWindow(lines, index) {
-  const collected = [lines[index]];
-  if (!lines[index].trimEnd().endsWith(';')) {
-    for (let j = index + 1; j < Math.min(lines.length, index + 3); j += 1) {
-      if (INTRA_MONOREPO_MOCK_RE.test(lines[j])) break;
-      collected.push(lines[j]);
-      if (lines[j].trimEnd().endsWith(';')) break;
+function extractBalancedCall(text, openParenIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = openParenIndex; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return text.slice(openParenIndex, i + 1);
     }
   }
-  return EXEMPT_MOCK_WRAPPER_RE.test(collected.join('\n'));
+  return text.slice(openParenIndex, Math.min(text.length, openParenIndex + 400));
+}
+
+function extractBalancedBraces(text, openBraceIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = openBraceIndex; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(openBraceIndex, i + 1);
+    }
+  }
+  return null;
+}
+
+function splitTopLevelObjectProps(objectLiteral) {
+  const inner = objectLiteral.slice(1, -1);
+  const props = [];
+  let start = 0;
+  let paren = 0;
+  let brace = 0;
+  let bracket = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < inner.length; i += 1) {
+    const ch = inner[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') paren += 1;
+    else if (ch === ')') paren -= 1;
+    else if (ch === '{') brace += 1;
+    else if (ch === '}') brace -= 1;
+    else if (ch === '[') bracket += 1;
+    else if (ch === ']') bracket -= 1;
+    else if (ch === ',' && paren === 0 && brace === 0 && bracket === 0) {
+      const piece = inner.slice(start, i).trim();
+      if (piece.length > 0) props.push(piece);
+      start = i + 1;
+    }
+  }
+  const tail = inner.slice(start).trim();
+  if (tail.length > 0) props.push(tail);
+  return props;
+}
+
+function hasDisallowedReturnedObjectOverride(callExpr) {
+  const returnRe = /(?:\breturn\s*\(?|=>\s*\()\s*\{/gu;
+  let match;
+  while ((match = returnRe.exec(callExpr)) !== null) {
+    const braceIdx = match.index + match[0].length - 1;
+    const obj = extractBalancedBraces(callExpr, braceIdx);
+    if (obj === null) return true;
+    for (const prop of splitTopLevelObjectProps(obj)) {
+      if (prop.startsWith('...')) continue;
+      const colon = prop.indexOf(':');
+      if (colon < 0) return true;
+      const valueExpr = prop.slice(colon + 1).trim();
+      if (!PURE_SPY_ON_EXPR_RE.test(valueExpr)) return true;
+    }
+  }
+  return false;
+}
+
+function isExemptMockCall(callExpr) {
+  if (SPY_OPTION_RE.test(callExpr)) return true;
+  if (IMPORT_ORIGINAL_FACTORY_RE.test(callExpr)) {
+    if (FAKE_OVERRIDE_IN_FACTORY_RE.test(callExpr)) return false;
+    if (hasDisallowedReturnedObjectOverride(callExpr)) return false;
+    return true;
+  }
+  return false;
+}
+
+function findIntraMonorepoMocks(text, lineNumberAtOffset) {
+  const hits = [];
+  INTRA_MONOREPO_MOCK_GLOBAL_RE.lastIndex = 0;
+  let match;
+  while ((match = INTRA_MONOREPO_MOCK_GLOBAL_RE.exec(text)) !== null) {
+    const openParen = text.indexOf('(', match.index);
+    const callExpr = openParen >= 0 ? extractBalancedCall(text, openParen) : match[0];
+    if (isExemptMockCall(callExpr)) continue;
+    hits.push({
+      line: lineNumberAtOffset(match.index),
+      target: match[1],
+      text: match[0].replace(/\s+/gu, ' ').trim(),
+    });
+  }
+  return hits;
 }
 
 const registeredContracts = [];
@@ -359,12 +488,10 @@ export function scanIntraMonorepoMocks(
     });
     for (const abs of files) {
       const rel = toPosix(path.relative(repoRoot, abs));
-      const lines = fs.readFileSync(abs, 'utf8').split(/\r?\n/u);
-      for (let i = 0; i < lines.length; i += 1) {
-        const mockMatch = INTRA_MONOREPO_MOCK_RE.exec(lines[i]);
-        if (!mockMatch) continue;
-        if (isExemptMockWindow(lines, i)) continue;
-        const hit = { file: rel, line: i + 1, target: mockMatch[1], text: lines[i].trim() };
+      const content = fs.readFileSync(abs, 'utf8');
+      const lineNumberAtOffset = (offset) => content.slice(0, offset).split('\n').length;
+      for (const found of findIntraMonorepoMocks(content, lineNumberAtOffset)) {
+        const hit = { file: rel, line: found.line, target: found.target, text: found.text };
         if (allowlist.has(rel)) legacyExempted.push(hit);
         else violations.push(hit);
       }
@@ -387,15 +514,46 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
 
   let currentFile = null;
   let currentLine = 0;
-  const rawLines = rawDiff.split(/\r?\n/u);
+  let addedHunk = [];
+  const flushHunk = () => {
+    if (!currentFile || addedHunk.length === 0) {
+      addedHunk = [];
+      return;
+    }
+    const hunkText = addedHunk.map((entry) => entry.text).join('\n');
+    const offsets = [];
+    let cursor = 0;
+    for (const entry of addedHunk) {
+      offsets.push({ start: cursor, line: entry.line });
+      cursor += entry.text.length + 1;
+    }
+    const lineNumberAtOffset = (offset) => {
+      let line = addedHunk[0].line;
+      for (const item of offsets) {
+        if (item.start <= offset) line = item.line;
+        else break;
+      }
+      return line;
+    };
+    for (const found of findIntraMonorepoMocks(hunkText, lineNumberAtOffset)) {
+      mockViolations.push({
+        file: currentFile,
+        line: found.line,
+        target: found.target,
+        text: found.text,
+      });
+    }
+    addedHunk = [];
+  };
 
-  for (let idx = 0; idx < rawLines.length; idx += 1) {
-    const rawLine = rawLines[idx];
+  for (const rawLine of rawDiff.split(/\r?\n/u)) {
     if (rawLine.startsWith('+++ b/')) {
+      flushHunk();
       currentFile = rawLine.slice('+++ b/'.length).trim();
       continue;
     }
     if (rawLine.startsWith('@@ ')) {
+      flushHunk();
       const m = /\+(\d+)/u.exec(rawLine);
       currentLine = m ? Number.parseInt(m[1], 10) - 1 : 0;
       continue;
@@ -404,23 +562,7 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
     if (rawLine.startsWith('+') && !rawLine.startsWith('+++')) {
       currentLine += 1;
       const added = rawLine.slice(1);
-      const mockMatch = INTRA_MONOREPO_MOCK_RE.exec(added);
-      if (mockMatch) {
-        const addedWindow = [added];
-        for (let look = idx + 1; look < Math.min(rawLines.length, idx + 3); look += 1) {
-          if (rawLines[look].startsWith('+') && !rawLines[look].startsWith('+++')) {
-            addedWindow.push(rawLines[look].slice(1));
-          }
-        }
-        if (!isExemptMockWindow(addedWindow, 0)) {
-          mockViolations.push({
-            file: currentFile,
-            line: currentLine,
-            target: mockMatch[1],
-            text: added.trim(),
-          });
-        }
-      }
+      addedHunk.push({ line: currentLine, text: added });
       if (WEAK_ASSERTION_RE.test(added)) {
         weakAssertionViolations.push({
           file: currentFile,
@@ -435,8 +577,11 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
           text: added.trim(),
         });
       }
+    } else {
+      flushHunk();
     }
   }
+  flushHunk();
 
   return {
     mockViolations,

@@ -149,6 +149,7 @@ export async function readPersistedAgentCheckpoint(
   signal?.throwIfAborted();
   const ckptStat = await readPersistedCheckpointStatToken(storage, scope);
   signal?.throwIfAborted();
+  if (ckptStat.distinguishable && ckptStat.token === 'none') return undefined;
   const hasLargeState = names.has(contextMemoryKey.name);
   const fetchNames = hasLargeState ? names : new Set([...LIGHTWEIGHT_STATE_NAMES, ...names]);
   const extraNames = [...names].filter((name) => !LIGHTWEIGHT_STATE_NAMES.has(name)).sort().join(',');

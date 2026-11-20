@@ -7,6 +7,8 @@ import { promptQueueKey } from '#/agent/prompt/promptService';
 import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
 import { encodeReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
 import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
+import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 enableMapSet();
 const queued = (id: string, index: number) => ({ type: 'prompt.model_switch_queued', time: 1,
@@ -300,4 +302,50 @@ it('supports small prefix-verified checkpoints on append and falls back to offse
   const boundaryMismatchResult = await makeReader().read('large-boundary-changed');
   expect(boundaryMismatchResult.map((entry) => entry.input.operationId)).toEqual(['large-cp', 'small-tail']);
   expect(scanStarts).toEqual([0]);
+});
+
+it('preserves context.undo replacementPrompt queueIndex shifts across multi-MiB non-prompt noise', async () => {
+  const noiseLine = `${JSON.stringify({ type: 'llm.request', payload: 'n'.repeat(120_000) })}\n`;
+  const noiseBlock = noiseLine.repeat(40);
+  const wire = Buffer.from([
+    `${JSON.stringify(queued('after-undo-switch', 0))}\n`,
+    noiseBlock,
+    `${JSON.stringify({
+      type: 'context.undo',
+      time: 2,
+      count: 1,
+      replacementPrompt: {
+        promptId: 'replacement-1',
+        message: 'replaced prompt',
+        origin: { kind: 'user' },
+        appendTiming: 'queue',
+        queueIndex: 0,
+        revision: 1,
+      },
+    })}\n`,
+    noiseBlock,
+  ].join(''));
+
+  const host = {
+    docs: { get: async () => undefined } as unknown as IAtomicDocumentStore,
+    storage: {
+      size: async () => wire.length,
+      mtime: async () => 1,
+      pathFor: () => undefined,
+      read: async () => undefined,
+      readStream: async function* (_scope: string, _key: string, range?: { start?: number; end?: number }, options?: { chunkBytes?: number }) {
+        const start = range?.start ?? 0;
+        const end = range?.end ?? wire.length - 1;
+        const step = options?.chunkBytes ?? 1024 * 1024;
+        for (let offset = start; offset <= end; offset += step) {
+          yield wire.subarray(offset, Math.min(end + 1, offset + step));
+        }
+      },
+    } as unknown as IFileSystemStorageService,
+  };
+  const reader = new PersistedModelSwitchReader(host);
+  const switches = await reader.readReady('undo-shift-scope');
+  expect(switches).toHaveLength(1);
+  expect(switches[0]?.input.operationId).toBe('after-undo-switch');
+  expect(switches[0]?.queueIndex).toBe(1);
 });

@@ -65,14 +65,21 @@ const MAX_BUNDLE_SKILL_FILE_BYTES = 256 * 1024;
 /** Coordinates device X25519 keys, per-entry credential envelopes, portable project identities, portable config/memory/skill bundles, and peer push/pull sync. */
 export class SyncService {
   private readonly keyPath: string;
-  private readonly cipher: AgeX25519Cipher;
+  private resolvedCipher: AgeX25519Cipher | undefined;
   private cachedKeypair: AgeX25519Keypair | undefined;
   private keyLoadFlight: Promise<AgeX25519Keypair> | undefined;
   private mergeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: SyncServiceOptions) {
     this.keyPath = join(options.homeDir, 'credentials', 'device-x25519.key');
-    this.cipher = options.cipher ?? loadNativeAgeX25519Cipher();
+    this.resolvedCipher = options.cipher;
+  }
+
+  private get cipher(): AgeX25519Cipher {
+    if (this.resolvedCipher === undefined) {
+      this.resolvedCipher = loadNativeAgeX25519Cipher();
+    }
+    return this.resolvedCipher;
   }
 
   peekDeviceRecipient(): string | undefined {

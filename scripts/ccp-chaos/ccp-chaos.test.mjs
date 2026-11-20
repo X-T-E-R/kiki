@@ -754,21 +754,38 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
     }
   });
 
-  it('enforces vi.doMock/mock.module/@nb-corp intra-monorepo bans while exempting spy and importOriginal wrappers', () => {
+  it('enforces vi.doMock/mock.module/@nb-corp, multiline mocks, vi.mock(import(...)), and importOriginal value/vi.fn() overrides while exempting spy and clean importOriginal wrappers', () => {
     const diff = [
       '+++ b/packages/kap-server/test/sample.test.ts',
-      '@@ -1,0 +1,6 @@',
+      '@@ -1,0 +1,12 @@',
       "+vi.doMock('../src/routes/sessionMedia', () => ({ openSessionMedia: () => null }));",
       "+mock.module('@nb-corp/nb-im', () => ({}));",
+      "+vi.mock(import('../src/routes/prompts'), () => ({ registerPromptRoutes: () => {} }));",
+      '+vi.mock(',
+      "+  '../src/routes/hostMediaPreview',",
+      '+  () => ({ registerHostMediaPreviewRoutes: () => {} }),',
+      '+);',
+      "+vi.mock('../src/externalClients/access', async (importOriginal) => ({ ...(await importOriginal()), open: vi.fn() }));",
+      "+vi.mock('../src/lib/plainOverride', async (importOriginal) => ({ ...(await importOriginal()), enabled: false }));",
+      "+vi.mock('../src/lib/mixedSpyOverride', async (importOriginal) => { const actual = await importOriginal(); return { ...actual, ok: vi.spyOn(actual, 'ok'), forged: () => 42 }; });",
+      "+vi.mock('../src/lib/pureSpyWrapper', async (importOriginal) => { const actual = await importOriginal(); return { ...actual, ok: vi.spyOn(actual, 'ok') }; });",
       "+vi.mock('../src/services/history/logicalWireRead', { spy: true });",
       "+vi.mock('@nb-corp/nb-im', async (importOriginal) => ({ ...(await importOriginal()) }));",
       "+vi.mock('node:fs/promises', () => ({}));",
     ].join('\n');
     const ratchet = checkDiffMockRatchet({ diffText: diff });
-    assert.equal(ratchet.mockViolations.length, 2);
+    assert.equal(ratchet.mockViolations.length, 7);
     assert.deepEqual(
       ratchet.mockViolations.map((entry) => entry.target),
-      ['../src/routes/sessionMedia', '@nb-corp/nb-im'],
+      [
+        '../src/routes/sessionMedia',
+        '@nb-corp/nb-im',
+        '../src/routes/prompts',
+        '../src/routes/hostMediaPreview',
+        '../src/externalClients/access',
+        '../src/lib/plainOverride',
+        '../src/lib/mixedSpyOverride',
+      ],
     );
 
     const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-hygiene-tree-'));
@@ -779,7 +796,7 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
       fs.mkdirSync(otherIntegDir, { recursive: true });
       fs.writeFileSync(
         path.join(kapTestDir, 'bad.test.ts'),
-        "vi.mock('../src/routes/sessionMedia', () => ({}));\nvi.mock('../src/routes/ok', { spy: true });\n",
+        "vi.mock(\n  '../src/routes/sessionMedia',\n  () => ({}),\n);\nvi.mock('../src/routes/ok', { spy: true });\n",
       );
       fs.writeFileSync(
         path.join(otherIntegDir, 'bad.integration.ts'),

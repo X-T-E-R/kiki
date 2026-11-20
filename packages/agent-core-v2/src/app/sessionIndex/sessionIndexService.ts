@@ -19,7 +19,7 @@ import {
   type Page,
   type QueryFilter,
 } from '#/persistence/interface/queryStore';
-import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 import {
   CHILD_SESSION_KIND,
@@ -45,6 +45,7 @@ import {
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
 import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from './errors';
+import { isSessionIndexResourceExhaustionError } from './sessionIndexMirrorService';
 import { readSessionArchiveFamily } from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
@@ -81,11 +82,7 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
 }
 
 function isResourceExhaustionError(error: unknown): boolean {
-  if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_DISK_FULL) return true;
-  const code = (error as { code?: unknown } | null)?.code;
-  if (code === 'ENOSPC' || code === 'SQLITE_FULL' || code === 'ERR_OUT_OF_MEMORY') return true;
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  return /\b(?:ENOSPC|SQLITE_FULL|out of memory|heap limit)\b/iu.test(message);
+  return isSessionIndexResourceExhaustionError(error);
 }
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -266,7 +263,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             this.log.warn('session index watched reconciliation paused after resource exhaustion', { error: String(error) });
           }
           this.watchRetryDelayMs = RECONCILE_RETRY_MAX_MS;
-          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, Date.now() + RECONCILE_RETRY_MAX_MS);
+          const retryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, retryAt);
+          this.resourceExhaustionCooldownUntil = Math.max(this.resourceExhaustionCooldownUntil, retryAt);
           return;
         }
         if (this.watchRetryDelayMs === WATCH_BATCH_MS && !(error instanceof SessionIndexReconcilePendingError)) {
@@ -279,7 +278,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.watchFlight = undefined;
         this.scheduleWatchedReconcile();
       });
-    }, this.watchedSessions.size > 0 ? this.watchRetryDelayMs : Math.max(this.watchRetryDelayMs, this.nextReconcileRetryAt - Date.now()));
+    }, Math.max(
+      this.watchedSessions.size > 0 ? this.watchRetryDelayMs : Math.max(this.watchRetryDelayMs, this.nextReconcileRetryAt - Date.now()),
+      this.activeResourceExhaustionCooldownUntil() - Date.now(),
+    ));
   }
 
   private async reconcileWatched(): Promise<void> {
@@ -368,8 +370,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
     if (this._store.isDisposed || !this.readModelEnabled()) return this.status();
-    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return this.status();
+    if (this.recoveryRequired && (this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS || Date.now() < this.activeResourceExhaustionCooldownUntil())) {
+      return this.status();
+    }
     if (!this.recoveryRequired && this.mirror.dirtyEpoch() !== undefined) {
+      if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return this.status();
       await this.ensureDirtyCatchUp();
       return this.status();
     }
@@ -468,9 +473,22 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private projectionRetryAt = 0;
+  private resourceExhaustionCooldownUntil = 0;
+
+  private activeResourceExhaustionCooldownUntil(): number {
+    return Math.max(
+      this.resourceExhaustionCooldownUntil,
+      this.mirror.resourceExhaustionCooldownUntil?.() ?? 0,
+    );
+  }
 
   private ensureProjection(fresh = false): Promise<boolean> {
-    if (this.projectFlight === undefined && Date.now() < this.projectionRetryAt) return Promise.resolve(false);
+    if (
+      this.projectFlight === undefined &&
+      (Date.now() < this.projectionRetryAt || Date.now() < this.activeResourceExhaustionCooldownUntil())
+    ) {
+      return Promise.resolve(false);
+    }
     this.projectFlight ??= this.runProjection(fresh).finally(() => {
       this.projectFlight = undefined;
     });
@@ -506,17 +524,24 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           continue;
         }
         this.generation = result.generation;
-        this.markReady();
+        this.markReady(true);
         projected = true;
       }
     } catch (error) {
       if (this.recoveryRequired) throw error;
+      const resourceExhausted = isResourceExhaustionError(error);
+      if (resourceExhausted) {
+        this.resourceExhaustionCooldownUntil = Math.max(
+          this.resourceExhaustionCooldownUntil,
+          Date.now() + RECONCILE_RETRY_MAX_MS,
+        );
+      }
       const published = await this.queryStore
         .getCheckpoint(SESSION_INDEX_MANIFEST)
         .catch(() => undefined);
       if (published !== undefined) {
         this.generation = published.seq;
-        this.markReady();
+        this.markReady(false);
         this.log.warn('session index re-projection failed; staying on the previous generation', {
           generation: published.seq,
           error: String(error),
@@ -525,11 +550,14 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.markDegraded('projection failed', error);
       }
     }
-    if (this.state === 'ready') await this.mirror.drain();
+    if (this.state === 'ready' && Date.now() >= this.activeResourceExhaustionCooldownUntil()) await this.mirror.drain();
     return projected;
   }
 
   private ensureDirtyCatchUp(): Promise<boolean> {
+    if (this.catchUpFlight === undefined && Date.now() < this.activeResourceExhaustionCooldownUntil()) {
+      return Promise.resolve(false);
+    }
     this.catchUpFlight ??= this.runDirtyCatchUp().finally(() => {
       this.catchUpFlight = undefined;
     });
@@ -539,9 +567,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async runDirtyCatchUp(): Promise<boolean> {
     if (!this.readModelEnabled()) return false;
     if (this.mirror.dirtyEpoch() === undefined) return true;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return false;
     const projection = this.projectFlight;
     if (projection !== undefined) await projection.catch(() => false);
     if (!this.readModelEnabled()) return false;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return false;
     const dirty = this.mirror.dirtyEpoch();
     if (dirty === undefined) return true;
     const projected = await this.ensureProjection(true).catch(() => false);
@@ -567,7 +597,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       }
       return this.reconcileFlight;
     }
-    const retryAfterMs = this.nextReconcileRetryAt - Date.now();
+    const retryUntil = options?.reuseFingerprints === true
+      ? Math.max(this.nextReconcileRetryAt, this.activeResourceExhaustionCooldownUntil())
+      : this.nextReconcileRetryAt;
+    const retryAfterMs = retryUntil - Date.now();
     if (retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
     this.reconcileRequest += 1;
     if (wantsForced) {
@@ -633,7 +666,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         });
       } catch (error) {
         if (isResourceExhaustionError(error)) {
-          this.nextReconcileRetryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          const retryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, retryAt);
+          this.resourceExhaustionCooldownUntil = Math.max(this.resourceExhaustionCooldownUntil, retryAt);
           this.reconcileRetryDelayMs = RECONCILE_RETRY_MAX_MS;
           this.reconcileRetryTimer.cancel();
         }
@@ -664,6 +699,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.recoveryAttempts = 0;
           this.reuseReconcileFingerprints = true;
           this.nextReconcileRetryAt = 0;
+          this.resourceExhaustionCooldownUntil = 0;
+          this.mirror.clearResourceExhaustionCooldown?.();
           this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
           this.reconcileRetryTimer.cancel();
           return;
@@ -689,9 +726,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     if (this.recoveryRequired) {
       this.recoveryAttempts = 0;
       this.nextPrepareRetryAt = 0;
+      this.resourceExhaustionCooldownUntil = 0;
+      this.mirror.clearResourceExhaustionCooldown?.();
       await this.prepare();
       return;
     }
+    this.resourceExhaustionCooldownUntil = 0;
+    this.mirror.clearResourceExhaustionCooldown?.();
     await this.ensureProjection();
   }
 
@@ -708,6 +749,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       return;
     }
     if (this.state !== 'ready') return;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return;
     try {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (manifest === undefined) {
@@ -721,9 +763,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
   }
 
-  private markReady(): void {
+  private markReady(clearExhaustionCooldown = false): void {
     if (this.recoveryRequired) return;
     this.recoveryAttempts = 0;
+    if (clearExhaustionCooldown) {
+      this.resourceExhaustionCooldownUntil = 0;
+      this.mirror.clearResourceExhaustionCooldown?.();
+    }
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
@@ -741,7 +787,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const resourceExhausted = isResourceExhaustionError(error);
     const retryDelay = exhausted || resourceExhausted ? RECOVERY_COOLDOWN_MS : DEGRADED_RETRY_MS;
     if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; next read can retry after ${RECOVERY_COOLDOWN_MS}ms cooldown`;
-    this.nextPrepareRetryAt = Date.now() + retryDelay;
+    const retryAt = Date.now() + retryDelay;
+    this.nextPrepareRetryAt = retryAt;
+    if (resourceExhausted) this.resourceExhaustionCooldownUntil = Math.max(this.resourceExhaustionCooldownUntil, retryAt);
     if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), retryDelay);
     else this.log.error('session index automatic recovery exhausted; waiting for read after cooldown', {
       attempts: this.recoveryAttempts,
@@ -870,11 +918,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const readRevision = this.readModelRevision;
     if (!this.readModelEnabled()) return legacy();
     if (this.recoveryRequired) {
-      if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare(true);
+      if (Date.now() >= this.activeResourceExhaustionCooldownUntil() && (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0)) {
+        this.kickPrepare(true);
+      }
       throw new SessionIndexBuildingError();
     }
     if (this.mirror.dirtyEpoch() !== undefined) {
-      void this.ensureDirtyCatchUp().catch(() => false);
+      if (Date.now() >= this.activeResourceExhaustionCooldownUntil()) {
+        void this.ensureDirtyCatchUp().catch(() => false);
+      }
       throw new SessionIndexBuildingError();
     }
     let manifest: Checkpoint | undefined;
@@ -896,7 +948,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const read = async (): Promise<T> => {
       if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
       if (this.mirror.dirtyEpoch() !== undefined) {
-        void this.ensureDirtyCatchUp().catch(() => false);
+        if (Date.now() >= this.activeResourceExhaustionCooldownUntil()) {
+          void this.ensureDirtyCatchUp().catch(() => false);
+        }
         throw new SessionIndexBuildingError();
       }
       let generation = publishedManifest.seq;
@@ -929,6 +983,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private kickPrepare(requested = false): void {
     if (this.prepareFlight !== undefined || this.state === 'preparing') return;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return;
     if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
       if (!requested || this.state !== 'degraded' || Date.now() < this.nextPrepareRetryAt) return;
       this.recoveryAttempts = 0;

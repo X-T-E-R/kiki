@@ -615,8 +615,8 @@ confirm = false
 | `zero_output_continuation` | `boolean` | `false` | 正常结束且没有思考文本、可见正文和工具调用时，显式发送一次 `Continue.` User 消息 |
 | `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
 | `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
-| `context_strategy` | `string` | `"auto"` | 主 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
-| `subagent_context_strategy` | `string` | `"auto"` | 当 profile 与模型均未指定 `context_strategy` 时，子 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
+| `context_strategy` | `string` | `"summarize"` | 主 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
+| `subagent_context_strategy` | `string` | `"summarize"` | 当 profile 与模型均未指定 `context_strategy` 时，子 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
 | `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
 | `compaction_soft_context_size` | `integer` | `0` | 旧版绝对 token 上限，仅在各层都没有设置 `auto_compact` 时使用 |
 | `compaction_max_attempts` | `integer` | `3` | 压缩循环的最大摘要尝试次数（含首次尝试）；断流与上下文溢出恢复共用这份预算。OAuth 刷新、请求投影恢复和显式开启的输出前无限重试由请求器单独处理 |

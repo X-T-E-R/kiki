@@ -28,6 +28,7 @@ import { ErrorCode } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { projectTurnPlans, type PlanInfo } from '../services/transcript/planProjection';
+import { CanonicalEntityPreparingError } from '../services/history/historyCanonicalReader';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { boundedEntity } from '../transport/klient/boundedContent';
 import {
@@ -154,6 +155,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
+        [40923]: {},
       },
       description:
         'Turn-granular session transcript page: live sessions read the in-memory store (wire-records backfill awaited per requested agent), cold sessions rebuild the requested agent from the persisted wire records',
@@ -175,6 +177,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
           }),
         );
       } catch (error) {
+        if (error instanceof CanonicalEntityPreparingError) {
+          reply.send(errEnvelope(40923, error.message, req.id));
+          return;
+        }
         if (!(error instanceof TranscriptDetailCursorError)) throw error;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
         return;

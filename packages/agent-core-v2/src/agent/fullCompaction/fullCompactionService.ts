@@ -1224,9 +1224,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         if (error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
         const filteredFailure = compactionFailureKind(error) === 'filtered';
         const overflowFailure = this.shouldRecoverFromContextOverflow(error);
-        const allowAutoEmergencyRelay = data.source === 'auto' && requested !== 'summarize' && (filteredFailure || overflowFailure);
-        if ((choice.strategy === 'summarize' && !allowAutoEmergencyRelay) || customInstruction ||
-            !(overflowFailure || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError || filteredFailure)) throw error;
+        const rescueableFailure = overflowFailure || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError || filteredFailure;
+        const allowAutoEmergencyRelay = data.source === 'auto' && requested !== 'summarize' && rescueableFailure;
+        if ((choice.strategy === 'summarize' && !allowAutoEmergencyRelay) || customInstruction || !rescueableFailure) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
         const targetCompactCount = relayCompactCount > 0 ? relayCompactCount : compactCount;
         let rescueSummary = relaySummary;

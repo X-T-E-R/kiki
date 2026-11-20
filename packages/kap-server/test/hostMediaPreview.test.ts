@@ -161,47 +161,87 @@ describe('host media preview', () => {
     expect(Buffer.compare(redPreview.rawPayload, bluePreview.rawPayload)).not.toBe(0);
   });
 
-  it('rejects new requests for an expired grant while an earlier stream is still active and deletes it on close', async () => {
-    let now = 1_700_000_000_000;
-    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
-    cleanups.push(() => { nowSpy.mockRestore(); });
-
-    let blockNextStat = false;
-    let statEntered: (() => void) | undefined;
-    let releaseStat: (() => void) | undefined;
-    const firstStreamEntered = new Promise<void>((resolve) => { statEntered = resolve; });
-    const firstStreamGate = new Promise<void>((resolve) => { releaseStat = resolve; });
-
-    const { app, video, bytes } = await fixture({
-      onStat: async () => {
-        if (!blockNextStat) return;
-        blockNextStat = false;
-        statEntered?.();
-        await firstStreamGate;
-      },
-    });
-
+  it('honors If-Range with stat-based ETag on host /media-preview/:id range requests', async () => {
+    const { app, video, bytes } = await fixture();
     const opened = await app.inject({ method: 'POST', url: '/api/fs:media-preview', headers: OWNER_HEADERS, payload: { path: video } });
     expect(opened.statusCode, opened.body).toBe(200);
-    const { preview_id: previewId } = opened.json().data as { preview_id: string };
+    const id = (opened.json().data as { preview_id: string }).preview_id;
 
-    blockNextStat = true;
-    const firstStream = app.inject({ url: `/media-preview/${previewId}` });
-    await firstStreamEntered;
+    const first = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+    expect(first.statusCode).toBe(206);
+    expect(first.headers['cache-control']).toBe('private, no-store');
+    const etag = first.headers['etag'];
+    expect(typeof etag).toBe('string');
 
-    now += 30 * 60 * 1000 + 1;
-    const overlappingExpired = await app.inject({ url: `/media-preview/${previewId}` });
-    expect(overlappingExpired.statusCode).toBe(404);
-    expect(overlappingExpired.json()).toMatchObject({ msg: 'media_preview_not_found' });
+    const matched = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=4-7', 'if-range': String(etag) } });
+    expect(matched.statusCode).toBe(206);
+    expect([...matched.rawPayload]).toEqual([...bytes.subarray(4, 8)]);
 
-    releaseStat?.();
-    const firstResult = await firstStream;
-    expect(firstResult.statusCode).toBe(200);
-    expect([...firstResult.rawPayload]).toEqual([...bytes]);
+    const mismatched = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=4-7', 'if-range': '"0-0"' } });
+    expect(mismatched.statusCode).toBe(200);
+    expect([...mismatched.rawPayload]).toEqual([...bytes]);
+  });
 
-    now = 1_700_000_000_000 + 1;
-    const afterClose = await app.inject({ url: `/media-preview/${previewId}` });
-    expect(afterClose.statusCode).toBe(404);
-    expect(afterClose.json()).toMatchObject({ msg: 'media_preview_not_found' });
+  it('rejects new overlapping GET requests after grant expiry while letting an in-flight stream finish and deletes it on close', async () => {
+    const now = Date.now;
+    let fakeNow = 1_700_000_000_000;
+    Date.now = () => fakeNow;
+    const root = await mkdtemp(join(tmpdir(), 'media-preview-expiry-'));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const video = join(root, 'clip.mp4');
+    const bytes = Uint8Array.from([0, 0, 0, 24, 102, 116, 121, 112, 1, 2, 3, 4, 5, 6, 7, 8]);
+    await writeFile(video, bytes);
+    let statStarted!: () => void;
+    const firstInFlight = new Promise<void>((resolve) => { statStarted = resolve; });
+    let releaseFirstStat!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirstStat = resolve; });
+    let holdNextStat = false;
+    const hostFs = {
+      realpath: (path: string) => realpath(path),
+      stat: async (path: string) => {
+        if (holdNextStat) {
+          holdNextStat = false;
+          statStarted();
+          await gate;
+        }
+        const info = await stat(path);
+        return { isFile: info.isFile(), isDirectory: info.isDirectory(), size: info.size, mtimeMs: info.mtimeMs, ino: info.ino };
+      },
+      readBytes: async (path: string, length: number) => (await readFile(path)).subarray(0, length),
+    };
+    const core = { accessor: { get: () => hostFs } } as unknown as Scope;
+    const app = Fastify();
+    app.setValidatorCompiler(() => () => true);
+    app.addHook('onRequest', createAuthHook({
+      isValid: async (token: string) => token === 'fixture-owner',
+    } as IAuthTokenService));
+    registerHostMediaPreviewRoutes(app, core, undefined, true);
+    cleanups.push(() => app.close());
+    try {
+      const opened = await app.inject({ method: 'POST', url: '/api/fs:media-preview', headers: OWNER_HEADERS, payload: { path: video } });
+      expect(opened.statusCode, opened.body).toBe(200);
+      const id = (opened.json().data as { preview_id: string }).preview_id;
+
+      holdNextStat = true;
+      const firstStream = app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+      await firstInFlight;
+
+      fakeNow += 31 * 60 * 1000;
+      const overlapping = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+      expect(overlapping.statusCode).toBe(404);
+      expect(overlapping.json().msg).toBe('media_preview_not_found');
+
+      releaseFirstStat();
+      const completed = await firstStream;
+      expect(completed.statusCode).toBe(206);
+      expect([...completed.rawPayload]).toEqual([...bytes.subarray(0, 4)]);
+
+      fakeNow = 1_700_000_000_000 + 1;
+      const afterClose = await app.inject({ url: `/media-preview/${id}`, headers: { range: 'bytes=0-3' } });
+      expect(afterClose.statusCode).toBe(404);
+    } finally {
+      releaseFirstStat();
+      Date.now = now;
+    }
   });
 });
