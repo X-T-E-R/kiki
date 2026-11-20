@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { MeshInboundExecuteInput } from '@kiki/protocol';
@@ -173,6 +173,7 @@ export function createInboundMeshExecutor(
           if (!isPathContained(realRoot, dest)) {
             throw new Error(`file_sync path '${relPath}' escapes target root`);
           }
+          await assertNoSymlinkPath(realRoot, normalized, `file_sync path '${relPath}'`);
           const destParent = dirname(dest);
           const realParent = await resolveNearestRealpath(destParent);
           if (!isPathContained(realRoot, realParent)) {
@@ -184,6 +185,7 @@ export function createInboundMeshExecutor(
           if (!isPathContained(realRoot, confirmedParent)) {
             throw new Error(`file_sync path '${relPath}' escapes target root via symlink`);
           }
+          await assertLeafNotSymlink(dest, `file_sync path '${relPath}'`);
           await writeFile(dest, bytes);
           appliedPaths.push(normalized);
           stagedSha256s.push(staged.sha256);
@@ -239,6 +241,38 @@ export function createInboundMeshExecutor(
 function isPathContained(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+async function assertNoSymlinkPath(
+  realRoot: string,
+  normalizedRelative: string,
+  label: string,
+): Promise<void> {
+  let cursor = realRoot;
+  for (const segment of normalizedRelative.split('/')) {
+    cursor = join(cursor, segment);
+    try {
+      const stat = await lstat(cursor);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`${label} is not allowed through symlink`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+  }
+}
+
+async function assertLeafNotSymlink(dest: string, label: string): Promise<void> {
+  try {
+    const stat = await lstat(dest);
+    if (stat.isSymbolicLink() || stat.isDirectory()) {
+      throw new Error(`${label} is not allowed on symlink or directory`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
 }
 
 async function resolveNearestRealpath(target: string): Promise<string> {

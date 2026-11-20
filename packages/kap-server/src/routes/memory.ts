@@ -95,7 +95,12 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/export', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => authority().exportMarkdown(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id));
+    await handle(req.id, reply, async () => {
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const entry = await store().get(scope, req.params.id);
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, currentHostId())) throw new Error('Memory not found');
+      return authority().exportMarkdown(scope, req.params.id);
+    });
   }));
   add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/import-preview', params: scopeParams, querystring: scopeQuery, body: z.object({ markdown: z.string().max(65_536), source_locator: z.string().trim().min(1).max(2_000), reason: z.string().trim().min(1).max(500) }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => authority().previewImport(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), { markdown: req.body.markdown, sourceLocator: req.body.source_locator, reason: req.body.reason }));
@@ -104,13 +109,21 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     await handle(req.id, reply, async () => authority().applyImport(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.preview_token, req.body.operation_id));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/provenance', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => authority().provenance(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id));
+    await handle(req.id, reply, async () => {
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const entry = await store().get(scope, req.params.id);
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, currentHostId())) throw new Error('Memory not found');
+      return authority().provenance(scope, req.params.id);
+    });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/revisions/{revision}', params: entryParams.extend({ revision: z.string().min(1).max(300) }), querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
+      const hostId = currentHostId();
       const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const current = await store().get(scope, req.params.id);
+      if (current !== undefined && !isMemoryVisibleOnHost(current, hostId)) throw new Error('Memory revision not found');
       const entry = await authority().getRevision(scope, req.params.id, req.params.revision);
-      if (entry === undefined) throw new Error('Memory revision not found');
+      if (entry === undefined || !isMemoryVisibleOnHost(entry, hostId)) throw new Error('Memory revision not found');
       return { ...entry, scope, historical: true, complete: true };
     });
   }));

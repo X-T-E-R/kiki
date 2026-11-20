@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -343,6 +343,15 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       expect(spoofedCowRes.status).toBe(403);
       expect(((await spoofedCowRes.json()) as { msg: string }).msg).toBe('mesh_capability_denied');
 
+      const removeRestrictedCopyRes = await authedFetch(
+        serverA,
+        baseA,
+        `/api/mesh/workspace-copies/${encodeURIComponent(restrictedCowCopy['copyId'] as string)}`,
+        { method: 'DELETE' },
+      );
+      expect(removeRestrictedCopyRes.status).toBe(403);
+      expect(((await removeRestrictedCopyRes.json()) as { msg: string }).msg).toBe('mesh_capability_denied');
+
       const inboundBeforeUpgrade = await clientB.rest!.connections.inbound();
       const activeGrant = inboundBeforeUpgrade.grants.find((g) => g.status === 'approved');
       expect(activeGrant).toBeDefined();
@@ -456,6 +465,34 @@ describe('kap-server mesh, sync, and two-server integration', () => {
         );
         const peerDecideJson = (await peerDecideAttempt.json()) as { code: number };
         expect(peerDecideJson.code).toBe(40301);
+
+        const peerRestApprovalAttempt = await serverA.remoteConnections.forward(
+          trustedPeer.id,
+          {
+            operation: 'approval',
+            params: { sessionId: sessionIdB, interactionId: pendingLoginApprovalId! },
+            body: { decision: 'approved' },
+          },
+          trustedLease.signal,
+        );
+        expect(peerRestApprovalAttempt.status).toBe(403);
+        const peerRestApprovalJson = (await peerRestApprovalAttempt.json()) as { code: number; msg: string };
+        expect(peerRestApprovalJson.code).toBe(40301);
+        expect(peerRestApprovalJson.msg).toBe('local_owner_required');
+
+        const nonLocalInboundTargetAttempt = await serverA.remoteConnections.forward(
+          trustedPeer.id,
+          {
+            operation: 'meshInboundExecute',
+            body: {
+              operation: 'remote_command',
+              action: 'echo bypass-lock',
+              targetId: 'other-node',
+            },
+          },
+          trustedLease.signal,
+        );
+        expect(nonLocalInboundTargetAttempt.status).toBe(403);
       } finally {
         trustedLease.release();
       }
@@ -630,6 +667,29 @@ describe('kap-server mesh, sync, and two-server integration', () => {
         applicability: 'machine-local',
         origin_host_id: 'foreign-host-xyz',
       });
+      const outsideDir = join(sandbox, 'outside-symlink-target');
+      mkdirSync(outsideDir, { recursive: true });
+      const outsideSentinel = join(outsideDir, 'sentinel.txt');
+      writeFileSync(outsideSentinel, 'untouched', 'utf8');
+      symlinkSync(outsideDir, join(syncTargetDir, 'escape-junction'), 'junction');
+      const symlinkFileSyncRes = await authedFetch(serverA, baseA, `/api/mesh/targets/${encodeURIComponent(trustedPeer.id)}/dispatch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'file_sync',
+          action: 'attempt symlink write',
+          sessionId: sessionIdA,
+          payload: {
+            targetRoot: syncTargetDir,
+            files: [
+              { relativePath: 'escape-junction/sentinel.txt', contentBase64: Buffer.from('overwritten', 'utf8').toString('base64') },
+            ],
+          },
+        }),
+      });
+      expect(symlinkFileSyncRes.status).toBe(403);
+      expect(readFileSync(outsideSentinel, 'utf8')).toBe('untouched');
+
       const directGetForeign = await authedFetch(
         serverB,
         baseB,
@@ -637,6 +697,24 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       );
       const directGetJson = (await directGetForeign.json()) as { code: number };
       expect(directGetJson.code).not.toBe(0);
+      const exportForeign = await authedFetch(
+        serverB,
+        baseB,
+        `/api/memory/workspace/${encodeURIComponent(foreignLocal.entry.id)}/export?workspace_id=${encodeURIComponent(wsB.id)}`,
+      );
+      expect(((await exportForeign.json()) as { code: number }).code).not.toBe(0);
+      const provenanceForeign = await authedFetch(
+        serverB,
+        baseB,
+        `/api/memory/workspace/${encodeURIComponent(foreignLocal.entry.id)}/provenance?workspace_id=${encodeURIComponent(wsB.id)}`,
+      );
+      expect(((await provenanceForeign.json()) as { code: number }).code).not.toBe(0);
+      const revisionForeign = await authedFetch(
+        serverB,
+        baseB,
+        `/api/memory/workspace/${encodeURIComponent(foreignLocal.entry.id)}/revisions/${encodeURIComponent(foreignLocal.entry.revision)}?workspace_id=${encodeURIComponent(wsB.id)}`,
+      );
+      expect(((await revisionForeign.json()) as { code: number }).code).not.toBe(0);
       const journalForeign = await authedFetch(
         serverB,
         baseB,
@@ -645,6 +723,40 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       const journalJson = (await journalForeign.json()) as { code: number; data: Array<{ id: string }> };
       expect(journalJson.code).toBe(0);
       expect(journalJson.data.some((row) => row.id === foreignLocal.entry.id)).toBe(false);
+
+      await memStoreB.put({
+        action: 'create',
+        scope: { kind: 'workspace', workspaceId: resolvedIdentityA.projectId },
+        type: 'reference',
+        title: 'Local Only Keep',
+        body: 'Stay machine-local on B',
+        reason: 'Machine local guard',
+        source: { writer: 'user' },
+        applicability: 'machine-local',
+      });
+      const machineLocalOverwriteReceipt = await clientB.rest!.sync.importBundle({
+        format: 'kiki.sync-bundle.v1',
+        exportedAt: new Date().toISOString(),
+        memories: [
+          {
+            id: 'm_portable_overwrite_attempt',
+            projectId: resolvedIdentityA.projectId,
+            type: 'reference',
+            title: 'Local Only Keep',
+            body: 'Attempted portable overwrite',
+            pinned: false,
+            updated: new Date(Date.now() + 60_000).toISOString(),
+            revision: 'rev-attempt',
+            applicability: 'portable',
+          },
+        ],
+      });
+      expect(machineLocalOverwriteReceipt.memoriesApplied).toBe(0);
+      expect(machineLocalOverwriteReceipt.memoriesSkipped).toBe(1);
+      const keptLocal = (await memStoreB.list({ kind: 'workspace', workspaceId: resolvedIdentityA.projectId }))
+        .find((m) => m.title === 'Local Only Keep');
+      expect(keptLocal?.applicability).toBe('machine-local');
+      expect(keptLocal?.body).toBe('Stay machine-local on B');
 
       expect(readFileSync(join(homeB, 'skills', 'portable-skill', 'SKILL.md'), 'utf8')).toContain('Portable body');
       expect(() => readFileSync(join(homeB, 'skills', 'portable-skill', '.env'), 'utf8')).toThrow();
@@ -666,6 +778,18 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       expect(handCraftedImport.skillsSkipped).toBe(2);
       expect(() => readFileSync(join(homeB, 'skills', 'blocked-group', 'sibling.sh'), 'utf8')).toThrow();
 
+      symlinkSync(outsideDir, join(homeB, 'skills', 'symlink-skill'), 'junction');
+      const symlinkSkillImport = await clientB.rest!.sync.importBundle({
+        format: 'kiki.sync-bundle.v1',
+        exportedAt: new Date().toISOString(),
+        skills: [
+          { skillName: 'symlink-skill', relativePath: 'sentinel.txt', contentBase64: Buffer.from('pwned', 'utf8').toString('base64') },
+        ],
+      });
+      expect(symlinkSkillImport.skillsApplied).toBe(0);
+      expect(symlinkSkillImport.skillsSkipped).toBe(1);
+      expect(readFileSync(outsideSentinel, 'utf8')).toBe('untouched');
+
       const cowCopy = await clientA.rest!.mesh.createWorkspaceCopy({
         sourceRoot: workA,
         nodeId: 'local',
@@ -685,6 +809,23 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       });
       expect(conflictApplyRes.status).toBe(409);
       expect(((await conflictApplyRes.json()) as { msg: string }).msg).toBe('source_modified');
+
+      const localLeaseA = await clientA.rest!.mesh.acquireTakeover('local', {
+        holder: 'human',
+        ttlMs: 60_000,
+        reason: 'Hold local copy deletion',
+      });
+      const removeUnderTakeoverRes = await authedFetch(
+        serverA,
+        baseA,
+        `/api/mesh/workspace-copies/${encodeURIComponent(copyId)}`,
+        { method: 'DELETE' },
+      );
+      expect(removeUnderTakeoverRes.status).toBe(409);
+      expect(((await removeUnderTakeoverRes.json()) as { msg: string }).msg).toBe('human_controlling');
+      await clientA.rest!.mesh.releaseTakeover('local', { holder: 'human', expectedEpoch: localLeaseA.epoch });
+      const removedLocalCopy = await clientA.rest!.mesh.removeWorkspaceCopy(copyId);
+      expect(removedLocalCopy.removed).toBe(true);
 
       await new Promise<void>((resolve) => echoServer.close(() => resolve()));
       const deadUpstreamTunnelRes = await authedFetch(serverA, baseA, '/api/mesh/tunnels', {

@@ -581,6 +581,8 @@ export class RemoteConnectionManager {
           (refusal?.code === 40301 && typeof refusal.msg === 'string' && (
             (['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg))
             || (['sessionCreate', 'fsSearch', 'draftFsSearch'].includes(operation) && refusal.msg === 'peer_workspace_not_registered')
+            || (operation === 'approval' && refusal.msg === 'local_owner_required')
+            || operation === 'meshInboundExecute'
           ))
         ) {
           this.notePeerSuccess(id, epoch);

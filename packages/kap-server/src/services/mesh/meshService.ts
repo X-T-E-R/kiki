@@ -382,7 +382,13 @@ export class MeshService {
     });
   }
 
-  removeWorkspaceCopy(copyId: string): Promise<boolean> {
+  async removeWorkspaceCopy(copyId: string): Promise<boolean> {
+    const copy = await this.workspaceCopies.getCopy(copyId);
+    if (copy === undefined) return false;
+    if (copy.nodeId !== 'local') {
+      this.assertPeerCapability(copy.nodeId, 'cow_apply');
+    }
+    this.takeover.assertWritable(copy.nodeId);
     return this.workspaceCopies.removeCopy(copyId);
   }
 
@@ -562,16 +568,20 @@ export class MeshService {
   }
 
   async executeInboundAction(input: MeshInboundExecuteInput): Promise<MeshInboundExecutionReceipt> {
-    this.takeover.assertWritable(input.targetId, {
+    if (input.targetId !== 'local') {
+      throw new Error(`Inbound execution target '${input.targetId}' is not allowed`);
+    }
+    this.takeover.assertWritable('local', {
       overrideHumanLease: input.overrideHumanLease,
       expectedEpoch: input.expectedEpoch,
     });
-    const output = this.onInboundExecute === undefined ? undefined : await this.onInboundExecute(input);
+    const pinnedInput: MeshInboundExecuteInput = { ...input, targetId: 'local' };
+    const output = this.onInboundExecute === undefined ? undefined : await this.onInboundExecute(pinnedInput);
     if (input.sessionId !== undefined) {
       this.recordTransition({
         sessionId: input.sessionId,
         resourceKind: 'seat',
-        resourceId: input.targetId,
+        resourceId: 'local',
         previousState: 'running',
         nextState: 'completed',
         at: this.now(),
@@ -581,10 +591,10 @@ export class MeshService {
     return {
       executed: true,
       hostId: this.hostId,
-      targetId: input.targetId,
+      targetId: 'local',
       operation: input.operation,
       action: input.action,
-      epoch: this.takeover.currentEpoch(input.targetId),
+      epoch: this.takeover.currentEpoch('local'),
       ...(output === undefined ? {} : { output }),
     };
   }

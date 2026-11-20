@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   syncBundleSchema,
@@ -258,7 +258,11 @@ export class SyncService {
           );
         }
         if (existing !== undefined) {
-          if (existing.body === item.body || item.updated < existing.updated) {
+          if (
+            existing.applicability === 'machine-local' ||
+            existing.body === item.body ||
+            item.updated < existing.updated
+          ) {
             memoriesSkipped += 1;
             continue;
           }
@@ -304,6 +308,7 @@ export class SyncService {
     if (bundle.skills !== undefined && bundle.skills.length > 0) {
       const targetRoot = resolve(join(this.options.homeDir, 'skills'));
       await mkdir(targetRoot, { recursive: true });
+      const realTargetRoot = await realpath(targetRoot);
       const grouped = new Map<string, SyncSkillFileEntry[]>();
       for (const file of bundle.skills) {
         const list = grouped.get(file.skillName) ?? [];
@@ -311,7 +316,12 @@ export class SyncService {
         grouped.set(file.skillName, list);
       }
       for (const [skillName, group] of grouped) {
-        if (isSkillSyncExcluded({ name: skillName, targetPlatform: process.platform })) {
+        if (
+          !isSafeRelativeSkillPath(skillName) ||
+          skillName.includes('/') ||
+          skillName.includes('\\') ||
+          isSkillSyncExcluded({ name: skillName, targetPlatform: process.platform })
+        ) {
           skillsSkipped += group.length;
           continue;
         }
@@ -328,14 +338,30 @@ export class SyncService {
             skillsSkipped += 1;
             continue;
           }
-          const dest = resolve(targetRoot, skillName, file.relativePath);
-          const rel = relative(targetRoot, dest);
+          const normalizedRel = file.relativePath.replaceAll('\\', '/');
+          const dest = resolve(realTargetRoot, skillName, normalizedRel);
+          const rel = relative(realTargetRoot, dest);
           if (rel.startsWith('..') || isAbsolute(rel)) {
             skillsSkipped += 1;
             continue;
           }
+          if (!(await hasNoSymlinkSegments(realTargetRoot, `${skillName}/${normalizedRel}`))) {
+            skillsSkipped += 1;
+            continue;
+          }
           const bytes = Buffer.from(file.contentBase64, 'base64');
-          await mkdir(dirname(dest), { recursive: true });
+          const destParent = dirname(dest);
+          await mkdir(destParent, { recursive: true });
+          const confirmedParent = await realpath(destParent);
+          const parentRel = relative(realTargetRoot, confirmedParent);
+          if (parentRel.startsWith('..') || isAbsolute(parentRel)) {
+            skillsSkipped += 1;
+            continue;
+          }
+          if (!(await isSafeRegularWriteTarget(dest))) {
+            skillsSkipped += 1;
+            continue;
+          }
           await writeFile(dest, bytes);
           skillsApplied += 1;
         }
@@ -519,6 +545,30 @@ function isSafeRelativeSkillPath(relPath: string): boolean {
   return !normalized
     .split('/')
     .some((seg) => seg === '' || seg === '.' || seg === '..' || EXCLUDED_SKILL_DIRS.has(seg) || isSyncConflictArtifact(seg));
+}
+
+async function hasNoSymlinkSegments(realRoot: string, normalizedRel: string): Promise<boolean> {
+  let cursor = realRoot;
+  for (const segment of normalizedRel.split('/')) {
+    cursor = join(cursor, segment);
+    try {
+      const stat = await lstat(cursor);
+      if (stat.isSymbolicLink()) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return false;
+    }
+  }
+  return true;
+}
+
+async function isSafeRegularWriteTarget(dest: string): Promise<boolean> {
+  try {
+    const stat = await lstat(dest);
+    return !stat.isSymbolicLink() && !stat.isDirectory();
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
 }
 
 function parseSkillFrontmatter(content: string): Record<string, unknown> | undefined {
