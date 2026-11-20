@@ -210,6 +210,9 @@ export async function inspectTranscriptVisibility(page, targetAgentId = 'main') 
     const hiddenUserTurns = [];
     const systemSelector = [
       '[data-subagent-ended]',
+      '[data-subagent-event]',
+      '[data-agent-message-id]',
+      '[data-agent-message-sender]',
       '[data-model-switch-notice]',
       '[data-compaction-history]',
       '[data-compaction-summary]',
