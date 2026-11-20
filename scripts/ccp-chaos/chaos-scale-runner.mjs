@@ -2244,6 +2244,9 @@ export async function runChaosScaleSuite(options = {}) {
     }
 
     let s10ReopenCandidate = null;
+    let s10ReopenCandidates = [];
+    const trackedWorkloadPids = new Set();
+    let t0LastTerminalReceiptAt = Date.now();
     if (runS10) {
       const s10Res = await runScenarioS10LiveStorm({
         server: mainServer,
@@ -2256,10 +2259,16 @@ export async function runChaosScaleSuite(options = {}) {
         progress,
       });
       s10ReopenCandidate = s10Res.reopenCandidate ?? null;
+      s10ReopenCandidates = Array.isArray(s10Res.reopenCandidates)
+        ? s10Res.reopenCandidates
+        : s10ReopenCandidate
+          ? [s10ReopenCandidate]
+          : [];
       sharedBrowserHandle = s10Res.browserHandle ?? null;
       const { browserHandle: _bh, ...s10Serializable } = s10Res;
       report.scenarios.S10_liveOrchestratorStorm = s10Serializable;
       report.scenarios.s10 = s10Serializable;
+      t0LastTerminalReceiptAt = Date.now();
       persistCheckpoint();
     }
 
@@ -2271,12 +2280,13 @@ export async function runChaosScaleSuite(options = {}) {
         tier: effectiveTier,
         targetBytes: options.p01Bytes ?? null,
         stepCount: options.p01Steps ?? 200,
-        reopenSession: s10ReopenCandidate,
+        reopenSession: s10ReopenCandidates.length > 0 ? s10ReopenCandidates : s10ReopenCandidate,
         browserHandle: sharedBrowserHandle,
         progress,
       });
       report.scenarios.P01_coldChildOpen = p01Res;
       report.scenarios.p01 = p01Res;
+      t0LastTerminalReceiptAt = Date.now();
       persistCheckpoint();
     }
 
@@ -2299,6 +2309,7 @@ export async function runChaosScaleSuite(options = {}) {
       const { activeServer: _srv, ...s11Serializable } = s11Res;
       report.scenarios.S11_mesh256 = s11Serializable;
       report.scenarios.s11 = s11Serializable;
+      t0LastTerminalReceiptAt = Date.now();
       persistCheckpoint();
     }
 
@@ -2311,6 +2322,7 @@ export async function runChaosScaleSuite(options = {}) {
       });
       report.scenarios.S12_blindHmacControl = s12Res;
       report.scenarios.s12 = s12Res;
+      t0LastTerminalReceiptAt = Date.now();
       persistCheckpoint();
     }
 
@@ -2322,8 +2334,12 @@ export async function runChaosScaleSuite(options = {}) {
         workRoot: dir,
         progress,
       });
+      for (const pid of s13Res.spawnedPids ?? []) {
+        if (Number.isInteger(pid) && pid > 0) trackedWorkloadPids.add(pid);
+      }
       report.scenarios.S13_chaosFaults = s13Res;
       report.scenarios.s13 = s13Res;
+      t0LastTerminalReceiptAt = Date.now();
       persistCheckpoint();
     }
 
@@ -2331,6 +2347,8 @@ export async function runChaosScaleSuite(options = {}) {
       const s14Res = await runScenarioS14IdleCpu({
         serverPid: mainServer.pid,
         browserHandle: sharedBrowserHandle,
+        trackedWorkloadPids: [...trackedWorkloadPids],
+        t0LastTerminalReceiptAt,
         tier: effectiveTier,
         settleSec: options.idleSettleSec,
         windowCount: options.idleWindows,

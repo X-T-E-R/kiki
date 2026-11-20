@@ -195,7 +195,12 @@ export async function sampleProcessTreeCpu(rootPid, windowMs = 10_000) {
   };
 }
 
-export async function sampleDisjointIdleWindow({ serverPid, browserPid = null, windowMs = 10_000 }) {
+export async function sampleDisjointIdleWindow({
+  serverPid,
+  browserPid = null,
+  trackedWorkloadPids = [],
+  windowMs = 10_000,
+}) {
   const serverPidsBefore = Number.isInteger(serverPid) && serverPid > 0
     ? [serverPid, ...listDescendantPids(serverPid)]
     : [];
@@ -219,6 +224,15 @@ export async function sampleDisjointIdleWindow({ serverPid, browserPid = null, w
   const survivingWorkload = Number.isInteger(serverPid) && serverPid > 0
     ? listSurvivingWorkloadDescendants(serverPid)
     : [];
+  const seenSurvivorPids = new Set(survivingWorkload.map((p) => p.pid));
+  for (const pid of trackedWorkloadPids ?? []) {
+    if (!Number.isInteger(pid) || pid <= 0 || seenSurvivorPids.has(pid)) continue;
+    try {
+      process.kill(pid, 0);
+      seenSurvivorPids.add(pid);
+      survivingWorkload.push({ pid, ppid: 1, cmdline: 'reparented-tracked-workload' });
+    } catch {}
+  }
 
   return {
     elapsedSec: Number(elapsedSec.toFixed(2)),

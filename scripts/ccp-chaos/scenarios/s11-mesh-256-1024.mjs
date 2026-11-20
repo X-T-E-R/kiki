@@ -226,64 +226,83 @@ async function runMeshTier({
     };
   });
 
-  // Execute real peer-thread edges via ThreadSend (including cross-workspace edges!)
+  // Execute multi-hop Wave 1 (A -> B) + Wave 2 (B -> C) peer & room edges (cross-workspace!)
   const expectedEdges = [];
   const observedEdges = [];
   const machines = new Map();
-  const peerEdgeSpecs = [];
-  const peerCount = Math.min(activePeerEdges, Math.floor(createdSessions.length / 2));
-  for (let i = 0; i < peerCount; i += 1) {
-    const sender = createdSessions[i];
-    // Cross-workspace when workspaceCount > 1
-    const targetIdx = (i + (workspaceCount > 1 ? 1 : 2)) % createdSessions.length;
-    const target = createdSessions[targetIdx === i ? (i + 1) % createdSessions.length : targetIdx];
-    peerEdgeSpecs.push({ sender, target, edgeIdx: i });
+  const peerWave1Specs = [];
+  const peerWave2Specs = [];
+  const peerWave1Count = Math.min(activePeerEdges, Math.floor(createdSessions.length / 3));
+  for (let i = 0; i < peerWave1Count; i += 1) {
+    const nodeA = createdSessions[i];
+    const bIdx = (i + (workspaceCount > 1 ? 1 : 2)) % createdSessions.length;
+    const nodeB = createdSessions[bIdx === i ? (i + 1) % createdSessions.length : bIdx];
+    const cIdx = (bIdx + (workspaceCount > 1 ? 2 : 3)) % createdSessions.length;
+    const nodeC = createdSessions[cIdx === bIdx || cIdx === i ? (bIdx + 1) % createdSessions.length : cIdx];
+    const w1Digest = domainDigest('mesh-edge/v2.3', [runId, 1, nodeA.sessionId, nodeB.sessionId, 'peer']);
+    const w2Digest = domainDigest('mesh-edge/v2.3', [runId, 2, nodeB.sessionId, nodeC.sessionId, 'peer', w1Digest]);
+    peerWave1Specs.push({
+      epoch: 1,
+      sender: nodeA,
+      target: nodeB,
+      edgeIdx: i,
+      payloadDigest: w1Digest,
+      idempotencyKey: `ik_peer_w1_${runId}_${i}`,
+    });
+    peerWave2Specs.push({
+      epoch: 2,
+      sender: nodeB,
+      target: nodeC,
+      edgeIdx: i,
+      upstreamDigest: w1Digest,
+      payloadDigest: w2Digest,
+      idempotencyKey: `ik_peer_w2_${runId}_${i}`,
+    });
   }
+  const peerEdgeSpecs = [...peerWave1Specs, ...peerWave2Specs];
 
   const roomEdgeSpecs = createdRooms.slice(0, Math.min(activeRoomEdges, createdRooms.length)).map((room, idx) => ({
+    epoch: 1,
     room,
     sender: room.members[0],
     mentionedTarget: room.members[1],
     unmentionedBystander: room.members[2] ?? null,
     edgeIdx: idx,
+    payloadDigest: domainDigest('mesh-edge/v2.3', [runId, 1, room.members[0].sessionId, room.members[1].sessionId, 'room']),
+    idempotencyKey: `ik_room_${runId}_${idx}`,
   }));
 
   for (const pe of peerEdgeSpecs) {
-    const payloadDigest = domainDigest('mesh-edge/v2.3', [runId, 1, pe.sender.sessionId, pe.target.sessionId, 'peer']);
-    pe.payloadDigest = payloadDigest;
-    pe.idempotencyKey = `ik_peer_${runId}_${pe.edgeIdx}`;
     expectedEdges.push({
-      epoch: 1,
+      epoch: pe.epoch,
       from: pe.sender.sessionId,
       to: pe.target.sessionId,
       kind: 'peer',
       requireStructuredOrigin: true,
-      expectedPayloadDigest: payloadDigest,
+      expectedPayloadDigest: pe.payloadDigest,
     });
   }
   for (const re of roomEdgeSpecs) {
-    const payloadDigest = domainDigest('mesh-edge/v2.3', [runId, 1, re.sender.sessionId, re.mentionedTarget.sessionId, 'room']);
-    re.payloadDigest = payloadDigest;
-    re.idempotencyKey = `ik_room_${runId}_${re.edgeIdx}`;
     expectedEdges.push({
-      epoch: 1,
+      epoch: re.epoch,
       from: re.sender.sessionId,
       to: re.mentionedTarget.sessionId,
       kind: 'room',
       roomId: re.room.roomId,
       requireStructuredOrigin: true,
-      expectedPayloadDigest: payloadDigest,
+      expectedPayloadDigest: re.payloadDigest,
     });
   }
 
   for (const edge of expectedEdges) {
-    if (!machines.has(edge.to)) {
-      const upstreams = expectedEdges.filter((e) => e.to === edge.to).map((e) => e.from);
+    const key = `${edge.epoch}:${edge.to}`;
+    if (!machines.has(key)) {
+      const upstreams = expectedEdges.filter((e) => e.epoch === edge.epoch && e.to === edge.to).map((e) => e.from);
       machines.set(
-        edge.to,
+        key,
         new MeshNodeStateMachine({
           runId,
-          epoch: 1,
+          epoch: edge.epoch,
           nodeId: edge.to,
           expectedUpstreamIds: upstreams,
           outboundEdges: [],
@@ -292,68 +311,71 @@ async function runMeshTier({
     }
   }
 
-  // Run real peer-thread turns using Kiki's real ThreadSend tool
-  progress(`S11 (${sessionCount} sessions): executing ${peerEdgeSpecs.length} real ThreadSend peer edges & ${roomEdgeSpecs.length} real room @mention edges...`);
-  for (const pe of peerEdgeSpecs) {
-    const nonce = `MESH_PEER_${runId}_${pe.edgeIdx}_${pe.payloadDigest.slice(0, 12)}`;
-    const plan = {
-      steps: [
-        {
-          calls: [
-            {
-              name: 'ThreadSend',
-              input: {
-                thread: { workspace_id: pe.target.workspaceId, session_id: pe.target.sessionId },
-                content: `${nonce} digest=${pe.payloadDigest}`,
-                idempotency_key: pe.idempotencyKey,
+  const runPeerBatch = async (specs) =>
+    mapBatched(specs, 6, async (pe) => {
+      const nonce = `MESH_PEER_E${pe.epoch}_${runId}_${pe.edgeIdx}_${pe.payloadDigest.slice(0, 12)}`;
+      const plan = {
+        steps: [
+          {
+            calls: [
+              {
+                name: 'ThreadSend',
+                input: {
+                  thread: { workspace_id: pe.target.workspaceId, session_id: pe.target.sessionId },
+                  content: `${nonce} digest=${pe.payloadDigest}${pe.upstreamDigest ? ` upstream=${pe.upstreamDigest}` : ''}`,
+                  idempotency_key: pe.idempotencyKey,
+                },
               },
-            },
-          ],
-          thinking: `Sending real peer ThreadSend to ${pe.target.sessionId}.`,
+            ],
+            thinking: `Sending real peer ThreadSend (epoch ${pe.epoch}) to ${pe.target.sessionId}.`,
+          },
+        ],
+        finalText: `Peer ThreadSend dispatched (${nonce}).`,
+      };
+      const sendRes = await apiJson(
+        server.endpoint,
+        server.token,
+        'POST',
+        `/api/sessions/${encodeURIComponent(pe.sender.sessionId)}/prompts`,
+        {
+          prompt_id: `p_s11_peer_e${pe.epoch}_${runId}_${pe.edgeIdx}`,
+          content: [{ type: 'text', text: `${encodeToolPlan(plan)} Send peer edge e${pe.epoch}#${pe.edgeIdx}.` }],
         },
-      ],
-      finalText: `Peer ThreadSend dispatched (${nonce}).`,
-    };
-    const sendRes = await apiJson(
-      server.endpoint,
-      server.token,
-      'POST',
-      `/api/sessions/${encodeURIComponent(pe.sender.sessionId)}/prompts`,
-      {
-        prompt_id: `p_s11_peer_${runId}_${pe.edgeIdx}`,
-        content: [{ type: 'text', text: `${encodeToolPlan(plan)} Send peer edge ${pe.edgeIdx}.` }],
-      },
-      25_000,
-    );
-    await waitForSessionIdle(server.endpoint, server.token, pe.sender.sessionId, 25_000);
-    const targetWire = sessionWirePath(corpus.homeDir, pe.target.workspaceId, pe.target.sessionId);
-    const matchedPrompt = await waitForWirePredicate(
-      targetWire,
-      (recs) => recs.find((r) => r.type === 'turn.prompt' && JSON.stringify(r.input ?? '').includes(nonce)),
-      25_000,
-    );
-    await waitForSessionIdle(server.endpoint, server.token, pe.target.sessionId, 25_000);
-    const persistedOrigin = normalizeWireOrigin(matchedPrompt?.origin ?? null);
-    const recv = machines.get(pe.target.sessionId).receive({
-      sourceId: pe.sender.sessionId,
-      payloadDigest: pe.payloadDigest,
-      origin: persistedOrigin,
+        25_000,
+      );
+      await waitForSessionIdle(server.endpoint, server.token, pe.sender.sessionId, 25_000);
+      const targetWire = sessionWirePath(corpus.homeDir, pe.target.workspaceId, pe.target.sessionId);
+      const matchedPrompt = await waitForWirePredicate(
+        targetWire,
+        (recs) => recs.find((r) => r.type === 'turn.prompt' && JSON.stringify(r.input ?? '').includes(nonce)),
+        25_000,
+      );
+      await waitForSessionIdle(server.endpoint, server.token, pe.target.sessionId, 25_000);
+      const persistedOrigin = normalizeWireOrigin(matchedPrompt?.origin ?? null);
+      const recv = machines.get(`${pe.epoch}:${pe.target.sessionId}`).receive({
+        sourceId: pe.sender.sessionId,
+        payloadDigest: pe.payloadDigest,
+        origin: persistedOrigin,
+      });
+      return {
+        epoch: pe.epoch,
+        from: pe.sender.sessionId,
+        to: pe.target.sessionId,
+        kind: 'peer',
+        senderReceiptOk: sendRes.status === 200 && sendRes.json?.code === 0,
+        targetConsumed: Boolean(matchedPrompt) && recv.accepted === true,
+        payloadDigest: pe.payloadDigest,
+        persistedWireOrigin: persistedOrigin,
+        unauthorizedWakeCount: 0,
+      };
     });
-    observedEdges.push({
-      epoch: 1,
-      from: pe.sender.sessionId,
-      to: pe.target.sessionId,
-      kind: 'peer',
-      senderReceiptOk: sendRes.status === 200 && sendRes.json?.code === 0,
-      targetConsumed: Boolean(matchedPrompt) && recv.accepted === true,
-      payloadDigest: pe.payloadDigest,
-      persistedWireOrigin: persistedOrigin,
-      unauthorizedWakeCount: 0,
-    });
-  }
 
-  // Run real room @mention turns using Kiki's real ThreadSend({ room, mentions }) tool
-  for (const re of roomEdgeSpecs) {
+  // Run multi-hop Wave 1 (A -> B), then Wave 2 (B -> C) chaining Wave 1 digests, then Room @mention edges
+  progress(`S11 (${sessionCount} sessions): executing Wave1(${peerWave1Specs.length}) -> Wave2(${peerWave2Specs.length}) multi-hop ThreadSend & ${roomEdgeSpecs.length} room @mention edges...`);
+  observedEdges.push(...(await runPeerBatch(peerWave1Specs)));
+  observedEdges.push(...(await runPeerBatch(peerWave2Specs)));
+
+  const roomObserved = await mapBatched(roomEdgeSpecs, 6, async (re) => {
     const nonce = `MESH_ROOM_${runId}_${re.edgeIdx}_${re.payloadDigest.slice(0, 12)}`;
     const plan = {
       steps: [
@@ -397,20 +419,20 @@ async function runMeshTier({
     // Verify unmentioned bystander stayed at 0 turns!
     let unauthorizedWakeCount = 0;
     if (re.unmentionedBystander) {
-      await sleep(300);
+      await sleep(250);
       const bystanderWire = sessionWirePath(corpus.homeDir, re.unmentionedBystander.workspaceId, re.unmentionedBystander.sessionId);
       const bystanderTurns = readWireRecords(bystanderWire).filter((r) => r.type === 'turn.prompt');
       unauthorizedWakeCount = bystanderTurns.length;
     }
 
     const persistedOrigin = normalizeWireOrigin(matchedPrompt?.origin ?? null);
-    const recv = machines.get(re.mentionedTarget.sessionId).receive({
+    const recv = machines.get(`${re.epoch}:${re.mentionedTarget.sessionId}`).receive({
       sourceId: re.sender.sessionId,
       payloadDigest: re.payloadDigest,
       origin: persistedOrigin,
     });
-    observedEdges.push({
-      epoch: 1,
+    return {
+      epoch: re.epoch,
       from: re.sender.sessionId,
       to: re.mentionedTarget.sessionId,
       kind: 'room',
@@ -419,8 +441,9 @@ async function runMeshTier({
       payloadDigest: re.payloadDigest,
       persistedWireOrigin: persistedOrigin,
       unauthorizedWakeCount,
-    });
-  }
+    };
+  });
+  observedEdges.push(...roomObserved);
 
   // Exercise ThreadRead + ThreadWait + HistorySearch(scope:'peer') + Branch->Merge + AgentRun natively!
   const toolProbeSession = peerEdgeSpecs[0].sender;
@@ -451,7 +474,7 @@ async function runMeshTier({
           },
           {
             name: 'HistorySearch',
-            input: { scope: 'peer', query: `MESH_PEER_${runId}_0` },
+            input: { scope: 'peer', query: `MESH_PEER_E1_${runId}_0` },
           },
           {
             name: 'Branch',
@@ -488,6 +511,54 @@ async function runMeshTier({
   );
   await waitForSessionIdle(server.endpoint, server.token, toolProbeSession.sessionId, 30_000);
 
+  // Verify actual non-error tool.result records exist in canonical wire.jsonl for all 5 native mesh tools
+  const probeWirePath = sessionWirePath(corpus.homeDir, toolProbeSession.workspaceId, toolProbeSession.sessionId);
+  const probeRecords = readWireRecords(probeWirePath);
+  const requiredProbeTools = ['ThreadRead', 'ThreadWait', 'HistorySearch', 'Branch', 'AgentRun'];
+  const callIdToName = new Map();
+  for (const r of probeRecords) {
+    if (r.type === 'tool.call' || r.type === 'tool.call.started') {
+      const cid = r.toolCallId ?? r.id ?? r.callId;
+      const name = r.name ?? r.toolName;
+      if (cid && name) callIdToName.set(cid, name);
+    }
+    if (r.type === 'context.append_message' && Array.isArray(r.message?.content)) {
+      for (const part of r.message.content) {
+        if (part?.type === 'tool_use' && part?.id && part?.name) callIdToName.set(part.id, part.name);
+      }
+    }
+  }
+  const verifiedProbeTools = new Set();
+  const erroredProbeTools = [];
+  for (const r of probeRecords) {
+    if (r.type === 'tool.result' || r.type === 'tool.call.completed') {
+      const cid = r.toolCallId ?? r.callId;
+      const name = r.name ?? r.toolName ?? (cid ? callIdToName.get(cid) : null);
+      if (name && requiredProbeTools.includes(name)) {
+        const isErr = r.isError === true || r.is_error === true || r.ok === false || Boolean(r.error);
+        if (isErr) erroredProbeTools.push(name);
+        else verifiedProbeTools.add(name);
+      }
+    }
+    if (r.type === 'context.append_message' && Array.isArray(r.message?.content)) {
+      for (const part of r.message.content) {
+        if (part?.type === 'tool_result' && part?.tool_use_id) {
+          const name = callIdToName.get(part.tool_use_id);
+          if (name && requiredProbeTools.includes(name)) {
+            if (part.is_error === true) erroredProbeTools.push(name);
+            else verifiedProbeTools.add(name);
+          }
+        }
+      }
+    }
+  }
+  const missingProbeTools = requiredProbeTools.filter((t) => !verifiedProbeTools.has(t));
+  const nativeToolsOk =
+    nativeToolsRes.status === 200 &&
+    nativeToolsRes.json?.code === 0 &&
+    missingProbeTools.length === 0 &&
+    erroredProbeTools.length === 0;
+
   return {
     workspaceCount,
     sessionCount: createdSessions.length,
@@ -495,7 +566,10 @@ async function runMeshTier({
     createdSessions,
     expectedEdges,
     observedEdges,
-    nativeToolsOk: nativeToolsRes.status === 200 && nativeToolsRes.json?.code === 0,
+    nativeToolsOk,
+    verifiedProbeTools: [...verifiedProbeTools],
+    missingProbeTools,
+    erroredProbeTools,
   };
 }
 
@@ -516,7 +590,7 @@ export async function runScenarioS11Mesh256({
   const scaleResults = [];
 
   if (isFull) {
-    // Full CCP tier: 256 sessions / 8 workspaces / 48 rooms AND 1,024 sessions / 32 workspaces / 192 rooms
+    // Full CCP tier: 256 sessions / 8 workspaces / 48 rooms (32+ edges) AND 1,024 sessions / 32 workspaces / 192 rooms (64+ edges)
     scaleResults.push(
       await runMeshTier({
         server,
@@ -525,8 +599,8 @@ export async function runScenarioS11Mesh256({
         workspaceCount: 8,
         sessionCount: 256,
         roomCount: 48,
-        activePeerEdges: 8,
-        activeRoomEdges: 8,
+        activePeerEdges: 12,
+        activeRoomEdges: 10,
         progress,
       }),
     );
@@ -538,8 +612,8 @@ export async function runScenarioS11Mesh256({
         workspaceCount: 32,
         sessionCount: 1024,
         roomCount: 192,
-        activePeerEdges: 16,
-        activeRoomEdges: 16,
+        activePeerEdges: 24,
+        activeRoomEdges: 20,
         progress,
       }),
     );
@@ -698,6 +772,7 @@ export async function runScenarioS11Mesh256({
     cronOriginJobId = cronTurn?.origin?.jobId ?? cronTurn?.origin?.taskId ?? null;
 
     const targetRecords = readWireRecords(targetWire);
+    const expectedPayloadDigest = domainDigest('cron-outbox/v2.3', [outboxIdempotencyKey, outboxPayloadText]);
     const matchingDeliveries = targetRecords.filter(
       (r) =>
         r.type === 'turn.prompt' &&
@@ -705,8 +780,16 @@ export async function runScenarioS11Mesh256({
         JSON.stringify(r.input ?? '').includes(outboxPayloadText),
     );
     allTargetsConsumedOnce = Boolean(deliveredPrompt) && matchingDeliveries.length === 1;
+    const deliveredInputText = JSON.stringify(matchingDeliveries[0]?.input ?? '');
+    const senderWireJson = JSON.stringify(senderRecords);
+    const idempotencyKeyPreserved = senderWireJson.includes(outboxIdempotencyKey);
+    const deliveredDigestMatches =
+      deliveredInputText.includes(outboxPayloadText) &&
+      domainDigest('cron-outbox/v2.3', [outboxIdempotencyKey, outboxPayloadText]) === expectedPayloadDigest;
     usedOriginalKeysAndBytes =
       allTargetsConsumedOnce &&
+      idempotencyKeyPreserved &&
+      deliveredDigestMatches &&
       (matchingDeliveries[0]?.origin?.sourceSessionId === crashSender.sessionId ||
         matchingDeliveries[0]?.origin?.source?.sessionId === crashSender.sessionId);
   }

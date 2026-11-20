@@ -895,10 +895,12 @@ export async function runChaosOnCcp(options = {}) {
     const verdict = evaluateCcpRunVerdict({
       expectedRunId: runId,
       expectedBuildId: buildId,
+      expectedTier: options.v23Full ? 'v23-full' : options.v23Smoke ? 'v23-smoke' : tier,
       remoteExitCode: execOutcome.exitCode,
       receipt: runReceipt,
       chaosReport: chaosResults,
       requiredStages,
+      enforceMandatoryStages: true,
       requireAllV23Scenarios: Boolean(options.v23Full || options.v23Smoke),
     });
     fs.writeFileSync(path.join(outDir, 'verdict.json'), `${JSON.stringify({ runId, buildId, ...verdict }, null, 2)}\n`, 'utf8');

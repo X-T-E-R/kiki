@@ -259,32 +259,52 @@ async function executeColdChildFanout({ server, WebSocket, sessionId, childAgent
   const endpoints = buildChildWorkspaceFanoutEndpoints(sessionId, childAgentId);
 
   let wsFirstResetMs = null;
+  let wsLiveResetMs = null;
+  let wsResetCount = 0;
+  let wsFirstResetCursor = null;
   let wsResetItemsCount = 0;
   const wsPromise = preOpenedWs
     ? new Promise((resolve) => {
         const ws = preOpenedWs;
-        const timer = setTimeout(() => {
+        let settleTimer = null;
+        const finish = () => {
+          clearTimeout(timer);
+          if (settleTimer) clearTimeout(settleTimer);
           try {
             ws.close();
           } catch {}
           resolve();
-        }, 10_000);
+        };
+        const timer = setTimeout(finish, 10_000);
         ws.on('message', (data) => {
           try {
             const msg = JSON.parse(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'));
             if (msg?.type === 'transcript.reset' && msg?.payload?.agent_id === childAgentId) {
-              wsFirstResetMs = roundMs(performance.now() - t0);
-              wsResetItemsCount = Array.isArray(msg?.payload?.snapshot?.items) ? msg.payload.snapshot.items.length : 0;
-              clearTimeout(timer);
-              ws.close();
-              resolve();
+              const nowMs = roundMs(performance.now() - t0);
+              const cursor = msg?.payload?.cursor ?? null;
+              const itemsCount = Array.isArray(msg?.payload?.snapshot?.items) ? msg.payload.snapshot.items.length : 0;
+              wsResetCount += 1;
+              if (wsFirstResetMs === null) {
+                wsFirstResetMs = nowMs;
+                wsFirstResetCursor = cursor;
+              }
+              wsResetItemsCount = Math.max(wsResetItemsCount, itemsCount);
+              const isColdPlaceholder =
+                typeof cursor === 'string' && cursor.startsWith('cold:') && itemsCount === 0;
+              if (!isColdPlaceholder) {
+                wsLiveResetMs = nowMs;
+                finish();
+              } else if (!settleTimer) {
+                // Keep socket open briefly to observe any follow-up authoritative live reset
+                settleTimer = setTimeout(() => {
+                  wsLiveResetMs = wsLiveResetMs ?? wsFirstResetMs;
+                  finish();
+                }, 400);
+              }
             }
           } catch {}
         });
-        ws.on('error', () => {
-          clearTimeout(timer);
-          resolve();
-        });
+        ws.on('error', finish);
         ws.send(
           JSON.stringify({
             id: `p01_sub_${sessionId}`,
@@ -320,6 +340,9 @@ async function executeColdChildFanout({ server, WebSocket, sessionId, childAgent
   return {
     httpTranscriptMs,
     wsFirstResetMs,
+    wsLiveResetMs: wsLiveResetMs ?? wsFirstResetMs,
+    wsResetCount,
+    wsFirstResetCursor,
     firstPaintMs,
     controlBarSettleMs,
     wsResetItemsCount,
@@ -348,7 +371,9 @@ function verifyProductionCheckpointProof(agentDir) {
     return { exists: false, proof: null };
   }
   const wireStat = fs.statSync(wirePath);
-  const ckpt = JSON.parse(fs.readFileSync(ckptPath, 'utf8'));
+  const ckptRaw = fs.readFileSync(ckptPath);
+  const checkpointHash = createHash('sha256').update(ckptRaw).digest('hex');
+  const ckpt = JSON.parse(ckptRaw.toString('utf8'));
   const wireMeta = ckpt?.wire ?? {};
   const coveredByteOffset = Number(wireMeta.size ?? wireMeta.byteLength ?? wireMeta.offset ?? 0);
   const headLen = Math.min(64 * 1024, wireStat.size);
@@ -385,13 +410,15 @@ function verifyProductionCheckpointProof(agentDir) {
     proof: {
       sourceIdentity: `${wireStat.dev}:${wireStat.ino}`,
       storeGeneration,
+      diskGeneration,
       generation: storeGeneration,
+      checkpointHash,
       coveredByteOffset,
       headSha256,
       boundarySha256: wireMeta.boundarySha256 ?? tailSha256,
       tailSha256,
       formatVersion: ckpt?.format ?? null,
-      verified: Boolean(storeGeneration && generationMatches && headMatches && boundaryMatches && prefixMatches && offsetValid),
+      verified: Boolean(storeGeneration && checkpointHash && generationMatches && headMatches && boundaryMatches && prefixMatches && offsetValid),
     },
   };
 }
@@ -480,6 +507,8 @@ export async function runP01ColdChildFanoutProbe({
       wasColdBeforeOpen: true,
       httpTranscriptMs: fanout.httpTranscriptMs,
       wsFirstResetMs: fanout.wsFirstResetMs,
+      wsLiveResetMs: fanout.wsLiveResetMs,
+      wsResetCount: fanout.wsResetCount,
       firstPaintMs: fanout.firstPaintMs,
       controlBarSettleMs: fanout.controlBarSettleMs,
       wsResetItemsCount: fanout.wsResetItemsCount,
@@ -509,22 +538,28 @@ export async function runP01ColdChildFanoutProbe({
     );
   }
 
-  if (reopenSession && reopenSession.sessionId && reopenSession.childAgentId && reopenSession.agentDir) {
+  const reopenTargets = Array.isArray(reopenSession)
+    ? reopenSession.filter((r) => r && r.sessionId && r.childAgentId && r.agentDir)
+    : reopenSession && reopenSession.sessionId && reopenSession.childAgentId && reopenSession.agentDir
+      ? [reopenSession]
+      : [];
+
+  for (const target of reopenTargets) {
     if (typeof server.closeSession === 'function') {
-      await server.closeSession(reopenSession.sessionId);
+      await server.closeSession(target.sessionId);
     }
-    const ckptCheck = verifyProductionCheckpointProof(reopenSession.agentDir);
+    const ckptCheck = verifyProductionCheckpointProof(target.agentDir);
     const reopenFanout = await executeColdChildFanout({
       server,
       WebSocket,
-      sessionId: reopenSession.sessionId,
-      childAgentId: reopenSession.childAgentId,
-      wirePath: path.join(reopenSession.agentDir, 'wire.jsonl'),
+      sessionId: target.sessionId,
+      childAgentId: target.childAgentId,
+      wirePath: path.join(target.agentDir, 'wire.jsonl'),
     });
     const reopenTrial = {
       lane: 'reopen',
-      sessionId: reopenSession.sessionId,
-      childAgentId: reopenSession.childAgentId,
+      sessionId: target.sessionId,
+      childAgentId: target.childAgentId,
       wireBytes: reopenFanout.wireSize,
       wasColdBeforeOpen: true,
       productionCheckpointPublished: ckptCheck.exists,
@@ -532,6 +567,8 @@ export async function runP01ColdChildFanoutProbe({
       firstReaderBuiltCheckpoint: false,
       httpTranscriptMs: reopenFanout.httpTranscriptMs,
       wsFirstResetMs: reopenFanout.wsFirstResetMs,
+      wsLiveResetMs: reopenFanout.wsLiveResetMs,
+      wsResetCount: reopenFanout.wsResetCount,
       firstPaintMs: reopenFanout.firstPaintMs,
       controlBarSettleMs: reopenFanout.controlBarSettleMs,
       wsResetItemsCount: reopenFanout.wsResetItemsCount,
@@ -551,7 +588,7 @@ export async function runP01ColdChildFanoutProbe({
     harnessFailures.push(...reopenVerdict.harnessFailures);
 
     progress(
-      `P0-1 Reopen [${reopenSession.childAgentId}]: passed=${reopenVerdict.passed} httpTranscript=${reopenFanout.httpTranscriptMs}ms wsReset=${reopenFanout.wsFirstResetMs}ms ckptPublished=${ckptCheck.exists} wireRead=${((reopenFanout.ioTrace?.wireReadBytes ?? 0) / 1024).toFixed(1)}KiB`,
+      `P0-1 Reopen [${target.childAgentId}]: passed=${reopenVerdict.passed} httpTranscript=${reopenFanout.httpTranscriptMs}ms wsReset=${reopenFanout.wsFirstResetMs}ms wsLiveReset=${reopenFanout.wsLiveResetMs}ms ckptPublished=${ckptCheck.exists} wireRead=${((reopenFanout.ioTrace?.wireReadBytes ?? 0) / 1024).toFixed(1)}KiB`,
     );
   }
 

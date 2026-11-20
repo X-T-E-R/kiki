@@ -7,6 +7,8 @@ import {
   IAgentLifecycleService,
   IEventBus,
   IEventService,
+  ISessionActivityView,
+  ISessionInteractionService,
   ISessionManager,
 } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1610,6 +1612,18 @@ describe('WsConnectionV1 cursor replay ordering', () => {
             if (token === IAgentLifecycleService) {
               return { list: () => liveAgents, onDidCreate: () => ({ dispose: () => {} }), onDidDispose: () => ({ dispose: () => {} }) };
             }
+            if (token === ISessionActivityView) {
+              return { state: () => ({ busy: false, executing: false, mainTurnActive: false, pendingInteraction: false }), onDidChange: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionInteractionService) {
+              return {
+                listPending: () => [],
+                onDidChangePending: () => ({ dispose: () => {} }),
+                onDidResolve: () => ({ dispose: () => {} }),
+                acquireConsumer: () => {},
+                releaseConsumer: () => {},
+              };
+            }
             return undefined;
           },
         },
@@ -1632,6 +1646,16 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       const fireChild = (event: unknown) => {
         for (const fn of childListeners) fn(event);
       };
+      const legacySock = new FakeSocket();
+      const legacyConn = makeConn(legacySock, { broadcaster });
+      legacySock.emit('message', JSON.stringify({
+        type: 'subscribe',
+        id: 'sub-legacy-ctrl',
+        payload: { session_ids: ['s_bare'] },
+      }));
+      await vi.waitFor(() => {
+        expect(legacySock.frames().some((f) => (f as { id?: string }).id === 'sub-legacy-ctrl')).toBe(true);
+      });
       const runSession = async (reconnect: boolean) => {
         const sock = new FakeSocket();
         const conn = makeConn(sock, { broadcaster });
@@ -1643,9 +1667,14 @@ describe('WsConnectionV1 cursor replay ordering', () => {
         await vi.waitFor(() => {
           expect(sock.frames().some((f) => (f as { id?: string }).id === (reconnect ? 'sub-v2-reconn' : 'sub-v2-init'))).toBe(true);
         });
+        expect(childListeners.size).toBeGreaterThanOrEqual(1);
+        fireChild({ type: 'turn.started', agentId: 'child_1', turnId: 1 });
         fireChild({ type: 'assistant.delta', agentId: 'child_1', turnId: 1, delta: 'SECRET_CHILD_DELTA' });
         fireChild({ type: 'tool.result', agentId: 'child_1', turnId: 1, toolCallId: 'tc_1', output: 'SECRET_CHILD_TOOL' });
         fireChild({ type: 'context.append_message', agentId: 'child_1', message: { role: 'assistant', content: 'SECRET_CHILD_MSG' } });
+        await vi.waitFor(() => {
+          expect(legacySock.frames().some((f) => (f as { type?: string }).type === 'assistant.delta')).toBe(true);
+        });
         await new Promise((r) => setTimeout(r, 40));
         const childContentFrames = sock.frames().filter((f) => {
           const frame = f as { type?: string; payload?: { agentId?: string; agent_id?: string } };
@@ -1657,6 +1686,108 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       };
       await runSession(false);
       await runSession(true);
+      legacyConn.close();
+      await broadcaster.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes legacy session_events for explicitly detached child on partial unsubscribe_v2 while keeping never-subscribed children suppressed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ws-partial-unsub-v2-'));
+    try {
+      const listeners = new Map<string, Set<(event: unknown) => void>>([
+        ['main', new Set()],
+        ['child_1', new Set()],
+        ['child_2', new Set()],
+      ]);
+      const makeBus = (agentId: string) => ({
+        subscribe: (fn: (event: unknown) => void) => {
+          listeners.get(agentId)!.add(fn);
+          return { dispose: () => { listeners.get(agentId)!.delete(fn); } };
+        },
+      });
+      const liveAgents = ['main', 'child_1', 'child_2'].map((id) => ({
+        id,
+        accessor: { get: (token: unknown) => (token === IEventBus ? makeBus(id) : undefined) },
+      }));
+      const sessionHandle = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) {
+              return { list: () => liveAgents, onDidCreate: () => ({ dispose: () => {} }), onDidDispose: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionActivityView) {
+              return { state: () => ({ busy: false, executing: false, mainTurnActive: false, pendingInteraction: false }), onDidChange: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionInteractionService) {
+              return {
+                listPending: () => [],
+                onDidChangePending: () => ({ dispose: () => {} }),
+                onDidResolve: () => ({ dispose: () => {} }),
+                acquireConsumer: () => {},
+                releaseConsumer: () => {},
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const core = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IEventService) return { subscribe: () => ({ dispose: () => {} }) };
+            if (token === ISessionManager) {
+              return {
+                get: (sid: string) => (sid === 's_partial' ? sessionHandle : undefined),
+                acquire: async (sid: string) => (sid === 's_partial' ? { handle: sessionHandle, dispose: async () => {} } : undefined),
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const broadcaster = new SessionEventBroadcaster({ eventsDir: dir, core: core as never });
+      const sock = new FakeSocket();
+      const conn = makeConn(sock, { broadcaster });
+      sock.emit('message', JSON.stringify({
+        type: 'subscribe_v2',
+        id: 'sub-partial',
+        payload: { session_id: 's_partial', transcript: { main: 'delta', child_1: 'delta' }, transcript_coverage_version: 2 },
+      }));
+      await vi.waitFor(() => {
+        expect(sock.frames().some((f) => (f as { id?: string }).id === 'sub-partial')).toBe(true);
+      });
+      expect(listeners.get('child_1')!.size).toBeGreaterThanOrEqual(1);
+      sock.emit('message', JSON.stringify({
+        type: 'unsubscribe_v2',
+        id: 'unsub-child1',
+        payload: { session_id: 's_partial', agent_ids: ['child_1'] },
+      }));
+      await vi.waitFor(() => {
+        expect(sock.frames().some((f) => (f as { id?: string }).id === 'unsub-child1')).toBe(true);
+      });
+      for (const fn of listeners.get('child_1')!) {
+        fn({ type: 'turn.started', agentId: 'child_1', turnId: 1 });
+        fn({ type: 'assistant.delta', agentId: 'child_1', turnId: 1, delta: 'DETACHED_CHILD1_DELTA' });
+      }
+      for (const fn of listeners.get('child_2')!) {
+        fn({ type: 'turn.started', agentId: 'child_2', turnId: 1 });
+        fn({ type: 'assistant.delta', agentId: 'child_2', turnId: 1, delta: 'NEVER_SUBSCRIBED_CHILD2_DELTA' });
+      }
+      await vi.waitFor(() => {
+        const c1 = sock.frames().filter((f) => {
+          const frame = f as { type?: string; payload?: { agentId?: string } };
+          return frame.type === 'assistant.delta' && frame.payload?.agentId === 'child_1';
+        });
+        expect(c1.length).toBeGreaterThanOrEqual(1);
+      });
+      const c2 = sock.frames().filter((f) => {
+        const frame = f as { type?: string; payload?: { agentId?: string } };
+        return frame.type === 'assistant.delta' && frame.payload?.agentId === 'child_2';
+      });
+      expect(c2).toEqual([]);
+      conn.close();
       await broadcaster.close();
     } finally {
       await rm(dir, { recursive: true, force: true });

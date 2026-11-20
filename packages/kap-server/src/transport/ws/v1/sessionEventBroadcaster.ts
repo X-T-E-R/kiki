@@ -159,6 +159,7 @@ export interface TargetSubscription {
   readonly residencyLease?: SessionLease;
   readonly prevTranscriptSeeded?: boolean;
   readonly transcriptOnly?: boolean;
+  readonly detachedTranscriptAgents?: ReadonlySet<string>;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -613,13 +614,25 @@ export class SessionEventBroadcaster {
       const generation = this.nextTranscriptGeneration(state, target);
       if (prev?.residencyLease !== undefined) await acquiredLease?.dispose();
       acquiredLease = undefined;
+      const nextTranscriptOnly = opts?.transcriptOnly ?? (prev?.transcriptOnly === true && filter === undefined);
+      let nextDetached: Set<string> | undefined;
+      if (nextTranscriptOnly && prev?.detachedTranscriptAgents !== undefined && prev.detachedTranscriptAgents.size > 0) {
+        nextDetached = new Set<string>();
+        for (const id of prev.detachedTranscriptAgents) {
+          if (transcriptGrades === undefined || gradeFor(transcriptGrades, id) === 'off') {
+            nextDetached.add(id);
+          }
+        }
+        if (nextDetached.size === 0) nextDetached = undefined;
+      }
       state.targets.set(target, {
         agentFilter: filter,
         transcriptGrades,
         transcriptGeneration: generation,
         residencyLease,
         prevTranscriptSeeded: prevSeeded,
-        transcriptOnly: opts?.transcriptOnly ?? (prev?.transcriptOnly === true && filter === undefined),
+        transcriptOnly: nextTranscriptOnly,
+        detachedTranscriptAgents: nextDetached,
       });
       attached = { state, generation, prev, prevSeeded };
       if (transcriptGrades === undefined) {
@@ -669,6 +682,7 @@ export class SessionEventBroadcaster {
             transcriptGeneration: restoredGeneration,
             residencyLease: attached.prev.residencyLease,
             transcriptOnly: attached.prev.transcriptOnly,
+            detachedTranscriptAgents: attached.prev.detachedTranscriptAgents,
           });
           if (attached.prevSeeded) attached.state.transcriptSeeded.add(target);
           else attached.state.transcriptSeeded.delete(target);
@@ -769,6 +783,7 @@ export class SessionEventBroadcaster {
       transcriptGeneration: restoredGeneration,
       residencyLease: current.residencyLease,
       transcriptOnly: current.transcriptOnly,
+      detachedTranscriptAgents: current.detachedTranscriptAgents,
     });
     if (prior.transcriptGrades !== undefined && current.prevTranscriptSeeded === true) {
       state.transcriptSeeded.add(target);
@@ -822,12 +837,21 @@ export class SessionEventBroadcaster {
     const next =
       agentIds === undefined ? undefined : detachGrades(sub.transcriptGrades, agentIds);
     const generation = this.nextTranscriptGeneration(state, target);
+    let detachedTranscriptAgents: ReadonlySet<string> | undefined;
+    if (next !== undefined && sub.transcriptOnly === true) {
+      const merged = new Set<string>(sub.detachedTranscriptAgents);
+      for (const id of agentIds ?? []) {
+        if (id !== '*') merged.add(id);
+      }
+      if (merged.size > 0) detachedTranscriptAgents = merged;
+    }
     state.targets.set(target, {
       agentFilter: sub.agentFilter,
       transcriptGrades: next,
       transcriptGeneration: generation,
       residencyLease: sub.residencyLease,
-      transcriptOnly: sub.transcriptOnly,
+      transcriptOnly: next === undefined ? false : sub.transcriptOnly,
+      detachedTranscriptAgents,
     });
     if (next === undefined || !wasSeeded) state.transcriptSeeded.delete(target);
   }
@@ -2122,7 +2146,7 @@ export class SessionEventBroadcaster {
       for (const [target, sub] of targets) {
         if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
         try {
-          if (suppressedByTranscript(envelope, sub.transcriptGrades, sub.transcriptOnly === true)) {
+          if (suppressedByTranscript(envelope, sub.transcriptGrades, sub.transcriptOnly === true, sub.detachedTranscriptAgents)) {
             if (target.sendRosterHint !== undefined && (
               (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed' ||
                 event.type === 'turn.started' || event.type === 'turn.ended') && event.agentId !== MAIN_AGENT_ID ||
@@ -2353,6 +2377,7 @@ function suppressedByTranscript(
   envelope: EventEnvelope,
   spec: TranscriptGradeSpec | undefined,
   transcriptOnly = false,
+  detachedTranscriptAgents?: ReadonlySet<string>,
 ): boolean {
   if (spec === undefined) return false;
   if (isGlobalEvent(envelope.type)) return false;
@@ -2365,7 +2390,7 @@ function suppressedByTranscript(
   if (typeof agentId !== 'string') return false;
   const grade = gradeFor(spec, agentId);
   if (grade === 'off') {
-    if (!transcriptOnly) return false;
+    if (!transcriptOnly || detachedTranscriptAgents?.has(agentId) === true) return false;
     if (envelope.type.startsWith('event.approval.') || envelope.type.startsWith('event.question.')) return false;
     return TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type) || TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES.has(envelope.type);
   }

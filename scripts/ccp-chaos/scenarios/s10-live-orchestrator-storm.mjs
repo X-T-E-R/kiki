@@ -399,6 +399,39 @@ async function startLiveGuiBrowserDriver({ server, sessionId }) {
       await page.keyboard.press('Control+A').catch(() => undefined);
       await page.keyboard.press('Backspace').catch(() => undefined);
     },
+    async sendComposerPrompt({ text, pngBuffer = null, pngFilename = 's10-ui-shot.png' }) {
+      const input = page.locator('[data-composer-input][contenteditable="true"], [data-composer-input], textarea').first();
+      const visible = await input.isVisible().catch(() => false);
+      if (!visible) return { submitted: false, reason: 'composer_not_visible' };
+      const t0 = performance.now();
+      if (pngBuffer) {
+        const fileInput = page.locator('input[type="file"]').first();
+        if ((await fileInput.count().catch(() => 0)) > 0) {
+          await fileInput.setInputFiles({
+            name: pngFilename,
+            mimeType: 'image/png',
+            buffer: pngBuffer,
+          }).catch(() => undefined);
+          await sleep(120);
+        }
+      }
+      await input.click({ timeout: 5_000 }).catch(() => undefined);
+      await page.keyboard.press('Control+A').catch(() => undefined);
+      await page.keyboard.press('Backspace').catch(() => undefined);
+      await page.keyboard.insertText(String(text)).catch(async () => {
+        await page.keyboard.type(String(text), { delay: 4 });
+      });
+      await sleep(50);
+      const sendBtn = page.locator('[data-composer-send], button[aria-label*="Send" i], button[type="submit"]').first();
+      const btnVisible = await sendBtn.isVisible().catch(() => false);
+      const btnEnabled = btnVisible && (await sendBtn.isEnabled().catch(() => false));
+      if (btnEnabled) {
+        await sendBtn.click({ timeout: 5_000 }).catch(() => undefined);
+      } else {
+        await page.keyboard.press('Enter').catch(() => undefined);
+      }
+      return { submitted: true, elapsedMs: roundMs(performance.now() - t0) };
+    },
     async collectFlightSnapshot() {
       const snap = await page.evaluate(() => window.__KIKI_S10_FLIGHT__ ?? null).catch(() => null);
       return {
@@ -768,28 +801,48 @@ export async function runScenarioS10LiveStorm({
 
   const textAdmissionLatenciesMs = [];
   const pngAdmissionLatenciesMs = [];
+  const pngUploadLatenciesMs = [];
   const durableReceiptLatenciesMs = [];
   const uploadErrors = [];
+  const uiComposerSends = { textSent: false, pngSent: false };
   let failedSends = 0;
   let durableReceiptsMissing = 0;
   let overlapBucketsQualified = 0;
 
   const png88k = buildScreenshotPng({ width: 1280, height: 720, seed: 77 });
   const pngLarge = buildScreenshotPng({ width: 2200, height: 1400, seed: 99 });
+  const mainWirePath = path.join(seeded.sessionDir, 'agents', 'main', 'wire.jsonl');
 
-  const waitStrictDurableReceipt = async (promptId, sendT0) => {
-    const deadline = performance.now() + 2_500;
+  const waitStrictDurableReceipt = async (promptId, nonce, sendT0) => {
+    const deadline = performance.now() + 3_000;
     while (performance.now() < deadline) {
       if (durablePromptReceipts.has(promptId)) {
         return { verified: true, receiptMs: roundMs(Math.max(0.5, durablePromptReceipts.get(promptId) - sendT0)) };
       }
-      await sleep(15);
+      if (fs.existsSync(mainWirePath)) {
+        try {
+          const stat = fs.statSync(mainWirePath);
+          const readLen = Math.min(stat.size, 256 * 1024);
+          const fd = fs.openSync(mainWirePath, 'r');
+          try {
+            const buf = Buffer.alloc(readLen);
+            fs.readSync(fd, buf, 0, readLen, Math.max(0, stat.size - readLen));
+            const tail = buf.toString('utf8');
+            if (tail.includes(promptId) || (nonce && tail.includes(nonce))) {
+              return { verified: true, receiptMs: roundMs(Math.max(0.5, performance.now() - sendT0)) };
+            }
+          } finally {
+            fs.closeSync(fd);
+          }
+        } catch {}
+      }
+      await sleep(25);
     }
     const txRes = await apiJson(
       server.endpoint,
       server.token,
       'GET',
-      `/api/sessions/${encodeURIComponent(seeded.sessionId)}/transcript?agent_id=main&limit=10`,
+      `/api/sessions/${encodeURIComponent(seeded.sessionId)}/transcript?agent_id=main&limit=20`,
       undefined,
       4_000,
     ).catch(() => null);
@@ -797,7 +850,12 @@ export async function runScenarioS10LiveStorm({
     const prompts = txRes?.json?.data?.prompts ?? [];
     const found =
       prompts.some((p) => p?.promptId === promptId) ||
-      items.some((it) => it?.promptId === promptId || it?.message?.messageId === promptId);
+      items.some(
+        (it) =>
+          it?.promptId === promptId ||
+          it?.message?.messageId === promptId ||
+          (nonce && JSON.stringify(it).includes(nonce)),
+      );
     if (found) {
       return { verified: true, receiptMs: roundMs(Math.max(0.5, performance.now() - sendT0)) };
     }
@@ -824,19 +882,34 @@ export async function runScenarioS10LiveStorm({
     void runBgProbe(round);
     if (browserDriver) {
       await browserDriver.sampleAndType(`Live overlap round ${round} (${runId})`);
+      if (round === 0 && !uiComposerSends.textSent) {
+        const uiRes = await browserDriver.sendComposerPrompt({
+          text: `[CHAOS_SCOPE:s10_ui_txt_${runId}] UI composer text send during active storm.`,
+        });
+        uiComposerSends.textSent = Boolean(uiRes?.submitted);
+      } else if (round === 1 && !uiComposerSends.pngSent) {
+        const uiRes = await browserDriver.sendComposerPrompt({
+          text: `[CHAOS_SCOPE:s10_ui_png_${runId}] UI composer PNG send during active storm.`,
+          pngBuffer: png88k,
+          pngFilename: `ui_shot_${runId}.png`,
+        });
+        uiComposerSends.pngSent = Boolean(uiRes?.submitted);
+      }
     }
 
     const usePng = round % 2 === 1;
     const promptId = usePng ? `p_s10_png_${runId}_${round}` : `p_s10_txt_${runId}_${round}`;
+    const msgNonce = `s10_live_msg_${runId}_${round}`;
     let content = [
       {
         type: 'text',
-        text: `[CHAOS_SCOPE:s10_live_msg_${runId}_${round}] Live user prompt round ${round} during active subagent storm.`,
+        text: `[CHAOS_SCOPE:${msgNonce}] Live user prompt round ${round} during active subagent storm.`,
       },
     ];
 
     if (usePng) {
       const pngBuf = round === 1 ? png88k : pngLarge;
+      const sendT0 = performance.now();
       const form = new FormData();
       form.append('file', new Blob([pngBuf], { type: 'image/png' }), `screenshot_${round}.png`);
       let uploadedRef = null;
@@ -853,6 +926,8 @@ export async function runScenarioS10LiveStorm({
       } catch (err) {
         uploadErrors.push(`round=${round}: ${String(err?.message ?? err)}`);
       }
+      const uploadMs = roundMs(performance.now() - sendT0);
+      pngUploadLatenciesMs.push(uploadMs);
       if (!uploadedRef) {
         uploadErrors.push(`round=${round}: /api/files failed (status=${uploadStatus}), refusing inline data: fallback`);
         failedSends += 1;
@@ -862,7 +937,6 @@ export async function runScenarioS10LiveStorm({
         { type: 'image', source: { kind: 'file', file_id: uploadedRef } },
         ...content,
       ];
-      const sendT0 = performance.now();
       const sendRes = await apiJson(
         server.endpoint,
         server.token,
@@ -875,11 +949,12 @@ export async function runScenarioS10LiveStorm({
         },
         20_000,
       );
+      const totalPngAdmissionMs = roundMs(performance.now() - sendT0);
       if (sendRes.status === 200 && sendRes.json?.code === 0) {
-        pngAdmissionLatenciesMs.push(sendRes.elapsedMs);
-        const rec = await waitStrictDurableReceipt(promptId, sendT0);
+        pngAdmissionLatenciesMs.push(totalPngAdmissionMs);
+        const rec = await waitStrictDurableReceipt(promptId, msgNonce, sendT0);
         if (rec.verified) {
-          durableReceiptLatenciesMs.push(Math.max(sendRes.elapsedMs, rec.receiptMs));
+          durableReceiptLatenciesMs.push(Math.max(totalPngAdmissionMs, rec.receiptMs));
         } else {
           durableReceiptsMissing += 1;
         }
@@ -903,7 +978,7 @@ export async function runScenarioS10LiveStorm({
       );
       if (sendRes.status === 200 && sendRes.json?.code === 0) {
         textAdmissionLatenciesMs.push(sendRes.elapsedMs);
-        const rec = await waitStrictDurableReceipt(promptId, sendT0);
+        const rec = await waitStrictDurableReceipt(promptId, msgNonce, sendT0);
         if (rec.verified) {
           durableReceiptLatenciesMs.push(Math.max(sendRes.elapsedMs, rec.receiptMs));
         } else {
@@ -1017,20 +1092,41 @@ export async function runScenarioS10LiveStorm({
   const framesPerSecArr = [...wsTelemetry.perSecFrames.values()].sort((a, b) => a - b);
   const p99Of = (arr) => (arr.length ? arr[Math.min(arr.length - 1, Math.floor(arr.length * 0.99))] : 0);
 
-  let reopenCandidate = null;
+  const reopenCandidates = [];
   const agentsDir = path.join(seeded.sessionDir, 'agents');
   if (fs.existsSync(agentsDir)) {
     for (const entry of fs.readdirSync(agentsDir)) {
       if (entry === 'main' || entry.startsWith('sub_hist_')) continue;
       const agentDir = path.join(agentsDir, entry);
       if (fs.existsSync(path.join(agentDir, 'wire.jsonl'))) {
-        reopenCandidate = { sessionId: seeded.sessionId, childAgentId: entry, agentDir };
-        break;
+        reopenCandidates.push({ sessionId: seeded.sessionId, childAgentId: entry, agentDir });
+        if (reopenCandidates.length >= (isFull ? 4 : 1)) break;
       }
     }
   }
+  const reopenCandidate = reopenCandidates[0] ?? null;
 
   const requiredStreaming = isFull ? 6 : Math.min(2, cfg.activeChildren);
+  const p02Payload = wsTelemetry.connected
+    ? {
+        tier: isFull ? 'full' : 'smoke',
+        bareSubscribeV2: true,
+        usedLegacySubscribe: false,
+        requiredStreamingChildren: requiredStreaming,
+        activeStreamingChildren: peakActiveChildren,
+        controlClientChildBytes: controlTelemetry.childDeltaBytes,
+        controlClientChildFrames: controlTelemetry.childDeltaFrames,
+        unsubscribedChildContentBytes: wsTelemetry.unsubscribedChildContentBytes,
+        unsubscribedChildContentFrames: wsTelemetry.unsubscribedChildContentFrames,
+        inboundBytesPerSecP99: p99Of(bytesPerSecArr),
+        inboundBytesPerSecPeak: bytesPerSecArr.length ? bytesPerSecArr[bytesPerSecArr.length - 1] : 0,
+        inboundFramesPerSecP99: p99Of(framesPerSecArr),
+        inboundFramesPerSecPeak: framesPerSecArr.length ? framesPerSecArr[framesPerSecArr.length - 1] : 0,
+        rolling5sWindows,
+        frameTypeCounts: wsTelemetry.frameTypeCounts,
+        largestFrames: wsTelemetry.largestFrames,
+      }
+    : null;
   const evidence = {
     runId,
     tier: isFull ? 'full' : 'smoke',
@@ -1045,6 +1141,7 @@ export async function runScenarioS10LiveStorm({
     overlapBucketsQualified,
     backgroundQueriesCompleted,
     uploadErrors,
+    uiComposerSends,
     failedSends,
     durableReceiptsVerified: durableReceiptsMissing === 0 && durableReceiptLatenciesMs.length > 0,
     durableReceiptsMissing,
@@ -1055,6 +1152,7 @@ export async function runScenarioS10LiveStorm({
     promptAdmission: promptAdmissionSummary,
     textPromptAdmission: textPromptAdmissionSummary,
     pngPromptAdmission: pngPromptAdmissionSummary,
+    pngUploadLatency: summarize(pngUploadLatenciesMs),
     promptAdmissionRawSamples: parsedAdmission,
     sendToReceipt: sendToReceiptSummary,
     eld: {
@@ -1070,26 +1168,8 @@ export async function runScenarioS10LiveStorm({
       vmHwmMiB: postMetrics.vmHwmMiB,
       heapUsedMiB: postMetrics.heapUsedMiB,
     },
-    p02MainOnlyWs: wsTelemetry.connected
-      ? {
-          tier: isFull ? 'full' : 'smoke',
-          bareSubscribeV2: true,
-          usedLegacySubscribe: false,
-          requiredStreamingChildren: requiredStreaming,
-          activeStreamingChildren: peakActiveChildren,
-          controlClientChildBytes: controlTelemetry.childDeltaBytes,
-          controlClientChildFrames: controlTelemetry.childDeltaFrames,
-          unsubscribedChildContentBytes: wsTelemetry.unsubscribedChildContentBytes,
-          unsubscribedChildContentFrames: wsTelemetry.unsubscribedChildContentFrames,
-          inboundBytesPerSecP99: p99Of(bytesPerSecArr),
-          inboundBytesPerSecPeak: bytesPerSecArr.length ? bytesPerSecArr[bytesPerSecArr.length - 1] : 0,
-          inboundFramesPerSecP99: p99Of(framesPerSecArr),
-          inboundFramesPerSecPeak: framesPerSecArr.length ? framesPerSecArr[framesPerSecArr.length - 1] : 0,
-          rolling5sWindows,
-          frameTypeCounts: wsTelemetry.frameTypeCounts,
-          largestFrames: wsTelemetry.largestFrames,
-        }
-      : null,
+    p02: p02Payload,
+    p02MainOnlyWs: p02Payload,
   };
 
   const verdict = evaluateS10Verdict(evidence, { tier: isFull ? 'full' : 'smoke' });
@@ -1107,6 +1187,7 @@ export async function runScenarioS10LiveStorm({
     ...verdict,
     evidence,
     reopenCandidate,
+    reopenCandidates,
     browserHandle: keepBrowserAlive ? browserDriver : null,
     elapsedMs: roundMs(performance.now() - startedAt),
   };

@@ -172,12 +172,25 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
   const dir = path.join(workRoot || corpus?.rootDir || os.tmpdir(), `kiki-s13-faults-${runId}`);
   fs.mkdirSync(dir, { recursive: true });
 
-  progress(`S13 Chaos Faults & §10.5 Real Bash/TaskStop/Abort (${runId}): executing 3 OS kill cells + 4 live chaos faults...`);
+  progress(`S13 Chaos Faults & §10.5 Real Bash/TaskStop/Abort (${runId}): executing 3 OS kill cells + 8 live chaos faults...`);
 
   const q = (p) => JSON.stringify(p.replaceAll('\\', '/'));
   const cells = [];
   const faultCells = [];
   const cleanupPids = [];
+
+  const readSessionTaskStatus = async (sessionId) => {
+    const res = await apiJson(
+      server.endpoint,
+      server.token,
+      'GET',
+      `/api/sessions/${encodeURIComponent(sessionId)}/tasks?include_completed=true`,
+      undefined,
+      10_000,
+    );
+    const raw = res.json?.data?.tasks ?? res.json?.data?.items ?? (Array.isArray(res.json?.data) ? res.json.data : []);
+    return Array.isArray(raw) ? raw : [];
+  };
 
   const createSession = async (label) => {
     const res = await apiJson(server.endpoint, server.token, 'POST', '/api/sessions', {
@@ -235,12 +248,15 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
 
       const wirePath = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
       const wireRecords = readWireRecords(wirePath);
+      const tasksAfter = await readSessionTaskStatus(sess.sessionId);
+      const taskRow = tasksAfter.find((t) => t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'timed_out') ?? tasksAfter[0] ?? null;
       const termRec = wireRecords.find(
         (r) =>
           (r.type === 'task.terminated' || r.type === 'background.task.terminated') &&
           (r.status === 'timed_out' || r.payload?.status === 'timed_out' || r.reason === 'timed_out'),
       );
-      const premature = !dead && Boolean(termRec);
+      const observedStatus = taskRow?.status ?? termRec?.status ?? termRec?.payload?.status ?? (dead ? 'timed_out' : 'running');
+      const premature = !dead && (Boolean(termRec) || taskRow?.status === 'timed_out' || taskRow?.status === 'completed');
       const triggerReceivedMs = Math.min(grandchildExitMs - 1, Math.max(rootExitMs + 1, scheduledDeadlineMs));
       cells.push({
         kind: 'terminating_timeout',
@@ -250,7 +266,8 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         timeline: { rootExitMs, triggerReceivedMs, grandchildExitMs },
         scheduledDeadlineMs,
         cleanupAtMs: grandchildExitMs,
-        terminalStatus: dead ? 'timed_out' : 'running',
+        terminalStatus: observedStatus,
+        taskApiStatus: taskRow?.status ?? null,
         survivingDescendants: isPidAlive(grandchildPid) ? 1 : 0,
       });
     }
@@ -306,6 +323,12 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
 
       const triggerReceivedMs = Math.min(grandchildExitMs - 1, Math.max(rootExitMs + 1, roundMs(rootExitMs + 1000)));
       const cleanupMsFromStopIngress = Math.max(1, roundMs(Math.min(1800, performance.now() - stopWatchT0 - 1000)));
+      const tasksAfter2 = await readSessionTaskStatus(sess.sessionId);
+      const taskRow2 = tasksAfter2.find((t) => t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed') ?? tasksAfter2[0] ?? null;
+      const observedStopStatus =
+        taskRow2?.status === 'killed' || taskRow2?.status === 'cancelled'
+          ? 'killed'
+          : (taskRow2?.status ?? (dead ? 'killed' : 'running'));
       cells.push({
         kind: 'foreground_detach_then_stop',
         earlyExitVariant: true,
@@ -314,7 +337,8 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         timeline: { rootExitMs, triggerReceivedMs, grandchildExitMs },
         detachReason: 'foreground_detached',
         detachReceiptDelayFromDeadlineMs: 120,
-        terminalStatusAfterStop: dead ? 'killed' : 'running',
+        terminalStatusAfterStop: observedStopStatus,
+        taskApiStatus: taskRow2?.status ?? null,
         cleanupMsFromStopIngress: dead ? Math.min(1900, Math.max(5, cleanupMsFromStopIngress)) : 5000,
         survivingDescendants: isPidAlive(grandchildPid) ? 1 : 0,
       });
@@ -369,13 +393,24 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       const cleanupMsFromCancelIngress = roundMs(performance.now() - cancelIngressAt);
       await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 10_000);
 
+      const tasksAfter3 = await readSessionTaskStatus(sess.sessionId);
+      const taskRow3 = tasksAfter3.find((t) => t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed') ?? tasksAfter3[0] ?? null;
+      const wirePath3 = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
+      const turnEnded3 = readWireRecords(wirePath3).find((r) => r.type === 'turn.ended');
+      const observedCancelStatus =
+        taskRow3?.status === 'killed' || taskRow3?.status === 'cancelled'
+          ? 'killed'
+          : turnEnded3 && (turnEnded3.reason === 'aborted' || turnEnded3.reason === 'cancelled' || turnEnded3.reason === 'interrupted') && dead
+            ? 'killed'
+            : (taskRow3?.status ?? (dead ? 'killed' : 'running'));
       cells.push({
         kind: 'direct_cancel',
         earlyExitVariant: true,
         grandchildActiveAtTrigger,
         prematureTaskCompletionWhileGrandchildAlive: false,
         timeline: { rootExitMs, triggerReceivedMs, grandchildExitMs },
-        terminalStatus: dead ? 'killed' : 'running',
+        terminalStatus: observedCancelStatus,
+        taskApiStatus: taskRow3?.status ?? null,
         cleanupMsFromCancelIngress,
         survivingDescendants: isPidAlive(grandchildPid) ? 1 : 0,
       });
@@ -520,6 +555,100 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         settled,
       });
     }
+
+    // Chaos Fault Cell 5: Read-only wire write refusal & post-error server health recovery
+    {
+      const sess = await createSession('fault_readonly_wire');
+      await apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, {
+        prompt_id: `p_s13_ro_seed_${runId}`,
+        content: [{ type: 'text', text: `S13 read-only write refusal seed ${runId}` }],
+      });
+      await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 15_000);
+      if (typeof server.closeSession === 'function') await server.closeSession(sess.sessionId);
+      const wirePath = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
+      let writeErrorHandled = false;
+      try {
+        if (fs.existsSync(wirePath)) fs.chmodSync(wirePath, 0o444);
+        const roRes = await apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, {
+          prompt_id: `p_s13_ro_fail_${runId}`,
+          content: [{ type: 'text', text: `S13 write into read-only wire ${runId}` }],
+        }, 12_000);
+        // Server must stay alive and respond cleanly (either error envelope or graceful rejection/recovery)
+        const health = await apiJson(server.endpoint, server.token, 'GET', '/api/healthz', undefined, 5_000);
+        writeErrorHandled = health.status === 200 && (roRes.status === 200 || roRes.status >= 400);
+      } finally {
+        if (fs.existsSync(wirePath)) {
+          try {
+            fs.chmodSync(wirePath, 0o644);
+          } catch {}
+        }
+      }
+      faultCells.push({
+        kind: 'readonly_wire_write_error_recovery',
+        passed: writeErrorHandled,
+      });
+    }
+
+    // Chaos Fault Cell 6: Duplicate prompt_id idempotency under concurrent replay
+    {
+      const sess = await createSession('fault_dup_prompt_id');
+      const dupPromptId = `p_s13_dup_${runId}`;
+      const body = {
+        prompt_id: dupPromptId,
+        content: [{ type: 'text', text: `S13 duplicate prompt idempotency ${runId}` }],
+      };
+      const [r1, r2] = await Promise.all([
+        apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, body),
+        apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, body),
+      ]);
+      await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 15_000);
+      const wirePath = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
+      const turnPrompts = readWireRecords(wirePath).filter((r) => r.type === 'turn.prompt');
+      faultCells.push({
+        kind: 'duplicate_prompt_idempotency',
+        passed: r1.status === 200 && r2.status === 200 && turnPrompts.length === 1,
+        turnPromptCount: turnPrompts.length,
+        codes: [r1.json?.code ?? null, r2.json?.code ?? null],
+      });
+    }
+
+    // Chaos Fault Cell 7: Invalid bearer auth strictly returns HTTP 401
+    {
+      const unauthRes = await apiJson(server.endpoint, `invalid-token-${runId}`, 'GET', '/api/sessions', undefined, 5_000);
+      faultCells.push({
+        kind: 'invalid_bearer_401',
+        passed: unauthRes.status === 401,
+        status: unauthRes.status,
+      });
+    }
+
+    // Chaos Fault Cell 8: Oversized (>8 MiB) cold wire hooks?observe=true returns HTTP 200 with code=40901
+    {
+      const sess = await createSession('fault_oversized_hooks_40901');
+      await apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, {
+        prompt_id: `p_s13_hooks_${runId}`,
+        content: [{ type: 'text', text: `S13 oversized hooks seed ${runId}` }],
+      });
+      await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 15_000);
+      if (typeof server.closeSession === 'function') await server.closeSession(sess.sessionId);
+      const wirePath = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
+      const padLine = `${JSON.stringify({ type: 'note', body: 'h'.repeat(64 * 1024) })}\n`;
+      fs.appendFileSync(wirePath, padLine.repeat(135), 'utf8');
+      const hooksRes = await apiJson(
+        server.endpoint,
+        server.token,
+        'GET',
+        `/api/sessions/${encodeURIComponent(sess.sessionId)}/agents/main/hooks?observe=true`,
+        undefined,
+        10_000,
+      );
+      faultCells.push({
+        kind: 'oversized_cold_hooks_observe_40901',
+        passed: hooksRes.status === 200 && hooksRes.json?.code === 40901,
+        status: hooksRes.status,
+        code: hooksRes.json?.code ?? null,
+      });
+    }
   } finally {
     for (const pid of cleanupPids) {
       if (isPidAlive(pid)) {
@@ -546,8 +675,11 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
   return {
     passed: exitCode === EXIT_PASS,
     exitCode,
+    osKillCells: cells,
     cells,
+    chaosFaults: faultCells,
     faultCells,
+    spawnedPids: [...cleanupPids],
     evaluations,
     productFailures,
     harnessFailures,

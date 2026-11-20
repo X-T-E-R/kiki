@@ -562,10 +562,12 @@ export class WsConnectionV1 implements BroadcastTarget {
     const existing = this.subscriptions.get(sid);
     if (existing !== undefined) {
       this.broadcaster.unsubscribeTranscript(sid, this, agentIds);
+      const nextGrades =
+        agentIds === undefined ? undefined : detachGrades(existing.transcriptGrades, agentIds);
+      if (nextGrades === undefined) this.transcriptOnlySessions.delete(sid);
       this.subscriptions.set(sid, {
         agentFilter: existing.agentFilter,
-        transcriptGrades:
-          agentIds === undefined ? undefined : detachGrades(existing.transcriptGrades, agentIds),
+        transcriptGrades: nextGrades,
       });
     }
 

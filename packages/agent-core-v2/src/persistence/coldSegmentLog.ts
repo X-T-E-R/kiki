@@ -2196,9 +2196,17 @@ export async function* readLogicalBytes(
   }
 }
 
+interface ColdMarkerScanFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined>;
+  readonly scannedMarkers: ReadonlySet<string>;
+  waiters: number;
+  settled: boolean;
+}
+
 const COLD_MARKER_DEFAULT_NEEDLES = ['ExitPlanMode', 'prompt.model_switch'] as const;
 const coldMarkerCache = new Map<string, boolean>();
-const coldMarkerFlights = new Map<string, Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined>>();
+const coldMarkerFlights = new Map<string, ColdMarkerScanFlight>();
 
 function coldMarkerFileKey(wirePath: string, info: { readonly dev: number | bigint; readonly ino: number | bigint; readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number }): string {
   const normalized = process.platform === 'win32' ? resolve(wirePath).toLowerCase() : resolve(wirePath);
@@ -2246,14 +2254,35 @@ export async function scanColdWireMarkers(
   }
   if (cacheComplete) return { size: info.size, matches: allCached };
 
+  const awaitFlight = async (flight: ColdMarkerScanFlight): Promise<{ readonly size: number; readonly matches: ReadonlyMap<string, boolean> } | undefined> => {
+    flight.waiters += 1;
+    const onAbort = (): void => {
+      if (flight.waiters <= 1 && !flight.settled) flight.controller.abort(signal?.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const done = signal === undefined ? await flight.promise : await abortable(flight.promise, signal);
+      signal?.throwIfAborted();
+      if (done === undefined) return undefined;
+      const matches = new Map<string, boolean>();
+      for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
+      return { size: done.size, matches };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled && signal?.aborted) {
+        flight.controller.abort(signal.reason);
+      }
+    }
+  };
+
   const existingFlight = coldMarkerFlights.get(fileKey);
-  if (existingFlight !== undefined && markers.every((m) => m.length === 0 || (COLD_MARKER_DEFAULT_NEEDLES as readonly string[]).includes(m))) {
-    const done = signal === undefined ? await existingFlight : await abortable(existingFlight, signal);
-    signal?.throwIfAborted();
-    if (done === undefined) return undefined;
-    const matches = new Map<string, boolean>();
-    for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
-    return { size: done.size, matches };
+  if (
+    existingFlight !== undefined &&
+    !existingFlight.controller.signal.aborted &&
+    markers.every((m) => m.length === 0 || existingFlight.scannedMarkers.has(m))
+  ) {
+    return awaitFlight(existingFlight);
   }
 
   const scanSet = new Set<string>(COLD_MARKER_DEFAULT_NEEDLES);
@@ -2261,7 +2290,10 @@ export async function scanColdWireMarkers(
     if (m.length > 0) scanSet.add(m);
   }
   const needles = [...scanSet].map((marker) => ({ marker, buf: Buffer.from(marker, 'utf8'), found: false }));
+  const controller = new AbortController();
+  let created!: ColdMarkerScanFlight;
   const scanPromise = (async (): Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined> => {
+    if (controller.signal.aborted) return undefined;
     const maxNeedleLen = needles.reduce((acc, n) => Math.max(acc, n.buf.length), 1);
     const overlap = Math.max(0, maxNeedleLen - 1);
     const chunkSize = 2 * 1024 * 1024;
@@ -2272,8 +2304,9 @@ export async function scanColdWireMarkers(
       let pos = 0;
       let carry = 0;
       while (pos < info.size) {
+        if (controller.signal.aborted) return undefined;
         const toRead = Math.min(chunkSize, info.size - pos);
-        const { bytesRead } = await fh.read(buf, carry, toRead, pos);
+        const { bytesRead } = await abortable(fh.read(buf, carry, toRead, pos), controller.signal);
         if (bytesRead <= 0) break;
         const windowLen = carry + bytesRead;
         const slice = buf.subarray(0, windowLen);
@@ -2293,6 +2326,7 @@ export async function scanColdWireMarkers(
           carry = windowLen;
         }
       }
+      if (controller.signal.aborted) return undefined;
       const afterHandle = await fh.stat();
       const afterPath = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return undefined;
@@ -2304,10 +2338,13 @@ export async function scanColdWireMarkers(
         afterPath !== undefined &&
         coldMarkerFileKey(wirePath, afterHandle) === fileKey &&
         coldMarkerFileKey(wirePath, afterPath) === fileKey;
+    } catch (error) {
+      if (controller.signal.aborted) return undefined;
+      throw error;
     } finally {
       await fh.close();
     }
-    if (!stable) return undefined;
+    if (!stable || controller.signal.aborted) return undefined;
     const results = new Map<string, boolean>();
     for (const n of needles) {
       results.set(n.marker, n.found);
@@ -2318,21 +2355,16 @@ export async function scanColdWireMarkers(
       coldMarkerCache.set(`${fileKey}\0${n.marker}`, n.found);
     }
     return { size: info.size, results };
-  })();
-
-  if (!coldMarkerFlights.has(fileKey)) {
-    coldMarkerFlights.set(fileKey, scanPromise);
-  }
-  try {
-    const done = signal === undefined ? await scanPromise : await abortable(scanPromise, signal);
-    signal?.throwIfAborted();
-    if (done === undefined) return undefined;
-    const matches = new Map<string, boolean>();
-    for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
-    return { size: done.size, matches };
-  } finally {
-    if (coldMarkerFlights.get(fileKey) === scanPromise) {
+  })().finally(() => {
+    created.settled = true;
+    if (coldMarkerFlights.get(fileKey) === created) {
       coldMarkerFlights.delete(fileKey);
     }
+  });
+  void scanPromise.catch(() => undefined);
+  created = { controller, promise: scanPromise, scannedMarkers: scanSet, waiters: 0, settled: false };
+  if (!coldMarkerFlights.has(fileKey) || coldMarkerFlights.get(fileKey)?.controller.signal.aborted) {
+    coldMarkerFlights.set(fileKey, created);
   }
+  return awaitFlight(created);
 }

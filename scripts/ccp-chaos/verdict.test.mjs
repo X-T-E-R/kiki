@@ -146,6 +146,19 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       promptAdmission: { p95Ms: 16278, maxMs: 16278 },
       sendToReceipt: { samples: 6, p95Ms: 16400, maxMs: 16400 },
       eld: { p99Ms: 2609, maxMs: 3894 },
+      p02: {
+        tier: 'smoke',
+        requiredStreamingChildren: 2,
+        activeStreamingChildren: 4,
+        controlClientChildBytes: 4096,
+        unsubscribedChildContentBytes: 0,
+        unsubscribedChildContentFrames: 0,
+        inboundBytesPerSecP99: 2048,
+        inboundBytesPerSecPeak: 4096,
+        inboundFramesPerSecP99: 4,
+        inboundFramesPerSecPeak: 8,
+        rolling5sWindows: [{ windowMs: 5000, productiveChildren4s: 2, streamingChildren3s: 1, perChildStreams: [{ childId: 'c0', activeSeconds: 2, deltas: 20, usefulBytes: 1024 }] }],
+      },
     });
     assert.equal(res.passed, false);
     assert.equal(res.exitCode, EXIT_PRODUCT_FAIL);
@@ -298,6 +311,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       summaryProof: {
         sourceIdentity: '1:2',
         storeGeneration: 'g1',
+        checkpointHash: 'cc',
         coveredByteOffset: 1024,
         headSha256: 'aa',
         boundarySha256: 'bb',
@@ -620,24 +634,26 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
   it('idle CPU gate requires rAF disabled and enforces <=2% server / <=3% renderer / 0 descendants', () => {
     const pass = evaluateIdleCpuGate({
       tier: 'smoke',
+      windowSec: 10,
       recorderRafDisabled: true,
       browserEnabled: true,
       windows: [
-        { serverCorePct: 0.4, processCount: 2, rendererPlusGpuCorePct: 0.9, rendererProcessCount: 2, survivingDescendants: 0 },
-        { serverCorePct: 1.1, processCount: 2, rendererPlusGpuCorePct: 1.5, rendererProcessCount: 2, survivingDescendants: 0 },
-        { serverCorePct: 0.7, processCount: 2, rendererPlusGpuCorePct: 1.2, rendererProcessCount: 2, survivingDescendants: 0 },
+        { elapsedSec: 10, serverCorePct: 0.4, processCount: 2, rendererPlusGpuCorePct: 0.9, rendererProcessCount: 2, survivingDescendants: 0 },
+        { elapsedSec: 10, serverCorePct: 1.1, processCount: 2, rendererPlusGpuCorePct: 1.5, rendererProcessCount: 2, survivingDescendants: 0 },
+        { elapsedSec: 10, serverCorePct: 0.7, processCount: 2, rendererPlusGpuCorePct: 1.2, rendererProcessCount: 2, survivingDescendants: 0 },
       ],
     });
     assert.equal(pass.passed, true);
 
     const failHighCpu = evaluateIdleCpuGate({
       tier: 'smoke',
+      windowSec: 10,
       recorderRafDisabled: true,
       browserEnabled: true,
       windows: [
-        { serverCorePct: 14.2, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
-        { serverCorePct: 0.5, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
-        { serverCorePct: 0.5, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
+        { elapsedSec: 10, serverCorePct: 14.2, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
+        { elapsedSec: 10, serverCorePct: 0.5, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
+        { elapsedSec: 10, serverCorePct: 0.5, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
       ],
     });
     assert.equal(failHighCpu.passed, false);
@@ -779,5 +795,128 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(r6.passed, false);
     assert.equal(r6.exitCode, EXIT_HARNESS_FAIL);
     assert.ok(r6.harnessFailures.some((f) => f.includes('chaos report buildId')));
+  });
+
+  it('Round-2 affirmative evidence & bundle stage/tier binding negative gates', () => {
+    // 1. hygiene-only receipt rejected by verifySavedBundle with EXIT_HARNESS_FAIL
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-verdict-hygiene-only-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmp, 'manifest.json'),
+        JSON.stringify({ runId: 'r_hyg', buildId: 'b_hyg', tier: 'v23-smoke', requiredStages: ['hygiene'] }),
+      );
+      fs.writeFileSync(
+        path.join(tmp, 'run-receipt.json'),
+        JSON.stringify({ runId: 'r_hyg', buildId: 'b_hyg', remoteExitCode: 0, stages: { hygiene: { exitCode: 0 } } }),
+      );
+      fs.writeFileSync(
+        path.join(tmp, 'chaos-report.json'),
+        JSON.stringify({ runId: 'r_hyg', buildId: 'b_hyg', tier: 'v23-smoke', overallPassed: true, skipped: 0 }),
+      );
+      const rHyg = verifySavedBundle(tmp);
+      assert.equal(rHyg.passed, false);
+      assert.equal(rHyg.exitCode, EXIT_HARNESS_FAIL);
+      assert.ok(rHyg.harnessFailures.some((f) => f.includes('unitTests') || f.includes('chaos')));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+
+    // 2. manifest.tier !== report.tier rejected with EXIT_HARNESS_FAIL
+    const rTier = evaluateCcpRunVerdict({
+      expectedRunId: 'r_tier',
+      expectedBuildId: 'b_tier',
+      expectedTier: 'v23-full',
+      remoteExitCode: 0,
+      receipt: { runId: 'r_tier', buildId: 'b_tier', stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } } },
+      chaosReport: { runId: 'r_tier', buildId: 'b_tier', tier: 'v23-smoke', overallPassed: true, skipped: 0 },
+    });
+    assert.equal(rTier.passed, false);
+    assert.equal(rTier.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(rTier.harnessFailures.some((f) => f.includes('Tier mismatch')));
+
+    // 3. S13 missing or < 8 chaosFaults rejected with EXIT_HARNESS_FAIL
+    const rS13 = evaluateCcpRunVerdict({
+      expectedRunId: 'r_s13',
+      expectedBuildId: 'b_s13',
+      expectedTier: 'v23-smoke',
+      remoteExitCode: 0,
+      receipt: { runId: 'r_s13', buildId: 'b_s13', stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } } },
+      chaosReport: {
+        runId: 'r_s13',
+        buildId: 'b_s13',
+        tier: 'v23-smoke',
+        overallPassed: true,
+        skipped: 0,
+        scenarios: {
+          s13: {
+            cells: [
+              { kind: 'terminating_timeout', prematureTaskCompletionWhileGrandchildAlive: false, scheduledDeadlineMs: 2000, cleanupAtMs: 2500, terminalStatus: 'timed_out', survivingDescendants: 0 },
+              { kind: 'foreground_detach_then_stop', prematureTaskCompletionWhileGrandchildAlive: false, detachReason: 'foreground_detached', detachReceiptDelayFromDeadlineMs: 100, terminalStatusAfterStop: 'killed', cleanupMsFromStopIngress: 300, survivingDescendants: 0 },
+              { kind: 'direct_cancel', prematureTaskCompletionWhileGrandchildAlive: false, terminalStatus: 'killed', cleanupMsFromCancelIngress: 200, survivingDescendants: 0 },
+            ],
+            faultCells: [{ kind: 'f1', passed: true }],
+          },
+        },
+      },
+    });
+    assert.equal(rS13.passed, false);
+    assert.equal(rS13.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(rS13.harnessFailures.some((f) => f.includes('>= 8 live chaosFaults')));
+
+    // 4. S10 missing p02, missing cls, or missing true maxMs rejected with EXIT_HARNESS_FAIL
+    const rS10 = evaluateS10Verdict({
+      tier: 'smoke',
+      peakActiveChildren: 4,
+      totalChildToolCalls: 16,
+      overlapBucketsQualified: 2,
+      browserRequired: true,
+      guiDistServed: true,
+      failedSends: 0,
+      durableReceiptsVerified: true,
+      durableReceiptsMissing: 0,
+      flightRecorder: { sampleCount: 50, transcriptRootRemounts: 0, consoleErrors: 0, composerTyping: { samples: 10, p95Ms: 10 } },
+      textPromptAdmission: { samples: 2, p95Ms: 80 },
+      pngPromptAdmission: { samples: 2, p95Ms: 120, maxMs: 150 },
+      promptAdmission: { p95Ms: 120, maxMs: 150 },
+      sendToReceipt: { samples: 4, p95Ms: 200, maxMs: 250 },
+      eld: { p99Ms: 12, maxMs: 25 },
+    });
+    assert.equal(rS10.passed, false);
+    assert.equal(rS10.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(rS10.harnessFailures.some((f) => f.includes('p02')));
+    assert.ok(rS10.harnessFailures.some((f) => f.includes('numeric cls')));
+    assert.ok(rS10.harnessFailures.some((f) => f.includes('textPromptAdmission.maxMs')));
+
+    // 5. P0-1 > 8 MiB cold /hooks?observe=true returning code=0 rejected with EXIT_PRODUCT_FAIL
+    const rP01Hooks = evaluateP01ColdChildGate({
+      lane: 'legacy',
+      wasColdBeforeOpen: true,
+      checkpoints: [],
+      preexistingSummaryOrSidecar: false,
+      httpTranscriptMs: 120,
+      wsFirstResetMs: 150,
+      firstPaintMs: 150,
+      controlBarSettleMs: 220,
+      responses: [
+        { path: '/api/sessions/s/transcript?agent_id=c', status: 200, code: 0 },
+        { path: '/api/agents/capabilities?session_id=s&agent_id=c&metrics_settle=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/model-switches', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/hooks?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/auto-compact?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/context-strategy?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/status', status: 200, code: 0 },
+        { path: '/api/sessions/s/transcript/plan?agent_id=c', status: 200, code: 0 },
+      ],
+      rawPassCount: 1,
+      wireBytes: 20 * 1024 * 1024,
+      aggregateWireReadBytes: 20 * 1024 * 1024,
+      legacyScanBytesPerSec: 3_000_000_000,
+      aggregateParseInputBytes: 256 * 1024,
+      ioTraceSource: 'server_product_trace',
+      fullReplayMatches: true,
+    });
+    assert.equal(rP01Hooks.passed, false);
+    assert.equal(rP01Hooks.exitCode, EXIT_PRODUCT_FAIL);
+    assert.ok(rP01Hooks.productFailures.some((f) => f.includes('/hooks')));
   });
 });

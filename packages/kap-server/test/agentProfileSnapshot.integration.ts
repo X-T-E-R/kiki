@@ -724,6 +724,40 @@ describe('disposed agent capability snapshots', () => {
     expect(manager.get(sessionId)).toBeUndefined();
   });
 
+  it('returns immediate snapshot on metrics_settle=true for >8 MiB uncheckpointed cold wire and settles via detached catch-up', async () => {
+    await writeStubConfig(home);
+    await start();
+    const sessionId = await createSession();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const session = manager.get(sessionId)!;
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    await manager.close(sessionId);
+    const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), 'main');
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const wirePath = storage.pathFor(scope, 'wire.jsonl')!;
+    const lines = [
+      JSON.stringify({ type: 'metadata', protocol_version: '1.3' }),
+      JSON.stringify({ type: 'fixture.padding', text: 'x'.repeat((8 << 20) + 1), time: 1 }),
+      JSON.stringify(new UsageRecord({ model: 'stub', usage: { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 }, usageScope: 'turn', turnId: 1, usageKnown: true }).serialize()),
+    ];
+    await writeFile(wirePath, `${lines.join('\n')}\n`, 'utf8');
+    const first = agentCapabilitiesResponseSchema.parse(
+      (await (await authedFetch(server!, base, `/api/agents/capabilities?session_id=${sessionId}&agent_id=main&metrics_only=true&metrics_settle=true`)).json() as Envelope<unknown>).data,
+    );
+    expect(first.metrics?.['main']?.usageComplete).toBe(false);
+    await vi.waitFor(async () => {
+      const next = agentCapabilitiesResponseSchema.parse(
+        (await (await authedFetch(server!, base, `/api/agents/capabilities?session_id=${sessionId}&agent_id=main&metrics_only=true&metrics_settle=true`)).json() as Envelope<unknown>).data,
+      );
+      expect(next.metrics?.['main']).toMatchObject({
+        usageComplete: true,
+        inputTokens: 160,
+        outputTokens: 20,
+        totalTokens: 180,
+      });
+    }, { timeout: 10_000, interval: 150 });
+  }, 20_000);
+
   async function start(): Promise<void> {
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,

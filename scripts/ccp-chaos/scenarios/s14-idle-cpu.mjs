@@ -18,6 +18,8 @@ function sleep(ms) {
 export async function runScenarioS14IdleCpu({
   serverPid,
   browserHandle = null,
+  trackedWorkloadPids = [],
+  t0LastTerminalReceiptAt = null,
   tier = 'smoke',
   settleSec,
   windowCount,
@@ -25,6 +27,9 @@ export async function runScenarioS14IdleCpu({
   progress = () => {},
 }) {
   const isFull = tier === 'full';
+  const t0Ts = typeof t0LastTerminalReceiptAt === 'number' && t0LastTerminalReceiptAt > 0
+    ? t0LastTerminalReceiptAt
+    : Date.now();
   const effectiveSettleSec = settleSec ?? (isFull ? 30 : 25);
   const effectiveWindowCount = Math.max(
     isFull ? FROZEN_V23_THRESHOLDS.s14.minWindowsFull : FROZEN_V23_THRESHOLDS.s14.minWindowsSmoke,
@@ -48,11 +53,13 @@ export async function runScenarioS14IdleCpu({
   const headlessNoBrowser = !browserEnabled;
 
   progress(
-    `S14 Idle CPU Gate (${tier}): rAFDisabled=${recorderRafDisabled} settling ${effectiveSettleSec}s, sampling ${effectiveWindowCount}x${effectiveWindowSec}s (serverPid=${serverPid}, browserPid=${browserPid ?? 'none'})...`,
+    `S14 Idle CPU Gate (${tier}): rAFDisabled=${recorderRafDisabled} settling ${effectiveSettleSec}s from T0, sampling ${effectiveWindowCount}x${effectiveWindowSec}s (serverPid=${serverPid}, browserPid=${browserPid ?? 'none'}, trackedPids=${trackedWorkloadPids.length})...`,
   );
 
-  if (effectiveSettleSec > 0) {
-    await sleep(effectiveSettleSec * 1000);
+  const alreadyElapsedMs = Math.max(0, Date.now() - t0Ts);
+  const remainingSettleMs = Math.max(0, effectiveSettleSec * 1000 - alreadyElapsedMs);
+  if (remainingSettleMs > 0) {
+    await sleep(remainingSettleMs);
   }
 
   const windows = [];
@@ -60,11 +67,13 @@ export async function runScenarioS14IdleCpu({
     const sample = await sampleDisjointIdleWindow({
       serverPid,
       browserPid: browserEnabled ? browserPid : null,
+      trackedWorkloadPids,
       windowMs: effectiveWindowSec * 1000,
     });
     windows.push({
       index: i + 1,
       elapsedSec: sample.elapsedSec,
+      elapsedSinceT0Sec: Number(((Date.now() - t0Ts) / 1000).toFixed(2)),
       serverCorePct: sample.serverCorePct,
       processCount: sample.processCount,
       rendererPlusGpuCorePct: browserEnabled ? sample.rendererPlusGpuCorePct : undefined,
@@ -76,6 +85,8 @@ export async function runScenarioS14IdleCpu({
 
   const idleReport = {
     tier: isFull ? 'full' : 'smoke',
+    t0LastTerminalReceiptAt: t0Ts,
+    trackedWorkloadPidCount: trackedWorkloadPids.length,
     requiredWindowCount: effectiveWindowCount,
     windowSec: effectiveWindowSec,
     settleSec: effectiveSettleSec,

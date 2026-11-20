@@ -3558,4 +3558,33 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('keeps shared scanColdWireMarkers flight alive when one waiter aborts and aborts cleanly when sole waiter aborts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-marker-refcount-'));
+    const wirePath = join(root, 'wire.jsonl');
+    try {
+      const chunk = `${JSON.stringify({ type: 'note', body: 'z'.repeat(64 * 1024) })}\n`;
+      const payload = chunk.repeat(64) + `${JSON.stringify({ type: 'note', marker: 'ExitPlanMode' })}\n`;
+      await writeFile(wirePath, payload, 'utf8');
+      const ac1 = new AbortController();
+      const ac2 = new AbortController();
+      const p1 = scanColdWireMarkers(wirePath, ['ExitPlanMode'], ac1.signal);
+      const p2 = scanColdWireMarkers(wirePath, ['prompt.model_switch', 'ExitPlanMode'], ac2.signal);
+      ac1.abort(new Error('caller-1-cancelled'));
+      await expect(p1).rejects.toThrow('caller-1-cancelled');
+      const res2 = await p2;
+      expect(res2).toBeDefined();
+      expect(res2!.matches.get('ExitPlanMode')).toBe(true);
+      expect(res2!.matches.get('prompt.model_switch')).toBe(false);
+
+      const acSole = new AbortController();
+      const pSole = scanColdWireMarkers(wirePath, ['ExitPlanMode'], acSole.signal);
+      acSole.abort(new Error('sole-caller-cancelled'));
+      await expect(pSole).rejects.toThrow('sole-caller-cancelled');
+      const afterAbort = await scanColdWireMarkers(wirePath, ['ExitPlanMode']);
+      expect(afterAbort?.matches.get('ExitPlanMode')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

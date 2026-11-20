@@ -76,10 +76,10 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
   const trialDir = path.join(workRoot || corpus?.rootDir || os.tmpdir(), `kiki-s12-hmac-${runId}`);
   fs.mkdirSync(trialDir, { recursive: true });
   const scopedKey = randomBytes(32).toString('hex');
-  const keyFile = path.join(trialDir, 'scoped.key');
-  fs.writeFileSync(keyFile, scopedKey, 'utf8');
+  const keyFile = path.join(trialDir, '.scoped-env.key');
+  fs.writeFileSync(keyFile, scopedKey, { encoding: 'utf8', mode: 0o600 });
 
-  // Producer helper script invoked inside real Kiki Bash tool
+  // Producer helper script invoked inside real Kiki Bash tool (reads HMAC_KEY from process env)
   const producerScript = path.join(trialDir, 'run-producer.mjs');
   fs.writeFileSync(
     producerScript,
@@ -92,7 +92,8 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
       'const astScript = get("--ast");',
       'const inputAbs = get("--input");',
       'const outDir = get("--out-dir");',
-      'const key = fs.readFileSync(get("--key-file"), "utf8").trim();',
+      'const key = String(process.env.HMAC_KEY ?? "").trim();',
+      'if (!key) throw new Error("HMAC_KEY env missing");',
       'const meta = JSON.parse(fs.readFileSync(get("--meta"), "utf8"));',
       'const rawOut = execFileSync(process.execPath, [astScript, "--files", inputAbs, "--out", outDir, "--partitions", "1", "--min-cpu-ms", "40"], { encoding: "utf8", timeout: 30000 });',
       'const footerLine = rawOut.trim().split("\\n").reverse().find((l) => l.startsWith("AST_BUILD_FOOTER "));',
@@ -118,7 +119,7 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
     'utf8',
   );
 
-  // Pure verification-only blind validator script invoked inside real Kiki Bash tool
+  // Pure verification-only blind validator script invoked inside real Kiki Bash tool (reads HMAC_KEY from process env)
   const validatorScript = path.join(trialDir, 'run-validator.mjs');
   fs.writeFileSync(
     validatorScript,
@@ -127,7 +128,8 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
       'import fs from "node:fs";',
       'const args = process.argv.slice(2);',
       'const get = (k) => args[args.indexOf(k) + 1];',
-      'const key = fs.readFileSync(get("--key-file"), "utf8").trim();',
+      'const key = String(process.env.HMAC_KEY ?? "").trim();',
+      'if (!key) throw new Error("HMAC_KEY env missing");',
       'const envelope = JSON.parse(fs.readFileSync(get("--envelope"), "utf8"));',
       'const downstreamPath = get("--downstream-out");',
       'const reportPath = get("--report-out");',
@@ -227,9 +229,26 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
         throw new Error(`S12 failed to create real sessions for trial ${idx}`);
       }
 
+      // Minimal runner wrapper injects HMAC_KEY strictly into child process.env (never into trial spec/meta)
+      const envRunScript = path.join(trialDir, 'env-run.mjs');
+      if (!fs.existsSync(envRunScript)) {
+        fs.writeFileSync(
+          envRunScript,
+          [
+            'import { execFileSync } from "node:child_process";',
+            'import fs from "node:fs";',
+            'const [keyPath, targetScript, ...rest] = process.argv.slice(2);',
+            'const key = fs.readFileSync(keyPath, "utf8").trim();',
+            'const out = execFileSync(process.execPath, [targetScript, ...rest], { encoding: "utf8", env: { ...process.env, HMAC_KEY: key } });',
+            'process.stdout.write(out);',
+          ].join('\n'),
+          'utf8',
+        );
+      }
+
       // Producer turn via real Bash tool
       const q = (p) => JSON.stringify(p.replaceAll('\\', '/'));
-      const prodCmd = `${q(process.execPath)} ${q(producerScript)} --ast ${q(AST_BUILD_SCRIPT)} --input ${q(inputAbsPath)} --out-dir ${q(outDir)} --key-file ${q(keyFile)} --meta ${q(metaPath)} --produced-out ${q(producedPath)}`;
+      const prodCmd = `${q(process.execPath)} ${q(envRunScript)} ${q(keyFile)} ${q(producerScript)} --ast ${q(AST_BUILD_SCRIPT)} --input ${q(inputAbsPath)} --out-dir ${q(outDir)} --meta ${q(metaPath)} --produced-out ${q(producedPath)}`;
       const prodPlan = {
         steps: [{ calls: [{ name: 'Bash', input: { command: prodCmd, description: `S12 producer #${idx}` } }] }],
         finalText: `S12 producer #${idx} complete.`,
@@ -244,18 +263,37 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
       }
       const produced = JSON.parse(fs.readFileSync(producedPath, 'utf8'));
 
-      // Isolated transit tamper proxy: mutates ONLY consumedRecord payload without leaking trial kind/flags
+      // In-place byte-length-preserving 1-char hex/digit mutation (no length or schema fingerprint!)
+      const mutateCharInPlace = (str) => {
+        const s = String(str ?? '');
+        if (s.length === 0) return s;
+        const pos = Math.floor(s.length / 2);
+        const ch = s[pos];
+        const hex = '0123456789abcdef';
+        const dec = '0123456789';
+        let nextCh = ch;
+        const hi = hex.indexOf(ch.toLowerCase());
+        if (hi >= 0) {
+          const rep = hex[(hi + 1) % hex.length];
+          nextCh = ch === ch.toUpperCase() && /[A-F]/u.test(ch) ? rep.toUpperCase() : rep;
+        } else {
+          const di = dec.indexOf(ch);
+          nextCh = di >= 0 ? dec[(di + 1) % dec.length] : ch === 'a' ? 'b' : 'a';
+        }
+        return `${s.slice(0, pos)}${nextCh}${s.slice(pos + 1)}`;
+      };
       const consumedRecord = spec.tamper
-        ? { ...produced.record, resultValue: `${produced.record.resultValue}_mutated` }
+        ? { ...produced.record, artifactDigest: mutateCharInPlace(produced.record.artifactDigest) }
         : { ...produced.record };
-      fs.writeFileSync(
-        transitEnvelopePath,
-        JSON.stringify({ consumedRecord, tag: produced.tag }, null, 2),
-        'utf8',
-      );
+      const origRaw = JSON.stringify({ consumedRecord: produced.record, tag: produced.tag }, null, 2);
+      const transitRaw = JSON.stringify({ consumedRecord, tag: produced.tag }, null, 2);
+      if (Buffer.byteLength(origRaw, 'utf8') !== Buffer.byteLength(transitRaw, 'utf8')) {
+        throw new Error(`S12 in-place mutation changed transit byte length (${Buffer.byteLength(origRaw, 'utf8')} vs ${Buffer.byteLength(transitRaw, 'utf8')})`);
+      }
+      fs.writeFileSync(transitEnvelopePath, transitRaw, 'utf8');
 
-      // Validator turn via real Bash tool (sees ONLY keyFile, transitEnvelopePath, downstreamArtifactPath)
-      const valCmd = `${q(process.execPath)} ${q(validatorScript)} --key-file ${q(keyFile)} --envelope ${q(transitEnvelopePath)} --downstream-out ${q(downstreamArtifactPath)} --report-out ${q(validatorReportPath)}`;
+      // Validator turn via real Bash tool (sees ONLY HMAC_KEY in process.env + transitEnvelopePath + downstreamArtifactPath)
+      const valCmd = `${q(process.execPath)} ${q(envRunScript)} ${q(keyFile)} ${q(validatorScript)} --envelope ${q(transitEnvelopePath)} --downstream-out ${q(downstreamArtifactPath)} --report-out ${q(validatorReportPath)}`;
       const valPlan = {
         steps: [{ calls: [{ name: 'Bash', input: { command: valCmd, description: `S12 validator #${idx}` } }] }],
         finalText: `S12 validator #${idx} complete.`,

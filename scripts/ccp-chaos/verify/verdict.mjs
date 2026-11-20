@@ -407,9 +407,10 @@ export function evaluateP01ColdChildGate(trial) {
         typeof r.path === 'string' &&
         r.path.includes('/hooks') &&
         r.path.includes('observe=true') &&
-        (trial.wireBytes ?? 0) > 8 * 1024 * 1024 &&
-        r.code === 40901;
-      if (isLargeColdHooksObserve) return false;
+        (trial.wireBytes ?? 0) > 8 * 1024 * 1024;
+      if (isLargeColdHooksObserve) {
+        return r.code !== 40901;
+      }
       return r.code !== 0;
     });
     if (forbidden.length > 0) {
@@ -483,12 +484,16 @@ export function evaluateP01ColdChildGate(trial) {
       const missingFields = [];
       if (!p.sourceIdentity) missingFields.push('sourceIdentity');
       if (storeGen === undefined || storeGen === null || storeGen === '') missingFields.push('storeGeneration');
+      if (typeof p.checkpointHash !== 'string' || p.checkpointHash.trim().length === 0) missingFields.push('checkpointHash');
       if (typeof p.coveredByteOffset !== 'number' || p.coveredByteOffset <= 0) missingFields.push('coveredByteOffset');
       if (!p.headSha256) missingFields.push('headSha256');
       if (!boundaryHash) missingFields.push('boundarySha256');
       if (p.formatVersion === undefined || p.formatVersion === null || p.formatVersion === '') missingFields.push('formatVersion');
       if (missingFields.length > 0) {
         productFailures.push(`P0-1 reopen summary proof missing required fields: ${missingFields.join(', ')}`);
+      }
+      if (p.diskGeneration && storeGen && p.diskGeneration !== storeGen) {
+        productFailures.push(`P0-1 reopen storeGeneration mismatch: checkpoint=${storeGen} vs disk=${p.diskGeneration}`);
       }
       if (p.verified !== true) {
         productFailures.push('P0-1 reopen summary proof failed independent recomputation');
@@ -755,10 +760,15 @@ export function evaluateIdleCpuGate(idleReport, tierOverride = null) {
     harnessFailures.push('Idle CPU gate invalid: full tier requires visible browser renderer+GPU CPU measurement');
   }
   const requireBrowser = tier === 'full' || idleReport.browserEnabled === true || idleReport.headlessNoBrowser !== true;
+  const minWindowSec = tier === 'full' ? 10 : 4;
   for (let i = 0; i < windows.length; i += 1) {
     const w = windows[i];
-    if (typeof w.processCount === 'number' && w.processCount <= 0) {
-      harnessFailures.push(`Idle window #${i + 1}: OS process sampling returned 0 server processes`);
+    const windowDurationSec = typeof w.elapsedSec === 'number' ? w.elapsedSec : idleReport.windowSec;
+    if (typeof windowDurationSec !== 'number' || !Number.isFinite(windowDurationSec) || windowDurationSec < minWindowSec * 0.9) {
+      harnessFailures.push(`Idle window #${i + 1}: windowSec ${windowDurationSec} < required ${minWindowSec}s`);
+    }
+    if (typeof w.processCount !== 'number' || !Number.isFinite(w.processCount) || w.processCount <= 0) {
+      harnessFailures.push(`Idle window #${i + 1}: OS process sampling missing or returned 0 server processes`);
     }
     if (typeof w.serverCorePct !== 'number' || !Number.isFinite(w.serverCorePct)) {
       harnessFailures.push(`Idle window #${i + 1}: missing serverCorePct`);
@@ -766,8 +776,8 @@ export function evaluateIdleCpuGate(idleReport, tierOverride = null) {
       productFailures.push(`Idle window #${i + 1}: server+helpers CPU ${w.serverCorePct}% > ${T.maxServerCorePct}%`);
     }
     if (requireBrowser) {
-      if (typeof w.rendererProcessCount === 'number' && w.rendererProcessCount <= 0) {
-        harnessFailures.push(`Idle window #${i + 1}: OS process sampling returned 0 Chromium renderer/gpu processes`);
+      if (typeof w.rendererProcessCount !== 'number' || !Number.isFinite(w.rendererProcessCount) || w.rendererProcessCount <= 0) {
+        harnessFailures.push(`Idle window #${i + 1}: OS process sampling missing or returned 0 Chromium renderer/gpu processes`);
       }
       if (typeof w.rendererPlusGpuCorePct !== 'number' || !Number.isFinite(w.rendererPlusGpuCorePct)) {
         harnessFailures.push(`Idle window #${i + 1}: missing rendererPlusGpuCorePct (visible browser required)`);
@@ -792,14 +802,17 @@ export function evaluateIdleCpuGate(idleReport, tierOverride = null) {
 export function evaluateCcpRunVerdict({
   expectedRunId,
   expectedBuildId,
+  expectedTier = null,
   remoteExitCode,
   receipt,
   chaosReport,
   requiredStages = ['hygiene', 'unitTests', 'chaos'],
+  enforceMandatoryStages = false,
   requireAllV23Scenarios = undefined,
 }) {
   const productFailures = [];
   const harnessFailures = [];
+  const MANDATORY_BUNDLE_STAGES = ['hygiene', 'unitTests', 'chaos'];
 
   if (!expectedRunId) harnessFailures.push('Missing expectedRunId');
   if (typeof expectedBuildId !== 'string' || expectedBuildId.trim().length === 0) {
@@ -807,6 +820,15 @@ export function evaluateCcpRunVerdict({
   }
   if (!Array.isArray(requiredStages) || requiredStages.length === 0) {
     harnessFailures.push('requiredStages must be a non-empty array');
+  }
+  const effectiveStages = Array.isArray(requiredStages) ? [...requiredStages] : [];
+  if (enforceMandatoryStages) {
+    for (const req of MANDATORY_BUNDLE_STAGES) {
+      if (!effectiveStages.includes(req)) {
+        harnessFailures.push(`Bundle manifest omitted mandatory stage "${req}"`);
+        effectiveStages.push(req);
+      }
+    }
   }
   if (!receipt || typeof receipt !== 'object') {
     harnessFailures.push('Missing remote run-receipt.json (cannot accept stale or absent receipt)');
@@ -817,7 +839,7 @@ export function evaluateCcpRunVerdict({
     if (typeof receipt.buildId !== 'string' || receipt.buildId.trim().length === 0 || (expectedBuildId && receipt.buildId !== expectedBuildId)) {
       harnessFailures.push(`Missing or mismatched buildId: got "${receipt.buildId}", expected "${expectedBuildId}"`);
     }
-    for (const stage of Array.isArray(requiredStages) ? requiredStages : []) {
+    for (const stage of effectiveStages) {
       const st = receipt.stages?.[stage];
       if (!st || typeof st.exitCode !== 'number') {
         harnessFailures.push(`Missing fresh stage receipt for "${stage}"`);
@@ -831,7 +853,7 @@ export function evaluateCcpRunVerdict({
     }
   }
 
-  if (Array.isArray(requiredStages) && requiredStages.includes('chaos')) {
+  if (effectiveStages.includes('chaos')) {
     if (!chaosReport || typeof chaosReport !== 'object') {
       harnessFailures.push('Missing downloaded chaos report JSON');
     } else {
@@ -844,6 +866,18 @@ export function evaluateCcpRunVerdict({
         (expectedBuildId && chaosReport.buildId !== expectedBuildId)
       ) {
         harnessFailures.push(`Missing or mismatched chaos report buildId: got "${chaosReport.buildId}", expected "${expectedBuildId}"`);
+      }
+      if (typeof expectedTier === 'string' && expectedTier.trim().length > 0) {
+        const normTier = (v) => {
+          if (v === 'v23-full' || v === 'full') return 'full';
+          if (v === 'v23-smoke' || v === 'smoke') return 'smoke';
+          return String(v ?? '');
+        };
+        if (typeof chaosReport.tier !== 'string' || chaosReport.tier.trim().length === 0) {
+          harnessFailures.push(`Missing chaos report tier (expected "${expectedTier}")`);
+        } else if (normTier(chaosReport.tier) !== normTier(expectedTier)) {
+          harnessFailures.push(`Tier mismatch between manifest ("${expectedTier}") and chaos report ("${chaosReport.tier}")`);
+        }
       }
       if (chaosReport.overallPassed !== true) {
         productFailures.push('Chaos report overallPassed is not true');
@@ -937,7 +971,11 @@ export function evaluateCcpRunVerdict({
       }
 
       if (sc.s13) {
-        const cells = Array.isArray(sc.s13.cells) ? sc.s13.cells : [];
+        const cells = Array.isArray(sc.s13.osKillCells)
+          ? sc.s13.osKillCells
+          : Array.isArray(sc.s13.cells)
+            ? sc.s13.cells
+            : [];
         if (cells.length < 3) {
           harnessFailures.push(`S13 scenario requires >= 3 §10.5 OS kill cells, got ${cells.length}`);
         } else {
@@ -953,8 +991,15 @@ export function evaluateCcpRunVerdict({
             harnessFailures.push(...c.harnessFailures);
           }
         }
-        if (Array.isArray(sc.s13.faultCells)) {
-          for (const fc of sc.s13.faultCells) {
+        const chaosFaults = Array.isArray(sc.s13.chaosFaults)
+          ? sc.s13.chaosFaults
+          : Array.isArray(sc.s13.faultCells)
+            ? sc.s13.faultCells
+            : [];
+        if (chaosFaults.length < 8) {
+          harnessFailures.push(`S13 scenario requires >= 8 live chaosFaults, got ${chaosFaults.length}`);
+        } else {
+          for (const fc of chaosFaults) {
             if (fc.passed !== true) {
               productFailures.push(`S13 fault cell "${fc.kind}" failed: ${fc.error ?? 'unknown'}`);
             }
@@ -1040,22 +1085,30 @@ export function evaluateS10Verdict(evidence, options = {}) {
   if (!evidence.textPromptAdmission || (evidence.textPromptAdmission.samples ?? 1) <= 0) {
     harnessFailures.push('S10 missing warm text prompt_admission samples');
   } else {
-    if ((evidence.textPromptAdmission.p95Ms ?? Infinity) > T.promptAdmissionTextP95Ms) {
+    if (typeof evidence.textPromptAdmission.p95Ms !== 'number' || !Number.isFinite(evidence.textPromptAdmission.p95Ms)) {
+      harnessFailures.push('S10 missing numeric textPromptAdmission.p95Ms');
+    } else if (evidence.textPromptAdmission.p95Ms > T.promptAdmissionTextP95Ms) {
       productFailures.push(`S10 warm text prompt_admission p95 ${evidence.textPromptAdmission.p95Ms}ms > ${T.promptAdmissionTextP95Ms}ms`);
     }
-    if ((evidence.textPromptAdmission.maxMs ?? evidence.textPromptAdmission.p99Ms ?? Infinity) > T.promptAdmissionTextMaxMs) {
-      productFailures.push(`S10 warm text prompt_admission max ${evidence.textPromptAdmission.maxMs ?? evidence.textPromptAdmission.p99Ms}ms > ${T.promptAdmissionTextMaxMs}ms`);
+    if (typeof evidence.textPromptAdmission.maxMs !== 'number' || !Number.isFinite(evidence.textPromptAdmission.maxMs)) {
+      harnessFailures.push('S10 missing numeric textPromptAdmission.maxMs');
+    } else if (evidence.textPromptAdmission.maxMs > T.promptAdmissionTextMaxMs) {
+      productFailures.push(`S10 warm text prompt_admission max ${evidence.textPromptAdmission.maxMs}ms > ${T.promptAdmissionTextMaxMs}ms`);
     }
   }
 
   if (!evidence.pngPromptAdmission || (evidence.pngPromptAdmission.samples ?? 1) <= 0) {
     harnessFailures.push('S10 missing warm PNG prompt_admission samples');
   } else {
-    if ((evidence.pngPromptAdmission.p95Ms ?? Infinity) > T.promptAdmissionPngP95Ms) {
+    if (typeof evidence.pngPromptAdmission.p95Ms !== 'number' || !Number.isFinite(evidence.pngPromptAdmission.p95Ms)) {
+      harnessFailures.push('S10 missing numeric pngPromptAdmission.p95Ms');
+    } else if (evidence.pngPromptAdmission.p95Ms > T.promptAdmissionPngP95Ms) {
       productFailures.push(`S10 warm PNG prompt_admission p95 ${evidence.pngPromptAdmission.p95Ms}ms > ${T.promptAdmissionPngP95Ms}ms`);
     }
-    if ((evidence.pngPromptAdmission.maxMs ?? evidence.pngPromptAdmission.p99Ms ?? Infinity) > T.promptAdmissionPngMaxMs) {
-      productFailures.push(`S10 warm PNG prompt_admission max ${evidence.pngPromptAdmission.maxMs ?? evidence.pngPromptAdmission.p99Ms}ms > ${T.promptAdmissionPngMaxMs}ms`);
+    if (typeof evidence.pngPromptAdmission.maxMs !== 'number' || !Number.isFinite(evidence.pngPromptAdmission.maxMs)) {
+      harnessFailures.push('S10 missing numeric pngPromptAdmission.maxMs');
+    } else if (evidence.pngPromptAdmission.maxMs > T.promptAdmissionPngMaxMs) {
+      productFailures.push(`S10 warm PNG prompt_admission max ${evidence.pngPromptAdmission.maxMs}ms > ${T.promptAdmissionPngMaxMs}ms`);
     }
   }
 
@@ -1069,8 +1122,11 @@ export function evaluateS10Verdict(evidence, options = {}) {
   if ((evidence.failedSends ?? 0) > 0) {
     productFailures.push(`S10 had ${evidence.failedSends} failed user send(s)`);
   }
-  if (evidence.durableReceiptsVerified === false) {
-    harnessFailures.push('S10 sendToReceipt fell back to raw HTTP elapsed without durable receipt verification');
+  if (evidence.durableReceiptsVerified !== true) {
+    harnessFailures.push('S10 missing affirmative durableReceiptsVerified === true');
+  }
+  if ((evidence.durableReceiptsMissing ?? 0) > 0) {
+    productFailures.push(`S10 missing ${evidence.durableReceiptsMissing} durable user prompt receipt(s)`);
   }
   if (!evidence.sendToReceipt || (evidence.sendToReceipt.samples ?? 1) <= 0) {
     harnessFailures.push('S10 missing durable sendToReceipt samples');
@@ -1094,10 +1150,14 @@ export function evaluateS10Verdict(evidence, options = {}) {
     if ((evidence.flightRecorder.transcriptRootRemounts ?? 0) > 0) {
       productFailures.push(`S10 transcript root remounted ${evidence.flightRecorder.transcriptRootRemounts} time(s)`);
     }
-    if ((evidence.flightRecorder.cls ?? 0) > T.clsMax) {
+    if (typeof evidence.flightRecorder.cls !== 'number' || !Number.isFinite(evidence.flightRecorder.cls)) {
+      harnessFailures.push('S10 flightRecorder missing numeric cls');
+    } else if (evidence.flightRecorder.cls > T.clsMax) {
       productFailures.push(`S10 CLS ${evidence.flightRecorder.cls} > ${T.clsMax}`);
     }
-    if ((evidence.flightRecorder.rawLayoutShift ?? 0) > T.rawLayoutShiftMax) {
+    if (typeof evidence.flightRecorder.rawLayoutShift !== 'number' || !Number.isFinite(evidence.flightRecorder.rawLayoutShift)) {
+      harnessFailures.push('S10 flightRecorder missing numeric rawLayoutShift');
+    } else if (evidence.flightRecorder.rawLayoutShift > T.rawLayoutShiftMax) {
       productFailures.push(`S10 raw input-inclusive layout shift ${evidence.flightRecorder.rawLayoutShift} > ${T.rawLayoutShiftMax}`);
     }
     if ((evidence.flightRecorder.consoleErrors ?? 0) > 0) {
@@ -1121,8 +1181,11 @@ export function evaluateS10Verdict(evidence, options = {}) {
     }
   }
 
-  if (evidence.p02MainOnlyWs) {
-    const p02 = evaluateP02MainOnlyWsGate(evidence.p02MainOnlyWs, tier);
+  const p02Evidence = evidence.p02 ?? evidence.p02MainOnlyWs;
+  if (!p02Evidence || typeof p02Evidence !== 'object') {
+    harnessFailures.push('S10 missing required p02 main-only WS isolation evidence');
+  } else {
+    const p02 = evaluateP02MainOnlyWsGate(p02Evidence, tier);
     productFailures.push(...p02.productFailures);
     harnessFailures.push(...p02.harnessFailures);
   }
@@ -1169,10 +1232,12 @@ export function verifySavedBundle(bundleDir) {
   return evaluateCcpRunVerdict({
     expectedRunId: manifest.runId,
     expectedBuildId: manifest.buildId,
+    expectedTier: manifest.tier ?? null,
     remoteExitCode: receipt?.remoteExitCode,
     receipt,
     chaosReport,
     requiredStages: manifest.requiredStages ?? ['hygiene', 'unitTests', 'chaos'],
+    enforceMandatoryStages: true,
     requireAllV23Scenarios: manifest.requireAllV23Scenarios,
   });
 }
