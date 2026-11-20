@@ -469,12 +469,12 @@ describe('GUI shared client against an isolated KAP host (shared server partitio
         const agent = client.klient.session(id).agent('main');
         if (read === 'auto-compact') await expect(client.getAutoCompact(id, 'main')).rejects.toThrow('Model not set');
         if (read === 'context-strategy') {
-          expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'auto', source: 'default', shadow: false });
+          expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'summarize', source: 'default', shadow: false });
           await client.patchConfig({ loop_control: { context_strategy: 'fresh', relay_shadow: true } });
           try {
             expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'fresh', source: 'global', shadow: true });
           } finally {
-            await client.patchConfig({ loop_control: { context_strategy: 'auto', relay_shadow: false }, replace_domains: ['loop_control'] }).catch(async () => {
+            await client.patchConfig({ loop_control: { context_strategy: 'summarize', relay_shadow: false }, replace_domains: ['loop_control'] }).catch(async () => {
               await client.patchConfig({ replace_domains: ['loop_control'] });
             });
           }

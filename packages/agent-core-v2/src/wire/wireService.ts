@@ -650,37 +650,61 @@ export class WireService extends Service implements IWireService {
     }
     if (marker !== 0x0a) throw new JournalTailUnreadableError();
     if (startByte === size) return;
-    const decoder = new TextDecoder();
-    let pending = '';
+    let pendingChunks: Uint8Array[] = [];
+    let pendingBytes = 0;
+    const parseWireLine = (line: string): WireRecord => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new JournalTailUnreadableError();
+      }
+      if (!isWireRecord(parsed)) throw new JournalTailUnreadableError();
+      return parsed;
+    };
     for await (const chunk of this.journalBytes({
       start: startByte,
       end: size - 1,
     })) {
-      pending += decoder.decode(chunk, { stream: true });
       let cursor = 0;
-      let newline = pending.indexOf('\n', cursor);
-      while (newline !== -1) {
-        const raw = pending.slice(cursor, newline);
-        cursor = newline + 1;
-        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-        if (line.length > 0) {
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(line);
-          } catch {
-            throw new JournalTailUnreadableError();
-          }
-          if (!isWireRecord(parsed)) throw new JournalTailUnreadableError();
-          yield parsed;
+      if (pendingBytes > 0) {
+        const firstNewline = chunk.indexOf(0x0a, 0);
+        if (firstNewline === -1) {
+          const tail = Buffer.from(chunk);
+          pendingChunks.push(tail);
+          pendingBytes += tail.byteLength;
+          continue;
         }
-        newline = pending.indexOf('\n', cursor);
+        const head = chunk.subarray(0, firstNewline);
+        pendingChunks.push(head);
+        const merged = Buffer.concat(pendingChunks, pendingBytes + head.byteLength);
+        pendingChunks = [];
+        pendingBytes = 0;
+        cursor = firstNewline + 1;
+        const trimEnd = merged.byteLength > 0 && merged[merged.byteLength - 1] === 0x0d ? merged.byteLength - 1 : merged.byteLength;
+        if (trimEnd > 0) {
+          yield parseWireLine(merged.toString('utf8', 0, trimEnd));
+        }
       }
-      if (cursor > 0) {
-        pending = cursor < pending.length ? pending.slice(cursor) : '';
+      let newline = chunk.indexOf(0x0a, cursor);
+      while (newline !== -1) {
+        const trimEnd = newline > cursor && chunk[newline - 1] === 0x0d ? newline - 1 : newline;
+        const lineLen = trimEnd - cursor;
+        const lineStart = cursor;
+        cursor = newline + 1;
+        if (lineLen > 0) {
+          const lineBuf = Buffer.from(chunk.buffer, chunk.byteOffset + lineStart, lineLen);
+          yield parseWireLine(lineBuf.toString('utf8'));
+        }
+        newline = chunk.indexOf(0x0a, cursor);
+      }
+      if (cursor < chunk.byteLength) {
+        const tail = Buffer.from(chunk.subarray(cursor));
+        pendingChunks.push(tail);
+        pendingBytes += tail.byteLength;
       }
     }
-    pending += decoder.decode();
-    if (pending.length > 0) throw new JournalTailUnreadableError();
+    if (pendingBytes > 0) throw new JournalTailUnreadableError();
   }
 
   async journalIdentity(): Promise<WireJournalIdentity> {

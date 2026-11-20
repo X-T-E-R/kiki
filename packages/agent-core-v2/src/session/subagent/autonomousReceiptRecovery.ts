@@ -36,7 +36,6 @@ export async function readPendingAutonomousReceipts(scope: string, logs: IAppend
   let through = startOffset;
   let needsFullFold = state.active !== undefined || Object.keys(state.pending).length > 0;
   if (!needsFullFold) {
-    let scanned = 0;
     for await (const _record of logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
       startOffset,
       chunkBytes: 256 * 1024,
@@ -47,7 +46,7 @@ export async function readPendingAutonomousReceipts(scope: string, logs: IAppend
       needsFullFold = true;
       break;
     }
-    if (!needsFullFold && ++scanned > 0) {
+    if (!needsFullFold) {
       signal?.throwIfAborted();
     }
   }

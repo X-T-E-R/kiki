@@ -9,7 +9,7 @@ import {
   workDirKeyAliases,
 } from '#/_base/utils/workdir-slug';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
-import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
+import { ErrorCodes, Error2, isError2, unwrapErrorCause } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
@@ -254,11 +254,17 @@ export class WorkspaceService implements IWorkspaceService {
       [...byId.values()].map((workspace) => workspaceRootKey(workspace.root)),
     );
     do {
-      const page = await this.sessionIndex.listRecent({
-        includeArchived: true,
-        limit: 100,
-        before,
-      });
+      let page: Awaited<ReturnType<ISessionIndex['listRecent']>>;
+      try {
+        page = await this.sessionIndex.listRecent({
+          includeArchived: true,
+          limit: 100,
+          before,
+        });
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) break;
+        throw error;
+      }
       for (const session of page.items) {
         const root = session.worktree?.sourceRoot ?? session.cwd;
         if (root === undefined || !isAbsolute(root)) continue;

@@ -9,6 +9,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
+import { ErrorCodes, isError2 } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -272,7 +273,15 @@ export async function archiveSessionFamily(
 ): Promise<SessionArchiveBatchItemOutcome[]> {
   const services = archiveServices(accessor);
   const manager = accessor.get(ISessionManager);
-  const family = await services.index.archiveFamily(id, excludedIds);
+  let family: readonly SessionSummary[];
+  try {
+    family = await services.index.archiveFamily(id, excludedIds);
+  } catch (error) {
+    if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+      return [{ id, ok: false, reason: 'error', message: error.message }];
+    }
+    throw error;
+  }
   if (family.length === 0) return [{ id, ok: false, reason: 'not_found', message: `session ${id} does not exist` }];
   return setArchivedBatch(services, manager, family.map((summary) => summary.id), true, new Map(family.map((summary) => [summary.id, summary])));
 }

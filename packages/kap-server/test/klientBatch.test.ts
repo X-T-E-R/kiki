@@ -379,6 +379,22 @@ describe('POST /api/klient/batch end-to-end with HttpChannel', () => {
           await directPeer.close();
         }
 
+        const malformedEmpty = await fetch(`${brokerEndpoint}/api/remote-connections/${connectionId}/call`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ operation: 'procedureBatch', body: { calls: [] } }),
+        });
+        expect(malformedEmpty.status).toBe(400);
+        expect(await malformedEmpty.json()).toMatchObject({ code: 40001 });
+
+        const malformedBody = await fetch(`${brokerEndpoint}/api/remote-connections/${connectionId}/call`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ operation: 'procedureBatch', body: 'not-an-object' }),
+        });
+        expect(malformedBody.status).toBe(400);
+        expect(await malformedBody.json()).toMatchObject({ code: 40001 });
+
         process.stdout.write(
           `[klient-batch-broker] 3 concurrent brokered calls -> 1 POST /api/klient/batch (0 fallback); ` +
           `fast=${fastAt.toFixed(1)}ms slow=${slowAt.toFixed(1)}ms (delta=${(slowAt - fastAt).toFixed(1)}ms)\n`,

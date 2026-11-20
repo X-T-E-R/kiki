@@ -372,7 +372,7 @@ describe('FullCompaction', () => {
   it.each([undefined, 'summarize', 'fresh', 'auto'] as const)('resolves the main context default without overriding an explicit global choice (%s)', async (contextStrategy) => {
     const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { contextStrategy } } });
     const compactor = ctx.get(IAgentFullCompactionService);
-    expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'auto', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
+    expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'summarize', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
     const profile = ctx.get(IAgentProfileService);
     await profile.applyProfile(normalizeAgentProfile({ name: 'context-choice', systemPrompt: () => 'test', contextStrategy: 'fresh' }));
     expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'profile' });
@@ -383,27 +383,39 @@ describe('FullCompaction', () => {
     compactor.setContextStrategyOverride(null);
     expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'profile' });
     await profile.applyProfile(normalizeAgentProfile({ name: 'context-inherited', systemPrompt: () => 'test' }));
-    expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'auto', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
+    expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'summarize', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
   });
 
-  it('relays when work notes are missing and the original user text stays in the shape', async () => {
+  it('defaults to summarize when work notes are missing while explicit fresh still relays safely', async () => {
     const ctx = testAgent();
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const compactor = ctx.get(IAgentFullCompactionService);
-    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'auto', source: 'default' });
-    ctx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
+    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'summarize', source: 'default' });
+    ctx.mockNextResponse({ type: 'text', text: 'Default summary.' });
     expect(compactor.begin({ source: 'manual' })).toBe(true);
-    const result = await compactor.compacting!.promise;
+    const defaultResult = await compactor.compacting!.promise;
+    expect(defaultResult).toMatchObject({ strategy: 'summarize' });
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    const freshCtx = testAgent({ initialConfig: { providers: {}, loopControl: { contextStrategy: 'fresh' } } });
+    freshCtx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    freshCtx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    freshCtx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const freshCompactor = freshCtx.get(IAgentFullCompactionService);
+    expect(freshCompactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'global' });
+    freshCtx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
+    expect(freshCompactor.begin({ source: 'manual' })).toBe(true);
+    const result = await freshCompactor.compacting!.promise;
     expect(result).toMatchObject({ strategy: 'relay' });
     expect(result.fallbackFrom).toBeUndefined();
     expect(result.reasonCodes).toContain('notes_missing');
-    expect(result.reasonCodes).toContain('strategy_source:default');
-    expect(ctx.llmCalls).toHaveLength(0);
-    expect(ctx.compactHistory().some((message) => message.text === 'old user one')).toBe(true);
-    expect(ctx.compactHistory().some((message) => message.text === 'recent user two')).toBe(true);
-    expect(ctx.compactHistory().some((message) => message.text?.includes('handoff review pending'))).toBe(true);
+    expect(result.reasonCodes).toContain('strategy_source:global');
+    expect(freshCtx.llmCalls).toHaveLength(0);
+    expect(freshCtx.compactHistory().some((message) => message.text === 'old user one')).toBe(true);
+    expect(freshCtx.compactHistory().some((message) => message.text === 'recent user two')).toBe(true);
+    expect(freshCtx.compactHistory().some((message) => message.text?.includes('handoff review pending'))).toBe(true);
   });
 
   it('runs manual compaction and applies the compacted context', async () => {
@@ -2340,7 +2352,7 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Next step' }] });
     const events = await ctx.untilTurnEnd();
     expect(countEvents(events, 'compaction.started')).toBe(1);
-    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.llmCalls).toHaveLength(2);
     expect(eventIndex(events, 'full_compaction.complete')).toBeLessThan(eventIndex(events, 'turn.step.started'));
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -2394,8 +2406,16 @@ describe('FullCompaction', () => {
         tools: AgentRun, Cron, EnterPlanMode, ExitPlanMode
         messages:
           user: text "old user one"
+          assistant: text "old assistant one"
           user: text "old user two"
-          user: text "The following handoff was assembled without a summarizing model. Use the source reads below to recover details and verify claims.\\n\\n## Working notes\\n(empty)\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · [source 1]\\n- unknown (user): old user two · [source 2]\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.\\n\\n## Last conclusion\\nold assistant two\\n\\n## Window\\nmain/1\\nRemoved history boundary: part of the earlier conversation; the cut may be inside a turn\\nNotes written none · handoff review pending\\n\\n## History\\n\\nHistorySearch {scope:'this_session', agent_id:'main', query:'<terms>'}\\n\\n## Source reads\\n- [source 1] HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"}\\n- [source 2] HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"}"
+          assistant: text "old assistant two"
+          user: text <compaction-instruction>
+
+      call 2:
+        messages:
+          user: text "old user one"
+          user: text "old user two"
+          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat the summary as carried notes, not fresh proof or authorization. Reuse recorded checks when their candidate, inputs, and scope still apply. Re-check missing evidence and transient or changed state before relying on it; a bare “done” claim is not a verification result. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"}\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"}\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions."
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -2727,7 +2747,7 @@ describe('FullCompaction', () => {
         setNotes: () => {}, setTodos: () => {}, clear: () => {},
         onDidChange: () => ({ dispose: () => {} }), onDidChangeAgent: () => ({ dispose: () => {} }),
       });
-    }));
+    }), { initialConfig: { providers: {}, loopControl: { contextStrategy: 'fresh' } } });
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -2749,7 +2769,7 @@ describe('FullCompaction', () => {
       ctx.appendExchange(3, 'recent user', 'recent answer', 35_200);
       ctx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
       const compactor = ctx.get(IAgentFullCompactionService);
-      expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'auto', source: 'default' });
+      expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'global' });
       expect(compactor.begin({ source: 'manual', strategy })).toBe(true);
       expect(await compactor.compacting!.promise).toMatchObject({ strategy: 'relay' });
       expect(ctx.llmCalls).toHaveLength(0);
@@ -2847,10 +2867,10 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'x'.repeat(8_000) }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(1);
-    const [answerCall] = ctx.llmCalls;
+    expect(ctx.llmCalls).toHaveLength(2);
+    const [, answerCall] = ctx.llmCalls;
     const answerTexts = answerCall?.history.map(messageText) ?? [];
-    expect(answerTexts.some((text) => text.includes('assembled without a summarizing model'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('Soft-cap compacted summary.'))).toBe(true);
     expect(answerTexts.some((text) => text.includes('old user one'))).toBe(true);
     expect(answerTexts.some((text) => text.includes('x'.repeat(8_000)))).toBe(true);
     await ctx.expectResumeMatches();
@@ -3081,11 +3101,11 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Answer after compaction.' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
     const events = await ctx.untilTurnEnd();
-    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.llmCalls).toHaveLength(2);
     expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.started' }));
     expect(events).toContainEqual(expect.objectContaining({
       event: 'compaction.completed',
-      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'relay' }) }),
+      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'summarize' }) }),
     }));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -3106,10 +3126,10 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: pendingPrompt }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(1);
-    const [answerCall] = ctx.llmCalls;
+    expect(ctx.llmCalls).toHaveLength(2);
+    const [, answerCall] = ctx.llmCalls;
     const answerTexts = answerCall?.history.map(messageText) ?? [];
-    expect(answerTexts.some((text) => text.includes('assembled without a summarizing model'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('Ratio compacted summary.'))).toBe(true);
     expect(answerTexts.some((text) => text.includes('old user one'))).toBe(true);
     expect(answerTexts.filter((text) => text.includes('ratio-pending-verbatim'))).toEqual([pendingPrompt]);
 
@@ -3395,13 +3415,13 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
     const events = await ctx.untilTurnEnd();
 
-    expect(callCount).toBe(1);
+    expect(callCount).toBe(2);
     expect(events).toContainEqual(
       expect.objectContaining({ event: 'compaction.started' }),
     );
     expect(events).toContainEqual(expect.objectContaining({
       event: 'compaction.completed',
-      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'relay' }) }),
+      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'summarize' }) }),
     }));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -3489,7 +3509,7 @@ describe('FullCompaction', () => {
     const events = await ctx.untilTurnEnd();
 
     expect(callCount).toBeGreaterThanOrEqual(1);
-    expect(callCount).toBeLessThanOrEqual(2);
+    expect(callCount).toBeLessThanOrEqual(4);
     expect(events).toContainEqual(
       expect.objectContaining({
         event: 'compaction.started',
@@ -4460,8 +4480,8 @@ describe('goal reminder re-injection after full compaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Answer after compacting' }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(1);
-    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(1);
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(goalReminderCount(ctx.llmCalls[1]!.history)).toBe(1);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('re-injects the goal reminder at the first step after compaction', async () => {
@@ -4743,7 +4763,7 @@ describe('queued manual compaction failures', () => {
 });
 
 
-it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images through %s into the next provider request, cold resume, undo and clear', async (contextStrategy) => {
+it.each(['fresh', 'summarize'] as const)('automatically compacts 189 mixed images through %s into the next provider request, cold resume, undo and clear', async (contextStrategy) => {
   const requests: (readonly Message[])[] = [];
   const generate = realKosongGenerate((attempt, history) => {
     requests.push(structuredClone(history));
@@ -4794,7 +4814,7 @@ it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images
   expect(await serializedImages(requests.at(-1)!)).toEqual(expected);
   const records = await ctx.persistedWireRecords();
   expect(records.filter(record => record.type === 'full_compaction.begin')).toMatchObject([{ source: 'auto' }]);
-  expect(records.filter(record => record.type === 'context.apply_compaction')).toMatchObject([{ strategy: contextStrategy === 'auto' ? 'relay' : 'summarize', compactedCount: contextStrategy === 'summarize' ? 2 : 8 }]);
+  expect(records.filter(record => record.type === 'context.apply_compaction')).toMatchObject([{ strategy: contextStrategy === 'fresh' ? 'relay' : 'summarize', compactedCount: contextStrategy === 'summarize' ? 2 : 8 }]);
   expect(JSON.stringify(records)).toContain('sample-0.png');
   expect(JSON.stringify(records)).toContain('sample-188.png');
   await ctx.expectResumeMatches();
@@ -4812,7 +4832,7 @@ it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images
   expect(imageIds(cold.context.get())).toEqual(expected);
   await cold.expectResumeMatches();
   const compaction = cold.get(IAgentFullCompactionService);
-  expect(compaction.begin({ source: 'manual', strategy: contextStrategy === 'auto' ? 'relay' : 'summarize' })).toBe(true);
+  expect(compaction.begin({ source: 'manual', strategy: contextStrategy === 'fresh' ? 'relay' : 'summarize' })).toBe(true);
   await compaction.compacting!.promise;
   const twice = imageIds(cold.context.get());
   expect(twice).toEqual([...images.slice(1, 5), ...images.slice(164, 169)].map(part => part.imageUrl.id).concat('reference'));

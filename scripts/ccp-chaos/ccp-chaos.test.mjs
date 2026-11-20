@@ -12,6 +12,7 @@ import {
   defineTestContract,
   extractInlineContracts,
   runTestHygieneCheck,
+  scanIntraMonorepoMocks,
   validateSunsetTrigger,
 } from './check-test-hygiene.mjs';
 import { clone10kSubagents } from './clone-10k-subagents.mjs';
@@ -750,6 +751,51 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
       assert.equal(parsedFlags.s7Cycles, 180);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces vi.doMock/mock.module/@nb-corp intra-monorepo bans while exempting spy and importOriginal wrappers', () => {
+    const diff = [
+      '+++ b/packages/kap-server/test/sample.test.ts',
+      '@@ -1,0 +1,6 @@',
+      "+vi.doMock('../src/routes/sessionMedia', () => ({ openSessionMedia: () => null }));",
+      "+mock.module('@nb-corp/nb-im', () => ({}));",
+      "+vi.mock('../src/services/history/logicalWireRead', { spy: true });",
+      "+vi.mock('@nb-corp/nb-im', async (importOriginal) => ({ ...(await importOriginal()) }));",
+      "+vi.mock('node:fs/promises', () => ({}));",
+    ].join('\n');
+    const ratchet = checkDiffMockRatchet({ diffText: diff });
+    assert.equal(ratchet.mockViolations.length, 2);
+    assert.deepEqual(
+      ratchet.mockViolations.map((entry) => entry.target),
+      ['../src/routes/sessionMedia', '@nb-corp/nb-im'],
+    );
+
+    const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-hygiene-tree-'));
+    try {
+      const kapTestDir = path.join(tmpRepo, 'packages', 'kap-server', 'test');
+      const otherIntegDir = path.join(tmpRepo, 'packages', 'agent-core-v2', 'test');
+      fs.mkdirSync(kapTestDir, { recursive: true });
+      fs.mkdirSync(otherIntegDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(kapTestDir, 'bad.test.ts'),
+        "vi.mock('../src/routes/sessionMedia', () => ({}));\nvi.mock('../src/routes/ok', { spy: true });\n",
+      );
+      fs.writeFileSync(
+        path.join(otherIntegDir, 'bad.integration.ts'),
+        "vi.doMock('#/app/sessionIndex/sessionIndexService', () => ({}));\n",
+      );
+      const scanned = scanIntraMonorepoMocks(tmpRepo, { allowlist: new Set() });
+      assert.equal(scanned.violations.length, 2);
+      assert.deepEqual(
+        scanned.violations.map((entry) => entry.file).sort(),
+        [
+          'packages/agent-core-v2/test/bad.integration.ts',
+          'packages/kap-server/test/bad.test.ts',
+        ],
+      );
+    } finally {
+      fs.rmSync(tmpRepo, { recursive: true, force: true });
     }
   });
 });

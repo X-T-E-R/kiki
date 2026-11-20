@@ -27,7 +27,7 @@ export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; ${PREVIEW_RESO
 export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace(' allow-same-origin', '')}; ${PREVIEW_RESOURCE_CSP}`;
 const MAX_SHIM_HTML_BYTES = 16 * 1024 * 1024;
 const PREVIEW_LINK_SHIM = Buffer.from(
-  '<script>(()=>{addEventListener("click",e=>{if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;let a=null;const p=typeof e.composedPath==="function"?e.composedPath():[];for(let i=0;i<p.length;i++){const n=p[i];if(n&&typeof n.tagName==="string"&&n.tagName.toLowerCase()==="a"){a=n;break}}if(!a||typeof a.hasAttribute==="function"&&a.hasAttribute("download"))return;const h=typeof a.getAttribute==="function"?a.getAttribute("href")||a.getAttribute("xlink:href"):null;if(!h)return;const s=h.trim();if(!s||/^javascript:/i.test(s))return;const t=(a.getAttribute("target")||document.querySelector("base[target]")?.getAttribute("target")||"").trim().toLowerCase();if(s.startsWith("#")){if(t==="_top"||t==="_parent"||!a.hasAttribute("target")&&t==="_blank"){e.preventDefault();if(location.hash===s){try{document.getElementById(decodeURIComponent(s.slice(1)))?.scrollIntoView()}catch{}}else location.hash=s}return}let u;try{u=new URL(s,document.baseURI)}catch{return}if(u.origin===location.origin&&u.pathname.startsWith("/html-preview/")){if(t==="_top"||t==="_parent"){e.preventDefault();location.assign(u.href)}return}if(u.protocol==="http:"||u.protocol==="https:"||u.protocol==="mailto:"){e.preventDefault();open(u.href,"_blank","noopener,noreferrer")}})})()</script>',
+  '<script>(()=>{addEventListener("click",e=>{if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;let a=null;const p=typeof e.composedPath==="function"?e.composedPath():[];for(let i=0;i<p.length;i++){const n=p[i];if(n&&typeof n.tagName==="string"&&n.tagName.toLowerCase()==="a"){a=n;break}}if(!a||typeof a.hasAttribute==="function"&&a.hasAttribute("download"))return;const h=typeof a.getAttribute==="function"?a.getAttribute("href")||a.getAttribute("xlink:href"):null;if(!h)return;const s=h.trim();if(!s||/^javascript:/i.test(s))return;const t=(a.getAttribute("target")||document.querySelector("base[target]")?.getAttribute("target")||"").trim().toLowerCase();if(s.startsWith("#")){if(t==="_top"||t==="_parent"||!a.hasAttribute("target")&&t==="_blank"){e.preventDefault();if(location.hash===s){try{document.getElementById(decodeURIComponent(s.slice(1)))?.scrollIntoView()}catch{}}else location.hash=s}return}let u;try{u=new URL(s,document.baseURI)}catch{return}if(u.origin===location.origin&&u.pathname.startsWith("/html-preview/")){if(t==="_top"||t==="_parent"){e.preventDefault();location.assign(u.href)}return}if(u.protocol==="http:"||u.protocol==="https:"||u.protocol==="mailto:"){e.preventDefault();const w=open(u.href,"_blank","noopener,noreferrer");if(w)try{w.opener=null}catch{}}})})()</script>',
   'utf8',
 );
 const TTL = 30 * 60 * 1000;
@@ -86,6 +86,12 @@ function sendError(error: unknown, reply: FastifyReply): unknown {
 }
 function requireLocalClient(req: FastifyRequest): void {
   if (!isLoopbackPreviewClient(req)) throw new AdmissionError(403, 'html_preview_document_origin_requires_local_connection');
+}
+function requireLocalDocumentClient(req: FastifyRequest, previewId: string): void {
+  if (isLoopbackPreviewClient(req)) return;
+  const host = stripPort(req.headers.host ?? '');
+  if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) && host === `${previewId.slice(0, 32)}.kiki-document.localhost`) return;
+  throw new AdmissionError(403, 'html_preview_document_origin_requires_local_connection');
 }
 function isDocumentNavigation(req: FastifyRequest): boolean {
   return req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate' && req.headers.range === undefined;
@@ -450,9 +456,19 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
   });
   app.get('/api/html-preview/:previewId/resource', resourceOptions, async (req, reply) => {
     security(reply);
-    try { return await serveLocal((req.params as { previewId: string }).previewId, z.object({ path: z.string() }).parse(req.query).path, req, reply); }
+    try {
+      requireLocalClient(req);
+      return await serveLocal((req.params as { previewId: string }).previewId, z.object({ path: z.string() }).parse(req.query).path, req, reply);
+    }
     catch (error) { return sendError(error, reply); }
   });
-  app.get('/html-preview/:previewId/*', resourceOptions, async (req, reply) => { security(reply); return serveResource(req, reply); });
+  app.get('/html-preview/:previewId/*', resourceOptions, async (req, reply) => {
+    security(reply);
+    try {
+      requireLocalDocumentClient(req, (req.params as { previewId: string }).previewId);
+      return await serveResource(req, reply);
+    }
+    catch (error) { return sendError(error, reply); }
+  });
   app.addHook('preClose', async () => { clearInterval(timer); for (const id of [...local.keys(), ...remote.keys()]) await close(id); await Promise.all(closing); });
 }

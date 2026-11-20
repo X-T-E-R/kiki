@@ -3,6 +3,8 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import {
   AGENT_WIRE_RECORD_KEY,
+  ErrorCodes,
+  isError2,
   type UsageFact,
   type UsageFactTotals,
   summarizeUsageFacts,
@@ -594,7 +596,15 @@ export class UsageAggregationService {
       await consume({ key, workspaceId: session.workspaceId, kind: 'session', records: [] });
     }
     while (!this.exportAtRetained) {
-      const page = await index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before: this.exportCursor });
+      let page: Awaited<ReturnType<ISessionIndex['listRecent']>>;
+      try {
+        page = await index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before: this.exportCursor });
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          return { complete: false, reason: 'index_building', sources };
+        }
+        throw error;
+      }
       for (const summary of page.items) {
         if (this.now() >= budget.deadlineAt) return { complete: false, reason: 'deadline', sources };
         const key = sessionKey(summary); active.add(key);
@@ -892,7 +902,13 @@ export class UsageAggregationService {
         let before: string | undefined;
         let visitedSessions = 0;
         do {
-          const page = await waitForSource(index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before }), signal);
+          let page: Awaited<ReturnType<ISessionIndex['listRecent']>>;
+          try {
+            page = await waitForSource(index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before }), signal);
+          } catch (error) {
+            if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) return;
+            throw error;
+          }
           for (const summary of page.items) {
             const key = sessionKey(summary);
             bySession.set(key, unchanged(key) ? await collectSessionRows(summary) : []);
@@ -1048,7 +1064,16 @@ export class UsageAggregationService {
           if (stop()) return;
           if (!full && scannedSessions >= this.limits.sessionScanLimit) { this.modelIncompleteReason = 'session_cap'; return; }
           if (inventory.full && inventory.nextSession >= inventory.page.length) {
-            const page = await waitForSource(index.listRecent({ includeArchived: true, limit: Math.min(INDEX_PAGE_SIZE, full ? INDEX_PAGE_SIZE : this.limits.sessionScanLimit), before: inventory.before }), signal);
+            let page: Awaited<ReturnType<ISessionIndex['listRecent']>>;
+            try {
+              page = await waitForSource(index.listRecent({ includeArchived: true, limit: Math.min(INDEX_PAGE_SIZE, full ? INDEX_PAGE_SIZE : this.limits.sessionScanLimit), before: inventory.before }), signal);
+            } catch (error) {
+              if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+                this.modelIncompleteReason = 'deadline';
+                return;
+              }
+              throw error;
+            }
             const catalogBatchLimit = resolveCatalogBatchSources();
             const prepared: Array<{
               readonly key: string;

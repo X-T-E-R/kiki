@@ -1,4 +1,4 @@
-import { IRequestGovernance, ISessionIndex, type Scope } from '@kiki/agent-core-v2';
+import { ErrorCodes, IRequestGovernance, ISessionIndex, isError2, type Scope } from '@kiki/agent-core-v2';
 import {
   agentActivitySnapshotSchema,
   requestGovernanceSnapshotSchema,
@@ -70,18 +70,26 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
   const accounting = defineRoute({
     method: 'GET', path: '/usage/sessions/:sessionId/accounting',
     params: z.object({ sessionId: z.string().min(1) }), success: { data: usageAccountingSnapshotSchema },
-    errors: { [ErrorCode.SESSION_NOT_FOUND]: {} }, operationId: 'getSessionUsageAccounting', tags: ['usage'],
+    errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.SESSION_INDEX_BUILDING]: {} }, operationId: 'getSessionUsageAccounting', tags: ['usage'],
   }, async (req, reply) => {
-    const summary = await core.accessor.get(ISessionIndex).get(req.params.sessionId);
-    if (summary === undefined) {
-      reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
-      return;
+    try {
+      const summary = await core.accessor.get(ISessionIndex).get(req.params.sessionId);
+      if (summary === undefined) {
+        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
+        return;
+      }
+      const result = await withReplyCloseSignal(
+        reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+        (signal) => service.readSessionAccounting(summary.workspaceId, summary.id, signal), req,
+      );
+      reply.send(okEnvelope(result, req.id));
+    } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+        reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
+        return;
+      }
+      throw error;
     }
-    const result = await withReplyCloseSignal(
-      reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
-      (signal) => service.readSessionAccounting(summary.workspaceId, summary.id, signal), req,
-    );
-    reply.send(okEnvelope(result, req.id));
   });
   app.get(accounting.path, accounting.options, accounting.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const rescanStatus = defineRoute({
@@ -107,6 +115,7 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.PAGE_TOKEN_MISMATCH]: {},
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
       operationId: 'getUsage',
       tags: ['usage'],
@@ -122,6 +131,10 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
       } catch (error) {
         if (error instanceof UsagePageTokenMismatchError) {
           reply.send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id));
+          return;
+        }
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          reply.send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, error.message, req.id));
           return;
         }
         throw error;

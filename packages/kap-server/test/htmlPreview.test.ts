@@ -323,6 +323,12 @@ it('uses a unique document origin with no API surface, rejects its API origin an
   const nonLocal = await app.inject({ method: 'POST', url: '/api/fs:html-preview', remoteAddress: '192.0.2.10', payload: { root, path: join(root, 'slides/index.html') } });
   expect(nonLocal.statusCode).toBe(403);
   expect(nonLocal.json().msg).toBe('html_preview_document_origin_requires_local_connection');
+  const nonLocalResource = await app.inject({ method: 'GET', url: `/api/html-preview/${second.preview_id}/resource?path=slides%2Findex.html`, remoteAddress: '192.0.2.10' });
+  expect(nonLocalResource.statusCode).toBe(403);
+  expect(nonLocalResource.json().msg).toBe('html_preview_document_origin_requires_local_connection');
+  const nonLocalPreview = await app.inject({ method: 'GET', url: `/html-preview/${second.preview_id}/slides/index.html`, remoteAddress: '192.0.2.10' });
+  expect(nonLocalPreview.statusCode).toBe(403);
+  expect(nonLocalPreview.json().msg).toBe('html_preview_document_origin_requires_local_connection');
 });
 
 async function remotePreviewAdmissionFixture() {

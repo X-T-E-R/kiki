@@ -1,4 +1,4 @@
-import { ISessionIndex, ISessionManager, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
+import { ErrorCodes, ISessionIndex, ISessionManager, isError2, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
 import type { DeleteArchivedSessionsResponse } from '@kiki/protocol';
 
 export async function deleteArchivedSessions(
@@ -15,14 +15,29 @@ export async function deleteArchivedSessions(
     if (root === undefined || !root.archived) {
       return { deleted_ids: [], failed: [{ id: rootId, title: root?.title, message: root === undefined ? 'Conversation no longer exists.' : 'Conversation is no longer archived.' }] };
     }
-    candidates = await index.archiveFamily(rootId, excludedIds);
+    try {
+      candidates = await index.archiveFamily(rootId, excludedIds);
+    } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+        return { deleted_ids: [], failed: [{ id: rootId, title: root.title, message: error.message }] };
+      }
+      throw error;
+    }
   } else {
     candidates = [];
     let before: string | undefined;
     const cursors = new Set<string>();
     const deadline = Date.now() + 30_000;
     do {
-      const page = await index.listRecent({ includeArchived: true, limit: 100, before });
+      let page: Awaited<ReturnType<ISessionIndex['listRecent']>>;
+      try {
+        page = await index.listRecent({ includeArchived: true, limit: 100, before });
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          return { deleted_ids: [], failed: [{ id: '*', message: error.message }] };
+        }
+        throw error;
+      }
       candidates.push(...page.items.filter((item) => item.archived));
       before = page.nextCursor;
       if (candidates.length > 100_000 || Date.now() > deadline || (before !== undefined && cursors.has(before))) {
