@@ -3057,7 +3057,8 @@ function HistoryFoldRow({
       member.kind === 'system' ||
       member.kind === 'system-reminder' ||
       member.kind === 'skill' ||
-      member.kind === 'subagent-ended',
+      member.kind === 'subagent-ended' ||
+      member.kind === 'subagent-event',
   );
   return (
     <ActivityRow

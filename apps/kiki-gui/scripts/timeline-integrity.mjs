@@ -182,11 +182,23 @@ export async function inspectTranscriptVisibility(page, targetAgentId = 'main') 
     if (!scroller) {
       return { ok: false, reason: 'no_scroller', turnsChecked: 0, totalVisibleUserBlocks: 0, hiddenUserTurns: [] };
     }
-    const rows = [...scroller.querySelectorAll('[data-transcript-virtual-item]')];
+    const rows = [...scroller.querySelectorAll('[data-transcript-virtual-item]')].sort(
+      (a, b) => Number(a.getAttribute('data-index') ?? 0) - Number(b.getAttribute('data-index') ?? 0),
+    );
     const byTurn = new Map();
-    for (const row of rows) {
+    for (let rIdx = 0; rIdx < rows.length; rIdx += 1) {
+      const row = rows[rIdx];
       const turnNode = row.querySelector('[data-turn-id]');
-      const turnId = turnNode?.getAttribute('data-turn-id');
+      let turnId = turnNode?.getAttribute('data-turn-id');
+      if (!turnId && row.querySelector('[data-block-id^="user-"]') !== null) {
+        for (let nextIdx = rIdx + 1; nextIdx < rows.length; nextIdx += 1) {
+          const nextTurn = rows[nextIdx].querySelector('[data-turn-id]')?.getAttribute('data-turn-id');
+          if (nextTurn) {
+            turnId = nextTurn;
+            break;
+          }
+        }
+      }
       if (!turnId) continue;
       if (!byTurn.has(turnId)) {
         byTurn.set(turnId, { rows: [], visibleUserBlocks: 0, foldedBlocks: 0, assistantBlocks: 0 });

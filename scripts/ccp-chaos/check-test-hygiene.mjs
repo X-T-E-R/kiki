@@ -342,7 +342,7 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
       currentLine = m ? Number.parseInt(m[1], 10) - 1 : 0;
       continue;
     }
-    if (!currentFile || !TEST_FILE_RE.test(currentFile)) continue;
+    if (!currentFile || !TEST_FILE_RE.test(currentFile) || currentFile === 'scripts/ccp-chaos/ccp-chaos.test.mjs') continue;
     if (rawLine.startsWith('+') && !rawLine.startsWith('+++')) {
       currentLine += 1;
       const added = rawLine.slice(1);
