@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { open, readFile, stat } from 'node:fs/promises';
+import { scanColdWireMarkers } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
@@ -133,8 +134,6 @@ const FIRST_SCREEN_CHUNK_BYTES = 4 << 20;
 const LOOP_EVENT_LINE_PREFIX = Buffer.from('{"type":"context.append_loop_event",');
 const APPEND_MESSAGE_LINE_PREFIX = Buffer.from('{"type":"context.append_message",');
 const TURN_ID_KEY_NEEDLE = Buffer.from('"turnId":');
-const TOOL_CALL_ID_CAMEL_NEEDLE = Buffer.from('"toolCallId":');
-const TOOL_CALL_ID_SNAKE_NEEDLE = Buffer.from('"tool_call_id":');
 const ROLE_KEY_NEEDLE = Buffer.from('"role":');
 const HOOK_RESULT_NEEDLE = Buffer.from('"hook_result"');
 const DELIVERY_NEEDLE = Buffer.from('"delivery"');
@@ -227,19 +226,6 @@ function extractTurnIdFromBuffer(buf: Buffer, maxScan: number): string | undefin
   while (cursor < limit && head[cursor]! >= 0x30 && head[cursor]! <= 0x39) cursor += 1;
   if (cursor === digitStart) return undefined;
   return `t${head.toString('ascii', digitStart, cursor)}`;
-}
-
-function extractToolCallIdFromBuffer(buf: Buffer, maxScan: number): string | undefined {
-  const limit = Math.min(buf.length, maxScan);
-  const head = buf.subarray(0, limit);
-  let idx = head.indexOf(TOOL_CALL_ID_CAMEL_NEEDLE);
-  let needleLen = TOOL_CALL_ID_CAMEL_NEEDLE.length;
-  if (idx < 0) {
-    idx = head.indexOf(TOOL_CALL_ID_SNAKE_NEEDLE);
-    needleLen = TOOL_CALL_ID_SNAKE_NEEDLE.length;
-  }
-  if (idx < 0) return undefined;
-  return readJsonQuotedAscii(head, idx + needleLen, limit);
 }
 
 function extractRoleFromBuffer(buf: Buffer, maxScan: number): 'tool' | 'assistant' | undefined {
@@ -2667,7 +2653,11 @@ export class TranscriptService {
       return projected;
     }
     if (cached !== undefined) this.deleteColdSnapshotCache(wirePath);
-    const mode = !tailFirst ? 'headers' : preserveWindow ? 'records' : 'first-screen';
+    const mode = !tailFirst && !(boundedPage && !preserveWindow && info.size > FIRST_SCREEN_WINDOW_MAX_BYTES)
+      ? 'headers'
+      : preserveWindow
+        ? 'records'
+        : 'first-screen';
     const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, mode, preserveWindow);
     if (window === undefined) {
       return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, tailFirst || boundedPage);
@@ -2925,38 +2915,26 @@ export class TranscriptService {
     if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true &&
         (allowDroppedTail || (existing.droppedTail !== true && existing.end >= info.size))) {
       if (resolveHeaders && !existing.entire && existing.end >= info.size && existing.headers === undefined) {
-        await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, existing, signal, preserveOpenTurnIds, captureReplayState);
+        await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, existing, signal, undefined, undefined);
         existing.bytes = this.coldWindowBytes(existing.snapshot, existing.records);
         this.rememberColdWindow(wirePath, existing);
         this.deleteColdSnapshotCache(wirePath);
-      } else if (preserveOpenTurnIds === undefined && captureReplayState !== undefined && existing.replayState !== undefined) {
+      }
+      if (preserveOpenTurnIds === undefined && captureReplayState !== undefined && existing.replayState !== undefined) {
         captureReplayState(structuredClone(existing.replayState));
-      } else if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
-        existing.snapshot = await this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing, signal);
+        return existing;
+      }
+      if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
+        const snapshot = await this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing, signal);
+        return { ...existing, snapshot };
       }
       return existing;
     }
     if (existing !== undefined) this.forgetColdWindow(wirePath);
     const flightKey = `${wirePath}\0${fingerprint}\0${mode}`;
-    const canShareFlight =
-      (preserveOpenTurnIds === undefined && captureReplayState === undefined) ||
-      mode === 'first-screen';
-    if (canShareFlight) {
-      let flight = this.coldWindowFlights.get(flightKey);
-      if (flight !== undefined && !flight.controller.signal.aborted) this.coldReadsShared += 1;
-      if (flight === undefined || flight.controller.signal.aborted) {
-        const controller = new AbortController();
-        let created!: ColdWindowFlight;
-        const promise = Promise.resolve()
-          .then(() => this.buildColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, controller.signal, undefined, undefined, mode))
-          .finally(() => {
-            created.settled = true;
-            if (this.coldWindowFlights.get(flightKey) === created) this.coldWindowFlights.delete(flightKey);
-          });
-        created = { controller, promise, waiters: 0, settled: false };
-        flight = created;
-        this.coldWindowFlights.set(flightKey, flight);
-      }
+    let flight = this.coldWindowFlights.get(flightKey);
+    if (flight !== undefined && !flight.controller.signal.aborted) {
+      this.coldReadsShared += 1;
       const shared = await this.awaitColdWindowFlight(flight, signal);
       if (shared !== undefined) {
         if (preserveOpenTurnIds === undefined && captureReplayState !== undefined && shared.replayState !== undefined) {
@@ -2970,7 +2948,29 @@ export class TranscriptService {
       }
       return shared;
     }
-    return this.buildColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, mode);
+    const controller = new AbortController();
+    let created!: ColdWindowFlight;
+    const promise = Promise.resolve()
+      .then(() => this.buildColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, controller.signal, undefined, undefined, mode))
+      .finally(() => {
+        created.settled = true;
+        if (this.coldWindowFlights.get(flightKey) === created) this.coldWindowFlights.delete(flightKey);
+      });
+    created = { controller, promise, waiters: 0, settled: false };
+    flight = created;
+    this.coldWindowFlights.set(flightKey, flight);
+    const built = await this.awaitColdWindowFlight(flight, signal);
+    if (built !== undefined) {
+      if (preserveOpenTurnIds === undefined && captureReplayState !== undefined && built.replayState !== undefined) {
+        captureReplayState(structuredClone(built.replayState));
+        return built;
+      }
+      if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
+        const snapshot = await this.projectColdRecords(agentId, built.records, built.entire, preserveOpenTurnIds, captureReplayState, built, signal);
+        return { ...built, snapshot };
+      }
+    }
+    return built;
   }
 
   private async awaitColdWindowFlight(flight: ColdWindowFlight, signal: AbortSignal): Promise<ColdWireWindow | undefined> {
@@ -3538,7 +3538,8 @@ export class TranscriptService {
               hasClosedJsonObjectFrame(line);
             if (isClosedLoopEvent) {
               const recordBytes = line.byteLength;
-              const headTurn = extractTurnIdFromBuffer(line, 512);
+              const headTurn = extractTurnIdFromBuffer(line, 512)
+                ?? (line.length > 512 ? extractTurnIdFromBuffer(line.subarray(Math.max(0, line.length - 256)), 256) : undefined);
               const projectedReverse = headTurn ?? reverseTurn;
               const projectedCurrentBytes = headTurn !== undefined && reverseTurn !== undefined && reverseTurn !== headTurn ? 0 : currentTurnLoopBytes;
               const turnAlreadySkipped = skippedUnknownTurn || (projectedReverse !== undefined && skippedTurnIds.has(projectedReverse));
@@ -3555,12 +3556,16 @@ export class TranscriptService {
                 }
                 const effectiveTurn = headTurn ?? reverseTurn;
                 if (effectiveTurn !== undefined) {
-                  const toolCallId = extractToolCallIdFromBuffer(line, 512);
-                  if (toolCallId !== undefined) toolTurnIds.push([toolCallId, effectiveTurn]);
                   skippedTurnIds.add(effectiveTurn);
+                  if (turns === 0 && (end - start) >= FIRST_SCREEN_WINDOW_BYTES) {
+                    boundary = recordEnd;
+                    complete = false;
+                    return finish();
+                  }
                 } else {
                   skippedUnknownTurn = true;
                 }
+                if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
                 recordEnd = boundary;
                 lineEnd = previous;
                 if ((scannedRecords & 15) === 0 && performance.now() - yieldedAt >= 4) {
@@ -3582,10 +3587,7 @@ export class TranscriptService {
                 (role === 'tool' || (role === 'assistant' && !line.includes(HOOK_RESULT_NEEDLE))) &&
                 !line.includes(DELIVERY_NEEDLE)
               ) {
-                if (reverseTurn !== undefined) {
-                  const toolCallId = extractToolCallIdFromBuffer(line, 512);
-                  if (toolCallId !== undefined) toolTurnIds.push([toolCallId, reverseTurn]);
-                }
+                if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
                 recordEnd = boundary;
                 lineEnd = previous;
                 if ((scannedRecords & 15) === 0 && performance.now() - yieldedAt >= 4) {
@@ -3683,6 +3685,11 @@ export class TranscriptService {
           }
         }
         position = start;
+        if (turns === 0 && reverseTurn !== undefined && skippedTurnIds.has(reverseTurn) && (end - position) >= FIRST_SCREEN_WINDOW_BYTES) {
+          boundary = recordEnd;
+          complete = false;
+          return finish();
+        }
       }
       if (suffix.length > 0 || oversizedLine) {
         boundary = recordEnd;
@@ -4735,6 +4742,21 @@ export class TranscriptService {
     return { workspaceId: summary.workspaceId, wirePath: join(
       this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, AGENTS_DIR, agentId, WIRE_FILE,
     ) };
+  }
+
+  async hasColdWireMarker(
+    sessionId: string,
+    agentId: string,
+    marker: string,
+    signal?: AbortSignal,
+  ): Promise<boolean | undefined> {
+    signal?.throwIfAborted();
+    if (this.deps.wireRecordReader !== undefined) return undefined;
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return undefined;
+    const scanned = await scanColdWireMarkers(location.wirePath, [marker], signal, FIRST_SCREEN_WINDOW_BYTES);
+    if (scanned === undefined) return undefined;
+    return scanned.matches.get(marker) ?? false;
   }
 
   async readColdTodos(

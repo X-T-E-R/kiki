@@ -30,7 +30,7 @@ export class PromptCacheWindow {
   private readonly turnTools = new Map<number, readonly Tool[]>();
   private toolset: { signatureHash: string; tools: readonly Tool[] } | undefined;
   private extension: { baseline: string; current: string } | undefined;
-  private readonly extensionUpdates: { index: number; message: Message }[] = [];
+  private readonly extensionUpdates: { index: number; previousText: string; message: Message }[] = [];
 
   constructor(readonly key: string) {}
 
@@ -54,18 +54,27 @@ export class PromptCacheWindow {
   projectExtensions(text: string, messages: readonly Message[]): { text: string; messages: Message[] } {
     if (this.extension === undefined) this.extension = { baseline: text, current: text };
     if (text !== this.extension.current) {
+      const previousText = this.extension.current;
       this.extension.current = text;
-      this.extensionUpdates.push({
-        index: messages.at(-1)?.partial === true ? messages.length - 1 : messages.length,
-        message: {
-          role: 'user',
-          content: [{
-            type: 'text',
-            text: `<system-reminder>\nExtension prompt sections updated; use this state instead of the previous extension prompt sections.\n\n${text || 'No extension prompt sections are active.'}\n</system-reminder>`,
-          }],
-          toolCalls: [],
-        },
-      });
+      const index = messages.at(-1)?.partial === true ? messages.length - 1 : messages.length;
+      const message: Message = {
+        role: 'user',
+        content: [{
+          type: 'text',
+          text: `<system-reminder>\nExtension prompt sections updated; use this state instead of the previous extension prompt sections.\n\n${text || 'No extension prompt sections are active.'}\n</system-reminder>`,
+        }],
+        toolCalls: [],
+      };
+      const last = this.extensionUpdates.at(-1);
+      if (last !== undefined && last.index === index) {
+        if (text === last.previousText) {
+          this.extensionUpdates.pop();
+        } else {
+          last.message = message;
+        }
+      } else {
+        this.extensionUpdates.push({ index, previousText, message });
+      }
     }
     const projected: Message[] = [];
     let start = 0;

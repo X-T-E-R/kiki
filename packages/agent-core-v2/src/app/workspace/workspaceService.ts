@@ -123,7 +123,11 @@ export class WorkspaceService implements IWorkspaceService {
             };
       byId.set(ws.id, ws);
       deletedIds.delete(ws.id);
-      await this.store.save({ workspaces: [...byId.values()], deletedIds: [...deletedIds] });
+      await this.store.save({
+        workspaces: [...byId.values()],
+        deletedIds: [...deletedIds],
+        ...(catalog.legacyDiscoveryIncomplete === true ? { legacyDiscoveryIncomplete: true } : {}),
+      });
       return ws;
     });
   }
@@ -144,6 +148,7 @@ export class WorkspaceService implements IWorkspaceService {
       await this.store.save({
         workspaces: catalog.workspaces.map((ws) => (ws.id === id ? updated : ws)),
         deletedIds: catalog.deletedIds,
+        ...(catalog.legacyDiscoveryIncomplete === true ? { legacyDiscoveryIncomplete: true } : {}),
       });
       return updated;
     });
@@ -164,6 +169,7 @@ export class WorkspaceService implements IWorkspaceService {
         await this.store.save({
           workspaces: catalog.workspaces.filter((ws) => ws.id !== id),
           deletedIds: [...new Set([...catalog.deletedIds, id])],
+          ...(catalog.legacyDiscoveryIncomplete === true ? { legacyDiscoveryIncomplete: true } : {}),
         });
         return;
       }
@@ -176,6 +182,7 @@ export class WorkspaceService implements IWorkspaceService {
       await this.store.save({
         workspaces: catalog.workspaces.filter((ws) => workspaceRootKey(ws.root) !== rootKey),
         deletedIds: [...new Set([...catalog.deletedIds, ...aliasIds])],
+        ...(catalog.legacyDiscoveryIncomplete === true ? { legacyDiscoveryIncomplete: true } : {}),
       });
     });
   }
@@ -192,7 +199,11 @@ export class WorkspaceService implements IWorkspaceService {
     const discovered = new Map<string, Workspace>();
     const deletedIds = new Set(loaded.deletedIds);
     await this.mergeFromSessionIndex(discovered, deletedIds);
-    if (loaded.workspaces.length === 0 && discovered.size === 0) await this.mergeFromSessions(discovered, deletedIds);
+    let incomplete = false;
+    if (loaded.legacyDiscoveryIncomplete === true || (loaded.workspaces.length === 0 && discovered.size === 0)) {
+      const result = await this.mergeFromSessions(discovered, deletedIds);
+      incomplete = result.incomplete;
+    }
     await this.runExclusive(async () => {
       const current = await this.loadCatalog();
       const byId = new Map(current.workspaces.map((ws) => [ws.id, ws]));
@@ -206,8 +217,15 @@ export class WorkspaceService implements IWorkspaceService {
         roots.add(workspaceRootKey(workspace.root));
         changed = true;
       }
-      if (changed) await this.store.save({ workspaces: [...byId.values()], deletedIds: current.deletedIds });
-      this.merged = true;
+      const markerChanged = (current.legacyDiscoveryIncomplete === true) !== incomplete;
+      if (changed || markerChanged) {
+        await this.store.save({
+          workspaces: [...byId.values()],
+          deletedIds: current.deletedIds,
+          ...(incomplete ? { legacyDiscoveryIncomplete: true } : {}),
+        });
+      }
+      if (!incomplete) this.merged = true;
     });
   }
 
@@ -246,8 +264,9 @@ export class WorkspaceService implements IWorkspaceService {
   private async mergeFromSessions(
     byId: Map<string, Workspace>,
     deletedIds: ReadonlySet<string>,
-  ): Promise<boolean> {
+  ): Promise<{ readonly changed: boolean; readonly incomplete: boolean }> {
     let changed = false;
+    let incomplete = false;
     let before: string | undefined;
     const now = Date.now();
     const seenRootKeys = new Set(
@@ -262,7 +281,10 @@ export class WorkspaceService implements IWorkspaceService {
           before,
         });
       } catch (error) {
-        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) break;
+        if (isError2(error) && error.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+          incomplete = true;
+          break;
+        }
         throw error;
       }
       for (const session of page.items) {
@@ -292,7 +314,7 @@ export class WorkspaceService implements IWorkspaceService {
       if (page.nextCursor === before) break;
       before = page.nextCursor;
     } while (before !== undefined);
-    return changed;
+    return { changed, incomplete };
   }
 
   private async findStoredWorkspaceId(root: string): Promise<string | undefined> {

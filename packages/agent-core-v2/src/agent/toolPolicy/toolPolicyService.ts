@@ -37,6 +37,13 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     profile?: ProfileData;
     optional?: { value: IOptionalCapabilityPolicy | undefined };
     mobilePlatform?: { value: MobilePlatform | undefined };
+    toolsConfig?: { value: ToolsConfig | undefined };
+    subagentAllowedTools?: { value: SubagentConfig['allowedTools'] };
+    memoryApproval?: { value: MemoryConfig['approval'] };
+    computerServers?: readonly string[];
+    sessionDisabledTools?: readonly string[];
+    explicitProfileGrants?: { profile: ProfileData; value: readonly string[] | undefined };
+    cleanPaths?: Map<string, boolean>;
   } | undefined;
 
   constructor(
@@ -147,13 +154,21 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   private subagentPolicy(explicitProfileTools: readonly string[] | undefined): SubagentToolPolicy {
+    const allowedTools = this.snapshot === undefined
+      ? this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.allowedTools
+      : (this.snapshot.subagentAllowedTools ??= {
+          value: this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.allowedTools,
+        }).value;
     return {
       explicitProfileTools,
-      allowedTools: this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.allowedTools,
+      allowedTools,
     };
   }
 
   private explicitProfileGrants(data: ProfileData): readonly string[] | undefined {
+    if (this.snapshot?.explicitProfileGrants?.profile === data) {
+      return this.snapshot.explicitProfileGrants.value;
+    }
     const grants = new Set<string>();
     for (const item of data.toolOverride?.tools ?? []) {
       if (item !== '*') grants.add(item);
@@ -165,7 +180,11 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
         if (item !== '*') grants.add(item);
       }
     }
-    return grants.size > 0 ? [...grants] : undefined;
+    const value = grants.size > 0 ? [...grants] : undefined;
+    if (this.snapshot !== undefined) {
+      this.snapshot.explicitProfileGrants = { profile: data, value };
+    }
+    return value;
   }
 
   private evaluate(
@@ -179,7 +198,9 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     const capabilities = this.capabilities.current;
     const session = this.session.current;
     const optional = this.optionalPolicy();
-    const computerServers = typeof optional?.computerServerNames === 'function' ? optional.computerServerNames() : [];
+    const computerServers = this.snapshot === undefined
+      ? (typeof optional?.computerServerNames === 'function' ? optional.computerServerNames() : [])
+      : (this.snapshot.computerServers ??= typeof optional?.computerServerNames === 'function' ? optional.computerServerNames() : []);
     const capability = optionalCapabilityForTool(name, computerServers);
     const policy = session === undefined || capability === undefined ? undefined : optional;
     let sendMessageAllowListOverride = false;
@@ -202,7 +223,14 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
             (path) => this.cleanDefaultPath(path),
           )));
       }
-      if (name === 'MemoryWrite' && this.config.get<MemoryConfig>(MEMORY_SECTION)?.approval === 'off') return false;
+      if (name === 'MemoryWrite') {
+        const approval = this.snapshot === undefined
+          ? this.config.get<MemoryConfig>(MEMORY_SECTION)?.approval
+          : (this.snapshot.memoryApproval ??= {
+              value: this.config.get<MemoryConfig>(MEMORY_SECTION)?.approval,
+            }).value;
+        if (approval === 'off') return false;
+      }
     } else if (capabilities !== undefined && session !== undefined &&
       !capabilities.toolAvailable(name, session.workspaceId, session.sessionId)) return false;
     const effectiveProfile = name === 'SendMessage' && (sendMessageAllowListOverride || isLegacyShippedMessageBinding(
@@ -210,14 +238,20 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       this.delivery.current?.effectiveMode() ?? 'reply',
       (path) => this.cleanDefaultPath(path),
     )) ? { ...profile, tools: undefined, toolAllowPolicies: undefined } : profile;
+    const globalTools = this.snapshot === undefined
+      ? this.config.get<ToolsConfig>(TOOLS_SECTION)
+      : (this.snapshot.toolsConfig ??= { value: this.config.get<ToolsConfig>(TOOLS_SECTION) }).value;
+    const sessionDisabledTools = this.snapshot === undefined
+      ? this.sessionToolPolicy.disabledTools()
+      : (this.snapshot.sessionDisabledTools ??= this.sessionToolPolicy.disabledTools());
     const active = isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
         platformDefaultDisabledTools: platformDefaultDisabledTools(this.mobilePlatform()),
         profileExplicitlyGrantedTools: prospectiveExplicitTools ?? this.explicitProfileGrants(data),
         profile: effectiveProfile,
-        global: this.config.get<ToolsConfig>(TOOLS_SECTION),
-        sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
+        global: globalTools,
+        sessionDisabledTools,
         subagent,
         subagentDefault: this.registry.resolve(name)?.subagentDefault,
       },
@@ -257,11 +291,20 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   private cleanDefaultPath(path: string): boolean {
-    try {
-      return this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
-    } catch {
-      return false;
+    if (this.snapshot !== undefined) {
+      const cached = this.snapshot.cleanPaths?.get(path);
+      if (cached !== undefined) return cached;
     }
+    let clean = false;
+    try {
+      clean = this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
+    } catch {
+      clean = false;
+    }
+    if (this.snapshot !== undefined) {
+      (this.snapshot.cleanPaths ??= new Map()).set(path, clean);
+    }
+    return clean;
   }
 
   private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string, profile: ProfileData, sendMessageActive?: boolean): void {

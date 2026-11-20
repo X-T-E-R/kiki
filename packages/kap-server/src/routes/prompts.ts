@@ -466,7 +466,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       );
       const items = await withReplyCloseSignal(
         reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
-        (signal) => modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal),
+        async (signal) => {
+          if (transcriptService !== undefined && typeof transcriptService.hasColdWireMarker === 'function') {
+            const hasSwitch = await transcriptService.hasColdWireMarker(session_id, agent_id, 'prompt.model_switch', signal);
+            if (hasSwitch === false) return [];
+          }
+          return modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal);
+        },
         req as unknown as Parameters<typeof withReplyCloseSignal>[2],
       );
       reply.send(okEnvelope(items, req.id));
@@ -658,13 +664,17 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       const log = core.accessor.get(ILogService);
       const logContext = { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id };
       const phase = <T>(name: string, action: () => Promise<T>) => observeRestore(progress => ingressExecution?.onRestoreProgress(progress), () => withRestoreDeadline(() => timeRestorePhase(log, logContext, name, action)));
+      const admissionSubphases: Record<string, number> = {};
       const subphase = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
-        if (log.level !== 'debug') return action();
         const started = performance.now();
         try {
           return await action();
         } finally {
-          log.debug('prompt admission subphase', { ...logContext, subphase: name, elapsedMs: Number((performance.now() - started).toFixed(3)) });
+          const elapsedMs = Number((performance.now() - started).toFixed(2));
+          admissionSubphases[name] = elapsedMs;
+          if (log.level === 'debug') {
+            log.debug('prompt admission subphase', { ...logContext, subphase: name, elapsedMs });
+          }
         }
       };
       const sendResult = (result: z.input<typeof durableIngressItemSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
@@ -868,7 +878,21 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         }
         };
         const submitAndDeliver = async () => {
-          const result = await phase('prompt_admission', submit);
+          const admissionStarted = performance.now();
+          let result: Awaited<ReturnType<typeof submit>>;
+          try {
+            result = await phase('prompt_admission', submit);
+          } finally {
+            const totalMs = Number((performance.now() - admissionStarted).toFixed(2));
+            if (totalMs >= 250 || log.level === 'debug') {
+              log.info('prompt admission breakdown', {
+                ...logContext,
+                elapsedMs: totalMs,
+                subphases: admissionSubphases,
+                ...(preparedMedia?.imageStats !== undefined ? { images: preparedMedia.imageStats } : {}),
+              });
+            }
+          }
           if (req.body.delivery_mode !== 'steer') return result;
           const native = nativeSteerState(resolved.prompt, result.prompt_id);
           if (native !== undefined) return projectNativeSteer(result, native);

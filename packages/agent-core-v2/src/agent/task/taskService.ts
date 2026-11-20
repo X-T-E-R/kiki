@@ -214,7 +214,7 @@ function outputLimitReason(): string {
   );
 }
 
-const SIGTERM_GRACE_MS = 5_000;
+const SIGTERM_GRACE_MS = 1_000;
 const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 const SESSION_CLOSED_REASON = 'Session closed';
 const NOTIFICATION_FALLBACK_PREVIEW_BYTES = 3_000;

@@ -444,11 +444,12 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
 
   private onDelta(stream: 'assistant' | 'thinking' | 'tool_call'): void {
     this.touchActivity();
-    this.mutateTurn((t) => {
-      t.phase = 'streaming';
-      t.stream = stream;
-      t.retry = undefined;
-    });
+    const t = this.turn;
+    if (t === undefined || (t.phase === 'streaming' && t.stream === stream && t.retry === undefined)) return;
+    t.phase = 'streaming';
+    t.stream = stream;
+    t.retry = undefined;
+    this.publish();
   }
 
   private onToolCallStarted(toolCallId: string, name: string): void {

@@ -108,6 +108,16 @@ export class ProcessTask implements AgentTask {
     } finally {
       this.stopPromise = undefined;
     }
+    if (process.platform !== 'win32') {
+      try {
+        this.stopPromise = this.proc.kill('SIGKILL');
+        await this.stopPromise;
+      } catch (error) {
+        if (!isEsrchError(error)) stopError ??= error;
+      } finally {
+        this.stopPromise = undefined;
+      }
+    }
     if (stopError !== undefined && !this.cleanupConfirmed) throw stopError;
     try {
       await this.disposeProcess();
@@ -121,13 +131,11 @@ export class ProcessTask implements AgentTask {
 
   async forceStop(): Promise<void> {
     if (this.cleanupConfirmed) return;
-    if (this.proc.exitCode === null || process.platform === 'win32') {
-      try {
-        this.stopPromise = this.proc.kill('SIGKILL');
-        await this.stopPromise;
-      } finally {
-        this.stopPromise = undefined;
-      }
+    try {
+      this.stopPromise = this.proc.kill('SIGKILL');
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = undefined;
     }
     await this.disposeProcess();
     this.cleanupConfirmed = true;
@@ -148,6 +156,16 @@ export class ProcessTask implements AgentTask {
     this.release?.();
     this.release = undefined;
   }
+}
+
+function isEsrchError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const record = error as { code?: unknown; cause?: unknown; details?: { errno?: unknown } };
+  if (record.code === 'ESRCH' || record.details?.errno === 'ESRCH') return true;
+  if (typeof record.cause === 'object' && record.cause !== null) {
+    return (record.cause as { code?: unknown }).code === 'ESRCH';
+  }
+  return false;
 }
 
 async function waitForStreamDrain(

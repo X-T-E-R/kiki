@@ -106,7 +106,12 @@ export class FileWorkspacePersistence extends Disposable implements IWorkspacePe
     const deletedIds = Array.isArray(rawDeleted)
       ? rawDeleted.filter((id): id is string => typeof id === 'string')
       : [];
-    return Object.freeze({ workspaces: Object.freeze(workspaces.map((workspace) => Object.freeze(workspace))), deletedIds: Object.freeze(deletedIds) });
+    const legacyDiscoveryIncomplete = file.legacy_discovery_incomplete === true;
+    return Object.freeze({
+      workspaces: Object.freeze(workspaces.map((workspace) => Object.freeze(workspace))),
+      deletedIds: Object.freeze(deletedIds),
+      ...(legacyDiscoveryIncomplete ? { legacyDiscoveryIncomplete: true } : {}),
+    });
   }
 
   async save(catalog: WorkspaceCatalog): Promise<void> {
@@ -124,6 +129,7 @@ export class FileWorkspacePersistence extends Disposable implements IWorkspacePe
       version: WORKSPACE_CATALOG_VERSION,
       workspaces: record,
       deleted_workspace_ids: [...catalog.deletedIds],
+      ...(catalog.legacyDiscoveryIncomplete === true ? { legacy_discovery_incomplete: true } : {}),
     };
     this.invalidate(false);
     let committed = false;

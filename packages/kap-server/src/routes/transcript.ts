@@ -27,8 +27,8 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { projectTurnPlans, type PlanInfo } from '../services/transcript/planProjection';
 import { CanonicalEntityPreparingError } from '../services/history/historyCanonicalReader';
+import { projectTurnPlans, type PlanInfo } from '../services/transcript/planProjection';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { boundedEntity } from '../transport/klient/boundedContent';
 import {
@@ -224,6 +224,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
           }),
         );
       } catch (error) {
+        if (error instanceof CanonicalEntityPreparingError) {
+          reply.send({ code: 40923, msg: error.message, data: null, request_id: req.id });
+          return;
+        }
         if (!(error instanceof TranscriptDetailCursorError)) throw error;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
         return;
@@ -335,6 +339,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
           ? await readUserMessageAgents(transcriptService, session_id, agent_id, cursor, undefined)
           : await withReplyCloseSignal(replySignalSource(reply), (signal) => readUserMessageAgents(transcriptService, session_id, agent_id, cursor, signal));
       } catch (error) {
+        if (error instanceof CanonicalEntityPreparingError) {
+          reply.send({ code: 40923, msg: error.message, data: null, request_id: req.id });
+          return;
+        }
         if (!(error instanceof TranscriptDetailCursorError)) throw error;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
         return;
@@ -384,6 +392,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
           ? await read()
           : await withReplyCloseSignal(replySignalSource(reply), read);
       } catch (error) {
+        if (error instanceof CanonicalEntityPreparingError) {
+          reply.send({ code: 40923, msg: error.message, data: null, request_id: req.id });
+          return;
+        }
         if (!(error instanceof TranscriptDetailCursorError)) throw error;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
         return;
@@ -751,6 +763,12 @@ async function readPlanWindow(
     }
   }
   const source: ListCursor['source'] = transcriptService.forSessionLive(sessionId) !== undefined ? 'live' : 'cold';
+  if (source === 'cold' && typeof transcriptService.hasColdWireMarker === 'function') {
+    const hasExitPlanMode = await transcriptService.hasColdWireMarker(sessionId, agentId, 'ExitPlanMode', signal);
+    if (hasExitPlanMode === false) {
+      return toolCallId === undefined ? { plans: [], page: {} } : { plans: [], page: {}, missingTool: true };
+    }
+  }
   const seen = new Set<string>();
   for (let guard = 0; guard < 1000; guard += 1) {
     const page = await readSessionViewTranscriptPage(transcriptService, sessionId, {

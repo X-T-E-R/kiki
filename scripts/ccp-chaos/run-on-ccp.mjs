@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { evaluateCcpRunVerdict, EXIT_HARNESS_FAIL } from './verify/verdict.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const DEFAULT_MANIFEST_PATH = path.join(import.meta.dirname, 'corpus-manifest.json');
@@ -716,13 +717,34 @@ export async function runChaosOnCcp(options = {}) {
       }
     }
 
+    const runId = options.runId ?? `ccp_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const gitHead = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const buildId = options.buildId ?? ((gitHead.status === 0 ? gitHead.stdout.trim() : 'unknown') || 'unknown');
+    const remoteRunDir = `/tmp/kiki-chaos-run-${runId}`;
+    const s10Only = Boolean(options.s10Only);
+    const runS10 = s10Only || runAll || Boolean(options.runS10);
+    const effectiveIsolatedOnly = isolatedOnly || s10Only || Boolean(options.v23Smoke || options.v23Full);
+
+    // Clean stale local result artifacts in outDir so a failed run can never read an old green JSON
+    for (const staleName of [
+      'kiki-chaos-results.json',
+      'kiki-vitest-results.json',
+      'kiki-hygiene-results.json',
+      'run-receipt.json',
+      'verdict.json',
+    ]) {
+      fs.rmSync(path.join(outDir, staleName), { force: true });
+    }
+
     log(
-      isolatedOnly
-        ? `Running targeted Chaos-Scale scenarios (tier=${tier}, s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}, s9=${s9Only || runS9}) on CCP Linux (keepRuntime=${keepRuntime})...`
-        : `Running test hygiene, node --test, full S1-S5${runAll ? '+S6-S9' : runS9 ? '+S9' : ''} Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...`,
+      effectiveIsolatedOnly
+        ? `Running targeted Chaos-Scale scenarios (runId=${runId}, tier=${tier}, s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}, s9=${s9Only || runS9}, s10=${runS10}) on CCP Linux (keepRuntime=${keepRuntime})...`
+        : `Running test hygiene, node --test, full S1-S5${runAll ? '+S6-S10' : runS9 ? '+S9' : ''} Chaos-Scale + 1000-way + Playwright UX suite (runId=${runId}) on CCP Linux...`,
     );
     const runnerFlags = [
       '--dir /tmp/kiki-chaos-nvme',
+      `--run-id ${runId}`,
+      `--build-id ${buildId}`,
       `--tier ${tier}`,
       `--giant-gib ${giantGiB}`,
       `--concurrency ${concurrency}`,
@@ -731,35 +753,83 @@ export async function runChaosOnCcp(options = {}) {
       ...(usedExistingCorpus ? ['--existing-corpus'] : []),
       ...(runBrowser ? [] : ['--no-browser']),
       ...(runAll ? ['--run-all'] : []),
+      ...(options.v23Smoke ? ['--v23-smoke'] : []),
+      ...(options.v23Full ? ['--v23-full'] : []),
+      ...(options.manifestPath ? [`--manifest "${options.manifestPath}"`] : []),
       ...(s6Only ? ['--s6-only'] : options.runS6 ? ['--run-s6'] : []),
       ...(s7Only ? ['--s7-only'] : options.runS7 ? ['--run-s7'] : []),
       ...(s8Only ? ['--s8-only'] : options.runS8 ? ['--run-s8'] : []),
       ...(s9Only ? ['--s9-only'] : options.runS9 ? ['--run-s9'] : []),
+      ...(s10Only ? ['--s10-only'] : options.runS10 ? ['--run-s10'] : []),
       ...(runS7S8 ? ['--run-s7-s8'] : []),
       ...(s7Only || runS7S8 || runAll || options.runS7 ? [`--s7-cycles ${s7Cycles}`] : []),
       ...(runS6 || runS9 ? [`--tenk-subagents ${tenKSubagentCount}`, `--s6-step-timeout-ms ${s6StepTimeoutMs}`] : []),
       ...(syncCodeOnly || options.reuseWarmCorpus ? ['--reuse-10k-session'] : []),
-      '--out /tmp/kiki-chaos-results.json',
+      `--out ${remoteRunDir}/kiki-chaos-results.json`,
     ].join(' ');
     const runScript = [
       'set -o pipefail',
       `export PATH="${nodeBinPath}:$PATH"`,
       'ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true',
+      `rm -rf "${remoteRunDir}" && mkdir -p "${remoteRunDir}"`,
+      'rm -f /tmp/kiki-chaos-results.json /tmp/kiki-vitest-results.json /tmp/kiki-hygiene-results.json',
       'cd /tmp/kiki-work',
-      'node scripts/ccp-chaos/check-test-hygiene.mjs --json > /tmp/kiki-hygiene-results.json || true',
-      'node --test scripts/ccp-chaos/ccp-chaos.test.mjs',
+      ...(runBrowser
+        ? [
+            'if [ ! -f apps/kiki-gui/dist/index.html ]; then pnpm --filter @kiki/gui build || true; fi',
+          ]
+        : []),
+      `node scripts/ccp-chaos/check-test-hygiene.mjs --json > "${remoteRunDir}/kiki-hygiene-results.json"`,
+      'HYGIENE_RC=$?',
+      'echo "HYGIENE_EXIT=$HYGIENE_RC"',
+      'node --test scripts/ccp-chaos/ccp-chaos.test.mjs scripts/ccp-chaos/verdict.test.mjs',
+      'UNIT_RC=$?',
+      'echo "UNIT_TESTS_EXIT=$UNIT_RC"',
       `node scripts/ccp-chaos/chaos-scale-runner.mjs ${runnerFlags}`,
       'CHAOS_RC=$?',
       'echo "CHAOS_RUNNER_EXIT=$CHAOS_RC"',
-      ...(runVitest && !isolatedOnly
+      ...(runVitest && !effectiveIsolatedOnly
         ? [
-            'pnpm exec vitest run packages/protocol/test packages/transcript/test packages/kap-server/test/remotePairing.test.ts --reporter=json --outputFile=/tmp/kiki-vitest-results.json',
+            `pnpm exec vitest run packages/protocol/test packages/transcript/test packages/kap-server/test/remotePairing.test.ts --reporter=json --outputFile="${remoteRunDir}/kiki-vitest-results.json"`,
             'VITEST_RC=$?',
             'echo "VITEST_EXIT=$VITEST_RC"',
           ]
-        : ['VITEST_RC=0', 'echo "{}" > /tmp/kiki-vitest-results.json']),
+        : ['VITEST_RC=0', `echo "{}" > "${remoteRunDir}/kiki-vitest-results.json"`]),
+      'FINAL_RC=0',
+      'if [ "$HYGIENE_RC" -ne 0 ] || [ "$UNIT_RC" -ne 0 ]; then FINAL_RC=2; fi',
+      'if [ "$VITEST_RC" -ne 0 ] && [ "$FINAL_RC" -eq 0 ]; then FINAL_RC=1; fi',
+      'if [ "$CHAOS_RC" -ne 0 ]; then',
+      '  if [ "$CHAOS_RC" -eq 2 ]; then FINAL_RC=2; elif [ "$FINAL_RC" -eq 0 ]; then FINAL_RC=1; fi',
+      'fi',
+      `cat > "${remoteRunDir}/run-receipt.json" <<RECEIPT_EOF`,
+      '{',
+      `  "runId": "${runId}",`,
+      `  "buildId": "${buildId}",`,
+      '  "completedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",',
+      '  "remoteExitCode": $FINAL_RC,',
+      '  "stages": {',
+      '    "hygiene": { "exitCode": $HYGIENE_RC },',
+      '    "unitTests": { "exitCode": $UNIT_RC },',
+      '    "chaos": { "exitCode": $CHAOS_RC },',
+      '    "vitest": { "exitCode": $VITEST_RC }',
+      '  }',
+      '}',
+      'RECEIPT_EOF',
+      `cat > "${remoteRunDir}/manifest.json" <<MANIFEST_EOF`,
+      '{',
+      `  "runId": "${runId}",`,
+      `  "buildId": "${buildId}",`,
+      `  "tier": "${options.v23Full ? 'v23-full' : options.v23Smoke ? 'v23-smoke' : tier}",`,
+      `  "requireAllV23Scenarios": ${Boolean(options.v23Full || options.v23Smoke)},`,
+      `  "requiredStages": ${JSON.stringify(runVitest && !effectiveIsolatedOnly ? ['hygiene', 'unitTests', 'chaos', 'vitest'] : ['hygiene', 'unitTests', 'chaos'])}`,
+      '}',
+      'MANIFEST_EOF',
+      `node scripts/ccp-chaos/verify/verdict.mjs "${remoteRunDir}" > "${remoteRunDir}/remote-verdict.json"`,
+      'VERDICT_RC=$?',
+      'echo "REMOTE_VERDICT_EXIT=$VERDICT_RC"',
+      'if [ "$VERDICT_RC" -ne 0 ] && [ "$FINAL_RC" -eq 0 ]; then FINAL_RC=$VERDICT_RC; fi',
       ...(keepRuntime ? ['echo "KEEPING_WARM_NVME_CORPUS=/tmp/kiki-chaos-nvme"'] : ['rm -rf /tmp/kiki-chaos-nvme']),
-      'exit 0',
+      'exit $FINAL_RC',
     ].join('\n');
     const runScriptLocal = path.join(scratchDir, 'exec-chaos-remote.sh');
     fs.writeFileSync(runScriptLocal, runScript, 'utf8');
@@ -770,28 +840,70 @@ export async function runChaosOnCcp(options = {}) {
     const execOutcome = await runSshCommandWithSentinel(
       sshSessionId,
       'chmod +x /tmp/exec-chaos-remote.sh && /tmp/exec-chaos-remote.sh',
-      { timeoutMs: 2_400_000, streamOutput: true },
+      { timeoutMs: 7_200_000, streamOutput: true, allowFail: true },
     );
     fs.writeFileSync(path.join(outDir, 'remote-run.log'), `${execOutcome.stdout}\n---STDERR---\n${execOutcome.stderr}\n`, 'utf8');
 
     const localChaosJson = path.join(outDir, 'kiki-chaos-results.json');
     const localVitestJson = path.join(outDir, 'kiki-vitest-results.json');
     const localHygieneJson = path.join(outDir, 'kiki-hygiene-results.json');
-    log('Downloading structured JSON result artifacts via ccp ssh sftp...');
+    const localReceiptJson = path.join(outDir, 'run-receipt.json');
+    log(`Downloading fresh run-id-stamped JSON artifacts from ${remoteRunDir} via ccp ssh sftp...`);
     runSftpBatch(
       sshSessionId,
       [
-        `-get /tmp/kiki-chaos-results.json "${localChaosJson.replaceAll('\\', '/')}"`,
-        `-get /tmp/kiki-vitest-results.json "${localVitestJson.replaceAll('\\', '/')}"`,
-        `-get /tmp/kiki-hygiene-results.json "${localHygieneJson.replaceAll('\\', '/')}"`,
+        `-get ${remoteRunDir}/kiki-chaos-results.json "${localChaosJson.replaceAll('\\', '/')}"`,
+        `-get ${remoteRunDir}/kiki-vitest-results.json "${localVitestJson.replaceAll('\\', '/')}"`,
+        `-get ${remoteRunDir}/kiki-hygiene-results.json "${localHygieneJson.replaceAll('\\', '/')}"`,
+        `-get ${remoteRunDir}/run-receipt.json "${localReceiptJson.replaceAll('\\', '/')}"`,
       ],
       scratchDir,
       { timeoutMs: 120_000, allowFail: true },
     );
 
-    const chaosResults = fs.existsSync(localChaosJson) ? JSON.parse(fs.readFileSync(localChaosJson, 'utf8')) : null;
-    const vitestResults = fs.existsSync(localVitestJson) ? JSON.parse(fs.readFileSync(localVitestJson, 'utf8')) : null;
-    const hygieneResults = fs.existsSync(localHygieneJson) ? JSON.parse(fs.readFileSync(localHygieneJson, 'utf8')) : null;
+    const safeReadJson = (p) => {
+      if (!fs.existsSync(p)) return null;
+      try {
+        return JSON.parse(fs.readFileSync(p, 'utf8'));
+      } catch {
+        return null;
+      }
+    };
+    const chaosResults = safeReadJson(localChaosJson);
+    const vitestResults = safeReadJson(localVitestJson);
+    const hygieneResults = safeReadJson(localHygieneJson);
+    const runReceipt = safeReadJson(localReceiptJson);
+
+    const requiredStages = runVitest && !effectiveIsolatedOnly
+      ? ['hygiene', 'unitTests', 'chaos', 'vitest']
+      : ['hygiene', 'unitTests', 'chaos'];
+    fs.writeFileSync(
+      path.join(outDir, 'manifest.json'),
+      `${JSON.stringify(
+        {
+          runId,
+          buildId,
+          requiredStages,
+          tier: options.v23Full ? 'v23-full' : options.v23Smoke ? 'v23-smoke' : tier,
+          requireAllV23Scenarios: Boolean(options.v23Full || options.v23Smoke),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    const verdict = evaluateCcpRunVerdict({
+      expectedRunId: runId,
+      expectedBuildId: buildId,
+      expectedTier: options.v23Full ? 'v23-full' : options.v23Smoke ? 'v23-smoke' : tier,
+      remoteExitCode: execOutcome.exitCode,
+      receipt: runReceipt,
+      chaosReport: chaosResults,
+      requiredStages,
+      enforceMandatoryStages: true,
+      requireAllV23Scenarios: Boolean(options.v23Full || options.v23Smoke),
+    });
+    fs.writeFileSync(path.join(outDir, 'verdict.json'), `${JSON.stringify({ runId, buildId, ...verdict }, null, 2)}\n`, 'utf8');
 
     fs.writeFileSync(
       path.join(outDir, 'drive-transfer-metrics.json'),
@@ -824,15 +936,20 @@ export async function runChaosOnCcp(options = {}) {
     }
 
     return {
+      runId,
+      buildId,
       runtimeId,
       accountId,
       providerEndpoint: rtInfo.provider_endpoint,
       sshSessionId,
       keptAlive: keepRuntime,
       remoteExitCode: execOutcome.exitCode,
+      exitCode: verdict.exitCode,
+      verdict,
       driveTransferMetrics,
       totalOrchestratorWallMs: Number((performance.now() - startedAt).toFixed(2)),
       outDir,
+      runReceipt,
       chaosResults,
       vitestResults,
       hygieneResults,
@@ -874,12 +991,17 @@ export function parseCcpCliArgs(args) {
     s7Only: false,
     s8Only: false,
     s9Only: false,
+    s10Only: false,
     runS7S8: false,
     runAll: false,
+    v23Smoke: false,
+    v23Full: false,
+    manifestPath: undefined,
     runS6: false,
     runS7: false,
     runS8: false,
     runS9: false,
+    runS10: false,
     s7Cycles: 200,
     tenKSubagentCount: 10_000,
     s6StepTimeoutMs: 45_000,
@@ -902,12 +1024,17 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--s7-only') opts.s7Only = true;
     else if (args[i] === '--s8-only') opts.s8Only = true;
     else if (args[i] === '--s9-only') opts.s9Only = true;
+    else if (args[i] === '--s10-only') opts.s10Only = true;
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-all') opts.runAll = true;
+    else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
+    else if (args[i] === '--v23-full') { opts.v23Full = true; opts.tier = 'full'; }
+    else if (args[i] === '--manifest' && args[i + 1]) opts.manifestPath = args[++i];
     else if (args[i] === '--run-s6') opts.runS6 = true;
     else if (args[i] === '--run-s7') opts.runS7 = true;
     else if (args[i] === '--run-s8') opts.runS8 = true;
     else if (args[i] === '--run-s9') opts.runS9 = true;
+    else if (args[i] === '--run-s10') opts.runS10 = true;
     else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
     else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);
@@ -929,20 +1056,26 @@ const isMain = Boolean(process.argv[1] && path.resolve(process.argv[1]) === impo
 if (isMain) {
   const opts = parseCcpCliArgs(process.argv.slice(2));
   const outcome = await runChaosOnCcp(opts);
+  const finalExitCode = typeof outcome.exitCode === 'number' ? outcome.exitCode : EXIT_HARNESS_FAIL;
   process.stdout.write(
     `${JSON.stringify(
       {
+        runId: outcome.runId,
+        buildId: outcome.buildId,
         runtimeId: outcome.runtimeId,
         providerEndpoint: outcome.providerEndpoint,
         keptAlive: outcome.keptAlive,
         remoteExitCode: outcome.remoteExitCode,
+        exitCode: finalExitCode,
+        verdict: outcome.verdict,
         driveTransferMetrics: outcome.driveTransferMetrics,
         totalOrchestratorWallMs: outcome.totalOrchestratorWallMs,
         outDir: outcome.outDir,
-        overallPassed: outcome.chaosResults?.overallPassed ?? false,
+        overallPassed: Boolean(outcome.verdict?.passed),
       },
       null,
       2,
     )}\n`,
   );
+  process.exitCode = finalExitCode;
 }

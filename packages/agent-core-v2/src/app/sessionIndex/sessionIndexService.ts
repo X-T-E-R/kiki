@@ -300,10 +300,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       }
     } else {
       const entries = [...this.watchedSessions.entries()].slice(0, WATCH_BATCH_SIZE);
-      for (const [key] of entries) this.watchedSessions.delete(key);
-      if (!this.recoveryRequired && this.mirror.dirtyEpoch() === undefined) {
-        await this.mirror.drain();
-      }
       const requeue = (subset: readonly (readonly [string, { workspaceId: string; id: string }])[]): void => {
         for (const [key, value] of subset) this.watchedSessions.set(key, value);
         if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
@@ -311,6 +307,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.watchedSessions.clear();
         }
       };
+      for (const [key] of entries) this.watchedSessions.delete(key);
+      if (!this.recoveryRequired && this.mirror.dirtyEpoch() === undefined) {
+        try {
+          await this.mirror.drain();
+        } catch (error) {
+          requeue(entries);
+          throw error;
+        }
+      }
       const runBatch = async (
         batch: readonly (readonly [string, { workspaceId: string; id: string }])[],
         allowRetrySplit: boolean,
@@ -653,6 +658,30 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             return false;
           }
           if (this.mirror.epoch() !== baseline.epoch || revision?.seq !== baseline.revision) {
+            const canMergeClean =
+              attempt === RECONCILE_MAX_ATTEMPTS - 1 &&
+              reuseFingerprints &&
+              mutated.size > 0 &&
+              knownMutationsOnly &&
+              this.forcedReconcileRequest < request &&
+              request === this.reconcileRequest;
+            if (canMergeClean) {
+              const skipSessionIds = new Set<string>();
+              const skipWorkspaceIds = new Set<string>();
+              for (const [id, workspaceId] of mutated) {
+                skipSessionIds.add(id);
+                if (workspaceId !== undefined) {
+                  skipWorkspaceIds.add(workspaceId);
+                  this.projector.invalidateFingerprint(workspaceId, id);
+                  this.watchedSessions.set(`${workspaceId}\0${id}`, { workspaceId, id });
+                }
+              }
+              await commit({ sessionIds: skipSessionIds, workspaceIds: skipWorkspaceIds });
+              this.generation = baseline.generation;
+              if (skipWorkspaceIds.size > 0) this.watchInventory = true;
+              this.scheduleWatchedReconcile();
+              return true;
+            }
             wipeAllFingerprints = mutated.size === 0 || !knownMutationsOnly || this.forcedReconcileRequest > request;
             return false;
           }

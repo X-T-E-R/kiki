@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 
 import type { ContentPart } from '#/kosong/contract/message';
 
@@ -16,7 +17,7 @@ import {
   unsupportedImageMimeFromUrl,
 } from './image-format-policy';
 import { isAnimatedWebp } from './webp-decode';
-import { decodeToJimp } from './imageDecode';
+import { decodeToJimp, tryFastDecodePng, trySniffPngSize } from './imageDecode';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { hasRegisteredCpuPool, runCpuTask } from '#/app/cpuWorker/runtime';
 
@@ -808,6 +809,212 @@ async function encodeWithinBudget(
   return smallest;
 }
 
+function pngChunkBuffer(type: string, data: Buffer): Buffer {
+  const out = Buffer.allocUnsafe(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 4, 'ascii');
+  data.copy(out, 8);
+  const crc = crc32(out.subarray(4, 8 + data.length));
+  out.writeUInt32BE(crc >>> 0, 8 + data.length);
+  return out;
+}
+
+function encodeFastPng(rgba: Uint8Array, width: number, height: number): Buffer {
+  let opaque = true;
+  for (let i = 3; i < rgba.length; i += 4) {
+    if (rgba[i] !== 255) {
+      opaque = false;
+      break;
+    }
+  }
+  const bpp = opaque ? 3 : 4;
+  const stride = width * bpp;
+  const filtered = Buffer.allocUnsafe(height * (stride + 1));
+  if (opaque) {
+    for (let y = 0; y < height; y += 1) {
+      let srcOff = y * width * 4;
+      const dstOff = y * (stride + 1);
+      filtered[dstOff] = 1;
+      let dstPos = dstOff + 1;
+      let prevR = 0;
+      let prevG = 0;
+      let prevB = 0;
+      for (let x = 0; x < width; x += 1) {
+        const r = rgba[srcOff]!;
+        const g = rgba[srcOff + 1]!;
+        const b = rgba[srcOff + 2]!;
+        filtered[dstPos] = (r - prevR) & 0xff;
+        filtered[dstPos + 1] = (g - prevG) & 0xff;
+        filtered[dstPos + 2] = (b - prevB) & 0xff;
+        prevR = r;
+        prevG = g;
+        prevB = b;
+        srcOff += 4;
+        dstPos += 3;
+      }
+    }
+  } else {
+    for (let y = 0; y < height; y += 1) {
+      const srcOff = y * stride;
+      const dstOff = y * (stride + 1);
+      filtered[dstOff] = 1;
+      const dstRow = dstOff + 1;
+      for (let i = 0; i < 4; i += 1) {
+        filtered[dstRow + i] = rgba[srcOff + i]!;
+      }
+      for (let i = 4; i < stride; i += 1) {
+        filtered[dstRow + i] = (rgba[srcOff + i]! - rgba[srcOff + i - 4]!) & 0xff;
+      }
+    }
+  }
+  const compressed = deflateSync(filtered, { level: 3 });
+  const ihdr = Buffer.allocUnsafe(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = opaque ? 2 : 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunkBuffer('IHDR', ihdr),
+    pngChunkBuffer('IDAT', compressed),
+    pngChunkBuffer('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+interface RawBitmap {
+  data: Buffer;
+  width: number;
+  height: number;
+}
+
+function fastResizeBilinearBitmap(bitmap: RawBitmap, targetW: number, targetH: number): void {
+  const srcW = bitmap.width;
+  const srcH = bitmap.height;
+  const src = bitmap.data;
+  const dst = Buffer.allocUnsafe(targetW * targetH * 4);
+  const x0Table = new Int32Array(targetW);
+  const x1Table = new Int32Array(targetW);
+  const wxTable = new Float32Array(targetW);
+  const scaleX = srcW > 1 && targetW > 1 ? (srcW - 1) / (targetW - 1) : 0;
+  const scaleY = srcH > 1 && targetH > 1 ? (srcH - 1) / (targetH - 1) : 0;
+  for (let x = 0; x < targetW; x += 1) {
+    const sx = x * scaleX;
+    const x0 = Math.floor(sx);
+    x0Table[x] = x0 * 4;
+    x1Table[x] = Math.min(x0 + 1, srcW - 1) * 4;
+    wxTable[x] = sx - x0;
+  }
+  const srcStride = srcW * 4;
+  let dstIdx = 0;
+  for (let y = 0; y < targetH; y += 1) {
+    const sy = y * scaleY;
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(y0 + 1, srcH - 1);
+    const wy = sy - y0;
+    const invWy = 1 - wy;
+    const row0 = y0 * srcStride;
+    const row1 = y1 * srcStride;
+    for (let x = 0; x < targetW; x += 1) {
+      const x0 = x0Table[x]!;
+      const x1 = x1Table[x]!;
+      const wx = wxTable[x]!;
+      const invWx = 1 - wx;
+      const w00 = invWx * invWy;
+      const w10 = wx * invWy;
+      const w01 = invWx * wy;
+      const w11 = wx * wy;
+      const i00 = row0 + x0;
+      const i10 = row0 + x1;
+      const i01 = row1 + x0;
+      const i11 = row1 + x1;
+      const a00 = src[i00 + 3]! * w00;
+      const a10 = src[i10 + 3]! * w10;
+      const a01 = src[i01 + 3]! * w01;
+      const a11 = src[i11 + 3]! * w11;
+      const aSum = a00 + a10 + a01 + a11;
+      if (aSum <= 0) {
+        dst[dstIdx] = 0;
+        dst[dstIdx + 1] = 0;
+        dst[dstIdx + 2] = 0;
+        dst[dstIdx + 3] = 0;
+      } else {
+        dst[dstIdx] = Math.round((src[i00]! * a00 + src[i10]! * a10 + src[i01]! * a01 + src[i11]! * a11) / aSum);
+        dst[dstIdx + 1] = Math.round((src[i00 + 1]! * a00 + src[i10 + 1]! * a10 + src[i01 + 1]! * a01 + src[i11 + 1]! * a11) / aSum);
+        dst[dstIdx + 2] = Math.round((src[i00 + 2]! * a00 + src[i10 + 2]! * a10 + src[i01 + 2]! * a01 + src[i11 + 2]! * a11) / aSum);
+        dst[dstIdx + 3] = Math.round(aSum);
+      }
+      dstIdx += 4;
+    }
+  }
+  bitmap.data = dst;
+  bitmap.width = targetW;
+  bitmap.height = targetH;
+}
+
+function fitBitmapWithinEdge(bitmap: RawBitmap, edge: number): boolean {
+  const longest = Math.max(bitmap.width, bitmap.height);
+  if (longest <= edge) return false;
+  const factor = edge / longest;
+  fastResizeBilinearBitmap(
+    bitmap,
+    Math.max(1, Math.round(bitmap.width * factor)),
+    Math.max(1, Math.round(bitmap.height * factor)),
+  );
+  return true;
+}
+
+function predecimateBitmapForEdge(bitmap: RawBitmap, targetEdge: number, signal?: AbortSignal): void {
+  let width = bitmap.width;
+  let height = bitmap.height;
+  let src: Buffer | Uint8Array = bitmap.data;
+  let decimated = false;
+  while (Math.max(width, height) > targetEdge * 2 && width >= 4 && height >= 4) {
+    signal?.throwIfAborted();
+    const nextW = width >> 1;
+    const nextH = height >> 1;
+    const dst = Buffer.allocUnsafe(nextW * nextH * 4);
+    const srcStride = width * 4;
+    let dstIdx = 0;
+    for (let y = 0; y < nextH; y += 1) {
+      let row0 = y * 2 * srcStride;
+      let row1 = row0 + srcStride;
+      for (let x = 0; x < nextW; x += 1) {
+        const a00 = src[row0 + 3]!;
+        const a10 = src[row0 + 7]!;
+        const a01 = src[row1 + 3]!;
+        const a11 = src[row1 + 7]!;
+        const aSum = a00 + a10 + a01 + a11;
+        if (aSum === 0) {
+          dst[dstIdx] = 0;
+          dst[dstIdx + 1] = 0;
+          dst[dstIdx + 2] = 0;
+          dst[dstIdx + 3] = 0;
+        } else {
+          dst[dstIdx] = Math.round((src[row0]! * a00 + src[row0 + 4]! * a10 + src[row1]! * a01 + src[row1 + 4]! * a11) / aSum);
+          dst[dstIdx + 1] = Math.round((src[row0 + 1]! * a00 + src[row0 + 5]! * a10 + src[row1 + 1]! * a01 + src[row1 + 5]! * a11) / aSum);
+          dst[dstIdx + 2] = Math.round((src[row0 + 2]! * a00 + src[row0 + 6]! * a10 + src[row1 + 2]! * a01 + src[row1 + 6]! * a11) / aSum);
+          dst[dstIdx + 3] = (aSum + 2) >> 2;
+        }
+        row0 += 8;
+        row1 += 8;
+        dstIdx += 4;
+      }
+    }
+    src = dst;
+    width = nextW;
+    height = nextH;
+    decimated = true;
+  }
+  if (decimated) {
+    bitmap.data = src as Buffer;
+    bitmap.width = width;
+    bitmap.height = height;
+  }
+}
+
 function fitWithinEdge(image: JimpImage, edge: number): boolean {
   const longest = Math.max(image.width, image.height);
   if (longest <= edge) return false;
@@ -835,10 +1042,22 @@ function predecimateForEdge(image: JimpImage, targetEdge: number, signal?: Abort
       let row0 = y * 2 * srcStride;
       let row1 = row0 + srcStride;
       for (let x = 0; x < nextW; x += 1) {
-        dst[dstIdx] = (src[row0]! + src[row0 + 4]! + src[row1]! + src[row1 + 4]! + 2) >> 2;
-        dst[dstIdx + 1] = (src[row0 + 1]! + src[row0 + 5]! + src[row1 + 1]! + src[row1 + 5]! + 2) >> 2;
-        dst[dstIdx + 2] = (src[row0 + 2]! + src[row0 + 6]! + src[row1 + 2]! + src[row1 + 6]! + 2) >> 2;
-        dst[dstIdx + 3] = (src[row0 + 3]! + src[row0 + 7]! + src[row1 + 3]! + src[row1 + 7]! + 2) >> 2;
+        const a00 = src[row0 + 3]!;
+        const a10 = src[row0 + 7]!;
+        const a01 = src[row1 + 3]!;
+        const a11 = src[row1 + 7]!;
+        const aSum = a00 + a10 + a01 + a11;
+        if (aSum === 0) {
+          dst[dstIdx] = 0;
+          dst[dstIdx + 1] = 0;
+          dst[dstIdx + 2] = 0;
+          dst[dstIdx + 3] = 0;
+        } else {
+          dst[dstIdx] = Math.round((src[row0]! * a00 + src[row0 + 4]! * a10 + src[row1]! * a01 + src[row1 + 4]! * a11) / aSum);
+          dst[dstIdx + 1] = Math.round((src[row0 + 1]! * a00 + src[row0 + 5]! * a10 + src[row1 + 1]! * a01 + src[row1 + 5]! * a11) / aSum);
+          dst[dstIdx + 2] = Math.round((src[row0 + 2]! * a00 + src[row0 + 6]! * a10 + src[row1 + 2]! * a01 + src[row1 + 6]! * a11) / aSum);
+          dst[dstIdx + 3] = (aSum + 2) >> 2;
+        }
         row0 += 8;
         row1 += 8;
         dstIdx += 4;
@@ -866,6 +1085,7 @@ function dispatchCpuImageTask<T>(
       signal: options.signal,
       transferList: [transfer],
       bytes: transfer.byteLength,
+      priority: 'high',
     });
   }
   if (hasRegisteredCpuPool()) {
@@ -873,6 +1093,7 @@ function dispatchCpuImageTask<T>(
       signal: options?.signal,
       transferList: [transfer],
       bytes: transfer.byteLength,
+      priority: 'high',
     });
   }
   return undefined;
@@ -905,20 +1126,71 @@ export async function executeImageCompress(
 ): Promise<ImageCompressWorkerOutput> {
   try {
     signal?.throwIfAborted();
-    const image = await decodeToJimp(new Uint8Array(input.bytes), input.normalizedMime);
-    signal?.throwIfAborted();
-    const originalWidth = image.width;
-    const originalHeight = image.height;
-    predecimateForEdge(image, input.maxEdge, signal);
-    signal?.throwIfAborted();
-    fitWithinEdge(image, input.maxEdge);
+    const outputMimes = new Set(input.outputMimes);
+    const inputBytes = new Uint8Array(input.bytes);
+    let fastResized: { data: Buffer; width: number; height: number; originalWidth: number; originalHeight: number } | undefined;
+    if (input.normalizedMime === 'image/png' && outputMimes.has('image/png')) {
+      const sniffed = trySniffPngSize(inputBytes);
+      if (sniffed !== undefined && Math.max(sniffed.width, sniffed.height) > input.maxEdge) {
+        const fast = tryFastDecodePng(inputBytes);
+        if (fast !== undefined && Math.max(fast.width, fast.height) > input.maxEdge) {
+          const originalWidth = fast.width;
+          const originalHeight = fast.height;
+          predecimateBitmapForEdge(fast, input.maxEdge, signal);
+          signal?.throwIfAborted();
+          fitBitmapWithinEdge(fast, input.maxEdge);
+          signal?.throwIfAborted();
+          const png = encodeFastPng(fast.data, fast.width, fast.height);
+          if (png.length <= input.byteBudget) {
+            const outBuffer = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
+            return {
+              kind: 'encoded',
+              data: outBuffer,
+              mimeType: 'image/png',
+              width: fast.width,
+              height: fast.height,
+              originalWidth,
+              originalHeight,
+            };
+          }
+          fastResized = {
+            data: fast.data,
+            width: fast.width,
+            height: fast.height,
+            originalWidth,
+            originalHeight,
+          };
+        }
+      }
+    }
+    let image: JimpImage;
+    let originalWidth: number;
+    let originalHeight: number;
+    if (fastResized !== undefined) {
+      const { Jimp } = await import('jimp');
+      image = Jimp.fromBitmap({
+        data: fastResized.data,
+        width: fastResized.width,
+        height: fastResized.height,
+      }) as unknown as JimpImage;
+      originalWidth = fastResized.originalWidth;
+      originalHeight = fastResized.originalHeight;
+    } else {
+      image = await decodeToJimp(inputBytes, input.normalizedMime);
+      signal?.throwIfAborted();
+      originalWidth = image.width;
+      originalHeight = image.height;
+      predecimateForEdge(image, input.maxEdge, signal);
+      signal?.throwIfAborted();
+      fitWithinEdge(image, input.maxEdge);
+    }
     const encoded = await encodeWithinBudget(
       image,
       {
         preferLossless: input.normalizedMime !== 'image/jpeg',
         byteBudget: input.byteBudget,
         fallbackEdges: FALLBACK_EDGES_PX,
-        outputMimes: new Set(input.outputMimes),
+        outputMimes,
       },
       signal,
     );

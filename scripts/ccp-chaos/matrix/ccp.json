@@ -1,0 +1,43 @@
+{
+  "name": "ccp",
+  "seed": 20261120,
+  "tiers": {
+    "s10": {
+      "turns": 600,
+      "seededSubagents": 600,
+      "activeChildren": 12,
+      "scaleUpTiers": [12, 24, 32, 64],
+      "stepsPerChild": 6,
+      "deltasPerStep": 120,
+      "cadenceMs": 18,
+      "workspaceFiles": 5000,
+      "promptAdmissionP95Ms": 500,
+      "promptAdmissionMaxMs": 1500,
+      "sendToReceiptP95Ms": 1000,
+      "sendToReceiptMaxMs": 2500,
+      "eldP99Ms": 50,
+      "eldMaxMs": 250
+    },
+    "p01ColdChild": {
+      "sizesMiB": [20, 60, 82.65, 100],
+      "lanes": ["legacy", "reopen"],
+      "seedsPerCell": 3
+    },
+    "p02MainOnlyWs": {
+      "activeChildren": [12, 24, 32, 64],
+      "scoringSeconds": 60
+    },
+    "mesh": {
+      "acceptanceSliceSessions": 6,
+      "scaleTiers": [256, 1024],
+      "epochs": 3
+    },
+    "idleCpu": {
+      "settleSeconds": 30,
+      "windowSeconds": 10,
+      "windowCount": 12,
+      "maxServerCorePct": 2.0,
+      "maxRendererPlusGpuCorePct": 3.0
+    }
+  }
+}

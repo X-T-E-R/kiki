@@ -12,6 +12,7 @@ import {
   discardColdUnlocked,
   hasColdStateForRewrite,
   readLogicalBytes,
+  scanColdWireMarkers,
   sealColdSegments,
   waitActiveReadersIdle,
   withColdExclusive,
@@ -260,6 +261,33 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     if (end !== undefined && position >= end) {
       options?.signal?.throwIfAborted();
       return;
+    }
+    if (
+      position === 0 &&
+      onTruncate === undefined &&
+      rawSubstrings !== undefined &&
+      rawSubstrings.length > 0 &&
+      (end === undefined || end > 1024 * 1024)
+    ) {
+      const wirePath = this.storage.pathFor?.(scope, key);
+      if (wirePath !== undefined) {
+        const markers = rawSubstrings.map((b) => b.toString('utf8'));
+        const scanned = await scanColdWireMarkers(wirePath, markers, options?.signal);
+        if (scanned !== undefined && (end === undefined || end === scanned.size)) {
+          let anyFound = false;
+          for (const m of markers) {
+            if (scanned.matches.get(m) === true) {
+              anyFound = true;
+              break;
+            }
+          }
+          if (!anyFound) {
+            options?.onPosition?.(scanned.size);
+            options?.signal?.throwIfAborted();
+            return;
+          }
+        }
+      }
     }
     const range = end === undefined ? undefined : { start: position, end: end - 1 };
     for await (const chunk of readLogicalBytes(this.storage, scope, key, range, {

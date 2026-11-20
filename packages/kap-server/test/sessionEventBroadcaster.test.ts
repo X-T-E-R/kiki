@@ -4792,15 +4792,21 @@ describe('SessionEventBroadcaster', () => {
       expect(turns.map((e) => (e.payload as { agentId: string }).agentId)).toEqual(['agent-0']);
     });
 
-    it('suppresses ungraded sibling assistant.delta and thinking.delta when suppressUngradedTokenDeltas is enabled while keeping lifecycle events', async () => {
+    it('suppresses ungraded sibling assistant.delta and thinking.delta when transcriptOnly is enabled while keeping roster hints', async () => {
       const lc = new FakeLifecycle();
-      const main = lc.addAgent('main');
+      lc.addAgent('main');
       const sub = lc.addAgent('agent-0');
       sessions.set('s1', lc);
       bc = makeBroadcasterWithTranscript();
 
       const view = collectingTarget();
-      await bc.subscribe('s1', view.target, undefined, { main: 'delta' }, { suppressUngradedTokenDeltas: true });
+      const targetWithRoster: BroadcastTarget = {
+        ...view.target,
+        sendRosterHint: (envelope) => {
+          view.envelopes.push(envelope);
+        },
+      };
+      await bc.subscribe('s1', targetWithRoster, undefined, { main: 'delta' }, { transcriptOnly: true });
 
       sub.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
       sub.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'unsubscribed-token' }));

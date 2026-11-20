@@ -85,6 +85,7 @@ function withoutKey(value: unknown, key: string): unknown {
 }
 
 export const kimiModelEnvOverlay: ConfigEffectiveOverlay = {
+  domains: ['models', 'providers', 'defaultModel', 'modelOverrides'],
   apply(effective, getEnv, validate) {
     const model = trimmed(getEnv('KIKI_MODEL_NAME'));
     const temperature = parseFloatEnv(

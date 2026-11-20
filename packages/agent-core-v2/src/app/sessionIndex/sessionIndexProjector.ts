@@ -327,7 +327,7 @@ export class SessionIndexProjector {
   async planReconcile(
     generation: number,
     options?: { reuseFingerprints?: boolean; changedSessions?: readonly { workspaceId: string; id: string }[] },
-  ): Promise<() => Promise<ReconcileResult>> {
+  ): Promise<(skip?: { readonly sessionIds?: ReadonlySet<string>; readonly workspaceIds?: ReadonlySet<string> }) => Promise<ReconcileResult>> {
     const { storage, docs, queryStore, log, sessionsScope } = this.deps;
     if (this.fingerprintGeneration !== generation) {
       this.fingerprintCache.clear();
@@ -350,6 +350,15 @@ export class SessionIndexProjector {
       ? [...await listWorkspaceIds(storage, sessionsScope, log)].toSorted()
       : [...new Set(changed.map((entry) => entry.workspaceId))].toSorted();
     const currentWorkspaceSessions = new Map<string, readonly string[]>();
+    const workspaceTouchedSessions = new Map<string, Set<string>>();
+    const touchWorkspaceSessions = (workspaceId: string, ids: readonly string[]): void => {
+      let bucket = workspaceTouchedSessions.get(workspaceId);
+      if (bucket === undefined) {
+        bucket = new Set<string>();
+        workspaceTouchedSessions.set(workspaceId, bucket);
+      }
+      for (const sid of ids) bucket.add(sid);
+    };
     const currentSessionOwners = new Map<string, number>();
     for (const workspaceId of currentWorkspaceIds) {
       await maybeYield();
@@ -360,6 +369,7 @@ export class SessionIndexProjector {
           ...changed.filter((entry) => entry.workspaceId === workspaceId).map((entry) => entry.id),
         ])].toSorted();
       currentWorkspaceSessions.set(workspaceId, sessionIds);
+      touchWorkspaceSessions(workspaceId, sessionIds);
       for (const sessionId of sessionIds) {
         currentSessionOwners.set(sessionId, (currentSessionOwners.get(sessionId) ?? 0) + 1);
       }
@@ -497,6 +507,7 @@ export class SessionIndexProjector {
       const changedSet = new Set(changedIds);
       const currentSet = new Set(sessionIds);
       const departedIds = previousSessionIds.filter((sessionId) => !currentSet.has(sessionId));
+      touchWorkspaceSessions(workspaceId, departedIds);
       const removedIds = departedIds.filter(
         (sessionId) => (currentSessionOwners.get(sessionId) ?? 0) === 0,
       );
@@ -592,6 +603,7 @@ export class SessionIndexProjector {
       const removedIds = (previousWorkspace?.sessionIds ?? []).filter(
         (sessionId) => (currentSessionOwners.get(sessionId) ?? 0) === 0,
       );
+      touchWorkspaceSessions(workspaceId, previousWorkspace?.sessionIds ?? []);
       const oldSummaries =
         removedIds.length === 0
           ? new Map<string, SessionSummary>()
@@ -615,9 +627,18 @@ export class SessionIndexProjector {
       });
     }
 
-    const retainFingerprints = (): void => {
+    const retainFingerprints = (
+      skipSessionIds?: ReadonlySet<string>,
+      skipWorkspaceIds?: ReadonlySet<string>,
+    ): void => {
       if (this.fingerprintGeneration !== generation || this.fullInvalidationEpoch > invalidationEpoch) return;
       for (const [key, entry] of nextFingerprintCache) {
+        if (skipSessionIds !== undefined || skipWorkspaceIds !== undefined) {
+          const slash = key.indexOf('/');
+          const workspaceId = slash >= 0 ? key.slice(0, slash) : undefined;
+          const sessionId = slash >= 0 ? key.slice(slash + 1) : key;
+          if (skipSessionIds?.has(sessionId) || (workspaceId !== undefined && skipWorkspaceIds?.has(workspaceId))) continue;
+        }
         if ((this.keyInvalidationEpochs.get(key) ?? 0) > invalidationEpoch) continue;
         if ((this.fingerprintCache.get(key)?.sequence ?? 0) > sequence) continue;
         this.fingerprintCache.set(key, entry);
@@ -629,7 +650,20 @@ export class SessionIndexProjector {
       }
     };
     retainFingerprints();
-    return async () => {
+    return async (skip?: { readonly sessionIds?: ReadonlySet<string>; readonly workspaceIds?: ReadonlySet<string> }) => {
+      const skipWorkspaceIds = skip?.workspaceIds;
+      const effectiveSkipSessionIds = new Set<string>(skip?.sessionIds ?? []);
+      if (skipWorkspaceIds !== undefined && skipWorkspaceIds.size > 0) {
+        for (const workspaceId of skipWorkspaceIds) {
+          const wsSessionIds = workspaceTouchedSessions.get(workspaceId);
+          if (wsSessionIds !== undefined) {
+            for (const sid of wsSessionIds) effectiveSkipSessionIds.add(sid);
+          }
+          for (const key of this.fingerprintCache.keys()) {
+            if (key.startsWith(`${workspaceId}/`)) this.fingerprintCache.delete(key);
+          }
+        }
+      }
       const commitOps: WriteOp[] = [...ops];
       let commitUpserted = upserted;
       let commitRemoved = removed;
@@ -744,8 +778,21 @@ export class SessionIndexProjector {
           });
         }
       }
-      if (commitOps.length > 0) await advanceSessionIndexRevision(queryStore);
-      await this.batchChunks(commitOps);
+      const filteredOps =
+        effectiveSkipSessionIds.size === 0 &&
+        (skipWorkspaceIds === undefined || skipWorkspaceIds.size === 0)
+          ? commitOps
+          : commitOps.filter((op) => {
+              if ((op.collection === collection || op.collection === sources) && effectiveSkipSessionIds.has(op.key)) {
+                return false;
+              }
+              if ((op.collection === workspaces || op.collection === counters) && skipWorkspaceIds?.has(op.key)) {
+                return false;
+              }
+              return true;
+            });
+      if (filteredOps.length > 0) await advanceSessionIndexRevision(queryStore);
+      await this.batchChunks(filteredOps);
       const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (
         manifest?.seq === generation &&
@@ -756,7 +803,7 @@ export class SessionIndexProjector {
           sourceMaxMtimeMs,
         });
       }
-      retainFingerprints();
+      retainFingerprints(effectiveSkipSessionIds, skipWorkspaceIds);
       const result = { sessions, upserted: commitUpserted, removed: commitRemoved };
       if (commitUpserted > 0 || commitRemoved > 0) {
         log.info('session index reconciliation repaired drift', { generation, ...result });

@@ -88,6 +88,7 @@ export class WireService extends Service implements IWireService {
   private prefixHash: Hash | undefined;
   private prefixHashLength = 0;
   private journalGeneration = 0;
+  private sealedFirstRecord: { readonly generation: number; readonly validMetadata: boolean } | undefined;
   private journalHashOperation: Promise<void> = Promise.resolve();
   private appendedBytes = 0;
   private readonly appendListeners = new Set<(appendedBytes: number) => void>();
@@ -112,8 +113,12 @@ export class WireService extends Service implements IWireService {
 
   async seal(): Promise<void> {
     const tolerate = { onTruncate: () => {} };
+    const generation = this.journalGeneration;
     for await (const record of this.log.read(this.wireScope, AGENT_WIRE_RECORD_KEY, tolerate)) {
-      void record;
+      this.sealedFirstRecord = {
+        generation,
+        validMetadata: isWireRecord(record) && isWireMetadataRecord(record),
+      };
       return;
     }
     this.appendRecordLow(createWireMetadataRecord());
@@ -146,12 +151,16 @@ export class WireService extends Service implements IWireService {
       }
       trusted = trusted && base.size > 0 && endsWithNewline;
       if (trusted) {
-        let first: unknown;
-        for await (const candidate of this.log.read(this.wireScope, AGENT_WIRE_RECORD_KEY)) {
-          first = candidate;
-          break;
+        if (this.sealedFirstRecord !== undefined && this.sealedFirstRecord.generation === this.journalGeneration) {
+          trusted = this.sealedFirstRecord.validMetadata;
+        } else {
+          let first: unknown;
+          for await (const candidate of this.log.read(this.wireScope, AGENT_WIRE_RECORD_KEY)) {
+            first = candidate;
+            break;
+          }
+          trusted = first !== undefined && isWireRecord(first) && isWireMetadataRecord(first);
         }
-        trusted = first !== undefined && isWireRecord(first) && isWireMetadataRecord(first);
       }
       const epoch: WireTranscriptReceipt = { format: 2, epoch: randomUUID(), state: 'open', trusted };
       await this.storage.write(

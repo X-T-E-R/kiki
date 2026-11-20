@@ -229,7 +229,7 @@ export function buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSe
     'enabled = true',
     '',
     '[cron]',
-    'manualTick = true',
+    'no_jitter = true',
     '',
     '[search]',
     `enabled = ${enableSearch ? 'true' : 'false'}`,

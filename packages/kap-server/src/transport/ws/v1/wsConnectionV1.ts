@@ -137,7 +137,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private gotClientHello = false;
   /** Per-session subscription state: legacy agent allowlist + opt-in transcript grades. */
   readonly subscriptions = new Map<string, SessionSubscription>();
-  private readonly legacySubscribedSessions = new Set<string>();
+  private readonly transcriptOnlySessions = new Set<string>();
   private readonly pendingAttaches = new Set<string>();
   private readonly replayHolds = new Set<string>();
   private readonly heldDuringReplay = new Map<string, EventEnvelope[]>();
@@ -244,7 +244,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.holdReplayFrame(envelope);
       return;
     }
-    if (delivery === 'immediate') this.sendImmediateFrame(envelope);
+    if (delivery === 'immediate' || isUrgentTranscriptFrame(envelope)) this.sendImmediateFrame(envelope);
     else this.sendSubscribedFrame(envelope);
   }
 
@@ -443,7 +443,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         this.subscriptions.get(sid)?.transcriptGrades,
         undefined,
         { accepted, resyncRequired, serverCursors },
-        true,
+        false,
       );
     }
 
@@ -475,7 +475,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         this.subscriptions.get(sid)?.transcriptGrades,
         undefined,
         { accepted, resyncRequired, serverCursors, notFound },
-        true,
+        false,
       );
     }
 
@@ -520,14 +520,15 @@ export class WsConnectionV1 implements BroadcastTarget {
     const resyncRequired: string[] = [];
     const serverCursors: Record<string, { seq: number; epoch?: string }> = {};
 
+    const existingSub = this.subscriptions.get(sid);
     await this.attachSession(
       sid,
       undefined,
-      this.subscriptions.get(sid)?.agentFilter,
+      existingSub?.agentFilter,
       parsed.data.transcript,
       parsed.data.transcript_since,
       { accepted, resyncRequired, serverCursors, notFound },
-      this.legacySubscribedSessions.has(sid),
+      existingSub === undefined || this.transcriptOnlySessions.has(sid),
     );
 
     this.sendImmediateFrame(
@@ -561,10 +562,12 @@ export class WsConnectionV1 implements BroadcastTarget {
     const existing = this.subscriptions.get(sid);
     if (existing !== undefined) {
       this.broadcaster.unsubscribeTranscript(sid, this, agentIds);
+      const nextGrades =
+        agentIds === undefined ? undefined : detachGrades(existing.transcriptGrades, agentIds);
+      if (nextGrades === undefined) this.transcriptOnlySessions.delete(sid);
       this.subscriptions.set(sid, {
         agentFilter: existing.agentFilter,
-        transcriptGrades:
-          agentIds === undefined ? undefined : detachGrades(existing.transcriptGrades, agentIds),
+        transcriptGrades: nextGrades,
       });
     }
 
@@ -583,7 +586,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     for (const sid of sessionIds) {
       this.broadcaster.unsubscribe(sid, this);
       this.subscriptions.delete(sid);
-      this.legacySubscribedSessions.delete(sid);
+      this.transcriptOnlySessions.delete(sid);
     }
     this.sendImmediateFrame(
       buildAck(frame.id ?? '', 0, 'success', {
@@ -825,13 +828,12 @@ export class WsConnectionV1 implements BroadcastTarget {
       serverCursors: Record<string, { seq: number; epoch?: string }>;
       notFound?: string[];
     },
-    legacySubscribed = false,
+    transcriptOnly?: boolean,
   ): Promise<void> {
     if (this.closed) return;
     const { accepted, resyncRequired, serverCursors, notFound } = collectors;
     const prior = this.subscriptions.get(sid);
-    const effectiveLegacySubscribed = legacySubscribed || this.legacySubscribedSessions.has(sid);
-    const suppressUngradedTokenDeltas = !effectiveLegacySubscribed && transcriptGrades !== undefined;
+    const effectiveTranscriptOnly = transcriptOnly ?? this.transcriptOnlySessions.has(sid);
     this.pendingAttaches.add(sid);
     if (cursor !== undefined) this.replayHolds.add(sid);
     let attached = false;
@@ -841,7 +843,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
         deferTranscriptReset: cursor !== undefined,
         transcriptSince,
-        suppressUngradedTokenDeltas,
+        transcriptOnly,
       });
       if (this.closed) return;
       if (!ok) {
@@ -852,14 +854,15 @@ export class WsConnectionV1 implements BroadcastTarget {
       }
       subscribedInBroadcaster = true;
       if (cursor !== undefined) {
-        await this.replay(sid, cursor, filter, transcriptGrades, suppressUngradedTokenDeltas, resyncRequired, serverCursors);
+        await this.replay(sid, cursor, filter, transcriptGrades, effectiveTranscriptOnly, resyncRequired, serverCursors);
         await this.broadcaster.flushTranscriptSeed(sid, this);
       } else {
         serverCursors[sid] = await this.broadcaster.getCursor(sid);
       }
       if (this.closed) return;
-      if (effectiveLegacySubscribed) this.legacySubscribedSessions.add(sid);
       this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });
+      if (transcriptOnly === true) this.transcriptOnlySessions.add(sid);
+      else if (transcriptOnly === false) this.transcriptOnlySessions.delete(sid);
       accepted.push(sid);
       attached = true;
     } catch (error) {
@@ -876,7 +879,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         if (this.closed || notFoundSession || prior === undefined) {
           this.broadcaster.unsubscribe(sid, this);
           this.subscriptions.delete(sid);
-          this.legacySubscribedSessions.delete(sid);
+          this.transcriptOnlySessions.delete(sid);
         } else {
           if (subscribedInBroadcaster && typeof this.broadcaster.restoreSubscription === 'function') {
             this.broadcaster.restoreSubscription(sid, this, prior);
@@ -894,7 +897,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     cursor: SessionCursor,
     filter: AgentFilter | undefined,
     transcriptGrades: TranscriptGradeSpec | undefined,
-    suppressUngradedTokenDeltas: boolean,
+    transcriptOnly: boolean,
     resyncRequired: string[],
     serverCursors: Record<string, { seq: number; epoch?: string }>,
   ): Promise<void> {
@@ -903,7 +906,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       cursor,
       filter,
       transcriptGrades,
-      suppressUngradedTokenDeltas,
+      transcriptOnly,
     );
     this.replayHolds.delete(sid);
     const held = this.takeReplayHeld(sid);
@@ -1140,7 +1143,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.broadcaster.unsubscribe(sid, this);
     }
     this.subscriptions.clear();
-    this.legacySubscribedSessions.clear();
+    this.transcriptOnlySessions.clear();
     this.pendingAttaches.clear();
     this.replayHolds.clear();
     this.discardReplayHeld();
@@ -1216,24 +1219,67 @@ function isCoalescableDelta(frame: unknown): frame is CoalescableDelta {
   return typeof (payload as Record<string, unknown>)['delta'] === 'string';
 }
 
+const MAX_COALESCED_TRANSCRIPT_OPS_BYTES = 64 * 1024;
+
+interface CoalescableTranscriptOps {
+  type: 'transcript.ops';
+  seq: number;
+  volatile?: boolean;
+  session_id?: string;
+  timestamp: string;
+  payload: {
+    session_id?: string;
+    agent_id: string;
+    ops: readonly unknown[];
+    cursor: { readonly epoch: string; readonly seq: number };
+    through_seq: number;
+    [key: string]: unknown;
+  };
+}
+
+function isUrgentTranscriptOp(op: unknown): boolean {
+  if (typeof op !== 'object' || op === null) return false;
+  const record = op as { op?: unknown; turn?: { state?: unknown } };
+  if (
+    record.op === 'turn.end' ||
+    record.op === 'interaction.upsert' ||
+    record.op === 'interaction.resolve' ||
+    record.op === 'reset'
+  ) {
+    return true;
+  }
+  if (record.op === 'turn.upsert' && record.turn !== undefined && record.turn.state !== undefined && record.turn.state !== 'running') {
+    return true;
+  }
+  return false;
+}
+
+function isUrgentTranscriptFrame(frame: unknown): boolean {
+  if (!isCoalescableTranscriptOps(frame)) return false;
+  return frame.payload.ops.some(isUrgentTranscriptOp);
+}
+
+function isCoalescableTranscriptOps(frame: unknown): frame is CoalescableTranscriptOps {
+  if (typeof frame !== 'object' || frame === null) return false;
+  const f = frame as Record<string, unknown>;
+  if (f['type'] !== 'transcript.ops') return false;
+  const payload = f['payload'];
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  if (typeof p['agent_id'] !== 'string' || !Array.isArray(p['ops']) || typeof p['through_seq'] !== 'number') return false;
+  const cursor = p['cursor'];
+  if (typeof cursor !== 'object' || cursor === null) return false;
+  const c = cursor as Record<string, unknown>;
+  return typeof c['epoch'] === 'string' && typeof c['seq'] === 'number';
+}
+
 /**
- * Merge adjacent compatible volatile text deltas into a single envelope.
- *
- * Two adjacent frames merge when both are `volatile` `assistant.delta` /
- * `thinking.delta` of the same type, addressed to the same session, agent,
- * and turn. The merged frame keeps the first frame's `seq` / `offset` /
- * `timestamp` and concatenates `payload.delta` in order — the client's
- * offset-based alignment against the in-flight snapshot stays correct
- * (the broadcaster's per-session dispatch queue guarantees consecutive deltas
- * for a turn carry consecutive offsets).
- *
- * Durable events, control frames, and non-text deltas are never merged, and
- * merging never crosses a non-mergeable frame, so overall ordering is
- * preserved. The input frames are not mutated; merged results are fresh
- * objects. Exported for unit testing.
+ * Merge adjacent compatible volatile text deltas or contiguous `transcript.ops`
+ * batches into a single envelope while preserving frame order and bounds.
  */
 export function coalesceFrames(frames: readonly unknown[]): unknown[] {
   const out: unknown[] = [];
+  let lastTranscriptOpsBytes = 0;
   for (const frame of frames) {
     const last = out.at(-1);
     if (
@@ -1249,8 +1295,39 @@ export function coalesceFrames(frames: readonly unknown[]): unknown[] {
         ...last,
         payload: { ...last.payload, delta: last.payload.delta + frame.payload.delta },
       };
+      lastTranscriptOpsBytes = 0;
+    } else if (
+      last !== undefined &&
+      isCoalescableTranscriptOps(last) &&
+      isCoalescableTranscriptOps(frame) &&
+      (last.session_id ?? last.payload.session_id) === (frame.session_id ?? frame.payload.session_id) &&
+      last.payload.agent_id === frame.payload.agent_id &&
+      last.payload.cursor.epoch === frame.payload.cursor.epoch &&
+      frame.payload.cursor.seq === last.payload.through_seq + 1 &&
+      !last.payload.ops.some(isUrgentTranscriptOp) &&
+      !frame.payload.ops.some(isUrgentTranscriptOp)
+    ) {
+      const prevBytes = lastTranscriptOpsBytes > 0 ? lastTranscriptOpsBytes : Buffer.byteLength(JSON.stringify(last));
+      const nextBytes = Buffer.byteLength(JSON.stringify(frame));
+      if (prevBytes + nextBytes <= MAX_COALESCED_TRANSCRIPT_OPS_BYTES) {
+        out[out.length - 1] = {
+          ...last,
+          seq: frame.seq,
+          payload: {
+            ...last.payload,
+            ops: [...last.payload.ops, ...frame.payload.ops],
+            cursor: frame.payload.cursor,
+            through_seq: frame.payload.through_seq,
+          },
+        };
+        lastTranscriptOpsBytes = prevBytes + nextBytes;
+      } else {
+        out.push(frame);
+        lastTranscriptOpsBytes = nextBytes;
+      }
     } else {
       out.push(frame);
+      lastTranscriptOpsBytes = 0;
     }
   }
   return out;

@@ -449,6 +449,21 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   updateAgent(agentId: string, updater: (current: AgentMeta) => AgentMeta): Promise<void> {
+    if (this.initialized && !this.disposed && !this.disposing && this.agentBatch === undefined && this.pendingWrites.size === 0) {
+      const current = this.data.agents?.[agentId];
+      if (current === undefined) return Promise.resolve();
+      let updated: AgentMeta;
+      try {
+        updated = updater(structuredClone(current));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      const next = this.outcomes.preserveAgentRef(
+        current,
+        this.agentStatisticsPolicy({ ...updated, createdAt: current.createdAt }),
+      );
+      if (agentMetaEquals(current, next) && this.outcomes.sameOutcome(current, next)) return Promise.resolve();
+    }
     return this.enqueueAgentUpdate((agents) => {
       const current = agents[agentId];
       if (current === undefined) return false;

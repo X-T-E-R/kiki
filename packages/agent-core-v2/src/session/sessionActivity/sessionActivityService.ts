@@ -63,6 +63,16 @@ export const sessionActivityCurrentKey = defineState<SessionActivityState>('sess
   lastTurnReason: undefined,
 }));
 
+interface AttachedAgentRefs {
+  readonly handle: IAgentScopeHandle;
+  readonly tasks?: IAgentTaskService;
+  readonly view?: IAgentActivityView;
+  readonly loop?: IAgentLoopService;
+  readonly prompts?: IAgentPromptService;
+  readonly execution?: IAgentExecutionService;
+  readonly state?: IAgentStateService;
+}
+
 export class SessionActivityView extends Disposable implements ISessionActivityView {
   declare readonly _serviceBrand: undefined;
 
@@ -70,8 +80,9 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
   readonly onDidChange: Event<SessionActivityChangedEvent> = this._onDidChange.event;
 
   private readonly agentSubscriptions = new Map<string, IDisposable>();
+  private readonly agentRefs = new Map<string, AttachedAgentRefs>();
   private readonly workFacts = new Map<string, AgentWorkFacts>();
-  private readonly dirtyAgents = new Map<string, IAgentScopeHandle>();
+  private readonly dirtyAgents = new Map<string, AttachedAgentRefs>();
   private busyAgents = 0;
   private executingAgents = 0;
   private cleanupPendingAgents = 0;
@@ -104,6 +115,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
         this.dirtyAgents.clear();
         for (const subscription of this.agentSubscriptions.values()) await subscription.dispose();
         this.agentSubscriptions.clear();
+        this.agentRefs.clear();
         this.workFacts.clear();
       }),
     );
@@ -130,6 +142,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     const result = this.agentSubscriptions.get(agentId)?.dispose();
     if (isPromiseLike(result)) result.catch(onUnexpectedError);
     this.agentSubscriptions.delete(agentId);
+    this.agentRefs.delete(agentId);
     this.dirtyAgents.delete(agentId);
     this.replaceWorkFacts(agentId, undefined);
     if (this.folds.delete(agentId)) this.recompute('agent_lifecycle');
@@ -141,22 +154,25 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     this.folds.set(handle.id, foldOf(handle.id, view?.state()));
     const subscriptions = new DisposableStore();
     this.agentSubscriptions.set(handle.id, subscriptions);
-    this.dirtyAgents.set(handle.id, handle);
+    const lifetime = handle.accessor.get(IInstantiationService);
+    const execution = handle.accessor.get(IAgentExecutionService);
+    const loop = handle.accessor.get(IAgentLoopService);
+    const tasks = handle.accessor.get(IAgentTaskService);
+    const prompts = handle.accessor.get(IAgentPromptService);
+    const state = handle.accessor.get(IAgentStateService);
+    const refs: AttachedAgentRefs = { handle, tasks, view, loop, prompts, execution, state };
+    this.agentRefs.set(handle.id, refs);
+    this.dirtyAgents.set(handle.id, refs);
     const invalidate = (): void => {
       if (this.agentSubscriptions.get(handle.id) !== subscriptions || this.disposed) return;
-      this.dirtyAgents.set(handle.id, handle);
+      this.dirtyAgents.set(handle.id, refs);
       this.queueRecompute();
     };
-    const lifetime = handle.accessor.get(IInstantiationService);
     if (lifetime?.onWillDispose !== undefined) subscriptions.add(lifetime.onWillDispose(() => this.detachAgent(handle.id)));
-    const execution = handle.accessor.get(IAgentExecutionService);
     if (execution?.onDidChangeStatus !== undefined) subscriptions.add(execution.onDidChangeStatus(invalidate));
-    const loop = handle.accessor.get(IAgentLoopService);
     if (loop?.onDidChangePersistence !== undefined) subscriptions.add(loop.onDidChangePersistence(invalidate));
     if (loop?.onDidChangeWork !== undefined) subscriptions.add(loop.onDidChangeWork(invalidate));
-    const tasks = handle.accessor.get(IAgentTaskService);
     if (tasks?.onDidChangeWork !== undefined) subscriptions.add(tasks.onDidChangeWork(invalidate));
-    const state = handle.accessor.get(IAgentStateService);
     if (state?.onDidChange !== undefined) {
       subscriptions.add(state.onDidChange(goalKey)(invalidate));
       subscriptions.add(state.onDidChange(promptLaunchingKey)(invalidate));
@@ -166,7 +182,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     subscriptions.add(
       bus.subscribe((event) => {
         if (this.agentSubscriptions.get(handle.id) !== subscriptions || this.disposed) return;
-        if (event.type === AgentActivityUpdated.type) this.onActivity(handle, event as AgentActivityUpdated);
+        if (event.type === AgentActivityUpdated.type) this.onActivity(refs, event as AgentActivityUpdated);
         if (!/^(turn\.|task\.|prompt\.|goal\.|compaction\.)/u.test(event.type)) return;
         invalidate();
         if (event.type === 'turn.ended') {
@@ -179,8 +195,8 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     );
   }
 
-  private onActivity(handle: IAgentScopeHandle, snapshot: AgentActivityState): void {
-    const agentId = handle.id;
+  private onActivity(refs: AttachedAgentRefs, snapshot: AgentActivityState): void {
+    const agentId = refs.handle.id;
     const previous = this.folds.get(agentId);
     const next = foldOf(agentId, snapshot, previous);
     this.folds.set(agentId, next);
@@ -191,7 +207,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     else if (previous.background !== next.background || previous.compacting !== next.compacting) cause = 'background';
     else if (agentId === MAIN_AGENT_ID && previous.lastTurnReason !== next.lastTurnReason) cause = 'turn_ended';
     if (cause !== undefined) {
-      this.dirtyAgents.set(agentId, handle);
+      this.dirtyAgents.set(agentId, refs);
       if (cause === 'background') this.queueRecompute();
       else this.recompute(cause);
     }
@@ -216,22 +232,22 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
   }
 
   private refreshDirtyAgents(): void {
-    for (const [agentId, handle] of this.dirtyAgents) {
+    for (const [agentId, refs] of this.dirtyAgents) {
       this.dirtyAgents.delete(agentId);
-      this.replaceWorkFacts(agentId, this.readWorkFacts(handle));
+      this.replaceWorkFacts(agentId, this.readWorkFacts(refs));
     }
   }
 
-  private readWorkFacts(handle: IAgentScopeHandle): AgentWorkFacts {
-    const fold = this.folds.get(handle.id);
-    const tasks = handle.accessor.get(IAgentTaskService);
-    const activity = handle.accessor.get(IAgentActivityView)?.state();
+  private readWorkFacts(refs: AttachedAgentRefs): AgentWorkFacts {
+    const fold = this.folds.get(refs.handle.id);
+    const tasks = refs.tasks;
+    const activity = refs.view?.state();
     const background = tasks === undefined ? (fold?.background ?? 0) > 0 : fold?.compacting === true;
-    const loop = handle.accessor.get(IAgentLoopService)?.status();
-    const prompts = handle.accessor.get(IAgentPromptService);
+    const loop = refs.loop?.status();
+    const prompts = refs.prompts;
     const prompt = prompts?.list();
-    const execution = handle.accessor.get(IAgentExecutionService)?.status();
-    const state = handle.accessor.get(IAgentStateService);
+    const execution = refs.execution?.status();
+    const state = refs.state;
     const goalActive = state?.has(goalKey) === true && state.get(goalKey)?.status === 'active';
     const executorActive = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
     const turnExecuting = loop?.persistenceFailure === undefined && (execution === undefined ? fold?.turnActive === true : executorActive);

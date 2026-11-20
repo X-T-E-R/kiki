@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -53,13 +53,13 @@ export function sessionPromptFiles(staged: IFileService, media: ISessionMediaSto
   };
 }
 
-async function materializeSessionMedia(media: ISessionMediaStore, file: GetResult): Promise<SessionMediaFile> {
+async function materializeSessionMedia(media: ISessionMediaStore, file: GetResult, preloaded?: Buffer): Promise<SessionMediaFile> {
   await media.materialize({
     fileId: file.meta.id,
     size: file.meta.size,
     name: file.meta.name,
     mimeType: file.meta.media_type,
-    stream: () => file.stream(),
+    stream: () => (preloaded !== undefined ? Readable.from(preloaded) : file.stream()),
   });
   const retained = await media.open(file.meta.id);
   if (retained === undefined) {
@@ -68,9 +68,9 @@ async function materializeSessionMedia(media: ISessionMediaStore, file: GetResul
   return retained;
 }
 
-async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult): Promise<void> {
+async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult, preloaded?: Buffer): Promise<void> {
   if (media === undefined || await media.open(file.meta.id) !== undefined) return;
-  await materializeSessionMedia(media, file);
+  await materializeSessionMedia(media, file, preloaded);
 }
 
 /**
@@ -198,10 +198,22 @@ export interface ResolvePromptMediaOptions {
   readonly sessionMedia?: ISessionMediaStore;
 }
 
+export interface PromptMediaImageStat {
+  readonly bytes: number;
+  readonly width: number;
+  readonly height: number;
+  readonly originalWidth: number;
+  readonly originalHeight: number;
+  readonly changed: boolean;
+  readonly compressMs: number;
+}
+
 export interface PromptMediaPreparation {
   readonly content: WireContent;
   /** Output spans keyed by the original non-text input slot, including inserted captions and file notices. */
   readonly sourceRanges: readonly { index: number; start: number; end: number }[];
+  /** Lightweight per-image preparation metrics for admission latency attribution. */
+  readonly imageStats?: readonly PromptMediaImageStat[];
   /**
    * Delete the transient daemon uploads this preparation created (the
    * compressed re-save). Call on failure, or after the engine has either
@@ -237,14 +249,15 @@ export async function resolvePromptMediaFiles(
     }
     return pending;
   };
-  const materialize = (file: GetResult, dir: string): Promise<string> => {
+  const materialize = (file: GetResult, dir: string, preloaded?: Buffer): Promise<string> => {
     let pending = attachmentPaths.get(file.meta.id);
     if (pending === undefined) {
-      pending = materializeAttachmentToDir(file, dir);
+      pending = materializeAttachmentToDir(file, dir, preloaded);
       attachmentPaths.set(file.meta.id, pending);
     }
     return pending;
   };
+  const imageStats: PromptMediaImageStat[] = [];
   const ownedFileIds = new Set<string>();
   let discarded = false;
   const discard = async (): Promise<void> => {
@@ -421,20 +434,50 @@ export async function resolvePromptMediaFiles(
 
     const file = await getFile(part.source.file_id);
     assertMediaFile(file, part.type);
-    if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
-    const attachedPath = await materialize(file, await resolveAttachmentsDir());
-    notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
     if (part.type === 'image') {
       const data = await readFileOrStream(file);
       let mediaType = file.meta.media_type;
       mediaType = resolveEffectiveImageMime(mediaType, data);
       mediaType = normalizeImageMime(mediaType);
-      const compressed = await compressImageForModel(data, mediaType, {
-        telemetry: telemetryFor('prompt_file'),
+      let compressMs = 0;
+      const [attachedPath, compressed] = await Promise.all([
+        resolveAttachmentsDir().then((dir) => materialize(file, dir, data)),
+        (async () => {
+          const compressStarted = performance.now();
+          const result = await compressImageForModel(data, mediaType, {
+            telemetry: telemetryFor('prompt_file'),
+          });
+          compressMs = Number((performance.now() - compressStarted).toFixed(2));
+          return result;
+        })(),
+        part.source.kind === 'file' && options.sessionMedia !== undefined
+          ? retainSessionMedia(options.sessionMedia, file, data)
+          : Promise.resolve(),
+      ]);
+      imageStats.push({
+        bytes: data.length,
+        width: compressed.width,
+        height: compressed.height,
+        originalWidth: compressed.originalWidth,
+        originalHeight: compressed.originalHeight,
+        changed: compressed.changed,
+        compressMs,
       });
+      notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
+      let finalFile = file;
       if (compressed.changed) {
-        const dir = await resolveOriginalsDir();
-        const originalPath = await persistOriginalImage(data, mediaType, { dir });
+        const compressedBuffer = Buffer.from(compressed.data);
+        const [originalPath, saved] = await Promise.all([
+          resolveOriginalsDir().then((dir) => persistOriginalImage(data, mediaType, { dir })),
+          store.save(
+            Readable.from(compressedBuffer),
+            compressedUploadName(file.meta.name, compressed.mimeType),
+            { mimeType: compressed.mimeType },
+          ),
+        ]);
+        ownedFileIds.add(saved.id);
+        finalFile = await store.get(saved.id);
+        await retainSessionMedia(options.sessionMedia, finalFile, compressedBuffer);
         const text = buildImageCompressionCaption({
           original: {
             width: compressed.originalWidth,
@@ -456,17 +499,6 @@ export async function resolvePromptMediaFiles(
           presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
         });
       }
-      let finalFile = file;
-      if (compressed.changed) {
-        const saved = await store.save(
-          Readable.from(Buffer.from(compressed.data)),
-          compressedUploadName(file.meta.name, compressed.mimeType),
-          { mimeType: compressed.mimeType },
-        );
-        ownedFileIds.add(saved.id);
-        finalFile = await store.get(saved.id);
-      }
-      await retainSessionMedia(options.sessionMedia, finalFile);
       items.push({
         type: 'image',
         source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id) },
@@ -475,7 +507,9 @@ export async function resolvePromptMediaFiles(
       return { notes, items, changed: true };
     }
 
-    await retainSessionMedia(options.sessionMedia, file);
+    if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+    const attachedPath = await materialize(file, await resolveAttachmentsDir());
+    notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
     items.push({
       type: 'video',
       source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id) },
@@ -507,7 +541,12 @@ export async function resolvePromptMediaFiles(
     const sourceRanges = input.flatMap((part, index) => part.type === 'text' ? [] : [{
       index, start: sourceStarts[index]!, end: sourceStarts[index + 1] ?? content.length,
     }]);
-    return { content: changed ? content : input, sourceRanges, discard };
+    return {
+      content: changed ? content : input,
+      sourceRanges,
+      imageStats: imageStats.length > 0 ? imageStats : undefined,
+      discard,
+    };
   } catch (error) {
     await discard();
     throw error;
@@ -533,12 +572,16 @@ export function sanitizeAttachmentName(name: string): string {
   return cleaned.length > 0 ? cleaned : 'attachment';
 }
 
-async function materializeAttachmentToDir(file: GetResult, dir: string): Promise<string> {
+async function materializeAttachmentToDir(file: GetResult, dir: string, preloaded?: Buffer): Promise<string> {
   await mkdir(dir, { recursive: true });
   const target = join(dir, `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`);
   const info = await stat(target).catch(() => undefined);
   if (info?.size === file.meta.size) return target;
 
+  if (preloaded !== undefined) {
+    await writeFile(target, preloaded);
+    return target;
+  }
   await pipeline(file.stream(), createWriteStream(target));
   return target;
 }

@@ -46,6 +46,7 @@ import {
   openPinnedLogicalRead,
   readColdManifestSummary,
   readLogicalBytes,
+  scanColdWireMarkers,
   sealColdSegments,
   unsealColdSegments,
   withColdExclusive,
@@ -3508,6 +3509,81 @@ describe('cold segment journal', () => {
     } finally {
       await storage.close();
       closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('does not skip records inside sealed .segments.json wires when AppendLogStore.read uses rawSubstrings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-sealed-marker-'));
+    const storage = new FileStorageService(root);
+    const log = createTestAppendLogStore(storage);
+    const scope = 'sessions/ws/sealed-marker/agents/sub';
+    try {
+      const filler = 'x'.repeat(32 * 1024);
+      const records: WireRecord[] = [
+        { type: 'prompt.model_switch', id: 'sealed-switch-1', toModel: 'gpt-test' } as unknown as WireRecord,
+      ];
+      for (let i = 0; i < 40; i += 1) {
+        records.push({ type: 'note', id: `pad-${i}`, body: filler } as unknown as WireRecord);
+      }
+      for (const rec of records) {
+        await log.append(scope, KEY, rec);
+      }
+      await log.flush(scope, KEY);
+      const totalSize = (await storage.size(scope, KEY)) ?? 0;
+      expect(totalSize).toBeGreaterThan(1024 * 1024);
+
+      const sealed = await sealColdSegments(storage, scope, KEY, totalSize, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 256 * 1024,
+        keepHeadBytes: 0,
+      });
+      expect(sealed.segmentCount).toBeGreaterThan(0);
+
+      const wirePath = storage.pathFor(scope, KEY)!;
+      expect(await scanColdWireMarkers(wirePath, ['prompt.model_switch'])).toBeUndefined();
+
+      const seen: WireRecord[] = [];
+      for await (const record of log.read<WireRecord>(scope, KEY, {
+        rawSubstrings: [Buffer.from('prompt.model_switch', 'utf8')],
+      })) {
+        seen.push(record);
+      }
+      expect(seen.map((r) => (r as unknown as { id?: string }).id)).toEqual(['sealed-switch-1']);
+    } finally {
+      await log.dispose();
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('keeps shared scanColdWireMarkers flight alive when one waiter aborts and aborts cleanly when sole waiter aborts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-marker-refcount-'));
+    const wirePath = join(root, 'wire.jsonl');
+    try {
+      const chunk = `${JSON.stringify({ type: 'note', body: 'z'.repeat(64 * 1024) })}\n`;
+      const payload = chunk.repeat(64) + `${JSON.stringify({ type: 'note', marker: 'ExitPlanMode' })}\n`;
+      await writeFile(wirePath, payload, 'utf8');
+      const ac1 = new AbortController();
+      const ac2 = new AbortController();
+      const p1 = scanColdWireMarkers(wirePath, ['ExitPlanMode'], ac1.signal);
+      const p2 = scanColdWireMarkers(wirePath, ['prompt.model_switch', 'ExitPlanMode'], ac2.signal);
+      ac1.abort(new Error('caller-1-cancelled'));
+      await expect(p1).rejects.toThrow('caller-1-cancelled');
+      const res2 = await p2;
+      expect(res2).toBeDefined();
+      expect(res2!.matches.get('ExitPlanMode')).toBe(true);
+      expect(res2!.matches.get('prompt.model_switch')).toBe(false);
+
+      const acSole = new AbortController();
+      const pSole = scanColdWireMarkers(wirePath, ['ExitPlanMode'], acSole.signal);
+      acSole.abort(new Error('sole-caller-cancelled'));
+      await expect(pSole).rejects.toThrow('sole-caller-cancelled');
+      const afterAbort = await scanColdWireMarkers(wirePath, ['ExitPlanMode']);
+      expect(afterAbort?.matches.get('ExitPlanMode')).toBe(true);
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   }, 20_000);

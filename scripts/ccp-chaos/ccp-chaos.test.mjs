@@ -918,6 +918,9 @@ describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
   it('hard-fails evaluateS9Verdict on any flight-recorder, audio, popup, sidebar, or QuickSwitcher breach', () => {
     const cleanInput = () => ({
       flightRecorder: {
+        frameCount: 120,
+        cls: 0.005,
+        rawLayoutShift: 0.008,
         breaches: {
           phaseFlashToSettling: [],
           errorBoundaryMounts: [],
@@ -932,16 +935,27 @@ describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
         },
       },
       pageErrors: [],
+      consoleErrors: [],
       http5xxResponses: [],
       drill1: {
         roundsSucceeded: 10,
         composerUsableAfterAllRounds: true,
+        upwardScrollSnapBackCheck: { ok: true, skipped: false, settledScrollTop: 420 },
         composerPopupSweep: { triggersClicked: 4, breachCount: 0 },
       },
       drill2: {
+        concurrentTurnSubmitted: true,
+        indexChurnStats: { ticks: 12, mutated: 12 },
         oggRangeProbe: { status: 206, rangeLatencyMs: 18 },
         mp4RangeProbe: { status: 206, rangeLatencyMs: 22 },
         mountedAudioCount: 2,
+        browserMediaDecode: {
+          audioReadyState: 4,
+          audioErrorCount: 0,
+          audioAdvanced: true,
+          audioSeeked: true,
+          brokenImageCount: 0,
+        },
         attachmentPreviewOpened: true,
         redundantMediaPlaybackRemints: [],
       },
@@ -950,11 +964,36 @@ describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
         quickSwitcher: { opened: true, highlightedMounted: true, highlightedInViewport: true },
         rightRail10k: { foundColdNeedleA: true },
       },
+      corpusSummary: {
+        seededSessionCount: 140,
+        subagentCount: 250,
+        giantMainWireGiB: 0.02,
+      },
       serverHealth: { unhandledRejections: 0, uncaughtExceptions: 0 },
       tierConfig: resolveS9TierConfig('smoke'),
     });
 
     assert.equal(evaluateS9Verdict(cleanInput()).passed, true);
+
+    const withZeroRecorderFrames = cleanInput();
+    withZeroRecorderFrames.flightRecorder.frameCount = 0;
+    assert.equal(evaluateS9Verdict(withZeroRecorderFrames).passed, false);
+
+    const withHighCls = cleanInput();
+    withHighCls.flightRecorder.cls = 0.05;
+    assert.equal(evaluateS9Verdict(withHighCls).passed, false);
+
+    const withNoChurn = cleanInput();
+    withNoChurn.drill2.indexChurnStats = { ticks: 0, mutated: 0 };
+    assert.equal(evaluateS9Verdict(withNoChurn).passed, false);
+
+    const withUnderScaledCorpus = cleanInput();
+    withUnderScaledCorpus.corpusSummary.subagentCount = 50;
+    assert.equal(evaluateS9Verdict(withUnderScaledCorpus).passed, false);
+
+    const withAudioDecodeErr = cleanInput();
+    withAudioDecodeErr.drill2.browserMediaDecode.audioErrorCount = 1;
+    assert.equal(evaluateS9Verdict(withAudioDecodeErr).passed, false);
 
     const withPhaseFlash = cleanInput();
     withPhaseFlash.flightRecorder.breaches.phaseFlashToSettling.push({ from: 'active', to: 'settling' });

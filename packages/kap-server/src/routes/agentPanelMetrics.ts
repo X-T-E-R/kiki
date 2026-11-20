@@ -102,6 +102,7 @@ export interface PersistedAgentPanelMetricsOptions {
 
 const PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS = 30_000;
 const PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS = 600_000;
+const OVERSIZED_DETACHED_CATCHUP_DELAY_MS = 600;
 const PERSISTED_METRICS_SCAN_MAX_RECORDS = 100_000;
 const PERSISTED_METRICS_SCAN_MAX_BYTES = 128 * 1024 * 1024;
 const PERSISTED_METRICS_SCAN_WALL_TIME_MS = 5_000;
@@ -255,6 +256,7 @@ export async function readPersistedAgentPanelMetrics(
     type RuntimePrepassEntry = {
       readonly facts: PersistedAgentRuntimeFacts;
       readonly checkpointReady: boolean;
+      readonly oversizedUncheckpointed: boolean;
       readonly context: PersistedAgentContext;
       readonly contextComplete: boolean;
     };
@@ -270,6 +272,7 @@ export async function readPersistedAgentPanelMetrics(
       return [agentId, {
         facts: fallbackFacts(meta?.contextTokens),
         checkpointReady: false,
+        oversizedUncheckpointed: false,
         context,
         contextComplete,
       }] as const;
@@ -305,6 +308,7 @@ export async function readPersistedAgentPanelMetrics(
         return [agentId, {
           facts,
           checkpointReady: facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+          oversizedUncheckpointed: !facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
           context,
           contextComplete: true,
         }] as const;
@@ -362,6 +366,76 @@ export async function readPersistedAgentPanelMetrics(
       options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
       options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
     ].join(':');
+    const oversizedUncheckpointed = missing.filter(id => runtime.get(id)?.oversizedUncheckpointed === true);
+    if (oversizedUncheckpointed.length > 0) {
+      const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, oversizedUncheckpointed, options.signal);
+      const pendingOversized: string[] = [];
+      for (const id of oversizedUncheckpointed) {
+        const usage = resolvedUsage(id, persistedUsageOf(rows[id]));
+        result.set(id, toPersistedMetrics(usage, pricing));
+        if (!usage.complete) pendingOversized.push(id);
+      }
+      if (options.complete === true && pendingOversized.length > 0) {
+        const detachedKey = `oversized\0${pendingOversized.toSorted().map(keyFor).join('\0')}\0${limitsKey}`;
+        const existingDetached = state.flights.get(detachedKey);
+        if (existingDetached === undefined || existingDetached.valid.size !== pendingOversized.length || existingDetached.controller.signal.aborted) {
+          const controller = new AbortController();
+          const flightValid = new Set(pendingOversized.map(sourceFor));
+          state.reads.add(flightValid);
+          let created!: PersistedMetricsFlight;
+          const promise = new Promise<void>((resolve, reject) => {
+            if (controller.signal.aborted) {
+              reject(controller.signal.reason);
+              return;
+            }
+            const delayTimer = setTimeout(() => {
+              controller.signal.removeEventListener('abort', onAbort);
+              resolve();
+            }, OVERSIZED_DETACHED_CATCHUP_DELAY_MS);
+            delayTimer.unref();
+            const onAbort = (): void => {
+              clearTimeout(delayTimer);
+              reject(controller.signal.reason);
+            };
+            controller.signal.addEventListener('abort', onAbort, { once: true });
+          }).then(() => scanPersistedAgentPanelMetrics(
+            core, workspaceId, sessionId, pendingOversized, options.agentIds !== undefined,
+            options.limits,
+            controller.signal, () => created.sharedWaiters,
+            (id, usage) => { created.completed.set(id, usage); },
+          )).then((scanResult) => {
+            const usages = { ...scanResult.usages };
+            for (const [agentId, usage] of Object.entries(usages)) {
+              if (!flightValid.has(sourceFor(agentId))) {
+                usages[agentId] = { ...usage, complete: false, partial: true };
+                continue;
+              }
+              if (!usage.complete || controller.signal.aborted || runtime.get(agentId)?.contextComplete !== true) continue;
+              const ttl = mutable.has(agentId)
+                ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
+                : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
+              state.cache.set(sourceFor(agentId), {
+                liveRecords: options.mutableUsageRecords?.[agentId],
+                usage,
+                context: runtime.get(agentId)?.context ?? EMPTY_PERSISTED_CONTEXT,
+              }, { ttl });
+            }
+            return { usages, budgetCapped: Object.values(usages).some((usage) => !usage.complete) };
+          }).finally(() => {
+            created.settled = true;
+            state.reads.delete(flightValid);
+            state.activeFlights.delete(created);
+            if (state.flights.get(detachedKey) === created) state.flights.delete(detachedKey);
+          });
+          created = { controller, promise, valid: flightValid, completed: new Map(), waiters: 0, sharedWaiters: 0, settled: false, detach: true };
+          void promise.catch(() => undefined);
+          state.flights.set(detachedKey, created);
+          state.activeFlights.add(created);
+        }
+      }
+      for (let index = missing.length - 1; index >= 0; index--) if (result.has(missing[index]!)) missing.splice(index, 1);
+      if (missing.length === 0) return finish();
+    }
     const flightKey = `${missing.toSorted().map(keyFor).join('\0')}\0${limitsKey}`;
     let flight = state.flights.get(flightKey);
     if (flight !== undefined && (flight.valid.size !== missing.length || flight.controller.signal.aborted)) flight = undefined;

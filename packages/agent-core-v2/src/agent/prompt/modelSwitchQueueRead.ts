@@ -13,7 +13,7 @@ import {
   verifyReplayCheckpointWire,
   type ReplayCheckpointWire,
 } from '#/state/eventDispatcherService';
-import { logicalByteSize, openPinnedLogicalRead, type PinnedLogicalRead } from '#/persistence/coldSegmentLog';
+import { logicalByteSize, openPinnedLogicalRead, scanColdWireMarkers, type PinnedLogicalRead } from '#/persistence/coldSegmentLog';
 import { isWireRecord, AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
 
@@ -23,6 +23,7 @@ const SCAN_CHUNK_BYTES = 4 * 1024 * 1024;
 const PROOF_BYTES = 64 * 1024;
 const PROMPT_DOT_NEEDLE = Buffer.from('prompt.');
 const CONTEXT_UNDO_NEEDLE = Buffer.from('context.undo');
+const MODEL_SWITCH_NEEDLE = Buffer.from('prompt.model_switch', 'utf8');
 const CHECKPOINT_STATE_NAMES = new Set([modelSwitchQueueKey.name, promptQueueKey.name]);
 
 function isModelSwitchQueueRecordType(type: string): boolean {
@@ -102,6 +103,8 @@ export class PersistedModelSwitchReader {
     }
     const pinned = await openPinnedLogicalRead(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, signal);
     try {
+      const fastEmpty = await this.tryFastEmptyScan(scope, pinned, signal);
+      if (fastEmpty) return [];
       for (;;) {
         signal?.throwIfAborted();
         try { return await this.readWithPinned(scope, signal, pinned, true); }
@@ -127,6 +130,71 @@ export class PersistedModelSwitchReader {
     }).finally(() => { this.flights.delete(scope); });
     this.flights.set(scope, promise);
     return promise.then((list) => { signal?.throwIfAborted(); return list; });
+  }
+
+  private async tryFastEmptyScan(scope: string, pinned: PinnedLogicalRead, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
+    const current = await this.source(scope, pinned);
+    signal?.throwIfAborted();
+    if (current.size <= READ_BYTES * 2) return false;
+    const cached = this.states.get(scope);
+    if (cached !== undefined && cached.complete && cached.switches.size === 0 && this.canAppend(cached.source, current) && current.size === cached.source.size) {
+      return true;
+    }
+    const wirePath = this.host.storage.pathFor?.(scope, AGENT_WIRE_RECORD_KEY);
+    if (!pinned.sealed && wirePath !== undefined) {
+      const scanned = await scanColdWireMarkers(wirePath, ['prompt.model_switch'], signal, READ_BYTES * 2);
+      if (scanned !== undefined) {
+        if (scanned.matches.get('prompt.model_switch') === true) return false;
+        const after = await this.source(scope, pinned);
+        if (!this.canAppend(current, after) || after.size !== current.size) return false;
+        const proof = await this.prefixProof(scope, current.size, pinned);
+        this.states.delete(scope);
+        this.states.set(scope, {
+          source: after,
+          watermark: current.size,
+          proof,
+          switches: modelSwitchQueueKey.initial(),
+          queue: promptQueueKey.initial(),
+          offset: current.size,
+          pending: Buffer.alloc(0),
+          skip: false,
+          complete: true,
+        });
+        while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
+        return true;
+      }
+    }
+    const overlap = MODEL_SWITCH_NEEDLE.length - 1;
+    let carry = Buffer.alloc(0);
+    for await (const raw of pinned.read({ start: 0, end: current.size - 1 }, { chunkBytes: SCAN_CHUNK_BYTES })) {
+      signal?.throwIfAborted();
+      const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+      const combined = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+      if (combined.indexOf(MODEL_SWITCH_NEEDLE) !== -1) {
+        return false;
+      }
+      carry = overlap > 0 ? Buffer.from(combined.subarray(Math.max(0, combined.length - overlap))) : Buffer.alloc(0);
+    }
+    const after = await this.source(scope, pinned);
+    if (!this.canAppend(current, after) || after.size !== current.size) {
+      return false;
+    }
+    const proof = await this.prefixProof(scope, current.size, pinned);
+    this.states.delete(scope);
+    this.states.set(scope, {
+      source: after,
+      watermark: current.size,
+      proof,
+      switches: modelSwitchQueueKey.initial(),
+      queue: promptQueueKey.initial(),
+      offset: current.size,
+      pending: Buffer.alloc(0),
+      skip: false,
+      complete: true,
+    });
+    while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
+    return true;
   }
 
   private async checkpoint(scope: string, size: number, mtimeMs: number, pinned: PinnedLogicalRead) {
