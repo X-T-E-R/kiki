@@ -328,7 +328,7 @@ function buildRemoteSyncCodeOnlyScript(deletedFiles = []) {
     ...deletedFiles.map((f) => `rm -f ${JSON.stringify(`/tmp/kiki-work/${f}`)}`),
     'cd /tmp/kiki-work',
     'echo "=== INCREMENTAL BUILD TS WORKSPACE PACKAGES ==="',
-    'pnpm --filter @kiki/plugin-sdk --filter @kiki/lexical --filter @kiki/protocol --filter @kiki/transcript --filter @kiki/transcript-live --filter @kiki/kaos --filter @kiki/oauth --filter @kiki/cordis-runtime --filter @kiki/agent-profiles --filter @kiki/tree-sitter-bash --filter @kiki/klient --filter @kiki/session-core run build',
+    'pnpm --filter @kiki/plugin-sdk --filter @kiki/lexical --filter @kiki/protocol --filter @kiki/transcript --filter @kiki/transcript-live --filter @kiki/kaos --filter @kiki/oauth --filter @kiki/cordis-runtime --filter @kiki/agent-profiles --filter @kiki/tree-sitter-bash --filter @kiki/klient --filter @kiki/session-core --filter @kiki/gui run build',
     'echo "SYNC_CODE_ONLY_OK"',
   ].join('\n');
 }
@@ -363,7 +363,7 @@ function buildRemotePrepareScript(deletedFiles = []) {
     'echo "=== PNPM INSTALL ==="',
     'pnpm install --frozen-lockfile --ignore-scripts',
     'echo "=== BUILD TS WORKSPACE PACKAGES ==="',
-    'pnpm --filter @kiki/plugin-sdk --filter @kiki/lexical --filter @kiki/protocol --filter @kiki/transcript --filter @kiki/transcript-live --filter @kiki/kaos --filter @kiki/oauth --filter @kiki/cordis-runtime --filter @kiki/agent-profiles --filter @kiki/tree-sitter-bash --filter @kiki/klient --filter @kiki/session-core run build',
+    'pnpm --filter @kiki/plugin-sdk --filter @kiki/lexical --filter @kiki/protocol --filter @kiki/transcript --filter @kiki/transcript-live --filter @kiki/kaos --filter @kiki/oauth --filter @kiki/cordis-runtime --filter @kiki/agent-profiles --filter @kiki/tree-sitter-bash --filter @kiki/klient --filter @kiki/session-core --filter @kiki/gui run build',
     'echo "=== PLAYWRIGHT CHROMIUM CHECK ==="',
     'pnpm --filter @kiki/kap-server exec playwright install chromium --with-deps >/tmp/playwright-install.log 2>&1 || pnpm --filter @kiki/kap-server exec playwright install chromium >/tmp/playwright-install.log 2>&1 || true',
     'echo "PREPARE_OK"',
