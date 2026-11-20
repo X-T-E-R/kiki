@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use age::secrecy::SecretString;
+use age::secrecy::{ExposeSecret, SecretString};
 use fs2::FileExt;
 use napi::bindgen_prelude::{AsyncTask, Buffer};
 use napi::{Env, Error, Result, Task};
@@ -59,6 +59,90 @@ fn age_task(bytes: Buffer, passphrase: String, encrypt: bool) -> Result<AsyncTas
         passphrase: SecretString::from(passphrase),
         encrypt,
     }))
+}
+
+#[napi(object)]
+pub struct AgeX25519Keypair {
+    pub identity: String,
+    pub recipient: String,
+}
+
+fn parse_x25519_identity(identity: SecretString) -> Result<age::x25519::Identity> {
+    identity
+        .expose_secret()
+        .trim()
+        .parse::<age::x25519::Identity>()
+        .map_err(|_| Error::from_reason("Invalid age X25519 identity"))
+}
+
+fn parse_x25519_recipient(recipient: &str) -> Result<age::x25519::Recipient> {
+    recipient
+        .trim()
+        .parse::<age::x25519::Recipient>()
+        .map_err(|_| Error::from_reason("Invalid age X25519 recipient"))
+}
+
+fn encrypt_for_x25519_recipients(plaintext: &[u8], recipients: &[String]) -> Result<Vec<u8>> {
+    if recipients.is_empty() {
+        return Err(Error::from_reason(
+            "At least one age X25519 recipient is required",
+        ));
+    }
+    let parsed: Vec<age::x25519::Recipient> = recipients
+        .iter()
+        .map(|entry| parse_x25519_recipient(entry))
+        .collect::<Result<Vec<_>>>()?;
+    let encryptor =
+        age::Encryptor::with_recipients(parsed.iter().map(|entry| entry as &dyn age::Recipient))
+            .map_err(|_| Error::from_reason("Age X25519 encryption failed"))?;
+    let mut output = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut output)
+        .map_err(|_| Error::from_reason("Age X25519 encryption failed"))?;
+    writer
+        .write_all(plaintext)
+        .map_err(|_| Error::from_reason("Age X25519 encryption failed"))?;
+    writer
+        .finish()
+        .map_err(|_| Error::from_reason("Age X25519 encryption failed"))?;
+    Ok(output)
+}
+
+fn decrypt_with_x25519_identity(ciphertext: &[u8], identity: SecretString) -> Result<Vec<u8>> {
+    let parsed = parse_x25519_identity(identity)?;
+    age::decrypt(&parsed, ciphertext).map_err(|_| {
+        Error::from_reason("Age X25519 decryption failed (invalid ciphertext or identity)")
+    })
+}
+
+#[napi]
+pub fn generate_x25519_keypair() -> AgeX25519Keypair {
+    let identity = age::x25519::Identity::generate();
+    let recipient = identity.to_public().to_string();
+    let secret = identity.to_string();
+    AgeX25519Keypair {
+        identity: secret.expose_secret().to_owned(),
+        recipient,
+    }
+}
+
+#[napi]
+pub fn recipient_from_identity(identity: String) -> Result<String> {
+    let parsed = parse_x25519_identity(SecretString::from(identity))?;
+    Ok(parsed.to_public().to_string())
+}
+
+#[napi]
+pub fn encrypt_multi_recipient(plaintext: Buffer, recipients: Vec<String>) -> Result<Buffer> {
+    let bytes = Zeroizing::new(plaintext.to_vec());
+    let ciphertext = encrypt_for_x25519_recipients(&bytes, &recipients)?;
+    Ok(ciphertext.into())
+}
+
+#[napi]
+pub fn decrypt_identity(ciphertext: Buffer, identity: String) -> Result<Buffer> {
+    let plaintext = decrypt_with_x25519_identity(&ciphertext, SecretString::from(identity))?;
+    Ok(plaintext.into())
 }
 
 pub struct CanonicalizeTask(String);
@@ -275,5 +359,48 @@ mod tests {
         }
         drop(file);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn x25519_multi_recipient_roundtrip_and_isolation() {
+        let win = generate_x25519_keypair();
+        let mac = generate_x25519_keypair();
+        let outsider = generate_x25519_keypair();
+
+        assert!(win.identity.starts_with("AGE-SECRET-KEY-1"));
+        assert!(win.recipient.starts_with("age1"));
+        assert_eq!(
+            recipient_from_identity(win.identity.clone()).unwrap(),
+            win.recipient
+        );
+        assert_eq!(
+            recipient_from_identity(mac.identity.clone()).unwrap(),
+            mac.recipient
+        );
+
+        let payload = b"synthetic-32-byte-dek-material!!";
+        let ciphertext = encrypt_for_x25519_recipients(
+            payload,
+            &[win.recipient.clone(), mac.recipient.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            decrypt_with_x25519_identity(&ciphertext, SecretString::from(win.identity.clone()))
+                .unwrap(),
+            payload
+        );
+        assert_eq!(
+            decrypt_with_x25519_identity(&ciphertext, SecretString::from(mac.identity.clone()))
+                .unwrap(),
+            payload
+        );
+        assert!(
+            decrypt_with_x25519_identity(&ciphertext, SecretString::from(outsider.identity))
+                .is_err()
+        );
+        assert!(encrypt_for_x25519_recipients(payload, &[]).is_err());
+        assert!(encrypt_for_x25519_recipients(payload, &["not-a-recipient".to_owned()]).is_err());
+        assert!(recipient_from_identity("not-an-identity".to_owned()).is_err());
     }
 }

@@ -6,6 +6,12 @@ const native = require(path.join(__dirname, 'prebuilds', `${process.platform}-${
 
 exports.ageEncrypt = (bytes, passphrase) => native.ageEncrypt(Buffer.from(bytes), passphrase);
 exports.ageDecrypt = (bytes, passphrase) => native.ageDecrypt(Buffer.from(bytes), passphrase);
+exports.generateX25519Keypair = native.generateX25519Keypair;
+exports.recipientFromIdentity = native.recipientFromIdentity;
+exports.encryptMultiRecipient = (plaintext, recipients) =>
+  native.encryptMultiRecipient(Buffer.from(plaintext), Array.from(recipients));
+exports.decryptIdentity = (ciphertext, identity) =>
+  native.decryptIdentity(Buffer.from(ciphertext), identity);
 exports.tryAcquireGrokAuthLock = native.tryAcquireGrokAuthLock;
 exports.canonicalizeOriginalHome = native.canonicalizeOriginalHome;
 

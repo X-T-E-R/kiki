@@ -5,6 +5,20 @@ export function ageEncrypt(plaintext: Uint8Array, passphrase: string): Promise<B
 /** Decrypts an age scrypt envelope without interpreting the plaintext schema. */
 export function ageDecrypt(ciphertext: Uint8Array, passphrase: string): Promise<Buffer>;
 
+/** Generated age X25519 secret identity (`AGE-SECRET-KEY-1...`) and public recipient (`age1...`). */
+export interface AgeX25519Keypair {
+  readonly identity: string;
+  readonly recipient: string;
+}
+/** Generates a new age X25519 device identity and public recipient pair. */
+export function generateX25519Keypair(): AgeX25519Keypair;
+/** Derives the public `age1...` recipient string from an `AGE-SECRET-KEY-1...` identity. */
+export function recipientFromIdentity(identity: string): string;
+/** Encrypts plaintext into a binary age v1 envelope readable by every listed X25519 recipient. */
+export function encryptMultiRecipient(plaintext: Uint8Array, recipients: readonly string[]): Buffer;
+/** Decrypts a binary age v1 X25519 envelope with the matching secret identity. */
+export function decryptIdentity(ciphertext: Uint8Array, identity: string): Buffer;
+
 /** Rust std::fs::canonicalize + to_string_lossy, including Windows namespace prefix. Never creates a path. */
 export function canonicalizeOriginalHome(path: string): Promise<string>;
 

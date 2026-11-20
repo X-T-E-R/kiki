@@ -28,6 +28,27 @@ fn main() {
             assert_eq!(plaintext, PLAINTEXT);
             println!("AGE_COMPAT_OK");
         }
+        "x25519-encrypt" => {
+            let recipients: Vec<age::x25519::Recipient> = args[3..]
+                .iter()
+                .map(|value| value.trim().parse::<age::x25519::Recipient>().unwrap())
+                .collect();
+            let encryptor = age::Encryptor::with_recipients(
+                recipients.iter().map(|entry| entry as &dyn age::Recipient),
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            let mut writer = encryptor.wrap_output(&mut output).unwrap();
+            writer.write_all(PLAINTEXT).unwrap();
+            writer.finish().unwrap();
+            std::fs::write(&args[2], output).unwrap();
+        }
+        "x25519-decrypt" => {
+            let identity = args[3].trim().parse::<age::x25519::Identity>().unwrap();
+            let plaintext = age::decrypt(&identity, &std::fs::read(&args[2]).unwrap()).unwrap();
+            assert_eq!(plaintext, PLAINTEXT);
+            println!("AGE_X25519_COMPAT_OK");
+        }
         "hold" => {
             // Independent donor-style holder, not the N-API implementation.
             let file = OpenOptions::new()

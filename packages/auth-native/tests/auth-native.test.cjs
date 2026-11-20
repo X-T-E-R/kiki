@@ -9,8 +9,14 @@ const { setTimeout: delay } = require('node:timers/promises');
 const auth = require('../index.cjs');
 const root = path.resolve(__dirname, '../../..');
 const scratch = path.resolve(root, '.tmp/auth-native-build');
-const env = { ...process.env, CARGO_HOME: path.join(scratch, 'cargo-home'), CARGO_TARGET_DIR: path.join(scratch, 'target') };
-const fixture = path.join(scratch, 'target/release/examples', process.platform === 'win32' ? 'compat.exe' : 'compat');
+const cargoTargetDir = process.env.CARGO_TARGET_DIR
+  ? path.resolve(path.resolve(__dirname, '..'), process.env.CARGO_TARGET_DIR)
+  : path.join(scratch, 'target');
+const cargoHome = process.env.CARGO_HOME
+  ? path.resolve(path.resolve(__dirname, '..'), process.env.CARGO_HOME)
+  : path.join(scratch, 'cargo-home');
+const env = { ...process.env, CARGO_HOME: cargoHome, CARGO_TARGET_DIR: cargoTargetDir };
+const fixture = path.join(cargoTargetDir, 'release/examples', process.platform === 'win32' ? 'compat.exe' : 'compat');
 let temp;
 const passphrase = 'synthetic-auth-fixture-passphrase';
 const plaintext = Buffer.from('{"version":1,"secrets":{"example":"SYNTHETIC_ONLY"}}');
@@ -33,6 +39,41 @@ void test('independent Rust age 0.11.1 scrypt vector decrypts in Node, and Node 
   assert.match(execFileSync(fixture, ['decrypt', file], { encoding: 'utf8' }), /AGE_COMPAT_OK/);
   await assert.rejects(auth.ageDecrypt(Buffer.from('invalid age'), passphrase), /Age decryption failed/);
   assert.throws(() => auth.ageEncrypt(plaintext, ''), /passphrase must not be empty/);
+});
+
+void test('age X25519 keypair generation, multi-recipient encryption/decryption, and Rust compat', () => {
+  const deviceWin = auth.generateX25519Keypair();
+  const deviceMac = auth.generateX25519Keypair();
+  const revokedDevice = auth.generateX25519Keypair();
+
+  assert.match(deviceWin.identity, /^AGE-SECRET-KEY-1[A-Z0-9]+$/);
+  assert.match(deviceWin.recipient, /^age1[a-z0-9]+$/);
+  assert.equal(auth.recipientFromIdentity(deviceWin.identity), deviceWin.recipient);
+  assert.equal(auth.recipientFromIdentity(deviceMac.identity), deviceMac.recipient);
+  assert.notEqual(deviceWin.recipient, deviceMac.recipient);
+
+  const encrypted = auth.encryptMultiRecipient(plaintext, [deviceWin.recipient, deviceMac.recipient]);
+  assert.equal(encrypted.subarray(0, 22).toString(), 'age-encryption.org/v1\n');
+  assert.deepEqual(auth.decryptIdentity(encrypted, deviceWin.identity), plaintext);
+  assert.deepEqual(auth.decryptIdentity(encrypted, deviceMac.identity), plaintext);
+  assert.throws(() => auth.decryptIdentity(encrypted, revokedDevice.identity), /Age X25519 decryption failed/);
+
+  const nodeFile = path.join(temp, 'node-multi.age');
+  writeFileSync(nodeFile, encrypted);
+  assert.match(execFileSync(fixture, ['x25519-decrypt', nodeFile, deviceWin.identity], { encoding: 'utf8' }), /AGE_X25519_COMPAT_OK/);
+  assert.match(execFileSync(fixture, ['x25519-decrypt', nodeFile, deviceMac.identity], { encoding: 'utf8' }), /AGE_X25519_COMPAT_OK/);
+
+  const rustFile = path.join(temp, 'rust-multi.age');
+  execFileSync(fixture, ['x25519-encrypt', rustFile, deviceWin.recipient, deviceMac.recipient]);
+  const rustCiphertext = readFileSync(rustFile);
+  assert.deepEqual(auth.decryptIdentity(rustCiphertext, deviceWin.identity), plaintext);
+  assert.deepEqual(auth.decryptIdentity(rustCiphertext, deviceMac.identity), plaintext);
+  assert.throws(() => auth.decryptIdentity(rustCiphertext, revokedDevice.identity), /Age X25519 decryption failed/);
+
+  assert.throws(() => auth.encryptMultiRecipient(plaintext, []), /At least one age X25519 recipient is required/);
+  assert.throws(() => auth.encryptMultiRecipient(plaintext, ['age1invalid']), /Invalid age X25519 recipient/);
+  assert.throws(() => auth.recipientFromIdentity('not-an-identity'), /Invalid age X25519 identity/);
+  assert.throws(() => auth.decryptIdentity(encrypted, 'not-an-identity'), /Invalid age X25519 identity/);
 });
 
 void test('Rust canonical home string and original SHA256 input are identical in Node', async () => {
