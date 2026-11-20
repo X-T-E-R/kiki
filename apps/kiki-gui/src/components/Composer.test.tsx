@@ -4120,11 +4120,36 @@ describe('Composer restored selection diagnostics', () => {
     listModels.mockRejectedValue(new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'Invalid model config', data: null }));
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'hello', onSend });
-    expect(container.querySelector('[data-selection-diagnostic][role="status"]')?.textContent).toContain('Invalid model config');
+    const diagnostic = container.querySelector<HTMLElement>('[data-selection-diagnostic][role="status"]');
+    expect(diagnostic?.textContent).toContain('Invalid model config');
+    expect(diagnostic?.className).toContain('overflow-y-auto');
+    expect(diagnostic?.className).toContain('max-h-');
     expect(container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
     await pressKey(composerInput(container), { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith('hello', []);
     expect(listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it('clamps upward AddMenu anchor variables inside the viewport even when the card sits near or past innerHeight', async () => {
+    const prevInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
+    try {
+      const { container } = await renderComposer({ value: '' });
+      const card = container.querySelector<HTMLElement>('[data-composer-card]')!;
+      const menuRoot = container.querySelector<HTMLElement>('[data-add-menu]')!;
+      vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+        x: 200, y: 977, left: 200, top: 977, right: 960, bottom: 1063, width: 760, height: 86, toJSON() { return {}; },
+      });
+      vi.spyOn(menuRoot, 'getBoundingClientRect').mockReturnValue({
+        x: 212, y: 1023, left: 212, top: 1023, right: 240, bottom: 1051, width: 28, height: 28, toJSON() { return {}; },
+      });
+      await openAddMenu(container);
+      // panelBottomEdge = min(977 - 6, 900 - 8) = 892 -> --cp-bottom = 1051 - 892 = 159px (keeps panel bottom <= 892 < 900).
+      expect(menuRoot.style.getPropertyValue('--cp-bottom')).toBe('159px');
+      expect(Number.parseInt(menuRoot.style.getPropertyValue('--cp-max-h'), 10)).toBeLessThanOrEqual(780);
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: prevInnerHeight });
+    }
   });
 
   it('keeps a removed model visible, blocks sending, and keeps the input and reselect path usable', async () => {

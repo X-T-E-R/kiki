@@ -366,29 +366,9 @@ export async function verifyAddMenuSecondaryScrollable(page) {
     }
     const panel = addPanel ?? bestScroller?.closest('[role="menu"], [role="dialog"], [data-add-menu] > div') ?? bestScroller;
     const panelRect = panel ? panel.getBoundingClientRect() : null;
-    const card = document.querySelector('[data-composer-card]');
-    const cardRect = card ? card.getBoundingClientRect() : null;
-    const computedMaxH = panel ? getComputedStyle(panel).maxHeight : null;
-    const cpMaxH = menuRoot instanceof HTMLElement ? menuRoot.style.getPropertyValue('--cp-max-h') : null;
-    const cpBottom = menuRoot instanceof HTMLElement ? menuRoot.style.getPropertyValue('--cp-bottom') : null;
     const clipsViewport = panelRect !== null && (panelRect.bottom > window.innerHeight + 4 || panelRect.top < -4);
-    const debugGeom = panelRect
-      ? {
-          top: Math.round(panelRect.top),
-          bottom: Math.round(panelRect.bottom),
-          height: Math.round(panelRect.height),
-          innerHeight: window.innerHeight,
-          cardTop: cardRect ? Math.round(cardRect.top) : null,
-          cardBottom: cardRect ? Math.round(cardRect.bottom) : null,
-          computedMaxH,
-          cpMaxH,
-          cpBottom,
-          scrollerScrollH: bestScroller ? bestScroller.scrollHeight : null,
-          scrollerClientH: bestScroller ? bestScroller.clientHeight : null,
-        }
-      : null;
     if (!bestScroller) {
-      return { foundScroller: false, overflowed: false, moved: false, clipsViewport, debugGeom };
+      return { foundScroller: false, overflowed: false, moved: false, clipsViewport };
     }
     const overflowed = bestScroller.scrollHeight > bestScroller.clientHeight + 2;
     let moved = true;
@@ -398,7 +378,7 @@ export async function verifyAddMenuSecondaryScrollable(page) {
       moved = bestScroller.scrollTop > before;
       bestScroller.scrollTop = before;
     }
-    return { foundScroller: true, overflowed, moved, clipsViewport, debugGeom };
+    return { foundScroller: true, overflowed, moved, clipsViewport };
   });
 
   await page.keyboard.press('Escape').catch(() => undefined);
@@ -411,7 +391,6 @@ export async function verifyAddMenuSecondaryScrollable(page) {
     view: pickedView,
     scrollable: check.foundScroller && check.moved,
     overflowed: check.overflowed,
-    ...(ok ? {} : { debugGeom: check.debugGeom }),
   };
 }
 

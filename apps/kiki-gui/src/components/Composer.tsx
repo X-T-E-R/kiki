@@ -3305,8 +3305,8 @@ export function Composer({
             </span>
           </p>
         ) : null}
-        {selectionBlocked || selectionCatalogError !== null ? <div data-selection-diagnostic role={selectionBlocked ? 'alert' : 'status'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
-          {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
+        {selectionBlocked || selectionCatalogError !== null ? <div data-selection-diagnostic role={selectionBlocked ? 'alert' : 'status'} className="mb-2 max-h-[min(10rem,25dvh)] space-y-1 overflow-y-auto overscroll-contain break-words rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
+          {selectionCatalogError !== null ? <p className="max-h-20 overflow-y-auto overscroll-contain break-words">{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
           {invalidProfile ? (
             <div className="flex flex-wrap items-center gap-2">
               <p>{t('selection.profileInvalid', { value: agentProfile! })}</p>

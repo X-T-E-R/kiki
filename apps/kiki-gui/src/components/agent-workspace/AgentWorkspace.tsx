@@ -1804,14 +1804,14 @@ function ChildAgentWorkspace({
         ) : null}
         {sendNotice?.scope === sendScope ? (
           <ConversationDockColumn>
-            <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
+            <p role="alert" className="max-h-24 overflow-y-auto overscroll-contain break-words rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
               {sendNotice.text}
             </p>
           </ConversationDockColumn>
         ) : null}
         {executorBindingQuery.isError && reportedExecutorId === undefined ? (
           <ConversationDockColumn>
-            <p role="status" className="px-1 text-[12px] text-ink-faint">
+            <p role="status" className="max-h-24 overflow-y-auto overscroll-contain break-words px-1 text-[12px] text-ink-faint">
               {t('diagnostics.error')} · {executorBindingQuery.error.message}
               <button type="button" className="ml-2 underline" onClick={() => { void executorBindingQuery.refetch(); }}>{t('common.retry')}</button>
             </p>

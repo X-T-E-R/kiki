@@ -1207,7 +1207,7 @@ function NormalApp() {
         <Group
           orientation="horizontal"
           id="kiki-shell"
-          className="flex h-full min-w-0 flex-1 overflow-hidden bg-canvas"
+          className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-canvas"
           onLayoutChanged={() => {
             if (latestSidebarPixelsRef.current !== null && latestSidebarPixelsRef.current >= SIDEBAR_MIN_WIDTH) {
               persistSidebarPanelWidth(latestSidebarPixelsRef.current);
@@ -1226,6 +1226,7 @@ function NormalApp() {
               }
             }}
             className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+            style={{ overflow: 'hidden' }}
           >
             {sidebarNode}
           </Panel>
@@ -1253,7 +1254,7 @@ function NormalApp() {
               persistSidebarPanelWidth(SIDEBAR_DEFAULT_WIDTH);
             }}
           />
-          <Panel id="stage" minSize={480} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          <Panel id="stage" minSize={480} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden" style={{ overflow: 'hidden' }}>
             {stageNode}
           </Panel>
         </Group>
