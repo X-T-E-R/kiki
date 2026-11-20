@@ -20,7 +20,7 @@
  * `document.title` follows the active route; toasts mount at the root.
  */
 
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
@@ -342,7 +342,7 @@ function NormalApp() {
   pendingNavigationRef.current = pendingNavigation;
   // A plugin's "bring up this session" hands focus between desktop windows.
   // On a phone it would only change the page with nobody touching it, so
-  // neither watch below runs in phone mode. Nothing waits on this client: the
+  // this watch does not run in phone mode. Nothing waits on this client: the
   // server keeps just the latest request, for ten seconds, and reading it
   // acknowledges nothing (only the desktop shell acks, natively).
   const phoneMode = usePhoneMode();
@@ -356,7 +356,8 @@ function NormalApp() {
       return;
     }
     let closed = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const webIdlePollMs = 6000;
     const noteConsumed = (identity: PluginFocusIdentity) => {
       const pending = focusWatch.current.pendingPublish;
       if (!pending.some((item) => pluginFocusSameIdentity(item, identity))) pending.push(identity);
@@ -370,7 +371,16 @@ function NormalApp() {
         if (focusWatch.current.pendingPublish[0] === identity) focusWatch.current.pendingPublish.shift();
       }
     };
+    const scheduleNext = (hasActiveRequest: boolean) => {
+      if (closed) return;
+      if (host.kind !== 'tauri' && typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+      const delayMs = host.kind === 'tauri' || hasActiveRequest ? 1500 : webIdlePollMs;
+      timer = setTimeout(() => { void read(); }, delayMs);
+    };
     const read = async () => {
+      let hasActiveRequest = false;
       try {
         if (focusWatch.current.client !== client) {
           focusWatch.current.client = client;
@@ -418,6 +428,7 @@ function NormalApp() {
           }
           if (closed) return;
           if (nativeHandoff !== undefined && !pluginFocusSameIdentity(focusWatch.current.armedNative, nativeHandoff)) {
+            hasActiveRequest = true;
             const { invoke } = await import('@tauri-apps/api/core');
             await invoke('show_main_window');
             if (closed) return;
@@ -427,6 +438,7 @@ function NormalApp() {
             noteConsumed(handed);
             await flushConsumed();
           } else if (localRestore !== undefined) {
+            hasActiveRequest = true;
             await showDesktopWindow();
             if (closed) return;
             await requestScopeNavigation({ homeId: localRestore.homeId, scopeId: localRestore.scopeId, route: localRestore.route });
@@ -436,8 +448,10 @@ function NormalApp() {
             noteConsumed(handed);
             await flushConsumed();
           } else {
+            const request = (await client.pluginNavigation()).request;
+            hasActiveRequest = request !== undefined;
             const applied = await applyConnectionPluginFocus({
-              request: (await client.pluginNavigation()).request,
+              request,
               cursor: focusWatch.current.current,
               sameConnection: true,
               owner: { homeId: activeSpace()?.homeId ?? 'main', scopeId: 'local' },
@@ -457,50 +471,31 @@ function NormalApp() {
         // A rejected show or a thrown scope transaction leaves that request unconsumed.
         // Returning from the existing confirmation consumes it, so a later poll does not open the dialog again.
       }
-      if (!closed) timer = setTimeout(() => { void read(); }, 1500);
+      scheduleNext(hasActiveRequest);
     };
-    void read();
-    return () => { closed = true; clearTimeout(timer); };
-  }, [client, localClient, connectionSource, host, navigate, phoneMode]);
-
-  useEffect(() => {
-    if (phoneMode) return;
-    let closed = false;
-    let initialized = false;
-    let seen = 0;
-    let timer: ReturnType<typeof setTimeout>;
-    let loggedError = false;
-    const read = async () => {
-      try {
-        const { request } = await client.pluginNavigation();
-        if (closed) return;
-        loggedError = false;
-        if (initialized && request !== undefined && request.id > seen) {
-          seen = Math.max(seen, request.id);
-          void navigate(`/s/${encodeURIComponent(request.sessionId)}`);
-          if (host.kind === 'tauri') {
-            try {
-              const { getCurrentWindow } = await import('@tauri-apps/api/window');
-              const window = getCurrentWindow();
-              await window.show(); await window.unminimize(); await window.setFocus();
-            } catch (focusError) {
-              console.warn('[plugin-navigation] failed to focus desktop window:', focusError);
-            }
-          }
+    const onVisibilityChange = () => {
+      if (closed || host.kind === 'tauri') return;
+      if (document.visibilityState === 'hidden') {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
         }
-        initialized = true;
-        if (request !== undefined) seen = Math.max(seen, request.id);
-      } catch (error) {
-        if (!loggedError) {
-          loggedError = true;
-          console.warn('[plugin-navigation] poll failed:', error);
-        }
+        return;
       }
-      if (!closed) timer = setTimeout(() => { void read(); }, 1500);
+      if (timer === undefined) void read();
     };
+    if (host.kind !== 'tauri' && typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
     void read();
-    return () => { closed = true; clearTimeout(timer); };
-  }, [client, host, navigate, phoneMode]);
+    return () => {
+      closed = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (host.kind !== 'tauri' && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+    };
+  }, [client, localClient, connectionSource, host, navigate, phoneMode]);
 
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
@@ -590,10 +585,12 @@ function NormalApp() {
             before_id,
           }, { signal: controller.signal }), current, controller.signal);
           if (controller.signal.aborted) return;
-          queryClient.setQueryData(
-            sessionsKey,
-            (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
-          );
+          startTransition(() => {
+            queryClient.setQueryData(
+              sessionsKey,
+              (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
+            );
+          });
         }
         if (workspaceFilter !== undefined && !controller.signal.aborted) {
           void queryClient.invalidateQueries({ queryKey: personaHeadKey });
@@ -634,14 +631,19 @@ function NormalApp() {
     const subscriptions = events === undefined
       ? []
       : [
-          events.on('session.created', (event) => { noteMaybeNewSession(event.sessionId, true); }),
+          events.on('session.created', (event) => {
+            noteMaybeNewSession(event.sessionId, true);
+            void queryClient.invalidateQueries({ queryKey: ['sessions', 'ephemeral'] });
+          }),
           events.on('session.metaUpdated', (event) => { noteMaybeNewSession(event.sessionId); }),
           events.on('session.workChanged', (event) => { noteMaybeNewSession(event.sessionId); }),
           events.on('personas.changed', () => { scheduleImmediateRefresh(); }),
         ];
 
     const stop = startVisiblePoll({
-      intervalMs: SESSION_FIRST_PAGE_POLL_INTERVAL_MS,
+      // While the event socket is open, live session events drive head refreshes;
+      // keep only a slow safety reconciliation poll so an idle browser stays quiet.
+      intervalMs: wsStatus === 'open' ? SESSION_FIRST_PAGE_POLL_INTERVAL_MS * 8 : SESSION_FIRST_PAGE_POLL_INTERVAL_MS,
       task: runHeadRefresh,
     });
     return () => {
@@ -650,7 +652,7 @@ function NormalApp() {
       for (const sub of subscriptions) sub.dispose();
       controller.abort();
     };
-  }, [client, includePrivate, personaHeadKey, privateOnly, queryClient, sessionsKey, showArchived, workspaceFilter]);
+  }, [client, includePrivate, personaHeadKey, privateOnly, queryClient, sessionsKey, showArchived, workspaceFilter, wsStatus]);
   // Pinned sessions are read as their own complete set: the recency pages
   // above only reach as far as the reader has scrolled, and an old pinned
   // session must not wait for them. The key sits under ['sessions'], so every

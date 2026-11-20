@@ -17,6 +17,7 @@
 
 import {
   createContext,
+  startTransition,
   useCallback,
   useContext,
   useEffect,
@@ -1466,12 +1467,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     let offPlugins = subscribePluginFreshness(klient, queryClient);
     let offPersonas = subscribePersonaFreshness(klient, queryClient);
     const workChanged = klient.events.on('session.workChanged', (change) => {
-      queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
-        mergeSessionWorkChanged(old, change),
-      );
-      queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
-        old === undefined ? old : patchSessionWorkChanged(old, change),
-      );
+      startTransition(() => {
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+          mergeSessionWorkChanged(old, change),
+        );
+        queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
+          old === undefined ? old : patchSessionWorkChanged(old, change),
+        );
+      });
     });
     const offStatus = socket.onStatus((status) => {
       if (!active) return;

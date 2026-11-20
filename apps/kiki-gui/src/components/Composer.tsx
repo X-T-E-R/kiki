@@ -25,7 +25,7 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
@@ -825,7 +825,32 @@ export function Composer({
   // Phone contract: the IME's Enter is the newline key (sending belongs to
   // the button), and the input text stays ≥16px so iOS never zooms on focus.
   const coarsePointer = useCoarsePointer();
-  const text = normalizeComposerText(value);
+  // Mirror the controlled `value` locally while a typing transition is in
+  // flight so each keystroke paints inside Composer without waiting on parent
+  // route/workspace re-renders; once the transition settles (or when an
+  // external prop update arrives), follow the authoritative controlled `value`.
+  const normalizedPropValue = normalizeComposerText(value);
+  const [draftTransitionPending, startDraftTransition] = useTransition();
+  const [localText, setLocalText] = useState(normalizedPropValue);
+  const prevPropValueRef = useRef(normalizedPropValue);
+  if (prevPropValueRef.current !== normalizedPropValue) {
+    prevPropValueRef.current = normalizedPropValue;
+    if (localText !== normalizedPropValue) setLocalText(normalizedPropValue);
+  } else if (!draftTransitionPending && localText !== normalizedPropValue) {
+    setLocalText(normalizedPropValue);
+  }
+  const text = draftTransitionPending ? localText : normalizedPropValue;
+  const commitText = useCallback((nextText: string) => {
+    const normalized = normalizeComposerText(nextText);
+    if (composingRef.current) {
+      onChange(normalized);
+      return;
+    }
+    setLocalText(normalized);
+    startDraftTransition(() => {
+      onChange(normalized);
+    });
+  }, [onChange, startDraftTransition]);
   const textareaRef = useRef<ComposerInputHandle>(null);
   const composingRef = useRef(false);
   // Custom right-click menu for the input (cut / copy / paste / select all).
@@ -2553,6 +2578,7 @@ export function Composer({
   /** `now`: join the running turn instead of queueing behind it (plain prompts only). */
   const send = (now = false, timing?: DeferredAppendTiming) => {
     if (!canSend || slashCatalogPendingRef.current || composingRef.current) return;
+    if (text !== normalizedPropValue) onChange(text);
     sendNowRef.current = now && onSendNow !== undefined;
     sendTimingRef.current = timing;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
@@ -3939,7 +3965,7 @@ export function Composer({
                 composingRef.current = false;
                 const node = textareaRef.current;
                 if (node === null) return;
-                onChange(node.value);
+                commitText(node.value);
                 lastCursorRef.current = node.selectionStart;
                 setSlashConfirm(null);
                 refreshMenu(node.value, node.selectionStart);
@@ -3956,7 +3982,7 @@ export function Composer({
                 historyIndexRef.current = null;
                 recalledCaretUntouchedRef.current = false;
                 recalledCaretPosRef.current = null;
-                onChange(nextText);
+                commitText(nextText);
                 lastCursorRef.current = cursor;
                 setSlashConfirm(null);
                 refreshMenu(nextText, cursor);

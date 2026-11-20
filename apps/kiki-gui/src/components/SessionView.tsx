@@ -5,7 +5,7 @@
  * ConversationShell composer seat across /new → /s/:id.
  */
 
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Popover } from '@base-ui/react/popover';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -403,7 +403,7 @@ export interface SidebarBadge {
   readonly needsYouCount?: number;
 }
 
-function Header({
+const Header = memo(function Header({
   controller,
   railOpen,
   railAvailable = true,
@@ -724,7 +724,7 @@ function Header({
       ) : null}
     </WorkspaceHeader>
   );
-}
+});
 
 /**
  * Session title + cwd. The title renames in place (Enter commits, Esc
@@ -1805,7 +1805,7 @@ function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNu
       <button
         type="button"
         disabled={status === 'loading'}
-        onClick={() => { void continuation.onRequest(); }}
+        onClick={() => { continuation.onRequest(); }}
         title={label}
         aria-label={label}
         className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50 ${
@@ -3062,7 +3062,10 @@ export function SessionView({
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => client.listEphemeralSessions({ before_id: pageParam, page_size: 50 }),
     getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
-    refetchInterval: 15_000,
+    refetchInterval: (query) =>
+      wsStatus === 'open'
+        ? ((query.state.data?.pages[0]?.items.length ?? 0) > 0 ? 60_000 : false)
+        : 15_000,
   });
   useEffect(() => {
     if (controller === null) return;
@@ -3161,10 +3164,15 @@ export function SessionView({
     && (selectedModelId !== boundModelId || modelSwitchMode === 'fresh' || modelSwitchMode === 'compact');
   const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined
     && composerSelection.effortOverride !== (state.thinkingEffort ?? catalogItem?.default_effort);
-  const pendingRuntimeControls: PendingRuntimeControls | undefined = modelControlPending || effortControlPending ? {
-    model: modelControlPending ? effectiveModel : undefined,
-    thinking: effortControlPending ? effectiveEffort : undefined,
-  } : undefined;
+  const pendingRuntimeControls = useMemo<PendingRuntimeControls | undefined>(
+    () => (modelControlPending || effortControlPending
+      ? {
+          model: modelControlPending ? effectiveModel : undefined,
+          thinking: effortControlPending ? effectiveEffort : undefined,
+        }
+      : undefined),
+    [modelControlPending, effortControlPending, effectiveModel, effectiveEffort],
+  );
   const nativeSteeringUnavailable = harnessDenies(harness, 'native_steering');
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
@@ -5632,6 +5640,29 @@ boundExecution,
             loaded: state.loaded,
             hasInitialPrompt: hadInitialHandoffRef.current,
           });
+  const composerExecutionGrants = useMemo(
+    () => ({
+      kikiContext: executionBinding?.effective.kiki_context,
+      allowKikiSubagents: executionBinding?.effective.allow_kiki_subagents,
+    }),
+    [executionBinding?.effective.kiki_context, executionBinding?.effective.allow_kiki_subagents],
+  );
+  const hasBlocks = state.blocks.length > 0;
+  const composerContextUsage = useMemo(() => {
+    const meterLimit = effectiveContextLimit ?? contextAutoCompact?.status.effectiveMaxContextTokens;
+    if (meterLimit === undefined) return undefined;
+    const hasSessionContext =
+      contextUsed !== undefined ||
+      (usage?.turn_count ?? 0) > 0 ||
+      hasBlocks ||
+      contextAutoCompact !== undefined ||
+      usage !== undefined;
+    return hasSessionContext ? { used: contextUsed, limit: meterLimit } : undefined;
+  }, [effectiveContextLimit, contextAutoCompact, contextUsed, usage, hasBlocks]);
+  const handleComposerOpenBranch = useCallback(
+    (task?: string) => { startBranch(task); },
+    [startBranch],
+  );
   const seat = useMemo<ConversationSeat>(() => ({
     cockpit,
     phase: seatPhase,
@@ -5670,27 +5701,14 @@ boundExecution,
             boundExecution={boundExecution}
             executionPending={executionPending}
             onCancelExecution={cancelPendingExecution}
-            executionGrants={{
-              kikiContext: executionBinding?.effective.kiki_context,
-              allowKikiSubagents: executionBinding?.effective.allow_kiki_subagents,
-            }}
+            executionGrants={composerExecutionGrants}
             permissionMode={permissionMode}
             planMode={planMode}
             planGate={planGate}
             goalMode={goalMode}
             efforts={supportedEfforts}
             effort={effectiveEffort}
-            contextUsage={(() => {
-              const meterLimit = effectiveContextLimit ?? contextAutoCompact?.status.effectiveMaxContextTokens;
-              if (meterLimit === undefined) return undefined;
-              const hasSessionContext =
-                contextUsed !== undefined ||
-                (usage?.turn_count ?? 0) > 0 ||
-                state.blocks.length > 0 ||
-                contextAutoCompact !== undefined ||
-                usage !== undefined;
-              return hasSessionContext ? { used: contextUsed, limit: meterLimit } : undefined;
-            })()}
+            contextUsage={composerContextUsage}
             sessionUsage={usage}
             sessionUsageError={usageError}
             workspaceId={profileWorkspaceId}
@@ -5701,7 +5719,7 @@ boundExecution,
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
             onSideQuestion={composerEngine?.fork === false ? undefined : startSideQuestion}
-            onOpenBranch={composerEngine?.fork === false ? undefined : (task) => { startBranch(task); }}
+            onOpenBranch={composerEngine?.fork === false ? undefined : handleComposerOpenBranch}
             onCompactContext={handleCompactContext}
             onChangeModel={handleModelChange}
             onChangeAgentProfile={handleAgentProfileChange}
@@ -5744,7 +5762,7 @@ boundExecution,
     composerBusy,
     composerWorkingInfo,
     composerDisabled,
-    modelOverride,
+    composerSelection.modelOverride,
     sessionModel,
     inheritedDefault,
     modelSource,
@@ -5754,8 +5772,9 @@ boundExecution,
     boundProfile,
     profilePending,
     shownExecution,
+    boundExecution,
     executionPending,
-    executionBinding,
+    composerExecutionGrants,
     handleExecutionChange,
     cancelPendingExecution,
     permissionMode,
@@ -5764,15 +5783,19 @@ boundExecution,
     goalMode,
     supportedEfforts,
     effectiveEffort,
-    contextUsed,
-    effectiveContextLimit,
+    composerContextUsage,
+    usage,
+    usageError,
     compactionProgress,
+    seedCompactionProgress,
     profileWorkspaceId,
     agentProfileCatalogMode,
     attachments,
     updateAttachments,
     handleActivateSkill,
     runSessionAction,
+    startSideQuestion,
+    handleComposerOpenBranch,
     handleCompactContext,
     handleComposerSend,
     handleComposerSendNow,
@@ -5791,6 +5814,11 @@ boundExecution,
     handleAgentProfileChange,
     handleContextRebuild,
     composerEngine,
+    sessionSendReady,
+    sessionRemainder,
+    externalClient,
+    externalMaterials.data,
+    sessionId,
     t,
   ]);
   useRegisterSeat(seat);
@@ -5811,6 +5839,169 @@ boundExecution,
     [reviewPending, pendingInteractionRefs],
   );
   const routedSubagent = selectedAgentId !== undefined;
+
+  const handleHeaderSideQuestion = useCallback(() => { startSideQuestion(); }, [startSideQuestion]);
+  const handleHeaderOpenBranch = useCallback(() => { startBranch(); }, [startBranch]);
+  const handleResyncRetry = useMemo(
+    () => (controller === null ? undefined : () => { void controller.resync(); }),
+    [controller],
+  );
+  const handleCloseBtw = useCallback(() => { setActiveBtw(null); }, []);
+  const handleExpandBtw = useCallback((btwAgentId: string) => {
+    setActiveBtw(null);
+    openAgentRoute(btwAgentId);
+  }, [openAgentRoute]);
+  const handleRestoreArchivedSession = useCallback(() => {
+    void client.restoreSession(sessionId).then(async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined),
+        queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined),
+        controller?.refreshSession(),
+      ]);
+    }).catch((error: unknown) => {
+      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+    });
+  }, [client, sessionId, queryClient, controller]);
+  const handleRefreshSessionSaved = useCallback(() => { void controller?.refreshSession(); }, [controller]);
+  const isPrivateBusy = pendingPrivacy.has(sessionId);
+  const forkLaunchBusy = forkingSession || branchPending || sideQuestionPending;
+  const deliveryPending = deliveryChangedInTurn && state.busy;
+  const mainHeaderNode = useMemo(() => (
+    <Header
+      controller={controller} railOpen={railOpen} railAvailable={railAvailable}
+      terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
+      onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
+      onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
+      onTogglePrivate={toggleSessionPrivate}
+      privateBusy={isPrivateBusy}
+      onSessionAction={runSessionAction}
+      freshContextAvailable={conversationStarted}
+      onSideQuestion={handleHeaderSideQuestion}
+      onOpenBranch={handleHeaderOpenBranch}
+      forkLineage={forkLineage}
+      forkPopoverOpenRequest={forkPopoverOpenRequest}
+      forkLaunchBusy={forkLaunchBusy}
+      onOpenForkSession={openForkSession}
+      onOpenBranchAgent={openAgentRoute}
+      onForkSessionWithSeed={handleForkSessionWithSeed}
+      onStartBranchWithSeed={startBranch}
+      view={timelineView} onView={setTimelineView}
+      onDelivery={changeDelivery} deliveryPending={deliveryPending}
+      harness={harness}
+    />
+  ), [
+    controller, railOpen, railAvailable, terminalAvailable, terminalOpen,
+    toggleRail, toggleTerminalPanel, onToggleSidebar, sidebarBadge, renameSession,
+    toggleSessionPrivate, isPrivateBusy, runSessionAction, conversationStarted,
+    handleHeaderSideQuestion, handleHeaderOpenBranch, forkLineage, forkPopoverOpenRequest,
+    forkLaunchBusy, openForkSession, openAgentRoute, handleForkSessionWithSeed, startBranch,
+    timelineView, changeDelivery, deliveryPending, harness,
+  ]);
+  const mainTimelineProp = useMemo(() => ({
+    view: timelineView,
+    state: timelineState,
+    connected: wsStatus === 'open',
+    onLoadOlder: mainTimelineActions.loadOlder,
+    onResolveApproval: mainTimelineActions.resolveApproval,
+    onAnswerQuestion: mainTimelineActions.answerQuestion,
+    onDismissQuestion: mainTimelineActions.dismissQuestion,
+    onCancelQueued: handleCancelQueuedChips,
+    onRetryLoad: mainTimelineActions.retryLoad,
+    onRetryPending: retryPendingSubmission,
+    forest,
+    onOpenAgent: openAgent,
+    rowActions: transcriptRowActionsWithBranch,
+    offshootsByBlockId: forkLineage.byBlockId,
+    onOpenForkSession: openForkSession,
+    onOpenBranchAgent: openAgentRoute,
+    onContinueFailedTurn: handleContinueFailedTurn,
+    onRetryFailedTurn: handleRetryFailedTurn,
+    onRetryCompaction: handleRetryCompaction,
+  }), [
+    timelineView, timelineState, wsStatus,
+    mainTimelineActions.loadOlder, mainTimelineActions.resolveApproval,
+    mainTimelineActions.answerQuestion, mainTimelineActions.dismissQuestion,
+    handleCancelQueuedChips, mainTimelineActions.retryLoad, retryPendingSubmission,
+    forest, openAgent, transcriptRowActionsWithBranch, forkLineage.byBlockId,
+    openForkSession, openAgentRoute, handleContinueFailedTurn, handleRetryFailedTurn,
+    handleRetryCompaction,
+  ]);
+  const mainDockNode = useMemo(() => (
+    <>
+      {shownBtw !== null ? (
+        <BtwFloatingCard
+          sessionId={sessionId}
+          agentId={shownBtw.agentId}
+          controller={controller}
+          sendingInitial={shownBtw.sendingInitial}
+          onSendQuestion={handleSendBtwQuestion}
+          onExpandFullView={handleExpandBtw}
+          onClose={handleCloseBtw}
+        />
+      ) : null}
+      <SubmissionRecovery sessionId={sessionId} state={state} />
+      <ResyncStatusBanner
+        resyncing={state.resyncing} resyncFailed={state.resyncFailed}
+        error={state.resyncError}
+        onRetry={handleResyncRetry}
+      />
+      {recoveryHold ? (
+        <RecoveryHoldBar count={recoveryHoldCount} pending={recoveryPending}
+          onConfirm={handleRecoveryConfirm} />
+      ) : null}
+      {state.session?.archived === true ? (
+        <div
+          data-archived-session-banner
+          className="mx-auto flex w-full max-w-[var(--kiki-chat-content-width,760px)] flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
+        >
+          <span>{locale === 'zh' ? '此对话已归档' : 'This conversation is archived'}</span>
+          <button
+            type="button"
+            data-archived-session-restore
+            onClick={handleRestoreArchivedSession}
+            className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
+          >
+            {t('archive.restore')}
+          </button>
+        </div>
+      ) : null}
+      {state.session?.ephemeral === true ? (
+        <EphemeralBar
+          session={state.session}
+          busy={state.busy}
+          onSaved={handleRefreshSessionSaved}
+        />
+      ) : null}
+    </>
+  ), [
+    shownBtw, sessionId, controller, handleSendBtwQuestion, handleExpandBtw, handleCloseBtw,
+    state, handleResyncRetry, recoveryHold, recoveryHoldCount, recoveryPending,
+    handleRecoveryConfirm, locale, handleRestoreArchivedSession, t, handleRefreshSessionSaved,
+  ]);
+  const mainRailNode = useMemo(() => (
+    controller !== null ? <RightRail
+      className={`app-rail ${railOpen ? 'open' : ''}`}
+      state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
+      subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
+      onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
+      onOpenSubagent={openAgent} onClose={closeRail}
+      onInspectMain={inspectMain} onOpenFile={openFileInPreview}
+      onReviewPending={reviewPending}
+      onSearchSubagents={searchSubagents}
+      sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
+    /> : null
+  ), [
+    controller, railOpen, focusState, forest, panelFocusAgent, focusSubagent, focusTaskOwner,
+    handleCancelTask, stopAgentTask, openAgent, closeRail, inspectMain, openFileInPreview,
+    reviewPending, searchSubagents, trayItems, mainTimelineActions.resolveApproval,
+  ]);
+  const mainWorkspaceAdapter = useMemo(() => ({
+    header: mainHeaderNode,
+    timeline: mainTimelineProp,
+    annotations: annotationSurface,
+    dock: mainDockNode,
+    rail: mainRailNode,
+  }), [mainHeaderNode, mainTimelineProp, annotationSurface, mainDockNode, mainRailNode]);
 
   return (
     <MediaPreviewProvider
@@ -5852,7 +6043,7 @@ boundExecution,
           <InteractionPlacementContext.Provider value={interactionPlacement}>
           <AdmissionScope value={admissionScope}>
           <AgentWorkspace
-            target={{ sessionId, agentId: MAIN_AGENT_ID }}
+            target={mainTarget}
             controller={controller}
             sessionState={state}
             forest={forest}
@@ -5864,124 +6055,7 @@ boundExecution,
             onCancelTask={handleCancelTask}
             onStopAgentTask={stopAgentTask}
             inheritMediaPreview
-            main={{
-              header: <Header
-                controller={controller} railOpen={railOpen} railAvailable={railAvailable}
-                terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
-                onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
-                onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
-                onTogglePrivate={toggleSessionPrivate}
-                privateBusy={pendingPrivacy.has(sessionId)}
-                onSessionAction={runSessionAction}
-                freshContextAvailable={conversationStarted}
-                onSideQuestion={() => { startSideQuestion(); }}
-                onOpenBranch={() => { startBranch(); }}
-                forkLineage={forkLineage}
-                forkPopoverOpenRequest={forkPopoverOpenRequest}
-                forkLaunchBusy={forkingSession || branchPending || sideQuestionPending}
-                onOpenForkSession={openForkSession}
-                onOpenBranchAgent={openAgentRoute}
-                onForkSessionWithSeed={handleForkSessionWithSeed}
-                onStartBranchWithSeed={startBranch}
-                view={timelineView} onView={setTimelineView}
-                onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
-                harness={harness}
-              />,
-              timeline: {
-                view: timelineView,
-                state: timelineState,
-                connected: wsStatus === 'open',
-                onLoadOlder: mainTimelineActions.loadOlder,
-                onResolveApproval: mainTimelineActions.resolveApproval,
-                onAnswerQuestion: mainTimelineActions.answerQuestion,
-                onDismissQuestion: mainTimelineActions.dismissQuestion,
-                onCancelQueued: handleCancelQueuedChips,
-                onRetryLoad: mainTimelineActions.retryLoad,
-                onRetryPending: retryPendingSubmission,
-                forest,
-                onOpenAgent: openAgent,
-                rowActions: transcriptRowActionsWithBranch,
-                offshootsByBlockId: forkLineage.byBlockId,
-                onOpenForkSession: openForkSession,
-                onOpenBranchAgent: openAgentRoute,
-                onContinueFailedTurn: handleContinueFailedTurn,
-                onRetryFailedTurn: handleRetryFailedTurn,
-                onRetryCompaction: handleRetryCompaction,
-              },
-              annotations: annotationSurface,
-              dock: <>
-                {shownBtw !== null ? (
-                  <BtwFloatingCard
-                    sessionId={sessionId}
-                    agentId={shownBtw.agentId}
-                    controller={controller}
-                    sendingInitial={shownBtw.sendingInitial}
-                    onSendQuestion={handleSendBtwQuestion}
-                    onExpandFullView={(btwAgentId) => {
-                      setActiveBtw(null);
-                      openAgentRoute(btwAgentId);
-                    }}
-                    onClose={() => { setActiveBtw(null); }}
-                  />
-                ) : null}
-                <SubmissionRecovery sessionId={sessionId} state={state} />
-                <ResyncStatusBanner
-                  resyncing={state.resyncing} resyncFailed={state.resyncFailed}
-                  error={state.resyncError}
-                  onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-                />
-                {recoveryHold ? (
-                  <RecoveryHoldBar count={recoveryHoldCount} pending={recoveryPending}
-                    onConfirm={handleRecoveryConfirm} />
-                ) : null}
-                {state.session?.archived === true ? (
-                  <div
-                    data-archived-session-banner
-                    className="mx-auto flex w-full max-w-[var(--kiki-chat-content-width,760px)] flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
-                  >
-                    <span>{locale === 'zh' ? '此对话已归档' : 'This conversation is archived'}</span>
-                    <button
-                      type="button"
-                      data-archived-session-restore
-                      onClick={() => {
-                        void client.restoreSession(sessionId).then(async () => {
-                          await Promise.all([
-                            queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined),
-                            queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined),
-                            controller?.refreshSession(),
-                          ]);
-                        }).catch((error: unknown) => {
-                          pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
-                        });
-                      }}
-                      className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
-                    >
-                      {t('archive.restore')}
-                    </button>
-                  </div>
-                ) : null}
-                {state.session?.ephemeral === true ? (
-                  <EphemeralBar
-                    session={state.session}
-                    busy={state.busy}
-                    onSaved={() => { void controller?.refreshSession(); }}
-                  />
-                ) : null}
-              </>,
-              // The inspector's session-operation reads use the mounted
-              // controller; resyncs keep the rail and its drafts mounted.
-              rail: controller !== null ? <RightRail
-                className={`app-rail ${railOpen ? 'open' : ''}`}
-                state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
-                subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
-                onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
-                onOpenSubagent={openAgent} onClose={closeRail}
-                onInspectMain={inspectMain} onOpenFile={openFileInPreview}
-                onReviewPending={reviewPending}
-                onSearchSubagents={searchSubagents}
-                sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
-              /> : null,
-            }}
+            main={mainWorkspaceAdapter}
           />
           </AdmissionScope>
           </InteractionPlacementContext.Provider>

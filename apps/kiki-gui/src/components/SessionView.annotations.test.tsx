@@ -189,6 +189,7 @@ vi.mock('./ConversationShell', () => {
     EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
     useConversationShell: () => ({ slots }),
     useOptionalConversationShell: () => ({ slots }),
+    useConversationSeatHeight: () => 0,
     useRegisterSeat: (next: { composer: unknown }) => { seat.composer = next.composer; },
   };
 });

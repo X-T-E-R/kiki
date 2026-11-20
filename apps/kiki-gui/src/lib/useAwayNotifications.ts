@@ -110,34 +110,74 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   sessionsRef.current = sessions;
 
   // Stable work receipts: the list poll cannot see an episode end while the
-  // app's own query is paused, so this poll owns its checkpoint.
+  // app's own query is paused, so this poll owns its checkpoint. When the live
+  // event socket is open, work-change events trigger immediate coalesced reads
+  // and the fallback timer backs off so an idle window stays quiet.
+  const wsOpen = connection.wsStatus === 'open';
   useEffect(() => {
     if (host.notify === undefined) return;
     const storage = spaceStorage.capture();
     const key = `kiki.completionObserved.v1:${scopeKey}`;
+    const savedRaw = storage.getItem(key);
     let checkpoint: readonly StableCompletion[] | undefined;
-    try { checkpoint = readCompletionCheckpoint(storage.getItem(key)); } catch { checkpoint = undefined; }
+    try { checkpoint = readCompletionCheckpoint(savedRaw); } catch { checkpoint = undefined; }
+    let lastSavedJson = savedRaw;
     const observer = new CompletionObserver(checkpoint);
     let stopped = false;
     let running = false;
+    let queued = false;
+    let coalesceTimer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
-      if (running) return;
+      if (running) {
+        queued = true;
+        return;
+      }
       running = true;
+      queued = false;
       try {
         const completions = await client.notifications.listCompletions();
         if (stopped) return;
         await awayNotifier.report(observer.observe(completions, sessionsRef.current));
-        if (!stopped) storage.setItem(key, JSON.stringify(observer.checkpoint()));
+        if (!stopped) {
+          const nextJson = JSON.stringify(observer.checkpoint());
+          if (nextJson !== lastSavedJson) {
+            lastSavedJson = nextJson;
+            storage.setItem(key, nextJson);
+          }
+        }
       } catch {
         // Retain the episode cursor across a temporary transport failure.
       } finally {
         running = false;
+        if (!stopped && queued) {
+          queued = false;
+          void tick();
+        }
       }
     };
+    const scheduleEventTick = () => {
+      if (stopped || coalesceTimer !== undefined) return;
+      coalesceTimer = setTimeout(() => {
+        coalesceTimer = undefined;
+        void tick();
+      }, 250);
+    };
     void tick();
-    const timer = setInterval(() => { void tick(); }, 5_000);
-    return () => { stopped = true; clearInterval(timer); };
-  }, [client, scopeKey, host]);
+    const events = client.klient?.events;
+    const subs = wsOpen && events !== undefined
+      ? [
+          events.on('session.workChanged', scheduleEventTick),
+          events.on('session.metaUpdated', scheduleEventTick),
+        ]
+      : [];
+    const timer = setInterval(() => { void tick(); }, wsOpen && subs.length > 0 ? 60_000 : 5_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      if (coalesceTimer !== undefined) clearTimeout(coalesceTimer);
+      for (const sub of subs) sub.dispose();
+    };
+  }, [client, scopeKey, host, wsOpen]);
 
   // Wire the shared notifier to this host and locale.
   useEffect(() => {

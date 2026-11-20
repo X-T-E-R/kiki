@@ -5,29 +5,51 @@ import { useI18n } from '../i18n';
 function clock(intervalMs: number) {
   let current = Date.now();
   let timer: ReturnType<typeof setInterval> | undefined;
+  let visibilityBound = false;
   const listeners = new Set<() => void>();
+  const stop = () => {
+    if (timer !== undefined) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+  };
+  const tick = () => {
+    current = Date.now();
+    for (const active of listeners) active();
+  };
+  const start = () => {
+    if (timer !== undefined || listeners.size === 0) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    current = Date.now();
+    timer = setInterval(tick, intervalMs);
+  };
+  const onVisibility = () => {
+    if (listeners.size === 0) return;
+    if (document.visibilityState === 'hidden') {
+      stop();
+    } else {
+      tick();
+      start();
+    }
+  };
   return {
     subscribe(listener: () => void): () => void {
       listeners.add(listener);
-      if (timer === undefined) {
-        current = Date.now();
-        timer = setInterval(() => {
-          current = Date.now();
-          for (const active of listeners) active();
-        }, intervalMs);
+      if (!visibilityBound && typeof document !== 'undefined') {
+        visibilityBound = true;
+        document.addEventListener('visibilitychange', onVisibility);
       }
+      start();
       return () => {
         listeners.delete(listener);
-        if (listeners.size === 0 && timer !== undefined) {
-          clearInterval(timer);
-          timer = undefined;
-        }
+        if (listeners.size === 0) stop();
       };
     },
     getSnapshot: () => current,
   };
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
 const seconds = clock(1_000);
 const minutes = clock(60_000);
 const secondsSubscribe = (listener: () => void): (() => void) => seconds.subscribe(listener);
@@ -60,15 +82,18 @@ export function useElapsedSince(anchor: number | undefined): number | undefined 
 
 /**
  * Relative time that keeps aging ("just now" → "2m ago") instead of freezing
- * at the value computed on first render.
+ * at the value computed on first render. Timestamps older than a week render a
+ * fixed calendar date and need no timer subscription.
  */
 export function RelativeTime({ at, className }: { readonly at: string; readonly className?: string }) {
   const { time } = useI18n();
-  const recent = Date.now() - Date.parse(at) < 60_000;
+  const ageMs = Date.now() - Date.parse(at);
+  const recent = ageMs < 60_000;
+  const staticDate = Number.isNaN(ageMs) || ageMs >= SEVEN_DAYS_MS;
   useSyncExternalStore(
-    recent ? secondsSubscribe : minutesSubscribe,
-    recent ? secondsSnapshot : minutesSnapshot,
-    recent ? secondsSnapshot : minutesSnapshot,
+    staticDate ? idleSubscribe : recent ? secondsSubscribe : minutesSubscribe,
+    staticDate ? idleSnapshot : recent ? secondsSnapshot : minutesSnapshot,
+    staticDate ? idleSnapshot : recent ? secondsSnapshot : minutesSnapshot,
   );
   return <span className={className}>{time.relativeTime(at)}</span>;
 }

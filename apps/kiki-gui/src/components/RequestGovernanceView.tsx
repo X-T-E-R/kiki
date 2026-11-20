@@ -43,7 +43,7 @@ export const CONCURRENCY_RULES_SETTINGS_HREF = '/settings/ai?tab=defaults#st-car
  * concise refresh hint in its title.
  */
 export function RequestGovernanceBadge({ compact = false }: { compact?: boolean }) {
-  const { snapshot, stale } = useRequestGovernance();
+  const { snapshot, stale } = useRequestGovernance({ background: true });
   const { t } = useI18n();
   if (snapshot === undefined || (snapshot.active === 0 && snapshot.queued === 0)) return null;
   const title = `${t('usage.governance.badge', { active: snapshot.active, queued: snapshot.queued })}${stale ? ` · ${t('usage.governance.stale', { time: snapshot.asOf })}` : ''}`;

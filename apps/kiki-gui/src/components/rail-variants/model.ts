@@ -560,15 +560,17 @@ export function compactionTimes(blocks: readonly Block[]): number[] {
 }
 
 /** A clock that advances every `ms` so live bars and ages keep moving. */
-export function useNow(ms = 30_000): number {
+export function useNow(ms = 30_000, enabled = true): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
     const id = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       setNow(Date.now());
     }, ms);
     return () => { window.clearInterval(id); };
-  }, [ms]);
+  }, [ms, enabled]);
   return now;
 }
 
