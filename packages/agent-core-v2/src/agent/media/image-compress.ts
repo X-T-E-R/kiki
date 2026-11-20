@@ -867,7 +867,7 @@ function encodeFastPng(rgba: Uint8Array, width: number, height: number): Buffer 
       }
     }
   }
-  const compressed = deflateSync(filtered, { level: 3 });
+  const compressed = deflateSync(filtered, { level: 1 });
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);

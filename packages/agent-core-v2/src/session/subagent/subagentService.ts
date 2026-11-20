@@ -231,7 +231,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
       materializeChain = next.catch(() => {});
       return next;
     };
-    const workerCount = Math.min(16, candidates.length);
+    const workerCount = Math.min(2, candidates.length);
+    const paceMs = candidates.length > 16 ? 10 : 0;
     const workers = Array.from({ length: workerCount }, async () => {
       while (true) {
         signal.throwIfAborted();
@@ -239,6 +240,15 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         if (index >= candidates.length) return;
         const [agentId, agent] = candidates[index]!;
         if (this.agentLifecycle.get(agentId) !== undefined) continue;
+        if (paceMs > 0 && index >= workerCount) {
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = (): void => { clearTimeout(timer); reject(signal.reason); };
+            const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, paceMs);
+            timer.unref?.();
+            signal.addEventListener('abort', onAbort, { once: true });
+          });
+          signal.throwIfAborted();
+        }
         try {
           await retryReceiptDiscovery(async () => {
             const pending = await readPendingAutonomousReceipts(this.session.scope(`agents/${agentId}`), this.logs, this.documents, signal);

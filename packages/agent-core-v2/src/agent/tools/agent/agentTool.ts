@@ -127,6 +127,10 @@ type AgentRunPhase = 'launch_prepare' | 'dispatch' | 'started' | 'task_register'
 
 export { buildProfileDescriptions } from './subagentDescription';
 
+const MAX_CONCURRENT_BACKGROUND_LAUNCHES = 4;
+const MAX_CONCURRENT_BACKGROUND_RUNS = 10;
+const BACKGROUND_LAUNCH_BURST_PACE_MS = 30;
+
 export class SubagentTool implements ISubagentTool {
   declare readonly _serviceBrand: undefined;
   readonly name: string = 'AgentRun';
@@ -138,6 +142,10 @@ export class SubagentTool implements ISubagentTool {
   private readonly canRunInBackground: () => boolean;
   private readonly notifiedMainProfiles = new Set<string>();
   private readonly resumeExecutions = new Map<string, { readonly fingerprint: string; readonly promise: Promise<ExecutableToolResult> }>();
+  private activeBackgroundLaunches = 0;
+  private readonly backgroundLaunchQueue: Array<() => void> = [];
+  private activeBackgroundRuns = 0;
+  private readonly backgroundRunQueue: Array<() => void> = [];
   private catalogReady = false;
   private frozenDescription: string | undefined;
   private advertised: ReturnType<ISubagentTool['visibleProfileDescriptions']> = new Map();
@@ -539,6 +547,7 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runTask: Promise<string | undefined>,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    onTurnCompletion?: (completion: Promise<unknown>) => void,
   ): Promise<SubagentHandle> {
     const resumeRef = args.resume?.trim();
     const prepared = await this.withAgentRunPhase(toolCallId, 'launch_prepare', async () => {
@@ -637,6 +646,7 @@ export class SubagentTool implements ISubagentTool {
     const started = admitted === 'queued'
       ? { agentId: run.child.agentId, completion: run.started.then((handle) => handle.completion) }
       : admitted;
+    onTurnCompletion?.(started.completion);
     const prompt = run.request.kind === 'prompt' ? run.request.prompt : undefined;
     const mirrored = mirrorAgentRun(prepared.requester, started, {
       profileName: run.child.profileName,
@@ -685,6 +695,90 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
+  private async acquireBackgroundRunSlot(signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    if (this.activeBackgroundRuns >= MAX_CONCURRENT_BACKGROUND_RUNS) {
+      await new Promise<void>((resolve, reject) => {
+        const onWake = (): void => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        const onAbort = (): void => {
+          const idx = this.backgroundRunQueue.indexOf(onWake);
+          if (idx !== -1) this.backgroundRunQueue.splice(idx, 1);
+          reject(signal.reason);
+        };
+        this.backgroundRunQueue.push(onWake);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      if (signal.aborted) {
+        const next = this.backgroundRunQueue.shift();
+        if (next !== undefined) next();
+        else this.activeBackgroundRuns = Math.max(0, this.activeBackgroundRuns - 1);
+        signal.throwIfAborted();
+      }
+    } else {
+      this.activeBackgroundRuns += 1;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.backgroundRunQueue.shift();
+      if (next !== undefined) {
+        next();
+      } else {
+        this.activeBackgroundRuns = Math.max(0, this.activeBackgroundRuns - 1);
+      }
+    };
+  }
+
+  private async acquireBackgroundLaunchSlot(signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    if (this.activeBackgroundLaunches >= MAX_CONCURRENT_BACKGROUND_LAUNCHES) {
+      await new Promise<void>((resolve, reject) => {
+        const onWake = (): void => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        const onAbort = (): void => {
+          const idx = this.backgroundLaunchQueue.indexOf(onWake);
+          if (idx !== -1) this.backgroundLaunchQueue.splice(idx, 1);
+          reject(signal.reason);
+        };
+        this.backgroundLaunchQueue.push(onWake);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      if (signal.aborted) {
+        const next = this.backgroundLaunchQueue.shift();
+        if (next !== undefined) next();
+        else this.activeBackgroundLaunches = Math.max(0, this.activeBackgroundLaunches - 1);
+        signal.throwIfAborted();
+      }
+    } else {
+      this.activeBackgroundLaunches += 1;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const wakeNext = (): void => {
+        const next = this.backgroundLaunchQueue.shift();
+        if (next !== undefined) {
+          next();
+        } else {
+          this.activeBackgroundLaunches = Math.max(0, this.activeBackgroundLaunches - 1);
+        }
+      };
+      if (this.backgroundLaunchQueue.length > 0) {
+        const timer = setTimeout(wakeNext, BACKGROUND_LAUNCH_BURST_PACE_MS);
+        timer.unref?.();
+      } else {
+        wakeNext();
+      }
+    };
+  }
+
   private execution(
     args: SubagentToolInput,
     context: ExecutableToolContext,
@@ -693,7 +787,34 @@ export class SubagentTool implements ISubagentTool {
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
   ): Promise<ExecutableToolResult> {
-    return this.workAdmission.run('agent-run-prepare', () => this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots));
+    return this.workAdmission.run('agent-run-prepare', async () => {
+      if (!runInBackground) {
+        return this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+      }
+      const releaseRunSlot = await this.acquireBackgroundRunSlot(context.signal);
+      let handoffToCompletion = false;
+      try {
+        const releaseLaunchSlot = await this.acquireBackgroundLaunchSlot(context.signal);
+        try {
+          return await this.executionAdmitted(
+            args,
+            context,
+            snapshot,
+            capturedLaunchPolicy,
+            runInBackground,
+            workspaceRoots,
+            (completion) => {
+              handoffToCompletion = true;
+              void completion.finally(() => { releaseRunSlot(); });
+            },
+          );
+        } finally {
+          releaseLaunchSlot();
+        }
+      } finally {
+        if (!handoffToCompletion) releaseRunSlot();
+      }
+    });
   }
 
   private async executionAdmitted(
@@ -703,8 +824,11 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    onBackgroundCompletion?: (completion: Promise<unknown>) => void,
   ): Promise<ExecutableToolResult> {
-    if (!args.resume?.trim()) return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+    if (!args.resume?.trim()) {
+      return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, onBackgroundCompletion);
+    }
     const key = `${context.turnId}:${context.toolCallId}`;
     const fingerprint = JSON.stringify(args);
     const previous = this.resumeExecutions.get(key);
@@ -712,7 +836,7 @@ export class SubagentTool implements ISubagentTool {
       if (previous.fingerprint !== fingerprint) return { isError: true, output: 'This resume tool call already belongs to a different request. Retry its original arguments.' };
       return previous.promise;
     }
-    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, onBackgroundCompletion);
     this.resumeExecutions.set(key, { fingerprint, promise });
     void promise.then((result) => { if (result.isError) this.resumeExecutions.delete(key); }, () => { this.resumeExecutions.delete(key); });
     return promise;
@@ -725,6 +849,7 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    onBackgroundCompletion?: (completion: Promise<unknown>) => void,
   ): Promise<ExecutableToolResult> {
     const { toolCallId, signal, turnId } = context;
     try {
@@ -783,7 +908,18 @@ export class SubagentTool implements ISubagentTool {
       let resolveRunTask!: (taskId: string | undefined) => void;
       const runTask = new Promise<string | undefined>((resolve) => { resolveRunTask = resolve; });
       try {
-        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy, runTask, workspaceRoots);
+        handle = await this.launch(
+          args,
+          toolCallId,
+          turnId,
+          controller,
+          runtimeLease.runtime,
+          snapshot,
+          capturedLaunchPolicy,
+          runTask,
+          workspaceRoots,
+          runInBackground ? onBackgroundCompletion : undefined,
+        );
       } catch (error) {
         resolveRunTask(undefined);
         signal.removeEventListener('abort', abortBeforeRegister);

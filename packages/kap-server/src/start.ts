@@ -506,7 +506,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const connectionIdentity = { homeId: serverHomeId, hostId: createKimiDeviceId(homeDir), protocol: CONNECTION_PROTOCOL } as const;
   const admission = new ConnectionAdmission(homeDir, connectionIdentity, opts.disableAuth === true ? 'dangerous_auth_bypass' : undefined);
   const serverVersion = opts.serverVersion ?? getServerVersion();
-  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info', async: true });
   const sshRemote = opts.sshRemoteConnector ?? new SshRemoteConnector({ serverVersion });
   const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger);
   await Promise.all([admission.ready(), remoteConnections.ready()]);

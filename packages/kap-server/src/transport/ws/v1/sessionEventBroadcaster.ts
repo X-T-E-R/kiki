@@ -602,6 +602,10 @@ export class SessionEventBroadcaster {
           (existingLease !== undefined && state !== pinnedState)) return false;
       const prev = state.targets.get(target);
       const prevSeeded = state.transcriptSeeded.has(target);
+      const prevSeed = state.pendingTranscriptSeeds.get(target);
+      const prevSeedStore = prevSeed?.store;
+      const prevSeedSpec = prevSeed?.spec;
+      const prevSeedDelivered = prevSeed !== undefined ? new Map(prevSeed.delivered) : undefined;
       const residencyLease = prev?.residencyLease ?? acquiredLease;
       if (residencyLease !== undefined &&
           (state.sessionHandle !== residencyLease.handle ||
@@ -652,6 +656,28 @@ export class SessionEventBroadcaster {
       const hadBaseline = state.transcriptSeeded.has(target);
       state.transcriptSeeded.delete(target);
       if (liveStore === undefined) return true;
+      const delivered = new Map<string, TranscriptCursor>();
+      if (!deferred && !streamChanged && opts?.transcriptSince === undefined && service !== undefined) {
+        if (hadBaseline && prev?.transcriptGrades !== undefined) {
+          for (const { agentId } of liveStore.agents()) {
+            const nextGrade = gradeFor(transcriptGrades, agentId);
+            if (nextGrade === 'off') continue;
+            if (!needsResetOnTransition(gradeFor(prev.transcriptGrades, agentId), nextGrade)) {
+              delivered.set(agentId, service.getTranscriptCursor(sessionId, agentId));
+            }
+          }
+        } else if (prevSeedDelivered !== undefined && prevSeedStore === liveStore && prevSeedSpec !== undefined) {
+          for (const [agentId, prevCursor] of prevSeedDelivered) {
+            const nextGrade = gradeFor(transcriptGrades, agentId);
+            if (nextGrade === 'off') continue;
+            if (needsResetOnTransition(gradeFor(prevSeedSpec, agentId), nextGrade)) continue;
+            const currentCursor = service.getTranscriptCursor(sessionId, agentId);
+            if (currentCursor.seq === prevCursor.seq && currentCursor.epoch === prevCursor.epoch) {
+              delivered.set(agentId, prevCursor);
+            }
+          }
+        }
+      }
       const diagnostics = new AbortController();
       const seed: PendingTranscriptSeed = {
         generation,
@@ -660,7 +686,7 @@ export class SessionEventBroadcaster {
         transcriptSince: opts?.transcriptSince,
         store: liveStore,
         deferred,
-        delivered: new Map(),
+        delivered,
         diagnostics,
         timing: { ...timing, signal: AbortSignal.any([timing.signal, diagnostics.signal]) },
       };
@@ -865,6 +891,7 @@ export class SessionEventBroadcaster {
     const startedAt = performance.now();
     const admitted = admittedForHistory(seed);
     const priority = new Set(Object.keys(seed.spec).filter((agentId) => agentId !== '*' &&
+      !seed.delivered.has(agentId) &&
       (gradeFor(seed.spec, agentId) === 'block' || gradeFor(seed.spec, agentId) === 'delta')));
     const timing = seed.timing;
     const fields = { sessionId: state.sessionId, generation: timing.generation,
@@ -900,6 +927,13 @@ export class SessionEventBroadcaster {
         if (currentSpec === undefined) return false;
         const grade = gradeFor(currentSpec, agentId);
         if (grade === 'off') return true;
+        const alreadyDelivered = delivered.get(agentId);
+        if (alreadyDelivered !== undefined) {
+          const liveCursor = service.getTranscriptCursor(state.sessionId, agentId);
+          if (alreadyDelivered.seq === liveCursor.seq && alreadyDelivered.epoch === liveCursor.epoch) {
+            return true;
+          }
+        }
         const transcript = await ensureHistory(agentId);
         if (!current()) return false;
         if (transcript === undefined) return true;
@@ -2211,12 +2245,12 @@ export class SessionEventBroadcaster {
 function admittedForHistory(seed: PendingTranscriptSeed): Set<string> {
   const admitted = new Set<string>();
   for (const agentId of Object.keys(seed.spec)) {
-    if (agentId !== '*' && gradeFor(seed.spec, agentId) !== 'off') admitted.add(agentId);
+    if (agentId !== '*' && !seed.delivered.has(agentId) && gradeFor(seed.spec, agentId) !== 'off') admitted.add(agentId);
   }
   const wildcardCursor = seed.transcriptSince?.['*'] !== undefined;
   for (const descriptor of seed.store.agents()) {
     const { agentId } = descriptor;
-    if (admitted.has(agentId) || gradeFor(seed.spec, agentId) === 'off') continue;
+    if (admitted.has(agentId) || seed.delivered.has(agentId) || gradeFor(seed.spec, agentId) === 'off') continue;
     const claimed = wildcardCursor || seed.transcriptSince?.[agentId] !== undefined;
     if (claimed || seed.store.getAgent(agentId) !== undefined) admitted.add(agentId);
   }

@@ -833,7 +833,6 @@ export async function runScenarioS10LiveStorm({
       `/api/sessions/${encodeURIComponent(seeded.sessionId)}/prompts`,
       {
         prompt_id: `p_s10_dispatch_${waveRunId}`,
-        mode: waveIdx === 0 ? undefined : 'steer',
         content: [{ type: 'text', text: stormPrompt }],
       },
       30_000,
@@ -1019,7 +1018,7 @@ export async function runScenarioS10LiveStorm({
         `/api/sessions/${encodeURIComponent(seeded.sessionId)}/prompts`,
         {
           prompt_id: promptId,
-          mode: round === 1 ? 'steer' : 'queue',
+          ...(round === 1 ? { delivery_mode: 'steer' } : {}),
           content,
         },
         20_000,
@@ -1046,7 +1045,7 @@ export async function runScenarioS10LiveStorm({
         `/api/sessions/${encodeURIComponent(seeded.sessionId)}/prompts`,
         {
           prompt_id: promptId,
-          mode: 'steer',
+          delivery_mode: 'steer',
           content,
         },
         20_000,

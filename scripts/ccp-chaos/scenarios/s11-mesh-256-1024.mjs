@@ -581,7 +581,7 @@ async function runMeshTier({
           },
           {
             name: 'Branch',
-            input: { prompt: `${branchMergePlan} Execute S11 branch merge.` },
+            input: { task: `${branchMergePlan} Execute S11 branch merge.` },
           },
           {
             name: 'AgentRun',
@@ -620,9 +620,10 @@ async function runMeshTier({
   const requiredProbeTools = ['ThreadRead', 'ThreadWait', 'HistorySearch', 'Branch', 'AgentRun'];
   const callIdToName = new Map();
   for (const r of probeRecords) {
-    if (r.type === 'tool.call' || r.type === 'tool.call.started') {
-      const cid = r.toolCallId ?? r.id ?? r.callId;
-      const name = r.name ?? r.toolName;
+    const ev = r.type === 'context.append_loop_event' && r.event && typeof r.event === 'object' ? r.event : r;
+    if (ev.type === 'tool.call' || ev.type === 'tool.call.started') {
+      const cid = ev.toolCallId ?? ev.id ?? ev.callId;
+      const name = ev.name ?? ev.toolName;
       if (cid && name) callIdToName.set(cid, name);
     }
     if (r.type === 'context.append_message' && Array.isArray(r.message?.content)) {
@@ -634,11 +635,19 @@ async function runMeshTier({
   const verifiedProbeTools = new Set();
   const erroredProbeTools = [];
   for (const r of probeRecords) {
-    if (r.type === 'tool.result' || r.type === 'tool.call.completed') {
-      const cid = r.toolCallId ?? r.callId;
-      const name = r.name ?? r.toolName ?? (cid ? callIdToName.get(cid) : null);
+    const ev = r.type === 'context.append_loop_event' && r.event && typeof r.event === 'object' ? r.event : r;
+    if (ev.type === 'tool.result' || ev.type === 'tool.call.completed') {
+      const cid = ev.toolCallId ?? ev.callId;
+      const name = ev.name ?? ev.toolName ?? (cid ? callIdToName.get(cid) : null);
       if (name && requiredProbeTools.includes(name)) {
-        const isErr = r.isError === true || r.is_error === true || r.ok === false || Boolean(r.error);
+        const res = ev.result && typeof ev.result === 'object' ? ev.result : ev;
+        const isErr =
+          ev.isError === true ||
+          ev.is_error === true ||
+          res.isError === true ||
+          res.is_error === true ||
+          ev.ok === false ||
+          Boolean(ev.error);
         if (isErr) erroredProbeTools.push(name);
         else verifiedProbeTools.add(name);
       }

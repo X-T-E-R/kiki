@@ -383,7 +383,7 @@ async function* filteredProfileRecords(
     if (record !== undefined) yield record;
   };
   let yieldedAt = performance.now();
-  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 }, { chunkBytes: 1024 * 1024 })) {
+  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
     pending += decoder.decode(chunk, { stream: true });
     let lineStart = 0;
     let newline: number;

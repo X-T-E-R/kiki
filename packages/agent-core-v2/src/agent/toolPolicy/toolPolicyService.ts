@@ -44,6 +44,8 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     sessionDisabledTools?: readonly string[];
     explicitProfileGrants?: { profile: ProfileData; value: readonly string[] | undefined };
     cleanPaths?: Map<string, boolean>;
+    optionalAdmissions?: Map<string, boolean>;
+    sendMessageOverride?: boolean;
   } | undefined;
 
   constructor(
@@ -206,22 +208,37 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     let sendMessageAllowListOverride = false;
     if (policy !== undefined && session !== undefined && capability !== undefined) {
       this.note(policy, session.sessionId, session.workspaceId, data);
-      const request = { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId };
-      const admission = capability === 'send_message'
-        ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
-        : policy.admit(capability, request);
-      if (!admission.admitted) {
+      const admitKey = `${capability}\0${session.sessionId}\0${session.workspaceId}\0${this.scope.agentId}`;
+      let admitted: boolean;
+      if (this.snapshot !== undefined && this.snapshot.optionalAdmissions?.has(admitKey)) {
+        admitted = this.snapshot.optionalAdmissions.get(admitKey)!;
+      } else {
+        const request = { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId };
+        const admission = capability === 'send_message'
+          ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
+          : policy.admit(capability, request);
+        admitted = admission.admitted;
+        if (this.snapshot !== undefined) {
+          (this.snapshot.optionalAdmissions ??= new Map()).set(admitKey, admitted);
+        }
+      }
+      if (!admitted) {
         if (name === 'SendMessage') this.note(policy, session.sessionId, session.workspaceId, data, false);
         return false;
       }
       if (name === 'SendMessage') {
-        const choice = policy.choice(session.sessionId, 'send_message');
-        sendMessageAllowListOverride = choice === 'on' ||
-          (choice === 'inherit' && (policy.globalState('send_message').defaultOn || isLegacyShippedMessageBinding(
-            data,
-            this.delivery.current?.effectiveMode() ?? 'reply',
-            (path) => this.cleanDefaultPath(path),
-          )));
+        if (this.snapshot !== undefined && this.snapshot.sendMessageOverride !== undefined) {
+          sendMessageAllowListOverride = this.snapshot.sendMessageOverride;
+        } else {
+          const choice = policy.choice(session.sessionId, 'send_message');
+          sendMessageAllowListOverride = choice === 'on' ||
+            (choice === 'inherit' && (policy.globalState('send_message').defaultOn || isLegacyShippedMessageBinding(
+              data,
+              this.delivery.current?.effectiveMode() ?? 'reply',
+              (path) => this.cleanDefaultPath(path),
+            )));
+          if (this.snapshot !== undefined) this.snapshot.sendMessageOverride = sendMessageAllowListOverride;
+        }
       }
       if (name === 'MemoryWrite') {
         const approval = this.snapshot === undefined

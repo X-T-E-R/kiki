@@ -307,7 +307,7 @@ export async function readPersistedAgentPanelMetrics(
         };
         return [agentId, {
           facts,
-          checkpointReady: facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+          checkpointReady: facts.complete && (facts.fromCheckpoint === true || size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET),
           oversizedUncheckpointed: !facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
           context,
           contextComplete: true,

@@ -29,12 +29,17 @@ function toolParameters(schema: ParameterSchema): ParameterSchema {
   return { type: 'object', properties, additionalProperties: false };
 }
 
+let cachedSearchParameters: Record<string, unknown> | undefined;
+let cachedFetchParameters: Record<string, unknown> | undefined;
+
 export function nativeSearchParameters(): Record<string, unknown> {
-  return toolParameters(searchInputSchema.toJSONSchema({ target: 'draft-7', io: 'input' }));
+  cachedSearchParameters ??= toolParameters(searchInputSchema.toJSONSchema({ target: 'draft-7', io: 'input' }));
+  return cachedSearchParameters;
 }
 
 export function nativeFetchParameters(): Record<string, unknown> {
-  return toolParameters(fetchInputSchema.toJSONSchema({ target: 'draft-7', io: 'input' }));
+  cachedFetchParameters ??= toolParameters(fetchInputSchema.toJSONSchema({ target: 'draft-7', io: 'input' }));
+  return cachedFetchParameters;
 }
 
 export function parseNativeSearchInput(input: NativeSearchInput): SearchInput {

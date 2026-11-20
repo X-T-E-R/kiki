@@ -1,5 +1,5 @@
-import '#/_base/utils/fsWatchGuard';
-import { watch as fsWatch, realpathSync } from 'node:fs';
+import { createDeletedRootSpinDetector, guardChokidarDeletedWatchSpin } from '#/_base/utils/fsWatchGuard';
+import { existsSync, watch as fsWatch, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from 'node:path';
 
@@ -43,10 +43,12 @@ interface HostFsWatchRuntime {
   readonly platform: NodeJS.Platform;
   readonly homeDir: string;
   readonly resolvePath?: (path: string) => string;
+  readonly exists?: (path: string) => boolean;
   watchNative(
     root: string,
     listener: (eventType: string, filename: string | null) => void,
     onError: (error: NodeJS.ErrnoException) => void,
+    recursive?: boolean,
   ): NativeFsWatcher;
   watchFallback(
     root: string,
@@ -60,8 +62,9 @@ const NODE_HOST_FS_WATCH_RUNTIME: HostFsWatchRuntime = {
   platform: process.platform,
   homeDir: homedir(),
   resolvePath: (path) => process.platform === 'win32' && /~\d/.test(path) ? resolveLongWatchPath(path) : path,
-  watchNative: (root, listener, onError) => {
-    const watcher = fsWatch(root, { persistent: false, recursive: true });
+  exists: existsSync,
+  watchNative: (root, listener, onError, recursive = true) => {
+    const watcher = fsWatch(root, { persistent: false, recursive });
     watcher.on('error', onError);
     watcher.on('change', listener);
     return watcher;
@@ -133,6 +136,7 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
       depth: options?.recursive === false ? 0 : undefined,
       ignored: options?.ignored ?? DEFAULT_IGNORED,
     });
+    guardChokidarDeletedWatchSpin(this.watcher);
     this.watcher.on('all', (eventName: string, absPath: string) => {
       const mapped = mapChokidarEvent(eventName, absPath);
       if (mapped !== undefined) this.emitter.fire(mapped);
@@ -176,6 +180,7 @@ class SignalWatchHandle implements IHostFsWatchHandle {
   private readonly readiness = createWatchReadiness();
   private readonly emitter: Emitter<HostFsChange>;
   private readonly ignored: HostFsWatchIgnore;
+  private readonly recursive: boolean;
   private readonly ignoredTopLevel = new Map<string, boolean>();
   private nativeWatcher: NativeFsWatcher | undefined;
   private chokidarLeg: IHostFsWatchHandle | undefined;
@@ -195,6 +200,7 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     this.emitter = new Emitter<HostFsChange>();
     this.onDidChange = this.emitter.event;
     this.ignored = options?.ignored ?? DEFAULT_IGNORED;
+    this.recursive = options?.recursive !== false;
     this.startNativeLeg();
   }
 
@@ -210,15 +216,25 @@ class SignalWatchHandle implements IHostFsWatchHandle {
         }
         this.onNativeError(watcher, error);
       };
+      const isDeletedSpin = this.runtime.exists === undefined
+        ? undefined
+        : createDeletedRootSpinDetector(this.root, this.runtime.exists);
       watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
         if (this.disposed) return;
+        if (isDeletedSpin?.()) {
+          this.onNativeError(
+            watcher,
+            Object.assign(new Error(`ENOENT: watched root removed: ${this.root}`), { code: 'ENOENT' }) as NodeJS.ErrnoException,
+          );
+          return;
+        }
         this.retryAttempts = 0;
         this.recoveryInvalidated = false;
         if (this.isIgnoredTopLevel(filename)) return;
         const absPath = resolveNativeSignalPath(this.root, filename);
         if (absPath !== this.root && this.ignored(absPath)) return;
         this.fireInvalidation();
-      }, onError);
+      }, onError, this.recursive);
       if (earlyError !== undefined) {
         watcher.close();
         this.onNativeError(undefined, earlyError);
@@ -374,7 +390,8 @@ export class HostFsWatchService implements IHostFsWatchService {
         subtree: ignored.subtree === undefined ? undefined : (changed: string) => ignored.subtree!(requestedPath(changed)),
       }),
     };
-    const handle = useNativeRecursive(watchOptions, this.runtime.platform) && !isExpansiveNativeRoot(watched, this.runtime, watchOptions)
+    const isNonRecursiveSignal = watchOptions?.signal === true && watchOptions.recursive === false;
+    const handle = useNativeRecursive(watchOptions, this.runtime.platform) && (isNonRecursiveSignal || !isExpansiveNativeRoot(watched, this.runtime, watchOptions))
       ? new SignalWatchHandle(watched, watchOptions, this.runtime, this.reportError)
       : this.runtime.watchFallback(watched, watchOptions, this.reportError);
     if (watched === path) return handle;
@@ -405,11 +422,9 @@ function useNativeRecursive(
   options: HostFsWatchOptions | undefined,
   platform: NodeJS.Platform,
 ): boolean {
-  return (
-    options?.signal === true &&
-    options.recursive !== false &&
-    (platform === 'darwin' || platform === 'win32')
-  );
+  if (options?.signal !== true) return false;
+  if (options.recursive === false) return true;
+  return platform === 'darwin' || platform === 'win32';
 }
 
 function isExpansiveNativeRoot(

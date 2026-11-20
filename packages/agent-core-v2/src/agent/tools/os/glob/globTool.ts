@@ -262,17 +262,55 @@ export class GlobTool implements IGlobTool {
         return { isError: true, output: 'Glob aborted' };
       }
 
-      rawPaths = splitCompletePaths(stdoutText, bufferTruncated || timedOut).map(path => resolve(searchRoot, path));
-      if (args.include_ignored !== true && !(processService instanceof SshHostProcessService)) {
-        rawPaths = await runCpuTask<readonly string[]>({ type: 'workspace.pathFilter', root: searchRoot, paths: rawPaths }, { signal });
+      const normalizedRoot = resolve(searchRoot);
+      const rootPrefix = normalizedRoot.endsWith('/') ? normalizedRoot : `${normalizedRoot}/`;
+      const splitPaths = splitCompletePaths(stdoutText, bufferTruncated || timedOut);
+      const resolvedPaths: string[] = [];
+      let resolveYieldAt = performance.now();
+      for (let i = 0; i < splitPaths.length; i += 1) {
+        const entry = splitPaths[i]!;
+        const trimmed = entry.startsWith('./') || entry.startsWith('.\\') ? entry.slice(2) : entry;
+        if (
+          trimmed.length > 0 &&
+          trimmed.charCodeAt(0) !== 47 &&
+          trimmed.charCodeAt(0) !== 92 &&
+          !trimmed.includes(':') &&
+          !trimmed.includes('..')
+        ) {
+          resolvedPaths.push(`${rootPrefix}${trimmed.includes('\\') ? trimmed.replaceAll('\\', '/') : trimmed}`);
+        } else {
+          resolvedPaths.push(resolve(normalizedRoot, entry));
+        }
+        if ((i & 511) === 511 && performance.now() - resolveYieldAt >= 2.5) {
+          await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
+          if (signal.aborted) return { isError: true, output: 'Glob aborted' };
+          resolveYieldAt = performance.now();
+        }
+      }
+      rawPaths = resolvedPaths;
+      if (args.include_ignored !== true && !(processService instanceof SshHostProcessService) && rawPaths.length > 0) {
+        const filteredText = await runCpuTask<string | null>(
+          { type: 'workspace.pathFilterPacked', root: searchRoot, pathsText: rawPaths.join('\n') },
+          { signal, priority: 'low' },
+        );
+        if (filteredText !== null) {
+          rawPaths = filteredText.length === 0 ? [] : filteredText.split('\n');
+        }
       }
     }
 
     const kept: string[] = [];
     let filteredSensitive = 0;
-    for (const path of rawPaths) {
-      if (isSensitiveFile(path)) filteredSensitive++;
-      else kept.push(path);
+    let yieldedAt = performance.now();
+    for (let i = 0; i < rawPaths.length; i += 1) {
+      const candidate = rawPaths[i]!;
+      if (isSensitiveFile(candidate)) filteredSensitive++;
+      else kept.push(candidate);
+      if ((i & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
+        await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
+        if (signal.aborted) return { isError: true, output: 'Glob aborted' };
+        yieldedAt = performance.now();
+      }
     }
 
     const offset = args.offset ?? 0;

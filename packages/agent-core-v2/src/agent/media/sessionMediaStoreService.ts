@@ -114,11 +114,15 @@ export class ScopedMediaStore implements ISessionMediaStore {
     const key = this.keyFor(input.fileId, ext);
     const existingSize = await this.storage.size(this.scope, key);
     if (existingSize !== input.size) {
-      const source = input.stream() as NodeJS.ReadableStream & AsyncIterable<Uint8Array>;
-      await this.storage.writeStream(this.scope, key, source, {
-        atomic: true,
-        signal: input.signal,
-      });
+      if (input.data !== undefined) {
+        await this.storage.write(this.scope, key, input.data, { atomic: true });
+      } else {
+        const source = input.stream() as NodeJS.ReadableStream & AsyncIterable<Uint8Array>;
+        await this.storage.writeStream(this.scope, key, source, {
+          atomic: true,
+          signal: input.signal,
+        });
+      }
     }
     await this.documents.set(this.scope, this.metadataKey(input.fileId), {
       version: 1,

@@ -62,6 +62,7 @@ interface DetachedDraining {
 
 interface Slot {
   worker?: Worker;
+  ready?: boolean;
   active?: Pending;
   drainingCancel?: DrainingCancel;
   retiring?: Promise<number>;
@@ -186,7 +187,37 @@ export class CpuWorkerPool {
     if (this.closing !== undefined) return;
     let activeCount = this.activeSlotCount();
     while (this.hasRunnableWaiting(activeCount)) {
-      let slot = this.slots.find((candidate) => candidate.worker !== undefined && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined)
+      const hasReadyWorker = this.slots.some(
+        (candidate) => candidate.worker !== undefined && candidate.ready === true && candidate.retiring === undefined,
+      );
+      let slot = this.slots.find(
+        (candidate) => candidate.worker !== undefined && candidate.ready === true && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined,
+      );
+      if (slot === undefined && hasReadyWorker) {
+        const hasBootingWorker = this.slots.some(
+          (candidate) => candidate.worker !== undefined && candidate.ready !== true && candidate.active === undefined && candidate.retiring === undefined,
+        );
+        if (!hasBootingWorker) {
+          let warmup = this.slots.find(
+            (candidate) => candidate.worker === undefined && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined,
+          );
+          if (warmup === undefined && this.slots.length < this.size) {
+            warmup = {};
+            this.slots.push(warmup);
+          }
+          if (warmup !== undefined) {
+            this.clearIdleTimer(warmup);
+            try {
+              const worker = this.spawn(warmup);
+              worker.unref();
+            } catch {
+              void this.retire(warmup);
+            }
+          }
+        }
+        break;
+      }
+      slot ??= this.slots.find((candidate) => candidate.worker !== undefined && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined)
         ?? this.slots.find((candidate) => candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined);
       if (slot === undefined) {
         if (this.slots.length >= this.size) break;
@@ -275,6 +306,7 @@ export class CpuWorkerPool {
     const index = this.slots.indexOf(slot);
     if (index >= 0) this.slots.splice(index, 1);
     slot.worker = undefined;
+    slot.ready = undefined;
     slot.exited = undefined;
     worker.unref();
     const detached: DetachedDraining = { worker, id, exited };
@@ -356,10 +388,21 @@ export class CpuWorkerPool {
       resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb },
     });
     slot.worker = worker;
+    slot.ready = undefined;
     slot.exited = new Promise<void>((resolve) => {
       worker.once('exit', () => { resolve(); });
     });
     worker.on('message', (response: CpuResponse) => {
+      if ('type' in response && response.type === 'ready') {
+        if (slot.worker === worker && slot.retiring === undefined) {
+          slot.ready = true;
+          if (slot.active === undefined && slot.drainingCancel === undefined) {
+            worker.unref();
+          }
+          this.pump();
+        }
+        return;
+      }
       const detachedIndex = this.detachedDraining.findIndex((entry) => entry.worker === worker);
       if (detachedIndex >= 0) {
         const detached = this.detachedDraining[detachedIndex]!;
@@ -421,6 +464,7 @@ export class CpuWorkerPool {
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', `CPU worker exited (${code})`));
       slot.active = undefined;
       slot.worker = undefined;
+      slot.ready = undefined;
       slot.retiring = undefined;
       slot.exited = undefined;
       const index = this.slots.indexOf(slot);

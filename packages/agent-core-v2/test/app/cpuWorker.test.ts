@@ -352,7 +352,7 @@ describe('CPU cooperative abort stress regression', () => {
     const fileEntries = baseline.entries.filter((entry) => entry.kind === 'file');
     expect(fileEntries.length).toBe(400);
 
-    await workers.request({ type: 'workspace.trigram.begin', path: dbPath, epoch: 'stress-epoch' });
+    await workers.request({ type: 'workspace.trigram.begin', path: dbPath, epoch: 'stress-epoch', owner: 'stress-test-owner' });
 
     const iterations = 90;
     for (let i = 0; i < iterations; i += 1) {
@@ -379,7 +379,7 @@ describe('CPU cooperative abort stress regression', () => {
     expect(afterInventory.overflow).toBe(false);
     expect(afterInventory.entries.filter((entry) => entry.kind === 'file').length).toBe(400);
 
-    await workers.request({ type: 'workspace.trigram.begin', path: dbPath, epoch: 'final-epoch' });
+    await workers.request({ type: 'workspace.trigram.begin', path: dbPath, epoch: 'final-epoch', owner: 'stress-test-owner' });
     expect(await workers.request<boolean | undefined>({
       type: 'workspace.trigram.update',
       path: dbPath,

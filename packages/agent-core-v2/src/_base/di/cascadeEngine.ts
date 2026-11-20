@@ -195,6 +195,7 @@ export class CascadeEngine {
     ServiceIdentifier<any>,
     UnitRecord
   >();
+  private readonly _pendingActivatable = new Set<ServiceIdentifier<any>>();
   private readonly _pendingIndex = new Map<
     ServiceIdentifier<any>,
     Set<ServiceIdentifier<any>>
@@ -357,6 +358,7 @@ export class CascadeEngine {
     this._tree.removeEngine(this);
     this._tree.dropScope(this._scope);
     this._units.clear();
+    this._pendingActivatable.clear();
     this._pendingIndex.clear();
     const remaining: QueuedRequest[] = [];
     for (const request of this._tree.queue) {
@@ -390,7 +392,7 @@ export class CascadeEngine {
   }
 
   _recheckForCascade(rebuilt: string[], failed: string[]): void {
-    if (this._disposed) {
+    if (this._disposed || this._pendingActivatable.size === 0) {
       return;
     }
     this._recheckPending(rebuilt, failed);
@@ -415,6 +417,7 @@ export class CascadeEngine {
       case 'unprovide':
         this._host.applyUnprovide(change.token);
         this._units.delete(change.token);
+        this._pendingActivatable.delete(change.token);
         break;
       case 'update':
         this._markPending(change.token, undefined, true);
@@ -569,7 +572,7 @@ export class CascadeEngine {
         engine._applyChangeForCascade(change);
       }
       const enginesInOrder = [...this._tree.engines]
-        .filter((engine) => !engine._disposed)
+        .filter((engine) => !engine._disposed && engine._pendingActivatable.size > 0)
         .sort((a, b) => a._scope.cascadeDepth - b._scope.cascadeDepth);
       for (;;) {
         let progress = false;
@@ -609,11 +612,20 @@ export class CascadeEngine {
     return undefined;
   }
 
+  private _syncPendingActivatable(token: ServiceIdentifier<any>, unit: UnitRecord): void {
+    if (unit.state === 'Pending' && (unit.everActive || unit.activation === 'eager')) {
+      this._pendingActivatable.add(token);
+    } else {
+      this._pendingActivatable.delete(token);
+    }
+  }
+
   private _unitFor(token: ServiceIdentifier<any>): UnitRecord {
     let unit = this._units.get(token);
     if (unit === undefined) {
       unit = { state: 'Pending', activation: 'eager', everActive: false };
       this._units.set(token, unit);
+      this._syncPendingActivatable(token, unit);
       this._onDidChangeUnitState.fire({ token: token.toString(), state: 'Pending' });
     }
     return unit;
@@ -628,6 +640,7 @@ export class CascadeEngine {
     const changed = unit.state !== state;
     unit.state = state;
     unit.error = error;
+    this._syncPendingActivatable(token, unit);
     if (changed) {
       this._onDidChangeUnitState.fire({
         token: token.toString(),
@@ -643,21 +656,28 @@ export class CascadeEngine {
     everActive?: boolean,
   ): void {
     const unit = this._unitFor(token);
-    this._setUnitState(token, unit, 'Pending', undefined);
     if (activation !== undefined) {
       unit.activation = activation;
     }
     if (everActive !== undefined) {
       unit.everActive = everActive;
     }
+    this._setUnitState(token, unit, 'Pending', undefined);
   }
 
   private _recheckPending(rebuilt: string[], failed: string[]): void {
     for (;;) {
       this._pendingIndex.clear();
+      if (this._pendingActivatable.size === 0) {
+        return;
+      }
       const satisfied: ServiceIdentifier<any>[] = [];
-      for (const [token, unit] of this._units) {
-        if (unit.state !== 'Pending') continue;
+      for (const token of this._pendingActivatable) {
+        const unit = this._units.get(token);
+        if (unit === undefined || unit.state !== 'Pending') {
+          this._pendingActivatable.delete(token);
+          continue;
+        }
         const missing = this._missingDeps(token);
         if (missing.length === 0) {
           if (unit.everActive || unit.activation === 'eager') {

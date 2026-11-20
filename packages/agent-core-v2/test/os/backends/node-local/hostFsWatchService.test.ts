@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { readdirSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,10 @@ import {
   resetUnexpectedErrorHandler,
   setUnexpectedErrorHandler,
 } from '#/_base/errors/unexpectedError';
+import {
+  createDeletedRootSpinDetector,
+  guardChokidarDeletedWatchSpin,
+} from '#/_base/utils/fsWatchGuard';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 import type {
@@ -505,4 +510,41 @@ describe('host filesystem change notifications', () => {
     },
     30000,
   );
+
+  it('detects deleted-root spin bursts and ignores existing directories', () => {
+    let exists = true;
+    const detector = createDeletedRootSpinDetector('/deleted/root', () => exists);
+    for (let i = 0; i < 6; i += 1) {
+      expect(detector()).toBe(false);
+    }
+    exists = false;
+    let triggered = false;
+    for (let i = 0; i < 4; i += 1) {
+      if (detector()) triggered = true;
+    }
+    expect(triggered).toBe(true);
+  });
+
+  it('unwatches deleted chokidar paths once raw rename bursts indicate a Windows watch spin', () => {
+    const emitter = new EventEmitter();
+    const unwatched: string[] = [];
+    const fakeWatcher = Object.assign(emitter, {
+      unwatch(path: string): Promise<void> {
+        unwatched.push(path);
+        return Promise.resolve();
+      },
+    });
+    let exists = false;
+    guardChokidarDeletedWatchSpin(fakeWatcher, () => exists);
+    const details = { watchedPath: '/gone/dir' };
+    for (let i = 0; i < 4; i += 1) {
+      emitter.emit('raw', 'rename', '/gone/dir', details);
+    }
+    expect(unwatched).toEqual(['/gone/dir']);
+    exists = true;
+    for (let i = 0; i < 6; i += 1) {
+      emitter.emit('raw', 'rename', '/live/dir', { watchedPath: '/live/dir' });
+    }
+    expect(unwatched).toEqual(['/gone/dir']);
+  });
 });

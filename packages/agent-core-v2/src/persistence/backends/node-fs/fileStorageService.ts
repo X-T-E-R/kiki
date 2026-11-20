@@ -3,6 +3,7 @@ import { createReadStream, mkdirSync, statSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { FSWatcher } from 'chokidar';
+import { guardChokidarDeletedWatchSpin } from '#/_base/utils/fsWatchGuard';
 import * as portablePath from 'pathe';
 
 import { DisposableStore, combinedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
@@ -444,6 +445,7 @@ export class FileStorageService implements IFileSystemStorageService {
             return normalized !== normalizedDir && normalized !== normalizedTarget;
           },
         });
+        guardChokidarDeletedWatchSpin(current);
         watcher = current;
         current.on('all', (_event, changedPath) => {
           if (watcher === current && normalize(changedPath) === normalizedTarget) schedule();

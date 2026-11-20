@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export type InputJsonSchemaFinalizer = (schema: Record<string, unknown>) => void;
 
+const inputJsonSchemaCache = new WeakMap<z.ZodType, Record<string, unknown>>();
+
 /** Projects a Zod schema to input JSON Schema with ordinary object nodes closed; `finalize` then
  *  attaches tool-specific AJV constraints, because Zod refinements and transforms do not survive
  *  the projection and conditional object probes must keep their intended open semantics. */
@@ -9,6 +11,10 @@ export function toInputJsonSchema(
   schema: z.ZodType,
   finalize?: InputJsonSchemaFinalizer,
 ): Record<string, unknown> {
+  if (finalize === undefined) {
+    const cached = inputJsonSchemaCache.get(schema);
+    if (cached !== undefined) return cached;
+  }
   const jsonSchema = z.toJSONSchema(schema, {
     target: 'draft-7',
     io: 'input',
@@ -16,6 +22,9 @@ export function toInputJsonSchema(
   closeObjectNodes(jsonSchema);
   finalize?.(jsonSchema);
   ensureObjectRoot(jsonSchema);
+  if (finalize === undefined) {
+    inputJsonSchemaCache.set(schema, jsonSchema);
+  }
   return jsonSchema;
 }
 

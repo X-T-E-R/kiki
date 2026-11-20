@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 
 import { dirname, join, normalize } from 'pathe';
 import { FSWatcher } from 'chokidar';
+import { guardChokidarDeletedWatchSpin } from '#/_base/utils/fsWatchGuard';
 
 import { resolveKikiHome, type KimiHostIdentity } from '@kiki/oauth';
 
@@ -294,6 +295,7 @@ class ReadOnlyAtomicDocumentStore implements IAtomicTomlDocumentStore {
         depth: 1,
         ignored: (changedPath: string) => !watched.has(normalize(changedPath).toLowerCase()),
       });
+      guardChokidarDeletedWatchSpin(watcher);
       watcher.on('all', (_event, changedPath) => {
         if (normalize(changedPath).toLowerCase() === target.toLowerCase()) emitter.fire();
       });

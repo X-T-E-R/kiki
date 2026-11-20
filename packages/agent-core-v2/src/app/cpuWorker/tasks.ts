@@ -1,6 +1,6 @@
 import { basename, dirname } from 'node:path';
 import type { MessagePort } from 'node:worker_threads';
-import { workspacePathInventory, workspacePathEntry, workspacePathFilter } from '#/os/backends/node-local/workspacePathInventory';
+import { workspacePathInventory, workspacePathEntry, workspacePathFilter, workspacePathFilterPacked } from '#/os/backends/node-local/workspacePathInventory';
 import { executeWorkspaceTrigram, type WorkspaceTrigramOperation } from '#/os/backends/node-local/workspaceTrigramStore';
 import { decodeImageVerdict } from '#/agent/media/imageDecode';
 import type {
@@ -40,6 +40,7 @@ export type CpuOperation =
   | FileLineRangeOperation
   | { readonly type: 'file.tailRange'; readonly path: string; readonly options: Omit<TailRangeOptions, 'signal'> }
   | { readonly type: 'workspace.pathFilter'; readonly root: string; readonly paths: readonly string[] }
+  | { readonly type: 'workspace.pathFilterPacked'; readonly root: string; readonly pathsText: string }
   | { readonly type: 'workspace.path'; readonly root: string; readonly path: string }
   | { readonly type: 'workspace.paths'; readonly root: string; readonly limit: number }
   | WorkspaceTrigramOperation;
@@ -92,6 +93,7 @@ export async function executeCpuOperation(operation: CpuOperation, signal?: Abor
   signal?.throwIfAborted();
   switch (operation.type) {
     case 'workspace.pathFilter': return workspacePathFilter(operation.root, operation.paths, signal);
+    case 'workspace.pathFilterPacked': return workspacePathFilterPacked(operation.root, operation.pathsText, signal);
     case 'workspace.path': return workspacePathEntry(operation.root, operation.path, signal);
     case 'workspace.paths': return workspacePathInventory(operation.root, operation.limit, signal);
     case 'workspace.trigram.begin':
