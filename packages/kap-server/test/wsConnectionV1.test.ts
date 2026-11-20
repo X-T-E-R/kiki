@@ -1,9 +1,18 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  IAgentLifecycleService,
+  IEventBus,
+  IEventService,
+  ISessionManager,
+} from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IConnectionRegistry } from '../src/transport/ws/connectionRegistry';
-import type { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
+import { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
 import {
   type WsConnectionV1Options,
   WsConnectionV1,
@@ -1578,5 +1587,79 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       transcriptGrades: { main: 'turn' },
     });
     conn.close();
+  });
+
+  it('suppresses unsubscribed child content events on bare subscribe_v2 without prior legacy subscribe across attach and reconnect', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ws-bare-v2-'));
+    try {
+      const childListeners = new Set<(event: unknown) => void>();
+      const mainListeners = new Set<(event: unknown) => void>();
+      const makeBus = (listeners: Set<(event: unknown) => void>) => ({
+        subscribe: (fn: (event: unknown) => void) => {
+          listeners.add(fn);
+          return { dispose: () => { listeners.delete(fn); } };
+        },
+      });
+      const liveAgents = [
+        { id: 'main', accessor: { get: (token: unknown) => (token === IEventBus ? makeBus(mainListeners) : undefined) } },
+        { id: 'child_1', accessor: { get: (token: unknown) => (token === IEventBus ? makeBus(childListeners) : undefined) } },
+      ];
+      const sessionHandle = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) {
+              return { list: () => liveAgents, onDidCreate: () => ({ dispose: () => {} }), onDidDispose: () => ({ dispose: () => {} }) };
+            }
+            return undefined;
+          },
+        },
+      };
+      const core = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IEventService) return { subscribe: () => ({ dispose: () => {} }) };
+            if (token === ISessionManager) {
+              return {
+                get: (sid: string) => (sid === 's_bare' ? sessionHandle : undefined),
+                acquire: async (sid: string) => (sid === 's_bare' ? { handle: sessionHandle, dispose: async () => {} } : undefined),
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const broadcaster = new SessionEventBroadcaster({ eventsDir: dir, core: core as never });
+      const fireChild = (event: unknown) => {
+        for (const fn of childListeners) fn(event);
+      };
+      const runSession = async (reconnect: boolean) => {
+        const sock = new FakeSocket();
+        const conn = makeConn(sock, { broadcaster });
+        sock.emit('message', JSON.stringify({
+          type: 'subscribe_v2',
+          id: reconnect ? 'sub-v2-reconn' : 'sub-v2-init',
+          payload: { session_id: 's_bare', transcript: { main: 'delta' }, transcript_coverage_version: 2 },
+        }));
+        await vi.waitFor(() => {
+          expect(sock.frames().some((f) => (f as { id?: string }).id === (reconnect ? 'sub-v2-reconn' : 'sub-v2-init'))).toBe(true);
+        });
+        fireChild({ type: 'assistant.delta', agentId: 'child_1', turnId: 1, delta: 'SECRET_CHILD_DELTA' });
+        fireChild({ type: 'tool.result', agentId: 'child_1', turnId: 1, toolCallId: 'tc_1', output: 'SECRET_CHILD_TOOL' });
+        fireChild({ type: 'context.append_message', agentId: 'child_1', message: { role: 'assistant', content: 'SECRET_CHILD_MSG' } });
+        await new Promise((r) => setTimeout(r, 40));
+        const childContentFrames = sock.frames().filter((f) => {
+          const frame = f as { type?: string; payload?: { agentId?: string; agent_id?: string } };
+          const aid = frame.payload?.agentId ?? frame.payload?.agent_id;
+          return aid === 'child_1' && (frame.type === 'assistant.delta' || frame.type === 'tool.result' || frame.type === 'context.append_message');
+        });
+        expect(childContentFrames).toEqual([]);
+        conn.close();
+      };
+      await runSession(false);
+      await runSession(true);
+      await broadcaster.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

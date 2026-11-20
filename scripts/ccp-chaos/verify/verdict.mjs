@@ -15,6 +15,65 @@ export const EXIT_PASS = 0;
 export const EXIT_PRODUCT_FAIL = 1;
 export const EXIT_HARNESS_FAIL = 2;
 
+export const FROZEN_V23_THRESHOLDS = Object.freeze({
+  p01: Object.freeze({
+    httpTranscriptMaxMs: 300,
+    wsFirstResetMaxMs: 300,
+    firstPaintMaxMs: 300,
+    controlBarSettleMaxMs: 500,
+    maxParseInputBytes: 2 * 1024 * 1024,
+    maxReopenWireReadBytes: 2 * 1024 * 1024,
+    maxLegacyAuxiliaryBytes: 2 * 1024 * 1024,
+    minLegacyScanBytesPerSec: 2_000_000_000,
+    requiredEndpointSubstrings: Object.freeze([
+      '/transcript?',
+      '/agents/capabilities',
+      'metrics_settle=true',
+      '/model-switches',
+      '/hooks?observe=true',
+      '/auto-compact?observe=true',
+      '/context-strategy?observe=true',
+      '/status',
+      '/transcript/plan',
+    ]),
+    fullRequiredSizeMiB: Object.freeze([20, 60, 82.65, 100]),
+  }),
+  p02: Object.freeze({
+    maxInboundBytesPerSecP99: 128 * 1024,
+    maxInboundBytesPerSecPeak: 1024 * 1024,
+    maxInboundFramesPerSecP99: 64,
+    maxInboundFramesPerSecPeak: 192,
+    minRollingWindowsSmoke: 1,
+    minRollingWindowsFull: 6,
+    minRollingWindowMs: 4_500,
+  }),
+  s10: Object.freeze({
+    promptAdmissionTextP95Ms: 250,
+    promptAdmissionTextMaxMs: 750,
+    promptAdmissionPngP95Ms: 500,
+    promptAdmissionPngMaxMs: 1500,
+    promptAdmissionP95Ms: 500,
+    promptAdmissionMaxMs: 1500,
+    sendToReceiptP95Ms: 750,
+    sendToReceiptMaxMs: 2000,
+    eldP99Ms: 50,
+    eldMaxMs: 250,
+    clsMax: 0.02,
+    rawLayoutShiftMax: 0.02,
+    composerTypingP95Ms: 32,
+    tiers: Object.freeze({
+      smoke: Object.freeze({ minPeakActiveChildren: 4, minChildToolCalls: 12, minOverlapBuckets: 1 }),
+      full: Object.freeze({ minPeakActiveChildren: 12, minChildToolCalls: 48, minOverlapBuckets: 3 }),
+    }),
+  }),
+  s14: Object.freeze({
+    maxServerCorePct: 2.0,
+    maxRendererPlusGpuCorePct: 3.0,
+    minWindowsSmoke: 3,
+    minWindowsFull: 12,
+  }),
+});
+
 export function domainDigest(domain, fields) {
   const h = createHash('sha256');
   const writeField = (val) => {
@@ -304,26 +363,44 @@ export function evaluateP01ColdChildGate(trial) {
   }
 
   const lane = trial.lane ?? (trial.productionCheckpointPublished ? 'reopen' : 'legacy');
-  const TWO_MIB = 2 * 1024 * 1024;
-  const MIN_LEGACY_SCAN_BYTES_PER_SEC = 2_000_000_000;
+  const T = FROZEN_V23_THRESHOLDS.p01;
+  const TWO_MIB = T.maxParseInputBytes;
 
   if (trial.wasColdBeforeOpen !== true) {
     harnessFailures.push('P0-1 pre-condition violation: target child was not cold before open');
   }
-  if (typeof trial.firstPaintMs !== 'number' || trial.firstPaintMs >= 300) {
-    productFailures.push(`P0-1 first paint ${trial.firstPaintMs}ms >= 300ms`);
+  if (typeof trial.httpTranscriptMs !== 'number' || !Number.isFinite(trial.httpTranscriptMs)) {
+    harnessFailures.push('P0-1 missing measured httpTranscriptMs');
+  } else if (trial.httpTranscriptMs >= T.httpTranscriptMaxMs) {
+    productFailures.push(`P0-1 GET /transcript ${trial.httpTranscriptMs}ms >= ${T.httpTranscriptMaxMs}ms`);
   }
-  if (typeof trial.controlBarSettleMs !== 'number' || trial.controlBarSettleMs >= 500) {
-    productFailures.push(`P0-1 control bar settle ${trial.controlBarSettleMs}ms >= 500ms`);
+  if (typeof trial.wsFirstResetMs !== 'number' || !Number.isFinite(trial.wsFirstResetMs)) {
+    harnessFailures.push('P0-1 missing measured wsFirstResetMs');
+  } else if (trial.wsFirstResetMs >= T.wsFirstResetMaxMs) {
+    productFailures.push(`P0-1 WS transcript.reset ${trial.wsFirstResetMs}ms >= ${T.wsFirstResetMaxMs}ms`);
+  }
+  if (typeof trial.firstPaintMs !== 'number' || trial.firstPaintMs >= T.firstPaintMaxMs) {
+    productFailures.push(`P0-1 first paint ${trial.firstPaintMs}ms >= ${T.firstPaintMaxMs}ms`);
+  }
+  if (typeof trial.controlBarSettleMs !== 'number' || trial.controlBarSettleMs >= T.controlBarSettleMaxMs) {
+    productFailures.push(`P0-1 control bar settle ${trial.controlBarSettleMs}ms >= ${T.controlBarSettleMaxMs}ms`);
   }
   if (!Array.isArray(trial.responses) || trial.responses.length === 0) {
     harnessFailures.push('P0-1 missing endpoint response receipts');
   } else {
+    for (const requiredSub of T.requiredEndpointSubstrings) {
+      if (!trial.responses.some((r) => typeof r.path === 'string' && r.path.includes(requiredSub))) {
+        harnessFailures.push(`P0-1 fanout missing required endpoint matching "${requiredSub}"`);
+      }
+    }
     const forbidden = trial.responses.filter((r) => {
       if (r.code === 50001 || r.code === 40923 || r.status === 'preparing' || r.reason === 'history_canonical_preparing') {
         return true;
       }
-      if (typeof r.status !== 'number' || r.status === 0 || r.status >= 400) {
+      if (r.status !== 200) {
+        return true;
+      }
+      if (!Number.isInteger(r.code)) {
         return true;
       }
       const isLargeColdHooksObserve =
@@ -331,16 +408,17 @@ export function evaluateP01ColdChildGate(trial) {
         r.path.includes('/hooks') &&
         r.path.includes('observe=true') &&
         (trial.wireBytes ?? 0) > 8 * 1024 * 1024 &&
-        (r.code === 40901 || r.code === 'SESSION_BUSY');
+        r.code === 40901;
       if (isLargeColdHooksObserve) return false;
-      if (r.code !== undefined && r.code !== null && r.code !== 0) {
-        return true;
-      }
-      return false;
+      return r.code !== 0;
     });
     if (forbidden.length > 0) {
       productFailures.push(`P0-1 forbidden or failed initial-open responses: ${JSON.stringify(forbidden)}`);
     }
+  }
+
+  if (trial.driverSimulatedScan === true || (trial.ioTraceSource !== undefined && trial.ioTraceSource !== 'server_product_trace')) {
+    harnessFailures.push(`P0-1 invalid IO attribution source (ioTraceSource=${trial.ioTraceSource}, driverSimulatedScan=${trial.driverSimulatedScan})`);
   }
 
   if (typeof trial.aggregateParseInputBytes !== 'number' || !Number.isFinite(trial.aggregateParseInputBytes)) {
@@ -362,12 +440,12 @@ export function evaluateP01ColdChildGate(trial) {
     if (rawPassCount > 1) {
       productFailures.push(`P0-1 legacy lane performed ${rawPassCount} raw passes > 1 shared pass`);
     }
-    if (typeof trial.auxiliaryTargetReadBytes === 'number' && trial.auxiliaryTargetReadBytes > TWO_MIB) {
+    if (typeof trial.auxiliaryTargetReadBytes === 'number' && trial.auxiliaryTargetReadBytes > T.maxLegacyAuxiliaryBytes) {
       productFailures.push(`P0-1 legacy lane auxiliary reads ${trial.auxiliaryTargetReadBytes}B > 2 MiB`);
     }
     if (typeof trial.legacyScanBytesPerSec !== 'number' || !Number.isFinite(trial.legacyScanBytesPerSec)) {
       harnessFailures.push('P0-1 legacy lane missing measured legacyScanBytesPerSec');
-    } else if (trial.legacyScanBytesPerSec <= MIN_LEGACY_SCAN_BYTES_PER_SEC) {
+    } else if (trial.legacyScanBytesPerSec <= T.minLegacyScanBytesPerSec) {
       productFailures.push(
         `P0-1 legacy raw prefilter throughput ${(trial.legacyScanBytesPerSec / 1e9).toFixed(2)} GB/s <= 2.0 GB/s`,
       );
@@ -381,6 +459,8 @@ export function evaluateP01ColdChildGate(trial) {
     }
     if (trial.fullReplayMatches !== true) {
       productFailures.push('P0-1 legacy prefilter result did not prove match with independent full replay');
+    } else if (trial.fullReplayProof !== undefined && (trial.fullReplayProof.matches !== true || (trial.fullReplayProof.turnCount ?? 0) <= 0)) {
+      productFailures.push(`P0-1 legacy fullReplayProof invalid: ${JSON.stringify(trial.fullReplayProof)}`);
     }
   } else if (lane === 'reopen') {
     if (trial.productionCheckpointPublished !== true) {
@@ -391,16 +471,22 @@ export function evaluateP01ColdChildGate(trial) {
     }
     if (typeof trial.aggregateWireReadBytes !== 'number' || !Number.isFinite(trial.aggregateWireReadBytes) || trial.aggregateWireReadBytes <= 0) {
       harnessFailures.push('P0-1 reopen lane missing measured aggregateWireReadBytes attribution');
-    } else if (trial.aggregateWireReadBytes > TWO_MIB) {
+    } else if (trial.aggregateWireReadBytes > T.maxReopenWireReadBytes) {
       productFailures.push(`P0-1 reopen lane aggregate raw target I/O ${trial.aggregateWireReadBytes}B > 2 MiB`);
     }
     if (!trial.summaryProof || typeof trial.summaryProof !== 'object') {
       harnessFailures.push('P0-1 reopen lane missing required summaryProof');
     } else {
       const p = trial.summaryProof;
-      const missingFields = ['sourceIdentity', 'generation', 'coveredByteOffset', 'headSha256', 'tailSha256', 'formatVersion'].filter(
-        (k) => p[k] === undefined || p[k] === null || p[k] === '',
-      );
+      const storeGen = p.storeGeneration ?? p.generation;
+      const boundaryHash = p.boundarySha256 ?? p.tailSha256;
+      const missingFields = [];
+      if (!p.sourceIdentity) missingFields.push('sourceIdentity');
+      if (storeGen === undefined || storeGen === null || storeGen === '') missingFields.push('storeGeneration');
+      if (typeof p.coveredByteOffset !== 'number' || p.coveredByteOffset <= 0) missingFields.push('coveredByteOffset');
+      if (!p.headSha256) missingFields.push('headSha256');
+      if (!boundaryHash) missingFields.push('boundarySha256');
+      if (p.formatVersion === undefined || p.formatVersion === null || p.formatVersion === '') missingFields.push('formatVersion');
       if (missingFields.length > 0) {
         productFailures.push(`P0-1 reopen summary proof missing required fields: ${missingFields.join(', ')}`);
       }
@@ -420,8 +506,9 @@ export function evaluateP01ColdChildGate(trial) {
  * Evaluates P0-2 Main-Only WebSocket Isolation Gate (Astra v2.3 §§9.2, 10.2).
  * Enforces zero unsubscribed-child content bytes/frames, byte/frame rate ceilings,
  * AND §10.2 continuous rolling-5s producer load floors across the entire scoring interval.
+ * Ignores caller-supplied minRollingWindows: 0; uses frozen tier minimums.
  */
-export function evaluateP02MainOnlyWsGate(report) {
+export function evaluateP02MainOnlyWsGate(report, tierOverride = null) {
   const productFailures = [];
   const harnessFailures = [];
   if (!report || typeof report !== 'object') {
@@ -429,16 +516,20 @@ export function evaluateP02MainOnlyWsGate(report) {
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, productFailures, harnessFailures };
   }
 
-  const N = report.requiredStreamingChildren ?? 1;
+  const T = FROZEN_V23_THRESHOLDS.p02;
+  const tier = (tierOverride ?? report.tier) === 'full' ? 'full' : 'smoke';
+  const N = Math.max(1, report.requiredStreamingChildren ?? 1);
   if ((report.activeStreamingChildren ?? 0) < N) {
     harnessFailures.push(`P0-2 insufficient concurrent streaming children: ${report.activeStreamingChildren ?? 0} < ${N}`);
   }
   if ((report.controlClientChildBytes ?? 0) <= 0) {
     harnessFailures.push('P0-2 positive-control child_k delta subscriber received 0 bytes (child stream was silent)');
   }
+  if (report.usedLegacySubscribe === true || report.bareSubscribeV2 === false) {
+    harnessFailures.push('P0-2 main-only isolation probe must use bare subscribe_v2 without legacy subscribe');
+  }
 
-  // §10.2 rolling 5-second producer floors (REQUIRED — fail closed when missing or empty)
-  const minRollingWindows = report.minRollingWindows ?? 1;
+  const minRollingWindows = tier === 'full' ? T.minRollingWindowsFull : T.minRollingWindowsSmoke;
   if (!Array.isArray(report.rolling5sWindows) || report.rolling5sWindows.length < minRollingWindows) {
     harnessFailures.push(
       `P0-2 §10.2 missing rolling5sWindows evidence: got ${Array.isArray(report.rolling5sWindows) ? report.rolling5sWindows.length : 0} < required ${minRollingWindows}`,
@@ -448,6 +539,9 @@ export function evaluateP02MainOnlyWsGate(report) {
     const minStreaming = Math.ceil(N / 3);
     for (let i = 0; i < report.rolling5sWindows.length; i += 1) {
       const w = report.rolling5sWindows[i];
+      if (w.windowMs !== undefined && w.windowMs < T.minRollingWindowMs) {
+        harnessFailures.push(`P0-2 §10.2 rolling window #${i} span ${w.windowMs}ms < ${T.minRollingWindowMs}ms`);
+      }
       if ((w.productiveChildren4s ?? 0) < minActive) {
         harnessFailures.push(
           `P0-2 §10.2 underproduction in rolling window #${i}: productiveChildren4s=${w.productiveChildren4s ?? 0} < ceil(0.9*${N})=${minActive}`,
@@ -471,26 +565,24 @@ export function evaluateP02MainOnlyWsGate(report) {
     }
   }
 
-  // Product isolation assertions (an observed leak ALWAYS fails as product failure)
   if ((report.unsubscribedChildContentBytes ?? 0) > 0 || (report.unsubscribedChildContentFrames ?? 0) > 0) {
     productFailures.push(
       `P0-2 leaked unsubscribed child content on main-only socket: bytes=${report.unsubscribedChildContentBytes} frames=${report.unsubscribedChildContentFrames}`,
     );
   }
-  if ((report.inboundBytesPerSecP99 ?? Infinity) > 128 * 1024) {
+  if ((report.inboundBytesPerSecP99 ?? Infinity) > T.maxInboundBytesPerSecP99) {
     productFailures.push(`P0-2 inbound WS bytes/s p99 ${report.inboundBytesPerSecP99} > 128 KiB`);
   }
-  if ((report.inboundBytesPerSecPeak ?? Infinity) > 1024 * 1024) {
+  if ((report.inboundBytesPerSecPeak ?? Infinity) > T.maxInboundBytesPerSecPeak) {
     productFailures.push(`P0-2 inbound WS bytes/s peak ${report.inboundBytesPerSecPeak} > 1 MiB`);
   }
-  if ((report.inboundFramesPerSecP99 ?? Infinity) > 64) {
+  if ((report.inboundFramesPerSecP99 ?? Infinity) > T.maxInboundFramesPerSecP99) {
     productFailures.push(`P0-2 inbound WS frames/s p99 ${report.inboundFramesPerSecP99} > 64`);
   }
-  if ((report.inboundFramesPerSecPeak ?? Infinity) > 192) {
+  if ((report.inboundFramesPerSecPeak ?? Infinity) > T.maxInboundFramesPerSecPeak) {
     productFailures.push(`P0-2 inbound WS frames/s peak ${report.inboundFramesPerSecPeak} > 192`);
   }
 
-  // Note: product leak takes precedence if observed even alongside underproduction, else harness error
   const exitCode =
     productFailures.length > 0 && (report.unsubscribedChildContentBytes ?? 0) > 0
       ? EXIT_PRODUCT_FAIL
@@ -641,11 +733,17 @@ export function evaluateP1TimeoutVsDetachCell(cell) {
 /**
  * Evaluates Idle CPU Gate over consecutive 10s windows [T0+30s, T0+150s) (Astra v2.3 §§5, 9.5).
  */
-export function evaluateIdleCpuGate(idleReport) {
+export function evaluateIdleCpuGate(idleReport, tierOverride = null) {
   const productFailures = [];
   const harnessFailures = [];
-  const windows = idleReport?.windows;
-  const requiredWindowCount = idleReport?.requiredWindowCount ?? 12;
+  if (!idleReport || typeof idleReport !== 'object') {
+    harnessFailures.push('Idle CPU gate missing report');
+    return { passed: false, exitCode: EXIT_HARNESS_FAIL, productFailures, harnessFailures };
+  }
+  const T = FROZEN_V23_THRESHOLDS.s14;
+  const tier = (tierOverride ?? idleReport.tier) === 'full' ? 'full' : 'smoke';
+  const windows = idleReport.windows;
+  const requiredWindowCount = tier === 'full' ? T.minWindowsFull : T.minWindowsSmoke;
   if (!Array.isArray(windows) || windows.length < requiredWindowCount) {
     harnessFailures.push(`Idle CPU gate missing windows: got ${windows?.length ?? 0} < required ${requiredWindowCount}`);
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, productFailures, harnessFailures };
@@ -653,21 +751,33 @@ export function evaluateIdleCpuGate(idleReport) {
   if (idleReport.recorderRafDisabled !== true) {
     harnessFailures.push('Idle CPU gate invalid: flight recorder rAF loop was not disabled during idle measurement');
   }
+  if (tier === 'full' && idleReport.headlessNoBrowser === true) {
+    harnessFailures.push('Idle CPU gate invalid: full tier requires visible browser renderer+GPU CPU measurement');
+  }
+  const requireBrowser = tier === 'full' || idleReport.browserEnabled === true || idleReport.headlessNoBrowser !== true;
   for (let i = 0; i < windows.length; i += 1) {
     const w = windows[i];
+    if (typeof w.processCount === 'number' && w.processCount <= 0) {
+      harnessFailures.push(`Idle window #${i + 1}: OS process sampling returned 0 server processes`);
+    }
     if (typeof w.serverCorePct !== 'number' || !Number.isFinite(w.serverCorePct)) {
       harnessFailures.push(`Idle window #${i + 1}: missing serverCorePct`);
-    } else if (w.serverCorePct > 2.0) {
-      productFailures.push(`Idle window #${i + 1}: server+helpers CPU ${w.serverCorePct}% > 2.0%`);
+    } else if (w.serverCorePct > T.maxServerCorePct) {
+      productFailures.push(`Idle window #${i + 1}: server+helpers CPU ${w.serverCorePct}% > ${T.maxServerCorePct}%`);
     }
-    if (idleReport.headlessNoBrowser !== true) {
+    if (requireBrowser) {
+      if (typeof w.rendererProcessCount === 'number' && w.rendererProcessCount <= 0) {
+        harnessFailures.push(`Idle window #${i + 1}: OS process sampling returned 0 Chromium renderer/gpu processes`);
+      }
       if (typeof w.rendererPlusGpuCorePct !== 'number' || !Number.isFinite(w.rendererPlusGpuCorePct)) {
         harnessFailures.push(`Idle window #${i + 1}: missing rendererPlusGpuCorePct (visible browser required)`);
-      } else if (w.rendererPlusGpuCorePct > 3.0) {
-        productFailures.push(`Idle window #${i + 1}: renderer+GPU CPU ${w.rendererPlusGpuCorePct}% > 3.0%`);
+      } else if (w.rendererPlusGpuCorePct > T.maxRendererPlusGpuCorePct) {
+        productFailures.push(`Idle window #${i + 1}: renderer+GPU CPU ${w.rendererPlusGpuCorePct}% > ${T.maxRendererPlusGpuCorePct}%`);
       }
     }
-    if ((w.survivingDescendants ?? 0) > 0) {
+    if (typeof w.survivingDescendants !== 'number' || !Number.isFinite(w.survivingDescendants)) {
+      harnessFailures.push(`Idle window #${i + 1}: missing numeric survivingDescendants from OS process table`);
+    } else if (w.survivingDescendants > 0) {
       productFailures.push(`Idle window #${i + 1}: ${w.survivingDescendants} surviving workload descendant(s)`);
     }
   }
@@ -677,7 +787,7 @@ export function evaluateIdleCpuGate(idleReport) {
 
 /**
  * Evaluates a CCP / outer-runner receipt bundle (CRIT #1 + Astra §7).
- * Rejects stale/missing receipts, mismatched runId/buildId, empty requiredStages, or any failed stage.
+ * Rejects stale/missing receipts, mismatched runId/buildId, empty requiredStages, missing v2.3 scenarios, or any failed stage.
  */
 export function evaluateCcpRunVerdict({
   expectedRunId,
@@ -686,6 +796,7 @@ export function evaluateCcpRunVerdict({
   receipt,
   chaosReport,
   requiredStages = ['hygiene', 'unitTests', 'chaos'],
+  requireAllV23Scenarios = undefined,
 }) {
   const productFailures = [];
   const harnessFailures = [];
@@ -727,55 +838,138 @@ export function evaluateCcpRunVerdict({
       if (chaosReport.runId !== expectedRunId) {
         harnessFailures.push(`Stale or un-stamped chaos report runId: got "${chaosReport.runId}", expected "${expectedRunId}"`);
       }
+      if (
+        typeof chaosReport.buildId !== 'string' ||
+        chaosReport.buildId.trim().length === 0 ||
+        (expectedBuildId && chaosReport.buildId !== expectedBuildId)
+      ) {
+        harnessFailures.push(`Missing or mismatched chaos report buildId: got "${chaosReport.buildId}", expected "${expectedBuildId}"`);
+      }
       if (chaosReport.overallPassed !== true) {
         productFailures.push('Chaos report overallPassed is not true');
       }
       if ((chaosReport.skipped ?? 0) > 0) {
         harnessFailures.push(`Chaos report has skipped=${chaosReport.skipped} > 0`);
       }
+
       const sc = chaosReport.scenarios ?? {};
-      if (sc.p01?.trial) {
-        const v = evaluateP01ColdChildGate(sc.p01.trial);
-        productFailures.push(...v.productFailures);
-        harnessFailures.push(...v.harnessFailures);
+      const reportTier =
+        chaosReport.tier === 'v23-full' || chaosReport.tier === 'full' ? 'full' : 'smoke';
+      const enforceV23Set =
+        requireAllV23Scenarios === true ||
+        chaosReport.mode === 'v23' ||
+        chaosReport.tier === 'v23-smoke' ||
+        chaosReport.tier === 'v23-full';
+
+      if (enforceV23Set) {
+        for (const key of ['p01', 's10', 's11', 's12', 's13', 's14']) {
+          if (!sc[key] || typeof sc[key] !== 'object') {
+            harnessFailures.push(`Missing required v2.3 scenario "${key}" in chaos report`);
+          }
+        }
       }
-      if (Array.isArray(sc.p01?.trials)) {
-        for (const t of sc.p01.trials) {
-          const v = evaluateP01ColdChildGate(t);
+
+      if (sc.p01) {
+        const trials = Array.isArray(sc.p01.trials)
+          ? sc.p01.trials
+          : sc.p01.trial
+            ? [sc.p01.trial]
+            : [];
+        if (trials.length === 0) {
+          harnessFailures.push('P0-1 scenario has 0 trials');
+        } else {
+          for (const t of trials) {
+            const v = evaluateP01ColdChildGate(t);
+            productFailures.push(...v.productFailures);
+            harnessFailures.push(...v.harnessFailures);
+          }
+          if (enforceV23Set) {
+            const lanes = new Set(trials.map((t) => t.lane));
+            if (!lanes.has('legacy') || !lanes.has('reopen')) {
+              harnessFailures.push(`P0-1 requires both legacy and reopen lanes, got [${[...lanes].join(', ')}]`);
+            }
+            if (reportTier === 'full') {
+              for (const reqMiB of FROZEN_V23_THRESHOLDS.p01.fullRequiredSizeMiB) {
+                const matched = trials.some((t) => t.lane === 'legacy' && typeof t.wireBytes === 'number' && Math.abs(t.wireBytes / (1024 * 1024) - reqMiB) <= 3);
+                if (!matched) {
+                  harnessFailures.push(`P0-1 full tier missing legacy trial near ${reqMiB} MiB`);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (sc.s10) {
+        if (!sc.s10.evidence || typeof sc.s10.evidence !== 'object') {
+          harnessFailures.push('S10 scenario missing evidence object');
+        } else {
+          const v = evaluateS10Verdict(sc.s10.evidence, { tier: reportTier });
           productFailures.push(...v.productFailures);
           harnessFailures.push(...v.harnessFailures);
         }
       }
-      if (sc.s10?.evidence) {
-        const v = evaluateS10Verdict(sc.s10.evidence, sc.s10.limits ?? {});
-        productFailures.push(...v.productFailures);
-        harnessFailures.push(...v.harnessFailures);
-      }
-      if (sc.s11?.graphEvidence) {
-        const g = verifyMeshGraph(sc.s11.graphEvidence);
-        if (!g.ok) productFailures.push(...g.failures);
-      }
-      if (sc.s11?.cronOutboxTrace) {
-        const c = evaluateP03CronOutboxRecovery(sc.s11.cronOutboxTrace);
-        productFailures.push(...c.productFailures);
-        harnessFailures.push(...c.harnessFailures);
-      }
-      if (sc.s12?.blindControl) {
-        const b = evaluateP04BlindMutationControl(sc.s12.blindControl);
-        productFailures.push(...b.productFailures);
-        harnessFailures.push(...b.harnessFailures);
-      }
-      if (Array.isArray(sc.s13?.cells)) {
-        for (const cell of sc.s13.cells) {
-          const c = evaluateP1TimeoutVsDetachCell(cell);
+
+      if (sc.s11) {
+        if (!sc.s11.graphEvidence || !Array.isArray(sc.s11.graphEvidence.expectedEdges) || sc.s11.graphEvidence.expectedEdges.length === 0) {
+          harnessFailures.push('S11 scenario missing non-empty graphEvidence.expectedEdges');
+        } else {
+          const g = verifyMeshGraph(sc.s11.graphEvidence);
+          if (!g.ok) productFailures.push(...g.failures);
+        }
+        if (!sc.s11.cronOutboxTrace) {
+          harnessFailures.push('S11 scenario missing cronOutboxTrace');
+        } else {
+          const c = evaluateP03CronOutboxRecovery(sc.s11.cronOutboxTrace);
           productFailures.push(...c.productFailures);
           harnessFailures.push(...c.harnessFailures);
         }
       }
-      if (sc.s14?.idleReport) {
-        const idle = evaluateIdleCpuGate(sc.s14.idleReport);
-        productFailures.push(...idle.productFailures);
-        harnessFailures.push(...idle.harnessFailures);
+
+      if (sc.s12) {
+        if (!sc.s12.blindControl) {
+          harnessFailures.push('S12 scenario missing blindControl evidence');
+        } else {
+          const b = evaluateP04BlindMutationControl(sc.s12.blindControl);
+          productFailures.push(...b.productFailures);
+          harnessFailures.push(...b.harnessFailures);
+        }
+      }
+
+      if (sc.s13) {
+        const cells = Array.isArray(sc.s13.cells) ? sc.s13.cells : [];
+        if (cells.length < 3) {
+          harnessFailures.push(`S13 scenario requires >= 3 §10.5 OS kill cells, got ${cells.length}`);
+        } else {
+          const kinds = new Set(cells.map((c) => c.kind));
+          for (const reqKind of ['terminating_timeout', 'foreground_detach_then_stop', 'direct_cancel']) {
+            if (!kinds.has(reqKind)) {
+              harnessFailures.push(`S13 missing required cell kind "${reqKind}"`);
+            }
+          }
+          for (const cell of cells) {
+            const c = evaluateP1TimeoutVsDetachCell(cell);
+            productFailures.push(...c.productFailures);
+            harnessFailures.push(...c.harnessFailures);
+          }
+        }
+        if (Array.isArray(sc.s13.faultCells)) {
+          for (const fc of sc.s13.faultCells) {
+            if (fc.passed !== true) {
+              productFailures.push(`S13 fault cell "${fc.kind}" failed: ${fc.error ?? 'unknown'}`);
+            }
+          }
+        }
+      }
+
+      if (sc.s14) {
+        if (!sc.s14.idleReport) {
+          harnessFailures.push('S14 scenario missing idleReport');
+        } else {
+          const idle = evaluateIdleCpuGate(sc.s14.idleReport, reportTier);
+          productFailures.push(...idle.productFailures);
+          harnessFailures.push(...idle.harnessFailures);
+        }
       }
     }
   }
@@ -805,23 +999,18 @@ export function evaluateCcpRunVerdict({
 }
 
 /**
- * Evaluates Scenario S10 (Live Multi-Subagent Orchestrator Storm) evidence.
+ * Evaluates Scenario S10 (Live Multi-Subagent Orchestrator Storm) evidence
+ * against FROZEN v2.3 thresholds (caller-supplied limits can NEVER relax SLOs).
  */
-export function evaluateS10Verdict(evidence, limits = {}) {
+export function evaluateS10Verdict(evidence, options = {}) {
   const productFailures = [];
   const harnessFailures = [];
-  const maxPromptAdmTextP95 = limits.promptAdmissionTextP95Ms ?? 250;
-  const maxPromptAdmTextP99 = limits.promptAdmissionTextP99Ms ?? 750;
-  const maxPromptAdmPngP95 = limits.promptAdmissionPngP95Ms ?? 500;
-  const maxPromptAdmPngP99 = limits.promptAdmissionPngP99Ms ?? 1500;
-  const maxPromptAdmP95 = limits.promptAdmissionP95Ms ?? 500;
-  const maxPromptAdmMax = limits.promptAdmissionMaxMs ?? 1500;
-  const maxSendP95 = limits.sendToReceiptP95Ms ?? 750;
-  const maxSendMax = limits.sendToReceiptMaxMs ?? 2000;
-  const maxEldP99 = limits.eldP99Ms ?? 50;
-  const maxEldMax = limits.eldMaxMs ?? 250;
-  const minPeakChildren = limits.minPeakActiveChildren ?? 2;
-  const minChildToolCalls = limits.minChildToolCalls ?? 4;
+  const T = FROZEN_V23_THRESHOLDS.s10;
+  const tier = (options.tier ?? evidence?.tier) === 'full' ? 'full' : 'smoke';
+  const scaleFloor = T.tiers[tier];
+  const minPeakChildren = Math.max(scaleFloor.minPeakActiveChildren, options.minPeakActiveChildren ?? 0);
+  const minChildToolCalls = Math.max(scaleFloor.minChildToolCalls, options.minChildToolCalls ?? 0);
+  const minOverlapBuckets = Math.max(scaleFloor.minOverlapBuckets, options.minOverlapBuckets ?? 0);
 
   if (!evidence || typeof evidence !== 'object') {
     harnessFailures.push('S10 missing evidence');
@@ -834,60 +1023,95 @@ export function evaluateS10Verdict(evidence, limits = {}) {
   if ((evidence.totalChildToolCalls ?? 0) < minChildToolCalls) {
     harnessFailures.push(`S10 insufficient child tool calls: ${evidence.totalChildToolCalls ?? 0} < ${minChildToolCalls}`);
   }
-  if ((evidence.overlapBucketsQualified ?? 0) < (limits.minOverlapBuckets ?? 1)) {
-    harnessFailures.push(`S10 insufficient overlapping load buckets: ${evidence.overlapBucketsQualified ?? 0}`);
-  }
-  if (evidence.browserRequired && (!evidence.flightRecorder || (evidence.flightRecorder.sampleCount ?? 0) === 0)) {
-    harnessFailures.push('S10 browser flight recorder missing or recorded 0 samples');
+  if ((evidence.overlapBucketsQualified ?? 0) < minOverlapBuckets) {
+    harnessFailures.push(`S10 insufficient overlapping load buckets: ${evidence.overlapBucketsQualified ?? 0} < ${minOverlapBuckets}`);
   }
 
-  if (evidence.textPromptAdmission) {
-    if ((evidence.textPromptAdmission.p95Ms ?? Infinity) > maxPromptAdmTextP95) {
-      productFailures.push(`S10 warm text prompt_admission p95 ${evidence.textPromptAdmission.p95Ms}ms > ${maxPromptAdmTextP95}ms`);
+  const browserRequired = tier === 'full' || evidence.browserRequired === true || evidence.flightRecorder != null;
+  if (browserRequired) {
+    if (!evidence.flightRecorder || (evidence.flightRecorder.sampleCount ?? 0) === 0) {
+      harnessFailures.push('S10 browser flight recorder missing or recorded 0 samples');
     }
-    if ((evidence.textPromptAdmission.p99Ms ?? evidence.textPromptAdmission.maxMs ?? Infinity) > maxPromptAdmTextP99) {
-      productFailures.push(`S10 warm text prompt_admission p99 ${evidence.textPromptAdmission.p99Ms ?? evidence.textPromptAdmission.maxMs}ms > ${maxPromptAdmTextP99}ms`);
-    }
-  }
-  if (evidence.pngPromptAdmission) {
-    if ((evidence.pngPromptAdmission.p95Ms ?? Infinity) > maxPromptAdmPngP95) {
-      productFailures.push(`S10 warm PNG prompt_admission p95 ${evidence.pngPromptAdmission.p95Ms}ms > ${maxPromptAdmPngP95}ms`);
-    }
-    if ((evidence.pngPromptAdmission.p99Ms ?? evidence.pngPromptAdmission.maxMs ?? Infinity) > maxPromptAdmPngP99) {
-      productFailures.push(`S10 warm PNG prompt_admission p99 ${evidence.pngPromptAdmission.p99Ms ?? evidence.pngPromptAdmission.maxMs}ms > ${maxPromptAdmPngP99}ms`);
+    if (evidence.guiDistServed === false || evidence.usedStubHtml === true) {
+      harnessFailures.push('S10 browser test used stub HTML instead of real built @kiki/gui dist');
     }
   }
-  if ((evidence.promptAdmission?.p95Ms ?? Infinity) > maxPromptAdmP95) {
-    productFailures.push(`S10 prompt_admission p95 ${evidence.promptAdmission?.p95Ms}ms > ${maxPromptAdmP95}ms`);
+
+  if (!evidence.textPromptAdmission || (evidence.textPromptAdmission.samples ?? 1) <= 0) {
+    harnessFailures.push('S10 missing warm text prompt_admission samples');
+  } else {
+    if ((evidence.textPromptAdmission.p95Ms ?? Infinity) > T.promptAdmissionTextP95Ms) {
+      productFailures.push(`S10 warm text prompt_admission p95 ${evidence.textPromptAdmission.p95Ms}ms > ${T.promptAdmissionTextP95Ms}ms`);
+    }
+    if ((evidence.textPromptAdmission.maxMs ?? evidence.textPromptAdmission.p99Ms ?? Infinity) > T.promptAdmissionTextMaxMs) {
+      productFailures.push(`S10 warm text prompt_admission max ${evidence.textPromptAdmission.maxMs ?? evidence.textPromptAdmission.p99Ms}ms > ${T.promptAdmissionTextMaxMs}ms`);
+    }
   }
-  if ((evidence.promptAdmission?.maxMs ?? Infinity) > maxPromptAdmMax) {
-    productFailures.push(`S10 prompt_admission max ${evidence.promptAdmission?.maxMs}ms > ${maxPromptAdmMax}ms`);
+
+  if (!evidence.pngPromptAdmission || (evidence.pngPromptAdmission.samples ?? 1) <= 0) {
+    harnessFailures.push('S10 missing warm PNG prompt_admission samples');
+  } else {
+    if ((evidence.pngPromptAdmission.p95Ms ?? Infinity) > T.promptAdmissionPngP95Ms) {
+      productFailures.push(`S10 warm PNG prompt_admission p95 ${evidence.pngPromptAdmission.p95Ms}ms > ${T.promptAdmissionPngP95Ms}ms`);
+    }
+    if ((evidence.pngPromptAdmission.maxMs ?? evidence.pngPromptAdmission.p99Ms ?? Infinity) > T.promptAdmissionPngMaxMs) {
+      productFailures.push(`S10 warm PNG prompt_admission max ${evidence.pngPromptAdmission.maxMs ?? evidence.pngPromptAdmission.p99Ms}ms > ${T.promptAdmissionPngMaxMs}ms`);
+    }
   }
-  if ((evidence.sendToReceipt?.p95Ms ?? Infinity) > maxSendP95) {
-    productFailures.push(`S10 send-to-receipt p95 ${evidence.sendToReceipt?.p95Ms}ms > ${maxSendP95}ms`);
+
+  if ((evidence.promptAdmission?.p95Ms ?? Infinity) > T.promptAdmissionP95Ms) {
+    productFailures.push(`S10 prompt_admission p95 ${evidence.promptAdmission?.p95Ms}ms > ${T.promptAdmissionP95Ms}ms`);
   }
-  if ((evidence.sendToReceipt?.maxMs ?? Infinity) > maxSendMax) {
-    productFailures.push(`S10 send-to-receipt max ${evidence.sendToReceipt?.maxMs}ms > ${maxSendMax}ms`);
+  if ((evidence.promptAdmission?.maxMs ?? Infinity) > T.promptAdmissionMaxMs) {
+    productFailures.push(`S10 prompt_admission max ${evidence.promptAdmission?.maxMs}ms > ${T.promptAdmissionMaxMs}ms`);
   }
-  if ((evidence.eld?.p99Ms ?? Infinity) > maxEldP99) {
-    productFailures.push(`S10 ELD p99 ${evidence.eld?.p99Ms}ms > ${maxEldP99}ms`);
+
+  if ((evidence.failedSends ?? 0) > 0) {
+    productFailures.push(`S10 had ${evidence.failedSends} failed user send(s)`);
   }
-  if ((evidence.eld?.maxMs ?? Infinity) > maxEldMax) {
-    productFailures.push(`S10 ELD max ${evidence.eld?.maxMs}ms > ${maxEldMax}ms`);
+  if (evidence.durableReceiptsVerified === false) {
+    harnessFailures.push('S10 sendToReceipt fell back to raw HTTP elapsed without durable receipt verification');
+  }
+  if (!evidence.sendToReceipt || (evidence.sendToReceipt.samples ?? 1) <= 0) {
+    harnessFailures.push('S10 missing durable sendToReceipt samples');
+  } else {
+    if ((evidence.sendToReceipt.p95Ms ?? Infinity) > T.sendToReceiptP95Ms) {
+      productFailures.push(`S10 send-to-receipt p95 ${evidence.sendToReceipt.p95Ms}ms > ${T.sendToReceiptP95Ms}ms`);
+    }
+    if ((evidence.sendToReceipt.maxMs ?? Infinity) > T.sendToReceiptMaxMs) {
+      productFailures.push(`S10 send-to-receipt max ${evidence.sendToReceipt.maxMs}ms > ${T.sendToReceiptMaxMs}ms`);
+    }
+  }
+
+  if ((evidence.eld?.p99Ms ?? Infinity) > T.eldP99Ms) {
+    productFailures.push(`S10 ELD p99 ${evidence.eld?.p99Ms}ms > ${T.eldP99Ms}ms`);
+  }
+  if ((evidence.eld?.maxMs ?? Infinity) > T.eldMaxMs) {
+    productFailures.push(`S10 ELD max ${evidence.eld?.maxMs}ms > ${T.eldMaxMs}ms`);
   }
 
   if (evidence.flightRecorder) {
     if ((evidence.flightRecorder.transcriptRootRemounts ?? 0) > 0) {
       productFailures.push(`S10 transcript root remounted ${evidence.flightRecorder.transcriptRootRemounts} time(s)`);
     }
-    if ((evidence.flightRecorder.cls ?? 0) > 0.02) {
-      productFailures.push(`S10 CLS ${evidence.flightRecorder.cls} > 0.02`);
+    if ((evidence.flightRecorder.cls ?? 0) > T.clsMax) {
+      productFailures.push(`S10 CLS ${evidence.flightRecorder.cls} > ${T.clsMax}`);
     }
-    if ((evidence.flightRecorder.rawLayoutShift ?? 0) > 0.02) {
-      productFailures.push(`S10 raw input-inclusive layout shift ${evidence.flightRecorder.rawLayoutShift} > 0.02`);
+    if ((evidence.flightRecorder.rawLayoutShift ?? 0) > T.rawLayoutShiftMax) {
+      productFailures.push(`S10 raw input-inclusive layout shift ${evidence.flightRecorder.rawLayoutShift} > ${T.rawLayoutShiftMax}`);
     }
     if ((evidence.flightRecorder.consoleErrors ?? 0) > 0) {
       productFailures.push(`S10 console/page errors: ${evidence.flightRecorder.consoleErrors}`);
+    }
+    const typing = evidence.flightRecorder.composerTyping ?? evidence.composerTyping;
+    if (typing) {
+      if ((typing.samples ?? 0) <= 0) {
+        harnessFailures.push('S10 composerTyping recorded 0 samples');
+      } else if ((typing.p95Ms ?? Infinity) > T.composerTypingP95Ms) {
+        productFailures.push(`S10 composerTyping p95 ${typing.p95Ms}ms > ${T.composerTypingP95Ms}ms`);
+      }
+    } else if (browserRequired) {
+      harnessFailures.push('S10 missing composerTyping metrics from browser session');
     }
   }
 
@@ -898,7 +1122,7 @@ export function evaluateS10Verdict(evidence, limits = {}) {
   }
 
   if (evidence.p02MainOnlyWs) {
-    const p02 = evaluateP02MainOnlyWsGate(evidence.p02MainOnlyWs);
+    const p02 = evaluateP02MainOnlyWsGate(evidence.p02MainOnlyWs, tier);
     productFailures.push(...p02.productFailures);
     harnessFailures.push(...p02.harnessFailures);
   }
@@ -949,6 +1173,7 @@ export function verifySavedBundle(bundleDir) {
     receipt,
     chaosReport,
     requiredStages: manifest.requiredStages ?? ['hygiene', 'unitTests', 'chaos'],
+    requireAllV23Scenarios: manifest.requireAllV23Scenarios,
   });
 }
 

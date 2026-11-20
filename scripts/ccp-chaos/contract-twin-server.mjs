@@ -186,6 +186,88 @@ function validateAnthropicToolPairing(messages) {
   return null;
 }
 
+function isSystemReminderOnlyText(text) {
+  const stripped = String(text ?? '').replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, '').trim();
+  return stripped.length === 0;
+}
+
+function extractLatestTurnPrompt(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { text: '', turnToolRound: 0 };
+  }
+  let turnToolRound = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (!msg || msg.role !== 'user') continue;
+    const blocks = normalizeMessageBlocks(msg.content);
+    const hasToolResult = blocks.some((b) => b && typeof b === 'object' && b.type === 'tool_result');
+    const textParts = blocks
+      .filter((b) => b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .filter((t) => !isSystemReminderOnlyText(t));
+    if (hasToolResult && textParts.length === 0) {
+      turnToolRound += 1;
+      continue;
+    }
+    if (textParts.length === 0) {
+      continue;
+    }
+    return { text: textParts.join('\n'), turnToolRound };
+  }
+  return { text: '', turnToolRound };
+}
+
+function extractToolResultText(toolResults) {
+  const parts = [];
+  for (const tr of toolResults ?? []) {
+    if (typeof tr?.content === 'string') parts.push(tr.content);
+    else if (Array.isArray(tr?.content)) {
+      for (const blk of tr.content) {
+        if (typeof blk?.text === 'string') parts.push(blk.text);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function stripReadLinePrefixes(text) {
+  return String(text ?? '')
+    .split(/\r?\n/u)
+    .filter((line) => !line.startsWith('<system>'))
+    .map((line) => line.replace(/^\s*\d+\t/u, ''))
+    .join('\n')
+    .trim();
+}
+
+function detectV23ToolPlan(text) {
+  const m = /\[V23_TOOL_PLAN:([A-Za-z0-9_-]+)\]/u.exec(String(text ?? ''));
+  if (!m) return null;
+  try {
+    const raw = Buffer.from(m[1], 'base64url').toString('utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.steps)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function interpolatePlanValue(value, ctx) {
+  if (typeof value === 'string') {
+    return value
+      .replaceAll('{{LAST_TOOL_TEXT}}', ctx.lastToolText)
+      .replaceAll('{{LAST_TASK_ID}}', ctx.lastTaskId)
+      .replaceAll('{{LAST_BRANCH_ID}}', ctx.lastBranchId);
+  }
+  if (Array.isArray(value)) return value.map((v) => interpolatePlanValue(v, ctx));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = interpolatePlanValue(v, ctx);
+    return out;
+  }
+  return value;
+}
+
 function extractAllPromptText(body) {
   const parts = [];
   if (Array.isArray(body?.messages)) {
@@ -1337,12 +1419,181 @@ export async function createContractTwinServer(options = {}) {
 
             const effectivePromptText = extractAllPromptText({ messages: effectiveMessages });
             const effectiveScopeKey = extractScopeKey(req.headers, { messages: effectiveMessages }, effectivePromptText || promptText);
+            const latestTurn = extractLatestTurnPrompt(effectiveMessages);
             const toolSpec = detectToolProfile(effectivePromptText || promptText);
-            const s10Directive = detectS10Directive(effectivePromptText || promptText);
+            const s10Directive = detectS10Directive(latestTurn.text || effectivePromptText || promptText);
+            const v23Plan = detectV23ToolPlan(latestTurn.text);
             const declaredToolNames = new Set(
               effectiveTools.map((t) => (t && typeof t === 'object' ? t.name : null)).filter(Boolean),
             );
             const prevStep = scopeToolStep.get(effectiveScopeKey) ?? 0;
+
+            if (v23Plan !== null) {
+              const lastToolText = extractToolResultText(latestUser.toolResults);
+              const taskIdMatch =
+                /\btask_id["':\s=]+([A-Za-z0-9_-]+)/u.exec(lastToolText) ??
+                /\b(bash_[A-Za-z0-9_-]+|agent_[A-Za-z0-9_-]+)\b/u.exec(lastToolText);
+              const branchIdMatch =
+                /\bbranch_id["':\s=]+([A-Za-z0-9_-]+)/u.exec(lastToolText) ??
+                /\b(branch_[A-Za-z0-9_-]+)\b/u.exec(lastToolText);
+              const interpCtx = {
+                lastToolText,
+                lastTaskId: taskIdMatch?.[1] ?? '',
+                lastBranchId: branchIdMatch?.[1] ?? '',
+              };
+              const step = v23Plan.steps[latestTurn.turnToolRound];
+              if (step && Array.isArray(step.calls) && step.calls.length > 0) {
+                const needed = step.calls.map((c) => c.name);
+                const preflight = checkRequiredToolSchemas(declaredToolNames, needed);
+                if (!preflight.ok) {
+                  const v = recordViolation(
+                    422,
+                    'missing_required_tool_schema',
+                    `V23_TOOL_PLAN missing required tools: ${preflight.missing.join(', ')}`,
+                    { missing: preflight.missing },
+                  );
+                  sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
+                }
+                const calls = step.calls.map((c, ci) => {
+                  const callId = `v23_${msgSeq}_s${latestTurn.turnToolRound}_c${ci}`;
+                  toolIdToName.set(callId, c.name);
+                  if (!toolStats[c.name]) toolStats[c.name] = { invoked: 0, resultsOk: 0, resultsError: 0 };
+                  toolStats[c.name].invoked += 1;
+                  return {
+                    id: callId,
+                    name: c.name,
+                    input: interpolatePlanValue(c.input ?? {}, interpCtx),
+                  };
+                });
+                threadStore.set(messageId, {
+                  messages: [
+                    ...effectiveMessages,
+                    {
+                      role: 'assistant',
+                      content: calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
+                    },
+                  ],
+                  tools: effectiveTools,
+                  createdAt: Date.now(),
+                });
+                await streamPacedAnthropicResponse(res, req, {
+                  model: body.model,
+                  messageId,
+                  thinkingText: step.thinking ?? `Executing v2.3 plan step ${latestTurn.turnToolRound}.`,
+                  toolCalls: calls,
+                  targetDeltas: Math.max(4, Number(step.deltas ?? 8)),
+                  cadenceMs: Math.max(2, Number(step.cadenceMs ?? 5)),
+                });
+                return;
+              }
+              const finalText = interpolatePlanValue(v23Plan.finalText ?? `V23_PLAN_DONE [${messageId}]`, interpCtx);
+              threadStore.set(messageId, {
+                messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: finalText }] }],
+                tools: effectiveTools,
+                createdAt: Date.now(),
+              });
+              await streamPacedAnthropicResponse(res, req, {
+                model: body.model,
+                messageId,
+                replyText: finalText,
+                targetDeltas: 6,
+                cadenceMs: 5,
+              });
+              return;
+            }
+
+            if (latestTurn.text.includes("Drain this session's committed outbox.")) {
+              if (latestTurn.turnToolRound === 0) {
+                const preflight = checkRequiredToolSchemas(declaredToolNames, ['Read', 'ThreadSend']);
+                if (!preflight.ok) {
+                  const v = recordViolation(
+                    422,
+                    'missing_required_tool_schema',
+                    `Cron outbox drain missing required tools: ${preflight.missing.join(', ')}`,
+                    { missing: preflight.missing },
+                  );
+                  sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
+                }
+                const callId = `v23_cron_read_${msgSeq}`;
+                toolIdToName.set(callId, 'Read');
+                if (!toolStats.Read) toolStats.Read = { invoked: 0, resultsOk: 0, resultsError: 0 };
+                toolStats.Read.invoked += 1;
+                const calls = [{ id: callId, name: 'Read', input: { path: '.kiki-s11-outbox.json' } }];
+                threadStore.set(messageId, {
+                  messages: [...effectiveMessages, { role: 'assistant', content: calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })) }],
+                  tools: effectiveTools,
+                  createdAt: Date.now(),
+                });
+                await streamPacedAnthropicResponse(res, req, {
+                  model: body.model,
+                  messageId,
+                  thinkingText: 'Reading persisted outbox file before sending.',
+                  toolCalls: calls,
+                  targetDeltas: 6,
+                  cadenceMs: 5,
+                });
+                return;
+              }
+              if (latestTurn.turnToolRound === 1) {
+                const rawToolOut = stripReadLinePrefixes(extractToolResultText(latestUser.toolResults));
+                let outbox = null;
+                try {
+                  outbox = JSON.parse(rawToolOut);
+                } catch {
+                  const jm = /\{[\s\S]*\}/u.exec(rawToolOut);
+                  if (jm) outbox = JSON.parse(jm[0]);
+                }
+                if (!outbox?.toWorkspaceId || !outbox?.toSessionId || !outbox?.idempotencyKey) {
+                  const finalText = `CRON_OUTBOX_PARSE_ERROR: ${rawToolOut.slice(0, 200)}`;
+                  threadStore.set(messageId, {
+                    messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: finalText }] }],
+                    tools: effectiveTools,
+                    createdAt: Date.now(),
+                  });
+                  await streamPacedAnthropicResponse(res, req, { model: body.model, messageId, replyText: finalText, targetDeltas: 4, cadenceMs: 5 });
+                  return;
+                }
+                const callId = `v23_cron_send_${msgSeq}`;
+                toolIdToName.set(callId, 'ThreadSend');
+                if (!toolStats.ThreadSend) toolStats.ThreadSend = { invoked: 0, resultsOk: 0, resultsError: 0 };
+                toolStats.ThreadSend.invoked += 1;
+                const calls = [
+                  {
+                    id: callId,
+                    name: 'ThreadSend',
+                    input: {
+                      thread: { workspace_id: outbox.toWorkspaceId, session_id: outbox.toSessionId },
+                      content: String(outbox.payloadText ?? ''),
+                      idempotency_key: String(outbox.idempotencyKey),
+                    },
+                  },
+                ];
+                threadStore.set(messageId, {
+                  messages: [...effectiveMessages, { role: 'assistant', content: calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })) }],
+                  tools: effectiveTools,
+                  createdAt: Date.now(),
+                });
+                await streamPacedAnthropicResponse(res, req, {
+                  model: body.model,
+                  messageId,
+                  thinkingText: 'Delivering persisted outbox intent via ThreadSend.',
+                  toolCalls: calls,
+                  targetDeltas: 6,
+                  cadenceMs: 5,
+                });
+                return;
+              }
+              const finalText = `CRON_OUTBOX_DRAINED [${messageId}]`;
+              threadStore.set(messageId, {
+                messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: finalText }] }],
+                tools: effectiveTools,
+                createdAt: Date.now(),
+              });
+              await streamPacedAnthropicResponse(res, req, { model: body.model, messageId, replyText: finalText, targetDeltas: 4, cadenceMs: 5 });
+              return;
+            }
 
             if (s10Directive?.kind === 'orchestrator_storm' && latestUser.toolResults.length === 0 && prevStep === 0) {
               const preflight = checkRequiredToolSchemas(declaredToolNames, REQUIRED_ORCHESTRATOR_TOOLS);
@@ -1397,6 +1648,7 @@ export async function createContractTwinServer(options = {}) {
                     content: calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
                   },
                 ],
+                tools: effectiveTools,
                 createdAt: Date.now(),
               });
               await streamPacedAnthropicResponse(res, req, {
@@ -1493,6 +1745,7 @@ export async function createContractTwinServer(options = {}) {
                       content: planned.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
                     },
                   ],
+                  tools: effectiveTools,
                   createdAt: Date.now(),
                 });
                 sendAnthropicToolUse(res, { model: body.model, messageId, calls: planned, stream: body.stream !== false });
@@ -1515,6 +1768,7 @@ export async function createContractTwinServer(options = {}) {
                       content: followups.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
                     },
                   ],
+                  tools: effectiveTools,
                   createdAt: Date.now(),
                 });
                 sendAnthropicToolUse(res, { model: body.model, messageId, calls: followups, stream: body.stream !== false });
@@ -1527,6 +1781,7 @@ export async function createContractTwinServer(options = {}) {
             const streamHoldMs = detectStreamHoldMs(latestUser.text);
             threadStore.set(messageId, {
               messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: replyText }] }],
+              tools: effectiveTools,
               createdAt: Date.now(),
             });
             if (threadStore.size > 4096) {

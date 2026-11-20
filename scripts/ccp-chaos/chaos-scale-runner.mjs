@@ -202,6 +202,7 @@ if (isServerWorker) {
       const openRecord = { bytes: 0, caller: (new Error().stack ?? '').split('\n').slice(2, 12).map((s) => s.trim()).join(' <- ') };
       state.opens.push(openRecord);
       let handleBytes = 0;
+      let handleReadMs = 0;
       let fileSize = 0;
       try {
         fileSize = (await handle.stat()).size;
@@ -215,9 +216,15 @@ if (isServerWorker) {
         state.wireReadBytes += n;
         state.wireScanMs += dt;
         handleBytes += n;
+        handleReadMs += dt;
         openRecord.bytes = handleBytes;
+        openRecord.readMs = roundMs(handleReadMs);
         if (fileSize > 0 && handleBytes >= fileSize * 0.95 && handleBytes - n < fileSize * 0.95) {
           state.fullPassCount += 1;
+        }
+        if (fileSize > 0 && handleBytes >= fileSize * 0.95) {
+          state.fullPassScanMs = Math.max(state.fullPassScanMs, handleReadMs);
+          state.fullPassBytes = Math.max(state.fullPassBytes, handleBytes);
         }
         return res;
       };
@@ -250,7 +257,8 @@ if (isServerWorker) {
       wireOpenCount: ioTrace.wireOpenCount,
       opens: ioTrace.opens,
       rawPassCount: Math.max(1, ioTrace.fullPassCount),
-      wireScanMs: roundMs(ioTrace.wireScanMs),
+      wireScanMs: roundMs(ioTrace.fullPassScanMs > 0 ? ioTrace.fullPassScanMs : ioTrace.wireScanMs),
+      fullPassBytes: ioTrace.fullPassBytes,
       jsonParseInputBytes: ioTrace.jsonParseInputBytes,
       jsonParseCalls: ioTrace.jsonParseCalls,
     };
@@ -265,6 +273,8 @@ if (isServerWorker) {
       wireOpenCount: 0,
       opens: [],
       fullPassCount: 0,
+      fullPassScanMs: 0,
+      fullPassBytes: 0,
       wireScanMs: 0,
       jsonParseInputBytes: 0,
       jsonParseCalls: 0,
@@ -494,6 +504,8 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
       osHomeDir,
       extra: {
         KIKI_CHAOS_TSX_READY: '1',
+        KIKI_CRON_NO_JITTER: '1',
+        KIKI_CRON_NO_STALE: '1',
         ...extraEnv,
       },
     }),
@@ -1922,20 +1934,22 @@ export async function runChaosScaleSuite(options = {}) {
   const s13Only = Boolean(options.s13Only);
   const s14Only = Boolean(options.s14Only);
   const v23Smoke = Boolean(options.v23Smoke);
+  const v23Full = Boolean(options.v23Full);
+  const effectiveTier = v23Full ? 'full' : v23Smoke ? 'smoke' : tier;
   const runS7S8 = Boolean(options.runS7S8);
   const runAll = Boolean(options.runAll);
   const isolatedOnly =
-    s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || s11Only || s12Only || s13Only || s14Only || v23Smoke || runS7S8;
+    s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || s11Only || s12Only || s13Only || s14Only || v23Smoke || v23Full || runS7S8;
   const runS6 = s6Only || runAll || Boolean(options.runS6);
   const runS7 = s7Only || runS7S8 || runAll || Boolean(options.runS7);
   const runS8 = s8Only || runS7S8 || runAll || Boolean(options.runS8);
   const runS9 = s9Only || runAll || Boolean(options.runS9);
-  const runS10 = s10Only || v23Smoke || runAll || Boolean(options.runS10);
-  const runP01 = p01Only || v23Smoke || runAll || Boolean(options.runP01);
-  const runS11 = s11Only || v23Smoke || runAll || Boolean(options.runS11);
-  const runS12 = s12Only || v23Smoke || runAll || Boolean(options.runS12);
-  const runS13 = s13Only || v23Smoke || runAll || Boolean(options.runS13);
-  const runS14 = s14Only || v23Smoke || runAll || Boolean(options.runS14);
+  const runS10 = s10Only || v23Smoke || v23Full || runAll || Boolean(options.runS10);
+  const runP01 = p01Only || v23Smoke || v23Full || runAll || Boolean(options.runP01);
+  const runS11 = s11Only || v23Smoke || v23Full || runAll || Boolean(options.runS11);
+  const runS12 = s12Only || v23Smoke || v23Full || runAll || Boolean(options.runS12);
+  const runS13 = s13Only || v23Smoke || v23Full || runAll || Boolean(options.runS13);
+  const runS14 = s14Only || v23Smoke || v23Full || runAll || Boolean(options.runS14);
   const runId = options.runId ?? `chaos_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const s7Cycles = options.s7Cycles ?? 200;
   const tenKSubagentCount = options.tenKSubagentCount ?? (tier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
@@ -2052,9 +2066,12 @@ export async function runChaosScaleSuite(options = {}) {
 
   const osHomeDir = path.join(dir, 'os-home');
   let mainServer = null;
+  let sharedBrowserHandle = null;
   const report = {
     runId,
     buildId: options.buildId ?? 'local',
+    mode: v23Full || v23Smoke ? 'v23' : 'standard',
+    tier: v23Full ? 'v23-full' : v23Smoke ? 'v23-smoke' : effectiveTier,
     skipped: 0,
     timestamp: new Date().toISOString(),
     environment: {
@@ -2233,13 +2250,16 @@ export async function runChaosScaleSuite(options = {}) {
         twin,
         corpus,
         WebSocket,
-        tier,
+        tier: effectiveTier,
         runBrowser,
+        keepBrowserAlive: runBrowser && (runP01 || runS14),
         progress,
       });
       s10ReopenCandidate = s10Res.reopenCandidate ?? null;
-      report.scenarios.S10_liveOrchestratorStorm = s10Res;
-      report.scenarios.s10 = s10Res;
+      sharedBrowserHandle = s10Res.browserHandle ?? null;
+      const { browserHandle: _bh, ...s10Serializable } = s10Res;
+      report.scenarios.S10_liveOrchestratorStorm = s10Serializable;
+      report.scenarios.s10 = s10Serializable;
       persistCheckpoint();
     }
 
@@ -2248,9 +2268,11 @@ export async function runChaosScaleSuite(options = {}) {
         server: mainServer,
         corpus,
         WebSocket,
-        targetBytes: options.p01Bytes ?? (tier === 'full' ? 86_664_806 : 20 * 1024 * 1024),
+        tier: effectiveTier,
+        targetBytes: options.p01Bytes ?? null,
         stepCount: options.p01Steps ?? 200,
         reopenSession: s10ReopenCandidate,
+        browserHandle: sharedBrowserHandle,
         progress,
       });
       report.scenarios.P01_coldChildOpen = p01Res;
@@ -2266,10 +2288,14 @@ export async function runChaosScaleSuite(options = {}) {
           return mainServer;
         },
         corpus,
-        meshSessions: options.meshSessions ?? (tier === 'full' ? 256 : 6),
+        tier: effectiveTier,
+        meshSessions: options.meshSessions,
         progress,
       });
       if (s11Res.activeServer) mainServer = s11Res.activeServer;
+      if (sharedBrowserHandle?.reconnectToServer) {
+        await sharedBrowserHandle.reconnectToServer(mainServer, s10ReopenCandidate?.sessionId ?? null).catch(() => undefined);
+      }
       const { activeServer: _srv, ...s11Serializable } = s11Res;
       report.scenarios.S11_mesh256 = s11Serializable;
       report.scenarios.s11 = s11Serializable;
@@ -2278,6 +2304,8 @@ export async function runChaosScaleSuite(options = {}) {
 
     if (runS12) {
       const s12Res = await runScenarioS12BlindHmacTrials({
+        server: mainServer,
+        corpus,
         workRoot: dir,
         progress,
       });
@@ -2288,7 +2316,9 @@ export async function runChaosScaleSuite(options = {}) {
 
     if (runS13) {
       const s13Res = await runScenarioS13ChaosFaults({
-        repoRoot: REPO_ROOT,
+        server: mainServer,
+        corpus,
+        WebSocket,
         workRoot: dir,
         progress,
       });
@@ -2300,14 +2330,21 @@ export async function runChaosScaleSuite(options = {}) {
     if (runS14) {
       const s14Res = await runScenarioS14IdleCpu({
         serverPid: mainServer.pid,
-        settleSec: options.idleSettleSec ?? (tier === 'full' ? 30 : 3),
-        windowCount: options.idleWindows ?? (tier === 'full' ? 12 : 2),
-        windowSec: options.idleWindowSec ?? (tier === 'full' ? 10 : 3),
+        browserHandle: sharedBrowserHandle,
+        tier: effectiveTier,
+        settleSec: options.idleSettleSec,
+        windowCount: options.idleWindows,
+        windowSec: options.idleWindowSec,
         progress,
       });
       report.scenarios.S14_idleCpu = s14Res;
       report.scenarios.s14 = s14Res;
       persistCheckpoint();
+    }
+
+    if (sharedBrowserHandle) {
+      await sharedBrowserHandle.close().catch(() => undefined);
+      sharedBrowserHandle = null;
     }
 
     await mainServer.shutdown().catch(() => undefined);
@@ -2359,6 +2396,7 @@ export async function runChaosScaleSuite(options = {}) {
     }
     report.exitCode = report.overallPassed ? 0 : exitCodes.includes(2) ? 2 : 1;
   } finally {
+    if (sharedBrowserHandle) await sharedBrowserHandle.close().catch(() => undefined);
     if (mainServer) await mainServer.shutdown().catch(() => undefined);
     await twin.close().catch(() => undefined);
   }
@@ -2394,6 +2432,7 @@ if (isCliMain && !isServerWorker) {
     s13Only: false,
     s14Only: false,
     v23Smoke: false,
+    v23Full: false,
     p01Bytes: undefined,
     meshSessions: undefined,
     idleSettleSec: undefined,
@@ -2440,6 +2479,7 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s13-only') opts.s13Only = true;
     else if (args[i] === '--s14-only') opts.s14Only = true;
     else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
+    else if (args[i] === '--v23-full') { opts.v23Full = true; opts.tier = 'full'; }
     else if (args[i] === '--p01-bytes' && args[i + 1]) opts.p01Bytes = Number(args[++i]);
     else if (args[i] === '--mesh-sessions' && args[i + 1]) opts.meshSessions = Number(args[++i]);
     else if (args[i] === '--idle-settle-sec' && args[i + 1]) opts.idleSettleSec = Number(args[++i]);

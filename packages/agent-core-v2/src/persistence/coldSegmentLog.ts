@@ -649,6 +649,47 @@ async function loadManifest(
   return manifest;
 }
 
+interface OrphanedSparseProbeFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<boolean>;
+  waiters: number;
+  settled: boolean;
+}
+
+const orphanedSparseProbes = new Map<string, OrphanedSparseProbeFlight>();
+
+async function hasOrphanedSparseJournalCoalesced(located: string, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
+  let flight = orphanedSparseProbes.get(located);
+  if (flight === undefined || flight.controller.signal.aborted) {
+    const controller = new AbortController();
+    let created!: OrphanedSparseProbeFlight;
+    const promise = detectOrphanedSparseJournal(located, controller.signal).finally(() => {
+      created.settled = true;
+      if (orphanedSparseProbes.get(located) === created) orphanedSparseProbes.delete(located);
+    });
+    void promise.catch(() => undefined);
+    created = { controller, promise, waiters: 0, settled: false };
+    flight = created;
+    orphanedSparseProbes.set(located, flight);
+  }
+  flight.waiters += 1;
+  const active = flight;
+  const onAbort = (): void => {
+    if (active.waiters <= 1 && !active.settled) active.controller.abort(signal?.reason);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    return signal === undefined ? await active.promise : await abortable(active.promise, signal);
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    active.waiters -= 1;
+    if (active.waiters === 0 && !active.settled && signal?.aborted) {
+      active.controller.abort(signal.reason);
+    }
+  }
+}
+
 async function loadMatchedManifest(
   storage: IFileSystemStorageService,
   scope: string,
@@ -660,7 +701,7 @@ async function loadMatchedManifest(
   const manifest = await loadManifest(storage, scope, key, signal);
   if (manifest === undefined) {
     const located = locatedJournal(storage, scope, key);
-    if (located !== undefined && await detectOrphanedSparseJournal(located, signal)) {
+    if (located !== undefined && await hasOrphanedSparseJournalCoalesced(located, signal)) {
       throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
     }
     return undefined;
@@ -2155,13 +2196,23 @@ export async function* readLogicalBytes(
   }
 }
 
-const COLD_MARKER_DEFAULT_NEEDLES = ['ExitPlanMode', 'prompt.model_switch', '"parentReceiptManaged"'] as const;
+const COLD_MARKER_DEFAULT_NEEDLES = ['ExitPlanMode', 'prompt.model_switch'] as const;
 const coldMarkerCache = new Map<string, boolean>();
-const coldMarkerFlights = new Map<string, Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> }>>();
+const coldMarkerFlights = new Map<string, Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined>>();
 
 function coldMarkerFileKey(wirePath: string, info: { readonly dev: number | bigint; readonly ino: number | bigint; readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number }): string {
   const normalized = process.platform === 'win32' ? resolve(wirePath).toLowerCase() : resolve(wirePath);
   return `${normalized}\0${String(info.dev)}:${String(info.ino)}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+async function hasColdSegmentsManifest(wirePath: string): Promise<boolean> {
+  return stat(coldManifestKey(wirePath)).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    },
+  );
 }
 
 export async function scanColdWireMarkers(
@@ -2171,14 +2222,7 @@ export async function scanColdWireMarkers(
   minSizeBytes = 1024 * 1024,
 ): Promise<{ readonly size: number; readonly matches: ReadonlyMap<string, boolean> } | undefined> {
   signal?.throwIfAborted();
-  const hasSegments = await stat(`${dirname(wirePath)}/wire.manifest.json`).then(
-    () => true,
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return false;
-      throw error;
-    },
-  );
-  if (hasSegments) return undefined;
+  if (await hasColdSegmentsManifest(wirePath)) return undefined;
   const info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return undefined;
     throw error;
@@ -2204,8 +2248,9 @@ export async function scanColdWireMarkers(
 
   const existingFlight = coldMarkerFlights.get(fileKey);
   if (existingFlight !== undefined && markers.every((m) => m.length === 0 || (COLD_MARKER_DEFAULT_NEEDLES as readonly string[]).includes(m))) {
-    const done = await existingFlight;
+    const done = signal === undefined ? await existingFlight : await abortable(existingFlight, signal);
     signal?.throwIfAborted();
+    if (done === undefined) return undefined;
     const matches = new Map<string, boolean>();
     for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
     return { size: done.size, matches };
@@ -2216,12 +2261,12 @@ export async function scanColdWireMarkers(
     if (m.length > 0) scanSet.add(m);
   }
   const needles = [...scanSet].map((marker) => ({ marker, buf: Buffer.from(marker, 'utf8'), found: false }));
-  const scanPromise = (async (): Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> }> => {
+  const scanPromise = (async (): Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined> => {
     const maxNeedleLen = needles.reduce((acc, n) => Math.max(acc, n.buf.length), 1);
     const overlap = Math.max(0, maxNeedleLen - 1);
-    const chunkSize = 1024 * 1024;
+    const chunkSize = 2 * 1024 * 1024;
     const buf = Buffer.allocUnsafe(chunkSize + overlap);
-    let stable = true;
+    let stable = false;
     const fh = await open(wirePath, 'r');
     try {
       let pos = 0;
@@ -2248,23 +2293,29 @@ export async function scanColdWireMarkers(
           carry = windowLen;
         }
       }
-      if (needles.some((n) => !n.found)) {
-        const after = await fh.stat();
-        stable = coldMarkerFileKey(wirePath, after) === fileKey;
-      }
+      const afterHandle = await fh.stat();
+      const afterPath = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      const segmentsAppeared = await hasColdSegmentsManifest(wirePath);
+      stable =
+        !segmentsAppeared &&
+        afterPath !== undefined &&
+        coldMarkerFileKey(wirePath, afterHandle) === fileKey &&
+        coldMarkerFileKey(wirePath, afterPath) === fileKey;
     } finally {
       await fh.close();
     }
+    if (!stable) return undefined;
     const results = new Map<string, boolean>();
     for (const n of needles) {
       results.set(n.marker, n.found);
-      if (n.found || stable) {
-        if (coldMarkerCache.size >= 1024) {
-          const oldest = coldMarkerCache.keys().next().value;
-          if (oldest !== undefined) coldMarkerCache.delete(oldest);
-        }
-        coldMarkerCache.set(`${fileKey}\0${n.marker}`, n.found);
+      if (coldMarkerCache.size >= 1024) {
+        const oldest = coldMarkerCache.keys().next().value;
+        if (oldest !== undefined) coldMarkerCache.delete(oldest);
       }
+      coldMarkerCache.set(`${fileKey}\0${n.marker}`, n.found);
     }
     return { size: info.size, results };
   })();
@@ -2273,8 +2324,9 @@ export async function scanColdWireMarkers(
     coldMarkerFlights.set(fileKey, scanPromise);
   }
   try {
-    const done = await scanPromise;
+    const done = signal === undefined ? await scanPromise : await abortable(scanPromise, signal);
     signal?.throwIfAborted();
+    if (done === undefined) return undefined;
     const matches = new Map<string, boolean>();
     for (const m of markers) matches.set(m, m.length === 0 ? true : (done.results.get(m) ?? false));
     return { size: done.size, matches };

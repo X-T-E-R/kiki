@@ -530,15 +530,70 @@ export class SessionEventBroadcaster {
     const fields = { sessionId, generation: timing.generation, viewId: timing.viewId };
     let acquiredLease: SessionLease | undefined;
     let attached: { state: SessionState; generation: number; prev: TargetSubscription | undefined; prevSeeded: boolean } | undefined;
+    const coldPreEmitAbort = new AbortController();
     try {
       const pinnedState = this.sessions.get(sessionId);
       const existingLease = pinnedState?.targets.get(target)?.residencyLease;
       const manager = this.opts.core.accessor.get(ISessionManager);
+      const service = this.opts.transcriptService;
+      if (
+        pinnedState === undefined &&
+        existingLease === undefined &&
+        transcriptGrades !== undefined &&
+        opts?.deferTranscriptReset !== true &&
+        opts?.transcriptSince === undefined &&
+        service !== undefined &&
+        typeof service.readColdPageSnapshot === 'function'
+      ) {
+        const preEmitSignal = AbortSignal.any([timing.signal, coldPreEmitAbort.signal]);
+        for (const [agentId, grade] of Object.entries(transcriptGrades)) {
+          if (agentId === '*' || (grade !== 'delta' && grade !== 'block')) continue;
+          void service
+            .readColdPageSnapshot(sessionId, agentId, (snapshot) => snapshot, preEmitSignal, false, undefined, false, true)
+            .then((rawSnapshot) => {
+              if (
+                rawSnapshot === undefined ||
+                preEmitSignal.aborted ||
+                this.closed ||
+                pending.get(target) !== token
+              ) {
+                return;
+              }
+              const redacted = boundedTranscriptSnapshot(redactSnapshotForGrade(grade, rawSnapshot), agentId);
+              const snapshot = { ...redacted, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
+              const coverage = { kind: 'unknown' as const, hasMoreOlder: true as const };
+              const cursor: TranscriptCursor = { epoch: 'cold', seq: 0 };
+              try {
+                target.send({
+                  type: 'transcript.reset',
+                  seq: 0,
+                  epoch: 'cold',
+                  volatile: true,
+                  session_id: sessionId,
+                  timestamp: new Date().toISOString(),
+                  payload: {
+                    type: 'transcript.reset',
+                    session_id: sessionId,
+                    agent_id: agentId,
+                    snapshot: { ...snapshot, olderCursor: sessionViewSnapshotHistoryCursor(snapshot, agentId, 'derived', cursor.epoch) },
+                    grade,
+                    coverage,
+                    cursor,
+                    read: transcriptReadForCoverage('cold', coverage, { transcript: cursor }),
+                  },
+                });
+              } catch {
+              }
+            })
+            .catch(() => undefined);
+        }
+      }
       if (existingLease === undefined) {
         acquiredLease = await timeSessionViewPhase('subscription_acquire', fields,
           async () => manager.acquire?.(sessionId, 'ws-subscription', undefined, token.signal), timing);
         if (manager.acquire !== undefined && acquiredLease === undefined) return false;
       }
+      coldPreEmitAbort.abort();
       if (this.closed || pending.get(target) !== token) return false;
       const state = await timeSessionViewPhase('subscription_state', fields, () => this.ensureState(sessionId), timing);
       if (state === undefined || this.closed || pending.get(target) !== token ||
@@ -613,6 +668,7 @@ export class SessionEventBroadcaster {
             transcriptGrades: attached.prev.transcriptGrades,
             transcriptGeneration: restoredGeneration,
             residencyLease: attached.prev.residencyLease,
+            transcriptOnly: attached.prev.transcriptOnly,
           });
           if (attached.prevSeeded) attached.state.transcriptSeeded.add(target);
           else attached.state.transcriptSeeded.delete(target);
@@ -620,6 +676,7 @@ export class SessionEventBroadcaster {
       }
       throw error;
     } finally {
+      coldPreEmitAbort.abort();
       await acquiredLease?.dispose();
       if (pending.get(target) === token) pending.delete(target);
       if (pending.size === 0 && this.pendingSubscriptions.get(sessionId) === pending) {
@@ -711,6 +768,7 @@ export class SessionEventBroadcaster {
       transcriptGrades: prior.transcriptGrades,
       transcriptGeneration: restoredGeneration,
       residencyLease: current.residencyLease,
+      transcriptOnly: current.transcriptOnly,
     });
     if (prior.transcriptGrades !== undefined && current.prevTranscriptSeeded === true) {
       state.transcriptSeeded.add(target);
@@ -769,6 +827,7 @@ export class SessionEventBroadcaster {
       transcriptGrades: next,
       transcriptGeneration: generation,
       residencyLease: sub.residencyLease,
+      transcriptOnly: sub.transcriptOnly,
     });
     if (next === undefined || !wasSeeded) state.transcriptSeeded.delete(target);
   }
@@ -1129,6 +1188,7 @@ export class SessionEventBroadcaster {
     cursor: SessionCursor,
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
+    transcriptOnly = false,
   ): Promise<BufferedSinceResult> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) {
@@ -1160,7 +1220,7 @@ export class SessionEventBroadcaster {
         : entries.filter(
             ({ envelope }) =>
               matchesAgentFilter(envelope, filter) &&
-              !suppressedByTranscript(envelope, transcriptGrades),
+              !suppressedByTranscript(envelope, transcriptGrades, transcriptOnly),
           );
 
     const tailStart = tail[0]?.seq;
@@ -2303,7 +2363,12 @@ function suppressedByTranscript(
       ? (payload as { agentId?: unknown }).agentId
       : undefined;
   if (typeof agentId !== 'string') return false;
-  if (gradeFor(spec, agentId) === 'off') return false;
+  const grade = gradeFor(spec, agentId);
+  if (grade === 'off') {
+    if (!transcriptOnly) return false;
+    if (envelope.type.startsWith('event.approval.') || envelope.type.startsWith('event.question.')) return false;
+    return TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type) || TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES.has(envelope.type);
+  }
   if (TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type)) return true;
   return transcriptOnly && TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES.has(envelope.type);
 }

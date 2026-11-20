@@ -113,7 +113,7 @@ export class ProcessTask implements AgentTask {
         this.stopPromise = this.proc.kill('SIGKILL');
         await this.stopPromise;
       } catch (error) {
-        if (sink.signal.aborted) stopError ??= error;
+        if (!isEsrchError(error)) stopError ??= error;
       } finally {
         this.stopPromise = undefined;
       }
@@ -156,6 +156,16 @@ export class ProcessTask implements AgentTask {
     this.release?.();
     this.release = undefined;
   }
+}
+
+function isEsrchError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const record = error as { code?: unknown; cause?: unknown; details?: { errno?: unknown } };
+  if (record.code === 'ESRCH' || record.details?.errno === 'ESRCH') return true;
+  if (typeof record.cause === 'object' && record.cause !== null) {
+    return (record.cause as { code?: unknown }).code === 'ESRCH';
+  }
+  return false;
 }
 
 async function waitForStreamDrain(

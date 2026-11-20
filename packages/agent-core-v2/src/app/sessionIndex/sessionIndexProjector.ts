@@ -350,6 +350,15 @@ export class SessionIndexProjector {
       ? [...await listWorkspaceIds(storage, sessionsScope, log)].toSorted()
       : [...new Set(changed.map((entry) => entry.workspaceId))].toSorted();
     const currentWorkspaceSessions = new Map<string, readonly string[]>();
+    const workspaceTouchedSessions = new Map<string, Set<string>>();
+    const touchWorkspaceSessions = (workspaceId: string, ids: readonly string[]): void => {
+      let bucket = workspaceTouchedSessions.get(workspaceId);
+      if (bucket === undefined) {
+        bucket = new Set<string>();
+        workspaceTouchedSessions.set(workspaceId, bucket);
+      }
+      for (const sid of ids) bucket.add(sid);
+    };
     const currentSessionOwners = new Map<string, number>();
     for (const workspaceId of currentWorkspaceIds) {
       await maybeYield();
@@ -360,6 +369,7 @@ export class SessionIndexProjector {
           ...changed.filter((entry) => entry.workspaceId === workspaceId).map((entry) => entry.id),
         ])].toSorted();
       currentWorkspaceSessions.set(workspaceId, sessionIds);
+      touchWorkspaceSessions(workspaceId, sessionIds);
       for (const sessionId of sessionIds) {
         currentSessionOwners.set(sessionId, (currentSessionOwners.get(sessionId) ?? 0) + 1);
       }
@@ -490,6 +500,7 @@ export class SessionIndexProjector {
       const changedSet = new Set(changedIds);
       const currentSet = new Set(sessionIds);
       const departedIds = previousSessionIds.filter((sessionId) => !currentSet.has(sessionId));
+      touchWorkspaceSessions(workspaceId, departedIds);
       const removedIds = departedIds.filter(
         (sessionId) => (currentSessionOwners.get(sessionId) ?? 0) === 0,
       );
@@ -584,6 +595,7 @@ export class SessionIndexProjector {
       const removedIds = (previousWorkspace?.sessionIds ?? []).filter(
         (sessionId) => (currentSessionOwners.get(sessionId) ?? 0) === 0,
       );
+      touchWorkspaceSessions(workspaceId, previousWorkspace?.sessionIds ?? []);
       const oldSummaries =
         removedIds.length === 0
           ? new Map<string, SessionSummary>()
@@ -636,7 +648,7 @@ export class SessionIndexProjector {
       const effectiveSkipSessionIds = new Set<string>(skip?.sessionIds ?? []);
       if (skipWorkspaceIds !== undefined && skipWorkspaceIds.size > 0) {
         for (const workspaceId of skipWorkspaceIds) {
-          const wsSessionIds = currentWorkspaceSessions.get(workspaceId);
+          const wsSessionIds = workspaceTouchedSessions.get(workspaceId);
           if (wsSessionIds !== undefined) {
             for (const sid of wsSessionIds) effectiveSkipSessionIds.add(sid);
           }

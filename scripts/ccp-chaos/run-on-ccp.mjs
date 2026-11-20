@@ -723,7 +723,7 @@ export async function runChaosOnCcp(options = {}) {
     const remoteRunDir = `/tmp/kiki-chaos-run-${runId}`;
     const s10Only = Boolean(options.s10Only);
     const runS10 = s10Only || runAll || Boolean(options.runS10);
-    const effectiveIsolatedOnly = isolatedOnly || s10Only;
+    const effectiveIsolatedOnly = isolatedOnly || s10Only || Boolean(options.v23Smoke || options.v23Full);
 
     // Clean stale local result artifacts in outDir so a failed run can never read an old green JSON
     for (const staleName of [
@@ -754,6 +754,7 @@ export async function runChaosOnCcp(options = {}) {
       ...(runBrowser ? [] : ['--no-browser']),
       ...(runAll ? ['--run-all'] : []),
       ...(options.v23Smoke ? ['--v23-smoke'] : []),
+      ...(options.v23Full ? ['--v23-full'] : []),
       ...(options.manifestPath ? [`--manifest "${options.manifestPath}"`] : []),
       ...(s6Only ? ['--s6-only'] : options.runS6 ? ['--run-s6'] : []),
       ...(s7Only ? ['--s7-only'] : options.runS7 ? ['--run-s7'] : []),
@@ -773,6 +774,11 @@ export async function runChaosOnCcp(options = {}) {
       `rm -rf "${remoteRunDir}" && mkdir -p "${remoteRunDir}"`,
       'rm -f /tmp/kiki-chaos-results.json /tmp/kiki-vitest-results.json /tmp/kiki-hygiene-results.json',
       'cd /tmp/kiki-work',
+      ...(runBrowser
+        ? [
+            'if [ ! -f apps/kiki-gui/dist/index.html ]; then pnpm --filter @kiki/gui build || true; fi',
+          ]
+        : []),
       `node scripts/ccp-chaos/check-test-hygiene.mjs --json > "${remoteRunDir}/kiki-hygiene-results.json"`,
       'HYGIENE_RC=$?',
       'echo "HYGIENE_EXIT=$HYGIENE_RC"',
@@ -809,6 +815,19 @@ export async function runChaosOnCcp(options = {}) {
       '  }',
       '}',
       'RECEIPT_EOF',
+      `cat > "${remoteRunDir}/manifest.json" <<MANIFEST_EOF`,
+      '{',
+      `  "runId": "${runId}",`,
+      `  "buildId": "${buildId}",`,
+      `  "tier": "${options.v23Full ? 'v23-full' : options.v23Smoke ? 'v23-smoke' : tier}",`,
+      `  "requireAllV23Scenarios": ${Boolean(options.v23Full || options.v23Smoke)},`,
+      `  "requiredStages": ${JSON.stringify(runVitest && !effectiveIsolatedOnly ? ['hygiene', 'unitTests', 'chaos', 'vitest'] : ['hygiene', 'unitTests', 'chaos'])}`,
+      '}',
+      'MANIFEST_EOF',
+      `node scripts/ccp-chaos/verify/verdict.mjs "${remoteRunDir}" > "${remoteRunDir}/remote-verdict.json"`,
+      'VERDICT_RC=$?',
+      'echo "REMOTE_VERDICT_EXIT=$VERDICT_RC"',
+      'if [ "$VERDICT_RC" -ne 0 ] && [ "$FINAL_RC" -eq 0 ]; then FINAL_RC=$VERDICT_RC; fi',
       ...(keepRuntime ? ['echo "KEEPING_WARM_NVME_CORPUS=/tmp/kiki-chaos-nvme"'] : ['rm -rf /tmp/kiki-chaos-nvme']),
       'exit $FINAL_RC',
     ].join('\n');
@@ -821,7 +840,7 @@ export async function runChaosOnCcp(options = {}) {
     const execOutcome = await runSshCommandWithSentinel(
       sshSessionId,
       'chmod +x /tmp/exec-chaos-remote.sh && /tmp/exec-chaos-remote.sh',
-      { timeoutMs: 2_400_000, streamOutput: true, allowFail: true },
+      { timeoutMs: 7_200_000, streamOutput: true, allowFail: true },
     );
     fs.writeFileSync(path.join(outDir, 'remote-run.log'), `${execOutcome.stdout}\n---STDERR---\n${execOutcome.stderr}\n`, 'utf8');
 
@@ -858,6 +877,21 @@ export async function runChaosOnCcp(options = {}) {
     const requiredStages = runVitest && !effectiveIsolatedOnly
       ? ['hygiene', 'unitTests', 'chaos', 'vitest']
       : ['hygiene', 'unitTests', 'chaos'];
+    fs.writeFileSync(
+      path.join(outDir, 'manifest.json'),
+      `${JSON.stringify(
+        {
+          runId,
+          buildId,
+          requiredStages,
+          tier: options.v23Full ? 'v23-full' : options.v23Smoke ? 'v23-smoke' : tier,
+          requireAllV23Scenarios: Boolean(options.v23Full || options.v23Smoke),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     const verdict = evaluateCcpRunVerdict({
       expectedRunId: runId,
       expectedBuildId: buildId,
@@ -865,12 +899,8 @@ export async function runChaosOnCcp(options = {}) {
       receipt: runReceipt,
       chaosReport: chaosResults,
       requiredStages,
+      requireAllV23Scenarios: Boolean(options.v23Full || options.v23Smoke),
     });
-    fs.writeFileSync(
-      path.join(outDir, 'manifest.json'),
-      `${JSON.stringify({ runId, buildId, requiredStages, tier }, null, 2)}\n`,
-      'utf8',
-    );
     fs.writeFileSync(path.join(outDir, 'verdict.json'), `${JSON.stringify({ runId, buildId, ...verdict }, null, 2)}\n`, 'utf8');
 
     fs.writeFileSync(
@@ -963,6 +993,7 @@ export function parseCcpCliArgs(args) {
     runS7S8: false,
     runAll: false,
     v23Smoke: false,
+    v23Full: false,
     manifestPath: undefined,
     runS6: false,
     runS7: false,
@@ -995,6 +1026,7 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-all') opts.runAll = true;
     else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
+    else if (args[i] === '--v23-full') { opts.v23Full = true; opts.tier = 'full'; }
     else if (args[i] === '--manifest' && args[i + 1]) opts.manifestPath = args[++i];
     else if (args[i] === '--run-s6') opts.runS6 = true;
     else if (args[i] === '--run-s7') opts.runS7 = true;

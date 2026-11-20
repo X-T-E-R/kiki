@@ -255,6 +255,7 @@ export async function readPersistedAgentPanelMetrics(
     type RuntimePrepassEntry = {
       readonly facts: PersistedAgentRuntimeFacts;
       readonly checkpointReady: boolean;
+      readonly oversizedUncheckpointed: boolean;
       readonly context: PersistedAgentContext;
       readonly contextComplete: boolean;
     };
@@ -270,6 +271,7 @@ export async function readPersistedAgentPanelMetrics(
       return [agentId, {
         facts: fallbackFacts(meta?.contextTokens),
         checkpointReady: false,
+        oversizedUncheckpointed: false,
         context,
         contextComplete,
       }] as const;
@@ -305,6 +307,7 @@ export async function readPersistedAgentPanelMetrics(
         return [agentId, {
           facts,
           checkpointReady: facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+          oversizedUncheckpointed: !facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
           context,
           contextComplete: true,
         }] as const;
@@ -353,6 +356,15 @@ export async function readPersistedAgentPanelMetrics(
             context: runtime.get(id)?.context ?? EMPTY_PERSISTED_CONTEXT,
           }, { ttl });
         }
+      }
+      for (let index = missing.length - 1; index >= 0; index--) if (result.has(missing[index]!)) missing.splice(index, 1);
+      if (missing.length === 0) return finish();
+    }
+    const oversizedUncheckpointed = missing.filter(id => runtime.get(id)?.oversizedUncheckpointed === true);
+    if (oversizedUncheckpointed.length > 0) {
+      const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, oversizedUncheckpointed, options.signal);
+      for (const id of oversizedUncheckpointed) {
+        result.set(id, toPersistedMetrics(resolvedUsage(id, persistedUsageOf(rows[id])), pricing));
       }
       for (let index = missing.length - 1; index >= 0; index--) if (result.has(missing[index]!)) missing.splice(index, 1);
       if (missing.length === 0) return finish();

@@ -1259,7 +1259,7 @@ async function apiJsonRaw(endpoint, token, method, urlPath, body, timeoutMs = 30
   }
 }
 
-async function startGuiStaticServer() {
+export async function startGuiStaticServer() {
   const { ensureGuiStaticBuild } = await import('../perf/browser-runner.mjs');
   const build = ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'));
   const staticServer = createHttpServer((req, res) => {

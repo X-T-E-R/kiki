@@ -584,6 +584,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     for (const sid of sessionIds) {
       this.broadcaster.unsubscribe(sid, this);
       this.subscriptions.delete(sid);
+      this.transcriptOnlySessions.delete(sid);
     }
     this.sendImmediateFrame(
       buildAck(frame.id ?? '', 0, 'success', {
@@ -896,7 +897,13 @@ export class WsConnectionV1 implements BroadcastTarget {
     resyncRequired: string[],
     serverCursors: Record<string, { seq: number; epoch?: string }>,
   ): Promise<void> {
-    const result = await this.broadcaster.getBufferedSince(sid, cursor, filter, transcriptGrades);
+    const result = await this.broadcaster.getBufferedSince(
+      sid,
+      cursor,
+      filter,
+      transcriptGrades,
+      this.transcriptOnlySessions.has(sid),
+    );
     this.replayHolds.delete(sid);
     const held = this.takeReplayHeld(sid);
     let seq = result.currentSeq;

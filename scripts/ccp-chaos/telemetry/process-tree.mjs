@@ -26,10 +26,9 @@ function readLinuxProcStat(pid) {
   }
 }
 
-export function listDescendantPids(rootPid) {
-  if (!Number.isInteger(rootPid) || rootPid <= 0) return [];
+function listAllProcessesWithCmdline() {
   if (process.platform === 'linux') {
-    const childrenByParent = new Map();
+    const rows = [];
     let entries = [];
     try {
       entries = fs.readdirSync('/proc');
@@ -41,55 +40,95 @@ export function listDescendantPids(rootPid) {
       const pid = Number(entry);
       const st = readLinuxProcStat(pid);
       if (!st) continue;
-      const list = childrenByParent.get(st.ppid) ?? [];
-      list.push(pid);
-      childrenByParent.set(st.ppid, list);
+      let cmdline = '';
+      try {
+        cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0+/gu, ' ').trim();
+      } catch {}
+      rows.push({ pid, ppid: st.ppid, cmdline });
     }
-    const descendants = [];
-    const queue = [...(childrenByParent.get(rootPid) ?? [])];
-    const seen = new Set([rootPid]);
-    while (queue.length > 0) {
-      const cur = queue.shift();
-      if (seen.has(cur)) continue;
-      seen.add(cur);
-      descendants.push(cur);
-      for (const next of childrenByParent.get(cur) ?? []) queue.push(next);
-    }
-    return descendants;
+    return rows;
   }
 
   if (process.platform === 'win32') {
     try {
-      const ps = `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress`;
+      const ps = `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`;
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
         encoding: 'utf8',
         timeout: 8_000,
       }).trim();
       if (!out) return [];
-      const rows = JSON.parse(out);
-      const list = Array.isArray(rows) ? rows : [rows];
-      const byParent = new Map();
-      for (const r of list) {
-        const arr = byParent.get(r.ParentProcessId) ?? [];
-        arr.push(r.ProcessId);
-        byParent.set(r.ParentProcessId, arr);
-      }
-      const descendants = [];
-      const queue = [...(byParent.get(rootPid) ?? [])];
-      const seen = new Set([rootPid]);
-      while (queue.length > 0) {
-        const cur = queue.shift();
-        if (seen.has(cur)) continue;
-        seen.add(cur);
-        descendants.push(cur);
-        for (const next of byParent.get(cur) ?? []) queue.push(next);
-      }
-      return descendants;
+      const parsed = JSON.parse(out);
+      return (Array.isArray(parsed) ? parsed : [parsed]).map((r) => ({
+        pid: Number(r.ProcessId),
+        ppid: Number(r.ParentProcessId),
+        cmdline: String(r.CommandLine ?? ''),
+      }));
     } catch {
       return [];
     }
   }
   return [];
+}
+
+export function listDescendantProcesses(rootPid) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return [];
+  const rows = listAllProcessesWithCmdline();
+  const byParent = new Map();
+  for (const r of rows) {
+    const arr = byParent.get(r.ppid) ?? [];
+    arr.push(r);
+    byParent.set(r.ppid, arr);
+  }
+  const descendants = [];
+  const queue = [...(byParent.get(rootPid) ?? [])];
+  const seen = new Set([rootPid]);
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (!cur || seen.has(cur.pid)) continue;
+    seen.add(cur.pid);
+    descendants.push(cur);
+    for (const next of byParent.get(cur.pid) ?? []) queue.push(next);
+  }
+  return descendants;
+}
+
+export function listDescendantPids(rootPid) {
+  return listDescendantProcesses(rootPid).map((p) => p.pid);
+}
+
+export function findChildBrowserRootPid(parentPid = process.pid) {
+  const descendants = listDescendantProcesses(parentPid);
+  // Find the top-level Chromium browser process (no --type= flag) spawned under parentPid
+  const browserMain = descendants.find((p) => {
+    const cmd = p.cmdline.toLowerCase();
+    return (
+      (cmd.includes('chrom') || cmd.includes('headless_shell')) &&
+      !cmd.includes('--type=')
+    );
+  });
+  return browserMain?.pid ?? null;
+}
+
+export function listChromiumRendererAndGpuPids(browserRootPid) {
+  if (!Number.isInteger(browserRootPid) || browserRootPid <= 0) return [];
+  const descendants = listDescendantProcesses(browserRootPid);
+  return descendants
+    .filter((p) => /--type=(?:renderer|gpu-process)\b/u.test(p.cmdline))
+    .map((p) => p.pid);
+}
+
+export function listSurvivingWorkloadDescendants(serverRootPid) {
+  if (!Number.isInteger(serverRootPid) || serverRootPid <= 0) return [];
+  const descendants = listDescendantProcesses(serverRootPid);
+  // Exclude known internal Kiki helper processes (e.g. sqlite search indexer) while counting
+  // any lingering shell/bash/node/python/workload children spawned by tools.
+  return descendants.filter((p) => {
+    const cmd = p.cmdline.toLowerCase();
+    if (cmd.includes('__search-indexer') || cmd.includes('sqlite-indexer') || cmd.includes('esbuild')) {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function samplePidCpuTicks(pids) {
@@ -136,6 +175,9 @@ export function computeCorePctDelta(prevMap, nextMap, elapsedSec) {
 }
 
 export async function sampleProcessTreeCpu(rootPid, windowMs = 10_000) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) {
+    return { totalCorePct: null, processCount: 0, elapsedSec: 0 };
+  }
   const pidsBefore = [rootPid, ...listDescendantPids(rootPid)];
   const prev = samplePidCpuTicks(pidsBefore);
   const t0 = performance.now();
@@ -143,10 +185,55 @@ export async function sampleProcessTreeCpu(rootPid, windowMs = 10_000) {
   const elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
   const pidsAfter = [...new Set([rootPid, ...listDescendantPids(rootPid), ...pidsBefore])];
   const next = samplePidCpuTicks(pidsAfter);
+  if (prev.size === 0 || next.size === 0) {
+    return { totalCorePct: null, processCount: 0, elapsedSec: Number(elapsedSec.toFixed(2)) };
+  }
   return {
     totalCorePct: computeCorePctDelta(prev, next, elapsedSec),
     processCount: next.size,
     elapsedSec: Number(elapsedSec.toFixed(2)),
+  };
+}
+
+export async function sampleDisjointIdleWindow({ serverPid, browserPid = null, windowMs = 10_000 }) {
+  const serverPidsBefore = Number.isInteger(serverPid) && serverPid > 0
+    ? [serverPid, ...listDescendantPids(serverPid)]
+    : [];
+  const browserPidsBefore = Number.isInteger(browserPid) && browserPid > 0
+    ? listChromiumRendererAndGpuPids(browserPid)
+    : [];
+  const prevServer = serverPidsBefore.length > 0 ? samplePidCpuTicks(serverPidsBefore) : new Map();
+  const prevBrowser = browserPidsBefore.length > 0 ? samplePidCpuTicks(browserPidsBefore) : new Map();
+  const t0 = performance.now();
+  await new Promise((resolve) => setTimeout(resolve, windowMs));
+  const elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
+
+  const serverPidsAfter = Number.isInteger(serverPid) && serverPid > 0
+    ? [...new Set([serverPid, ...listDescendantPids(serverPid), ...serverPidsBefore])]
+    : [];
+  const browserPidsAfter = Number.isInteger(browserPid) && browserPid > 0
+    ? [...new Set([...listChromiumRendererAndGpuPids(browserPid), ...browserPidsBefore])]
+    : [];
+  const nextServer = serverPidsAfter.length > 0 ? samplePidCpuTicks(serverPidsAfter) : new Map();
+  const nextBrowser = browserPidsAfter.length > 0 ? samplePidCpuTicks(browserPidsAfter) : new Map();
+  const survivingWorkload = Number.isInteger(serverPid) && serverPid > 0
+    ? listSurvivingWorkloadDescendants(serverPid)
+    : [];
+
+  return {
+    elapsedSec: Number(elapsedSec.toFixed(2)),
+    serverCorePct: prevServer.size > 0 && nextServer.size > 0
+      ? computeCorePctDelta(prevServer, nextServer, elapsedSec)
+      : null,
+    processCount: nextServer.size,
+    rendererPlusGpuCorePct: browserPid != null
+      ? (prevBrowser.size > 0 && nextBrowser.size > 0
+          ? computeCorePctDelta(prevBrowser, nextBrowser, elapsedSec)
+          : null)
+      : null,
+    rendererProcessCount: nextBrowser.size,
+    survivingDescendants: survivingWorkload.length,
+    survivingDescendantDetails: survivingWorkload.map((p) => ({ pid: p.pid, cmdline: p.cmdline.slice(0, 160) })),
   };
 }
 

@@ -46,6 +46,7 @@ import {
   openPinnedLogicalRead,
   readColdManifestSummary,
   readLogicalBytes,
+  scanColdWireMarkers,
   sealColdSegments,
   unsealColdSegments,
   withColdExclusive,
@@ -3506,6 +3507,52 @@ describe('cold segment journal', () => {
       });
       expect(Buffer.from((await mem.read(SCOPE, `${KEY}.segments/${crashedSealId}/000000.zst`))!)).toEqual(seg0Bytes);
     } finally {
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('does not skip records inside sealed .segments.json wires when AppendLogStore.read uses rawSubstrings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-sealed-marker-'));
+    const storage = new FileStorageService(root);
+    const log = createTestAppendLogStore(storage);
+    const scope = 'sessions/ws/sealed-marker/agents/sub';
+    try {
+      const filler = 'x'.repeat(32 * 1024);
+      const records: WireRecord[] = [
+        { type: 'prompt.model_switch', id: 'sealed-switch-1', toModel: 'gpt-test' } as unknown as WireRecord,
+      ];
+      for (let i = 0; i < 40; i += 1) {
+        records.push({ type: 'note', id: `pad-${i}`, body: filler } as unknown as WireRecord);
+      }
+      for (const rec of records) {
+        await log.append(scope, KEY, rec);
+      }
+      await log.flush(scope, KEY);
+      const totalSize = (await storage.size(scope, KEY)) ?? 0;
+      expect(totalSize).toBeGreaterThan(1024 * 1024);
+
+      const sealed = await sealColdSegments(storage, scope, KEY, totalSize, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 256 * 1024,
+        keepHeadBytes: 0,
+      });
+      expect(sealed.segmentCount).toBeGreaterThan(0);
+
+      const wirePath = storage.pathFor(scope, KEY)!;
+      expect(await scanColdWireMarkers(wirePath, ['prompt.model_switch'])).toBeUndefined();
+
+      const seen: WireRecord[] = [];
+      for await (const record of log.read<WireRecord>(scope, KEY, {
+        rawSubstrings: [Buffer.from('prompt.model_switch', 'utf8')],
+      })) {
+        seen.push(record);
+      }
+      expect(seen.map((r) => (r as unknown as { id?: string }).id)).toEqual(['sealed-switch-1']);
+    } finally {
+      await log.dispose();
       await storage.close();
       closeSparseFileWorker();
       await rm(root, { recursive: true, force: true });

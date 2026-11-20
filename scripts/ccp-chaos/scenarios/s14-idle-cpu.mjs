@@ -1,61 +1,97 @@
-import { sampleProcessTreeCpu } from '../telemetry/process-tree.mjs';
-import { evaluateIdleCpuGate } from '../verify/verdict.mjs';
+import { sampleDisjointIdleWindow } from '../telemetry/process-tree.mjs';
+import { evaluateIdleCpuGate, FROZEN_V23_THRESHOLDS } from '../verify/verdict.mjs';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Executes Astra v2.3 §9.5 Idle CPU Gate after active work settles:
- * waits `settleSec` (30s in full/CCP), then samples consecutive `windowSec` (10s) windows
- * measuring disjoint server+helpers core% (<= 2.0%), optional browser renderer+GPU core% (<= 3.0%)
- * with recorder rAF disabled, and 0 surviving workload descendants.
+ * Executes Astra v2.3 §9.5 Idle CPU Gate on the SAME live kap-server + live Chromium page
+ * after active work settles:
+ *   1. Stops ONLY the test harness's in-page rAF flight recorder (`window.__KIKI_STOP_FLIGHT__()`).
+ *   2. Waits `settleSec` (30s in full/CCP).
+ *   3. Samples consecutive `windowSec` windows measuring disjoint:
+ *      - server+helpers Core% (<= 2.0%)
+ *      - Chromium `--type=renderer` + `--type=gpu-process` Core% (<= 3.0%)
+ *      - real OS surviving workload descendants (=== 0, never hardcoded)
  */
 export async function runScenarioS14IdleCpu({
   serverPid,
-  browserPid = null,
-  settleSec = 30,
-  windowCount = 12,
-  windowSec = 10,
+  browserHandle = null,
+  tier = 'smoke',
+  settleSec,
+  windowCount,
+  windowSec,
   progress = () => {},
 }) {
-  const headlessNoBrowser = !browserPid;
+  const isFull = tier === 'full';
+  const effectiveSettleSec = settleSec ?? (isFull ? 30 : 25);
+  const effectiveWindowCount = Math.max(
+    isFull ? FROZEN_V23_THRESHOLDS.s14.minWindowsFull : FROZEN_V23_THRESHOLDS.s14.minWindowsSmoke,
+    windowCount ?? (isFull ? 12 : 3),
+  );
+  const effectiveWindowSec = windowSec ?? (isFull ? 10 : 10);
+
+  let recorderRafDisabled = false;
+  let browserPid = null;
+  if (browserHandle) {
+    if (typeof browserHandle.stopFlightRecorder === 'function') {
+      recorderRafDisabled = await browserHandle.stopFlightRecorder().catch(() => false);
+    }
+    browserPid = browserHandle.browserPid ?? null;
+  } else if (!isFull) {
+    // No browser attached in headless-only smoke run: no rAF loop exists
+    recorderRafDisabled = true;
+  }
+
+  const browserEnabled = Boolean(browserHandle && browserPid);
+  const headlessNoBrowser = !browserEnabled;
+
   progress(
-    `S14 Idle CPU Gate: settling ${settleSec}s, then sampling ${windowCount}x${windowSec}s windows (serverPid=${serverPid}, browserPid=${browserPid ?? 'none'})...`,
+    `S14 Idle CPU Gate (${tier}): rAFDisabled=${recorderRafDisabled} settling ${effectiveSettleSec}s, sampling ${effectiveWindowCount}x${effectiveWindowSec}s (serverPid=${serverPid}, browserPid=${browserPid ?? 'none'})...`,
   );
 
-  if (settleSec > 0) {
-    await sleep(settleSec * 1000);
+  if (effectiveSettleSec > 0) {
+    await sleep(effectiveSettleSec * 1000);
   }
 
   const windows = [];
-  for (let i = 0; i < windowCount; i += 1) {
-    const [srvSample, brSample] = await Promise.all([
-      sampleProcessTreeCpu(serverPid, windowSec * 1000),
-      browserPid ? sampleProcessTreeCpu(browserPid, windowSec * 1000) : Promise.resolve(null),
-    ]);
+  for (let i = 0; i < effectiveWindowCount; i += 1) {
+    const sample = await sampleDisjointIdleWindow({
+      serverPid,
+      browserPid: browserEnabled ? browserPid : null,
+      windowMs: effectiveWindowSec * 1000,
+    });
     windows.push({
       index: i + 1,
-      serverCorePct: srvSample.totalCorePct,
-      serverProcessCount: srvSample.processCount,
-      rendererPlusGpuCorePct: brSample ? brSample.totalCorePct : undefined,
-      browserProcessCount: brSample ? brSample.processCount : 0,
-      survivingDescendants: 0,
+      elapsedSec: sample.elapsedSec,
+      serverCorePct: sample.serverCorePct,
+      processCount: sample.processCount,
+      rendererPlusGpuCorePct: browserEnabled ? sample.rendererPlusGpuCorePct : undefined,
+      rendererProcessCount: browserEnabled ? sample.rendererProcessCount : 0,
+      survivingDescendants: sample.survivingDescendants,
+      survivingDescendantDetails: sample.survivingDescendantDetails,
     });
   }
 
   const idleReport = {
-    requiredWindowCount: windowCount,
-    windowSec,
-    settleSec,
-    recorderRafDisabled: true,
+    tier: isFull ? 'full' : 'smoke',
+    requiredWindowCount: effectiveWindowCount,
+    windowSec: effectiveWindowSec,
+    settleSec: effectiveSettleSec,
+    recorderRafDisabled,
+    browserEnabled,
     headlessNoBrowser,
     windows,
   };
-  const verdict = evaluateIdleCpuGate(idleReport);
-  const peakServer = Math.max(0, ...windows.map((w) => w.serverCorePct));
+  const verdict = evaluateIdleCpuGate(idleReport, isFull ? 'full' : 'smoke');
+  const peakServer = Math.max(0, ...windows.map((w) => (typeof w.serverCorePct === 'number' ? w.serverCorePct : 0)));
+  const peakRenderer = Math.max(
+    0,
+    ...windows.map((w) => (typeof w.rendererPlusGpuCorePct === 'number' ? w.rendererPlusGpuCorePct : 0)),
+  );
   progress(
-    `S14 Idle CPU Result: passed=${verdict.passed} peakServerCorePct=${peakServer}% windows=${windows.length}`,
+    `S14 Idle CPU Result: passed=${verdict.passed} peakServerCorePct=${peakServer}% peakRendererCorePct=${peakRenderer}% maxSurvivors=${Math.max(0, ...windows.map((w) => w.survivingDescendants))}`,
   );
   return {
     ...verdict,

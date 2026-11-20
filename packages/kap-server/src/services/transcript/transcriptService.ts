@@ -201,12 +201,6 @@ function extractHeaderTurnId(line: Buffer): string | undefined {
   return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
 }
 
-function extractHeaderToolCallId(line: Buffer): string | undefined {
-  const head = line.toString('utf8', 0, Math.min(512, line.length));
-  const match = /"(?:toolCallId|tool_call_id)"\s*:\s*"([^"]+)"/.exec(head);
-  return match?.[1];
-}
-
 function isSkippableOverflowMessageLine(line: Buffer): boolean {
   if (line.length < APPEND_MESSAGE_PREFIX.length + 2 || !hasClosedJsonObjectFrame(line)) return false;
   if (!line.subarray(0, APPEND_MESSAGE_PREFIX.length).equals(APPEND_MESSAGE_PREFIX)) return false;
@@ -2876,12 +2870,14 @@ export class TranscriptService {
     if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true &&
         (allowDroppedTail || (existing.droppedTail !== true && existing.end >= info.size))) {
       if (resolveHeaders && !existing.entire && existing.end >= info.size && existing.headers === undefined) {
-        await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, existing, signal, preserveOpenTurnIds, captureReplayState);
+        await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, existing, signal, undefined, undefined);
         existing.bytes = this.coldWindowBytes(existing.snapshot, existing.records);
         this.rememberColdWindow(wirePath, existing);
         this.deleteColdSnapshotCache(wirePath);
-      } else if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
-        existing.snapshot = await this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing, signal);
+      }
+      if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
+        const snapshot = await this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing, signal);
+        return { ...existing, snapshot };
       }
       return existing;
     }
@@ -2892,7 +2888,8 @@ export class TranscriptService {
       this.coldReadsShared += 1;
       const shared = await this.awaitColdWindowFlight(flight, signal);
       if (shared !== undefined && (preserveOpenTurnIds !== undefined || captureReplayState !== undefined)) {
-        shared.snapshot = await this.projectColdRecords(agentId, shared.records, shared.entire, preserveOpenTurnIds, captureReplayState, shared, signal);
+        const snapshot = await this.projectColdRecords(agentId, shared.records, shared.entire, preserveOpenTurnIds, captureReplayState, shared, signal);
+        return { ...shared, snapshot };
       }
       return shared;
     }
@@ -2909,7 +2906,8 @@ export class TranscriptService {
     this.coldWindowFlights.set(flightKey, flight);
     const built = await this.awaitColdWindowFlight(flight, signal);
     if (built !== undefined && (preserveOpenTurnIds !== undefined || captureReplayState !== undefined)) {
-      built.snapshot = await this.projectColdRecords(agentId, built.records, built.entire, preserveOpenTurnIds, captureReplayState, built, signal);
+      const snapshot = await this.projectColdRecords(agentId, built.records, built.entire, preserveOpenTurnIds, captureReplayState, built, signal);
+      return { ...built, snapshot };
     }
     return built;
   }
@@ -3457,8 +3455,6 @@ export class TranscriptService {
                     skippedTurnIds.add(headerTurn);
                     skippedUnknownTurn = false;
                   }
-                  const headerToolId = extractHeaderToolCallId(line);
-                  if (headerToolId !== undefined) toolTurnIds.push([headerToolId, headerTurn]);
                   skippedTurnIds.add(headerTurn);
                   if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
                   if (turns === 0 && (end - start) >= FIRST_SCREEN_WINDOW_BYTES) {
@@ -3479,10 +3475,6 @@ export class TranscriptService {
             }
             if (turnAlreadySkipped && line.byteLength > 256 && isSkippableOverflowMessageLine(line)) {
               scannedRecords++;
-              if (reverseTurn !== undefined) {
-                const headerToolId = extractHeaderToolCallId(line);
-                if (headerToolId !== undefined) toolTurnIds.push([headerToolId, reverseTurn]);
-              }
               if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
               recordEnd = boundary;
               lineEnd = previous;

@@ -114,7 +114,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
           buildId: 'abc1234',
           stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 1 } },
         },
-        chaosReport: { runId: 'run_new_999', overallPassed: false, skipped: 0 },
+        chaosReport: { runId: 'run_new_999', buildId: 'abc1234', overallPassed: false, skipped: 0 },
       });
       assert.equal(directFail.passed, false);
       assert.equal(directFail.exitCode, EXIT_PRODUCT_FAIL);
@@ -125,13 +125,26 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
 
   it('S10 product failure gate catches 16s prompt_admission & transcript root remounts', () => {
     const res = evaluateS10Verdict({
+      tier: 'smoke',
       peakActiveChildren: 8,
       totalChildToolCalls: 48,
       overlapBucketsQualified: 4,
       browserRequired: true,
-      flightRecorder: { sampleCount: 120, cls: 0.001, rawLayoutShift: 0.001, transcriptRootRemounts: 1, consoleErrors: 0 },
+      guiDistServed: true,
+      durableReceiptsVerified: true,
+      failedSends: 0,
+      flightRecorder: {
+        sampleCount: 120,
+        cls: 0.001,
+        rawLayoutShift: 0.001,
+        transcriptRootRemounts: 1,
+        consoleErrors: 0,
+        composerTyping: { samples: 12, p95Ms: 14 },
+      },
+      textPromptAdmission: { samples: 4, p95Ms: 1011, maxMs: 1011 },
+      pngPromptAdmission: { samples: 2, p95Ms: 16278, maxMs: 16278 },
       promptAdmission: { p95Ms: 16278, maxMs: 16278 },
-      sendToReceipt: { p95Ms: 16400, maxMs: 16400 },
+      sendToReceipt: { samples: 6, p95Ms: 16400, maxMs: 16400 },
       eld: { p99Ms: 2609, maxMs: 3894 },
     });
     assert.equal(res.passed, false);
@@ -142,21 +155,35 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
   });
 
   it('§10.1 P0-1 cold child gate enforces both legacy (>2GB/s raw pass, <=2MiB parse) and reopen (<=2MiB raw+parse) lanes', () => {
+    const completeResponses = (hooksCode = 40901) => [
+      { path: '/api/sessions/s/transcript?agent_id=c&transcript_coverage_version=2', status: 200, code: 0 },
+      { path: '/api/agents/capabilities?session_id=s&agent_id=c&metrics_settle=true', status: 200, code: 0 },
+      { path: '/api/sessions/s/agents/c/model-switches', status: 200, code: 0 },
+      { path: '/api/sessions/s/agents/c/hooks?observe=true', status: 200, code: hooksCode },
+      { path: '/api/sessions/s/agents/c/auto-compact?observe=true', status: 200, code: 0 },
+      { path: '/api/sessions/s/agents/c/context-strategy?observe=true', status: 200, code: 0 },
+      { path: '/api/sessions/s/status', status: 200, code: 0 },
+      { path: '/api/sessions/s/transcript/plan?agent_id=c', status: 200, code: 0 },
+    ];
     const passLegacy = evaluateP01ColdChildGate({
       lane: 'legacy',
       wasColdBeforeOpen: true,
       checkpoints: [],
       preexistingSummaryOrSidecar: false,
+      httpTranscriptMs: 145,
+      wsFirstResetMs: 210,
       firstPaintMs: 145,
       controlBarSettleMs: 220,
-      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      responses: completeResponses(40901),
       rawPassCount: 1,
       wireBytes: 80 * 1024 * 1024,
       aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 2_800_000_000,
       auxiliaryTargetReadBytes: 128 * 1024,
       aggregateParseInputBytes: 512 * 1024,
+      ioTraceSource: 'server_product_trace',
       fullReplayMatches: true,
+      fullReplayProof: { matches: true, turnCount: 12 },
     });
     assert.equal(passLegacy.passed, true);
 
@@ -164,14 +191,17 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       lane: 'legacy',
       wasColdBeforeOpen: true,
       checkpoints: [],
+      httpTranscriptMs: 145,
+      wsFirstResetMs: 180,
       firstPaintMs: 145,
       controlBarSettleMs: 220,
-      responses: [{ path: '/api/sessions/s/transcript', status: 404, code: 40401 }],
+      responses: [{ ...completeResponses()[0], status: 404, code: 40401 }, ...completeResponses().slice(1)],
       rawPassCount: 1,
       wireBytes: 80 * 1024 * 1024,
       aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 2_800_000_000,
       aggregateParseInputBytes: 512 * 1024,
+      ioTraceSource: 'server_product_trace',
       fullReplayMatches: true,
     });
     assert.equal(failHttp404.passed, false);
@@ -181,9 +211,11 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       lane: 'legacy',
       wasColdBeforeOpen: true,
       checkpoints: [],
+      httpTranscriptMs: 145,
+      wsFirstResetMs: 180,
       firstPaintMs: 145,
       controlBarSettleMs: 220,
-      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      responses: completeResponses(),
       rawPassCount: 1,
       wireBytes: 80 * 1024 * 1024,
       aggregateWireReadBytes: 80 * 1024 * 1024,
@@ -196,14 +228,17 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       lane: 'legacy',
       wasColdBeforeOpen: true,
       checkpoints: [],
+      httpTranscriptMs: 180,
+      wsFirstResetMs: 190,
       firstPaintMs: 180,
       controlBarSettleMs: 240,
-      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      responses: completeResponses(),
       rawPassCount: 1,
       wireBytes: 80 * 1024 * 1024,
       aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 800_000_000,
       aggregateParseInputBytes: 512 * 1024,
+      ioTraceSource: 'server_product_trace',
       fullReplayMatches: true,
     });
     assert.equal(failSlowScan.passed, false);
@@ -213,14 +248,17 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       lane: 'legacy',
       wasColdBeforeOpen: true,
       checkpoints: [],
+      httpTranscriptMs: 180,
+      wsFirstResetMs: 190,
       firstPaintMs: 180,
       controlBarSettleMs: 240,
-      responses: [{ path: '/api/sessions/s/transcript/plan', status: 200, code: 40923, reason: 'history_canonical_preparing' }],
+      responses: [...completeResponses().slice(0, 7), { path: '/api/sessions/s/transcript/plan?agent_id=c', status: 200, code: 40923, reason: 'history_canonical_preparing' }],
       rawPassCount: 1,
       wireBytes: 80 * 1024 * 1024,
       aggregateWireReadBytes: 80 * 1024 * 1024,
       legacyScanBytesPerSec: 2_500_000_000,
       aggregateParseInputBytes: 80 * 1024 * 1024,
+      ioTraceSource: 'server_product_trace',
       fullReplayMatches: true,
     });
     assert.equal(failLegacyOverParse.passed, false);
@@ -232,11 +270,14 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       wasColdBeforeOpen: true,
       productionCheckpointPublished: true,
       fixtureBuiltCheckpoint: false,
+      httpTranscriptMs: 90,
+      wsFirstResetMs: 110,
       firstPaintMs: 90,
       controlBarSettleMs: 140,
-      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      responses: completeResponses(0),
       aggregateWireReadBytes: 512 * 1024,
       aggregateParseInputBytes: 256 * 1024,
+      ioTraceSource: 'server_product_trace',
     });
     assert.equal(failReopenMissingProof.passed, false);
     assert.equal(failReopenMissingProof.exitCode, EXIT_HARNESS_FAIL);
@@ -246,17 +287,20 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       wasColdBeforeOpen: true,
       productionCheckpointPublished: true,
       fixtureBuiltCheckpoint: true,
+      httpTranscriptMs: 90,
+      wsFirstResetMs: 110,
       firstPaintMs: 90,
       controlBarSettleMs: 140,
-      responses: [{ path: '/api/sessions/s/transcript', status: 200, code: 0 }],
+      responses: completeResponses(0),
       aggregateWireReadBytes: 512 * 1024,
       aggregateParseInputBytes: 256 * 1024,
+      ioTraceSource: 'server_product_trace',
       summaryProof: {
         sourceIdentity: '1:2',
-        generation: 'g1',
+        storeGeneration: 'g1',
         coveredByteOffset: 1024,
         headSha256: 'aa',
-        tailSha256: 'bb',
+        boundarySha256: 'bb',
         formatVersion: 1,
         verified: true,
       },
@@ -575,21 +619,165 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
 
   it('idle CPU gate requires rAF disabled and enforces <=2% server / <=3% renderer / 0 descendants', () => {
     const pass = evaluateIdleCpuGate({
+      tier: 'smoke',
       recorderRafDisabled: true,
-      requiredWindowCount: 2,
+      browserEnabled: true,
       windows: [
-        { serverCorePct: 0.4, rendererPlusGpuCorePct: 0.9, survivingDescendants: 0 },
-        { serverCorePct: 1.1, rendererPlusGpuCorePct: 1.5, survivingDescendants: 0 },
+        { serverCorePct: 0.4, processCount: 2, rendererPlusGpuCorePct: 0.9, rendererProcessCount: 2, survivingDescendants: 0 },
+        { serverCorePct: 1.1, processCount: 2, rendererPlusGpuCorePct: 1.5, rendererProcessCount: 2, survivingDescendants: 0 },
+        { serverCorePct: 0.7, processCount: 2, rendererPlusGpuCorePct: 1.2, rendererProcessCount: 2, survivingDescendants: 0 },
       ],
     });
     assert.equal(pass.passed, true);
 
     const failHighCpu = evaluateIdleCpuGate({
+      tier: 'smoke',
       recorderRafDisabled: true,
-      requiredWindowCount: 1,
-      windows: [{ serverCorePct: 14.2, rendererPlusGpuCorePct: 1.0, survivingDescendants: 0 }],
+      browserEnabled: true,
+      windows: [
+        { serverCorePct: 14.2, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
+        { serverCorePct: 0.5, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
+        { serverCorePct: 0.5, processCount: 2, rendererPlusGpuCorePct: 1.0, rendererProcessCount: 2, survivingDescendants: 0 },
+      ],
     });
     assert.equal(failHighCpu.passed, false);
     assert.equal(failHighCpu.exitCode, EXIT_PRODUCT_FAIL);
+  });
+
+  it('closes all 6 fail-open counterexamples in verdict.mjs', () => {
+    // Counterexample #1: P0-1 HTTP 302, missing code, slow wsFirstResetMs (>300ms), or driver-simulated scan must FAIL
+    const p01Base = {
+      lane: 'legacy',
+      wasColdBeforeOpen: true,
+      checkpoints: [],
+      preexistingSummaryOrSidecar: false,
+      httpTranscriptMs: 140,
+      wsFirstResetMs: 416,
+      firstPaintMs: 140,
+      controlBarSettleMs: 220,
+      responses: [
+        { path: '/api/sessions/s/transcript?agent_id=c', status: 302 },
+        { path: '/api/agents/capabilities?session_id=s&agent_id=c&metrics_settle=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/model-switches', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/hooks?observe=true', status: 200, code: 40901 },
+        { path: '/api/sessions/s/agents/c/auto-compact?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/context-strategy?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/status', status: 200, code: 0 },
+        { path: '/api/sessions/s/transcript/plan?agent_id=c', status: 200, code: 0 },
+      ],
+      rawPassCount: 1,
+      wireBytes: 80 * 1024 * 1024,
+      aggregateWireReadBytes: 80 * 1024 * 1024,
+      legacyScanBytesPerSec: 2_800_000_000,
+      aggregateParseInputBytes: 512 * 1024,
+      driverSimulatedScan: true,
+      fullReplayMatches: true,
+    };
+    const r1 = evaluateP01ColdChildGate(p01Base);
+    assert.equal(r1.passed, false);
+    assert.ok(r1.productFailures.some((f) => f.includes('WS transcript.reset')));
+    assert.ok(r1.productFailures.some((f) => f.includes('302')));
+    assert.ok(r1.harnessFailures.some((f) => f.includes('IO attribution')));
+
+    // Counterexample #2: P0-2 caller passing minRollingWindows: 0 must NOT bypass rolling5sWindows
+    const r2 = evaluateP02MainOnlyWsGate({
+      tier: 'smoke',
+      minRollingWindows: 0,
+      requiredStreamingChildren: 4,
+      activeStreamingChildren: 4,
+      controlClientChildBytes: 1024,
+      unsubscribedChildContentBytes: 0,
+      unsubscribedChildContentFrames: 0,
+      inboundBytesPerSecP99: 1024,
+      inboundBytesPerSecPeak: 2048,
+      inboundFramesPerSecP99: 4,
+      inboundFramesPerSecPeak: 8,
+      rolling5sWindows: [],
+    });
+    assert.equal(r2.passed, false);
+    assert.equal(r2.exitCode, EXIT_HARNESS_FAIL);
+
+    // Counterexample #3: S10 caller passing relaxed limits or stub HTML must NOT pass
+    const r3 = evaluateS10Verdict(
+      {
+        tier: 'smoke',
+        peakActiveChildren: 4,
+        totalChildToolCalls: 16,
+        overlapBucketsQualified: 2,
+        browserRequired: true,
+        guiDistServed: false,
+        usedStubHtml: true,
+        failedSends: 0,
+        durableReceiptsVerified: true,
+        flightRecorder: { sampleCount: 100, cls: 0, rawLayoutShift: 0, transcriptRootRemounts: 0, consoleErrors: 0, composerTyping: { samples: 10, p95Ms: 12 } },
+        textPromptAdmission: { samples: 2, p95Ms: 900, maxMs: 900 },
+        pngPromptAdmission: { samples: 2, p95Ms: 200, maxMs: 200 },
+        promptAdmission: { p95Ms: 900, maxMs: 900 },
+        sendToReceipt: { samples: 4, p95Ms: 900, maxMs: 900 },
+        eld: { p99Ms: 10, maxMs: 20 },
+      },
+      { promptAdmissionTextP95Ms: 5000, sendToReceiptP95Ms: 5000 },
+    );
+    assert.equal(r3.passed, false);
+    assert.ok(r3.productFailures.some((f) => f.includes('warm text prompt_admission')));
+    assert.ok(r3.harnessFailures.some((f) => f.includes('stub HTML')));
+
+    // Counterexample #4: S14 full tier ignoring headlessNoBrowser=true & rejecting 0-process sampling
+    const r4 = evaluateIdleCpuGate({
+      tier: 'full',
+      headlessNoBrowser: true,
+      recorderRafDisabled: true,
+      windows: Array.from({ length: 12 }, () => ({ serverCorePct: 0.5, processCount: 0, survivingDescendants: 0 })),
+    });
+    assert.equal(r4.passed, false);
+    assert.equal(r4.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(r4.harnessFailures.some((f) => f.includes('full tier requires visible browser')));
+    assert.ok(r4.harnessFailures.some((f) => f.includes('0 server processes')));
+
+    // Counterexample #5: verifySavedBundle / evaluateCcpRunVerdict rejects missing v2.3 scenarios or empty S13 cells
+    const r5 = evaluateCcpRunVerdict({
+      expectedRunId: 'run_v23_1',
+      expectedBuildId: 'sha_1234',
+      remoteExitCode: 0,
+      receipt: {
+        runId: 'run_v23_1',
+        buildId: 'sha_1234',
+        stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } },
+      },
+      chaosReport: {
+        runId: 'run_v23_1',
+        buildId: 'sha_1234',
+        mode: 'v23',
+        tier: 'v23-smoke',
+        overallPassed: true,
+        skipped: 0,
+        scenarios: { s13: { cells: [] } },
+      },
+    });
+    assert.equal(r5.passed, false);
+    assert.equal(r5.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(r5.harnessFailures.some((f) => f.includes('Missing required v2.3 scenario "p01"')));
+    assert.ok(r5.harnessFailures.some((f) => f.includes('S13 scenario requires >= 3')));
+
+    // Counterexample #6: mismatched buildId in chaosReport vs manifest fails closed
+    const r6 = evaluateCcpRunVerdict({
+      expectedRunId: 'run_v23_2',
+      expectedBuildId: 'sha_expected',
+      remoteExitCode: 0,
+      receipt: {
+        runId: 'run_v23_2',
+        buildId: 'sha_expected',
+        stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } },
+      },
+      chaosReport: {
+        runId: 'run_v23_2',
+        buildId: 'sha_different',
+        overallPassed: true,
+        skipped: 0,
+      },
+    });
+    assert.equal(r6.passed, false);
+    assert.equal(r6.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(r6.harnessFailures.some((f) => f.includes('chaos report buildId')));
   });
 });

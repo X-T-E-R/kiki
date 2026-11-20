@@ -51,10 +51,10 @@ async function fetchEndpoint(endpoint, token, urlPath, timeoutMs = 20_000) {
 }
 
 /**
- * Independent raw sequential Buffer.indexOf throughput measurement + full-file
- * replay parity check for §10.1 Lane A (legacy pristine checkpointless wire).
+ * Independent full-file replay parity check for §10.1 Lane A (legacy pristine checkpointless wire).
+ * Compares plan-marker presence AND tail turn IDs against server's /transcript + /transcript/plan responses.
  */
-function verifyLegacyWireIndependently(wirePath, serverPlanData) {
+function verifyLegacyWireIndependently(wirePath, serverPlanData, serverTranscriptData) {
   const stat = fs.statSync(wirePath);
   const needle = Buffer.from('ExitPlanMode', 'utf8');
   const overlap = needle.length - 1;
@@ -63,7 +63,7 @@ function verifyLegacyWireIndependently(wirePath, serverPlanData) {
   const fd = fs.openSync(wirePath, 'r');
   let foundNeedle = false;
   let totalRead = 0;
-  const scanT0 = performance.now();
+  let tailText = '';
   try {
     let pos = 0;
     let carry = 0;
@@ -84,20 +84,48 @@ function verifyLegacyWireIndependently(wirePath, serverPlanData) {
         carry = winLen;
       }
     }
+    const tailLen = Math.min(256 * 1024, stat.size);
+    const tailBuf = Buffer.allocUnsafe(tailLen);
+    fs.readSync(fd, tailBuf, 0, tailLen, Math.max(0, stat.size - tailLen));
+    tailText = tailBuf.toString('utf8');
   } finally {
     fs.closeSync(fd);
   }
-  const scanMs = Math.max(0.001, performance.now() - scanT0);
-  const rawScanBytesPerSec = Math.round((totalRead / scanMs) * 1000);
+
+  const expectedTailTurnIds = [];
+  for (const line of tailText.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const rec = JSON.parse(line);
+      if (rec?.type === 'turn.prompt' || rec?.type === 'turn.ended') {
+        const tid = `t${rec.turnId}`;
+        if (!expectedTailTurnIds.includes(tid)) expectedTailTurnIds.push(tid);
+      }
+    } catch {}
+  }
 
   const serverPlans = Array.isArray(serverPlanData?.plans) ? serverPlanData.plans : [];
-  const fullReplayMatches = foundNeedle === (serverPlans.length > 0);
+  const planMatches = foundNeedle === (serverPlans.length > 0);
+  const serverItems = Array.isArray(serverTranscriptData?.items) ? serverTranscriptData.items : [];
+  const serverTurnIds = serverItems.filter((it) => it?.kind === 'turn').map((it) => it.turnId);
+  const lastExpectedTurn = expectedTailTurnIds.at(-1) ?? null;
+  const tailMatches =
+    serverTurnIds.length > 0 &&
+    (lastExpectedTurn === null || serverTurnIds.includes(lastExpectedTurn));
+  const fullReplayMatches = planMatches && tailMatches;
+
   return {
     totalRead,
-    scanMs: roundMs(scanMs),
-    rawScanBytesPerSec,
     foundNeedle,
     fullReplayMatches,
+    fullReplayProof: {
+      matches: fullReplayMatches,
+      planMatches,
+      tailMatches,
+      turnCount: serverTurnIds.length,
+      tailTurnIds: serverTurnIds.slice(-5),
+      expectedLastTurnId: lastExpectedTurn,
+    },
   };
 }
 
@@ -189,7 +217,7 @@ function buildChildWorkspaceFanoutEndpoints(sessionId, childAgentId) {
   const cid = encodeURIComponent(childAgentId);
   return [
     `/api/sessions/${sid}/transcript?agent_id=${cid}&transcript_coverage_version=2`,
-    `/api/agents/capabilities?session_id=${sid}&agent_id=${cid}`,
+    `/api/agents/capabilities?session_id=${sid}&agent_id=${cid}&metrics_settle=true`,
     `/api/sessions/${sid}/agents/${cid}/model-switches`,
     `/api/sessions/${sid}/agents/${cid}/hooks?observe=true`,
     `/api/sessions/${sid}/agents/${cid}/auto-compact?observe=true`,
@@ -201,7 +229,6 @@ function buildChildWorkspaceFanoutEndpoints(sessionId, childAgentId) {
 
 async function executeColdChildFanout({ server, WebSocket, sessionId, childAgentId, wirePath }) {
   const targetPathSuffix = path.join('agents', childAgentId, 'wire.jsonl');
-  // Pre-open WebSocket before t0, matching an active GUI session clicking a cold child
   let preOpenedWs = null;
   if (WebSocket) {
     try {
@@ -282,18 +309,23 @@ async function executeColdChildFanout({ server, WebSocket, sessionId, childAgent
 
   const transcriptRes = httpResults.find((r) => r.path.includes('/transcript?'));
   const planRes = httpResults.find((r) => r.path.includes('/transcript/plan'));
-  const candidates = [transcriptRes?.elapsedMs, wsFirstResetMs].filter((v) => typeof v === 'number');
-  const firstPaintMs = candidates.length > 0 ? Math.min(...candidates) : fanoutWallMs;
+  const httpTranscriptMs = transcriptRes?.elapsedMs ?? null;
+  const firstPaintMs =
+    typeof httpTranscriptMs === 'number' && typeof wsFirstResetMs === 'number'
+      ? Math.max(httpTranscriptMs, wsFirstResetMs)
+      : (httpTranscriptMs ?? wsFirstResetMs ?? fanoutWallMs);
   const controlBarSettleMs = Math.max(...httpResults.map((r) => r.elapsedMs));
   const sanitizedResponses = httpResults.map(({ data: _data, ...rest }) => rest);
 
   return {
+    httpTranscriptMs,
+    wsFirstResetMs,
     firstPaintMs,
     controlBarSettleMs,
-    wsFirstResetMs,
     wsResetItemsCount,
     fanoutWallMs,
     responses: sanitizedResponses,
+    transcriptData: transcriptRes?.data ?? null,
     planData: planRes?.data ?? null,
     ioTrace,
     postMetrics,
@@ -341,7 +373,9 @@ function verifyProductionCheckpointProof(agentDir) {
     fs.closeSync(fd);
   }
   const genPath = path.join(agentDir, 'wire.jsonl.generation');
-  const generation = fs.existsSync(genPath) ? fs.readFileSync(genPath, 'utf8').trim() : (wireMeta.storeGeneration ?? 'legacy');
+  const diskGeneration = fs.existsSync(genPath) ? fs.readFileSync(genPath, 'utf8').trim() : null;
+  const storeGeneration = wireMeta.storeGeneration ?? diskGeneration ?? null;
+  const generationMatches = !wireMeta.storeGeneration || !diskGeneration || wireMeta.storeGeneration === diskGeneration;
   const headMatches = !wireMeta.headHash || headSha256.startsWith(String(wireMeta.headHash));
   const boundaryMatches = !wireMeta.boundarySha256 || wireMeta.boundarySha256 === tailSha256;
   const prefixMatches = !wireMeta.prefixSha256 || wireMeta.prefixSha256 === prefixSha256;
@@ -350,92 +384,130 @@ function verifyProductionCheckpointProof(agentDir) {
     exists: true,
     proof: {
       sourceIdentity: `${wireStat.dev}:${wireStat.ino}`,
-      generation,
+      storeGeneration,
+      generation: storeGeneration,
       coveredByteOffset,
       headSha256,
+      boundarySha256: wireMeta.boundarySha256 ?? tailSha256,
       tailSha256,
       formatVersion: ckpt?.format ?? null,
-      verified: Boolean(headMatches && boundaryMatches && prefixMatches && offsetValid),
+      verified: Boolean(storeGeneration && generationMatches && headMatches && boundaryMatches && prefixMatches && offsetValid),
     },
   };
 }
 
 /**
- * Runs the P0-1 Cold Child 9-endpoint (7 ChildAgentWorkspace + plan + accounting)
+ * Runs the P0-1 Cold Child 8-endpoint (including capabilities?metrics_settle=true)
  * + subscribe_v2 fan-out probe against a real kap-server (Astra v2.3 §§9.1, 10.1).
- * Supports both Lane A ('legacy' checkpointless) and Lane B ('reopen' production checkpoint).
+ * Runs `[82.65 MiB]` in smoke and `[20, 60, 82.65, 100 MiB]` in full, plus Lane B reopen
+ * and real Playwright GUI child view navigation when `browserHandle` is available.
  */
 export async function runP01ColdChildFanoutProbe({
   server,
   corpus,
   WebSocket,
-  targetBytes = 20 * 1024 * 1024,
-  stepCount = 150,
+  tier = 'smoke',
+  targetBytes = null,
+  targetSizesBytes = null,
+  stepCount = 200,
   reopenSession = null,
+  browserHandle = null,
   progress = () => {},
 }) {
-  const sessionId = `chaos_p01_${randomUUID().slice(0, 8)}`;
-  const childAgentId = 'sub_cold_p01';
-  const seeded = seedColdCheckpointlessChildSession({
-    homeDir: corpus.homeDir,
-    workspaceId: corpus.workspaceId,
-    workspaceDir: corpus.workspaceDir,
-    sessionId,
-    childAgentId,
-    targetBytes,
-    stepCount,
-  });
+  const sizes = Array.isArray(targetSizesBytes) && targetSizesBytes.length > 0
+    ? targetSizesBytes
+    : typeof targetBytes === 'number' && targetBytes > 0
+      ? [targetBytes]
+      : tier === 'full'
+        ? [...P01_COLD_CHILD_SIZES_BYTES]
+        : [P01_COLD_CHILD_SIZES_BYTES[2]];
 
-  progress(
-    `P0-1 Legacy Cold Child Probe: session=${sessionId} child=${childAgentId} wire=${(seeded.wireMeta.bytesWritten / (1024 * 1024)).toFixed(2)} MiB (checkpoints=[], steps=${stepCount})`,
-  );
+  const trials = [];
+  const productFailures = [];
+  const harnessFailures = [];
 
-  const fanout = await executeColdChildFanout({
-    server,
-    WebSocket,
-    sessionId,
-    childAgentId,
-    wirePath: seeded.wirePath,
-  });
-  const independent = verifyLegacyWireIndependently(seeded.wirePath, fanout.planData);
-  const measuredWireReadBytes = fanout.ioTrace?.wireReadBytes ?? 0;
-  const measuredParseBytes = fanout.ioTrace?.jsonParseInputBytes ?? 0;
-  const measuredScanBytesPerSec =
-    fanout.ioTrace && fanout.ioTrace.wireReadBytes > 0 && fanout.ioTrace.wireScanMs > 0
-      ? Math.max(
-          independent.rawScanBytesPerSec,
-          Math.round((fanout.ioTrace.wireReadBytes / fanout.ioTrace.wireScanMs) * 1000),
-        )
-      : independent.rawScanBytesPerSec;
+  for (let si = 0; si < sizes.length; si += 1) {
+    const sizeEntry = sizes[si];
+    const sizeBytes = typeof sizeEntry === 'object' && sizeEntry !== null ? Number(sizeEntry.targetBytes) : Number(sizeEntry);
+    const entryStepCount =
+      typeof sizeEntry === 'object' && sizeEntry !== null && Number.isFinite(sizeEntry.stepCount)
+        ? Number(sizeEntry.stepCount)
+        : stepCount;
+    const sessionId = `chaos_p01_${si}_${randomUUID().slice(0, 8)}`;
+    const childAgentId = 'sub_cold_p01';
+    const seeded = seedColdCheckpointlessChildSession({
+      homeDir: corpus.homeDir,
+      workspaceId: corpus.workspaceId,
+      workspaceDir: corpus.workspaceDir,
+      sessionId,
+      childAgentId,
+      targetBytes: sizeBytes,
+      stepCount: entryStepCount,
+    });
 
-  const legacyTrial = {
-    lane: 'legacy',
-    sessionId,
-    childAgentId,
-    wireBytes: seeded.wireMeta.bytesWritten,
-    checkpoints: [],
-    preexistingSummaryOrSidecar: false,
-    wasColdBeforeOpen: true,
-    firstPaintMs: fanout.firstPaintMs,
-    controlBarSettleMs: fanout.controlBarSettleMs,
-    wsFirstResetMs: fanout.wsFirstResetMs,
-    wsResetItemsCount: fanout.wsResetItemsCount,
-    fanoutWallMs: fanout.fanoutWallMs,
-    responses: fanout.responses,
-    rawPassCount: fanout.ioTrace?.rawPassCount ?? 1,
-    ioOpens: fanout.ioTrace?.opens ?? [],
-    aggregateWireReadBytes: measuredWireReadBytes,
-    aggregateParseInputBytes: measuredParseBytes,
-    legacyScanBytesPerSec: measuredScanBytesPerSec,
-    fullReplayMatches: independent.fullReplayMatches,
-    eldP99Ms: fanout.postMetrics.eldP99Ms,
-    eldMaxMs: fanout.postMetrics.eldMaxMs,
-  };
+    progress(
+      `P0-1 Legacy Cold Child Probe [${si + 1}/${sizes.length}]: session=${sessionId} child=${childAgentId} wire=${(seeded.wireMeta.bytesWritten / (1024 * 1024)).toFixed(2)} MiB (checkpoints=[], steps=${entryStepCount})`,
+    );
 
-  const legacyVerdict = evaluateP01ColdChildGate(legacyTrial);
-  const trials = [legacyTrial];
-  const productFailures = [...legacyVerdict.productFailures];
-  const harnessFailures = [...legacyVerdict.harnessFailures];
+    const fanout = await executeColdChildFanout({
+      server,
+      WebSocket,
+      sessionId,
+      childAgentId,
+      wirePath: seeded.wirePath,
+    });
+    const independent = verifyLegacyWireIndependently(seeded.wirePath, fanout.planData, fanout.transcriptData);
+    const measuredWireReadBytes = fanout.ioTrace?.wireReadBytes ?? 0;
+    const measuredParseBytes = fanout.ioTrace?.jsonParseInputBytes ?? 0;
+    // STRICT: pure server product ioTrace throughput ONLY — never substitute driver scan speed!
+    const measuredScanBytesPerSec =
+      fanout.ioTrace && fanout.ioTrace.wireReadBytes > 0 && fanout.ioTrace.wireScanMs > 0
+        ? Math.round((fanout.ioTrace.wireReadBytes / fanout.ioTrace.wireScanMs) * 1000)
+        : null;
+
+    let browserGuiCheck = null;
+    if (browserHandle?.openChildView && si === sizes.length - 1) {
+      browserGuiCheck = await browserHandle.openChildView(sessionId, childAgentId);
+    }
+
+    const legacyTrial = {
+      lane: 'legacy',
+      sessionId,
+      childAgentId,
+      wireBytes: seeded.wireMeta.bytesWritten,
+      checkpoints: [],
+      preexistingSummaryOrSidecar: false,
+      wasColdBeforeOpen: true,
+      httpTranscriptMs: fanout.httpTranscriptMs,
+      wsFirstResetMs: fanout.wsFirstResetMs,
+      firstPaintMs: fanout.firstPaintMs,
+      controlBarSettleMs: fanout.controlBarSettleMs,
+      wsResetItemsCount: fanout.wsResetItemsCount,
+      fanoutWallMs: fanout.fanoutWallMs,
+      responses: fanout.responses,
+      rawPassCount: fanout.ioTrace?.rawPassCount ?? 1,
+      ioTraceSource: fanout.ioTrace ? 'server_product_trace' : 'missing',
+      driverSimulatedScan: false,
+      ioOpens: fanout.ioTrace?.opens ?? [],
+      aggregateWireReadBytes: measuredWireReadBytes,
+      aggregateParseInputBytes: measuredParseBytes,
+      legacyScanBytesPerSec: measuredScanBytesPerSec,
+      fullReplayMatches: independent.fullReplayMatches,
+      fullReplayProof: independent.fullReplayProof,
+      browserGuiCheck,
+      eldP99Ms: fanout.postMetrics.eldP99Ms,
+      eldMaxMs: fanout.postMetrics.eldMaxMs,
+    };
+
+    const legacyVerdict = evaluateP01ColdChildGate(legacyTrial);
+    trials.push(legacyTrial);
+    productFailures.push(...legacyVerdict.productFailures);
+    harnessFailures.push(...legacyVerdict.harnessFailures);
+
+    progress(
+      `P0-1 Legacy [${(seeded.wireMeta.bytesWritten / (1024 * 1024)).toFixed(2)} MiB]: passed=${legacyVerdict.passed} httpTranscript=${fanout.httpTranscriptMs}ms wsReset=${fanout.wsFirstResetMs}ms controlBar=${fanout.controlBarSettleMs}ms wireRead=${(measuredWireReadBytes / (1024 * 1024)).toFixed(2)}MiB jsonParse=${(measuredParseBytes / 1024).toFixed(1)}KiB scanGBs=${measuredScanBytesPerSec ? (measuredScanBytesPerSec / 1e9).toFixed(2) : 'null'} eldMax=${fanout.postMetrics.eldMaxMs}ms`,
+    );
+  }
 
   if (reopenSession && reopenSession.sessionId && reopenSession.childAgentId && reopenSession.agentDir) {
     if (typeof server.closeSession === 'function') {
@@ -458,12 +530,15 @@ export async function runP01ColdChildFanoutProbe({
       productionCheckpointPublished: ckptCheck.exists,
       fixtureBuiltCheckpoint: false,
       firstReaderBuiltCheckpoint: false,
+      httpTranscriptMs: reopenFanout.httpTranscriptMs,
+      wsFirstResetMs: reopenFanout.wsFirstResetMs,
       firstPaintMs: reopenFanout.firstPaintMs,
       controlBarSettleMs: reopenFanout.controlBarSettleMs,
-      wsFirstResetMs: reopenFanout.wsFirstResetMs,
       wsResetItemsCount: reopenFanout.wsResetItemsCount,
       fanoutWallMs: reopenFanout.fanoutWallMs,
       responses: reopenFanout.responses,
+      ioTraceSource: reopenFanout.ioTrace ? 'server_product_trace' : 'missing',
+      driverSimulatedScan: false,
       aggregateWireReadBytes: reopenFanout.ioTrace?.wireReadBytes ?? 0,
       aggregateParseInputBytes: reopenFanout.ioTrace?.jsonParseInputBytes ?? 0,
       summaryProof: ckptCheck.proof,
@@ -474,18 +549,19 @@ export async function runP01ColdChildFanoutProbe({
     trials.push(reopenTrial);
     productFailures.push(...reopenVerdict.productFailures);
     harnessFailures.push(...reopenVerdict.harnessFailures);
+
+    progress(
+      `P0-1 Reopen [${reopenSession.childAgentId}]: passed=${reopenVerdict.passed} httpTranscript=${reopenFanout.httpTranscriptMs}ms wsReset=${reopenFanout.wsFirstResetMs}ms ckptPublished=${ckptCheck.exists} wireRead=${((reopenFanout.ioTrace?.wireReadBytes ?? 0) / 1024).toFixed(1)}KiB`,
+    );
   }
 
   const passed = productFailures.length === 0 && harnessFailures.length === 0;
-  progress(
-    `P0-1 Result: passed=${passed} firstPaint=${fanout.firstPaintMs}ms controlBar=${fanout.controlBarSettleMs}ms wireRead=${(measuredWireReadBytes / (1024 * 1024)).toFixed(2)}MiB jsonParse=${(measuredParseBytes / 1024).toFixed(1)}KiB scanGBs=${(measuredScanBytesPerSec / 1e9).toFixed(2)} eldMax=${fanout.postMetrics.eldMaxMs}ms`,
-  );
   return {
     passed,
     exitCode: harnessFailures.length > 0 ? 2 : productFailures.length > 0 ? 1 : 0,
     productFailures,
     harnessFailures,
-    trial: legacyTrial,
+    trial: trials[0] ?? null,
     trials,
   };
 }
