@@ -419,6 +419,7 @@ async function runAgentListToolProbe({ server, twin, target, stepTimeoutMs, prog
   if (!twin) {
     return { skipped: true, reason: 'twin server not supplied' };
   }
+  const twinBefore = twin.getStats();
   const t0 = performance.now();
   const promptId = `p_s6_agentlist_${Date.now()}`;
   const submitRes = await apiJsonRaw(
@@ -435,12 +436,14 @@ async function runAgentListToolProbe({ server, twin, target, stepTimeoutMs, prog
         },
       ],
     },
-    stepTimeoutMs,
+    Math.max(stepTimeoutMs, 60_000),
   );
+  const submitMs = submitRes.elapsedMs;
   if (submitRes.status !== 200 || submitRes.json?.code !== 0) {
     return {
       ok: false,
       stage: 'submit',
+      submitMs,
       httpStatus: submitRes.status,
       code: submitRes.json?.code ?? submitRes.networkError ?? 'http_error',
       msg: submitRes.json?.msg ?? submitRes.rawText,
@@ -451,7 +454,9 @@ async function runAgentListToolProbe({ server, twin, target, stepTimeoutMs, prog
   const deadline = performance.now() + Math.max(stepTimeoutMs, 60_000);
   let settled = false;
   let lastTurnReason = null;
+  let pollCount = 0;
   while (performance.now() < deadline) {
+    pollCount += 1;
     const st = await apiJsonRaw(
       server.endpoint,
       server.token,
@@ -468,17 +473,20 @@ async function runAgentListToolProbe({ server, twin, target, stepTimeoutMs, prog
         data.main_turn_active === true ||
         data.state === 'running' ||
         data.loop?.status === 'running';
-      if (!busy) {
+      const twinNow = twin.getStats();
+      const sawLlmCall = twinNow.counters.totalRequests > twinBefore.counters.totalRequests;
+      if (!busy && (sawLlmCall || pollCount >= 8)) {
         settled = true;
         lastTurnReason = data.last_turn_reason ?? data.lastTurnReason ?? 'completed';
         break;
       }
     }
-    await sleep(60);
+    await sleep(80);
   }
 
   const turnWallMs = roundMs(performance.now() - t0);
-  const agentListStats = twin.getStats()?.toolStats?.AgentList ?? null;
+  const twinAfter = twin.getStats();
+  const agentListStats = twinAfter?.toolStats?.AgentList ?? null;
   const resultBytes = agentListStats?.lastResultBytes ?? null;
   const subagentMentionCount = agentListStats?.lastSubagentMentionCount ?? null;
   const parsedEntryCount = agentListStats?.lastParsedEntryCount ?? null;
@@ -491,7 +499,11 @@ async function runAgentListToolProbe({ server, twin, target, stepTimeoutMs, prog
     settled,
     timedOut: !settled,
     lastTurnReason,
+    submitMs,
     turnWallMs,
+    twinRequestsDelta: twinAfter.counters.totalRequests - twinBefore.counters.totalRequests,
+    twinContractViolationsDelta: twinAfter.counters.contractViolations - twinBefore.counters.contractViolations,
+    twinViolationsTail: twinAfter.violations?.slice(-3) ?? [],
     toolResultBytes: resultBytes,
     toolResultKiB: resultBytes === null ? null : Number((resultBytes / 1024).toFixed(2)),
     toolResultLineCount: agentListStats?.lastResultLineCount ?? null,
