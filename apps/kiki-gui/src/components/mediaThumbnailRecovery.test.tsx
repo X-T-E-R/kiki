@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
@@ -10,7 +10,7 @@ import { configureMediaFetchConfig, useSessionMedia } from './mediaParts';
 import { LazyMediaLightbox } from './preview/PreviewLoadBoundary';
 import { MediaGalleryOrder } from './mediaPreviewContext';
 import { configureMediaTransportLimits, KikiClient } from '../lib/client';
-import { LiveControllerRegistry, VIEW_CACHE_MAX_PARKED } from '../state/connection';
+import { ConnectionContext, type ConnectionValue, LiveControllerRegistry, VIEW_CACHE_MAX_PARKED } from '../state/connection';
 import type { SessionController } from '@kiki/session-core/session';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 
@@ -35,13 +35,14 @@ const fixture = vi.hoisted(() => {
   };
 });
 
-vi.mock('../state/connection', async (importOriginal) => {
-  const originalModule = await importOriginal<typeof import('../state/connection')>();
-  return {
-    ...originalModule,
-    useOptionalConnection: () => ({ client: fixture.client, scopeId: 'local', ...fixture.connectionOverrides }),
-  };
-});
+function TestShell({ children }: { readonly children: ReactNode }) {
+  const value = { client: fixture.client, scopeId: 'local', ...fixture.connectionOverrides } as unknown as ConnectionValue;
+  return (
+    <ConnectionContext.Provider value={value}>
+      <I18nProvider>{children}</I18nProvider>
+    </ConnectionContext.Provider>
+  );
+}
 
 let root: Root;
 let container: HTMLDivElement;
@@ -103,12 +104,12 @@ describe('thumbnail recovery', () => {
     fixture.hostPreview.mockRejectedValue(error);
     fixture.hostOriginal.mockResolvedValue({ bytes: Uint8Array.from([1, 2, 3]), mime: 'image/png' });
     await act(async () => {
-      root.render(<I18nProvider><MediaPreviewProvider sessionId="session">
+      root.render(<TestShell><MediaPreviewProvider sessionId="session">
         <MediaPartList media={[
           { kind: 'image', fileId: 'large', path: 'E:/images/large.png', name: 'large.png' },
           { kind: 'image', path: 'E:/images/host.png', name: 'host.png' },
         ]} />
-      </MediaPreviewProvider></I18nProvider>);
+      </MediaPreviewProvider></TestShell>);
     });
     await flush();
     expect(container.querySelectorAll('img')).toHaveLength(2);
@@ -120,7 +121,7 @@ describe('thumbnail recovery', () => {
   it('retries only the file thumbnail after that image becomes ready in the viewer', async () => {
     await act(async () => {
       root.render(
-        <I18nProvider>
+        <TestShell>
           <MediaPreviewProvider sessionId="session">
             <MediaGalleryOrder agentId="other" order={0} blockId="foreign">
               <MediaPartList media={[{ kind: 'image', fileId: 'foreign', name: 'foreign.png', mime: 'image/png' }]} />
@@ -132,7 +133,7 @@ describe('thumbnail recovery', () => {
               ]} />
             </MediaGalleryOrder>
           </MediaPreviewProvider>
-        </I18nProvider>,
+        </TestShell>,
       );
     });
     await flush();
@@ -175,11 +176,11 @@ describe('thumbnail recovery', () => {
     try {
       await act(async () => {
         root.render(
-          <I18nProvider>
+          <TestShell>
             <MediaPreviewProvider sessionId="session">
               <MediaPartList media={[{ kind: 'image', fileId: 'busy', name: 'busy.png', mime: 'image/png' }]} />
             </MediaPreviewProvider>
-          </I18nProvider>,
+          </TestShell>,
         );
       });
       await act(async () => { await vi.advanceTimersByTimeAsync(250); });
@@ -197,11 +198,11 @@ describe('thumbnail recovery', () => {
     fixture.preview.mockRejectedValue(new ApiError({ code: 40001, msg: 'HTTP 415 unsupported video poster', data: null }));
     await act(async () => {
       root.render(
-        <I18nProvider>
+        <TestShell>
           <MediaPreviewProvider sessionId="session">
             <MediaPartList media={[{ kind: 'video', fileId: 'clip', name: 'clip.mp4', mime: 'video/mp4' }]} />
           </MediaPreviewProvider>
-        </I18nProvider>,
+        </TestShell>,
       );
     });
     await flush();
@@ -243,11 +244,11 @@ describe('thumbnail recovery', () => {
 
     await act(async () => {
       root.render(
-        <I18nProvider>
+        <TestShell>
           <MediaPreviewProvider sessionId="session-lifo">
             <MediaPartList media={items} />
           </MediaPreviewProvider>
-        </I18nProvider>,
+        </TestShell>,
       );
     });
 
@@ -258,11 +259,11 @@ describe('thumbnail recovery', () => {
     // those queued items must dequeue immediately with 0 network requests!
     await act(async () => {
       root.render(
-        <I18nProvider>
+        <TestShell>
           <MediaPreviewProvider sessionId="session-lifo">
             <MediaPartList media={[items[0]!, items[1]!, items[2]!, items[3]!, items[10]!, items[11]!]} />
           </MediaPreviewProvider>
-        </I18nProvider>,
+        </TestShell>,
       );
     });
 
@@ -302,11 +303,11 @@ describe('thumbnail recovery', () => {
     // Case 1: oversized (> 4 MiB) local image must not auto-download raw original inline
     await act(async () => {
       root.render(
-        <I18nProvider>
+        <TestShell>
           <MediaPreviewProvider sessionId="session-huge">
             <MediaPartList media={[{ kind: 'image', fileId: 'huge-25mb', name: 'huge.png', mime: 'image/png', size: 25 * 1024 * 1024 }]} />
           </MediaPreviewProvider>
-        </I18nProvider>,
+        </TestShell>,
       );
     });
     await flush();
@@ -317,11 +318,11 @@ describe('thumbnail recovery', () => {
     fixture.connectionOverrides = { connectionSource: 'remote', scopeId: 'remote:space-1', spaceKey: 'remote:space-1' };
     await act(async () => {
       root.render(
-        <I18nProvider>
+        <TestShell>
           <MediaPreviewProvider sessionId="session-remote">
             <MediaPartList media={[{ kind: 'image', fileId: 'remote-img', name: 'remote.png', mime: 'image/png' }]} />
           </MediaPreviewProvider>
-        </I18nProvider>,
+        </TestShell>,
       );
     });
     await flush();
@@ -355,11 +356,11 @@ describe('thumbnail recovery', () => {
       // Step 1: mount preview thumbnail so provider cache holds the preview bytes
       await act(async () => {
         root.render(
-          <I18nProvider>
+          <TestShell>
             <MediaPreviewProvider sessionId="soak-session">
               <Harness item={item} previewOnly={true} />
             </MediaPreviewProvider>
-          </I18nProvider>,
+          </TestShell>,
         );
       });
       await flush();
@@ -367,11 +368,11 @@ describe('thumbnail recovery', () => {
       // Step 2: switch to full-res (Lightbox) -> creates thumbnailUrl while loading full original
       await act(async () => {
         root.render(
-          <I18nProvider>
+          <TestShell>
             <MediaPreviewProvider sessionId="soak-session">
               <Harness item={item} previewOnly={false} />
             </MediaPreviewProvider>
-          </I18nProvider>,
+          </TestShell>,
         );
       });
       const thumbUrl = container.querySelector('span')?.getAttribute('data-thumb');
@@ -405,6 +406,9 @@ describe('thumbnail recovery', () => {
     const uploadResolvers: Array<() => void> = [];
     vi.stubGlobal('fetch', vi.fn((input: string | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith('/klient/batch')) {
+        return Promise.resolve(new Response('not found', { status: 404 }));
+      }
       if (url.includes('/files') || url.includes('/klient/call') || init?.method === 'POST') {
         activeUploads += 1;
         peakUploads = Math.max(peakUploads, activeUploads);

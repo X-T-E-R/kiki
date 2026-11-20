@@ -490,7 +490,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
   }
 }
 
-const ConnectionContext = createContext<ConnectionValue | null>(null);
+export const ConnectionContext = createContext<ConnectionValue | null>(null);
 const GUI_LEASE_INTERVAL_MS = 15_000;
 let guiLeaseClientSequence = 0;
 
