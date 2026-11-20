@@ -214,9 +214,20 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
       };
 
       let pendingWrites = Promise.resolve();
+      let pendingRemovals = 0;
+      const isRedundantWorkspaceTouch = (patch?: Parameters<InstanceRegistration['update']>[0]): boolean =>
+        patch !== undefined &&
+        patch.port === undefined &&
+        patch.removedWorkspaces === undefined &&
+        patch.workspaces !== undefined &&
+        patch.workspaces.length > 0 &&
+        patch.workspaces.every((workspace) => state.workspaces.has(workspace));
       const write = (patch?: Parameters<InstanceRegistration['update']>[0]): Promise<void> => {
+        const hasRemovals = (patch?.removedWorkspaces?.length ?? 0) > 0;
+        if (hasRemovals) pendingRemovals += 1;
         const current = pendingWrites.then(async () => {
           if (state.released) return;
+          if (isRedundantWorkspaceTouch(patch)) return;
           const port = patch?.port ?? state.port;
           const workspaces = new Set(state.workspaces);
           for (const workspace of patch?.workspaces ?? []) workspaces.add(workspace);
@@ -241,6 +252,8 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
           await writeFileAtomic(filePath, encode(full));
           state.port = port;
           state.workspaces = workspaces;
+        }).finally(() => {
+          if (hasRemovals) pendingRemovals -= 1;
         });
         pendingWrites = current.catch(() => undefined);
         return current;
@@ -258,6 +271,7 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
         serverId,
         async update(patch) {
           if (state.released) return;
+          if (pendingRemovals === 0 && isRedundantWorkspaceTouch(patch)) return;
           await write(patch);
         },
         async release() {

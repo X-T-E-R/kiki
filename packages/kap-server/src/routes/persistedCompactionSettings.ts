@@ -13,7 +13,7 @@ import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { logicalByteSize, readLogicalBytes } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { AGENT_WIRE_RECORD_KEY, isWireRecord } from '@kiki/agent-core-v2/wire/record';
-import { readPersistedAgentCheckpoint } from '@kiki/agent-core-v2/session/persistedAgentCheckpoint';
+import { readPersistedAgentCheckpoint, readPersistedCheckpointStatToken } from '@kiki/agent-core-v2/session/persistedAgentCheckpoint';
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { modelWithUsage } from '@kiki/agent-core-v2/kosong/model/parameters';
 import { mergeModelParameters, resolveModelProfileEntry } from '@kiki/agent-core-v2/app/agentProfileCatalog/modelProfileOverlay';
@@ -41,6 +41,50 @@ const OVERRIDE_MARKERS = [
   `"type":"${AutoCompactOverrideChanged.type}"`,
   `"type":"${ContextStrategyOverrideChanged.type}"`,
 ];
+const COMPACTION_OVERRIDES_CACHE_MAX_ENTRIES = 512;
+
+interface CompactionOverridesCacheEntry {
+  readonly key: string;
+  readonly value: PersistedCompactionOverrides;
+}
+
+interface CompactionOverridesState {
+  readonly cache: Map<string, CompactionOverridesCacheEntry>;
+  readonly flights: Map<string, Promise<PersistedCompactionOverrides>>;
+}
+
+const compactionOverridesStates = new WeakMap<Scope, CompactionOverridesState>();
+
+function compactionOverridesState(core: Scope): CompactionOverridesState {
+  let state = compactionOverridesStates.get(core);
+  if (state === undefined) {
+    state = { cache: new Map(), flights: new Map() };
+    compactionOverridesStates.set(core, state);
+  }
+  return state;
+}
+
+function waitForCompactionOverrides(
+  promise: Promise<PersistedCompactionOverrides>,
+  signal?: AbortSignal,
+): Promise<PersistedCompactionOverrides> {
+  signal?.throwIfAborted();
+  if (signal === undefined) return promise;
+  return new Promise<PersistedCompactionOverrides>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 async function readPersistedCompactionOverrides(
   core: Scope,
@@ -58,64 +102,110 @@ async function readPersistedCompactionOverrides(
   const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), agentId);
   let size: number | undefined;
   let mtime: number | undefined;
+  let ckptStat: Awaited<ReturnType<typeof readPersistedCheckpointStatToken>>;
   try {
-    [size, mtime] = await Promise.all([
+    [size, mtime, ckptStat] = await Promise.all([
       logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY),
       storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+      readPersistedCheckpointStatToken(storage, scope),
     ]);
   } catch {
     return empty;
   }
+  signal?.throwIfAborted();
   if (size === undefined) return empty;
-  const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, OVERRIDE_NAMES, workers, signal);
-  const autoCompactOverrides: Record<string, number> = {
-    ...((checkpoint?.states.get(autoCompactOverrideKey.name) as Record<string, number> | undefined) ?? {}),
-  };
-  let contextStrategyOverride = (checkpoint?.states.get(contextStrategyOverrideKey.name) as ContextStrategy | null | undefined) ?? null;
-  const start = checkpoint !== undefined ? checkpoint.offset : 0;
-  if (size - start > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET || typeof storage.readStream !== 'function') {
-    return { autoCompactOverrides, contextStrategyOverride };
+  const state = compactionOverridesState(core);
+  const versionKey = `${size}:${mtime ?? 0}:${ckptStat.token}`;
+  const cached = state.cache.get(scope);
+  if (cached !== undefined && ckptStat.distinguishable && cached.key === versionKey) {
+    state.cache.delete(scope);
+    state.cache.set(scope, cached);
+    return cached.value;
   }
-  if (start >= size) return { autoCompactOverrides, contextStrategyOverride };
-  const decoder = new TextDecoder();
-  let pending = '';
-  const foldLine = (line: string) => {
-    const head = line.slice(0, 96);
-    if (!OVERRIDE_MARKERS.some((marker) => head.includes(marker))) return;
-    let record: unknown;
-    try { record = JSON.parse(line); } catch { return; }
-    if (!isWireRecord(record)) return;
-    if (record.type === AutoCompactOverrideChanged.type) {
-      const event = event2FromRecord(AutoCompactOverrideChanged, record);
-      if (event instanceof AutoCompactOverrideChanged) {
-        if (event.tokens === null) delete autoCompactOverrides[event.modelId];
-        else autoCompactOverrides[event.modelId] = event.tokens;
+  const flightKey = `${scope}\0${versionKey}`;
+  let flight = state.flights.get(flightKey);
+  if (flight === undefined) {
+    flight = (async (): Promise<PersistedCompactionOverrides> => {
+      const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, OVERRIDE_NAMES, workers);
+      const autoCompactOverrides: Record<string, number> = {
+        ...((checkpoint?.states.get(autoCompactOverrideKey.name) as Record<string, number> | undefined) ?? {}),
+      };
+      let contextStrategyOverride = (checkpoint?.states.get(contextStrategyOverrideKey.name) as ContextStrategy | null | undefined) ?? null;
+      const start = checkpoint !== undefined ? checkpoint.offset : 0;
+      if (size - start > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET || typeof storage.readStream !== 'function' || start >= size) {
+        const result = { autoCompactOverrides, contextStrategyOverride };
+        if (ckptStat.distinguishable) {
+          state.cache.delete(scope);
+          state.cache.set(scope, { key: versionKey, value: result });
+          while (state.cache.size > COMPACTION_OVERRIDES_CACHE_MAX_ENTRIES) {
+            const oldest = state.cache.keys().next().value;
+            if (oldest === undefined) break;
+            state.cache.delete(oldest);
+          }
+        }
+        return result;
       }
-    } else if (record.type === ContextStrategyOverrideChanged.type) {
-      const event = event2FromRecord(ContextStrategyOverrideChanged, record);
-      if (event instanceof ContextStrategyOverrideChanged) {
-        contextStrategyOverride = event.strategy;
+      const decoder = new TextDecoder();
+      let pending = '';
+      const foldLine = (line: string) => {
+        const head = line.slice(0, 96);
+        if (!OVERRIDE_MARKERS.some((marker) => head.includes(marker))) return;
+        let record: unknown;
+        try { record = JSON.parse(line); } catch { return; }
+        if (!isWireRecord(record)) return;
+        if (record.type === AutoCompactOverrideChanged.type) {
+          const event = event2FromRecord(AutoCompactOverrideChanged, record);
+          if (event instanceof AutoCompactOverrideChanged) {
+            if (event.tokens === null) delete autoCompactOverrides[event.modelId];
+            else autoCompactOverrides[event.modelId] = event.tokens;
+          }
+        } else if (record.type === ContextStrategyOverrideChanged.type) {
+          const event = event2FromRecord(ContextStrategyOverrideChanged, record);
+          if (event instanceof ContextStrategyOverrideChanged) {
+            contextStrategyOverride = event.strategy;
+          }
+        }
+      };
+      try {
+        for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
+          pending += decoder.decode(chunk, { stream: true });
+          let newline = pending.indexOf('\n');
+          while (newline !== -1) {
+            const line = pending.slice(0, newline).replace(/\r$/, '');
+            pending = pending.slice(newline + 1);
+            if (line.length > 0) foldLine(line);
+            newline = pending.indexOf('\n');
+          }
+        }
+        pending += decoder.decode();
+        if (pending.length > 0) foldLine(pending);
+      } catch {
+        return { autoCompactOverrides, contextStrategyOverride };
       }
-    }
-  };
-  try {
-    for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
-      signal?.throwIfAborted();
-      pending += decoder.decode(chunk, { stream: true });
-      let newline = pending.indexOf('\n');
-      while (newline !== -1) {
-        const line = pending.slice(0, newline).replace(/\r$/, '');
-        pending = pending.slice(newline + 1);
-        if (line.length > 0) foldLine(line);
-        newline = pending.indexOf('\n');
+      const result = { autoCompactOverrides, contextStrategyOverride };
+      if (ckptStat.distinguishable) {
+        const [afterSize, afterMtime, afterCkpt] = await Promise.all([
+          logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY).catch(() => undefined),
+          storage.mtime(scope, AGENT_WIRE_RECORD_KEY).catch(() => undefined),
+          readPersistedCheckpointStatToken(storage, scope).catch(() => ({ token: 'untracked', distinguishable: false })),
+        ]);
+        if (afterSize === size && afterMtime === mtime && afterCkpt.distinguishable && afterCkpt.token === ckptStat.token) {
+          state.cache.delete(scope);
+          state.cache.set(scope, { key: versionKey, value: result });
+          while (state.cache.size > COMPACTION_OVERRIDES_CACHE_MAX_ENTRIES) {
+            const oldest = state.cache.keys().next().value;
+            if (oldest === undefined) break;
+            state.cache.delete(oldest);
+          }
+        }
       }
-    }
-    pending += decoder.decode();
-    if (pending.length > 0) foldLine(pending);
-  } catch {
-    return { autoCompactOverrides, contextStrategyOverride };
+      return result;
+    })().finally(() => {
+      if (state.flights.get(flightKey) === flight) state.flights.delete(flightKey);
+    });
+    state.flights.set(flightKey, flight);
   }
-  return { autoCompactOverrides, contextStrategyOverride };
+  return waitForCompactionOverrides(flight, signal);
 }
 
 function isExternalProfile(profile: PersistedAgentProfileSnapshot | undefined, metadata: AgentMeta | undefined): boolean {

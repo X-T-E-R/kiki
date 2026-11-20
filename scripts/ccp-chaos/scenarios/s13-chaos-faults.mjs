@@ -194,7 +194,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
 
   const createSession = async (label) => {
     const res = await apiJson(server.endpoint, server.token, 'POST', '/api/sessions', {
-      work_dir: dir,
+      metadata: { cwd: dir },
       title: `S13 ${label} ${runId}`,
     });
     if (res.status !== 200 || !res.json?.data?.id) {

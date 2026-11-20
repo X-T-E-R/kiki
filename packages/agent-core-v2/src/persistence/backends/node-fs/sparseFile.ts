@@ -599,14 +599,23 @@ export async function detectOrphanedSparseJournal(
   }
 
   signal?.throwIfAborted();
-  let size: number;
+  let info: Awaited<ReturnType<typeof stat>>;
   try {
-    size = (await stat(filePath)).size;
+    info = await stat(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+  const size = info.size;
   if (size < SPARSE_UNIT_BYTES) return false;
+  if (
+    process.platform !== 'win32' &&
+    typeof info.blocks === 'number' &&
+    info.blocks > 0 &&
+    info.blocks * 512 >= size
+  ) {
+    return false;
+  }
   const lastAlignedOffset = Math.floor((size - SPARSE_UNIT_BYTES) / SPARSE_UNIT_BYTES) * SPARSE_UNIT_BYTES;
   const fallbackOffsets = normalizeOffsets([...FALLBACK_SPARSE_PROBE_OFFSETS, lastAlignedOffset]).filter(
     (offset) => offset >= 0 && offset < size,

@@ -159,17 +159,17 @@ async function runMeshTier({
     wsIdx: idx % workspaceCount,
     workDir: workspaceDirs[idx % workspaceCount],
   }));
-  const createdSessions = await mapBatched(sessionSpecs, 24, async (spec) => {
+  const createOneSession = async (spec) => {
     const res = await apiJson(
       server.endpoint,
       server.token,
       'POST',
       '/api/sessions',
       {
-        work_dir: spec.workDir,
+        metadata: { cwd: spec.workDir },
         title: `S11 Mesh ${runId} #${spec.idx}`,
       },
-      25_000,
+      60_000,
     );
     if (res.status !== 200 || res.json?.code !== 0 || !res.json?.data?.id) {
       throw new Error(`POST /api/sessions failed for mesh #${spec.idx}: status=${res.status} code=${res.json?.code} msg=${res.json?.msg ?? res.error ?? ''}`);
@@ -181,7 +181,12 @@ async function runMeshTier({
       sessionId: res.json.data.id,
       workspaceId: res.json.data.workspace_id,
     };
-  });
+  };
+  const warmupSpecs = sessionSpecs.slice(0, Math.min(workspaceCount, sessionSpecs.length));
+  const remainingSpecs = sessionSpecs.slice(warmupSpecs.length);
+  const warmedSessions = await mapBatched(warmupSpecs, Math.min(8, warmupSpecs.length), createOneSession);
+  const restSessions = remainingSpecs.length > 0 ? await mapBatched(remainingSpecs, 16, createOneSession) : [];
+  const createdSessions = [...warmedSessions, ...restSessions];
 
   // Group sessions by workspace and create real thread rooms via POST /api/rooms/from-threads
   const byWs = Array.from({ length: workspaceCount }, () => []);
@@ -214,7 +219,7 @@ async function runMeshTier({
         workspace: spec.workDir,
         sessionIds: spec.members.map((m) => m.sessionId),
       },
-      25_000,
+      60_000,
     );
     if (res.status !== 200 || res.json?.code !== 0 || !res.json?.data?.id) {
       throw new Error(`POST /api/rooms/from-threads failed for room #${spec.ri}: status=${res.status} code=${res.json?.code} msg=${res.json?.msg ?? res.error ?? ''}`);

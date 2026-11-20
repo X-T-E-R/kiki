@@ -220,8 +220,8 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
 
       // Create real producer & validator sessions on kap-server
       const [prodSess, valSess] = await Promise.all([
-        apiJson(server.endpoint, server.token, 'POST', '/api/sessions', { work_dir: subDir, title: `S12 Producer ${runId} #${idx}` }),
-        apiJson(server.endpoint, server.token, 'POST', '/api/sessions', { work_dir: subDir, title: `S12 Validator ${runId} #${idx}` }),
+        apiJson(server.endpoint, server.token, 'POST', '/api/sessions', { metadata: { cwd: subDir }, title: `S12 Producer ${runId} #${idx}` }),
+        apiJson(server.endpoint, server.token, 'POST', '/api/sessions', { metadata: { cwd: subDir }, title: `S12 Validator ${runId} #${idx}` }),
       ]);
       const prodSid = prodSess.json?.data?.id;
       const valSid = valSess.json?.data?.id;

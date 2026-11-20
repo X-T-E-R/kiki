@@ -886,7 +886,15 @@ export class SessionEventBroadcaster {
       };
       this.ensureTranscriptStream(state, seed.store);
       const delivered = seed.delivered;
+      let sliceStart = performance.now();
+      const yieldIfNeeded = async (): Promise<void> => {
+        if (performance.now() - sliceStart >= 8) {
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+          sliceStart = performance.now();
+        }
+      };
       const deliverAgent = async (agentId: string): Promise<boolean> => {
+        await yieldIfNeeded();
         if (!current()) return false;
         const currentSpec = state.targets.get(target)?.transcriptGrades;
         if (currentSpec === undefined) return false;
@@ -897,6 +905,7 @@ export class SessionEventBroadcaster {
         if (transcript === undefined) return true;
         let sent = delivered.get(agentId);
         for (;;) {
+          await yieldIfNeeded();
           if (!current()) return false;
           const cursor = service.getTranscriptCursor(state.sessionId, agentId);
           if (sent !== undefined && sent.seq === cursor.seq && sent.epoch === cursor.epoch) {
@@ -917,6 +926,7 @@ export class SessionEventBroadcaster {
               .map((batch) => ({ ...batch, ops: filterOpsForGrade(grade, batch.ops) }))
               .filter((batch) => batch.ops.length > 0);
             for (let index = 0; index < visible.length; index += 1) {
+              await yieldIfNeeded();
               if (!current()) return false;
               const batch = visible[index]!;
               if (!this.sendTranscriptOps(
@@ -954,21 +964,29 @@ export class SessionEventBroadcaster {
         }
       }));
       for (;;) {
+        await yieldIfNeeded();
         if (!current()) return;
         const agents = [...new Set([...seed.store.agents().map((descriptor) => descriptor.agentId),
           ...Object.keys(seed.spec).filter((agentId) => agentId !== '*')])]
           .toSorted((left, right) => Number(priority.has(right)) - Number(priority.has(left)));
         for (const agentId of agents) {
+          await yieldIfNeeded();
           if (!await deliverAgent(agentId)) return;
         }
         if (!current()) return;
         const currentSpec = state.targets.get(target)?.transcriptGrades;
-        const caughtUp = seed.store.agents().every(({ agentId }) => {
-          if (gradeFor(currentSpec, agentId) === 'off' || seed.store.getAgent(agentId) === undefined) return true;
-          const current = service.getTranscriptCursor(state.sessionId, agentId);
+        let caughtUp = true;
+        for (const { agentId } of seed.store.agents()) {
+          await yieldIfNeeded();
+          if (!current()) return;
+          if (gradeFor(currentSpec, agentId) === 'off' || seed.store.getAgent(agentId) === undefined) continue;
+          const currentCursor = service.getTranscriptCursor(state.sessionId, agentId);
           const sent = delivered.get(agentId);
-          return sent?.seq === current.seq && sent.epoch === current.epoch;
-        });
+          if (sent?.seq !== currentCursor.seq || sent?.epoch !== currentCursor.epoch) {
+            caughtUp = false;
+            break;
+          }
+        }
         if (caughtUp) {
           state.transcriptSeeded.add(target);
           recordSessionViewTiming('seed_ready', startedAt, fields, timing);

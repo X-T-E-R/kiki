@@ -2,6 +2,7 @@ import { IAgentLifecycleService, IAgentProfileService, IAtomicDocumentStore, ISe
 import { agentExecutorBindingFingerprint } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import type { SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { executorAuthObservationSchema, type ExecutorAuthObservation } from '@kiki/protocol';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 
 export async function readExecutorAuth(core: Scope, sessionId: string, agentId: string): Promise<ExecutorAuthObservation | undefined> {
   const session = core.accessor.get(ISessionManager).get(sessionId);
@@ -12,7 +13,7 @@ export async function readExecutorAuth(core: Scope, sessionId: string, agentId: 
     if (summary === undefined) return undefined;
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), sessionId);
     const documents = core.accessor.get(IAtomicDocumentStore);
-    metadata = await documents.get<SessionMeta>(scope, 'state.json') ?? await documents.get<SessionMeta>(`${scope}/session-meta`, 'state.json');
+    metadata = await readColdSessionMeta(core, summary.workspaceId, sessionId) ?? await documents.get<SessionMeta>(`${scope}/session-meta`, 'state.json');
   }
   const agent = metadata?.agents?.[agentId];
   const parsed = executorAuthObservationSchema.safeParse(agent?.executorAuth);

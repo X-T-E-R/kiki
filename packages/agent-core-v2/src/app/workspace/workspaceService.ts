@@ -21,19 +21,26 @@ import {
 } from './workspaceAlias';
 import { IWorkspacePersistence, type WorkspaceCatalog } from './workspacePersistence';
 
+const RECENT_TOUCH_TTL_MS = 5_000;
+
 export class WorkspaceService implements IWorkspaceService {
   declare readonly _serviceBrand: undefined;
 
   private merged = false;
   private merging: Promise<void> | undefined;
   private opQueue: Promise<unknown> = Promise.resolve();
+  private readonly recentTouched = new Map<string, { readonly workspace: Workspace; readonly touchedAt: number }>();
 
   constructor(
     @IWorkspacePersistence private readonly store: IWorkspacePersistence,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @ISessionIndex private readonly sessionIndex: ISessionIndex,
-  ) {}
+  ) {
+    this.store.onDidChange?.(() => {
+      this.recentTouched.clear();
+    });
+  }
 
   async list(): Promise<readonly Workspace[]> {
     await this.ensureMerged();
@@ -67,34 +74,32 @@ export class WorkspaceService implements IWorkspaceService {
     return root !== undefined && workDirKeyAliases(root).some((alias) => deleted.has(alias));
   }
 
-  createOrTouch(root: string, name?: string): Promise<Workspace> {
+  async createOrTouch(root: string, name?: string): Promise<Workspace> {
+    const rootKey = workspaceRootKey(root);
+    const cached = this.recentTouched.get(rootKey);
+    if (
+      cached !== undefined &&
+      Date.now() - cached.touchedAt < RECENT_TOUCH_TTL_MS &&
+      (name === undefined || name === cached.workspace.name)
+    ) {
+      await this.assertDirectory(root);
+      const stillCached = this.recentTouched.get(rootKey);
+      if (
+        stillCached !== undefined &&
+        Date.now() - stillCached.touchedAt < RECENT_TOUCH_TTL_MS &&
+        (name === undefined || name === stillCached.workspace.name)
+      ) {
+        return stillCached.workspace;
+      }
+    }
     return this.runExclusive(async () => {
-      let stat;
-      try {
-        stat = await this.hostFs.stat(root);
-      } catch (error) {
-        const code = (unwrapErrorCause(error) as NodeJS.ErrnoException | undefined)?.code;
-        if (code === 'ENOENT' || code === 'ENOTDIR') {
-          throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} does not exist`);
-        }
-        throw error;
-      }
-      if (!stat.isDirectory) {
-        try {
-          stat = await this.hostFs.stat(await this.hostFs.realpath(root));
-        } catch {
-        }
-      }
-      if (!stat.isDirectory) {
-        throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} is not a directory`);
-      }
+      await this.assertDirectory(root);
       const catalog = await this.loadCatalog();
       const byId = new Map(catalog.workspaces.map((ws) => [ws.id, ws]));
       const deletedIds = new Set(catalog.deletedIds);
       let id = encodeWorkDirKey(root);
       let existing = byId.get(id);
       if (existing === undefined) {
-        const rootKey = workspaceRootKey(root);
         for (const entry of byId.values()) {
           if (workspaceRootKey(entry.root) === rootKey) {
             existing = entry;
@@ -110,6 +115,15 @@ export class WorkspaceService implements IWorkspaceService {
         }
       }
       const now = Date.now();
+      if (
+        existing !== undefined &&
+        !deletedIds.has(existing.id) &&
+        (name === undefined || name === existing.name) &&
+        now - existing.lastOpenedAt < RECENT_TOUCH_TTL_MS
+      ) {
+        this.recentTouched.set(workspaceRootKey(existing.root), { workspace: existing, touchedAt: now });
+        return existing;
+      }
       const ws: Workspace =
         existing !== undefined
           ? { ...existing, lastOpenedAt: now }
@@ -128,8 +142,31 @@ export class WorkspaceService implements IWorkspaceService {
         deletedIds: [...deletedIds],
         ...(catalog.legacyDiscoveryIncomplete === true ? { legacyDiscoveryIncomplete: true } : {}),
       });
+      this.recentTouched.set(workspaceRootKey(ws.root), { workspace: ws, touchedAt: now });
       return ws;
     });
+  }
+
+  private async assertDirectory(root: string): Promise<void> {
+    let stat;
+    try {
+      stat = await this.hostFs.stat(root);
+    } catch (error) {
+      const code = (unwrapErrorCause(error) as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} does not exist`);
+      }
+      throw error;
+    }
+    if (!stat.isDirectory) {
+      try {
+        stat = await this.hostFs.stat(await this.hostFs.realpath(root));
+      } catch {
+      }
+    }
+    if (!stat.isDirectory) {
+      throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} is not a directory`);
+    }
   }
 
   async update(id: string, patch: WorkspaceUpdate): Promise<Workspace | undefined> {
@@ -150,6 +187,7 @@ export class WorkspaceService implements IWorkspaceService {
         deletedIds: catalog.deletedIds,
         ...(catalog.legacyDiscoveryIncomplete === true ? { legacyDiscoveryIncomplete: true } : {}),
       });
+      this.recentTouched.delete(workspaceRootKey(updated.root));
       return updated;
     });
   }
@@ -157,6 +195,7 @@ export class WorkspaceService implements IWorkspaceService {
   async delete(id: string): Promise<void> {
     await this.ensureMerged();
     return this.runExclusive(async () => {
+      this.recentTouched.clear();
       const catalog = await this.loadCatalog();
       let root = catalog.workspaces.find((ws) => ws.id === id)?.root;
       if (root === undefined) {

@@ -439,7 +439,7 @@ if (isServerWorker) {
     } else if (msg.cmd === 'inspectLiveAgents') {
       const handle = server.core.accessor.get(ISessionManager).get(msg.sessionId);
       if (!handle) {
-        process.send?.({ id: msg.id, activeChildCount: 0, liveChildCount: 0, busy: false });
+        process.send?.({ id: msg.id, activeChildCount: 0, liveChildCount: 0, childIds: [], busy: false });
       } else {
         const agents = handle.accessor.get(IAgentLifecycleService).list();
         const children = agents.filter((a) => a.id !== MAIN_AGENT_ID);
@@ -448,6 +448,7 @@ if (isServerWorker) {
           id: msg.id,
           activeChildCount: children.length,
           liveChildCount: children.length,
+          childIds: children.map((a) => a.id),
           busy: Boolean(activity.busy),
           executing: Boolean(activity.executing),
         });

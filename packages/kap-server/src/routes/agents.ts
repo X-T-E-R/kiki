@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { parseActionSuffix } from './action-suffix';
 
 interface RouteHost {
@@ -208,7 +209,7 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     if (summary === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     const docs = core.accessor.get(IAtomicDocumentStore);
-    const metadata = (await docs.get<SessionMeta>(scope, 'state.json') ?? await docs.get<SessionMeta>(`${scope}/session-meta`, 'state.json'))?.agents?.[req.params.agent_id];
+    const metadata = (await readColdSessionMeta(core, summary.workspaceId, summary.id) ?? await docs.get<SessionMeta>(`${scope}/session-meta`, 'state.json'))?.agents?.[req.params.agent_id];
     if (metadata === undefined && req.params.agent_id !== 'main') { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
     const coldAgentScope = `${scope}/agents/${req.params.agent_id}`;
     const coldWireSize = req.query.observe === 'true'

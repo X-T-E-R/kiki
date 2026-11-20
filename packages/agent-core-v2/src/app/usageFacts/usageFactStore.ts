@@ -8,7 +8,8 @@ import { ILogService } from '#/_base/log/log';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { readCachedColdSessionMeta } from '#/session/sessionMetadata/coldSessionMetaRead';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { normalizeUsageFact, type UsageFact, type UsageFactTotals } from '#/agent/usage/usageFact';
 import { UsageJsonStream, type UsageFactJsonObserver } from '#/agent/usage/usageJson';
@@ -169,7 +170,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       let flight = this.privacyFlights.get(session);
       if (flight?.fingerprint !== fingerprint || flight.epoch !== epoch) {
         const result = (async () => {
-          const doc = await this.documents.get<SessionMeta>(session, 'state.json');
+          const doc = await readCachedColdSessionMeta(this.storage, this.documents, session);
           const value = doc?.private === true;
           const after = await this.stateFingerprint(session);
           if (after !== fingerprint || epoch !== this.sessionEpoch(session)) return undefined;

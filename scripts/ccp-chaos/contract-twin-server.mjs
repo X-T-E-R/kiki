@@ -1418,8 +1418,12 @@ export async function createContractTwinServer(options = {}) {
             }
 
             const effectivePromptText = extractAllPromptText({ messages: effectiveMessages });
-            const effectiveScopeKey = extractScopeKey(req.headers, { messages: effectiveMessages }, effectivePromptText || promptText);
             const latestTurn = extractLatestTurnPrompt(effectiveMessages);
+            const effectiveScopeKey = extractScopeKey(
+              req.headers,
+              { messages: effectiveMessages },
+              latestTurn.text || effectivePromptText || promptText,
+            );
             const toolSpec = detectToolProfile(effectivePromptText || promptText);
             const s10Directive = detectS10Directive(latestTurn.text || effectivePromptText || promptText);
             const v23Plan = detectV23ToolPlan(latestTurn.text);
@@ -1626,6 +1630,7 @@ export async function createContractTwinServer(options = {}) {
                 toolIdToName.set(callId, 'AgentRun');
                 if (!toolStats.AgentRun) toolStats.AgentRun = { invoked: 0, resultsOk: 0, resultsError: 0 };
                 toolStats.AgentRun.invoked += 1;
+                const safeWaveRun = String(s10Directive.runId ?? 's10').replace(/[^a-z0-9_]/giu, '_').toLowerCase();
                 calls.push({
                   id: callId,
                   name: 'AgentRun',
@@ -1633,7 +1638,7 @@ export async function createContractTwinServer(options = {}) {
                     profile: 'general',
                     model_alias: 'twin-anthropic',
                     effort: 'high',
-                    name: `s10_worker_${c}`,
+                    name: `s10_${safeWaveRun}_${c}`,
                     description: `S10 live workload child ${c}`,
                     background: true,
                     prompt: childPrompt,

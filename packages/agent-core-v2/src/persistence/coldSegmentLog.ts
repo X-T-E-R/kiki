@@ -673,15 +673,51 @@ interface OrphanedSparseProbeFlight {
   settled: boolean;
 }
 
+const ORPHANED_SPARSE_CACHE_MAX_ENTRIES = 512;
 const orphanedSparseProbes = new Map<string, OrphanedSparseProbeFlight>();
+const orphanedSparseDenseCache = new Map<string, true>();
+
+function orphanedSparseCacheKey(
+  located: string,
+  info: { readonly dev: number | bigint; readonly ino: number | bigint; readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number; readonly blocks?: number | bigint },
+): string {
+  return `${coldMarkerFileKey(located, info)}:${String(info.blocks ?? '')}`;
+}
 
 async function hasOrphanedSparseJournalCoalesced(located: string, signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
+  const beforeInfo = await stat(located).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  signal?.throwIfAborted();
+  const beforeKey = beforeInfo === undefined ? undefined : orphanedSparseCacheKey(located, beforeInfo);
+  if (beforeKey !== undefined && orphanedSparseDenseCache.has(beforeKey)) {
+    orphanedSparseDenseCache.delete(beforeKey);
+    orphanedSparseDenseCache.set(beforeKey, true);
+    return false;
+  }
   let flight = orphanedSparseProbes.get(located);
   if (flight === undefined || flight.controller.signal.aborted) {
     const controller = new AbortController();
     let created!: OrphanedSparseProbeFlight;
-    const promise = detectOrphanedSparseJournal(located, controller.signal).finally(() => {
+    const promise = detectOrphanedSparseJournal(located, controller.signal).then(async (isSparse) => {
+      if (!isSparse && beforeKey !== undefined) {
+        const afterInfo = await stat(located).catch(() => undefined);
+        if (afterInfo !== undefined && orphanedSparseCacheKey(located, afterInfo) === beforeKey) {
+          orphanedSparseDenseCache.delete(beforeKey);
+          orphanedSparseDenseCache.set(beforeKey, true);
+          while (orphanedSparseDenseCache.size > ORPHANED_SPARSE_CACHE_MAX_ENTRIES) {
+            const oldest = orphanedSparseDenseCache.keys().next().value;
+            if (oldest === undefined) break;
+            orphanedSparseDenseCache.delete(oldest);
+          }
+        }
+      } else if (isSparse && beforeKey !== undefined) {
+        orphanedSparseDenseCache.delete(beforeKey);
+      }
+      return isSparse;
+    }).finally(() => {
       created.settled = true;
       if (orphanedSparseProbes.get(located) === created) orphanedSparseProbes.delete(located);
     });
@@ -2241,7 +2277,20 @@ interface ColdMarkerScanFlight {
   settled: boolean;
 }
 
-const COLD_MARKER_DEFAULT_NEEDLES = ['ExitPlanMode', 'prompt.model_switch'] as const;
+const PARENT_RECEIPT_GATE_MARKER = 'parentReceiptManaged';
+const PARENT_RECEIPT_GATED_MARKERS = new Set<string>([
+  '"parentReceiptManaged"',
+  '"parentReceiptManaged":false',
+  '"parentReceiptManaged": false',
+]);
+const COLD_MARKER_DEFAULT_NEEDLES = [
+  'ExitPlanMode',
+  'prompt.model_switch',
+  PARENT_RECEIPT_GATE_MARKER,
+  '"parentReceiptManaged"',
+  '"parentReceiptManaged":false',
+  '"parentReceiptManaged": false',
+] as const;
 const coldMarkerCache = new Map<string, boolean>();
 const coldMarkerFlights = new Map<string, ColdMarkerScanFlight>();
 
@@ -2258,6 +2307,37 @@ async function hasColdSegmentsManifest(wirePath: string): Promise<boolean> {
       throw error;
     },
   );
+}
+
+const COLD_MARKER_CHUNK_BYTES = 4 * 1024 * 1024;
+const COLD_MARKER_SCRATCH_MAX_OVERLAP = 1024;
+const COLD_MARKER_SCRATCH_IDLE_MS = 30_000;
+let coldMarkerScratchBuf: Buffer | undefined;
+let coldMarkerScratchInUse = false;
+let coldMarkerScratchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function acquireColdMarkerScratch(neededBytes: number): { readonly buf: Buffer; readonly pooled: boolean } {
+  if (!coldMarkerScratchInUse && neededBytes <= COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP) {
+    if (coldMarkerScratchTimer !== undefined) {
+      clearTimeout(coldMarkerScratchTimer);
+      coldMarkerScratchTimer = undefined;
+    }
+    coldMarkerScratchBuf ??= Buffer.allocUnsafe(COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP);
+    coldMarkerScratchInUse = true;
+    return { buf: coldMarkerScratchBuf, pooled: true };
+  }
+  return { buf: Buffer.allocUnsafe(neededBytes), pooled: false };
+}
+
+function releaseColdMarkerScratch(pooled: boolean): void {
+  if (!pooled) return;
+  coldMarkerScratchInUse = false;
+  if (coldMarkerScratchTimer !== undefined) clearTimeout(coldMarkerScratchTimer);
+  coldMarkerScratchTimer = setTimeout(() => {
+    coldMarkerScratchTimer = undefined;
+    if (!coldMarkerScratchInUse) coldMarkerScratchBuf = undefined;
+  }, COLD_MARKER_SCRATCH_IDLE_MS);
+  coldMarkerScratchTimer.unref?.();
 }
 
 export async function scanColdWireMarkers(
@@ -2326,15 +2406,22 @@ export async function scanColdWireMarkers(
   for (const m of markers) {
     if (m.length > 0) scanSet.add(m);
   }
-  const needles = [...scanSet].map((marker) => ({ marker, buf: Buffer.from(marker, 'utf8'), found: false }));
+  const needles = [...scanSet].map((marker) => ({
+    marker,
+    buf: Buffer.from(marker, 'utf8'),
+    found: false,
+    gatedByParentReceipt: PARENT_RECEIPT_GATED_MARKERS.has(marker),
+  }));
+  const parentReceiptGate = needles.find((n) => n.marker === PARENT_RECEIPT_GATE_MARKER);
   const controller = new AbortController();
   let created!: ColdMarkerScanFlight;
   const scanPromise = (async (): Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined> => {
     if (controller.signal.aborted) return undefined;
     const maxNeedleLen = needles.reduce((acc, n) => Math.max(acc, n.buf.length), 1);
     const overlap = Math.max(0, maxNeedleLen - 1);
-    const chunkSize = 2 * 1024 * 1024;
-    const buf = Buffer.allocUnsafe(chunkSize + overlap);
+    const chunkSize = COLD_MARKER_CHUNK_BYTES;
+    const scratch = acquireColdMarkerScratch(chunkSize + overlap);
+    const buf = scratch.buf;
     let stable = false;
     const fh = await open(wirePath, 'r');
     try {
@@ -2347,12 +2434,24 @@ export async function scanColdWireMarkers(
         if (bytesRead <= 0) break;
         const windowLen = carry + bytesRead;
         const slice = buf.subarray(0, windowLen);
+        let parentReceiptHitThisSlice = false;
+        if (parentReceiptGate !== undefined) {
+          parentReceiptHitThisSlice = slice.indexOf(parentReceiptGate.buf) !== -1;
+          if (parentReceiptHitThisSlice) parentReceiptGate.found = true;
+        }
         let allFound = true;
         for (const n of needles) {
-          if (!n.found) {
-            if (slice.indexOf(n.buf) !== -1) n.found = true;
-            else allFound = false;
+          if (n.found) continue;
+          if (n === parentReceiptGate) {
+            allFound = false;
+            continue;
           }
+          if (n.gatedByParentReceipt && parentReceiptGate !== undefined && !parentReceiptHitThisSlice) {
+            allFound = false;
+            continue;
+          }
+          if (slice.indexOf(n.buf) !== -1) n.found = true;
+          else allFound = false;
         }
         if (allFound) break;
         pos += bytesRead;
@@ -2379,6 +2478,7 @@ export async function scanColdWireMarkers(
       if (controller.signal.aborted) return undefined;
       throw error;
     } finally {
+      releaseColdMarkerScratch(scratch.pooled);
       await fh.close();
     }
     if (!stable || controller.signal.aborted) return undefined;

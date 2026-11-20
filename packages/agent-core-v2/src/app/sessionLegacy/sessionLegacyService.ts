@@ -5,7 +5,8 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { readCachedColdSessionMeta } from '#/session/sessionMetadata/coldSessionMetaRead';
 import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { PersistedStatusReader } from './persistedStatus';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '#/session/agentProfileSnapshot';
@@ -65,16 +66,30 @@ export class SessionLegacyService implements ISessionLegacyService {
     const summary = await this.services.get(ISessionIndex).get(sessionId);
     if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     const scope = `sessions/${summary.workspaceId}/${sessionId}`;
-    const metadata = await this.services.get(IAtomicDocumentStore).get<SessionMeta>(scope, 'state.json');
-    const profile = await readPersistedAgentProfileSnapshot(this.profileHost, summary.workspaceId, sessionId, 'main', metadata?.agents?.['main'], undefined, {
-      inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
-    });
-    const preview = createUnscopedAgentProfileCatalog(this.instantiation, metadata?.cwd ?? summary.cwd, summary.workspaceId, false);
+    const storage = this.services.get(IFileSystemStorageService);
+    const docs = this.services.get(IAtomicDocumentStore);
+    const metadata = await readCachedColdSessionMeta(storage, docs, scope);
+    this.statusReader ??= new PersistedStatusReader(
+      this.services.get(ICpuWorkerService),
+      this.services.get(IAppendLogStore),
+      storage,
+      docs,
+    );
+    const [profile, projection] = await Promise.all([
+      readPersistedAgentProfileSnapshot(this.profileHost, summary.workspaceId, sessionId, 'main', metadata?.agents?.['main'], undefined, {
+        inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+      }),
+      this.statusReader.read(summary.workspaceId, sessionId, metadata?.agents?.['main']),
+    ]);
+    const needsDefault = !(profile?.modelAlias || profile?.profileName);
+    const preview = needsDefault
+      ? createUnscopedAgentProfileCatalog(this.instantiation, metadata?.cwd ?? summary.cwd, summary.workspaceId, false)
+      : undefined;
     try {
-      await preview.catalog.ready;
+      await preview?.catalog.ready;
       const models = this.services.get(IModelService);
       await models.ready;
-      const binding = resolveEffectiveSessionModel(models, profile ?? {}, profile?.modelAlias || profile?.profileName ? undefined : preview.catalog.getDefault());
+      const binding = resolveEffectiveSessionModel(models, profile ?? {}, needsDefault ? preview?.catalog.getDefault() : undefined);
       const config = this.services.get(IConfigService);
       let thinkingLevel = profile?.modelAlias ? profile.thinkingLevel ?? '' : '';
       let modelName: string | null = null;
@@ -100,9 +115,6 @@ export class SessionLegacyService implements ISessionLegacyService {
           if (budget !== undefined) maxTokens = Math.min(maxTokens, budget);
         } catch { modelName = null; }
       }
-      this.statusReader ??= new PersistedStatusReader(this.services.get(ICpuWorkerService),
-        this.services.get(IAppendLogStore), this.services.get(IFileSystemStorageService), this.services.get(IAtomicDocumentStore));
-      const projection = await this.statusReader.read(summary.workspaceId, sessionId, metadata?.agents?.['main']);
       const strategy = config.get<TokenCountingConfig>(TOKEN_COUNTING_SECTION)?.strategy ?? 'measured+estimated';
       const tokens = projection.contextTokens[strategy];
       return {
@@ -113,7 +125,7 @@ export class SessionLegacyService implements ISessionLegacyService {
         max_context_tokens: maxTokens > 0 ? maxTokens : undefined,
         context_usage: maxTokens > 0 ? Math.min(1, tokens / maxTokens) : 0,
       };
-    } finally { await preview.dispose(); }
+    } finally { await preview?.dispose(); }
   }
 
   private async assembleStatus(

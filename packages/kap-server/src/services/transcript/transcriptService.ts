@@ -130,7 +130,7 @@ const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
 const COLD_ROSTER_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
 const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
-const FIRST_SCREEN_CHUNK_BYTES = 4 << 20;
+const FIRST_SCREEN_CHUNK_BYTES = 512 << 10;
 const LOOP_EVENT_LINE_PREFIX = Buffer.from('{"type":"context.append_loop_event",');
 const APPEND_MESSAGE_LINE_PREFIX = Buffer.from('{"type":"context.append_message",');
 const TURN_ID_KEY_NEEDLE = Buffer.from('"turnId":');
@@ -3474,11 +3474,13 @@ export class TranscriptService {
       return { start: chunkStart, promise: opened.readAt(chunkStart, pos - chunkStart) };
     };
     let pendingRead = startChunkRead(position);
+    let chunksRead = 0;
     try {
       while (pendingRead !== undefined && scannedRecords < WIRE_COLD_READ_MAX_RECORDS) {
         signal.throwIfAborted();
         const { start, promise } = pendingRead;
-        pendingRead = startChunkRead(start);
+        chunksRead += 1;
+        pendingRead = chunksRead >= 4 ? startChunkRead(start) : undefined;
         const rawChunk = await promise;
         const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength);
         this.coldReadBytes += chunk.byteLength;
@@ -3690,6 +3692,7 @@ export class TranscriptService {
           complete = false;
           return finish();
         }
+        if (pendingRead === undefined) pendingRead = startChunkRead(position);
       }
       if (suffix.length > 0 || oversizedLine) {
         boundary = recordEnd;

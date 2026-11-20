@@ -1,59 +1,18 @@
 import { IAtomicDocumentStore, IFileSystemStorageService, type Scope, type SessionMeta } from '@kiki/agent-core-v2';
-import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { readCachedColdSessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/coldSessionMetaRead';
 
 const META_KEY = 'state.json';
-const MAX_ENTRIES = 32;
-const MIN_SOURCE_BYTES = 16 * 1024 * 1024;
-const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
-const MIN_ENTRY_BYTES = 48 * 1024 * 1024;
-const COLD_SESSION_META_CACHE_MB_ENV = 'KIKI_COLD_SESSION_META_CACHE_MB';
+const MAX_WORKSPACE_BY_SESSION = 256;
 
-function resolveColdSessionMetaBudgets(): { readonly maxSourceBytes: number; readonly maxEntryBytes: number } {
-  const rawMb = process.env[COLD_SESSION_META_CACHE_MB_ENV]?.trim();
-  let maxSourceBytes: number;
-  if (rawMb !== undefined && /^\d+$/.test(rawMb)) {
-    const parsedMb = Number.parseInt(rawMb, 10);
-    maxSourceBytes = parsedMb > 0 ? parsedMb * 1024 * 1024 : MIN_SOURCE_BYTES;
-  } else {
-    maxSourceBytes = Math.min(MAX_SOURCE_BYTES, Math.max(MIN_SOURCE_BYTES, Math.floor(RESOURCE_DEFAULTS.residentHeapBytes / 8)));
+const workspaceBySessionCaches = new WeakMap<object, Map<string, string>>();
+
+function workspaceBySessionFor(core: Scope): Map<string, string> {
+  let map = workspaceBySessionCaches.get(core);
+  if (map === undefined) {
+    map = new Map();
+    workspaceBySessionCaches.set(core, map);
   }
-  const maxEntryBytes = Math.max(MIN_ENTRY_BYTES, Math.floor(maxSourceBytes * 0.75));
-  return { maxSourceBytes, maxEntryBytes };
-}
-
-interface Entry {
-  readonly revision: string;
-  readonly bytes: number;
-  readonly meta: SessionMeta;
-}
-
-interface Cache {
-  readonly entries: Map<string, Entry>;
-  readonly inflight: Map<string, Promise<SessionMeta | undefined>>;
-  readonly workspaceBySession: Map<string, string>;
-  bytes: number;
-}
-
-const caches = new WeakMap<object, Cache>();
-
-function cacheFor(core: Scope): Cache {
-  let cache = caches.get(core);
-  if (cache === undefined) {
-    cache = { entries: new Map(), inflight: new Map(), workspaceBySession: new Map(), bytes: 0 };
-    caches.set(core, cache);
-  }
-  return cache;
-}
-
-function fingerprint(info: { readonly size: number; readonly identity?: string; readonly revision: string }): string {
-  return `${String(info.size)}:${info.identity ?? ''}:${info.revision}`;
-}
-
-function remove(cache: Cache, scope: string): void {
-  const entry = cache.entries.get(scope);
-  if (entry === undefined) return;
-  cache.entries.delete(scope);
-  cache.bytes -= entry.bytes;
+  return map;
 }
 
 /**
@@ -65,47 +24,17 @@ export async function readColdSessionMeta(core: Scope, workspaceId: string, sess
   const scope = `sessions/${workspaceId}/${sessionId}`;
   const storage = core.accessor.get(IFileSystemStorageService);
   const docs = core.accessor.get(IAtomicDocumentStore);
-  const cache = cacheFor(core);
-  const info = storage.stat === undefined ? undefined : await storage.stat(scope, META_KEY);
-  if (info === undefined) return docs.get<SessionMeta>(scope, META_KEY);
-  const revision = fingerprint(info);
-  const cached = cache.entries.get(scope);
-  if (cached?.revision === revision) {
-    cache.entries.delete(scope);
-    cache.entries.set(scope, cached);
-    cache.workspaceBySession.set(sessionId, workspaceId);
-    return cached.meta;
+  const meta = await readCachedColdSessionMeta(storage, docs, scope);
+  if (meta !== undefined) {
+    const map = workspaceBySessionFor(core);
+    map.delete(sessionId);
+    map.set(sessionId, workspaceId);
+    if (map.size > MAX_WORKSPACE_BY_SESSION) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
   }
-  const inflightKey = `${scope}\0${revision}`;
-  const pending = cache.inflight.get(inflightKey);
-  if (pending !== undefined) return pending;
-  const budgets = resolveColdSessionMetaBudgets();
-  const load = (async (): Promise<SessionMeta | undefined> => {
-    remove(cache, scope);
-    const meta = await docs.get<SessionMeta>(scope, META_KEY);
-    if (meta === undefined) return undefined;
-    cache.workspaceBySession.set(sessionId, workspaceId);
-    if (cache.workspaceBySession.size > MAX_ENTRIES * 8) {
-      const oldestSession = cache.workspaceBySession.keys().next().value;
-      if (oldestSession !== undefined) cache.workspaceBySession.delete(oldestSession);
-    }
-    if (info.size > budgets.maxEntryBytes) return meta;
-    const after = await storage.stat!(scope, META_KEY);
-    if (after === undefined || fingerprint(after) !== revision) return meta;
-    remove(cache, scope);
-    cache.entries.set(scope, { revision, bytes: info.size, meta });
-    cache.bytes += info.size;
-    while (cache.entries.size > MAX_ENTRIES || (cache.entries.size > 1 && cache.bytes > budgets.maxSourceBytes)) {
-      const oldest = cache.entries.keys().next().value;
-      if (oldest === undefined) break;
-      remove(cache, oldest);
-    }
-    return meta;
-  })().finally(() => {
-    if (cache.inflight.get(inflightKey) === load) cache.inflight.delete(inflightKey);
-  });
-  cache.inflight.set(inflightKey, load);
-  return load;
+  return meta;
 }
 
 /**
@@ -119,15 +48,15 @@ export async function readColdSessionMetaBySessionId(
   resolveWorkspaceId: () => Promise<string | undefined>,
 ): Promise<SessionMeta | undefined> {
   const storage = core.accessor.get(IFileSystemStorageService);
-  const cache = cacheFor(core);
-  const cachedWorkspaceId = cache.workspaceBySession.get(sessionId);
+  const map = workspaceBySessionFor(core);
+  const cachedWorkspaceId = map.get(sessionId);
   if (cachedWorkspaceId !== undefined && storage.stat !== undefined) {
     const scope = `sessions/${cachedWorkspaceId}/${sessionId}`;
     const info = await storage.stat(scope, META_KEY);
     if (info !== undefined) {
       return readColdSessionMeta(core, cachedWorkspaceId, sessionId);
     }
-    cache.workspaceBySession.delete(sessionId);
+    map.delete(sessionId);
   }
   const workspaceId = await resolveWorkspaceId();
   if (workspaceId === undefined) return undefined;

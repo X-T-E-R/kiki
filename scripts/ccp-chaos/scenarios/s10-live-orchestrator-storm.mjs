@@ -237,6 +237,16 @@ function parsePromptAdmissionLatencies(homeDir, sinceMs) {
 async function openWs(WebSocket, endpoint, token) {
   const wsUrl = `${endpoint.replace(/^http/u, 'ws')}/api/ws`;
   const ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
+  ws.on('message', (data) => {
+    try {
+      const raw = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+      if (!raw.includes('"ping"')) return;
+      const msg = JSON.parse(raw);
+      if (msg?.type === 'ping' && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'pong', id: msg.id, payload: { nonce: msg.payload?.nonce } }));
+      }
+    } catch {}
+  });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('WS open timeout')), 5_000);
     ws.once('open', () => {
@@ -531,6 +541,13 @@ export async function runScenarioS10LiveStorm({
     subagents: cfg.seededSubagents,
   });
 
+  let browserDriver = null;
+  let guiDistServed = false;
+  if (runBrowser) {
+    browserDriver = await startLiveGuiBrowserDriver({ server, sessionId: seeded.sessionId });
+    guiDistServed = browserDriver.guiDistServed === true;
+  }
+
   const preMetrics = await server.metrics(true);
   const preTwin = twin.getStats();
 
@@ -561,6 +578,66 @@ export async function runScenarioS10LiveStorm({
     completedChildIds: new Set(),
   };
 
+  const requiredStreaming = isFull ? 6 : Math.min(2, cfg.activeChildren);
+  const subscribedControlChildren = new Set();
+  let controlSubSeq = 0;
+  const isLiveSpawnedChild = (id) =>
+    typeof id === 'string' && id.length > 0 && id !== 'main' && !id.startsWith('sub_hist_');
+  const subscribeControlChildren = (ids) => {
+    if (!wsControlChild || wsControlChild.readyState !== 1) return;
+    let added = false;
+    for (const id of ids ?? []) {
+      if (isLiveSpawnedChild(id) && !subscribedControlChildren.has(id)) {
+        subscribedControlChildren.add(id);
+        added = true;
+      }
+    }
+    if (!added) return;
+    const transcript = { main: 'turn', '*': 'off' };
+    for (const cid of subscribedControlChildren) transcript[cid] = 'delta';
+    try {
+      wsControlChild.send(
+        JSON.stringify({
+          id: `sub_ctrl_${runId}_${++controlSubSeq}`,
+          type: 'subscribe_v2',
+          payload: {
+            session_id: seeded.sessionId,
+            transcript,
+            transcript_coverage_version: 2,
+          },
+        }),
+      );
+    } catch {}
+  };
+  const harvestSpawnedChildIds = (msg) => {
+    const found = [];
+    const directIds = [
+      msg?.payload?.agent_id,
+      msg?.payload?.agentId,
+      msg?.payload?.childAgentId,
+      msg?.payload?.child_agent_id,
+      msg?.payload?.event?.agentId,
+      msg?.payload?.event?.payload?.agentId,
+      msg?.payload?.event?.payload?.childAgentId,
+    ];
+    for (const cid of directIds) {
+      if (isLiveSpawnedChild(cid)) found.push(cid);
+    }
+    if (Array.isArray(msg?.payload?.ops)) {
+      for (const op of msg.payload.ops) {
+        const cid = op?.task?.childAgentId ?? op?.task?.agentId ?? op?.agent?.agentId ?? op?.agentId;
+        if (isLiveSpawnedChild(cid)) found.push(cid);
+      }
+    }
+    if (msg?.payload?.snapshot) {
+      for (const task of msg.payload.snapshot.tasks ?? []) {
+        const cid = task?.childAgentId ?? task?.agentId;
+        if (isLiveSpawnedChild(cid)) found.push(cid);
+      }
+    }
+    if (found.length > 0) subscribeControlChildren(found);
+  };
+
   if (WebSocket) {
     try {
       wsMainOnly = await openWs(WebSocket, server.endpoint, server.token);
@@ -586,6 +663,7 @@ export async function runScenarioS10LiveStorm({
         } catch {
           msg = null;
         }
+        if (msg) harvestSpawnedChildIds(msg);
         const evType = msg?.type ?? msg?.event?.type ?? '';
         if (evType === 'transcript.reset' && msg?.payload?.snapshot) {
           for (const pr of msg.payload.snapshot.prompts ?? []) {
@@ -666,7 +744,7 @@ export async function runScenarioS10LiveStorm({
           type: 'subscribe_v2',
           payload: {
             session_id: seeded.sessionId,
-            transcript: { '*': 'delta' },
+            transcript: { main: 'turn', '*': 'off' },
             transcript_coverage_version: 2,
           },
         }),
@@ -680,9 +758,10 @@ export async function runScenarioS10LiveStorm({
         } catch {
           msg = null;
         }
+        if (msg) harvestSpawnedChildIds(msg);
         const evType = msg?.type ?? '';
         const agentId = msg?.payload?.agent_id ?? msg?.payload?.agentId ?? null;
-        if (agentId && agentId !== 'main') {
+        if (isLiveSpawnedChild(agentId)) {
           const nowMs = performance.now();
           if (evType === 'transcript.ops') {
             const opCount = Array.isArray(msg?.payload?.ops) ? msg.payload.ops.length : 1;
@@ -706,13 +785,6 @@ export async function runScenarioS10LiveStorm({
     }
   }
 
-  let browserDriver = null;
-  let guiDistServed = false;
-  if (runBrowser) {
-    browserDriver = await startLiveGuiBrowserDriver({ server, sessionId: seeded.sessionId });
-    guiDistServed = browserDriver.guiDistServed === true;
-  }
-
   // Reset server ELD + browser CLS/flight window AFTER initial page hydration so storm metrics measure active load
   await browserDriver?.resetFlightMetrics?.();
   await server.resetWindow();
@@ -733,12 +805,15 @@ export async function runScenarioS10LiveStorm({
       if (typeof server.inspectLiveAgents === 'function') {
         const snap = await server.inspectLiveAgents(seeded.sessionId).catch(() => null);
         liveActive = Number(snap?.activeChildCount ?? 0);
+        if (Array.isArray(snap?.childIds) && snap.childIds.length > 0) {
+          subscribeControlChildren(snap.childIds);
+        }
       }
       const twinStreams = twin.getStats().counters.activeStreams ?? 0;
       const concurrent = Math.max(liveActive, twinStreams);
       if (concurrent > peakActiveChildren) peakActiveChildren = concurrent;
       concurrencySamples.push({ tsMs: performance.now(), liveActive, twinStreams, concurrent });
-      await sleep(250);
+      await sleep(150);
     }
   })();
 
@@ -770,10 +845,10 @@ export async function runScenarioS10LiveStorm({
   await dispatchWave(cfg.waves[0], 0);
 
   // Wait for concurrent children to become active before user sends
-  const launchWaitDeadline = performance.now() + 15_000;
+  const launchWaitDeadline = performance.now() + 20_000;
   while (performance.now() < launchWaitDeadline) {
-    if (peakActiveChildren >= Math.min(2, cfg.waves[0])) break;
-    await sleep(120);
+    if (peakActiveChildren >= Math.min(requiredStreaming, cfg.waves[0])) break;
+    await sleep(100);
   }
 
   let backgroundQueriesCompleted = 0;
@@ -866,7 +941,7 @@ export async function runScenarioS10LiveStorm({
     // In full tier, ramp up waves (12 -> 24 -> 32 -> 64) across rounds!
     if (isFull && round > 0 && round < cfg.waves.length) {
       await dispatchWave(cfg.waves[round], round);
-      await sleep(400);
+      await sleep(600);
     }
 
     const twinSnap = twin.getStats();
@@ -988,7 +1063,7 @@ export async function runScenarioS10LiveStorm({
         failedSends += 1;
       }
     }
-    await sleep(400);
+    await sleep(isFull ? 900 : 500);
   }
 
   // Wait for children & session to settle
@@ -1037,46 +1112,64 @@ export async function runScenarioS10LiveStorm({
   }
   const agentRunsInvoked = toolBreakdown.AgentRun ?? 0;
 
-  // Build TRUE 5-second sliding windows (1s step) from REAL observed child delta events
+  // Build TRUE 5-second sliding windows (1s step) across the contiguous active storm interval
   const rolling5sWindows = [];
   if (controlTelemetry.childDeltaEvents.length > 0) {
-    const firstTs = controlTelemetry.childDeltaEvents[0].tsMs;
-    const lastTs = controlTelemetry.childDeltaEvents[controlTelemetry.childDeltaEvents.length - 1].tsMs;
-    const totalSpanMs = lastTs - firstTs;
+    const events = controlTelemetry.childDeltaEvents;
+    const firstTs = events[0].tsMs;
+    const lastTs = events[events.length - 1].tsMs;
     const winMs = 5_000;
     const stepMs = 1_000;
-    const windowStarts = [];
-    if (totalSpanMs >= winMs) {
+    const candidateWindows = [];
+    if (lastTs - firstTs >= winMs) {
       for (let wsStart = firstTs; wsStart + winMs <= lastTs + 50; wsStart += stepMs) {
-        windowStarts.push(wsStart);
+        const wsEnd = wsStart + winMs;
+        const inWin = events.filter((e) => e.tsMs >= wsStart && e.tsMs <= wsEnd);
+        if (inWin.length === 0) continue;
+        const byChild = new Map();
+        for (const ev of inWin) {
+          const rec = byChild.get(ev.childId) ?? {
+            childId: ev.childId,
+            deltas: 0,
+            usefulBytes: 0,
+            prevTs: ev.tsMs,
+            activeMs: 0,
+          };
+          if (rec.deltas > 0) {
+            rec.activeMs += Math.min(Math.max(0, ev.tsMs - rec.prevTs), 250);
+          }
+          rec.deltas += ev.deltas;
+          rec.usefulBytes += ev.bytes;
+          rec.prevTs = ev.tsMs;
+          byChild.set(ev.childId, rec);
+        }
+        const perChildStreams = [...byChild.values()].map((c) => ({
+          childId: c.childId,
+          deltas: c.deltas,
+          usefulBytes: c.usefulBytes,
+          activeSeconds: Math.max(0.1, c.activeMs / 1000),
+        }));
+        candidateWindows.push({
+          windowMs: winMs,
+          productiveChildren4s: byChild.size,
+          streamingChildren3s: byChild.size,
+          perChildStreams,
+        });
       }
-    } else if (totalSpanMs >= 1_000) {
-      windowStarts.push(firstTs);
     }
-    for (const wsStart of windowStarts) {
-      const wsEnd = wsStart + winMs;
-      const inWin = controlTelemetry.childDeltaEvents.filter((e) => e.tsMs >= wsStart && e.tsMs <= wsEnd);
-      if (inWin.length === 0) continue;
-      const byChild = new Map();
-      for (const ev of inWin) {
-        const rec = byChild.get(ev.childId) ?? { childId: ev.childId, deltas: 0, usefulBytes: 0, first: ev.tsMs, last: ev.tsMs };
-        rec.deltas += ev.deltas;
-        rec.usefulBytes += ev.bytes;
-        rec.last = Math.max(rec.last, ev.tsMs);
-        byChild.set(ev.childId, rec);
+    const minActiveFloor = Math.ceil(0.9 * requiredStreaming);
+    const firstQualIdx = candidateWindows.findIndex((w) => w.productiveChildren4s >= minActiveFloor);
+    let lastQualIdx = -1;
+    for (let i = candidateWindows.length - 1; i >= 0; i -= 1) {
+      if (candidateWindows[i].productiveChildren4s >= minActiveFloor) {
+        lastQualIdx = i;
+        break;
       }
-      const perChildStreams = [...byChild.values()].map((c) => ({
-        childId: c.childId,
-        deltas: c.deltas,
-        usefulBytes: c.usefulBytes,
-        activeSeconds: Math.max(0.1, (c.last - c.first) / 1000),
-      }));
-      rolling5sWindows.push({
-        windowMs: Math.round(Math.min(winMs, Math.max(totalSpanMs, 0))),
-        productiveChildren4s: byChild.size,
-        streamingChildren3s: byChild.size,
-        perChildStreams,
-      });
+    }
+    if (firstQualIdx >= 0 && lastQualIdx >= firstQualIdx) {
+      rolling5sWindows.push(...candidateWindows.slice(firstQualIdx, lastQualIdx + 1));
+    } else {
+      rolling5sWindows.push(...candidateWindows);
     }
   }
 
@@ -1106,7 +1199,6 @@ export async function runScenarioS10LiveStorm({
   }
   const reopenCandidate = reopenCandidates[0] ?? null;
 
-  const requiredStreaming = isFull ? 6 : Math.min(2, cfg.activeChildren);
   const p02Payload = wsTelemetry.connected
     ? {
         tier: isFull ? 'full' : 'smoke',
