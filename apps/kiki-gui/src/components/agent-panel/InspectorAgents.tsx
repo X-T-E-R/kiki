@@ -11,11 +11,14 @@
  * text, so status marks and labels line up down the whole panel.
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
+import type { SessionAgentCounts } from '@kiki/protocol';
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
+import { useRemoteSubagentSearch, type SubagentSearchFn } from '../../lib/subagentSearch';
+import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 import { formatThinkingEffort } from '../../lib/thinkingEffort';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
@@ -101,17 +104,23 @@ const CRUMB = 'flex h-7 min-w-0 items-center rounded-md px-1.5 -mx-1.5 text-ink-
 export const RailCrumbs = memo(function RailCrumbs({
   forest,
   focusedAgentId,
+  fallbackLabel,
   onSelect,
   close,
 }: {
   forest: AgentForest;
   focusedAgentId: string;
+  /** Label fallback when inspecting a historical agent outside the hydrated roster window. */
+  fallbackLabel?: string;
   onSelect: (agentId: string) => void;
   close: ReactNode;
 }) {
   const { t } = useI18n();
   const chain = ancestry(forest, focusedAgentId);
-  const label = (id: string) => (id === MAIN_AGENT_ID ? t('rail.ownerMain') : (forest.byId[id]?.label ?? id));
+  const label = (id: string) =>
+    id === MAIN_AGENT_ID
+      ? t('rail.ownerMain')
+      : (forest.byId[id]?.label ?? (id === focusedAgentId && fallbackLabel !== undefined && fallbackLabel !== '' ? fallbackLabel : id));
   // A deep chain keeps main and the direct parent; the middle folds to "…".
   const steps = chain.slice(0, -1);
   const shown = steps.length > 2 ? [steps[0]!, undefined, steps[steps.length - 1]!] : steps;
@@ -166,8 +175,6 @@ const FAILED_TONE = 'bg-ink-faint';
 
 /** Past this many agents the roster offers a search field. */
 const SEARCH_AT = 6;
-/** Past this many visible rows the list windows inside its own scroller. */
-const WINDOW_AT = 40;
 const ROW_HEIGHT = 46;
 const GROUP_HEIGHT = 32;
 /** Indent per tree level; guides sit on the parent's mark column. */
@@ -403,6 +410,8 @@ export const AgentRoster = memo(function AgentRoster({
   onSelect,
   actions,
   initialFilter,
+  agentCounts,
+  onSearchSubagents,
 }: {
   forest: AgentForest;
   /** Whose team: main, or the focused agent when it has its own children. */
@@ -415,33 +424,55 @@ export const AgentRoster = memo(function AgentRoster({
   actions?: ReactNode;
   /** The bucket a summary chip already asked for; the roster starts filtered. */
   initialFilter?: RosterBucket | 'all';
+  /** Exact server-side counts when local forest holds a bounded recent window. */
+  agentCounts?: SessionAgentCounts;
+  /** Optional server-backed search callback (`controller.searchSubagents`). */
+  onSearchSubagents?: SubagentSearchFn;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [filter, setFilter] = useState<RosterBucket | 'all'>(initialFilter ?? 'all');
   const [query, setQuery] = useState('');
   const [unknownOpen, setUnknownOpen] = useState(false);
   const [doneOpen, setDoneOpen] = useState(false);
+  const deferredForest = useDeferredValue(forest);
+  const deferredQuery = useDeferredValue(query);
+  const scaleConfig = getSubagentScaleConfig();
+  const remoteSearch = useRemoteSubagentSearch(deferredQuery, onSearchSubagents, true, scaleConfig.searchResultLimit);
   const model = useMemo(
-    () => buildRoster({ forest, rootId, waiting: waitingAgentIds, expanded, filter, query, unknownOpen, doneOpen }),
-    [forest, rootId, waitingAgentIds, expanded, filter, query, unknownOpen, doneOpen],
+    () => buildRoster({
+      forest: deferredForest,
+      rootId,
+      waiting: waitingAgentIds,
+      expanded,
+      filter,
+      query: deferredQuery,
+      unknownOpen,
+      doneOpen,
+      agentCounts: rootId === MAIN_AGENT_ID ? agentCounts : undefined,
+      extraNodes: remoteSearch.results,
+      settledCap: scaleConfig.settledRosterWindow,
+    }),
+    [deferredForest, rootId, waitingAgentIds, expanded, filter, deferredQuery, unknownOpen, doneOpen, agentCounts, remoteSearch.results, scaleConfig.settledRosterWindow],
   );
   // A filter whose bucket emptied out falls back to everything.
   const activeFilter = filter !== 'all' && model.counts[filter] === 0 ? 'all' : filter;
   useEffect(() => {
     if (activeFilter !== filter) setFilter('all');
   }, [activeFilter, filter]);
-  const now = useMinuteClock();
-  const toggle = (agentId: string) => {
+  const now = useMinuteClock(model.counts.running > 0);
+  const toggle = useCallback((agentId: string) => {
     setExpanded((previous) => {
       const next = new Set(previous);
       if (next.has(agentId)) next.delete(agentId);
       else next.add(agentId);
       return next;
     });
-  };
+  }, []);
+  const toggleUnknown = useCallback(() => { setUnknownOpen((open) => !open); }, []);
+  const toggleDone = useCallback(() => { setDoneOpen((open) => !open); }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const windowed = model.rows.length > WINDOW_AT;
+  const windowed = model.rows.length > scaleConfig.virtualizeThreshold;
   const virtualizer = useVirtualizer({
     count: windowed ? model.rows.length : 0,
     getScrollElement: () => scrollRef.current,
@@ -482,13 +513,10 @@ export const AgentRoster = memo(function AgentRoster({
     return () => { delete row.dataset['agentPeek']; };
   }, [peekAgentId, model]);
 
-  if (model.total === 0) return null;
+  if (model.displayTotal === 0) return null;
   const renderRow = (row: RosterRow) =>
     row.kind === 'group'
-      ? <RosterGroup row={row} onToggle={() => {
-          if (row.bucket === 'unknown') setUnknownOpen((open) => !open);
-          else setDoneOpen((open) => !open);
-        }} />
+      ? <RosterGroup row={row} onToggle={row.bucket === 'unknown' ? toggleUnknown : toggleDone} />
       : <RosterAgent row={row} now={now} onSelect={onSelect} onToggle={toggle} />;
   return (
     <div data-agent-roster className="space-y-1.5">
@@ -498,7 +526,7 @@ export const AgentRoster = memo(function AgentRoster({
         </div>
         {actions}
       </div>
-      {model.total >= SEARCH_AT ? (
+      {model.displayTotal >= SEARCH_AT ? (
         <label className="relative block">
           <span className="sr-only">{t('inspector.searchAgentsAria')}</span>
           <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" />
@@ -514,7 +542,9 @@ export const AgentRoster = memo(function AgentRoster({
         </label>
       ) : null}
       {model.rows.length === 0 ? (
-        <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">{t('inspector.noAgentMatch')}</p>
+        <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
+          {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
+        </p>
       ) : (
         <div
           ref={(node) => { scrollRef.current = node; listRef.current = node; }}
@@ -522,7 +552,7 @@ export const AgentRoster = memo(function AgentRoster({
           data-subagent-scroll
           aria-label={t('inspector.agentsAria')}
           role="list"
-          className={`-mx-2 ${windowed ? 'max-h-[min(60vh,520px)] overflow-y-auto overscroll-contain pr-1' : ''}`}
+          className={`-mx-2 ${windowed ? 'max-h-[min(52dvh,480px)] overflow-y-auto overscroll-contain pr-1' : ''}`}
         >
           {windowed ? (
             <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
@@ -547,16 +577,25 @@ export const AgentRoster = memo(function AgentRoster({
           ))}
         </div>
       )}
+      {model.settledTruncated ? (
+        <p data-roster-window-hint className="px-2 pt-0.5 text-[11px] text-ink-faint">
+          {locale === 'zh'
+            ? `显示最近 ${model.settledShown} 项 · 搜索可定位全部`
+            : `Showing latest ${model.settledShown} · Search to find any`}
+        </p>
+      ) : null}
     </div>
   );
 });
 
-/** Wall clock at minute granularity: elapsed labels on rows are coarse. */
-function useMinuteClock(): number {
+/** Wall clock at minute granularity: only ticks while running agents exist. */
+function useMinuteClock(enabled: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
     const timer = window.setInterval(() => { setNow(Date.now()); }, 30_000);
     return () => { window.clearInterval(timer); };
-  }, []);
+  }, [enabled]);
   return now;
 }

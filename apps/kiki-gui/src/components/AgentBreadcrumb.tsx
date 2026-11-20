@@ -3,9 +3,11 @@
  * agent's relations (parent, children, siblings) beneath it.
  */
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from '@base-ui/react/popover';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
+import type { SessionAgentCounts } from '@kiki/protocol';
 import {
   agentChildren,
   MAIN_AGENT_ID,
@@ -14,6 +16,8 @@ import {
 } from '@kiki/session-core/session';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
+import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
+import { useRemoteSubagentSearch, type SubagentSearchFn } from '../lib/subagentSearch';
 import { Icon } from './icons';
 import { AnchoredPopover, usePopover } from './overlays';
 
@@ -365,6 +369,9 @@ export const AgentRelations = memo(function AgentRelations({
 
 /** Past this many agents a chip's list offers a filter field. */
 const LIST_FILTER_AT = 12;
+const POPOVER_ROW_HEIGHT = 32;
+const POPOVER_HEADER_HEIGHT = 24;
+const POPOVER_HINT_HEIGHT = 26;
 
 /** A count chip that opens a list of agents (siblings, or children that did not fit). */
 function AgentListChip({
@@ -388,11 +395,74 @@ function AgentListChip({
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const pop = usePopover();
-  const needle = query.trim().toLowerCase();
-  const shown = needle === ''
-    ? nodes
-    : nodes.filter((node) => `${node.label} ${node.description ?? ''}`.toLowerCase().includes(needle));
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const scaleConfig = getSubagentScaleConfig();
+  const needle = deferredQuery.trim().toLowerCase();
+  const shown = useMemo(
+    () => (
+      !pop.open
+        ? []
+        : needle === ''
+          ? nodes
+          : nodes.filter((node) => `${node.label} ${node.description ?? ''} ${node.agentId}`.toLowerCase().includes(needle))
+    ),
+    [pop.open, needle, nodes],
+  );
+  const windowed = pop.open && shown.length > scaleConfig.virtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: windowed ? shown.length : 0,
+    getScrollElement: () => listScrollRef.current,
+    estimateSize: () => POPOVER_ROW_HEIGHT,
+    getItemKey: (index) => shown[index]?.agentId ?? index,
+    overscan: 6,
+    initialRect: { width: 280, height: 288 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+  const renderListItem = (node: AgentTreeNode) => {
+    const branch = isBranchNode(node);
+    const sealed = node.branchSealed === true;
+    return (
+      <button
+        type="button"
+        data-agent-id={node.agentId}
+        data-branch-item={branch ? (sealed ? 'merged' : 'open') : undefined}
+        title={titleOf(node)}
+        onClick={() => { pop.setOpen(false); onOpen(node.agentId); }}
+        className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
+      >
+        {branch ? (
+          <Icon
+            name="branch"
+            size={12}
+            className={`shrink-0 ${sealed ? 'text-ink-faint' : 'text-accent'}`}
+          />
+        ) : (
+          <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+        )}
+        <span className="min-w-0 flex-1 truncate">{node.label}</span>
+        <span className={`shrink-0 text-[11.5px] ${branch && !sealed ? 'text-accent' : 'text-ink-faint'}`}>
+          {branch ? t(branchStateI18nKey(node)) : t(`subagent.status.${node.status}` as I18nKey)}
+        </span>
+      </button>
+    );
+  };
   return (
     <>
       <button
@@ -423,37 +493,28 @@ function AgentListChip({
             className="m-1 h-8 shrink-0 rounded-md border border-hairline bg-transparent px-2 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
           />
         ) : null}
-        <div role="list" className="min-h-0 overflow-y-auto">
-          {shown.map((node) => {
-            const branch = isBranchNode(node);
-            const sealed = node.branchSealed === true;
-            return (
-              <div key={node.agentId} role="listitem">
-                <button
-                  type="button"
-                  data-agent-id={node.agentId}
-                  data-branch-item={branch ? (sealed ? 'merged' : 'open') : undefined}
-                  title={titleOf(node)}
-                  onClick={() => { pop.setOpen(false); onOpen(node.agentId); }}
-                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
-                >
-                  {branch ? (
-                    <Icon
-                      name="branch"
-                      size={12}
-                      className={`shrink-0 ${sealed ? 'text-ink-faint' : 'text-accent'}`}
-                    />
-                  ) : (
-                    <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{node.label}</span>
-                  <span className={`shrink-0 text-[11.5px] ${branch && !sealed ? 'text-accent' : 'text-ink-faint'}`}>
-                    {branch ? t(branchStateI18nKey(node)) : t(`subagent.status.${node.status}` as I18nKey)}
-                  </span>
-                </button>
-              </div>
-            );
-          })}
+        <div ref={listScrollRef} role="list" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {windowed ? (
+            <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map((item) => {
+                const node = shown[item.index]!;
+                return (
+                  <div
+                    key={item.key}
+                    role="listitem"
+                    className="absolute top-0 left-0 w-full"
+                    style={{ transform: `translateY(${item.start}px)` }}
+                  >
+                    {renderListItem(node)}
+                  </div>
+                );
+              })}
+            </div>
+          ) : shown.map((node) => (
+            <div key={node.agentId} role="listitem">
+              {renderListItem(node)}
+            </div>
+          ))}
           {shown.length === 0 ? (
             <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('sv.noRelatedAgents')}</p>
           ) : null}
@@ -463,11 +524,43 @@ function AgentListChip({
   );
 }
 
-const FAMILY_UNFILTERED_LIMIT = 60;
-
 function isAgentRunning(node: AgentTreeNode): boolean {
   return node.status === 'running' || node.status === 'background' || node.busy;
 }
+
+function hasAnyFamilyRelation(
+  forest: AgentForest,
+  currentAgentId: string,
+  showBreadcrumb: boolean,
+  depth: number,
+  agentCounts?: SessionAgentCounts,
+): boolean {
+  if (agentCounts !== undefined && agentCounts.subagents >= LIST_FILTER_AT) return true;
+  const current = forest.byId[currentAgentId];
+  if (current === undefined) {
+    return currentAgentId !== MAIN_AGENT_ID && forest.byId[MAIN_AGENT_ID] !== undefined && (!showBreadcrumb || depth > 1);
+  }
+  const parentId = current.parentAgentId;
+  if (parentId !== undefined && parentId !== MAIN_AGENT_ID && forest.byId[parentId] !== undefined && (!showBreadcrumb || depth > 1)) {
+    return true;
+  }
+  if (current.childIds.some((id) => forest.byId[id] !== undefined)) return true;
+  if (parentId === undefined) {
+    return forest.roots.some((root) => root.agentId !== currentAgentId && root.parentAgentId === undefined);
+  }
+  const parentNode = forest.byId[parentId];
+  if (parentNode === undefined) return false;
+  return parentNode.childIds.some((id) => {
+    if (id === currentAgentId) return false;
+    const sibling = forest.byId[id];
+    return sibling !== undefined && sibling.parentAgentId === parentId;
+  });
+}
+
+type FamilyVirtualItem =
+  | { readonly kind: 'header'; readonly key: string; readonly section: 'parent' | 'children' | 'siblings' | 'search'; readonly label: string; readonly count?: number }
+  | { readonly kind: 'agent'; readonly key: string; readonly section: 'parent' | 'child' | 'sibling'; readonly node: AgentTreeNode }
+  | { readonly kind: 'hint'; readonly key: string; readonly text: string };
 
 export const AgentFamilyPopover = memo(function AgentFamilyPopover({
   forest,
@@ -483,6 +576,8 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
   onFilterRunningChange,
   onOpen,
   title,
+  agentCounts,
+  onSearchSubagents,
 }: {
   forest: AgentForest;
   currentAgentId: string;
@@ -497,9 +592,14 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
   onFilterRunningChange?: (runningOnly: boolean) => void;
   onOpen: (agentId: string) => void;
   title?: string;
+  /** Exact server-side counts when local forest holds a bounded recent window. */
+  agentCounts?: SessionAgentCounts;
+  /** Optional server-backed search callback (`controller.searchSubagents`). */
+  onSearchSubagents?: SubagentSearchFn;
 }) {
   const { t, locale } = useI18n();
   const titleOf = useChipTitle();
+  const scaleConfig = getSubagentScaleConfig();
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = (next: boolean) => {
@@ -511,38 +611,184 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
     }
   };
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+  const remoteSearch = useRemoteSubagentSearch(
+    deferredQuery,
+    onSearchSubagents,
+    open,
+    scaleConfig.searchResultLimit,
+  );
 
-  const related = useMemo(
-    () => relatedAgentNodes(forest, currentAgentId),
-    [forest, currentAgentId],
+  // Cheap O(1) relation presence check while closed: never sort or filter
+  // 10,000 children/siblings on every header render.
+  const hasFamily = useMemo(
+    () => hasAnyFamilyRelation(forest, currentAgentId, showBreadcrumb, depth, agentCounts),
+    [forest, currentAgentId, showBreadcrumb, depth, agentCounts],
   );
-  const parent = related.parent?.agentId === MAIN_AGENT_ID ? undefined : related.parent;
-  const showParentSection = parent !== undefined && (!showBreadcrumb || depth > 1);
-  const sortedChildren = useMemo(
-    () => [...related.children].sort((a, b) => Number(isAgentRunning(b)) - Number(isAgentRunning(a))),
-    [related.children],
-  );
-  const hasFamily = showParentSection || sortedChildren.length > 0 || related.siblings.length > 0;
-  const totalCount = (showParentSection ? 1 : 0) + sortedChildren.length + related.siblings.length;
-  const showSearch = sortedChildren.length >= LIST_FILTER_AT || related.siblings.length >= LIST_FILTER_AT || totalCount >= LIST_FILTER_AT;
 
-  const needle = query.trim().toLowerCase();
-  const matches = (node: AgentTreeNode): boolean =>
-    needle === '' || `${node.label} ${node.description ?? ''} ${node.agentId}`.toLowerCase().includes(needle);
+  const familyData = useMemo(() => {
+    if (!open) return null;
+    const related = relatedAgentNodes(forest, currentAgentId);
+    const parent = related.parent?.agentId === MAIN_AGENT_ID ? undefined : related.parent;
+    const showParentSection = parent !== undefined && (!showBreadcrumb || depth > 1);
+    const sortedChildren = [...related.children].sort((a, b) => Number(isAgentRunning(b)) - Number(isAgentRunning(a)));
+    const sortedSiblings = [...related.siblings].sort((a, b) => Number(isAgentRunning(b)) - Number(isAgentRunning(a)));
+    const totalLocal = (showParentSection ? 1 : 0) + sortedChildren.length + sortedSiblings.length;
+    const serverSubagents = agentCounts?.subagents ?? 0;
+    const showSearch =
+      sortedChildren.length >= LIST_FILTER_AT ||
+      sortedSiblings.length >= LIST_FILTER_AT ||
+      totalLocal >= LIST_FILTER_AT ||
+      serverSubagents >= LIST_FILTER_AT;
+    return { parent, showParentSection, sortedChildren, sortedSiblings, showSearch };
+  }, [open, forest, currentAgentId, showBreadcrumb, depth, agentCounts?.subagents]);
 
-  const visibleChildrenAll = useMemo(
-    () => sortedChildren.filter((node) => (!filterRunning || isAgentRunning(node)) && matches(node)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sortedChildren, filterRunning, needle],
-  );
-  const visibleSiblingsAll = useMemo(
-    () => (filterRunning ? [] : related.siblings.filter(matches)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [related.siblings, filterRunning, needle],
-  );
-  const visibleChildren = needle === '' ? visibleChildrenAll.slice(0, FAMILY_UNFILTERED_LIMIT) : visibleChildrenAll;
-  const visibleSiblings = needle === '' ? visibleSiblingsAll.slice(0, FAMILY_UNFILTERED_LIMIT) : visibleSiblingsAll;
-  const visibleParent = !filterRunning && showParentSection && parent !== undefined && matches(parent) ? parent : undefined;
+  const items = useMemo((): readonly FamilyVirtualItem[] => {
+    if (!open || familyData === null) return [];
+    const { parent, showParentSection, sortedChildren, sortedSiblings } = familyData;
+    const needle = deferredQuery.trim().toLowerCase();
+    const matches = (node: AgentTreeNode): boolean =>
+      needle === '' || `${node.label} ${node.description ?? ''} ${node.agentId}`.toLowerCase().includes(needle);
+    const cap = scaleConfig.settledRosterWindow;
+    const hintText = (shown: number) =>
+      locale === 'zh'
+        ? `显示最近 ${shown} 项 · 搜索可定位全部`
+        : `Showing latest ${shown} · Search to find any`;
+
+    const out: FamilyVirtualItem[] = [];
+    const seenIds = new Set<string>([currentAgentId]);
+
+    const visibleParent = !filterRunning && showParentSection && parent !== undefined && matches(parent) ? parent : undefined;
+    if (visibleParent !== undefined) {
+      seenIds.add(visibleParent.agentId);
+      out.push({ kind: 'header', key: 'hdr:parent', section: 'parent', label: t('sv.parentAgents') });
+      out.push({ kind: 'agent', key: `parent:${visibleParent.agentId}`, section: 'parent', node: visibleParent });
+    }
+
+    const matchedChildren = sortedChildren.filter((node) => (!filterRunning || isAgentRunning(node)) && matches(node));
+    const displayChildrenCount =
+      needle === '' && !filterRunning && currentAgentId === MAIN_AGENT_ID && agentCounts !== undefined
+        ? Math.max(matchedChildren.length, agentCounts.subagents)
+        : matchedChildren.length;
+    const shownChildren = needle === ''
+      ? (() => {
+          const active: AgentTreeNode[] = [];
+          const settled: AgentTreeNode[] = [];
+          for (const node of matchedChildren) {
+            if (isAgentRunning(node) || node.status === 'suspended' || (isBranchNode(node) && node.branchSealed !== true)) {
+              active.push(node);
+            } else if (settled.length < cap) {
+              settled.push(node);
+            }
+          }
+          return [...active, ...settled];
+        })()
+      : matchedChildren;
+    if (shownChildren.length > 0) {
+      out.push({ kind: 'header', key: 'hdr:children', section: 'children', label: t('sv.childAgents'), count: displayChildrenCount });
+      for (const node of shownChildren) {
+        seenIds.add(node.agentId);
+        out.push({ kind: 'agent', key: `child:${node.agentId}`, section: 'child', node });
+      }
+      if (needle === '' && displayChildrenCount > shownChildren.length) {
+        out.push({ kind: 'hint', key: 'hint:children', text: hintText(shownChildren.length) });
+      }
+    }
+
+    const matchedSiblings = filterRunning ? [] : sortedSiblings.filter(matches);
+    const isDirectMainChild = forest.byId[currentAgentId]?.parentAgentId === MAIN_AGENT_ID;
+    const displaySiblingsCount =
+      needle === '' && !filterRunning && isDirectMainChild && agentCounts !== undefined
+        ? Math.max(matchedSiblings.length, Math.max(0, agentCounts.subagents - 1))
+        : matchedSiblings.length;
+    const shownSiblings = needle === ''
+      ? (() => {
+          const active: AgentTreeNode[] = [];
+          const settled: AgentTreeNode[] = [];
+          for (const node of matchedSiblings) {
+            if (isAgentRunning(node) || node.status === 'suspended' || (isBranchNode(node) && node.branchSealed !== true)) {
+              active.push(node);
+            } else if (settled.length < cap) {
+              settled.push(node);
+            }
+          }
+          return [...active, ...settled];
+        })()
+      : matchedSiblings;
+    if (shownSiblings.length > 0) {
+      out.push({ kind: 'header', key: 'hdr:siblings', section: 'siblings', label: t('sv.siblingAgents'), count: displaySiblingsCount });
+      for (const node of shownSiblings) {
+        seenIds.add(node.agentId);
+        out.push({ kind: 'agent', key: `sibling:${node.agentId}`, section: 'sibling', node });
+      }
+      if (needle === '' && displaySiblingsCount > shownSiblings.length) {
+        out.push({ kind: 'hint', key: 'hint:siblings', text: hintText(shownSiblings.length) });
+      }
+    }
+
+    // Merge server-backed search hits not already present locally (deduped by agentId).
+    if (needle !== '' && remoteSearch.results.length > 0) {
+      const remoteOnly: AgentTreeNode[] = [];
+      for (const node of remoteSearch.results) {
+        if (seenIds.has(node.agentId)) continue;
+        if (filterRunning && !isAgentRunning(node)) continue;
+        seenIds.add(node.agentId);
+        remoteOnly.push(node);
+      }
+      if (remoteOnly.length > 0) {
+        out.push({
+          kind: 'header',
+          key: 'hdr:search',
+          section: 'search',
+          label: locale === 'zh' ? '搜索结果' : 'Search results',
+          count: remoteOnly.length,
+        });
+        for (const node of remoteOnly) {
+          out.push({
+            kind: 'agent',
+            key: `remote:${node.agentId}`,
+            section: node.parentAgentId === currentAgentId ? 'child' : 'sibling',
+            node,
+          });
+        }
+      }
+    }
+
+    return out;
+  }, [open, familyData, deferredQuery, filterRunning, currentAgentId, agentCounts, forest.byId, remoteSearch.results, scaleConfig.settledRosterWindow, locale, t]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const windowed = open && items.length > scaleConfig.virtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: windowed ? items.length : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => {
+      const entry = items[index];
+      if (entry === undefined) return POPOVER_ROW_HEIGHT;
+      if (entry.kind === 'header') return POPOVER_HEADER_HEIGHT;
+      if (entry.kind === 'hint') return POPOVER_HINT_HEIGHT;
+      return POPOVER_ROW_HEIGHT;
+    },
+    getItemKey: (index) => items[index]?.key ?? index,
+    overscan: 6,
+    initialRect: { width: 280, height: 304 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
 
   const headingContent = (
     <>
@@ -575,34 +821,54 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
     const branch = isBranchNode(node);
     const sealed = node.branchSealed === true;
     return (
-      <div key={`${section}:${node.agentId}`} role="listitem">
-        <button
-          type="button"
-          data-agent-id={node.agentId}
-          data-family-item={section}
-          data-branch-item={branch ? (sealed ? 'merged' : 'open') : undefined}
-          title={titleOf(node)}
-          onClick={() => { setOpen(false); onOpen(node.agentId); }}
-          className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
-        >
-          {section === 'parent' ? (
-            <Icon name="arrowUp" size={12} className="shrink-0 text-ink-faint" />
-          ) : branch ? (
-            <Icon
-              name="branch"
-              size={12}
-              className={`shrink-0 ${sealed ? 'text-ink-faint' : 'text-accent'}`}
-            />
-          ) : (
-            <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
-          )}
-          <span className="min-w-0 flex-1 truncate">{node.label}</span>
-          <span className={`shrink-0 text-[11px] ${branch && !sealed ? 'text-accent' : 'text-ink-faint'}`}>
-            {branch ? t(branchStateI18nKey(node)) : t(`subagent.status.${node.status}` as I18nKey)}
-          </span>
-        </button>
-      </div>
+      <button
+        type="button"
+        data-agent-id={node.agentId}
+        data-family-item={section}
+        data-branch-item={branch ? (sealed ? 'merged' : 'open') : undefined}
+        title={titleOf(node)}
+        onClick={() => { setOpen(false); onOpen(node.agentId); }}
+        className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
+      >
+        {section === 'parent' ? (
+          <Icon name="arrowUp" size={12} className="shrink-0 text-ink-faint" />
+        ) : branch ? (
+          <Icon
+            name="branch"
+            size={12}
+            className={`shrink-0 ${sealed ? 'text-ink-faint' : 'text-accent'}`}
+          />
+        ) : (
+          <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+        )}
+        <span className="min-w-0 flex-1 truncate">{node.label}</span>
+        <span className={`shrink-0 text-[11px] ${branch && !sealed ? 'text-accent' : 'text-ink-faint'}`}>
+          {branch ? t(branchStateI18nKey(node)) : t(`subagent.status.${node.status}` as I18nKey)}
+        </span>
+      </button>
     );
+  };
+
+  const renderItem = (item: FamilyVirtualItem) => {
+    if (item.kind === 'header') {
+      return (
+        <div
+          data-family-section={item.section}
+          className="flex items-center justify-between px-2 py-1 text-[11px] font-medium text-ink-faint"
+        >
+          <span>{item.label}</span>
+          {item.count !== undefined ? <span className="tabular-nums">{item.count}</span> : null}
+        </div>
+      );
+    }
+    if (item.kind === 'hint') {
+      return (
+        <p data-family-window-hint className="px-2 py-1 text-[11px] text-ink-faint">
+          {item.text}
+        </p>
+      );
+    }
+    return renderNodeRow(item.node, item.section);
   };
 
   return (
@@ -628,7 +894,7 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
             aria-label={name}
             className="anim-enter flex w-72 max-h-[min(24rem,var(--available-height,60vh))] flex-col rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_12px_32px_-12px_rgb(var(--kiki-shadow-ink)/0.22)] outline-none"
           >
-            {showSearch ? (
+            {familyData?.showSearch ? (
               <input
                 type="search"
                 data-agent-family-search=""
@@ -651,50 +917,34 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
                 </button>
               </div>
             ) : null}
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {visibleParent !== undefined ? (
-                <div data-family-section="parent" className="pb-1">
-                  <div className="px-2 py-1 text-[11px] font-medium text-ink-faint">
-                    {t('sv.parentAgents')}
-                  </div>
-                  <div role="list">{renderNodeRow(visibleParent, 'parent')}</div>
+            <div ref={scrollRef} role="list" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              {items.length === 0 ? (
+                <p className="px-2 py-2 text-[12px] text-ink-faint">
+                  {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('sv.noRelatedAgents')}
+                </p>
+              ) : windowed ? (
+                <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+                  {virtualizer.getVirtualItems().map((virtualItem) => {
+                    const entry = items[virtualItem.index]!;
+                    return (
+                      <div
+                        key={virtualItem.key}
+                        role={entry.kind === 'agent' ? 'listitem' : undefined}
+                        className="absolute top-0 left-0 w-full"
+                        style={{ transform: `translateY(${virtualItem.start}px)` }}
+                      >
+                        {renderItem(entry)}
+                      </div>
+                    );
+                  })}
                 </div>
-              ) : null}
-              {visibleChildren.length > 0 ? (
-                <div data-family-section="children" className="pb-1">
-                  <div className="flex items-center justify-between px-2 py-1 text-[11px] font-medium text-ink-faint">
-                    <span>{t('sv.childAgents')}</span>
-                    <span className="tabular-nums">{visibleChildrenAll.length}</span>
+              ) : (
+                items.map((entry) => (
+                  <div key={entry.key} role={entry.kind === 'agent' ? 'listitem' : undefined}>
+                    {renderItem(entry)}
                   </div>
-                  <div role="list">{visibleChildren.map((node) => renderNodeRow(node, 'child'))}</div>
-                  {visibleChildrenAll.length > visibleChildren.length ? (
-                    <p className="px-2 py-1 text-[11px] text-ink-faint">
-                      {locale === 'zh'
-                        ? `已显示前 ${visibleChildren.length} 项，输入关键词筛选全部 ${visibleChildrenAll.length} 项`
-                        : `Showing ${visibleChildren.length} of ${visibleChildrenAll.length} — type to filter`}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              {visibleSiblings.length > 0 ? (
-                <div data-family-section="siblings" className="pb-1">
-                  <div className="flex items-center justify-between px-2 py-1 text-[11px] font-medium text-ink-faint">
-                    <span>{t('sv.siblingAgents')}</span>
-                    <span className="tabular-nums">{visibleSiblingsAll.length}</span>
-                  </div>
-                  <div role="list">{visibleSiblings.map((node) => renderNodeRow(node, 'sibling'))}</div>
-                  {visibleSiblingsAll.length > visibleSiblings.length ? (
-                    <p className="px-2 py-1 text-[11px] text-ink-faint">
-                      {locale === 'zh'
-                        ? `已显示前 ${visibleSiblings.length} 项，输入关键词筛选全部 ${visibleSiblingsAll.length} 项`
-                        : `Showing ${visibleSiblings.length} of ${visibleSiblingsAll.length} — type to filter`}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              {visibleParent === undefined && visibleChildren.length === 0 && visibleSiblings.length === 0 ? (
-                <p className="px-2 py-2 text-[12px] text-ink-faint">{t('sv.noRelatedAgents')}</p>
-              ) : null}
+                ))
+              )}
             </div>
           </Popover.Popup>
         </Popover.Positioner>

@@ -7,7 +7,8 @@ import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation
 import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentForest } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
-import { AgentRoster } from './InspectorAgents';
+import { configureSubagentScale } from '../../lib/subagentScaleConfig';
+import { AgentRoster, RailCrumbs } from './InspectorAgents';
 
 const mounts: { container: HTMLDivElement; root: Root }[] = [];
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
@@ -259,4 +260,183 @@ it('renders a live worker through cold parent recovery and stale idle metadata, 
   expect(complete.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('completed');
   expect(complete.querySelector('[data-agent-id="live-child"]')?.getAttribute('data-roster-bucket')).toBe('ended');
   expect(complete.querySelector('.bg-success')).toBeNull();
+});
+
+function buildLargeSubagentForest(count: number): AgentForest {
+  const byId: Record<string, AgentForest['byId'][string]> = {};
+  const childIds: string[] = [];
+  const baseMs = Date.parse('2026-11-20T00:00:00.000Z');
+  for (let i = 0; i < count; i += 1) {
+    const id = `subagent_${String(i).padStart(5, '0')}`;
+    childIds.push(id);
+    const isRunning = i === 0 || i === 1;
+    const isWaiting = i === 2;
+    byId[id] = {
+      agentId: id,
+      parentAgentId: 'main',
+      name: id,
+      label: `Worker ${String(i).padStart(5, '0')}`,
+      status: isRunning ? 'running' : isWaiting ? 'suspended' : 'completed',
+      busy: isRunning,
+      toolCallCount: 1,
+      childIds: [],
+      startedAt: new Date(baseMs + i * 1000).toISOString(),
+      endedAt: isRunning || isWaiting ? undefined : new Date(baseMs + i * 1000 + 500).toISOString(),
+    };
+  }
+  byId['main'] = {
+    agentId: 'main',
+    name: 'main',
+    label: 'Main',
+    status: 'running',
+    busy: true,
+    toolCallCount: 0,
+    childIds,
+  };
+  return { byId, roots: [byId['main']!] };
+}
+
+describe('10,000-subagent bounded roster & server search', () => {
+  afterEach(() => {
+    configureSubagentScale(null);
+  });
+
+  it('bounds mounted DOM rows to <= 60 on 10,000 subagents even when the ended group opens, and filters by exact id', async () => {
+    const forest = buildLargeSubagentForest(10_000);
+    const opened: string[] = [];
+    const startMs = performance.now();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <AgentRoster
+            forest={forest}
+            waitingAgentIds={new Set(['subagent_00002'])}
+            onSelect={(id) => { opened.push(id); }}
+          />
+        </I18nProvider>,
+      );
+    });
+    const renderMs = performance.now() - startMs;
+    expect(renderMs).toBeLessThan(2_000);
+
+    // Collapsed initial render shows only active/waiting + the single ended group row.
+    expect(container.querySelectorAll('[data-agent-id]').length).toBeLessThanOrEqual(10);
+    const doneGroup = container.querySelector<HTMLButtonElement>('[data-roster-done-group]');
+    expect(doneGroup?.textContent).toContain('9997');
+
+    // Expanding the 9,997-item ended group stays bounded via settledRosterWindow + virtualizer.
+    await act(async () => { doneGroup?.click(); });
+    const mountedAfterExpand = container.querySelectorAll('[data-agent-id]').length;
+    expect(mountedAfterExpand).toBeGreaterThan(0);
+    expect(mountedAfterExpand).toBeLessThanOrEqual(60);
+    expect(container.querySelector('[data-roster-window-hint]')?.textContent).toContain('Showing latest 64');
+
+    // Searching finds subagent_09999 and clicking opens it.
+    const input = container.querySelector<HTMLInputElement>('[data-roster-search]')!;
+    expect(input).not.toBeNull();
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      nativeSetter.call(input, 'subagent_09999');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const targetRow = container.querySelector<HTMLButtonElement>('[data-agent-id="subagent_09999"]');
+    expect(targetRow).not.toBeNull();
+    await act(async () => { targetRow?.click(); });
+    expect(opened).toEqual(['subagent_09999']);
+  });
+
+  it('shows search and exact totals from agentCounts on sparse hydration and merges debounced remote searchSubagents hits', async () => {
+    configureSubagentScale({ searchDebounceMs: 10, searchResultLimit: 32 });
+    const sparseForest = buildLargeSubagentForest(3);
+    const remoteSearch = vi.fn(async (query: string, _options?: { readonly limit?: number; readonly signal?: AbortSignal }) => [
+      {
+        agentId: 'subagent_09999',
+        parentAgentId: 'main',
+        name: 'subagent_09999',
+        label: `Worker 09999 (${query})`,
+        status: 'completed' as const,
+        busy: false,
+        toolCallCount: 4,
+        childIds: [],
+        endedAt: '2026-11-20T03:00:00.000Z',
+      },
+    ]);
+    const opened: string[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <AgentRoster
+            forest={sparseForest}
+            waitingAgentIds={new Set(['subagent_00002'])}
+            agentCounts={{
+              total: 10_001,
+              subagents: 10_000,
+              completed: 9_997,
+              failed: 0,
+              cancelled: 0,
+              active: 3,
+              unknown: 0,
+            }}
+            onSearchSubagents={remoteSearch}
+            onSelect={(id) => { opened.push(id); }}
+          />
+        </I18nProvider>,
+      );
+    });
+
+    // Search input stays visible even with only 3 hydrated nodes because agentCounts.subagents === 10,000.
+    const input = container.querySelector<HTMLInputElement>('[data-roster-search]');
+    expect(input).not.toBeNull();
+    expect(container.querySelector('[data-roster-done-group]')?.textContent).toContain('9997');
+
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      nativeSetter.call(input!, 'subagent_09999');
+      input!.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => { window.setTimeout(resolve, 40); });
+    });
+
+    expect(remoteSearch).toHaveBeenCalledTimes(1);
+    expect(remoteSearch.mock.calls[0]?.[0]).toBe('subagent_09999');
+    expect(remoteSearch.mock.calls[0]?.[1]?.limit).toBe(32);
+    const remoteButton = container.querySelector<HTMLButtonElement>('[data-agent-id="subagent_09999"]');
+    expect(remoteButton).not.toBeNull();
+    await act(async () => { remoteButton?.click(); });
+    expect(opened).toEqual(['subagent_09999']);
+  });
+
+  it('preserves fallbackLabel in RailCrumbs when a historical agent is outside the hydrated forest window', async () => {
+    const sparseForest = buildLargeSubagentForest(2);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <RailCrumbs
+            forest={sparseForest}
+            focusedAgentId="agent-12"
+            fallbackLabel="Historic Auditor"
+            onSelect={() => {}}
+            close={null}
+          />
+        </I18nProvider>,
+      );
+    });
+    const heading = container.querySelector('[data-rail-owner-heading]');
+    expect(heading?.textContent).toContain('Historic Auditor');
+    expect(heading?.textContent).not.toContain('agent-12');
+    expect(container.querySelector('[data-inspect-main]')?.textContent).toBe('Main agent');
+  });
 });

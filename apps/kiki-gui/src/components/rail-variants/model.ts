@@ -22,6 +22,7 @@ import {
   type QuestionBlock,
 } from '@kiki/session-core/session';
 import { isEphemeralBtwNode } from '../agent-panel/InspectorBranches';
+import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 
 /**
  * Agent state as the graph reads it. `unknown` is a real state, kept distinct
@@ -340,7 +341,7 @@ function spanOf(nodes: readonly { startedAt: number | undefined; endedAt: number
 }
 
 /** The branch agent and everything under it, in dispatch order. */
-function collect(forest: AgentForest, rootId: string, out: FleetAgent[], seen: Set<string>): void {
+function collect(forest: AgentForest, rootId: string, depth: number, out: FleetAgent[], seen: Set<string>): void {
   if (seen.has(rootId)) return;
   seen.add(rootId);
   const node = forest.byId[rootId];
@@ -351,11 +352,28 @@ function collect(forest: AgentForest, rootId: string, out: FleetAgent[], seen: S
     description: node.description,
     state: stateOf(node.status, false),
     needsUser: false,
-    depth: 0,
+    depth,
     startedAt: parseTime(node.startedAt),
     endedAt: parseTime(node.endedAt),
   });
-  for (const childId of node.childIds) collect(forest, childId, out, seen);
+  for (const childId of node.childIds) collect(forest, childId, depth + 1, out, seen);
+}
+
+/**
+ * Pre-index earliest pending item timestamp per originAgentId in O(P),
+ * avoiding O(N * P) scans across 10,000-subagent sessions.
+ */
+function indexWaitingSince(pending: readonly PendingItem[]): ReadonlyMap<string, number> {
+  const earliest = new Map<string, number>();
+  for (const item of pending) {
+    const origin = item.originAgentId;
+    if (origin === undefined) continue;
+    const at = parseTime(item.request.created_at);
+    if (at === undefined) continue;
+    const prev = earliest.get(origin);
+    if (prev === undefined || at < prev) earliest.set(origin, at);
+  }
+  return earliest;
 }
 
 /**
@@ -376,6 +394,8 @@ export function sessionGraph(input: {
 }): SessionGraph {
   const { forest, pending, mainState, expanded, mainLabel, rootAgentId = MAIN_AGENT_ID } = input;
   const branches = firstLevelBranchIds(forest, rootAgentId);
+  const waitingByAgent = indexWaitingSince(pending);
+  const settledCap = getSubagentScaleConfig().settledRosterWindow;
   const rows: GraphRow[] = [];
   const everything: { state: FleetState; needsUser: boolean }[] = [];
   const mainStateWord: FleetState = mainState.busy ? 'running' : 'done';
@@ -388,14 +408,19 @@ export function sessionGraph(input: {
   });
   everything.push({ state: mainStateWord, needsUser: false });
   let from = mainState.turnStartedAt;
+
+  const activeRows: GraphRow[] = [];
+  const settledBranches: { readonly row: GraphBranch; readonly recency: number; readonly order: number }[] = [];
+  let branchOrder = 0;
+
   for (const branchId of branches) {
     const nodes: FleetAgent[] = [];
-    collect(forest, branchId, nodes, new Set());
+    collect(forest, branchId, 1, nodes, new Set());
     // A branch with no agent in the forest is not a branch; an agent with no
     // children is, and must still appear.
     if (nodes.length === 0) continue;
     const enriched = nodes.map((node) => {
-      const wait = waitingSince(pending, node.id);
+      const wait = waitingByAgent.get(node.id);
       return {
         ...node,
         state: wait !== undefined ? 'waiting' as const : node.state,
@@ -408,13 +433,13 @@ export function sessionGraph(input: {
     }
     if (expanded.has(branchId)) {
       for (const node of enriched) {
-        rows.push({
+        activeRows.push({
           kind: 'agent',
           id: node.id,
           label: node.label,
           state: node.state,
           needsUser: node.needsUser,
-          depth: depthIn(forest, node.id, rootAgentId),
+          depth: node.depth,
           startedAt: node.startedAt,
           endedAt: node.endedAt,
           waitingSince: node.waitingSince,
@@ -429,16 +454,42 @@ export function sessionGraph(input: {
     for (const at of [groupSpan.from, groupSpan.to]) {
       if (at !== undefined) from = from === undefined ? at : Math.min(from, at);
     }
-    rows.push({
+    const branchComposition = compose(enriched);
+    const branchRow: GraphBranch = {
       kind: 'branch',
       id: branchId,
       label: forest.byId[branchId]?.label ?? branchId,
       size: enriched.length,
-      composition: compose(enriched),
+      composition: branchComposition,
       from: groupSpan.from,
       to: groupSpan.to,
-      waitingSince: waitingSince(pending, branchId),
-    });
+      waitingSince: waitingByAgent.get(branchId),
+    };
+    const isActiveBranch = branchComposition.some(
+      (segment) => segment.state === 'waiting' || segment.state === 'running' || segment.state === 'failed',
+    );
+    if (isActiveBranch) {
+      activeRows.push(branchRow);
+    } else {
+      settledBranches.push({
+        row: branchRow,
+        recency: groupSpan.to ?? groupSpan.from ?? 0,
+        order: branchOrder,
+      });
+    }
+    branchOrder += 1;
+  }
+
+  for (const row of activeRows) rows.push(row);
+  if (settledBranches.length <= settledCap) {
+    for (const entry of settledBranches) rows.push(entry.row);
+  } else {
+    // Keep newest settled branches within the bounded display window while
+    // preserving exact composition and agentCount over every branch.
+    const newest = [...settledBranches]
+      .sort((a, b) => b.recency - a.recency || b.order - a.order)
+      .slice(0, settledCap);
+    for (const entry of newest) rows.push(entry.row);
   }
   return { rows, agentCount: everything.length, composition: compose(everything), from };
 }

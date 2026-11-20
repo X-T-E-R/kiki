@@ -29,10 +29,12 @@
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { MAIN_AGENT_ID, type AgentForest, type ApprovalBlock, type Block, type QuestionBlock } from '@kiki/session-core/session';
 import type { ListAgentTasksResponse, SessionAgentCounts, Task } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
+import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
 import {
   age,
@@ -940,6 +942,36 @@ function ExecutionGraph({ rows, agentCount, sessionCounts, branchTotal, composit
     return () => observer.disconnect();
   }, []);
   const main = rows.find((row): row is Extract<GraphRow, { kind: 'main' }> => row.kind === 'main');
+  const laneRows = useMemo(
+    () => rows.filter((row): row is GraphBranch | GraphAgent => row.kind !== 'main'),
+    [rows],
+  );
+  const lanesScrollRef = useRef<HTMLDivElement>(null);
+  const windowedLanes = laneRows.length > getSubagentScaleConfig().virtualizeThreshold;
+  const laneVirtualizer = useVirtualizer({
+    count: windowedLanes ? laneRows.length : 0,
+    getScrollElement: () => lanesScrollRef.current,
+    estimateSize: () => 28,
+    getItemKey: (index) => laneRows[index]?.id ?? index,
+    overscan: 6,
+    initialRect: { width: 480, height: 320 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
   const hiddenAgents = agentCount - 1 - rows.filter((row) => row.kind === 'agent').length;
   return (
     <section data-cockpit-graph data-cockpit-lanes role="group" aria-label={t('rail.cockpit.graph.aria')} className="space-y-1.5">
@@ -1005,7 +1037,26 @@ function ExecutionGraph({ rows, agentCount, sessionCounts, branchTotal, composit
               <span aria-hidden style={{ width: TRAILING_W }} className="shrink-0" />
             </button>
           ) : null}
-          {rows.filter((row) => row.kind !== 'main').map((row) => row.kind === 'branch'
+          {windowedLanes ? (
+            <div ref={lanesScrollRef} className="max-h-[min(52vh,440px)] overflow-y-auto overscroll-contain">
+              <div className="relative" style={{ height: laneVirtualizer.getTotalSize() }}>
+                {laneVirtualizer.getVirtualItems().map((item) => {
+                  const row = laneRows[item.index]!;
+                  return (
+                    <div
+                      key={item.key}
+                      className="absolute top-0 left-0 w-full"
+                      style={{ transform: `translateY(${item.start}px)` }}
+                    >
+                      {row.kind === 'branch'
+                        ? <BranchRow branch={row} pct={pct} now={now} locale={locale} t={t} onExpand={onExpand} onSelect={onSelect} />
+                        : <AgentLane agent={row} pct={pct} now={now} locale={locale} t={t} selectedId={selectedId} onSelect={onSelect} />}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : laneRows.map((row) => row.kind === 'branch'
             ? <BranchRow key={row.id} branch={row} pct={pct} now={now} locale={locale} t={t} onExpand={onExpand} onSelect={onSelect} />
             : <AgentLane key={row.id} agent={row} pct={pct} now={now} locale={locale} t={t} selectedId={selectedId} onSelect={onSelect} />)}
           {backgroundRows.map((row) => (
@@ -1127,11 +1178,10 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
   const branchTotal = useMemo(() => firstLevelBranchIds(forest, rootAgentId).length, [forest, rootAgentId]);
   // A task row names its owner with the tree's own label. The lookup is
   // memoized on the forest so the rows are not re-rendered on every tick.
-  const ownerNames = useMemo(() => {
-    const byId = new Map<string, string>();
-    for (const node of Object.values(forest.byId)) byId.set(node.agentId, node.label);
-    return (agentId: string) => byId.get(agentId);
-  }, [forest]);
+  const ownerNames = useCallback(
+    (id: string) => forest.byId[id]?.label,
+    [forest],
+  );
   return (
     <div data-cockpit-overview data-cockpit-subject={isSessionSubject ? 'session' : 'agent'} data-cockpit-agent={agentId} className="space-y-3">
       <ExecutionGraph

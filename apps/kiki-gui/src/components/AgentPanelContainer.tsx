@@ -378,8 +378,14 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   }, [controller, agentId]);
   // Poll cadence follows THIS agent's activity — its own view state or its
   // forest node. The routed agent being busy must neither start nor stop it.
-  const active = agentState?.busy === true || node?.busy === true ||
-    (agentId === MAIN_AGENT_ID && Object.values(forest.byId).some((entry) => entry.busy));
+  const anyForestBusy = useMemo(() => {
+    if (agentId !== MAIN_AGENT_ID) return false;
+    for (const key in forest.byId) {
+      if (forest.byId[key]?.busy === true) return true;
+    }
+    return false;
+  }, [agentId, forest.byId]);
+  const active = agentState?.busy === true || node?.busy === true || anyForestBusy;
   const metricsWanted = part === 'all' || part === 'overview' || part === 'usage';
   const catalog = useAgentPanelCatalog(part === 'all' || part === 'profile'
     ? { session_id: state.sessionId, agent_id: agentId } : undefined,
@@ -388,9 +394,15 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const header = useQuery({
     queryKey: panelMetricsCapabilitiesKey(query, connection.spaceKey, connection.scopeId, connection.meta?.server_id ?? ''),
     queryFn: async ({ signal }) => {
-      const sourceRevisions = new Map([agentId, MAIN_AGENT_ID, ...Object.keys(forest.byId)].map((id) =>
-        [id, sourceRevisionFor(controller, forest, id, panelUsageRevision(klient, state.sessionId, id))]));
-      return { ...await klient.global.agentPanel.read(query, { signal }), sourceRevisions };
+      const response = await klient.global.agentPanel.read(query, { signal });
+      const metricIds = new Set<string>([agentId, MAIN_AGENT_ID]);
+      if (response.metrics !== undefined) {
+        for (const id of Object.keys(response.metrics)) metricIds.add(id);
+      }
+      const sourceRevisions = new Map(
+        [...metricIds].map((id) => [id, sourceRevisionFor(controller, forest, id, panelUsageRevision(klient, state.sessionId, id))]),
+      );
+      return { ...response, sourceRevisions };
     },
     enabled: metricsWanted && visible && state.loaded && !state.resyncing,
     staleTime: 5_000,
@@ -848,13 +860,20 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     // The profile card has no way to mark a count as partial, so it keeps the
     // stricter rule: a tree that is not fully reported shows no total at all.
     // The overview labels its own partial sum instead.
-    treeMetrics: agentId === MAIN_AGENT_ID ? {
+    treeMetrics: agentId === MAIN_AGENT_ID && part !== 'overview' ? {
       ...(treeComplete ? tree : { totalTokens: null, totalCostUsd: null }),
       cacheHitRate: treeComplete ? aggregateTreeCacheHitRate(ids, metrics) : null,
       cacheReadTokens: treeComplete ? aggregateTreeCacheReadTokens(ids, metrics) : null,
       cacheWriteTokens: treeComplete ? aggregateTreeCacheWriteTokens(ids, metrics) : null,
-      activeSubagentsCount: Object.values(forest.byId).filter((entry) => entry.agentId !== MAIN_AGENT_ID && entry.busy).length,
-      totalSubagentsCount: ids.filter((id) => id !== MAIN_AGENT_ID).length,
+      activeSubagentsCount: (() => {
+        let count = 0;
+        for (const key in forest.byId) {
+          const entry = forest.byId[key];
+          if (entry !== undefined && entry.agentId !== MAIN_AGENT_ID && entry.busy) count += 1;
+        }
+        return count;
+      })(),
+      totalSubagentsCount: state.agentCounts?.subagents ?? ids.filter((id) => id !== MAIN_AGENT_ID).length,
     } : undefined,
     onOpenUsageDetail: () => { void navigate(usageSessionDeepLink(state.sessionId)); },
   };
@@ -990,8 +1009,15 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       cacheHitRate: treeComplete ? aggregateTreeCacheHitRate(ids, metrics) : null,
       cacheReadTokens: treeComplete ? aggregateTreeCacheReadTokens(ids, metrics) : null,
       cacheWriteTokens: treeComplete ? aggregateTreeCacheWriteTokens(ids, metrics) : null,
-      activeSubagentsCount: Object.values(forest.byId).filter((entry) => entry.agentId !== MAIN_AGENT_ID && entry.busy).length,
-      totalSubagentsCount: ids.filter((id) => id !== MAIN_AGENT_ID).length,
+      activeSubagentsCount: (() => {
+        let count = 0;
+        for (const key in forest.byId) {
+          const entry = forest.byId[key];
+          if (entry !== undefined && entry.agentId !== MAIN_AGENT_ID && entry.busy) count += 1;
+        }
+        return count;
+      })(),
+      totalSubagentsCount: state.agentCounts?.subagents ?? ids.filter((id) => id !== MAIN_AGENT_ID).length,
     } : undefined} onOpenUsageDetail={() => { void navigate(usageSessionDeepLink(state.sessionId)); }} />
     {capabilities.isPending ? <p role="status" className="text-[12.5px] text-ink-faint">{t('diagnostics.loading')}</p> : null}
     {/* An unsupported capability scope is a gap, not a failure: render nothing

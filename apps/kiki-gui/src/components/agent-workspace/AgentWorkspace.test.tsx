@@ -21,7 +21,8 @@ import { ApiError, ExternalAgentAttachmentUnsupportedError, NativeChildPromptCon
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { composerInput, setComposerInputValue, type ComposerInputElement } from '../composerInputTestUtils';
 import { AgentTreeView } from '../AgentTreeView';
-import { relatedAgentNodes } from '../AgentBreadcrumb';
+import { AgentFamilyPopover, relatedAgentNodes } from '../AgentBreadcrumb';
+import { configureSubagentScale } from '../../lib/subagentScaleConfig';
 import { Composer } from '../Composer';
 import { registerTimelineLocator, type TimelineTarget } from '../../lib/timelineLocate';
 import { InteractionPlacementContext, useInteractionPlacement } from '../Interactions';
@@ -4138,4 +4139,182 @@ it('resolves authoritative branch identity for agent-<N> deep-links outside fore
   expect(header.querySelector('[data-branch-seam-header]')?.textContent).toBe('Compact');
   expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
   expect(header.textContent).toContain('Investigate auth');
+});
+
+it('virtualizes AgentFamilyPopover on 10,000 siblings with bounded DOM rows and merges remote searchSubagents hits', async () => {
+  configureSubagentScale({ searchDebounceMs: 10, searchResultLimit: 32 });
+  try {
+    const byId: Record<string, AgentTreeNode> = {};
+    const childIds: string[] = [];
+    for (let i = 0; i < 10_000; i += 1) {
+      const id = `subagent_${String(i).padStart(5, '0')}`;
+      childIds.push(id);
+      byId[id] = {
+        agentId: id,
+        parentAgentId: 'main',
+        name: id,
+        label: `Worker ${String(i).padStart(5, '0')}`,
+        status: i === 1 ? 'running' : 'completed',
+        busy: i === 1,
+        toolCallCount: 1,
+        childIds: [],
+      };
+    }
+    byId['main'] = {
+      agentId: 'main',
+      name: 'main',
+      label: 'Main',
+      status: 'running',
+      busy: true,
+      toolCallCount: 0,
+      childIds,
+    };
+    const forest: AgentForest = { byId, roots: [byId['main']!] };
+    const opened: string[] = [];
+    const remoteSearch = vi.fn(async () => [
+      {
+        agentId: 'subagent_remote_archive',
+        parentAgentId: 'main',
+        name: 'subagent_remote_archive',
+        label: 'Archived Worker 99999',
+        status: 'completed' as const,
+        busy: false,
+        toolCallCount: 2,
+        childIds: [],
+      },
+    ]);
+
+    root = createRoot(container);
+    const startMs = performance.now();
+    await act(async () => {
+      root!.render(
+        <I18nProvider>
+          <AgentFamilyPopover
+            forest={forest}
+            currentAgentId="subagent_00000"
+            name="Worker 00000"
+            showBreadcrumb
+            open
+            onOpen={(id) => { opened.push(id); }}
+            onSearchSubagents={remoteSearch}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(performance.now() - startMs).toBeLessThan(2_000);
+
+    const popover = document.body.querySelector('[data-agent-family-popover]')!;
+    expect(popover).not.toBeNull();
+    expect(popover.querySelectorAll('[data-agent-id]').length).toBeGreaterThan(0);
+    expect(popover.querySelectorAll('[data-agent-id]').length).toBeLessThanOrEqual(60);
+    expect(popover.querySelector('[data-family-section="siblings"]')?.textContent).toContain('9999');
+
+    const input = popover.querySelector<HTMLInputElement>('[data-agent-family-search]')!;
+    expect(input).not.toBeNull();
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      nativeSetter.call(input, 'remote_archive');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => { window.setTimeout(resolve, 40); });
+    });
+
+    expect(remoteSearch).toHaveBeenCalledTimes(1);
+    const remoteBtn = popover.querySelector<HTMLButtonElement>('[data-agent-id="subagent_remote_archive"]');
+    expect(remoteBtn).not.toBeNull();
+    await act(async () => { remoteBtn?.click(); });
+    expect(opened).toEqual(['subagent_remote_archive']);
+  } finally {
+    configureSubagentScale(null);
+  }
+});
+
+it('opens a historical subagent cleanly when it is absent from a bounded forest window', async () => {
+  const mainNode: AgentTreeNode = {
+    agentId: 'main',
+    name: 'main',
+    label: 'Main',
+    status: 'idle',
+    busy: false,
+    toolCallCount: 0,
+    childIds: ['subagent_recent'],
+  };
+  const recentNode: AgentTreeNode = {
+    agentId: 'subagent_recent',
+    parentAgentId: 'main',
+    name: 'subagent_recent',
+    label: 'Recent Worker',
+    status: 'completed',
+    busy: false,
+    toolCallCount: 1,
+    childIds: [],
+  };
+  const onlyRecentForest: AgentForest = {
+    byId: {
+      main: mainNode,
+      subagent_recent: recentNode,
+    },
+    roots: [mainNode],
+  };
+
+  const sessionState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    agentCounts: {
+      total: 10_001,
+      subagents: 10_000,
+      completed: 10_000,
+      failed: 0,
+      cancelled: 0,
+      active: 0,
+      unknown: 0,
+    },
+    blocks: [
+      {
+        kind: 'subagent' as const,
+        id: 'card-agent-12',
+        turnId: 't1',
+        subagentId: 'agent-12',
+        parentAgentId: 'main',
+        parentToolCallId: 'call-12',
+        name: 'Historic Auditor',
+        label: 'Historic Auditor',
+        status: 'completed' as const,
+        description: 'Audited legacy schema',
+        model: undefined,
+        thinkingEffort: undefined,
+        summary: undefined,
+        error: undefined,
+        startedAt: undefined,
+        endedAt: undefined,
+        toolCallCount: 3,
+        transcript: [],
+      },
+    ],
+  };
+
+  const controller = controllerStub({
+    forest: onlyRecentForest,
+    agentStates: {
+      'agent-12': {
+        ...createViewState('session'),
+        loaded: true,
+        transcriptReady: true,
+        busy: false,
+      },
+    },
+  });
+
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'agent-12' },
+    forest: onlyRecentForest,
+    controller,
+    sessionState,
+  });
+  await settle();
+
+  expect(header.textContent).toContain('Historic Auditor');
+  expect(header.textContent).not.toContain('unknown');
 });
