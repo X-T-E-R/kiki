@@ -25,10 +25,12 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { isPeerConnectionSource } from '../lib/peerAccess';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { formatThinkingEffortWord } from '../lib/thinkingEffort';
 import { useNavigate } from 'react-router-dom';
 
@@ -39,7 +41,6 @@ import {
   classifySlashSubmission,
   completeSlashTrigger,
   extractSlashSkillTokens,
-  filterSlashItems,
   hasInlineSlashCandidate,
   orderSlashItemsForDisplay,
   parseSlashDraft,
@@ -1099,23 +1100,82 @@ export function Composer({
   const selectionDefaultModel = validateFile
     ? normalizeSelectableModelAlias(filePreviewQuery.data?.profile.pinned_model_alias) ?? normalizedServerDefaultModel
     : normalizedDefaultModel;
-  const modelOptions: readonly SearchableSelectOption[] = useMemo(() => catalogModelOptions.map((option) => {
-    const target = option.value === '' ? selectionDefaultModel ?? normalizedServerDefaultModel : option.value;
-    const inheritedFileModel = validateFile && option.value === '' && target !== undefined ? resolveCatalogModel(models, target) : undefined;
-    const row = validateFile && option.value === '' ? { ...option,
-      label: t('composer.inheritSession', { model: inheritedFileModel?.display_name ?? target ?? t('composer.unknown') }),
-      hint: inheritedFileModel === undefined ? target : providerGroupLabel(inheritedFileModel.provider_id), title: target,
-    } : option;
-    const state = projectedProfileModelState(modelProjection, models, target, modelSelectionPosition);
-    const source = projectedProfileModelRuleSource(modelProjection, models, target, selectedProfileName);
-    const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
-      : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
-    return state === 'allowed' ? row : {
-      ...row, disabled: state === 'blocked',
-      hint: state === 'unknown' || source === row.hint ? undefined : source,
-      description: reason, title: [row.title ?? row.label, reason].join('\n'),
+  const modelOptions: readonly SearchableSelectOption[] = useMemo(() => {
+    const projection: Parameters<typeof projectedProfileModelState>[0] = modelProjection;
+    const mainConstrained = projection?.model_constraints_active ?? (
+      projection?.restrict_models_to_menu === true
+      || projection?.allowed_models !== undefined
+      || (projection?.deny_models?.length ?? 0) > 0
+    );
+    const projectionActive = modelSelectionPosition === 'main'
+      ? (mainConstrained && projection?.effective_model_aliases !== undefined)
+      : (projection?.effective_model_aliases !== undefined || projection?.restrict_models_to_menu === true);
+
+    // Fast path: when no profile model constraint applies and no explicit file
+    // preview rewrites row 0, return `catalogModelOptions` directly in O(1)
+    // instead of rescanning 10,000 models.
+    if (!projectionActive && !validateFile) {
+      return catalogModelOptions;
+    }
+
+    const effectiveAliases = projection?.effective_model_aliases;
+    const modelById = new Map<string, (typeof models)[number]>();
+    const modelByRemote = new Map<string, (typeof models)[number]>();
+    for (let i = 0; i < models.length; i += 1) {
+      const m = models[i]!;
+      if (!modelById.has(m.id)) modelById.set(m.id, m);
+      if (!modelByRemote.has(m.remote_id)) modelByRemote.set(m.remote_id, m);
+    }
+    const resolveFast = (alias: string | undefined): string | undefined => {
+      const normalized = normalizeSelectableModelAlias(alias);
+      if (normalized === undefined) return undefined;
+      return modelById.get(normalized)?.id ?? modelByRemote.get(normalized)?.id ?? normalized;
     };
-  }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, normalizedServerDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
+    const effectiveIdentitySet = effectiveAliases === undefined
+      ? undefined
+      : new Set(effectiveAliases.map((alias: string) => resolveFast(alias) ?? alias));
+    const declaredMenuIdentities = projection?.restrict_models_to_menu === true
+      && projection.declared_model_menu !== undefined
+      ? new Set(projection.declared_model_menu.identities)
+      : undefined;
+
+    return catalogModelOptions.map((option) => {
+      const target = option.value === '' ? selectionDefaultModel ?? normalizedServerDefaultModel : option.value;
+      const inheritedFileModel = validateFile && option.value === '' && target !== undefined
+        ? resolveCatalogModel(models, target)
+        : undefined;
+      const row = validateFile && option.value === '' ? { ...option,
+        label: t('composer.inheritSession', { model: inheritedFileModel?.display_name ?? target ?? t('composer.unknown') }),
+        hint: inheritedFileModel === undefined ? target : providerGroupLabel(inheritedFileModel.provider_id), title: target,
+      } : option;
+      if (!projectionActive) return row;
+
+      const normalizedTarget = normalizeSelectableModelAlias(target);
+      let state: 'allowed' | 'warning' | 'blocked' | 'unknown';
+      if (effectiveIdentitySet === undefined) {
+        state = projection?.restrict_models_to_menu === true ? 'unknown' : 'allowed';
+      } else if (normalizedTarget === undefined) {
+        state = modelSelectionPosition === 'main' ? 'allowed' : 'blocked';
+      } else {
+        const identity = resolveFast(normalizedTarget) ?? normalizedTarget;
+        state = effectiveIdentitySet.has(identity)
+          ? 'allowed'
+          : modelSelectionPosition === 'main' ? 'warning' : 'blocked';
+      }
+      if (state === 'allowed') return row;
+
+      const identity = normalizedTarget === undefined ? undefined : resolveFast(normalizedTarget) ?? normalizedTarget;
+      const outsideMenu = declaredMenuIdentities !== undefined && identity !== undefined && !declaredMenuIdentities.has(identity);
+      const source = `profile:${selectedProfileName}${outsideMenu ? '.restrict_models_to_menu' : ''}`;
+      const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
+        : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
+      return {
+        ...row, disabled: state === 'blocked',
+        hint: state === 'unknown' || source === row.hint ? undefined : source,
+        description: reason, title: [row.title ?? row.label, reason].join('\n'),
+      };
+    });
+  }, [catalogModelOptions, modelProjection, models, selectionDefaultModel, normalizedServerDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
   const selectedExecution = execution ?? boundExecution;
   const externalExecution = selectedExecution !== undefined && !isNativeExecutor(selectedExecution.executor);
   const executorId = externalExecution ? selectedExecution.executor : undefined;
@@ -1315,13 +1375,60 @@ export function Composer({
     [skills, sessionId, pluginGuiSlots.slots, locale, engine, onSideQuestion, onOpenBranch],
   );
   const skillMenuItems = useMemo(() => slashItems.filter((item) => item.kind === 'skill'), [slashItems]);
+  // Pre-compute lowercase slash search entries once per `slashItems` identity
+  // so typing in `/` across 1,000+ skills filters in O(N) with zero sorting.
+  const slashSearchIndex = useMemo(
+    () => slashItems.map((item) => ({
+      item,
+      nameLower: item.name.toLowerCase(),
+      descLower: item.description.toLowerCase(),
+    })),
+    [slashItems],
+  );
+  const slashMenuQuery = menu?.kind === 'slash' ? menu.query : '';
+  const deferredSlashQuery = useDeferredValue(slashMenuQuery);
   const filteredSlashItems = useMemo(() => {
     if (menu?.kind !== 'slash') return [];
-    const candidates = menu.inline
-      ? slashItems.filter((item) => item.kind === 'skill')
-      : slashItems;
-    return orderSlashItemsForDisplay(filterSlashItems(candidates, menu.query));
-  }, [menu, slashItems]);
+    const q = deferredSlashQuery.trim().toLowerCase();
+    const inlineOnly = menu.inline;
+    if (q === '') {
+      const candidates = inlineOnly ? skillMenuItems : slashItems;
+      return orderSlashItemsForDisplay(candidates);
+    }
+    const skillR0: SlashItem[] = [];
+    const skillR1: SlashItem[] = [];
+    const skillR2: SlashItem[] = [];
+    const pluginR0: SlashItem[] = [];
+    const pluginR1: SlashItem[] = [];
+    const pluginR2: SlashItem[] = [];
+    const actionR0: SlashItem[] = [];
+    const actionR1: SlashItem[] = [];
+    const actionR2: SlashItem[] = [];
+    for (let i = 0; i < slashSearchIndex.length; i += 1) {
+      const entry = slashSearchIndex[i]!;
+      const { item } = entry;
+      if (inlineOnly && item.kind !== 'skill') continue;
+      let rank = -1;
+      if (entry.nameLower.startsWith(q)) rank = 0;
+      else if (entry.nameLower.includes(q)) rank = 1;
+      else if (entry.descLower.includes(q)) rank = 2;
+      if (rank < 0) continue;
+      if (item.kind === 'skill') {
+        if (rank === 0) skillR0.push(item);
+        else if (rank === 1) skillR1.push(item);
+        else skillR2.push(item);
+      } else if (item.kind === 'plugin') {
+        if (rank === 0) pluginR0.push(item);
+        else if (rank === 1) pluginR1.push(item);
+        else pluginR2.push(item);
+      } else {
+        if (rank === 0) actionR0.push(item);
+        else if (rank === 1) actionR1.push(item);
+        else actionR2.push(item);
+      }
+    }
+    return [...skillR0, ...skillR1, ...skillR2, ...pluginR0, ...pluginR1, ...pluginR2, ...actionR0, ...actionR1, ...actionR2];
+  }, [menu, slashItems, skillMenuItems, slashSearchIndex, deferredSlashQuery]);
 
   // Debounced file-picker query (fires only while the mention menu is open).
   useEffect(() => {
@@ -4312,18 +4419,99 @@ function SlashMenuBody({
 }) {
   const { t } = useI18n();
   const coarsePointer = useCoarsePointer();
+  const pickerScale = getPickerScaleConfig();
   const rootRef = useRef<HTMLDivElement>(null);
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
+
+  const flatRows = useMemo(() => {
+    const rows: { readonly item: SlashItem; readonly index: number; readonly header: string | null }[] = [];
+    let seenSkill = false;
+    let seenPlugin = false;
+    let seenAction = false;
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i]!;
+      let header: string | null = null;
+      if (item.kind === 'skill' && !seenSkill) {
+        seenSkill = true;
+        header = t('composer.slash.skills');
+      } else if (item.kind === 'plugin' && !seenPlugin) {
+        seenPlugin = true;
+        header = t('composer.slash.plugins');
+      } else if (item.kind === 'action' && !seenAction) {
+        seenAction = true;
+        header = t('composer.slash.shortcuts');
+      }
+      rows.push({ item, index: i, header });
+    }
+    return rows;
+  }, [items, t]);
+
   useLayoutEffect(() => {
+    const parent = rootRef.current?.closest<HTMLElement>('[data-composer-menu]') ?? null;
+    setScrollEl((prev) => (prev === parent ? prev : parent));
+  }, []);
+
+  const isVirtualized = flatRows.length > pickerScale.selectVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? flatRows.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: (index) => (flatRows[index]?.header !== null ? 58 : 34),
+    getItemKey: (index) => {
+      const entry = flatRows[index];
+      return entry === undefined ? index : `${entry.item.kind}-${entry.item.name}`;
+    },
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 420, height: 280 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 34;
+    },
+    useFlushSync: false,
+  });
+
+  useLayoutEffect(() => {
+    if (isVirtualized && scrollEl !== null && activeIndex >= 0 && activeIndex < flatRows.length) {
+      if (scrollEl.scrollHeight > scrollEl.clientHeight) {
+        virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
+      } else {
+        const item = virtualizer.measurementsCache[activeIndex];
+        if (item !== undefined) {
+          const viewportH = scrollEl.clientHeight > 0 ? scrollEl.clientHeight : 280;
+          const maxOffset = Math.max(0, virtualizer.getTotalSize() - viewportH);
+          const current = scrollEl.scrollTop;
+          let target = current;
+          if (item.end > current + viewportH) target = item.end - viewportH;
+          else if (item.start < current) target = item.start;
+          const clamped = Math.max(0, Math.min(maxOffset, Math.round(target)));
+          if (clamped !== current) {
+            scrollEl.scrollTop = clamped;
+            scrollEl.dispatchEvent(new Event('scroll'));
+          }
+        }
+      }
+      return;
+    }
     const active = rootRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
     active?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeIndex, items.length]);
-  const skills = items.filter((item) => item.kind === 'skill');
-  const plugins = items.filter((item) => item.kind === 'plugin');
-  const actions = items.filter((item) => item.kind === 'action');
-  let rowIndex = -1;
-  const renderRow = (item: SlashItem) => {
-    rowIndex += 1;
-    const index = rowIndex;
+  }, [activeIndex, flatRows.length, isVirtualized, scrollEl, virtualizer]);
+
+  const renderEntry = (entry: { readonly item: SlashItem; readonly index: number; readonly header: string | null }) => {
+    const { item, index, header } = entry;
     const active = index === activeIndex;
     const argHint = item.skill?.argument_hint ?? item.argumentHint;
     const descriptionText =
@@ -4331,70 +4519,85 @@ function SlashMenuBody({
         ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
         : item.description;
     return (
-      <button
-        key={`${item.kind}-${item.name}`}
-        type="button"
-        role="option"
-        aria-selected={active}
-        aria-disabled={item.disabled === true}
-        onClick={() => { onAccept(item); }}
-        onMouseEnter={() => { onHoverRow(index); }}
-        className={`flex w-full items-baseline gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
-          item.disabled === true ? 'opacity-50' : ''
-        } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
-      >
-        <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
-          /{item.name}
-        </span>
-        {argHint !== undefined ? (
-          <span className="max-w-32 truncate font-mono text-[11px] text-ink-faint">{argHint}</span>
+      <>
+        {header !== null ? (
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+            {header}
+          </p>
         ) : null}
-        <span
-          title={descriptionText}
-          className={`min-w-0 flex-1 text-[13px] text-ink-soft ${
-            active && item.kind === 'plugin'
-              ? 'whitespace-normal break-words max-[640px]:leading-snug min-[641px]:truncate'
-              : 'truncate'
-          }`}
+        <button
+          type="button"
+          role="option"
+          aria-selected={active}
+          aria-disabled={item.disabled === true}
+          aria-setsize={isVirtualized ? flatRows.length : undefined}
+          aria-posinset={isVirtualized ? index + 1 : undefined}
+          onClick={() => { onAccept(item); }}
+          onMouseEnter={() => { onHoverRow(index); }}
+          className={`flex w-full items-baseline gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
+            item.disabled === true ? 'opacity-50' : ''
+          } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
         >
-          {descriptionText}
-        </span>
-        {item.disabled === true ? (
-          <span className="shrink-0 text-[12px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
-        ) : item.kind === 'skill' ? (
-          <span title={item.skill?.path} className="shrink-0 text-[12px] text-ink-faint">{item.skill?.source}</span>
-        ) : item.kind === 'plugin' && item.pluginId !== undefined ? (
-          <span className="shrink-0 font-mono text-[11.5px] text-ink-faint">{item.pluginId}</span>
-        ) : null}
-      </button>
+          <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
+            /{item.name}
+          </span>
+          {argHint !== undefined ? (
+            <span className="max-w-32 truncate font-mono text-[11px] text-ink-faint">{argHint}</span>
+          ) : null}
+          <span
+            title={descriptionText}
+            className={`min-w-0 flex-1 text-[13px] text-ink-soft ${
+              active && item.kind === 'plugin'
+                ? 'whitespace-normal break-words max-[640px]:leading-snug min-[641px]:truncate'
+                : 'truncate'
+            }`}
+          >
+            {descriptionText}
+          </span>
+          {item.disabled === true ? (
+            <span className="shrink-0 text-[12px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
+          ) : item.kind === 'skill' ? (
+            <span title={item.skill?.path} className="shrink-0 text-[12px] text-ink-faint">{item.skill?.source}</span>
+          ) : item.kind === 'plugin' && item.pluginId !== undefined ? (
+            <span className="shrink-0 font-mono text-[11.5px] text-ink-faint">{item.pluginId}</span>
+          ) : null}
+        </button>
+      </>
     );
   };
+
   return (
     <div ref={rootRef}>
-      {skills.length > 0 ? (
-        <>
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-            {t('composer.slash.skills')}
-          </p>
-          {skills.map(renderRow)}
-        </>
-      ) : null}
-      {plugins.length > 0 ? (
-        <>
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-            {t('composer.slash.plugins')}
-          </p>
-          {plugins.map(renderRow)}
-        </>
-      ) : null}
-      {actions.length > 0 ? (
-        <>
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-            {t('composer.slash.shortcuts')}
-          </p>
-          {actions.map(renderRow)}
-        </>
-      ) : null}
+      {isVirtualized ? (
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          {virtualizer.getVirtualItems().map((row) => {
+            const entry = flatRows[row.index];
+            if (entry === undefined) return null;
+            return (
+              <div
+                key={row.key}
+                data-index={row.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${row.start}px)`,
+                }}
+              >
+                {renderEntry(entry)}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        flatRows.map((entry) => (
+          <div key={`${entry.item.kind}-${entry.item.name}`}>
+            {renderEntry(entry)}
+          </div>
+        ))
+      )}
       {items.length === 0 ? (
         <p className="px-3 py-2 text-[13px] text-ink-faint">
           {/* On touch Enter is a newline; the line goes out from the send button. */}
@@ -4485,13 +4688,117 @@ function MentionMenuBody({
   onAcceptAgent: (candidate: AgentReferenceCandidate) => void;
 }) {
   const { t } = useI18n();
-  const listRef = useRef<HTMLDivElement>(null);
+  const pickerScale = getPickerScaleConfig();
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const setListNode = useCallback((node: HTMLDivElement | null) => {
+    listRef.current = node;
+    setListEl(node);
+  }, []);
   const pending = feed.pendingMore || feed.pendingRestart;
-  const agentCount = agentGroups.reduce((total, group) => total + group.candidates.length, 0);
-  const bothEmpty = items.length === 0 && agentCount === 0;
+
+  type FlatMentionRow =
+    | { readonly kind: 'file'; readonly key: string; readonly index: number; readonly item: FsSearchHit }
+    | {
+        readonly kind: 'agent';
+        readonly key: string;
+        readonly index: number;
+        readonly candidate: AgentReferenceCandidate;
+        readonly groupLabel: string | null;
+        readonly showDelegationNote: boolean;
+      };
+
+  const flatRows = useMemo<readonly FlatMentionRow[]>(() => {
+    const out: FlatMentionRow[] = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i]!;
+      out.push({ kind: 'file', key: `file:${item.path}`, index: i, item });
+    }
+    let idx = items.length;
+    let delegationBannerPlaced = false;
+    for (let g = 0; g < agentGroups.length; g += 1) {
+      const group = agentGroups[g]!;
+      for (let c = 0; c < group.candidates.length; c += 1) {
+        const candidate = group.candidates[c]!;
+        const showDelegationNote = !delegationBannerPlaced && !delegationAvailable;
+        if (showDelegationNote) delegationBannerPlaced = true;
+        out.push({
+          kind: 'agent',
+          key: `agent:${group.group}:${candidate.profile}`,
+          index: idx,
+          candidate,
+          groupLabel: c === 0 ? group.label : null,
+          showDelegationNote,
+        });
+        idx += 1;
+      }
+    }
+    return out;
+  }, [items, agentGroups, delegationAvailable]);
+
+  const bothEmpty = flatRows.length === 0;
+  const isVirtualized = flatRows.length > pickerScale.selectVirtualizeThreshold;
+
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? flatRows.length : 0,
+    getScrollElement: () => listEl,
+    estimateSize: (index) => {
+      const row = flatRows[index];
+      if (row === undefined) return 34;
+      if (row.kind === 'agent') {
+        return 34 + (row.groupLabel !== null ? 26 : 0) + (row.showDelegationNote ? 34 : 0);
+      }
+      return 34;
+    },
+    getItemKey: (index) => flatRows[index]?.key ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 420, height: 256 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 34;
+    },
+    useFlushSync: false,
+  });
+
   useLayoutEffect(() => {
-    const active = listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
-    active?.scrollIntoView?.({ block: 'nearest' });
+    if (isVirtualized && listEl !== null && activeIndex >= 0 && activeIndex < flatRows.length) {
+      if (listEl.scrollHeight > listEl.clientHeight) {
+        virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
+      } else {
+        const item = virtualizer.measurementsCache[activeIndex];
+        if (item !== undefined) {
+          const viewportH = listEl.clientHeight > 0 ? listEl.clientHeight : 256;
+          const maxOffset = Math.max(0, virtualizer.getTotalSize() - viewportH);
+          const current = listEl.scrollTop;
+          let target = current;
+          if (item.end > current + viewportH) target = item.end - viewportH;
+          else if (item.start < current) target = item.start;
+          const clamped = Math.max(0, Math.min(maxOffset, Math.round(target)));
+          if (clamped !== current) {
+            listEl.scrollTop = clamped;
+            listEl.dispatchEvent(new Event('scroll'));
+          }
+        }
+      }
+    } else {
+      const active = listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+      active?.scrollIntoView?.({ block: 'nearest' });
+    }
     if (
       !loading &&
       !pending &&
@@ -4503,7 +4810,82 @@ function MentionMenuBody({
     ) {
       feed.loadMore();
     }
-  }, [activeIndex, items.length, loading, pending, feed]);
+  }, [activeIndex, items.length, flatRows.length, isVirtualized, listEl, virtualizer, loading, pending, feed]);
+
+  const renderMentionRow = (row: FlatMentionRow) => {
+    if (row.kind === 'file') {
+      const active = row.index === activeIndex;
+      const isDir = row.item.kind === 'directory';
+      return (
+        <button
+          type="button"
+          role="option"
+          aria-selected={active}
+          aria-setsize={isVirtualized ? flatRows.length : undefined}
+          aria-posinset={isVirtualized ? row.index + 1 : undefined}
+          onClick={() => { onAccept(row.item); }}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
+            active ? 'bg-paper' : 'hover:bg-paper'
+          }`}
+        >
+          <FileGlyph dir={isDir} />
+          <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
+            {row.item.name}
+            {isDir ? '/' : ''}
+          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
+            {row.item.path}
+          </span>
+        </button>
+      );
+    }
+    const { candidate } = row;
+    const active = row.index === activeIndex;
+    const disabled = !candidate.available;
+    const reason = agentUnavailableReason(candidate, t);
+    return (
+      <>
+        {row.showDelegationNote ? (
+          <p className="mx-1 mt-1 rounded-md bg-ink/[0.045] px-3 py-1.5 text-[11.5px] text-ink-faint" data-agent-mention-note>
+            {t('composer.agentsNoDelegation')}{delegationReason !== undefined && delegationReason !== '' ? ` — ${delegationReason}` : ''}
+          </p>
+        ) : null}
+        {row.groupLabel !== null ? (
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+            {row.groupLabel}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          role="option"
+          aria-selected={active}
+          aria-disabled={disabled}
+          aria-setsize={isVirtualized ? flatRows.length : undefined}
+          aria-posinset={isVirtualized ? row.index + 1 : undefined}
+          disabled={disabled}
+          title={disabled ? reason : undefined}
+          onClick={() => { onAcceptAgent(candidate); }}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
+            disabled ? 'cursor-not-allowed opacity-45' : active ? 'bg-paper' : 'hover:bg-paper'
+          }`}
+        >
+          <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-ink-faint">
+            <Icon name="thread" size={12} />
+          </span>
+          <span className={`shrink-0 text-[12.5px] font-medium ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
+            {candidate.label}
+          </span>
+          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
+            {candidate.engine_label}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
+            {disabled ? reason : candidate.description ?? ''}
+          </span>
+        </button>
+      </>
+    );
+  };
+
   return (
     <>
       {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
@@ -4516,83 +4898,40 @@ function MentionMenuBody({
         </p>
       ) : null}
       {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
-      <div ref={listRef} data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
+      <div ref={setListNode} data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
         const node = event.currentTarget;
         if (!loading && !pending && !feed.failed && !feed.exhausted && node.scrollHeight - node.scrollTop - node.clientHeight <= 32) feed.loadMore();
       }}>
-      {items.map((item, index) => {
-        const active = index === activeIndex;
-        const isDir = item.kind === 'directory';
-        return (
-          <button
-            key={item.path}
-            type="button"
-            role="option"
-            aria-selected={active}
-            onClick={() => { onAccept(item); }}
-            className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
-              active ? 'bg-paper' : 'hover:bg-paper'
-            }`}
-          >
-            <FileGlyph dir={isDir} />
-            <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
-              {item.name}
-              {isDir ? '/' : ''}
-            </span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
-              {item.path}
-            </span>
-          </button>
-        );
-      })}
-      {agentGroups.length > 0 && !delegationAvailable ? (
-        <p className="mx-1 mt-1 rounded-md bg-ink/[0.045] px-3 py-1.5 text-[11.5px] text-ink-faint" data-agent-mention-note>
-          {t('composer.agentsNoDelegation')}{delegationReason !== undefined && delegationReason !== '' ? ` — ${delegationReason}` : ''}
-        </p>
-      ) : null}
-      {agentGroups.map((group) => (
-        <div key={group.group}>
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-            {group.label}
-          </p>
-          {group.candidates.map((candidate) => {
-            const index = items.length + agentGroups
-              .slice(0, agentGroups.indexOf(group))
-              .reduce((total, g) => total + g.candidates.length, 0) + group.candidates.indexOf(candidate);
-            const active = index === activeIndex;
-            const disabled = !candidate.available;
-            const reason = agentUnavailableReason(candidate, t);
+      {isVirtualized ? (
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          {virtualizer.getVirtualItems().map((vRow) => {
+            const entry = flatRows[vRow.index];
+            if (entry === undefined) return null;
             return (
-              <button
-                key={candidate.profile}
-                type="button"
-                role="option"
-                aria-selected={active}
-                aria-disabled={disabled}
-                disabled={disabled}
-                title={disabled ? reason : undefined}
-                onClick={() => { onAcceptAgent(candidate); }}
-                className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
-                  disabled ? 'cursor-not-allowed opacity-45' : active ? 'bg-paper' : 'hover:bg-paper'
-                }`}
+              <div
+                key={vRow.key}
+                data-index={vRow.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${vRow.start}px)`,
+                }}
               >
-                <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-ink-faint">
-                  <Icon name="thread" size={12} />
-                </span>
-                <span className={`shrink-0 text-[12.5px] font-medium ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
-                  {candidate.label}
-                </span>
-                <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
-                  {candidate.engine_label}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
-                  {disabled ? reason : candidate.description ?? ''}
-                </span>
-              </button>
+                {renderMentionRow(entry)}
+              </div>
             );
           })}
         </div>
-      ))}
+      ) : (
+        flatRows.map((entry) => (
+          <div key={entry.key}>
+            {renderMentionRow(entry)}
+          </div>
+        ))
+      )}
       </div>
       {!loading && (!feed.exhausted || feed.failed || pending) ? (
         <button type="button" data-mention-file-more={feed.failed ? 'retry' : pending ? 'pending' : 'more'}

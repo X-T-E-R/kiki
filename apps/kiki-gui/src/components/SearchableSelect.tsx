@@ -14,15 +14,16 @@
  * itself), the panel is portaled to <body> and positioned against the viewport.
  */
 
-import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 import { Popover } from '@base-ui/react/popover';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
-import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
 import { useLayerHistory } from '../lib/layerHistory';
 import { isCoarsePointer, usePhoneMode } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
+import { DEFAULT_PICKER_SCALE_CONFIG, getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import {
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
@@ -89,17 +90,37 @@ const PANEL_MIN_WIDTH = 224;
 const PANEL_MAX_HEIGHT = 340;
 
 const EMPTY_OPTIONS: readonly SearchableSelectOption[] = [];
-/** Option lists above this count render a bounded virtual slice inside the listbox. */
-export const VIRTUALIZE_THRESHOLD = 120;
-const VIRTUAL_WINDOW_SIZE = 80;
-const VIRTUAL_OVERSCAN = 20;
-const VIRTUAL_SCROLL_HYSTERESIS = 8;
+/** Option lists above this count render via `@tanstack/react-virtual` inside the listbox. */
+export const VIRTUALIZE_THRESHOLD = DEFAULT_PICKER_SCALE_CONFIG.selectVirtualizeThreshold;
 
-function windowStartForIndex(targetIndex: number, total: number): number {
-  if (total <= VIRTUAL_WINDOW_SIZE) return 0;
-  const maxStart = total - VIRTUAL_WINDOW_SIZE;
-  if (targetIndex < VIRTUAL_WINDOW_SIZE - VIRTUAL_OVERSCAN) return 0;
-  return Math.max(0, Math.min(targetIndex - VIRTUAL_OVERSCAN, maxStart));
+const optionHaystackCache = new WeakMap<readonly SearchableSelectOption[], readonly string[]>();
+
+function getOptionHaystacks(options: readonly SearchableSelectOption[]): readonly string[] {
+  const cached = optionHaystackCache.get(options);
+  if (cached !== undefined) return cached;
+  const haystacks = new Array<string>(options.length);
+  for (let i = 0; i < options.length; i += 1) {
+    const option = options[i]!;
+    haystacks[i] = `${option.label}\0${option.hint ?? ''}\0${option.description ?? ''}\0${option.keywords ?? ''}`.toLowerCase();
+  }
+  optionHaystackCache.set(options, haystacks);
+  return haystacks;
+}
+
+function filterOptionsIndexed(
+  options: readonly SearchableSelectOption[],
+  query: string,
+): readonly SearchableSelectOption[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return options;
+  const haystacks = getOptionHaystacks(options);
+  const matched: SearchableSelectOption[] = [];
+  for (let i = 0; i < options.length; i += 1) {
+    if (haystacks[i]!.includes(needle)) {
+      matched.push(options[i]!);
+    }
+  }
+  return matched;
 }
 
 export interface SearchableSelectBaseProps {
@@ -229,17 +250,24 @@ export function SearchableSelect(props: SearchableSelectProps) {
 
   const { t } = useI18n();
   const phoneMode = usePhoneMode();
+  const pickerScale = getPickerScaleConfig();
   const selectUid = useId().replace(/:/g, '');
   const surfaceOwnerId = `select:${id ?? selectUid}`;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [windowStart, setWindowStart] = useState(0);
   const keyboardNavRef = useRef(false);
+  const scrollAlignRef = useRef<'auto' | 'center'>('auto');
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const setListNode = useCallback((node: HTMLDivElement | null) => {
+    listRef.current = node;
+    setListEl(node);
+  }, []);
 
   const ownsPanel = panelClassName === undefined;
   const asSheet = phoneMode;
@@ -248,21 +276,30 @@ export function SearchableSelect(props: SearchableSelectProps) {
   const ownerId = open && isPortaled ? owningModalId(triggerRef.current) : undefined;
   const floatingOwners = open && isPortaled ? resolveFloatingOwners(triggerRef.current) : undefined;
 
+  const optionLookup = useMemo(() => {
+    const byValue = new Map<string, SearchableSelectOption>();
+    const enabledIndexByValue = new Map<string, number>();
+    for (let i = 0; i < options.length; i += 1) {
+      const option = options[i]!;
+      if (!byValue.has(option.value)) byValue.set(option.value, option);
+      if (option.disabled !== true && !enabledIndexByValue.has(option.value)) {
+        enabledIndexByValue.set(option.value, i);
+      }
+    }
+    return { byValue, enabledIndexByValue };
+  }, [options]);
+
   const openSelect = () => {
     let initialActive = 0;
-    let initialWindow = 0;
     if (!isMultiple && singleValue !== '') {
-      const idx = options.findIndex((option) => option.value === singleValue && option.disabled !== true);
-      if (idx >= 0) {
+      const idx = optionLookup.enabledIndexByValue.get(singleValue);
+      if (idx !== undefined) {
         initialActive = idx;
-        if (options.length > VIRTUALIZE_THRESHOLD) {
-          initialWindow = windowStartForIndex(idx, options.length);
-        }
       }
     }
     keyboardNavRef.current = true;
+    scrollAlignRef.current = 'center';
     setActiveIndex(initialActive);
-    setWindowStart(initialWindow);
     setOpen(true);
   };
 
@@ -279,7 +316,6 @@ export function SearchableSelect(props: SearchableSelectProps) {
     closeSignalRef.current = closeSignal;
     setOpen(false);
     setQuery('');
-    setWindowStart(0);
   }, [closeSignal]);
 
   const panelZIndex = open && isPortaled ? floatingSurfaceZIndex(triggerRef.current) : undefined;
@@ -296,18 +332,13 @@ export function SearchableSelect(props: SearchableSelectProps) {
     isMultiple ? selectedSet.has(candidate) : candidate === singleValue;
 
   const selected = useMemo(
-    () => (isMultiple ? undefined : options.find((option) => option.value === singleValue)),
-    [isMultiple, options, singleValue],
+    () => (isMultiple ? undefined : optionLookup.byValue.get(singleValue)),
+    [isMultiple, optionLookup, singleValue],
   );
   const multiLabels = useMemo(() => {
     if (!isMultiple || multiValues.length === 0) return undefined;
-    if (multiValues.length <= 2) {
-      return multiValues.map((val) => options.find((opt) => opt.value === val)?.label ?? val);
-    }
-    const byValue = new Map<string, string>();
-    for (const opt of options) byValue.set(opt.value, opt.label);
-    return multiValues.map((val) => byValue.get(val) ?? val);
-  }, [isMultiple, multiValues, options]);
+    return multiValues.map((val) => optionLookup.byValue.get(val)?.label ?? val);
+  }, [isMultiple, multiValues, optionLookup]);
   const multiSummary = useMemo(() => {
     if (multiLabels === undefined || multiLabels.length === 0) return undefined;
     const first = multiLabels[0]!;
@@ -322,19 +353,19 @@ export function SearchableSelect(props: SearchableSelectProps) {
 
   const visible = useMemo(() => {
     if (!open) return EMPTY_OPTIONS;
-    if (!showFilter || query.trim() === '') return options;
-    return filterSelectOptions(options, query);
-  }, [open, options, query, showFilter]);
-  const customValue = open ? query.trim() : '';
+    if (!showFilter || deferredQuery.trim() === '') return options;
+    return filterOptionsIndexed(options, deferredQuery);
+  }, [open, options, deferredQuery, showFilter]);
+  const customValue = open ? deferredQuery.trim() : '';
   const customRow = useMemo(() => (
     open
     && showFilter
     && allowCustomValue
     && customValue !== ''
-    && !options.some((option) => option.value === customValue)
+    && !optionLookup.byValue.has(customValue)
       ? customValue
       : undefined
-  ), [open, showFilter, allowCustomValue, customValue, options]);
+  ), [open, showFilter, allowCustomValue, customValue, optionLookup]);
   const rowCount = visible.length + (customRow === undefined ? 0 : 1);
   const rowEnabled = (index: number) => index >= 0 && (visible[index] !== undefined
     ? visible[index].disabled !== true : customRow !== undefined && index === visible.length);
@@ -350,12 +381,8 @@ export function SearchableSelect(props: SearchableSelectProps) {
     setActiveIndex((index) => {
       if (rowEnabled(index)) return index;
       const next = nextEnabledIndex(-1, 1);
-      if (visible.length > VIRTUALIZE_THRESHOLD && next >= 0) {
-        setWindowStart((ws) => (
-          next < ws || next >= ws + VIRTUAL_WINDOW_SIZE
-            ? windowStartForIndex(next, visible.length)
-            : ws
-        ));
+      if (next >= 0) {
+        scrollAlignRef.current = 'auto';
         keyboardNavRef.current = true;
       }
       return next;
@@ -374,7 +401,6 @@ export function SearchableSelect(props: SearchableSelectProps) {
   const close = () => {
     setOpen(false);
     setQuery('');
-    setWindowStart(0);
   };
 
   useLayerHistory(surfaceOwnerId, open && asSheet, () => {
@@ -428,26 +454,99 @@ export function SearchableSelect(props: SearchableSelectProps) {
   }, [open, surfaceOwnerId, isPortaled]);
 
   const estRowHeight = asSheet ? 52 : density === 'compact' ? 40 : 52;
+  const isVirtualized = open && visible.length > pickerScale.selectVirtualizeThreshold;
+
+  const estimateRowSize = useCallback(
+    (index: number) => {
+      if (!showGroups) return estRowHeight;
+      const option = visible[index];
+      const prev = index > 0 ? visible[index - 1]?.group : undefined;
+      return option?.group !== undefined && option.group !== prev ? estRowHeight + 24 : estRowHeight;
+    },
+    [estRowHeight, showGroups, visible],
+  );
+
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? visible.length : 0,
+    getScrollElement: () => listEl,
+    estimateSize: estimateRowSize,
+    getItemKey: (index) => `${visible[index]?.value ?? ''}-${index}`,
+    indexAttribute: 'data-virtual-index',
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 320, height: PANEL_MAX_HEIGHT },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    scrollToFn: (offset, canSmooth, instance) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      if (typeof el.scrollTo === 'function' && canSmooth.behavior === 'smooth') {
+        el.scrollTo({ top: offset, behavior: 'smooth' });
+      } else {
+        el.scrollTop = offset;
+      }
+      if (el.clientHeight === 0) {
+        el.dispatchEvent(new Event('scroll'));
+      }
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      if (height > 0) return height;
+      const idx = Number(el.getAttribute('data-virtual-index'));
+      return Number.isInteger(idx) ? estimateRowSize(idx) : estRowHeight;
+    },
+    useFlushSync: false,
+  });
 
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open || listEl === null) return;
     if (!keyboardNavRef.current) return;
     keyboardNavRef.current = false;
-    const list = listRef.current;
-    const row = list?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
-    if (list !== null && row !== null && row !== undefined) {
-      if (visible.length > VIRTUALIZE_THRESHOLD && list.clientHeight > 0) {
-        const rowTop = row.offsetTop;
-        const rowBottom = rowTop + row.offsetHeight;
-        if (rowTop < list.scrollTop) {
-          list.scrollTop = rowTop;
-        } else if (rowBottom > list.scrollTop + list.clientHeight) {
-          list.scrollTop = rowBottom - list.clientHeight;
+    const alignMode = scrollAlignRef.current;
+    scrollAlignRef.current = 'auto';
+    if (isVirtualized && activeIndex >= 0 && activeIndex < visible.length) {
+      if (listEl.scrollHeight > listEl.clientHeight) {
+        virtualizer.scrollToIndex(activeIndex, { align: alignMode });
+      } else {
+        const item = virtualizer.measurementsCache[activeIndex];
+        if (item !== undefined) {
+          const viewportH = listEl.clientHeight > 0 ? listEl.clientHeight : PANEL_MAX_HEIGHT;
+          const maxOffset = Math.max(0, virtualizer.getTotalSize() - viewportH);
+          const current = listEl.scrollTop;
+          let target = current;
+          if (alignMode === 'center') {
+            target = item.start + (item.size - viewportH) / 2;
+          } else if (item.end > current + viewportH) {
+            target = item.end - viewportH;
+          } else if (item.start < current) {
+            target = item.start;
+          }
+          const clamped = Math.max(0, Math.min(maxOffset, Math.round(target)));
+          if (clamped !== current) {
+            listEl.scrollTop = clamped;
+            listEl.dispatchEvent(new Event('scroll'));
+          }
         }
       }
+      return;
+    }
+    const row = listEl.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
+    if (row !== null) {
       row.scrollIntoView?.({ block: 'nearest' });
     }
-  }, [open, activeIndex, visible.length]);
+  }, [open, listEl, activeIndex, visible.length, isVirtualized, virtualizer]);
 
   const toggleMultiValue = (val: string) => {
     if (!props.multiple) return;
@@ -495,13 +594,8 @@ export function SearchableSelect(props: SearchableSelectProps) {
       const direction = event.key === 'ArrowDown' ? 1 : -1;
       const next = nextEnabledIndex(activeIndex, direction);
       keyboardNavRef.current = true;
+      scrollAlignRef.current = 'auto';
       setActiveIndex(next);
-      if (visible.length > VIRTUALIZE_THRESHOLD && next >= 0) {
-        const clampedStart = Math.min(Math.max(0, windowStart), Math.max(0, visible.length - VIRTUAL_WINDOW_SIZE));
-        if (next < clampedStart + 4 || next >= clampedStart + VIRTUAL_WINDOW_SIZE - 4) {
-          setWindowStart(windowStartForIndex(next, visible.length));
-        }
-      }
     } else if (event.key === 'Enter') {
       if (!showFilter && event.target instanceof HTMLElement && event.target.getAttribute('role') === 'option') {
         const indexAttr = Number(event.target.getAttribute('data-index'));
@@ -521,34 +615,120 @@ export function SearchableSelect(props: SearchableSelectProps) {
     }
   };
 
-  const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    if (visible.length <= VIRTUALIZE_THRESHOLD) return;
-    const el = event.currentTarget;
-    const viewportH = el.clientHeight > 0 ? el.clientHeight : PANEL_MAX_HEIGHT;
-    const firstVisible = Math.floor(el.scrollTop / estRowHeight);
-    const lastVisible = Math.ceil((el.scrollTop + viewportH) / estRowHeight);
-    const maxStart = Math.max(0, visible.length - VIRTUAL_WINDOW_SIZE);
-    setWindowStart((current) => {
-      const clamped = Math.min(Math.max(0, current), maxStart);
-      const needUp = clamped > 0 && firstVisible < clamped + VIRTUAL_SCROLL_HYSTERESIS;
-      const needDown = clamped < maxStart && lastVisible > clamped + VIRTUAL_WINDOW_SIZE - VIRTUAL_SCROLL_HYSTERESIS;
-      if (!needUp && !needDown) return clamped;
-      return Math.max(0, Math.min(firstVisible - VIRTUAL_OVERSCAN, maxStart));
-    });
-  };
-
   const listId = `${id ?? 'searchable-select'}-list`;
   const rowPadClass = asSheet ? 'min-h-11 py-2.5 text-[14px]' : 'py-1.5 text-[13px]';
 
-  const renderPanel = () => {
-    const isVirtualized = visible.length > VIRTUALIZE_THRESHOLD;
-    const maxWindowStart = isVirtualized ? Math.max(0, visible.length - VIRTUAL_WINDOW_SIZE) : 0;
-    const sliceStart = isVirtualized ? Math.min(Math.max(0, windowStart), maxWindowStart) : 0;
-    const sliceEnd = isVirtualized ? Math.min(visible.length, sliceStart + VIRTUAL_WINDOW_SIZE) : visible.length;
-    const topSpacerHeight = isVirtualized ? sliceStart * estRowHeight : 0;
-    const bottomSpacerHeight = isVirtualized ? (visible.length - sliceEnd) * estRowHeight : 0;
-    const slicedOptions = isVirtualized ? visible.slice(sliceStart, sliceEnd) : visible;
+  const renderOptionEntry = (option: SearchableSelectOption, index: number) => {
+    const active = index === activeIndex;
+    const isSelected = isValueSelected(option.value);
+    const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
+    const groupHeader =
+      showGroups && option.group !== undefined && option.group !== previousGroup
+        ? option.group
+        : undefined;
+    return (
+      <>
+        {groupHeader !== undefined ? (
+          <p
+            className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
+          >
+            {groupHeader}
+          </p>
+        ) : null}
+        {density === 'compact' && !asSheet ? (
+          <CompactOptionRow
+            id={`${listId}-option-${index}`}
+            index={index}
+            option={option}
+            active={active}
+            selected={isSelected}
+            multiple={isMultiple}
+            ariaSetSize={isVirtualized ? rowCount : undefined}
+            ariaPosInSet={isVirtualized ? index + 1 : undefined}
+            onCommit={() => { commit(option); }}
+            onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+          />
+        ) : (
+        <button
+          type="button"
+          id={`${listId}-option-${index}`}
+          data-index={index}
+          role="option"
+          data-option-value={option.value}
+          {...option.dataAttrs}
+          aria-selected={isSelected}
+          aria-disabled={option.disabled ? true : undefined}
+          aria-setsize={isVirtualized ? rowCount : undefined}
+          aria-posinset={isVirtualized ? index + 1 : undefined}
+          disabled={option.disabled}
+          title={option.title ?? option.label}
+          onClick={() => { commit(option); }}
+          onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+          className={`flex w-full flex-col justify-center gap-0.5 rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 disabled:cursor-not-allowed ${rowPadClass} ${
+            isSelected && !isMultiple
+              ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
+              : isSelected && isMultiple
+                ? 'bg-ink/[0.05]'
+                : active ? 'bg-ink/[0.04]' : ''
+          }`}
+        >
+          <span className="flex w-full min-w-0 items-center gap-2">
+            {isMultiple ? (
+              <span
+                aria-hidden
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                  isSelected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+                }`}
+              >
+                <Icon name="check" size={12} />
+              </span>
+            ) : null}
+            <span
+              className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
+                isSelected ? 'font-medium' : ''
+              }`}
+            >
+              {option.label}
+            </span>
+            {!isMultiple && isSelected ? (
+              <Icon name="check" size={12} className="ml-auto shrink-0 text-ink-soft" />
+            ) : null}
+          </span>
+          {option.description !== undefined ? (
+            <span className={`line-clamp-2 text-[12px] leading-snug text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
+              {option.description}
+            </span>
+          ) : null}
+          {option.hint !== undefined ? (
+            <span className={`truncate font-mono text-[11px] text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
+              {option.hint}
+            </span>
+          ) : null}
+          {option.badges !== undefined && option.badges.length > 0 ? (
+            <span className={`mt-0.5 flex flex-wrap items-center gap-1 ${isMultiple ? 'pl-6' : ''}`}>
+              {option.badges.map((badge) => (
+                <span
+                  key={badge.label}
+                  className={`rounded-[4px] py-px text-[11px] leading-4 ${
+                    badge.accent === true
+                      ? 'font-medium text-accent-ink'
+                      : badge.tone === 'caution'
+                        ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
+                        : 'bg-ink/[0.05] px-1.5 text-ink-faint'
+                  }`}
+                >
+                  {badge.label}
+                </span>
+              ))}
+            </span>
+          ) : null}
+        </button>
+        )}
+      </>
+    );
+  };
 
+  const renderPanel = () => {
     return (
       <>
         {panelHeader}
@@ -562,7 +742,6 @@ export function SearchableSelect(props: SearchableSelectProps) {
             onChange={(event) => {
               setQuery(event.target.value);
               setActiveIndex(0);
-              setWindowStart(0);
               if (listRef.current !== null) listRef.current.scrollTop = 0;
             }}
             onKeyDown={onNavKeyDown}
@@ -581,7 +760,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
         )}
         {hideFilter === true && options.length === 0 && (panelHeader !== undefined || panelFooter !== undefined) ? null : (
         <div
-          ref={listRef}
+          ref={setListNode}
           id={listId}
           role="listbox"
           tabIndex={showFilter ? undefined : -1}
@@ -590,7 +769,6 @@ export function SearchableSelect(props: SearchableSelectProps) {
           aria-multiselectable={isMultiple ? true : undefined}
           aria-activedescendant={!showFilter && rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
           onKeyDown={showFilter ? undefined : onNavKeyDown}
-          onScroll={isVirtualized ? onListScroll : undefined}
           className={`${SELECT_SCROLL_LIST_CLASS} p-1.5 outline-none ${
             isPortaled ? '' : 'max-h-[min(340px,55vh)]'
           }`}
@@ -603,122 +781,41 @@ export function SearchableSelect(props: SearchableSelectProps) {
             </p>
           ) : (
             <>
-              {topSpacerHeight > 0 ? (
-                <div aria-hidden data-virtual-spacer="top" style={{ height: topSpacerHeight }} />
-              ) : null}
-              {slicedOptions.map((option, offset) => {
-                const index = sliceStart + offset;
-                const active = index === activeIndex;
-                const isSelected = isValueSelected(option.value);
-                const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
-                const groupHeader =
-                  showGroups && option.group !== undefined && option.group !== previousGroup
-                    ? option.group
-                    : undefined;
-                return (
-                  <div key={`${option.value}-${index}`} role="presentation">
-                    {groupHeader !== undefined ? (
-                      <p
-                        className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
+              {isVirtualized ? (
+                <div
+                  role="presentation"
+                  data-virtual-list
+                  style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
+                >
+                  {virtualizer.getVirtualItems().map((row) => {
+                    const option = visible[row.index];
+                    if (option === undefined) return null;
+                    return (
+                      <div
+                        key={row.key}
+                        role="presentation"
+                        data-virtual-index={row.index}
+                        ref={virtualizer.measureElement}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${row.start}px)`,
+                        }}
                       >
-                        {groupHeader}
-                      </p>
-                    ) : null}
-                    {density === 'compact' && !asSheet ? (
-                      <CompactOptionRow
-                        id={`${listId}-option-${index}`}
-                        index={index}
-                        option={option}
-                        active={active}
-                        selected={isSelected}
-                        multiple={isMultiple}
-                        ariaSetSize={isVirtualized ? rowCount : undefined}
-                        ariaPosInSet={isVirtualized ? index + 1 : undefined}
-                        onCommit={() => { commit(option); }}
-                        onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                      />
-                    ) : (
-                    <button
-                      type="button"
-                      id={`${listId}-option-${index}`}
-                      data-index={index}
-                      role="option"
-                      data-option-value={option.value}
-                      {...option.dataAttrs}
-                      aria-selected={isSelected}
-                      aria-disabled={option.disabled ? true : undefined}
-                      aria-setsize={isVirtualized ? rowCount : undefined}
-                      aria-posinset={isVirtualized ? index + 1 : undefined}
-                      disabled={option.disabled}
-                      title={option.title ?? option.label}
-                      onClick={() => { commit(option); }}
-                      onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                      className={`flex w-full flex-col justify-center gap-0.5 rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 disabled:cursor-not-allowed ${rowPadClass} ${
-                        isSelected && !isMultiple
-                          ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
-                          : isSelected && isMultiple
-                            ? 'bg-ink/[0.05]'
-                            : active ? 'bg-ink/[0.04]' : ''
-                      }`}
-                    >
-                      <span className="flex w-full min-w-0 items-center gap-2">
-                        {isMultiple ? (
-                          <span
-                            aria-hidden
-                            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
-                              isSelected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
-                            }`}
-                          >
-                            <Icon name="check" size={12} />
-                          </span>
-                        ) : null}
-                        <span
-                          className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
-                            isSelected ? 'font-medium' : ''
-                          }`}
-                        >
-                          {option.label}
-                        </span>
-                        {!isMultiple && isSelected ? (
-                          <Icon name="check" size={12} className="ml-auto shrink-0 text-ink-soft" />
-                        ) : null}
-                      </span>
-                      {option.description !== undefined ? (
-                        <span className={`line-clamp-2 text-[12px] leading-snug text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
-                          {option.description}
-                        </span>
-                      ) : null}
-                      {option.hint !== undefined ? (
-                        <span className={`truncate font-mono text-[11px] text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
-                          {option.hint}
-                        </span>
-                      ) : null}
-                      {option.badges !== undefined && option.badges.length > 0 ? (
-                        <span className={`mt-0.5 flex flex-wrap items-center gap-1 ${isMultiple ? 'pl-6' : ''}`}>
-                          {option.badges.map((badge) => (
-                            <span
-                              key={badge.label}
-                              className={`rounded-[4px] py-px text-[11px] leading-4 ${
-                                badge.accent === true
-                                  ? 'font-medium text-accent-ink'
-                                  : badge.tone === 'caution'
-                                    ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
-                                    : 'bg-ink/[0.05] px-1.5 text-ink-faint'
-                              }`}
-                            >
-                              {badge.label}
-                            </span>
-                          ))}
-                        </span>
-                      ) : null}
-                    </button>
-                    )}
+                        {renderOptionEntry(option, row.index)}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                visible.map((option, index) => (
+                  <div key={`${option.value}-${index}`} role="presentation">
+                    {renderOptionEntry(option, index)}
                   </div>
-                );
-              })}
-              {bottomSpacerHeight > 0 ? (
-                <div aria-hidden data-virtual-spacer="bottom" style={{ height: bottomSpacerHeight }} />
-              ) : null}
+                ))
+              )}
               {customRow !== undefined ? (
                 <button
                   type="button"

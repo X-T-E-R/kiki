@@ -1811,3 +1811,56 @@ describe('Connections list', () => {
       expect(probeOriginalOAuth).not.toHaveBeenCalled();
     });
   });
+
+  describe('10,000-model provider catalog scale', () => {
+    it('virtualizes a 10,000-model provider view to <= 40 mounted rows and supports instant filtering', async () => {
+      const tenKModels: ModelCatalogItem[] = Array.from({ length: 10_000 }, (_, index) => ({
+        id: `bulk/model-${index}`,
+        provider_id: 'bulk',
+        remote_id: `model-${index}`,
+        display_name: `Bulk Model ${index}`,
+        max_context_size: 262144,
+        capabilities: ['chat', 'tool_use'],
+        support_efforts: ['low', 'high'],
+      }));
+      const bulkProvider: ProviderCatalogItem = {
+        id: 'bulk',
+        type: 'openai',
+        base_url: 'https://bulk.example.test/v1',
+        default_model: 'bulk/model-0',
+        has_api_key: true,
+        status: 'connected',
+        models: ['bulk/model-0'],
+      };
+      listProviders.mockResolvedValue({ items: [bulkProvider] });
+      listModels.mockResolvedValue({ items: tenKModels });
+      listOAuthMethods.mockResolvedValue([]);
+      getProviderEntity.mockResolvedValue({ id: 'bulk', revision: 'rev-1' });
+      getCatalogProvider.mockResolvedValue({ id: 'bulk', models: [] });
+
+      const { container } = await renderSurface(<ConnectionsTab />);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="bulk"]')!;
+      expect(row).not.toBeNull();
+
+      await act(async () => { row.open = true; });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      const modelListRoot = row.querySelector<HTMLElement>('[data-provider-models="bulk"]')!;
+      expect(modelListRoot).not.toBeNull();
+      const mountedRows = modelListRoot.querySelectorAll('[role="listitem"]');
+      expect(mountedRows.length).toBeGreaterThan(0);
+      expect(mountedRows.length).toBeLessThanOrEqual(40);
+
+      const search = modelListRoot.querySelector<HTMLInputElement>('[data-provider-models-search="bulk"]')!;
+      expect(search).not.toBeNull();
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      await act(async () => {
+        setter.call(search, 'model-9999');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const filteredRows = modelListRoot.querySelectorAll('[role="listitem"]');
+      expect(filteredRows).toHaveLength(1);
+      expect(filteredRows[0]?.textContent).toContain('Bulk Model 9999');
+    });
+  });

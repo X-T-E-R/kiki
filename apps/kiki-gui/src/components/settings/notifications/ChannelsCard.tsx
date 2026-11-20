@@ -179,7 +179,6 @@ export function ChannelsCard({ adding, setAdding }: { adding: boolean; setAdding
             ) : (
               <div data-notify-channels data-im-accounts>
                 <ListBody items={view.visible} keyOf={keyOf} density="comfortable" label={t('st.channels.title')}
-                  virtualizeAfter={Number.POSITIVE_INFINITY}
                   renderRow={(entry) => entry.kind === 'im' && im !== undefined ? (
                     <ImAccountRow account={entry.account} data={im} catalog={catalog.data}
                       setupPlatform={setupCatalog.data?.platforms.find((item) => item.provider_kind === entry.account.provider_kind)}

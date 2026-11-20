@@ -6,12 +6,14 @@
  * chips exist, and how to group. Nothing here renders.
  */
 
-import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useDeferredValue, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+
+import { DEFAULT_PICKER_SCALE_CONFIG } from '../../../lib/subagentScaleConfig';
 
 export type ListDensity = 'comfortable' | 'compact';
 
 /** Above this many rows a list windows its body; below it every row stays mounted. */
-export const VIRTUALIZE_AFTER = 60;
+export const VIRTUALIZE_AFTER = DEFAULT_PICKER_SCALE_CONFIG.catalogVirtualizeThreshold;
 
 /**
  * The list-tools threshold (settings conventions §3, design rule 2). A list
@@ -52,8 +54,14 @@ export function listToolsFor<T>(
   // every row is an API: only a chip that splits the list is drawn.
   const filterIds = long
     ? filters.filter((spec) => {
-      const matched = items.filter(spec.test).length;
-      return matched > 0 && matched < items.length;
+      let hasMatch = false;
+      let hasMiss = false;
+      for (let i = 0; i < items.length; i += 1) {
+        if (spec.test(items[i]!)) hasMatch = true;
+        else hasMiss = true;
+        if (hasMatch && hasMiss) return true;
+      }
+      return false;
     }).map((spec) => spec.id)
     : [];
   return {
@@ -235,10 +243,57 @@ export function useListView<T>({
   const density = tools.search ? stored?.density ?? defaultDensity : defaultDensity;
   const folded = useMemo(() => new Set(stored?.folded ?? []), [stored?.folded]);
 
-  const matched = useMemo(() => items.filter((item) => matchesQuery(textOf(item), query)), [items, textOf, query]);
+  const deferredQuery = useDeferredValue(query);
+  const haystackCacheRef = useRef<{
+    readonly items: readonly T[];
+    readonly textOf: (item: T) => readonly (string | undefined)[];
+    readonly haystacks: readonly string[];
+  } | null>(null);
+
+  const matched = useMemo(() => {
+    const needles = deferredQuery.trim().toLowerCase().split(/\s+/).filter((word) => word !== '');
+    if (needles.length === 0) return items;
+    let cache = haystackCacheRef.current;
+    if (cache === null || cache.items !== items || cache.textOf !== textOf) {
+      const haystacks = new Array<string>(items.length);
+      for (let i = 0; i < items.length; i += 1) {
+        const parts = textOf(items[i]!);
+        let joined = '';
+        for (let j = 0; j < parts.length; j += 1) {
+          const part = parts[j];
+          if (part !== undefined && part !== '') {
+            joined = joined === '' ? part : `${joined}\n${part}`;
+          }
+        }
+        haystacks[i] = joined.toLowerCase();
+      }
+      cache = { items, textOf, haystacks };
+      haystackCacheRef.current = cache;
+    }
+    const { haystacks } = cache;
+    const out: T[] = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const text = haystacks[i]!;
+      let ok = true;
+      for (let k = 0; k < needles.length; k += 1) {
+        if (!text.includes(needles[k]!)) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) out.push(items[i]!);
+    }
+    return out;
+  }, [items, textOf, deferredQuery]);
   const counts = useMemo(() => {
     const out: Record<string, number> = { all: matched.length };
-    for (const spec of filters) out[spec.id] = matched.filter(spec.test).length;
+    for (const spec of filters) {
+      let count = 0;
+      for (let i = 0; i < matched.length; i += 1) {
+        if (spec.test(matched[i]!)) count += 1;
+      }
+      out[spec.id] = count;
+    }
     return out;
   }, [matched, filters]);
   const visible = useMemo(() => {
@@ -249,11 +304,11 @@ export function useListView<T>({
   }, [matched, filters, filter, sorts, sort]);
 
   // Selection never outlives its rows: a removed or filtered-away item drops out.
-  const visibleKeys = useMemo(() => new Set(visible.map(keyOf)), [visible, keyOf]);
-  const liveSelected = useMemo(
-    () => new Set([...selected].filter((key) => visibleKeys.has(key))),
-    [selected, visibleKeys],
-  );
+  const liveSelected = useMemo(() => {
+    if (selected.size === 0) return selected;
+    const visibleKeys = new Set(visible.map(keyOf));
+    return new Set([...selected].filter((key) => visibleKeys.has(key)));
+  }, [selected, visible, keyOf]);
 
   const toggleFold = useCallback((groupKey: string) => {
     const next = new Set(folded);

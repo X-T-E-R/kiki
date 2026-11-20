@@ -298,3 +298,56 @@ describe('quick switcher memory advisor command', () => {
     }
   });
 });
+
+describe('quick switcher 10,000-session scale', () => {
+  it('opens and filters 10,000 sessions with bounded DOM rows and instant top-K matching', async () => {
+    client.searchMessages.mockResolvedValue(readyPage());
+    const tenKSessions: Session[] = Array.from({ length: 10_000 }, (_, index) => ({
+      ...session(`session-${index}`, `Workspace thread ${index}`),
+      updated_at: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+    }));
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const openStart = performance.now();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <I18nProvider>
+              <LocationProbe />
+              <QuickSwitcher sessions={tenKSessions} onClose={() => {}} />
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    const openMs = performance.now() - openStart;
+    expect(rows()).toBeGreaterThan(0);
+    expect(rows()).toBeLessThanOrEqual(40);
+    expect(document.body.textContent).toContain('Workspace thread 9999');
+    expect(openMs).toBeLessThan(1500);
+
+    const input = document.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    const filterStart = performance.now();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, 'thread 4242');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const filterMs = performance.now() - filterStart;
+    expect(rows()).toBeGreaterThan(0);
+    expect(rows()).toBeLessThanOrEqual(40);
+    expect(document.body.textContent).toContain('Workspace thread 4242');
+    expect(filterMs).toBeLessThan(500);
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('[data-test-location]')?.textContent).toBe('/s/session-4242');
+  });
+});

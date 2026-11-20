@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -12,6 +13,7 @@ import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, agentProfileCatalogRefetchInterval, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { isImeKeyEvent } from '../../lib/shortcuts';
+import { getPickerScaleConfig } from '../../lib/subagentScaleConfig';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { FeedbackLine, InlineError, type Feedback } from '../controls';
@@ -397,10 +399,100 @@ export function UnifiedAgentManager() {
     </div>;
 
   // The rail: the same two groups as the table, names only.
-  const railGroups = (['main', 'subagent'] as const).map((kind) => ({
+  const railGroups = useMemo(() => (['main', 'subagent'] as const).map((kind) => ({
     kind, rows: rows.filter((row) => (kind === 'main') === row.profile.main),
-  })).filter((group) => group.rows.length > 0);
-  const rail = <div data-agent-rail>
+  })).filter((group) => group.rows.length > 0), [rows]);
+  const pickerScale = getPickerScaleConfig();
+  const [railScrollEl, setRailScrollEl] = useState<HTMLDivElement | null>(null);
+  const setRailScrollNode = useCallback((node: HTMLDivElement | null) => { setRailScrollEl(node); }, []);
+  const flatRail = useMemo(() => {
+    const out: (
+      | { readonly kind: 'group'; readonly key: string; readonly label: string; readonly count: number }
+      | { readonly kind: 'row'; readonly key: string; readonly row: TeamRow }
+    )[] = [];
+    for (const group of railGroups) {
+      out.push({
+        kind: 'group',
+        key: `g:${group.kind}`,
+        label: t(group.kind === 'main' ? 'st.profiles.groupMain' : 'st.profiles.groupSubagents'),
+        count: group.rows.length,
+      });
+      for (const row of group.rows) {
+        out.push({ kind: 'row', key: `r:${row.key}`, row });
+      }
+    }
+    return out;
+  }, [railGroups, t]);
+  const virtualizeRail = editing !== undefined && rows.length > pickerScale.catalogVirtualizeThreshold;
+  const railVirtualizer = useVirtualizer({
+    count: virtualizeRail ? flatRail.length : 0,
+    getScrollElement: () => railScrollEl,
+    estimateSize: (index) => (flatRail[index]?.kind === 'group' ? 28 : 34),
+    getItemKey: (index) => flatRail[index]?.key ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 240, height: 560 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 34;
+    },
+    useFlushSync: false,
+  });
+  const rail = virtualizeRail ? (
+    <div ref={setRailScrollNode} data-agent-rail className="max-h-[calc(100dvh-10rem)] overflow-y-auto">
+      <div style={{ height: railVirtualizer.getTotalSize(), position: 'relative' }}>
+        {railVirtualizer.getVirtualItems().map((vRow) => {
+          const entry = flatRail[vRow.index];
+          if (entry === undefined) return null;
+          return (
+            <div
+              key={vRow.key}
+              data-index={vRow.index}
+              ref={railVirtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vRow.start}px)`,
+              }}
+            >
+              {entry.kind === 'group' ? (
+                <p className="flex items-baseline justify-between gap-2 px-2 pt-2 pb-1 text-[11px] font-medium text-ink-faint">
+                  <span className="truncate">{entry.label}</span>
+                  <span className="shrink-0 tabular-nums">{entry.count}</span>
+                </p>
+              ) : (
+                <DetailRailItem
+                  itemKey={entry.row.profile.name}
+                  label={displayName(entry.row.profile, locale)}
+                  current={entry.row === editing}
+                  muted={entry.row.profile.disabled || entry.row.diagnostics.some((item) => item.kind === 'shadowedBy')}
+                  trailing={entry.row.diagnostics.some((item) => diagnosticTone(item) === 'warning')
+                    ? <Icon name="warning" size={12} className="shrink-0 text-amber-ink" /> : undefined}
+                  onSelect={() => openRow(entry.row)}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ) : <div data-agent-rail>
     {railGroups.map((group) => <DetailRailGroup key={group.kind} count={group.rows.length}
       label={t(group.kind === 'main' ? 'st.profiles.groupMain' : 'st.profiles.groupSubagents')}>
       {group.rows.map((row) => <DetailRailItem key={row.key} itemKey={row.profile.name}

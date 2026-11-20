@@ -88,3 +88,81 @@ export function configureSubagentScale(patch: Partial<SubagentScaleConfig> | nul
   runtimeOverrides = patch === null ? {} : { ...runtimeOverrides, ...patch };
   return getSubagentScaleConfig();
 }
+
+/**
+ * Centralized, configurable scale budgets for pickers, popovers, command/mention
+ * completion menus, and settings catalogs (`10,000`-model / `1,000+`-skill /
+ * `10,000`-session safe).
+ */
+export interface PickerScaleConfig {
+  /** Option/row count above which SearchableSelect and popover lists switch to virtualized scrolling. */
+  readonly selectVirtualizeThreshold: number;
+  /** Row count above which settings catalogs / rails switch to virtualized scrolling. */
+  readonly catalogVirtualizeThreshold: number;
+  /** Overscan rows rendered above and below the visible viewport in picker virtualizers. */
+  readonly virtualOverscan: number;
+  /** Cap for top-K quick-filter buffers before full rendering / virtualizing. */
+  readonly suggestionTopK: number;
+  /** Candidate count above which switchers and menus use pre-indexed top-K filtering. */
+  readonly fastFilterThreshold: number;
+}
+
+export const DEFAULT_PICKER_SCALE_CONFIG: PickerScaleConfig = {
+  selectVirtualizeThreshold: 40,
+  catalogVirtualizeThreshold: 40,
+  virtualOverscan: 6,
+  suggestionTopK: 40,
+  fastFilterThreshold: 120,
+};
+
+function resolveBasePickerConfig(): PickerScaleConfig {
+  return {
+    selectVirtualizeThreshold: readPositiveIntEnv(
+      'VITE_KIKI_SELECT_VIRTUALIZE_THRESHOLD',
+      DEFAULT_PICKER_SCALE_CONFIG.selectVirtualizeThreshold,
+    ),
+    catalogVirtualizeThreshold: readPositiveIntEnv(
+      'VITE_KIKI_CATALOG_VIRTUALIZE_THRESHOLD',
+      DEFAULT_PICKER_SCALE_CONFIG.catalogVirtualizeThreshold,
+    ),
+    virtualOverscan: readPositiveIntEnv(
+      'VITE_KIKI_PICKER_VIRTUAL_OVERSCAN',
+      DEFAULT_PICKER_SCALE_CONFIG.virtualOverscan,
+      1,
+      64,
+    ),
+    suggestionTopK: readPositiveIntEnv(
+      'VITE_KIKI_PICKER_SUGGESTION_TOP_K',
+      DEFAULT_PICKER_SCALE_CONFIG.suggestionTopK,
+    ),
+    fastFilterThreshold: readPositiveIntEnv(
+      'VITE_KIKI_PICKER_FAST_FILTER_THRESHOLD',
+      DEFAULT_PICKER_SCALE_CONFIG.fastFilterThreshold,
+    ),
+  };
+}
+
+let pickerRuntimeOverrides: Partial<PickerScaleConfig> = {};
+
+/**
+ * Current resolved picker & catalog scale configuration (`DEFAULT` <- `VITE_KIKI_*` <- runtime override).
+ */
+export function getPickerScaleConfig(): PickerScaleConfig {
+  const base = resolveBasePickerConfig();
+  return {
+    selectVirtualizeThreshold: pickerRuntimeOverrides.selectVirtualizeThreshold ?? base.selectVirtualizeThreshold,
+    catalogVirtualizeThreshold: pickerRuntimeOverrides.catalogVirtualizeThreshold ?? base.catalogVirtualizeThreshold,
+    virtualOverscan: pickerRuntimeOverrides.virtualOverscan ?? base.virtualOverscan,
+    suggestionTopK: pickerRuntimeOverrides.suggestionTopK ?? base.suggestionTopK,
+    fastFilterThreshold: pickerRuntimeOverrides.fastFilterThreshold ?? base.fastFilterThreshold,
+  };
+}
+
+/**
+ * Apply runtime overrides for picker/catalog virtualization thresholds. Passing
+ * `null` resets all overrides back to env/default values.
+ */
+export function configurePickerScale(patch: Partial<PickerScaleConfig> | null): PickerScaleConfig {
+  pickerRuntimeOverrides = patch === null ? {} : { ...pickerRuntimeOverrides, ...patch };
+  return getPickerScaleConfig();
+}

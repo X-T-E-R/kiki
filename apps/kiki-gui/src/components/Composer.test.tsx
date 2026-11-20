@@ -5452,3 +5452,88 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
     }
   });
 });
+
+describe('Composer 10,000-model & 1,000+ skill virtualization scale', () => {
+  it('opens a 10,000-model composer picker with <= 40 mounted options and filters instantly', async () => {
+    const tenKModels = Array.from({ length: 10_000 }, (_, index) => ({
+      id: `bulk/model-${index}`,
+      provider_id: `provider-${index % 20}`,
+      remote_id: `model-${index}`,
+      display_name: `Model ${index}`,
+      max_context_size: 262144,
+      capabilities: ['chat', 'tool_use', 'image_in'],
+      support_efforts: ['low', 'high'],
+    }));
+    listModels.mockResolvedValue({ items: tenKModels });
+    const onChangeModel = vi.fn();
+
+    const { container } = await renderComposer({
+      model: 'bulk/model-0',
+      serverDefaultModel: 'bulk/model-0',
+      onChangeModel,
+    });
+    await settle();
+
+    const modelTrigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(modelTrigger).not.toBeNull();
+    await act(async () => { modelTrigger.click(); });
+
+    const panel = container.querySelector<HTMLElement>('[data-select-panel]')!;
+    expect(panel).not.toBeNull();
+    const mountedOptions = panel.querySelectorAll('[role="option"]');
+    expect(mountedOptions.length).toBeGreaterThan(0);
+    expect(mountedOptions.length).toBeLessThanOrEqual(40);
+
+    const search = panel.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(search, 'model-9999');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const matched = panel.querySelectorAll('[role="option"]');
+    expect(matched).toHaveLength(1);
+    expect(matched[0]?.getAttribute('data-option-value')).toBe('bulk/model-9999');
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(onChangeModel).toHaveBeenCalledWith('bulk/model-9999');
+  });
+
+  it('virtualizes 1,200 skills in the / slash menu and filters cleanly', async () => {
+    const skills = Array.from({ length: 1200 }, (_, index) => ({
+      name: `skill-${index}`,
+      description: `Automated workflow skill number ${index}`,
+      path: `/skills/skill-${index}/SKILL.md`,
+      source: 'user' as const,
+      user_invocable: true,
+    }));
+    listSessionSkills.mockResolvedValue({ skills });
+
+    const { container } = await renderComposer({
+      sessionId: 'session-1k-skills',
+      value: '',
+    });
+    await settleMany(4);
+
+    const input = composerInput(container);
+    await act(async () => {
+      setComposerInputValue(input, '/');
+    });
+    await settle();
+
+    const menu = container.querySelector<HTMLElement>('[data-composer-menu]')!;
+    expect(menu).not.toBeNull();
+    const mountedRows = menu.querySelectorAll('[role="option"]');
+    expect(mountedRows.length).toBeGreaterThan(0);
+    expect(mountedRows.length).toBeLessThanOrEqual(40);
+    expect(Number(mountedRows[0]?.getAttribute('aria-setsize'))).toBeGreaterThanOrEqual(1200);
+
+    await act(async () => {
+      setComposerInputValue(input, '/skill-1199');
+    });
+    await settle();
+    const narrowedRows = menu.querySelectorAll('[role="option"]');
+    expect(narrowedRows).toHaveLength(1);
+    expect(narrowedRows[0]?.textContent).toContain('/skill-1199');
+  });
+});

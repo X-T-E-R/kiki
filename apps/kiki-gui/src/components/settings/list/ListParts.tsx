@@ -25,9 +25,10 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { useI18n } from '../../../i18n';
+import { getPickerScaleConfig } from '../../../lib/subagentScaleConfig';
 import { DisclosureChevron, Icon } from '../../icons';
 import { TEXT_BUTTON } from '../SettingsPrimitives';
-import { VIRTUALIZE_AFTER, type ListDensity, type ListFilterSpec, type ListSortSpec, type ListView } from './listState';
+import { type ListDensity, type ListFilterSpec, type ListSortSpec, type ListView } from './listState';
 
 const CHIP = 'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9';
 const CHIP_ON = 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]';
@@ -215,7 +216,7 @@ export function ListGroup({ groupKey, label, count, total, folded, onToggle, tra
  * the settings pane's own scroller. Rows are fixed height per density so the
  * estimate is exact and scrolling never jumps.
  */
-export function ListBody<T>({ items, keyOf, density, renderRow, label, virtualizeAfter = VIRTUALIZE_AFTER }: {
+export function ListBody<T>({ items, keyOf, density, renderRow, label, virtualizeAfter }: {
   items: readonly T[];
   keyOf: (item: T) => string;
   density: ListDensity;
@@ -223,7 +224,8 @@ export function ListBody<T>({ items, keyOf, density, renderRow, label, virtualiz
   label: string;
   virtualizeAfter?: number;
 }) {
-  const windowed = items.length > virtualizeAfter;
+  const threshold = virtualizeAfter ?? getPickerScaleConfig().catalogVirtualizeThreshold;
+  const windowed = items.length > threshold;
   return (
     <div role="list" aria-label={label} data-list-body data-list-density={density} data-list-windowed={windowed ? '' : undefined}
       className="overflow-hidden rounded-lg border border-hairline bg-panel">
@@ -278,14 +280,34 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
     return () => { observer.disconnect(); };
   }, [items.length, density]);
   const rowHeight = LIST_ROW_HEIGHT[density];
+  const overscan = getPickerScaleConfig().virtualOverscan;
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scroller,
     estimateSize: () => rowHeight,
     getItemKey: (index) => keyOf(items[index]!),
-    overscan: 10,
+    overscan,
     scrollMargin: offset,
-    initialRect: { width: 720, height: 900 },
+    initialRect: { width: 720, height: 640 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : rowHeight;
+    },
     useFlushSync: false,
   });
   return (
