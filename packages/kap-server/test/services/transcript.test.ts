@@ -328,7 +328,24 @@ describe('TranscriptService projection', () => {
     const verify = async (path: string) => (service as unknown as {
       verifyWireReceipt(path: string, info: unknown, signal: AbortSignal): Promise<boolean>;
     }).verifyWireReceipt(path, await fsPromises.stat(path), new AbortController().signal);
-    const streams = vi.spyOn(FileStorageService.prototype, 'readStream');
+    const observedRanges: Array<{ start: number; end: number }> = [];
+    const originalOpenLogicalWire = logicalWire.openLogicalWire;
+    const openSpy = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (wirePath, signal) => {
+      const opened = await originalOpenLogicalWire(wirePath, signal);
+      if (opened === undefined) return undefined;
+      return {
+        size: opened.size,
+        readAt: (position, length) => {
+          observedRanges.push({ start: position, end: position + length - 1 });
+          return opened.readAt(position, length);
+        },
+        chunks: () => {
+          observedRanges.push({ start: 0, end: opened.size - 1 });
+          return opened.chunks();
+        },
+        close: () => opened.close(),
+      };
+    });
     try {
       const path = join(home, 'wire.jsonl');
       for (const length of [0, 1, 200_000]) {
@@ -342,10 +359,10 @@ describe('TranscriptService projection', () => {
         await writeFixtureFile(join(home, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
           format, epoch: `example-${length}`, trusted: true, state: 'sealed', wire,
         }));
-        streams.mockClear();
+        observedRanges.length = 0;
         expect(await verify(path)).toBe(length > 0);
         if (length === 0) continue;
-        expect(streams.mock.calls.filter(([, key]) => key === 'wire.jsonl').map(([, , range]) => range))
+        expect(observedRanges)
           .toEqual([{ start: format === 1 ? 0 : bytes.byteLength - tail.byteLength, end: bytes.byteLength - 1 }]);
         await writeFixtureFile(path, bytes.subarray(0, bytes.byteLength - 2));
         expect(await verify(path)).toBe(false);
@@ -357,7 +374,7 @@ describe('TranscriptService projection', () => {
         expect(await verify(path)).toBe(false);
       }
     } finally {
-      streams.mockRestore(); service.dispose();
+      openSpy.mockRestore(); service.dispose();
       await rm(home, { recursive: true, force: true });
     }
   });
@@ -8215,3 +8232,72 @@ it('bounds retainedColdTurns globally to 8 MiB and within the 32 MiB combined co
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('preserves a long blocked-hook assistant message (>512 bytes before origin) on a trimmed cold first-screen turn', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-transcript-long-hook-'));
+  const wirePath = join(home, 'sessions', 'ws', 's-hook', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const longReason = `policy denied: ${'X'.repeat(1200)} tail-marker`;
+  const bigLoopPayload = 'L'.repeat(150_000);
+  const records: object[] = [
+    { type: 'metadata', protocol_version: '1.1', time: 1_000 },
+    { type: 'turn.prompt', turnId: 1, promptId: 'p-1', input: [{ type: 'text', text: 'first turn' }], origin: { kind: 'user' }, time: 1_100 },
+    { type: 'prompt.enqueued', promptId: 'p-blocked', message: [{ type: 'text', text: 'blocked follow-up' }], origin: { kind: 'user' }, mode: 'queue', queueIndex: 0, time: 1_150 },
+    { type: 'prompt.completed', promptId: 'p-blocked', reason: 'blocked', time: 1_160 },
+    {
+      type: 'context.append_message',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `<hook_result event="UserPromptSubmit">${longReason}</hook_result>` }],
+        toolCalls: [],
+        origin: { kind: 'hook_result', event: 'UserPromptSubmit', blocked: true },
+      },
+      time: 1_170,
+    },
+  ];
+  for (let i = 1; i <= 14; i += 1) {
+    records.push({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 1, step: i, uuid: `step-${i}` },
+      time: 2_000 + i * 10,
+    });
+    records.push({
+      type: 'context.append_loop_event',
+      event: { type: 'tool.result', turnId: 1, stepUuid: `step-${i}`, uuid: `tr-${i}`, toolCallId: `call-${i}`, name: 'Read', output: bigLoopPayload, isError: false },
+      time: 2_000 + i * 10 + 5,
+    });
+  }
+  records.push({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 5_000 });
+  await writeFixtureFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const core = {
+    accessor: {
+      get: (token: unknown) => {
+        if (token === ISessionIndex) {
+          return { get: async (id: string) => id === 's-hook' ? { id, workspaceId: 'ws', updatedAt: 1 } : undefined };
+        }
+        if (token === ISessionManager) return {};
+        return undefined;
+      },
+    },
+  } as unknown as Scope;
+  const service = new TranscriptService({ homeDir: home, core });
+  try {
+    const snapshot = await service.readColdPageSnapshot(
+      's-hook',
+      'main',
+      (value) => value,
+      new AbortController().signal,
+      false,
+      undefined,
+      false,
+      true,
+      true,
+    );
+    const blocked = snapshot?.prompts.find((entry) => entry.promptId === 'p-blocked');
+    expect(blocked?.status).toBe('blocked');
+    expect(blocked?.error).toBe(longReason);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 30_000);

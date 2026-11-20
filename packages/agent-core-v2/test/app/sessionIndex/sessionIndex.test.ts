@@ -19,7 +19,7 @@ import { TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { IHostFsWatchService, type HostFsChange, type HostFsWatchOptions } from '#/os/interface/hostFsWatch';
-import { SessionIndexBuildingError } from '#/app/sessionIndex/errors';
+import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from '#/app/sessionIndex/errors';
 import {
   ISessionIndex,
   ISessionIndexMirror,
@@ -5283,6 +5283,41 @@ describe('FileSessionIndex (read model)', () => {
     } finally {
       batchSpy.mockRestore();
       projectSpy.mockRestore();
+    }
+  });
+
+  it('preserves 60s SQLITE_FULL cooldown across normal reads of a published generation and automatic full reconcile', async () => {
+    await seedSession('s-full-read', { title: 'published-title', createdAt: 1, updatedAt: 10, archived: false });
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+    store.stopReconcileLoop();
+
+    const internals = store as unknown as {
+      projector: SessionIndexProjector;
+      ensureProjection(force?: boolean): Promise<boolean>;
+      activeResourceExhaustionCooldownUntil(): number;
+    };
+    const sqliteFull = Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
+    const projectSpy = vi.spyOn(internals.projector, 'project').mockRejectedValue(sqliteFull);
+    const planSpy = vi.spyOn(internals.projector, 'planReconcile');
+    try {
+      const projected = await internals.ensureProjection(true);
+      expect(projected).toBe(false);
+      expect(store.status().state).toBe('ready');
+      expect(internals.activeResourceExhaustionCooldownUntil() - Date.now()).toBeGreaterThan(50_000);
+
+      const listed = await store.listRecent({ limit: 10 });
+      expect(listed.items.map((item) => item.id)).toContain('s-full-read');
+      expect((await store.get('s-full-read'))?.title).toBe('published-title');
+      expect(internals.activeResourceExhaustionCooldownUntil() - Date.now()).toBeGreaterThan(50_000);
+
+      await expect(store.reconcileNow({ reuseFingerprints: true })).rejects.toBeInstanceOf(SessionIndexReconcilePendingError);
+      expect(planSpy).not.toHaveBeenCalled();
+    } finally {
+      projectSpy.mockRestore();
+      planSpy.mockRestore();
     }
   });
 });

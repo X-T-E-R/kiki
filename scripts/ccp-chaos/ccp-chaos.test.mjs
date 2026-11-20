@@ -746,12 +746,14 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
       '+);',
       "+vi.mock('../src/externalClients/access', async (importOriginal) => ({ ...(await importOriginal()), open: vi.fn() }));",
       "+vi.mock('../src/lib/plainOverride', async (importOriginal) => ({ ...(await importOriginal()), enabled: false }));",
+      "+vi.mock('../src/lib/mixedSpyOverride', async (importOriginal) => { const actual = await importOriginal(); return { ...actual, ok: vi.spyOn(actual, 'ok'), forged: () => 42 }; });",
+      "+vi.mock('../src/lib/pureSpyWrapper', async (importOriginal) => { const actual = await importOriginal(); return { ...actual, ok: vi.spyOn(actual, 'ok') }; });",
       "+vi.mock('../src/services/history/logicalWireRead', { spy: true });",
       "+vi.mock('@nb-corp/nb-im', async (importOriginal) => ({ ...(await importOriginal()) }));",
       "+vi.mock('node:fs/promises', () => ({}));",
     ].join('\n');
     const ratchet = checkDiffMockRatchet({ diffText: diff });
-    assert.equal(ratchet.mockViolations.length, 6);
+    assert.equal(ratchet.mockViolations.length, 7);
     assert.deepEqual(
       ratchet.mockViolations.map((entry) => entry.target),
       [
@@ -761,6 +763,7 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
         '../src/routes/hostMediaPreview',
         '../src/externalClients/access',
         '../src/lib/plainOverride',
+        '../src/lib/mixedSpyOverride',
       ],
     );
 

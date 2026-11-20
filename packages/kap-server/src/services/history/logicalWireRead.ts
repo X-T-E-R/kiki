@@ -41,7 +41,8 @@ export async function openLogicalWire(wirePath: string, signal?: AbortSignal): P
   let closed = false;
   return {
     size,
-    readAt: (position, length) => readPinnedRange(pinned, position, length, signal, WIRE_READ_CHUNK_BYTES),
+    readAt: (position, length) =>
+      readPinnedRange(pinned, position, length, signal, Math.max(WIRE_READ_CHUNK_BYTES, Math.min(length, 8 << 20))),
     chunks: () => pinned.read({ start: 0, end: size - 1 }, { signal }),
     close() {
       if (closed) return;

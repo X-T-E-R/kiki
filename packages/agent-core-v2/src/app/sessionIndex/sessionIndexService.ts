@@ -263,7 +263,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             this.log.warn('session index watched reconciliation paused after resource exhaustion', { error: String(error) });
           }
           this.watchRetryDelayMs = RECONCILE_RETRY_MAX_MS;
-          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, Date.now() + RECONCILE_RETRY_MAX_MS);
+          const retryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, retryAt);
+          this.resourceExhaustionCooldownUntil = Math.max(this.resourceExhaustionCooldownUntil, retryAt);
           return;
         }
         if (this.watchRetryDelayMs === WATCH_BATCH_MS && !(error instanceof SessionIndexReconcilePendingError)) {
@@ -276,7 +278,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.watchFlight = undefined;
         this.scheduleWatchedReconcile();
       });
-    }, this.watchedSessions.size > 0 ? this.watchRetryDelayMs : Math.max(this.watchRetryDelayMs, this.nextReconcileRetryAt - Date.now()));
+    }, Math.max(
+      this.watchedSessions.size > 0 ? this.watchRetryDelayMs : Math.max(this.watchRetryDelayMs, this.nextReconcileRetryAt - Date.now()),
+      this.activeResourceExhaustionCooldownUntil() - Date.now(),
+    ));
   }
 
   private async reconcileWatched(): Promise<void> {
@@ -519,7 +524,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           continue;
         }
         this.generation = result.generation;
-        this.markReady();
+        this.markReady(true);
         projected = true;
       }
     } catch (error) {
@@ -536,15 +541,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         .catch(() => undefined);
       if (published !== undefined) {
         this.generation = published.seq;
-        if (resourceExhausted) {
-          this.state = 'ready';
-          this.statusReason = undefined;
-          this.recoveryAttempts = 0;
-          this.ensureReconcileTimer();
-          this.emitStatusIfChanged();
-        } else {
-          this.markReady();
-        }
+        this.markReady(false);
         this.log.warn('session index re-projection failed; staying on the previous generation', {
           generation: published.seq,
           error: String(error),
@@ -600,7 +597,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       }
       return this.reconcileFlight;
     }
-    const retryAfterMs = this.nextReconcileRetryAt - Date.now();
+    const retryUntil = options?.reuseFingerprints === true
+      ? Math.max(this.nextReconcileRetryAt, this.activeResourceExhaustionCooldownUntil())
+      : this.nextReconcileRetryAt;
+    const retryAfterMs = retryUntil - Date.now();
     if (retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
     this.reconcileRequest += 1;
     if (wantsForced) {
@@ -666,7 +666,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         });
       } catch (error) {
         if (isResourceExhaustionError(error)) {
-          this.nextReconcileRetryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          const retryAt = Date.now() + RECONCILE_RETRY_MAX_MS;
+          this.nextReconcileRetryAt = Math.max(this.nextReconcileRetryAt, retryAt);
+          this.resourceExhaustionCooldownUntil = Math.max(this.resourceExhaustionCooldownUntil, retryAt);
           this.reconcileRetryDelayMs = RECONCILE_RETRY_MAX_MS;
           this.reconcileRetryTimer.cancel();
         }
@@ -697,6 +699,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.recoveryAttempts = 0;
           this.reuseReconcileFingerprints = true;
           this.nextReconcileRetryAt = 0;
+          this.resourceExhaustionCooldownUntil = 0;
+          this.mirror.clearResourceExhaustionCooldown?.();
           this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
           this.reconcileRetryTimer.cancel();
           return;
@@ -745,6 +749,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       return;
     }
     if (this.state !== 'ready') return;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return;
     try {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (manifest === undefined) {
@@ -758,11 +763,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
   }
 
-  private markReady(): void {
+  private markReady(clearExhaustionCooldown = false): void {
     if (this.recoveryRequired) return;
     this.recoveryAttempts = 0;
-    this.resourceExhaustionCooldownUntil = 0;
-    this.mirror.clearResourceExhaustionCooldown?.();
+    if (clearExhaustionCooldown) {
+      this.resourceExhaustionCooldownUntil = 0;
+      this.mirror.clearResourceExhaustionCooldown?.();
+    }
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
@@ -976,7 +983,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private kickPrepare(requested = false): void {
     if (this.prepareFlight !== undefined || this.state === 'preparing') return;
-    if (Date.now() < this.resourceExhaustionCooldownUntil) return;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return;
     if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
       if (!requested || this.state !== 'degraded' || Date.now() < this.nextPrepareRetryAt) return;
       this.recoveryAttempts = 0;

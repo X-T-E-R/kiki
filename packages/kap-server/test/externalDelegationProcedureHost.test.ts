@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -542,7 +543,45 @@ describe('seat klient delegation HTTP routes', () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-real-delegation-host-'));
     const cwd = join(home, 'workspace');
     await mkdir(cwd);
-    await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n[cron]\nmanualTick = true\n');
+    const stubLlm = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const timer = setTimeout(() => {
+        res.write(`data: ${JSON.stringify({
+          id: 'chatcmpl-stub',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'stub-model',
+          choices: [{ index: 0, delta: { role: 'assistant', content: 'delegation-ok' }, finish_reason: 'stop' }],
+        })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }, 2_000);
+      req.on('close', () => { clearTimeout(timer); });
+    });
+    await new Promise<void>((resolve) => { stubLlm.listen(0, '127.0.0.1', () => resolve()); });
+    const llmPort = (stubLlm.address() as { port: number }).port;
+    await writeFile(
+      join(home, 'config.toml'),
+      [
+        'default_model = "stub/m1"',
+        '[subagent]',
+        'default_model = "stub/m1"',
+        '[search]',
+        'enabled = false',
+        '[cron]',
+        'manualTick = true',
+        '[providers.stub]',
+        'type = "openai"',
+        `base_url = "http://127.0.0.1:${llmPort}/v1"`,
+        'api_key = "test-key"',
+        '[models."stub/m1"]',
+        'provider = "stub"',
+        'model = "stub-model"',
+        'max_context_size = 128000',
+        '',
+      ].join('\n'),
+    );
     const server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -577,12 +616,35 @@ describe('seat klient delegation HTTP routes', () => {
         },
       });
       expect(live.accessor.get(IAgentLifecycleService).get('main')).toBeDefined();
-      await expect(realHost.call(seat, 'status', { dispatchId: 'missing-dispatch' })).rejects.toThrow();
-      await expect(realHost.call(seat, 'send', { taskName: 'missing-task', message: 'hello', idempotencyKey: 'k1' })).rejects.toThrow();
-      await expect(realHost.call(seat, 'wait', { dispatchId: 'missing-dispatch', timeoutMs: 50 })).rejects.toThrow();
-      await expect(realHost.call(seat, 'cancel', { dispatchId: 'missing-dispatch' })).rejects.toThrow();
+
+      const profiles = await realHost.call(seat, 'profiles', {});
+      const targetProfile = profiles.profiles[0]?.profileName;
+      expect(targetProfile).toBeTruthy();
+
+      const dispatched = await realHost.call(seat, 'dispatch', {
+        target: 'named',
+        profileName: targetProfile!,
+        taskName: 'real_probe',
+        message: 'report workspace status',
+      });
+      expect(dispatched.dispatchId).toBeTruthy();
+      expect(dispatched.taskName).toBe('real_probe');
+
+      const status = await realHost.call(seat, 'status', { dispatchId: dispatched.dispatchId });
+      expect(status.dispatchId).toBe(dispatched.dispatchId);
+      expect(status.taskName).toBe('real_probe');
+
+      const listedAfter = await realHost.call(seat, 'list', {});
+      expect(listedAfter.children.some((child) => child.taskName === 'real_probe')).toBe(true);
+
+      const cancelled = await realHost.call(seat, 'cancel', { dispatchId: dispatched.dispatchId });
+      expect(cancelled.dispatchId).toBe(dispatched.dispatchId);
+
+      const waited = await realHost.call(seat, 'wait', { dispatchId: dispatched.dispatchId, timeoutMs: 5_000 });
+      expect(waited.dispatch?.dispatchId).toBe(dispatched.dispatchId);
     } finally {
       await server.close();
+      await new Promise<void>((resolve) => { stubLlm.close(() => resolve()); });
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 30_000);

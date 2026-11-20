@@ -117,10 +117,13 @@ const coldChains = new Map<string, Promise<void>>();
 
 interface SealPin {
   count: number;
+  lease?: { release(): Promise<void> };
+  releasing?: boolean;
   readonly waiters: Array<() => void>;
 }
 
 const sealPins = new Map<string, SealPin>();
+const logicalByteSizeFlights = new Map<string, Promise<number | undefined>>();
 const memoryIds = new WeakMap<object, string>();
 let memorySerial = 0;
 
@@ -157,12 +160,24 @@ async function pinSeal(
   onRelease?: () => Promise<void>,
 ): Promise<() => void> {
   const located = locatedJournal(storage, scope, key);
-  const lease = located === undefined ? undefined : await acquireSharedReadLease(located);
+  const id = pinId(storage, scope, key, sealId);
+  let entry = sealPins.get(id);
+  let acquiredLease: { release(): Promise<void> } | undefined;
+  if (entry === undefined || entry.releasing === true) {
+    acquiredLease = located === undefined ? undefined : await acquireSharedReadLease(located);
+    entry = sealPins.get(id);
+    if (entry === undefined || entry.releasing === true) {
+      entry = { count: 0, lease: acquiredLease, waiters: [] };
+      sealPins.set(id, entry);
+      acquiredLease = undefined;
+    } else if (acquiredLease !== undefined) {
+      await acquiredLease.release().catch(() => undefined);
+      acquiredLease = undefined;
+    }
+  }
+  const activeEntry = entry;
   try {
-    const id = pinId(storage, scope, key, sealId);
-    const entry = sealPins.get(id) ?? { count: 0, waiters: [] };
-    entry.count += 1;
-    sealPins.set(id, entry);
+    activeEntry.count += 1;
     let released = false;
     return () => {
       if (released) return;
@@ -171,19 +186,21 @@ async function pinSeal(
         try {
           await onRelease?.();
         } catch {}
+        activeEntry.count -= 1;
+        if (activeEntry.count > 0) return;
+        activeEntry.releasing = true;
+        const leaseToRelease = activeEntry.lease;
+        activeEntry.lease = undefined;
         try {
-          await lease?.release();
+          await leaseToRelease?.release();
         } catch {}
-        entry.count -= 1;
-        if (entry.count > 0) return;
-        sealPins.delete(id);
-        const waiters = entry.waiters.splice(0);
+        if (sealPins.get(id) === activeEntry) sealPins.delete(id);
+        const waiters = activeEntry.waiters.splice(0);
         for (const wake of waiters) wake();
       })();
     };
   } catch (error) {
     await onRelease?.().catch(() => undefined);
-    await lease?.release().catch(() => undefined);
     throw error;
   }
 }
@@ -1907,13 +1924,24 @@ export async function logicalByteSize(
   key: string,
   signal?: AbortSignal,
 ): Promise<number | undefined> {
-  return withColdExclusive(storage, scope, key, async () => {
-    const manifest = await loadMatchedManifest(storage, scope, key, undefined, signal);
-    const size = await storage.size(scope, key);
-    if (manifest === undefined) return size;
-    if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
-    return size;
-  }, signal);
+  signal?.throwIfAborted();
+  const id = resourceId(storage, scope, key);
+  let flight = logicalByteSizeFlights.get(id);
+  if (flight === undefined) {
+    flight = withColdExclusive(storage, scope, key, async () => {
+      const [manifest, size] = await Promise.all([
+        loadMatchedManifest(storage, scope, key, undefined),
+        storage.size(scope, key),
+      ]);
+      if (manifest === undefined) return size;
+      if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
+      return size;
+    }).finally(() => {
+      if (logicalByteSizeFlights.get(id) === flight) logicalByteSizeFlights.delete(id);
+    });
+    logicalByteSizeFlights.set(id, flight);
+  }
+  return signal === undefined ? flight : abortable(flight, signal);
 }
 
 function slices(bytes: Uint8Array, start: number, end: number): Uint8Array[] {
@@ -1927,21 +1955,27 @@ function slices(bytes: Uint8Array, start: number, end: number): Uint8Array[] {
 async function* readFromPinnedDenseHandle(
   handle: FileHandle,
   filePath: string,
+  knownSize: number,
   range: StorageReadRange | undefined,
   options: StorageReadOptions | undefined,
 ): AsyncIterable<Uint8Array> {
   options?.signal?.throwIfAborted();
-  let currentSize: number;
-  try {
-    currentSize = (await handle.stat()).size;
-  } catch (error) {
-    throw toStorageIoError(error, { path: filePath, op: 'read' });
-  }
   const start = range?.start ?? 0;
-  const requestedEnd = range?.end ?? (currentSize === 0 ? -1 : currentSize - 1);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0) {
+  const requestedEndRaw = range?.end;
+  if (!Number.isSafeInteger(start) || start < 0 || (requestedEndRaw !== undefined && !Number.isSafeInteger(requestedEndRaw))) {
     throw new BugIndicatingError('logical journal range is not a byte offset');
   }
+  let currentSize: number;
+  if (requestedEndRaw !== undefined && requestedEndRaw < knownSize) {
+    currentSize = knownSize;
+  } else {
+    try {
+      currentSize = (await handle.stat()).size;
+    } catch (error) {
+      throw toStorageIoError(error, { path: filePath, op: 'read' });
+    }
+  }
+  const requestedEnd = requestedEndRaw ?? (currentSize === 0 ? -1 : currentSize - 1);
   if (currentSize === 0 || requestedEnd < start || start >= currentSize) return;
   const end = Math.min(requestedEnd, currentSize - 1);
   const chunkSize = Math.max(1024, options?.chunkBytes ?? DEFAULT_DENSE_READ_CHUNK_BYTES);
@@ -2078,18 +2112,21 @@ export async function openPinnedLogicalRead(
       const located = locatedJournal(storage, scope, key);
       const openPinned = async (): Promise<void> => {
         signal?.throwIfAborted();
-        manifest = await loadMatchedManifest(storage, scope, key, undefined, signal);
-        size = await storage.size(scope, key);
+        [manifest, size] = await Promise.all([
+          loadMatchedManifest(storage, scope, key, undefined, signal),
+          storage.size(scope, key),
+        ]);
         signal?.throwIfAborted();
         if (manifest !== undefined) {
           if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
           release = await pinSeal(storage, scope, key, manifest.sealId);
         } else if (size !== undefined) {
-          pinnedGeneration = await generationOf(storage, scope, key);
-          if (located !== undefined && storage.readStream === FileStorageService.prototype.readStream) {
-            denseHandle = await open(located, 'r');
-            densePath = located;
-          }
+          const canOpenDense = located !== undefined && storage.readStream === FileStorageService.prototype.readStream;
+          [pinnedGeneration, denseHandle] = await Promise.all([
+            generationOf(storage, scope, key),
+            canOpenDense ? open(located, 'r') : Promise.resolve(undefined),
+          ]);
+          if (denseHandle !== undefined) densePath = located;
           const capturedHandle = denseHandle;
           release = await pinSeal(
             storage,
@@ -2127,7 +2164,7 @@ export async function openPinnedLogicalRead(
         return readPinned(storage, scope, key, manifest, range, options, segmentCache);
       }
       if (denseHandle !== undefined && densePath !== undefined) {
-        return readFromPinnedDenseHandle(denseHandle, densePath, range, options);
+        return readFromPinnedDenseHandle(denseHandle, densePath, size ?? 0, range, options);
       }
       return readUnsealedWithGenerationGuard(storage, scope, key, pinnedGeneration, range, options);
     },

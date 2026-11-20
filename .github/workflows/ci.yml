@@ -287,6 +287,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -299,6 +301,8 @@ jobs:
       - name: Test repository meta-governance and Nix workspace checkers
         run: node --test scripts/check-repo-meta.test.mjs scripts/check-nix-workspace.test.mjs
       - name: Check repository meta-governance gates
+        env:
+          KIKI_DIFF_BASE: ${{ github.base_ref && format('origin/{0}', github.base_ref) || '' }}
         run: node scripts/check-repo-meta.mjs
 
   lint:

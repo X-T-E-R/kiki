@@ -431,7 +431,7 @@ function makeCore(
   const accessor = {
     get(token: unknown): unknown {
       if (token === IAppendLogStore) return { read: async function* () {} };
-      if (token === IFileSystemStorageService) return { size: async () => 0, mtime: async () => 0, pathFor: () => undefined };
+      if (token === IFileSystemStorageService) return { read: async () => undefined, size: async () => 0, mtime: async () => 0, pathFor: () => undefined };
       if (token === IEventService) return eventBus;
       if (token === ISessionIndex) return { get: async (sessionId: string) => sessions.has(sessionId) ? { id: sessionId, workspaceId: 'wd' } : undefined };
       if (token === ISessionManager) {
@@ -3776,7 +3776,6 @@ describe('SessionEventBroadcaster', () => {
           read: { source: 'live', readiness: 'partial', reason: 'source_unverified' } } });
         expect(fastReset.snapshot.toolCallCount).toBeUndefined();
         expect(fastReset.snapshot.items.filter((item) => item.kind === 'turn').map((item) => item.prompt)).toEqual(persistedPrompts[blockedAgent === 'main' ? 'visible-child' : 'main']);
-        expect(service.forSessionLive('s1')!.getAgent(fast.id)!.snapshot()).toMatchObject({ toolCallCountKnown: true, toolCallCount: 0, hasMoreOlder: false });
         verification = service.verifyTranscriptLiveCoverage('s1', fast.id);
         await vi.waitFor(() => expect(proofRequested).toBe(true));
         expect(proofVerified).toBe(false);
@@ -3788,6 +3787,11 @@ describe('SessionEventBroadcaster', () => {
         releaseProof();
         await expect(verification).resolves.toBe(true);
         expect(proofVerified).toBe(true);
+        expect((await service.ensureAgentHistory('s1', fast.id, { fullHistory: true }))?.snapshot()).toMatchObject({
+          toolCallCountKnown: true,
+          toolCallCount: 0,
+          hasMoreOlder: false,
+        });
         if (supersede) await bc.subscribe('s1', target, undefined, { '*': 'off', [blockedAgent]: 'off', [fast.id]: 'delta' });
         const beforeRelease = transcriptEnvelopes(envelopes).length;
         const liveBeforeRelease = transcriptEnvelopes(envelopes).filter((frame) =>
@@ -3798,7 +3802,10 @@ describe('SessionEventBroadcaster', () => {
         expect(blockedFinished).toBe(true);
         const blockedSnapshot = service.forSessionLive('s1')!.getAgent(blockedAgent)!.snapshot();
         expect(blockedSnapshot.items.filter((item) => item.kind === 'turn').map((item) => item.prompt)).toEqual(persistedPrompts[blockedAgent]);
-        expect(blockedSnapshot.toolCallCountKnown).toBe(blockedReceiptTrusted);
+        const verifiedBlocked = (await service.ensureAgentHistory('s1', blockedAgent, { fullHistory: true }))!.snapshot();
+        expect(verifiedBlocked.toolCallCountKnown).toBe(blockedReceiptTrusted);
+        expect(verifiedBlocked.hasMoreOlder).toBe(!blockedReceiptTrusted);
+        expect(verifiedBlocked.toolCallCount).toBe(blockedReceiptTrusted ? 0 : undefined);
         const mainPrompts = service.forSessionLive('s1')!.getAgent('main')!.snapshot().items
           .filter((item) => item.kind === 'turn').map((item) => item.prompt);
         expect(mainPrompts).toEqual(expect.arrayContaining(['persisted main first', 'persisted main second']));
@@ -3813,17 +3820,10 @@ describe('SessionEventBroadcaster', () => {
           expect(frames.some((frame) => frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toBe(true);
           const blockedReset = frames.find((frame) => frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === blockedAgent)!.payload as import('@kiki/transcript').TranscriptResetEvent;
           expect(blockedReset.snapshot.items.filter((item) => item.kind === 'turn').map((item) => item.prompt)).toEqual(persistedPrompts[blockedAgent]);
-          expect(blockedReset.snapshot).toMatchObject({ toolCallCountKnown: blockedReceiptTrusted, hasMoreOlder: !blockedReceiptTrusted });
-          if (blockedReceiptTrusted) {
-            expect(blockedReset.coverage).toEqual({ kind: 'full', hasMoreOlder: false });
-            expect(blockedReset.snapshot.toolCallCount).toBe(0);
-            expect(blockedReset.read).toMatchObject({ source: 'live', readiness: 'ready' });
-            expect(blockedReset.read?.reason).toBeUndefined();
-          } else {
-            expect(blockedReset.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
-            expect(blockedReset.snapshot.toolCallCount).toBeUndefined();
-            expect(blockedReset.read).toMatchObject({ source: 'live', readiness: 'partial', reason: 'source_unverified' });
-          }
+          expect(blockedReset.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+          expect(blockedReset.snapshot).toMatchObject({ toolCallCountKnown: false, hasMoreOlder: true });
+          expect(blockedReset.snapshot.toolCallCount).toBeUndefined();
+          expect(blockedReset.read).toMatchObject({ source: 'live', readiness: 'partial', reason: 'source_unverified' });
           expect(fastReset.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
           expect(fastReset.snapshot).toMatchObject({ toolCallCountKnown: false, hasMoreOlder: true });
           expect(fastReset.snapshot.toolCallCount).toBeUndefined();

@@ -45,7 +45,10 @@ export function readVerifiedGitHead(cwd = process.cwd(), spawn = spawnSync) {
   return { gitHead: sha, worktreeDirty: dirty };
 }
 
-export function verifyPromoteReceipt(receiptPath, { cwd = process.cwd(), spawn = spawnSync, allowDirty = false } = {}) {
+export function verifyPromoteReceipt(
+  receiptPath,
+  { cwd = process.cwd(), spawn = spawnSync, allowDirty = false, withRealCorpus = false } = {},
+) {
   const receipt = JSON.parse(readFileSync(resolve(cwd, receiptPath), 'utf8'));
   const { gitHead, worktreeDirty } = readVerifiedGitHead(cwd, spawn);
   if (receipt?.schemaVersion !== 1 || receipt?.passed !== true) {
@@ -57,8 +60,24 @@ export function verifyPromoteReceipt(receiptPath, { cwd = process.cwd(), spawn =
   if (!allowDirty && (receipt.worktreeDirty === true || worktreeDirty)) {
     throw new Error(`promote receipt cannot certify a dirty worktree for HEAD ${gitHead}`);
   }
-  if (!Array.isArray(receipt.commands) || receipt.commands.length === 0 || receipt.commands.some((c) => c.status !== 0)) {
+  const expectedCommands = withRealCorpus
+    ? [...PROMOTE_TEST_COMMANDS, LOCAL_REAL_CORPUS_PROMOTE_COMMAND]
+    : PROMOTE_TEST_COMMANDS;
+  if (!Array.isArray(receipt.commands) || receipt.commands.length < expectedCommands.length || receipt.commands.some((c) => c.status !== 0)) {
     throw new Error(`promote receipt has incomplete or failed command results: ${receiptPath}`);
+  }
+  for (const expected of expectedCommands) {
+    const matched = receipt.commands.find(
+      (entry) =>
+        entry?.label === expected.label &&
+        entry?.status === 0 &&
+        Array.isArray(entry?.args) &&
+        entry.args.length === expected.args.length &&
+        entry.args.every((arg, index) => arg === expected.args[index]),
+    );
+    if (!matched) {
+      throw new Error(`promote receipt is missing required passing command "${expected.label}": ${receiptPath}`);
+    }
   }
   return receipt;
 }
@@ -77,7 +96,7 @@ export function runPromoteTests({
   const results = [];
   for (const entry of commands) {
     const launch = pnpmLaunch(entry.args, env);
-    const result = spawn(launch.command, pnpmSpawnArgs(launch.args, env), { stdio: 'inherit', env, ...pnpmSpawnOptions(env) });
+    const result = spawn(launch.command, pnpmSpawnArgs(launch.args, env), { cwd, stdio: 'inherit', env, ...pnpmSpawnOptions(env) });
     const status = result.error ? 1 : (result.status ?? 1);
     results.push({ label: entry.label, args: entry.args, status });
     if (status !== 0) failed = true;

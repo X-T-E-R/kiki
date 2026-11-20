@@ -44,8 +44,7 @@ const INTRA_MONOREPO_MOCK_GLOBAL_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\
 const SPY_OPTION_RE = /,\s*\{\s*spy\s*:\s*true\s*\}\s*\)$/u;
 const IMPORT_ORIGINAL_FACTORY_RE = /,\s*(?:async\s*)?\(?\s*(?:importOriginal|original)\b/u;
 const FAKE_OVERRIDE_IN_FACTORY_RE = /\bvi\.fn\s*\(|\bclass\s*\{/u;
-const OBJECT_RETURN_KEY_OVERRIDE_RE = /\{\s*\.\.\.[^,}]+,[\s\S]*?(?:[A-Za-z_$][\w$]*|['"`][^'"`]+['"`])\s*:/u;
-const PURE_SPY_ON_RE = /\bvi\.spyOn\s*\(/u;
+const PURE_SPY_ON_EXPR_RE = /^vi\.spyOn\s*\(/u;
 const WEAK_ASSERTION_RE = /\bexpect\.anything\s*\(\s*\)/u;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 
@@ -78,11 +77,92 @@ function extractBalancedCall(text, openParenIndex) {
   return text.slice(openParenIndex, Math.min(text.length, openParenIndex + 400));
 }
 
+function extractBalancedBraces(text, openBraceIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = openBraceIndex; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(openBraceIndex, i + 1);
+    }
+  }
+  return null;
+}
+
+function splitTopLevelObjectProps(objectLiteral) {
+  const inner = objectLiteral.slice(1, -1);
+  const props = [];
+  let start = 0;
+  let paren = 0;
+  let brace = 0;
+  let bracket = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < inner.length; i += 1) {
+    const ch = inner[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') paren += 1;
+    else if (ch === ')') paren -= 1;
+    else if (ch === '{') brace += 1;
+    else if (ch === '}') brace -= 1;
+    else if (ch === '[') bracket += 1;
+    else if (ch === ']') bracket -= 1;
+    else if (ch === ',' && paren === 0 && brace === 0 && bracket === 0) {
+      const piece = inner.slice(start, i).trim();
+      if (piece.length > 0) props.push(piece);
+      start = i + 1;
+    }
+  }
+  const tail = inner.slice(start).trim();
+  if (tail.length > 0) props.push(tail);
+  return props;
+}
+
+function hasDisallowedReturnedObjectOverride(callExpr) {
+  const returnRe = /(?:\breturn\s*\(?|=>\s*\()\s*\{/gu;
+  let match;
+  while ((match = returnRe.exec(callExpr)) !== null) {
+    const braceIdx = match.index + match[0].length - 1;
+    const obj = extractBalancedBraces(callExpr, braceIdx);
+    if (obj === null) return true;
+    for (const prop of splitTopLevelObjectProps(obj)) {
+      if (prop.startsWith('...')) continue;
+      const colon = prop.indexOf(':');
+      if (colon < 0) return true;
+      const valueExpr = prop.slice(colon + 1).trim();
+      if (!PURE_SPY_ON_EXPR_RE.test(valueExpr)) return true;
+    }
+  }
+  return false;
+}
+
 function isExemptMockCall(callExpr) {
   if (SPY_OPTION_RE.test(callExpr)) return true;
   if (IMPORT_ORIGINAL_FACTORY_RE.test(callExpr)) {
     if (FAKE_OVERRIDE_IN_FACTORY_RE.test(callExpr)) return false;
-    if (OBJECT_RETURN_KEY_OVERRIDE_RE.test(callExpr) && !PURE_SPY_ON_RE.test(callExpr)) return false;
+    if (hasDisallowedReturnedObjectOverride(callExpr)) return false;
     return true;
   }
   return false;

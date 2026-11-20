@@ -129,9 +129,15 @@ const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
 const COLD_ROSTER_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
 const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
-const FIRST_SCREEN_CHUNK_BYTES = 2 << 20;
+const FIRST_SCREEN_CHUNK_BYTES = 4 << 20;
 const LOOP_EVENT_LINE_PREFIX = Buffer.from('{"type":"context.append_loop_event",');
 const APPEND_MESSAGE_LINE_PREFIX = Buffer.from('{"type":"context.append_message",');
+const TURN_ID_KEY_NEEDLE = Buffer.from('"turnId":');
+const TOOL_CALL_ID_CAMEL_NEEDLE = Buffer.from('"toolCallId":');
+const TOOL_CALL_ID_SNAKE_NEEDLE = Buffer.from('"tool_call_id":');
+const ROLE_KEY_NEEDLE = Buffer.from('"role":');
+const HOOK_RESULT_NEEDLE = Buffer.from('"hook_result"');
+const DELIVERY_NEEDLE = Buffer.from('"delivery"');
 const DEFAULT_DIRECT_TURN_MAX_BYTES = 64 << 20;
 const DEFAULT_COLD_TURN_SPAN_MAX_TURNS = 16_384;
 const DEFAULT_COLD_TURN_SPAN_MAX_WIRES = 32;
@@ -187,6 +193,63 @@ const coldRecordBytesCache = new WeakMap<object, number>();
 function hasClosedJsonObjectFrame(line: Buffer): boolean {
   const end = line.length > 0 && line[line.length - 1] === 0x0d ? line.length - 1 : line.length;
   return end >= 2 && line[end - 1] === 0x7d;
+}
+
+function readJsonQuotedAscii(buf: Buffer, start: number, limit: number): string | undefined {
+  let cursor = start;
+  while (cursor < limit && (buf[cursor] === 0x20 || buf[cursor] === 0x09)) cursor += 1;
+  if (cursor >= limit || buf[cursor] !== 0x22) return undefined;
+  cursor += 1;
+  const valueStart = cursor;
+  while (cursor < limit) {
+    const byte = buf[cursor]!;
+    if (byte === 0x5c) return undefined;
+    if (byte === 0x22) return cursor > valueStart ? buf.toString('ascii', valueStart, cursor) : undefined;
+    cursor += 1;
+  }
+  return undefined;
+}
+
+function extractTurnIdFromBuffer(buf: Buffer, maxScan: number): string | undefined {
+  const limit = Math.min(buf.length, maxScan);
+  const head = buf.subarray(0, limit);
+  const idx = head.indexOf(TURN_ID_KEY_NEEDLE);
+  if (idx < 0) return undefined;
+  let cursor = idx + TURN_ID_KEY_NEEDLE.length;
+  while (cursor < limit && (head[cursor] === 0x20 || head[cursor] === 0x09)) cursor += 1;
+  if (cursor >= limit) return undefined;
+  if (head[cursor] === 0x22) {
+    const value = readJsonQuotedAscii(head, cursor, limit);
+    if (value === undefined) return undefined;
+    return value.startsWith('t') ? value : `t${value}`;
+  }
+  const digitStart = cursor;
+  while (cursor < limit && head[cursor]! >= 0x30 && head[cursor]! <= 0x39) cursor += 1;
+  if (cursor === digitStart) return undefined;
+  return `t${head.toString('ascii', digitStart, cursor)}`;
+}
+
+function extractToolCallIdFromBuffer(buf: Buffer, maxScan: number): string | undefined {
+  const limit = Math.min(buf.length, maxScan);
+  const head = buf.subarray(0, limit);
+  let idx = head.indexOf(TOOL_CALL_ID_CAMEL_NEEDLE);
+  let needleLen = TOOL_CALL_ID_CAMEL_NEEDLE.length;
+  if (idx < 0) {
+    idx = head.indexOf(TOOL_CALL_ID_SNAKE_NEEDLE);
+    needleLen = TOOL_CALL_ID_SNAKE_NEEDLE.length;
+  }
+  if (idx < 0) return undefined;
+  return readJsonQuotedAscii(head, idx + needleLen, limit);
+}
+
+function extractRoleFromBuffer(buf: Buffer, maxScan: number): 'tool' | 'assistant' | undefined {
+  const limit = Math.min(buf.length, maxScan);
+  const head = buf.subarray(0, limit);
+  const idx = head.indexOf(ROLE_KEY_NEEDLE);
+  if (idx < 0) return undefined;
+  const value = readJsonQuotedAscii(head, idx + ROLE_KEY_NEEDLE.length, limit);
+  if (value === 'tool' || value === 'assistant') return value;
+  return undefined;
 }
 
 function transcriptOpaqueHeaderRecord(head: Buffer): ContextRecord | undefined {
@@ -689,6 +752,8 @@ interface ColdWireWindow {
   payloadEvicted?: boolean;
   headers?: readonly TranscriptTurn[];
   headerAttachments?: AgentTranscriptSnapshot['attachments'];
+  replayState?: TranscriptReplayState;
+  navigationProof?: import('../history/historyNavigationProof').HistoryNavigationProof;
 }
 
 function completeColdWindowTurn(window: ColdWireWindow, turnId: string): TranscriptTurn | undefined {
@@ -2654,14 +2719,29 @@ export class TranscriptService {
       return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState, tailFirst);
     }
     const opened = signal ?? new AbortController().signal;
-    const proof = tailFirst ? await historyNavigationProof(location.wirePath, info.size, opened) : undefined;
     const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState, tailFirst ? 'first-screen' : 'headers', false);
     if (window === undefined) {
       return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState, tailFirst);
     }
-    if (proof !== undefined && !matchesNavigationProof(proof, await historyNavigationProof(location.wirePath, info.size, opened))) {
-      this.forgetColdWindow(location.wirePath);
-      throw new Error('history_source_changed');
+    if (tailFirst) {
+      const after = await stat(location.wirePath, { bigint: true }).catch(() => undefined);
+      const proof = window.navigationProof;
+      const unchangedStat =
+        after !== undefined &&
+        after.isFile() &&
+        proof !== undefined &&
+        `${after.dev}:${after.ino}:${after.birthtimeNs}` === proof.identity &&
+        Number(after.size) === proof.size &&
+        String(after.mtimeNs) === proof.mtimeNs &&
+        String(after.ctimeNs) === proof.ctimeNs;
+      if (!unchangedStat) {
+        const currentProof = await historyNavigationProof(location.wirePath, info.size, opened);
+        if (proof !== undefined && !matchesNavigationProof(proof, currentProof)) {
+          this.forgetColdWindow(location.wirePath);
+          throw new Error('history_source_changed');
+        }
+        window.navigationProof = currentProof;
+      }
     }
     opened.throwIfAborted();
     return partialColdWindowSnapshot(window);
@@ -2849,6 +2929,8 @@ export class TranscriptService {
         existing.bytes = this.coldWindowBytes(existing.snapshot, existing.records);
         this.rememberColdWindow(wirePath, existing);
         this.deleteColdSnapshotCache(wirePath);
+      } else if (preserveOpenTurnIds === undefined && captureReplayState !== undefined && existing.replayState !== undefined) {
+        captureReplayState(structuredClone(existing.replayState));
       } else if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
         existing.snapshot = await this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing, signal);
       }
@@ -2876,9 +2958,15 @@ export class TranscriptService {
         this.coldWindowFlights.set(flightKey, flight);
       }
       const shared = await this.awaitColdWindowFlight(flight, signal);
-      if (shared !== undefined && (preserveOpenTurnIds !== undefined || captureReplayState !== undefined)) {
-        const snapshot = await this.projectColdRecords(agentId, shared.records, shared.entire, preserveOpenTurnIds, captureReplayState, shared, signal);
-        return { ...shared, snapshot };
+      if (shared !== undefined) {
+        if (preserveOpenTurnIds === undefined && captureReplayState !== undefined && shared.replayState !== undefined) {
+          captureReplayState(structuredClone(shared.replayState));
+          return shared;
+        }
+        if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
+          const snapshot = await this.projectColdRecords(agentId, shared.records, shared.entire, preserveOpenTurnIds, captureReplayState, shared, signal);
+          return { ...shared, snapshot };
+        }
       }
       return shared;
     }
@@ -2930,8 +3018,27 @@ export class TranscriptService {
       return undefined;
     }
     const entire = start === 0 && read.complete && !(discovered?.skippedTurnIds.length);
-    const snapshot = await this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState, undefined, signal);
-    const window: ColdWireWindow = { fingerprint, start, end: info.size, entire, records: read.records, snapshot, bytes: 0, skippedTurnIds: discovered?.skippedTurnIds };
+    let capturedReplayState: TranscriptReplayState | undefined;
+    const captureForWindow =
+      mode === 'first-screen' && preserveOpenTurnIds === undefined
+        ? (state: TranscriptReplayState) => {
+            capturedReplayState = state;
+            captureReplayState?.(structuredClone(state));
+          }
+        : captureReplayState;
+    const snapshot = await this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureForWindow, undefined, signal);
+    const window: ColdWireWindow = {
+      fingerprint,
+      start,
+      end: info.size,
+      entire,
+      records: read.records,
+      snapshot,
+      bytes: 0,
+      skippedTurnIds: discovered?.skippedTurnIds,
+      replayState: capturedReplayState,
+      navigationProof: discovered?.navigationProof,
+    };
     if (!entire && resolveHeaders) {
       await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, window, signal, preserveOpenTurnIds, captureReplayState);
     }
@@ -3309,11 +3416,11 @@ export class TranscriptService {
     return { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: false };
   }
 
-  private firstScreenRecords(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[]; toolTurnIds: Array<readonly [string, string]> }> {
+  private firstScreenRecords(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[]; toolTurnIds: Array<readonly [string, string]>; navigationProof?: import('../history/historyNavigationProof').HistoryNavigationProof }> {
     return this.scheduleHistoryRead(signal, owned => this.firstScreenRecordsInLane(agentId, wirePath, end, owned), true);
   }
 
-  private async firstScreenRecordsInLane(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[]; toolTurnIds: Array<readonly [string, string]> }> {
+  private async firstScreenRecordsInLane(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[]; toolTurnIds: Array<readonly [string, string]>; navigationProof?: import('../history/historyNavigationProof').HistoryNavigationProof }> {
     const records: ColdWireRecord[] = [];
     const spanMarkers: ScannedSpanMarker[] = [];
     const toolTurnIds: Array<readonly [string, string]> = [];
@@ -3330,6 +3437,7 @@ export class TranscriptService {
     let complete = true;
     let boundary = end;
     const startedAt = performance.now();
+    let navigationProof: import('../history/historyNavigationProof').HistoryNavigationProof | undefined;
     const finish = () => {
       if (skippedUnknownTurn) skippedTurnIds.add('*');
       records.reverse();
@@ -3338,27 +3446,41 @@ export class TranscriptService {
       this.coldReadRecords += scannedRecords;
       this.coldReadsCompleted++;
       this.coldReadDurationMs += performance.now() - startedAt;
-      return { start: boundary, records, complete, skippedTurnIds: [...skippedTurnIds], spanMarkers, toolTurnIds };
+      return { start: boundary, records, complete, skippedTurnIds: [...skippedTurnIds], spanMarkers, toolTurnIds, navigationProof };
     };
     const opened = await openLogicalWire(wirePath, signal);
     if (opened === undefined) return { start: end, records, complete: false, skippedTurnIds: [], spanMarkers: [], toolTurnIds: [] };
+    try {
+      navigationProof = await historyNavigationProof(wirePath, end, signal, opened);
+    } catch (error) {
+      opened.close();
+      throw error;
+    }
     let position = end;
     let recordEnd = end;
     const suffix: Buffer[] = [];
     let suffixBytes = 0;
     let oversizedLine = false;
-    let oversizedLeading = Buffer.alloc(0);
+    let oversizedLeading: Buffer = Buffer.alloc(0);
     let turns = 0;
     let wantedTurns = DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns;
     let hasUndo = false;
     let hasImplicitTurn = false;
     let yieldedAt = performance.now();
     const floor = Math.max(0, end - COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES);
+    const startChunkRead = (pos: number): { start: number; promise: Promise<Uint8Array> } | undefined => {
+      if (pos <= floor) return undefined;
+      const chunkStart = Math.max(floor, pos - FIRST_SCREEN_CHUNK_BYTES);
+      return { start: chunkStart, promise: opened.readAt(chunkStart, pos - chunkStart) };
+    };
+    let pendingRead = startChunkRead(position);
     try {
-      while (position > floor && scannedRecords < WIRE_COLD_READ_MAX_RECORDS) {
+      while (pendingRead !== undefined && scannedRecords < WIRE_COLD_READ_MAX_RECORDS) {
         signal.throwIfAborted();
-        const start = Math.max(floor, position - FIRST_SCREEN_CHUNK_BYTES);
-        const chunk = Buffer.from(await opened.readAt(start, position - start));
+        const { start, promise } = pendingRead;
+        pendingRead = startChunkRead(start);
+        const rawChunk = await promise;
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength);
         this.coldReadBytes += chunk.byteLength;
         let lineEnd = chunk.length;
         if (position === end && chunk.at(-1) === 0x0a) lineEnd--;
@@ -3416,10 +3538,7 @@ export class TranscriptService {
               hasClosedJsonObjectFrame(line);
             if (isClosedLoopEvent) {
               const recordBytes = line.byteLength;
-              const headText = line.toString('utf8', 0, Math.min(512, line.length));
-              const turnMatch = /"turnId"\s*:\s*(?:"([^"]+)"|(\d+))/.exec(headText);
-              const rawTurn = turnMatch?.[1] ?? turnMatch?.[2];
-              const headTurn = rawTurn === undefined ? undefined : (rawTurn.startsWith('t') ? rawTurn : `t${rawTurn}`);
+              const headTurn = extractTurnIdFromBuffer(line, 512);
               const projectedReverse = headTurn ?? reverseTurn;
               const projectedCurrentBytes = headTurn !== undefined && reverseTurn !== undefined && reverseTurn !== headTurn ? 0 : currentTurnLoopBytes;
               const turnAlreadySkipped = skippedUnknownTurn || (projectedReverse !== undefined && skippedTurnIds.has(projectedReverse));
@@ -3436,15 +3555,15 @@ export class TranscriptService {
                 }
                 const effectiveTurn = headTurn ?? reverseTurn;
                 if (effectiveTurn !== undefined) {
-                  const toolMatch = /"(?:toolCallId|tool_call_id)"\s*:\s*"([^"]+)"/.exec(headText);
-                  if (toolMatch?.[1] !== undefined) toolTurnIds.push([toolMatch[1], effectiveTurn]);
+                  const toolCallId = extractToolCallIdFromBuffer(line, 512);
+                  if (toolCallId !== undefined) toolTurnIds.push([toolCallId, effectiveTurn]);
                   skippedTurnIds.add(effectiveTurn);
                 } else {
                   skippedUnknownTurn = true;
                 }
                 recordEnd = boundary;
                 lineEnd = previous;
-                if (performance.now() - yieldedAt >= 4) {
+                if ((scannedRecords & 15) === 0 && performance.now() - yieldedAt >= 4) {
                   await new Promise<void>(resolve => { setImmediate(resolve); });
                   signal.throwIfAborted();
                   yieldedAt = performance.now();
@@ -3458,17 +3577,18 @@ export class TranscriptService {
               line.subarray(0, APPEND_MESSAGE_LINE_PREFIX.length).equals(APPEND_MESSAGE_LINE_PREFIX) &&
               hasClosedJsonObjectFrame(line);
             if (isClosedAppendMessage && (skippedUnknownTurn || (reverseTurn !== undefined && skippedTurnIds.has(reverseTurn)))) {
-              const headText = line.toString('utf8', 0, Math.min(512, line.length));
-              const roleMatch = /"role"\s*:\s*"([^"]+)"/.exec(headText);
-              const role = roleMatch?.[1];
-              if ((role === 'tool' || (role === 'assistant' && !headText.includes('"hook_result"'))) && !headText.includes('"delivery"')) {
+              const role = extractRoleFromBuffer(line, 512);
+              if (
+                (role === 'tool' || (role === 'assistant' && !line.includes(HOOK_RESULT_NEEDLE))) &&
+                !line.includes(DELIVERY_NEEDLE)
+              ) {
                 if (reverseTurn !== undefined) {
-                  const toolMatch = /"(?:toolCallId|tool_call_id)"\s*:\s*"([^"]+)"/.exec(headText);
-                  if (toolMatch?.[1] !== undefined) toolTurnIds.push([toolMatch[1], reverseTurn]);
+                  const toolCallId = extractToolCallIdFromBuffer(line, 512);
+                  if (toolCallId !== undefined) toolTurnIds.push([toolCallId, reverseTurn]);
                 }
                 recordEnd = boundary;
                 lineEnd = previous;
-                if (performance.now() - yieldedAt >= 4) {
+                if ((scannedRecords & 15) === 0 && performance.now() - yieldedAt >= 4) {
                   await new Promise<void>(resolve => { setImmediate(resolve); });
                   signal.throwIfAborted();
                   yieldedAt = performance.now();
@@ -3569,7 +3689,10 @@ export class TranscriptService {
         complete = false;
       }
       return finish();
-    } finally { opened.close(); }
+    } finally {
+      if (pendingRead !== undefined) await pendingRead.promise.catch(() => undefined);
+      opened.close();
+    }
   }
 
   private async tailRecordStart(wirePath: string, end: number, signal: AbortSignal, spanBytes = FIRST_SCREEN_WINDOW_BYTES): Promise<number> {

@@ -1579,4 +1579,103 @@ describe('WsConnectionV1 cursor replay ordering', () => {
     });
     conn.close();
   });
+
+  it('restores ungraded sibling deltas in both live delivery and cursor replay when legacy subscribe follows subscribe_v2 over a real WebSocket', async () => {
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(wss, 'listening');
+    const addr = wss.address() as { port: number };
+    const subscribeCalls: Array<{ opts?: Record<string, unknown> }> = [];
+    const bufferedCalls: Array<{ suppress?: boolean }> = [];
+    let suppressPolicy: boolean | undefined;
+    let currentTarget: { send: (env: unknown) => void } | undefined;
+    const broadcaster = {
+      subscribe: vi.fn(async (_sid: string, target: { send: (env: unknown) => void }, _filter: unknown, _grades: unknown, opts?: Record<string, unknown>) => {
+        subscribeCalls.push({ opts });
+        currentTarget = target;
+        if (opts && 'suppressUngradedTokenDeltas' in opts) {
+          suppressPolicy = opts['suppressUngradedTokenDeltas'] as boolean;
+        }
+        return true;
+      }),
+      unsubscribe: vi.fn(),
+      unsubscribeTranscript: vi.fn(),
+      flushTranscriptSeed: vi.fn(async () => {}),
+      addGlobalTarget: () => {},
+      removeGlobalTarget: () => {},
+      getCursor: vi.fn(async () => ({ seq: 2, epoch: 'e1' })),
+      getBufferedSince: vi.fn(async (_sid: string, _cursor: unknown, _filter: unknown, _grades: unknown, suppress?: boolean) => {
+        bufferedCalls.push({ suppress });
+        const siblingDelta = {
+          type: 'assistant.delta',
+          seq: 2,
+          epoch: 'e1',
+          volatile: false,
+          session_id: 's1',
+          timestamp: new Date().toISOString(),
+          payload: { type: 'assistant.delta', agentId: 'agent-0', delta: 'replayed-token' },
+        };
+        return {
+          events: suppress === true ? [] : [{ seq: 2, envelope: siblingDelta }],
+          resyncRequired: false,
+          currentSeq: 2,
+          epoch: 'e1',
+        };
+      }),
+    } as unknown as SessionEventBroadcaster;
+
+    let serverConn: WsConnectionV1 | undefined;
+    wss.on('connection', (ws) => {
+      serverConn = makeConn(ws as unknown as FakeSocket, { broadcaster, flushIntervalMs: 1 });
+    });
+
+    const client = new WebSocket(`ws://127.0.0.1:${addr.port}`);
+    const received: Array<Record<string, unknown>> = [];
+    client.on('message', (raw) => {
+      received.push(JSON.parse(String(raw)) as Record<string, unknown>);
+    });
+    await once(client, 'open');
+
+    try {
+      client.send(JSON.stringify({
+        type: 'subscribe_v2',
+        id: 'v2-1',
+        payload: { session_id: 's1', transcript: { main: 'delta' }, transcript_coverage_version: 2 },
+      }));
+      await vi.waitFor(() => {
+        expect(received.some((frame) => frame['id'] === 'v2-1')).toBe(true);
+      });
+      expect(subscribeCalls[0]?.opts?.['suppressUngradedTokenDeltas']).toBe(true);
+      expect(suppressPolicy).toBe(true);
+
+      client.send(JSON.stringify({
+        type: 'subscribe',
+        id: 'legacy-1',
+        payload: { session_ids: ['s1'], cursors: { s1: { seq: 1, epoch: 'e1' } } },
+      }));
+      await vi.waitFor(() => {
+        expect(received.some((frame) => frame['id'] === 'legacy-1')).toBe(true);
+      });
+      expect(subscribeCalls[1]?.opts?.['suppressUngradedTokenDeltas']).toBe(false);
+      expect(suppressPolicy).toBe(false);
+      expect(bufferedCalls).toEqual([{ suppress: false }]);
+      expect(received.some((frame) => frame['type'] === 'assistant.delta' && (frame['payload'] as { delta?: string })?.delta === 'replayed-token')).toBe(true);
+
+      currentTarget?.send({
+        type: 'assistant.delta',
+        seq: 3,
+        epoch: 'e1',
+        volatile: true,
+        session_id: 's1',
+        timestamp: new Date().toISOString(),
+        payload: { type: 'assistant.delta', agentId: 'agent-0', delta: 'live-token' },
+      });
+      await vi.waitFor(() => {
+        expect(received.some((frame) => frame['type'] === 'assistant.delta' && (frame['payload'] as { delta?: string })?.delta === 'live-token')).toBe(true);
+      });
+    } finally {
+      serverConn?.close();
+      client.close();
+      await new Promise<void>((resolve) => { wss.close(() => resolve()); });
+    }
+  });
 });

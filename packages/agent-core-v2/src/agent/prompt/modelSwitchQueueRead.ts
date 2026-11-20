@@ -19,10 +19,19 @@ import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wir
 
 const PREFIX = '\u0000model-switch:';
 const READ_BYTES = 8 * 1024 * 1024;
-const SCAN_CHUNK_BYTES = 1024 * 1024;
+const SCAN_CHUNK_BYTES = 4 * 1024 * 1024;
 const PROOF_BYTES = 64 * 1024;
 const PROMPT_DOT_NEEDLE = Buffer.from('prompt.');
+const CONTEXT_UNDO_NEEDLE = Buffer.from('context.undo');
 const CHECKPOINT_STATE_NAMES = new Set([modelSwitchQueueKey.name, promptQueueKey.name]);
+
+function isModelSwitchQueueRecordType(type: string): boolean {
+  return type.startsWith('prompt.') || type === 'executor.prompt.delivery' || type === 'context.undo';
+}
+
+function bufferContainsQueueNeedle(buf: Buffer, start = 0): boolean {
+  return buf.indexOf(PROMPT_DOT_NEEDLE, start) !== -1 || buf.indexOf(CONTEXT_UNDO_NEEDLE, start) !== -1;
+}
 type SwitchState = ReturnType<typeof modelSwitchQueueKey.initial>;
 type QueueState = ReturnType<typeof promptQueueKey.initial>;
 interface Checkpoint {
@@ -254,7 +263,7 @@ export class PersistedModelSwitchReader {
         const end = Math.min(state.watermark, state.offset + READ_BYTES) - 1;
         const streamOptions = end - state.offset + 1 > 256 * 1024 ? { chunkBytes: SCAN_CHUNK_BYTES } : undefined;
         for await (const raw of pinned.read({ start: state.offset, end }, streamOptions)) {
-          const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+          const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
           state.offset += chunk.length;
           let start = 0;
           if (state.skip) {
@@ -264,7 +273,7 @@ export class PersistedModelSwitchReader {
             start = skipEnd + 1;
             if (start >= chunk.length) continue;
           }
-          if (state.pending.length === 0 && chunk.indexOf(PROMPT_DOT_NEEDLE, start) === -1) {
+          if (state.pending.length === 0 && !bufferContainsQueueNeedle(chunk, start)) {
             if (chunk[chunk.length - 1] !== 10) {
               const lastNewline = chunk.lastIndexOf(10);
               const tailStart = lastNewline < start ? start : lastNewline + 1;
@@ -287,9 +296,9 @@ export class PersistedModelSwitchReader {
             const index = newline < 0 ? chunk.length : newline;
             const fragment = chunk.subarray(start, index);
             if (state.pending.length === 0 && !state.skip && index !== chunk.length) {
-              if (fragment.length > 0 && fragment.indexOf(PROMPT_DOT_NEEDLE) !== -1) {
+              if (fragment.length > 0 && bufferContainsQueueNeedle(fragment)) {
                 const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(fragment.toString('utf8', 0, Math.min(256, fragment.length)))?.[1];
-                if (type === undefined || type.startsWith('prompt.') || type === 'executor.prompt.delivery') {
+                if (type === undefined || isModelSwitchQueueRecordType(type)) {
                   this.fold(state, fragment);
                 }
               }
@@ -299,7 +308,7 @@ export class PersistedModelSwitchReader {
             if (!state.skip) state.pending = state.pending.length === 0 ? Buffer.from(fragment) : Buffer.concat([state.pending, fragment]);
             if (!state.skip && state.pending.length >= 256) {
               const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, 256))?.[1];
-              if (type !== undefined && !type.startsWith('prompt.') && type !== 'executor.prompt.delivery') {
+              if (type !== undefined && !isModelSwitchQueueRecordType(type)) {
                 state.skip = true;
                 state.pending = Buffer.alloc(0);
               }
@@ -307,7 +316,7 @@ export class PersistedModelSwitchReader {
             if (index !== chunk.length) {
               if (!state.skip && state.pending.length > 0) {
                 const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(state.pending.toString('utf8', 0, Math.min(256, state.pending.length)))?.[1];
-                if (type === undefined || type.startsWith('prompt.') || type === 'executor.prompt.delivery') {
+                if (type === undefined || isModelSwitchQueueRecordType(type)) {
                   this.fold(state, state.pending);
                 }
               }

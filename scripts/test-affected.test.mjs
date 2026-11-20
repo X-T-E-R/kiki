@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -269,13 +269,15 @@ void test('uses pnpm.cmd directly when npm_execpath is absent on Windows', () =>
     : ['exec', 'node', 'file with space.mjs']);
 });
 
-void test('promote receipt binds verified git HEAD SHA and rejects mismatched or failed receipts', () => {
+void test('promote receipt binds verified git HEAD SHA, propagates cwd, and rejects mismatched or truncated receipts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kiki-promote-receipt-'));
   const receiptPath = join(dir, 'promote-receipt.json');
   const fakeHead = 'a'.repeat(40);
-  const spawnStub = (command, args) => {
+  const observedCwds = [];
+  const spawnStub = (command, args, options) => {
     if (command === 'git' && args[0] === 'rev-parse') return { status: 0, stdout: `${fakeHead}\n` };
     if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' };
+    observedCwds.push(options?.cwd);
     return { status: 0 };
   };
   try {
@@ -286,10 +288,29 @@ void test('promote receipt binds verified git HEAD SHA and rejects mismatched or
       cwd: dir,
     });
     assert.equal(code, 0);
+    assert.equal(observedCwds.length, PROMOTE_TEST_COMMANDS.length);
+    assert.ok(observedCwds.every((observed) => observed === dir));
     const verified = verifyPromoteReceipt(receiptPath, { cwd: dir, spawn: spawnStub });
     assert.equal(verified.gitHead, fakeHead);
     assert.equal(verified.passed, true);
     assert.equal(verified.commands.length, PROMOTE_TEST_COMMANDS.length);
+
+    const truncatedPath = join(dir, 'truncated-receipt.json');
+    writeFileSync(
+      truncatedPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        gitHead: fakeHead,
+        worktreeDirty: false,
+        passed: true,
+        commands: [verified.commands[0]],
+      }),
+      'utf8',
+    );
+    assert.throws(
+      () => verifyPromoteReceipt(truncatedPath, { cwd: dir, spawn: spawnStub }),
+      /incomplete or failed|missing required passing command/,
+    );
 
     assert.throws(
       () => verifyPromoteReceipt(receiptPath, {

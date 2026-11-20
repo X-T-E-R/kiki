@@ -841,7 +841,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
         deferTranscriptReset: cursor !== undefined,
         transcriptSince,
-        ...(suppressUngradedTokenDeltas ? { suppressUngradedTokenDeltas: true } : {}),
+        suppressUngradedTokenDeltas,
       });
       if (this.closed) return;
       if (!ok) {
@@ -852,7 +852,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       }
       subscribedInBroadcaster = true;
       if (cursor !== undefined) {
-        await this.replay(sid, cursor, filter, transcriptGrades, resyncRequired, serverCursors);
+        await this.replay(sid, cursor, filter, transcriptGrades, suppressUngradedTokenDeltas, resyncRequired, serverCursors);
         await this.broadcaster.flushTranscriptSeed(sid, this);
       } else {
         serverCursors[sid] = await this.broadcaster.getCursor(sid);
@@ -894,10 +894,17 @@ export class WsConnectionV1 implements BroadcastTarget {
     cursor: SessionCursor,
     filter: AgentFilter | undefined,
     transcriptGrades: TranscriptGradeSpec | undefined,
+    suppressUngradedTokenDeltas: boolean,
     resyncRequired: string[],
     serverCursors: Record<string, { seq: number; epoch?: string }>,
   ): Promise<void> {
-    const result = await this.broadcaster.getBufferedSince(sid, cursor, filter, transcriptGrades);
+    const result = await this.broadcaster.getBufferedSince(
+      sid,
+      cursor,
+      filter,
+      transcriptGrades,
+      suppressUngradedTokenDeltas,
+    );
     this.replayHolds.delete(sid);
     const held = this.takeReplayHeld(sid);
     let seq = result.currentSeq;

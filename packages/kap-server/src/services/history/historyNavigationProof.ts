@@ -22,11 +22,17 @@ export interface HistoryNavigationProof {
  * the captured stat revision as latest. A same-size mtime or ctime change still fails.
  * Exact record digests are a separate check.
  */
-export async function historyNavigationProof(path: string, through: number, signal?: AbortSignal): Promise<HistoryNavigationProof> {
+export async function historyNavigationProof(
+  path: string,
+  through: number,
+  signal?: AbortSignal,
+  existingWire?: LogicalWire,
+): Promise<HistoryNavigationProof> {
   signal?.throwIfAborted();
   const before = await stat(path, { bigint: true });
   const identity = `${before.dev}:${before.ino}:${before.birthtimeNs}`;
-  let opened: LogicalWire | undefined;
+  let opened: LogicalWire | undefined = existingWire;
+  const ownsWire = existingWire === undefined;
   const sample = async (): Promise<{ head: string; tail: string }> => {
     const size = Math.min(through, PROOF_BYTES);
     const tailStart = Math.max(0, through - PROOF_BYTES);
@@ -50,7 +56,7 @@ export async function historyNavigationProof(path: string, through: number, sign
     }
   };
   try {
-    opened = await openLogicalWire(path, signal);
+    opened ??= await openLogicalWire(path, signal);
     if (!before.isFile() || opened === undefined || !Number.isSafeInteger(through) || through < 0 ||
         BigInt(through) > before.size || through > opened.size) {
       throw new Error('history_source_changed');
@@ -69,7 +75,7 @@ export async function historyNavigationProof(path: string, through: number, sign
     signal?.throwIfAborted();
     return { identity, size: Number(before.size), mtimeNs: String(before.mtimeNs),
       ctimeNs: String(before.ctimeNs), head, tail };
-  } finally { opened?.close(); }
+  } finally { if (ownsWire) opened?.close(); }
 }
 
 export function matchesNavigationProof(saved: HistoryNavigationProof, current: HistoryNavigationProof): boolean {

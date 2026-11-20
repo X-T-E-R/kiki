@@ -1134,6 +1134,7 @@ export class SessionEventBroadcaster {
     cursor: SessionCursor,
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
+    suppressUngradedTokenDeltas?: boolean,
   ): Promise<BufferedSinceResult> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) {
@@ -1165,7 +1166,7 @@ export class SessionEventBroadcaster {
         : entries.filter(
             ({ envelope }) =>
               matchesAgentFilter(envelope, filter) &&
-              !suppressedByTranscript(envelope, transcriptGrades),
+              !suppressedByTranscript(envelope, transcriptGrades, suppressUngradedTokenDeltas),
           );
 
     const tailStart = tail[0]?.seq;

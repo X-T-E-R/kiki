@@ -1100,13 +1100,36 @@ function readMetaDiffText(repoRoot) {
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   if (probe.status !== 0) return '';
-  const diff = spawnSync('git', ['diff', '--unified=0', 'HEAD'], {
+  const workingDiff = spawnSync('git', ['diff', '--unified=0', 'HEAD'], {
     cwd: repoRoot,
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
-  return diff.status === 0 ? diff.stdout : '';
+  if (workingDiff.status === 0 && workingDiff.stdout.trim().length > 0) {
+    return workingDiff.stdout;
+  }
+  const baseCandidates = [
+    process.env.KIKI_DIFF_BASE?.trim(),
+    process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF.trim()}` : '',
+    'HEAD~1',
+  ].filter((candidate) => Boolean(candidate));
+  for (const baseRef of baseCandidates) {
+    const verify = spawnSync('git', ['rev-parse', '--verify', '--quiet', baseRef], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (verify.status !== 0) continue;
+    const rangeDiff = spawnSync('git', ['diff', '--unified=0', `${baseRef}...HEAD`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (rangeDiff.status === 0) return rangeDiff.stdout;
+  }
+  return '';
 }
 
 export function formatViolation(error) {

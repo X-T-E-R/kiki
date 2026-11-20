@@ -189,10 +189,10 @@ async function subscribeV2Reset(
 }
 
 describe('cold subagent workspace open performance and semantics', () => {
-  it('opens a 64+ MB checkpointless single-turn cold subagent across all 7 AgentWorkspace endpoints concurrently under 1500 ms with zero 50001 errors', async () => {
+  it('opens a 90+ MB checkpointless single-turn cold subagent with REST transcript <300ms, WS subscribe_v2 <300ms, and control endpoints <500ms', async () => {
     const subagentId = 'agent-299';
-    const { home, sessionId, wireBytes } = await seedColdSubagentHome('kiki-cold-subagent-64mb-', subagentId, 320, 100 * 1024);
-    expect(wireBytes).toBeGreaterThan(60 * 1024 * 1024);
+    const { home, sessionId, wireBytes } = await seedColdSubagentHome('kiki-cold-subagent-90mb-', subagentId, 460, 100 * 1024);
+    expect(wireBytes).toBeGreaterThan(88 * 1024 * 1024);
 
     const server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -255,7 +255,13 @@ describe('cold subagent workspace open performance and semantics', () => {
       expect(hooksRes.code).not.toBe(50001);
       expect(autoCompactRes.code).toBe(0);
       expect(ctxStrategyRes.code).toBe(0);
-      expect(totalWallMs).toBeLessThan(1500);
+      expect(transcriptRes.elapsedMs).toBeLessThan(300);
+      expect(wsRes.elapsedMs).toBeLessThan(300);
+      expect(capRes.elapsedMs).toBeLessThan(500);
+      expect(switchRes.elapsedMs).toBeLessThan(500);
+      expect(hooksRes.elapsedMs).toBeLessThan(500);
+      expect(autoCompactRes.elapsedMs).toBeLessThan(500);
+      expect(ctxStrategyRes.elapsedMs).toBeLessThan(500);
     } finally {
       await server.close();
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
