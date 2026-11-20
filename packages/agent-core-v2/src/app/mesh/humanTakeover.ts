@@ -1,0 +1,95 @@
+import type {
+  HumanTakeoverConflict,
+  HumanTakeoverHolder,
+  HumanTakeoverLease,
+} from '@kiki/protocol';
+
+/** Error raised with HTTP 409 semantics when automated input collides with an active human takeover lease. */
+export class HumanControllingError extends Error {
+  readonly status = 409 as const;
+  readonly code = 'human_controlling' as const;
+  readonly targetId: string;
+  readonly holder = 'human' as const;
+  readonly expiresAt: number;
+
+  constructor(lease: Pick<HumanTakeoverLease, 'targetId' | 'expiresAt'>) {
+    super(`Target '${lease.targetId}' is currently controlled by human until ${new Date(lease.expiresAt).toISOString()}`);
+    this.name = 'HumanControllingError';
+    this.targetId = lease.targetId;
+    this.expiresAt = lease.expiresAt;
+  }
+
+  toConflictPayload(): HumanTakeoverConflict {
+    return {
+      error: 'human_controlling',
+      targetId: this.targetId,
+      holder: 'human',
+      expiresAt: this.expiresAt,
+    };
+  }
+}
+
+/** Manages per-target human vs orchestrator takeover leases so automated writes yield to human control. */
+export class HumanTakeoverManager {
+  private readonly leases = new Map<string, HumanTakeoverLease>();
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  acquire(
+    targetId: string,
+    holder: HumanTakeoverHolder,
+    ttlMs = 300_000,
+    reason?: string,
+  ): HumanTakeoverLease {
+    const acquiredAt = this.now();
+    const clampedTtl = Math.max(1000, Math.min(86_400_000, Math.floor(ttlMs)));
+    const lease: HumanTakeoverLease = {
+      targetId,
+      holder,
+      acquiredAt,
+      expiresAt: acquiredAt + clampedTtl,
+      ...(reason === undefined ? {} : { reason }),
+    };
+    this.leases.set(targetId, lease);
+    return lease;
+  }
+
+  release(targetId: string, holder?: HumanTakeoverHolder): boolean {
+    const current = this.inspect(targetId);
+    if (current === undefined) return false;
+    if (holder !== undefined && current.holder !== holder) return false;
+    this.leases.delete(targetId);
+    return true;
+  }
+
+  inspect(targetId: string): HumanTakeoverLease | undefined {
+    const lease = this.leases.get(targetId);
+    if (lease === undefined) return undefined;
+    if (lease.expiresAt <= this.now()) {
+      this.leases.delete(targetId);
+      return undefined;
+    }
+    return lease;
+  }
+
+  listActive(): readonly HumanTakeoverLease[] {
+    const currentNow = this.now();
+    const active: HumanTakeoverLease[] = [];
+    for (const [targetId, lease] of this.leases) {
+      if (lease.expiresAt <= currentNow) {
+        this.leases.delete(targetId);
+        continue;
+      }
+      active.push(lease);
+    }
+    return active.toSorted((a, b) => a.targetId.localeCompare(b.targetId));
+  }
+
+  assertWritable(targetId: string, options?: { readonly overrideHumanLease?: boolean }): void {
+    const lease = this.inspect(targetId);
+    if (lease === undefined) return;
+    if (lease.holder === 'human' && options?.overrideHumanLease !== true) {
+      throw new HumanControllingError(lease);
+    }
+  }
+}

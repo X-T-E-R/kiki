@@ -7,7 +7,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { IMemoryPersistence, type MemoryCommit, type MemoryObjectEdit, type MemoryReadView, type MemoryProvenance } from '#/persistence/interface/memoryPersistence';
 import { IMemoryScopes, type MemoryScope } from './memoryScopes';
 import { decodeMemoryEntry, type IMemoryStore, type MemoryEntry, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource, type MemoryStatus } from './memoryStore';
-import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryValidity } from './memoryMetadata';
+import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryHostApplicability, normalizeMemoryValidity, normalizeOriginHostId } from './memoryMetadata';
 import { memoryQueryCursor, memoryQueryRequest } from './memoryQuery';
 import { buildMemoryRecallIndex, rankMemoryRecall, rankMemoryRecallIndexed, type MemoryRecallEntry, type MemoryRecallIndex } from './memoryRecall';
 import { redactMemorySecrets } from './memorySafety';
@@ -53,7 +53,7 @@ function fail(code: 'revision_conflict' | 'invalid_input' | 'inactive_target' | 
 }
 function newRevision(): string { return `mem2:${randomUUID()}`; }
 function same(a: MemoryEntry, b: MemoryEntry): boolean {
-  return ['type', 'title', 'body', 'status', 'pinned', 'basis', 'validity', 'covered_by'].every((key) => JSON.stringify(a[key as keyof MemoryEntry]) === JSON.stringify(b[key as keyof MemoryEntry]));
+  return ['type', 'title', 'body', 'status', 'pinned', 'basis', 'validity', 'covered_by', 'applicability', 'origin_host_id'].every((key) => JSON.stringify(a[key as keyof MemoryEntry]) === JSON.stringify(b[key as keyof MemoryEntry]));
 }
 function beforeEntry(raw: string): MemoryEntry { return raw.startsWith('---') ? decodeMemoryEntry(raw) : JSON.parse(raw) as MemoryEntry; }
 const MAX_QUERY_VIEW_CACHE = 4;
@@ -224,6 +224,8 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const now = new Date().toISOString();
     const id = create || proposal ? `m_${randomUUID().replaceAll('-', '')}` : input.id!;
     const entry: MemoryEntry = { id, type, title, body, basis, validity, pinned: archive ? old?.pinned ?? false : input.pinned ?? (create ? false : old?.pinned) ?? false,
+      applicability: archive ? old?.applicability : input.applicability === undefined ? (create ? undefined : old?.applicability) : normalizeMemoryHostApplicability(input.applicability),
+      origin_host_id: archive ? old?.origin_host_id : input.origin_host_id === undefined ? (create ? undefined : old?.origin_host_id) : normalizeOriginHostId(input.origin_host_id),
       status: input.pending ? 'pending' : archive ? 'archived' : 'active', created: create || proposal ? now : old?.created ?? now, updated: now, revision: newRevision(), source: input.source, reason: redactMemorySecrets(input.reason.trim()),
       supersedes: input.pending ? input.action === 'supersede' || proposal ? input.id : old?.supersedes : candidate?.status === 'pending' ? undefined : old?.supersedes,
       supersedes_revision: input.pending ? input.action === 'supersede' || proposal ? input.expectedRevision : old?.supersedes_revision : undefined,

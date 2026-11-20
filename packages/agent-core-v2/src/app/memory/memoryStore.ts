@@ -11,7 +11,7 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { MemoryAuthorityAccess } from '#/persistence/memoryAuthority';
 import { IMemoryScopes, MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
 import { redactMemorySecrets } from './memorySafety';
-import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryValidity, type MemoryBasis, type MemoryValidity } from './memoryMetadata';
+import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryHostApplicability, normalizeMemoryValidity, normalizeOriginHostId, type MemoryBasis, type MemoryHostApplicability, type MemoryValidity } from './memoryMetadata';
 export * from './memoryMetadata';
 
 const encoder = new TextEncoder();
@@ -44,6 +44,8 @@ export interface MemoryEntry {
   readonly basis?: MemoryBasis;
   readonly validity?: MemoryValidity;
   readonly covered_by?: { readonly id: string; readonly revision: string };
+  readonly applicability?: MemoryHostApplicability;
+  readonly origin_host_id?: string;
   readonly revision: string;
 }
 export interface MemoryTarget {
@@ -67,6 +69,8 @@ export interface MemoryMutation {
   readonly basis?: MemoryBasis;
   readonly validity?: MemoryValidity | null;
   readonly covered_by?: { readonly id: string; readonly expected_revision: string };
+  readonly applicability?: MemoryHostApplicability;
+  readonly origin_host_id?: string;
   /** Cancels waiting and validation before journaling; a started commit finishes its catalog refresh. */
   readonly signal?: AbortSignal;
 }
@@ -195,6 +199,8 @@ export function decodeMemoryEntry(raw: string): MemoryEntry {
     basis: normalizeMemoryBasis(meta['basis']),
     validity: normalizeMemoryValidity(meta['validity']),
     covered_by: meta['covered_by'] !== undefined ? decodeCoveredBy(meta['covered_by']) : undefined,
+    applicability: normalizeMemoryHostApplicability(meta['applicability']),
+    origin_host_id: normalizeOriginHostId(meta['origin_host_id']),
     revision: revision(raw),
   };
 }
@@ -208,7 +214,8 @@ function decodeCoveredBy(value: unknown): { id: string; revision: string } {
 function mutableEqual(a: MemoryEntry, b: Omit<MemoryEntry, 'revision'>): boolean {
   return a.type === b.type && a.title === b.title && a.body === b.body && a.pinned === b.pinned && a.status === b.status
     && JSON.stringify(a.basis) === JSON.stringify(b.basis) && JSON.stringify(a.validity) === JSON.stringify(b.validity)
-    && JSON.stringify(a.covered_by) === JSON.stringify(b.covered_by);
+    && JSON.stringify(a.covered_by) === JSON.stringify(b.covered_by)
+    && a.applicability === b.applicability && a.origin_host_id === b.origin_host_id;
 }
 
 export class MemoryStore extends Disposable implements IMemoryStore {
@@ -381,6 +388,8 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       if (old?.status === 'pending' && old.supersedes !== undefined && !input.pending && (superseded === undefined || revision(superseded.text) !== old.supersedes_revision)) throw new MemoryDomainError('revision_conflict', 'Memory revision conflict', 'Read the predecessor before approving the proposal.');
       const entry: Omit<MemoryEntry, 'revision'> = {
         id, type, title, body, basis, validity, covered_by,
+        applicability: archive ? preserved?.applicability : input.applicability === undefined ? (isCreate ? undefined : old?.applicability) : normalizeMemoryHostApplicability(input.applicability),
+        origin_host_id: archive ? preserved?.origin_host_id : input.origin_host_id === undefined ? (isCreate ? undefined : old?.origin_host_id) : normalizeOriginHostId(input.origin_host_id),
         status: input.pending ? 'pending' : input.action === 'archive' ? 'archived' : 'active',
         pinned: archive ? preserved?.pinned ?? false : input.pinned ?? (isCreate ? false : old?.pinned) ?? false,
         created: isCreate || isProposal ? now : old?.created ?? now, updated: now,

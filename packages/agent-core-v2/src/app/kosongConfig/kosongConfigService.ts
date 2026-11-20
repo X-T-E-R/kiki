@@ -5,6 +5,7 @@ import { ILogService } from '#/_base/log/log';
 import { retryBackoffDelays, sleepForRetry } from '#/_base/utils/retry';
 
 import { type ConfigSectionChangedEvent, IConfigService } from '#/app/config/config';
+import { CREDENTIALS_POOL_SECTION } from '#/app/config/credentialPool';
 import { describeUnknownError } from '#/app/config/configPure';
 import { deepEqual } from '#/_base/utils/recordDiff';
 import { IModelService, type ModelsSection } from '#/kosong/model/model';
@@ -97,6 +98,7 @@ export class KosongConfigService extends Disposable implements IKosongConfigServ
   private onConfigSectionChanged(e: ConfigSectionChangedEvent): void {
     switch (e.domain) {
       case PROVIDERS_SECTION:
+      case CREDENTIALS_POOL_SECTION:
         this.providers.loadAll(
           this.config.get<ProvidersSection>(PROVIDERS_SECTION) ?? {},
           this.providers.getDefaultProvider(),

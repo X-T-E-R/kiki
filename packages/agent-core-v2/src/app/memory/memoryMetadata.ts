@@ -14,6 +14,21 @@ export const memoryCoveredBySchema = z.object({ id: z.string().regex(/^m_[a-zA-Z
 export type MemoryBasis = z.infer<typeof memoryBasisSchema>;
 export type MemoryValidity = z.infer<typeof memoryValiditySchema>;
 export type MemoryApplicability = 'expired' | 'recheck' | 'unrecorded';
+export type MemoryHostApplicability = 'portable' | 'machine-local';
+
+export function normalizeMemoryHostApplicability(value: unknown): MemoryHostApplicability | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'portable' || value === 'machine-local') return value;
+  throw new MemoryDomainError('invalid_input', 'Invalid memory host applicability', 'Use portable or machine-local.');
+}
+
+export function normalizeOriginHostId(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new MemoryDomainError('invalid_input', 'Invalid origin host id', 'Provide a non-empty host identifier.');
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 128) throw new MemoryDomainError('invalid_input', 'Invalid origin host id', 'Provide a host identifier between 1 and 128 characters.');
+  return trimmed;
+}
 
 export function memoryApplicability(entry: { readonly validity?: MemoryValidity }, now = Date.now()): MemoryApplicability {
   if (entry.validity?.until !== undefined && Date.parse(entry.validity.until) <= now) return 'expired';

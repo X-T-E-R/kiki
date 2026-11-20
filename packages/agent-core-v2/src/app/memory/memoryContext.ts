@@ -8,11 +8,12 @@ import { memoryAdviceKey, type MemoryAdvice, type MemoryAdviceUse } from './memo
 
 export function memoryResult(entry: MemoryEntry, scope: MemoryScope) {
   return { ...entry, scope, target: { scope: scope.kind, id: entry.id, expected_revision: entry.revision },
-    applicability: memoryApplicability(entry), basis_kind: entry.basis?.kind ?? 'unknown', complete: true as const };
+    applicability: memoryApplicability(entry), host_applicability: entry.applicability ?? 'portable', basis_kind: entry.basis?.kind ?? 'unknown', complete: true as const };
 }
 export function memoryResultReference(entry: MemoryEntry, scope: MemoryScope) {
   return { id: entry.id, title: entry.title, type: entry.type, status: entry.status, scope, revision: entry.revision,
     target: { scope: scope.kind, id: entry.id, expected_revision: entry.revision }, applicability: memoryApplicability(entry),
+    host_applicability: entry.applicability ?? 'portable',
     basis_kind: entry.basis?.kind ?? 'unknown', complete: false as const, read: { id: entry.id, scope: scope.kind } };
 }
 export function memoryTextFits(text: string, characters: number, tokens: number): boolean {

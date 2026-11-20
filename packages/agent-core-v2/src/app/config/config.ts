@@ -74,12 +74,15 @@ export type ConfigCollectDiagnostics = (rawSection: unknown) => readonly ConfigD
 /** Combines a section's raw TOML layers; a callback receives the default deep merge as its third argument. */
 export type ConfigLayerMerge = 'union' | ((base: unknown, home: unknown, merged: unknown) => unknown);
 
+export type ConfigSyncScope = 'portable' | 'machine';
+
 export interface ConfigSection<T = unknown> {
   readonly domain: string;
   readonly schema?: ConfigSchema<T>;
   readonly defaultValue?: T;
   readonly merge: ConfigMerge<T>;
   readonly scope: ConfigScope;
+  readonly syncScope?: ConfigSyncScope;
   readonly env?: AnyEnvBindings;
   readonly stripEnv?: ConfigStripEnv<T>;
   readonly fromToml?: ConfigFromToml;
@@ -93,6 +96,7 @@ export interface RegisterSectionOptions<T> {
   readonly defaultValue?: T;
   readonly merge?: ConfigMerge<T>;
   readonly scope?: ConfigScope;
+  readonly syncScope?: ConfigSyncScope;
   readonly env?: EnvBindings<T>;
   readonly stripEnv?: ConfigStripEnv<T>;
   readonly fromToml?: ConfigFromToml;
@@ -166,7 +170,7 @@ export interface ConfigDiagnostic {
 }
 
 export type ResolvedConfig = Record<string, unknown>;
-export type ConfigOrigin = 'default' | 'preset' | 'base' | 'home' | 'env' | 'memory';
+export type ConfigOrigin = 'default' | 'preset' | 'base' | 'home' | 'local' | 'env' | 'memory';
 
 export enum ConfigScope {
   Core = 'core',
@@ -176,6 +180,7 @@ export enum ConfigScope {
 
 export enum ConfigTarget {
   User = 'user',
+  Local = 'local',
   Memory = 'memory',
 }
 

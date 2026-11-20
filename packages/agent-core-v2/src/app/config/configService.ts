@@ -32,7 +32,7 @@ import {
 } from './config';
 import { deepEqual, deepMerge, describeUnknownError, isPlainObject } from './configPure';
 import { readConfigDocumentSnapshot, writeConfigDocument } from './configDocument';
-import { leafOrigins, mergeConfigLayers, selectSpaceBaseConfig } from './configLayers';
+import { leafOrigins, LOCAL_CONFIG_KEY, mergeConfigLayers, selectSpaceBaseConfig } from './configLayers';
 import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import {
   ConfigSectionContribution,
@@ -132,6 +132,7 @@ function isSameSection(
     existing.schema === schema &&
     existing.merge === (options.merge ?? deepMerge) &&
     existing.scope === (options.scope ?? ConfigScope.Core) &&
+    existing.syncScope === options.syncScope &&
     existing.env === (options.env as ConfigSection['env']) &&
     existing.stripEnv === (options.stripEnv as ConfigSection['stripEnv']) &&
     existing.fromToml === options.fromToml &&
@@ -232,6 +233,7 @@ export class ConfigRegistry extends Disposable implements IConfigRegistry {
       defaultValue: options.defaultValue,
       merge: (options.merge ?? deepMerge) as ConfigMerge<unknown>,
       scope: options.scope ?? ConfigScope.Core,
+      syncScope: options.syncScope,
       env: options.env as ConfigSection['env'],
       stripEnv: options.stripEnv as ConfigSection['stripEnv'],
       fromToml: options.fromToml,
@@ -299,8 +301,10 @@ export class ConfigService extends Disposable implements IConfigService {
   private raw: ResolvedConfig = {};
   private baseSnake: ResolvedConfig = {};
   private homeSnake: ResolvedConfig = {};
+  private localSnake: ResolvedConfig = {};
   private baseRaw: ResolvedConfig = {};
   private homeRaw: ResolvedConfig = {};
+  private localRaw: ResolvedConfig = {};
   private presetSnake: ResolvedConfig = {};
   private presetRaw: ResolvedConfig = {};
   private validated: ResolvedConfig = {};
@@ -355,7 +359,7 @@ export class ConfigService extends Disposable implements IConfigService {
       this.watchRetries = 0;
       this.scheduleWatchReload();
     };
-    for (const key of [this.configKey, CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY]) {
+    for (const key of [this.configKey, LOCAL_CONFIG_KEY, CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY]) {
       this._register(this.documentStore.watch(CONFIG_SCOPE, key)(changed));
     }
     const baseStore = this.bootstrap.baseConfigDocumentStore;
@@ -408,6 +412,7 @@ export class ConfigService extends Disposable implements IConfigService {
           };
         };
         const home = await read(this.documentStore, this.configKey);
+        const localSnapshot = await readConfigDocumentSnapshot(this.documentStore, LOCAL_CONFIG_KEY, { recoverMissing: false });
         const baseStore = this.bootstrap.baseConfigDocumentStore;
         const inheritConfig = this.bootstrap.space?.inherit.config !== false;
         const selections = this.bootstrap.space?.sourceSelections?.selections;
@@ -419,12 +424,12 @@ export class ConfigService extends Disposable implements IConfigService {
         }
         const baseData = base?.data ?? this.baseSnake;
         if (this.watchClosed) return;
-        if (!this.tainted && deepEqual(home.data, this.homeSnake) && deepEqual(baseData, this.baseSnake)) {
+        if (!this.tainted && deepEqual(home.data, this.homeSnake) && deepEqual(localSnapshot.data, this.localSnake) && deepEqual(baseData, this.baseSnake)) {
           this.watchCandidate = undefined;
           this.watchRetries = 0;
           return;
         }
-        const candidate = JSON.stringify([home.text, base?.text]);
+        const candidate = JSON.stringify([home.text, localSnapshot.text, base?.text]);
         if (candidate !== this.watchCandidate) {
           this.watchCandidate = candidate;
           this.watchRetries = 0;
@@ -476,7 +481,7 @@ export class ConfigService extends Disposable implements IConfigService {
 
   origins(domain: string): Record<string, ConfigOrigin> {
     const sectionEnv = this.registry.getSection(domain)?.env;
-    const inputs = [this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], this.presetRaw[domain], sectionEnv];
+    const inputs = [this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], this.presetRaw[domain], this.localRaw[domain], sectionEnv];
     const cached = this.originsCache.get(domain);
     if (cached !== undefined && cached.inputs.every((input, index) => input === inputs[index]) && this.envUnchanged(cached.envNames, cached.envValues)) {
       return cached.value;
@@ -494,7 +499,7 @@ export class ConfigService extends Disposable implements IConfigService {
       for (const [key, entry] of Object.entries(bindings)) if (entry !== undefined) walk(entry, [...path, key]);
     };
     if (sectionEnv !== undefined) walk(sectionEnv, []);
-    const value = leafOrigins(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], envFields, inputs[5]);
+    const value = leafOrigins(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], envFields, inputs[5], inputs[6]);
     this.originsCache.set(domain, { inputs, envNames, envValues: envNames.map((name) => this.bootstrap.getEnv(name)), value });
     return value;
   }
@@ -608,6 +613,23 @@ export class ConfigService extends Disposable implements IConfigService {
       this.commit('set', [domain]);
       return;
     }
+    if (target === ConfigTarget.Local) {
+      await this.enqueueStateTransition(async () => {
+        this.assertPersistable();
+        await this.persistLocalDomains([domain], (stagedRaw, stagedRawSnake) => {
+          const next = this.registry.merge(domain, stagedRaw[domain], patch);
+          const stripped = this.stripEnv(domain, next, stagedRaw, stagedRawSnake);
+          if (stripped === undefined) {
+            delete stagedRaw[domain];
+          } else {
+            this.validateWrite(domain, this.validateLocalLayeredWrite(domain, stripped));
+            stagedRaw[domain] = stripped;
+          }
+        });
+        this.rebuildEffective('set', [domain]);
+      });
+      return;
+    }
     await this.enqueueStateTransition(async () => {
       this.assertPersistable();
       await this.persist(domain, (stagedRaw, stagedRawSnake) => {
@@ -640,6 +662,22 @@ export class ConfigService extends Disposable implements IConfigService {
         this.memory[domain] = this.validateWrite(domain, this.registry.validate(domain, effectiveValue));
       }
       this.commit('set', [domain]);
+      return;
+    }
+    if (target === ConfigTarget.Local) {
+      await this.enqueueStateTransition(async () => {
+        this.assertPersistable();
+        await this.persistLocalDomains([domain], (stagedRaw, stagedRawSnake) => {
+          const stripped = this.stripEnv(domain, effectiveValue, stagedRaw, stagedRawSnake);
+          if (stripped === undefined) {
+            delete stagedRaw[domain];
+          } else {
+            this.validateWrite(domain, this.validateLocalLayeredWrite(domain, stripped));
+            stagedRaw[domain] = stripped;
+          }
+        }, true);
+        this.rebuildEffective('set', [domain]);
+      });
       return;
     }
     await this.enqueueStateTransition(async () => {
@@ -722,6 +760,15 @@ export class ConfigService extends Disposable implements IConfigService {
 
   private validateLayeredWrite(domain: string, value: unknown): unknown {
     const lower = transformTomlData(this.mergeLayers(this.presetSnake, this.baseSnake), this.registry);
+    const candidate = this.registry.merge(domain, lower[domain], value);
+    return this.registry.validate(domain, candidate);
+  }
+
+  private validateLocalLayeredWrite(domain: string, value: unknown): unknown {
+    const lower = transformTomlData(
+      this.mergeLayers(this.mergeLayers(this.presetSnake, this.baseSnake), this.homeSnake),
+      this.registry,
+    );
     const candidate = this.registry.merge(domain, lower[domain], value);
     return this.registry.validate(domain, candidate);
   }
@@ -823,6 +870,7 @@ export class ConfigService extends Disposable implements IConfigService {
     this.diagnosticsList.length = 0;
     if (this.bootstrap.homeDiagnostic !== undefined) this.pushDiagnostic({ severity: 'error', message: this.bootstrap.homeDiagnostic });
     let fileData: ResolvedConfig = {};
+    let localData: ResolvedConfig = {};
     let failed = false;
     try {
       if (source === 'reload' && !skipCredentialMigration && !this.bootstrap.configReadOnly) {
@@ -831,12 +879,14 @@ export class ConfigService extends Disposable implements IConfigService {
       }
       const readOptions = this.bootstrap.configReadOnly ? { recoverMissing: false } : undefined;
       const configSnapshot = await readConfigDocumentSnapshot(this.documentStore, this.configKey, readOptions);
+      const localSnapshot = await readConfigDocumentSnapshot(this.documentStore, LOCAL_CONFIG_KEY, { recoverMissing: false });
       const credentialSnapshot = await readConfigDocumentSnapshot(this.documentStore, CREDENTIALS_KEY, readOptions);
       const legacySnapshot = await readConfigDocumentSnapshot(this.documentStore, LEGACY_CREDENTIALS_KEY, { recoverMissing: false });
       if (legacySnapshot.text !== undefined && credentialSnapshot.text !== undefined && legacySnapshot.text !== credentialSnapshot.text) {
         throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Old and new credentials.toml differ; inspect both files before loading.');
       }
       fileData = mergeConfigCredentials(configSnapshot.data, credentialSnapshot.text === undefined ? legacySnapshot.data : credentialSnapshot.data);
+      localData = localSnapshot.data;
     } catch (error) {
       failed = true;
       const message =
@@ -894,15 +944,19 @@ export class ConfigService extends Disposable implements IConfigService {
     }
     this.baseSnake = cloneRecord(baseData);
     this.homeSnake = cloneRecord(fileData);
+    this.localSnake = cloneRecord(localData);
     this.baseRaw = transformTomlData(this.baseSnake, this.registry);
     this.homeRaw = transformTomlData(this.homeSnake, this.registry);
+    this.localRaw = transformTomlData(this.localSnake, this.registry);
     const preset = this.bootstrap.space?.preset;
     if (preset !== undefined && findSpacePreset(preset) === undefined) {
       this.pushDiagnostic({ severity: 'warning', message: `Unknown space preset ${preset}; using Kiki defaults` });
     }
     this.presetSnake = this.bootstrap.space === undefined ? {} : spacePresetDefaults(preset);
     this.presetRaw = transformTomlData(this.presetSnake, this.registry);
-    const nextRawSnake = cloneRecord(this.mergeLayers(this.mergeLayers(this.presetSnake, baseData), fileData));
+    const nextRawSnake = cloneRecord(
+      this.mergeLayers(this.mergeLayers(this.mergeLayers(this.presetSnake, baseData), fileData), localData),
+    );
     for (const section of this.registry.listSections()) {
       if (section.collectDiagnostics === undefined) continue;
       const rawSection = nextRawSnake[camelToSnake(section.domain)];
@@ -1260,10 +1314,39 @@ export class ConfigService extends Disposable implements IConfigService {
       throw error;
     }
     this.homeSnake = cloneRecord(stagedRawSnake);
-    const layered = this.bootstrap.space !== undefined || this.bootstrap.baseConfigDocumentStore !== undefined;
+    const layered = this.bootstrap.space !== undefined || this.bootstrap.baseConfigDocumentStore !== undefined || Object.keys(this.localSnake).length > 0;
     this.homeRaw = layered ? transformTomlData(this.homeSnake, this.registry) : stagedRaw;
-    this.rawSnake = layered ? this.mergeLayers(this.mergeLayers(this.presetSnake, this.baseSnake), stagedRawSnake) : stagedRawSnake;
+    this.rawSnake = layered
+      ? this.mergeLayers(this.mergeLayers(this.mergeLayers(this.presetSnake, this.baseSnake), stagedRawSnake), this.localSnake)
+      : stagedRawSnake;
     this.raw = layered ? transformTomlData(this.rawSnake, this.registry) : stagedRaw;
+  }
+
+  private async persistLocalDomains(
+    domains: readonly string[],
+    rebase: (stagedRaw: ResolvedConfig, stagedRawSnake: ResolvedConfig) => void,
+    replaceDomain = false,
+  ): Promise<void> {
+    this.assertPersistable();
+    const snapshot = await readConfigDocumentSnapshot(this.documentStore, LOCAL_CONFIG_KEY, { recoverMissing: false });
+    const stagedRawSnake = cloneRecord(snapshot.data);
+    const stagedRaw = transformTomlData(stagedRawSnake, this.registry);
+    rebase(stagedRaw, stagedRawSnake);
+    for (const domain of domains) {
+      if (replaceDomain) {
+        delete stagedRawSnake[camelToSnake(domain)];
+      }
+      applySectionToToml(stagedRawSnake, domain, stagedRaw[domain], this.registry);
+    }
+    await writeConfigDocument(this.documentStore, LOCAL_CONFIG_KEY, snapshot.data, snapshot.text, stagedRawSnake);
+    this.localSnake = cloneRecord(stagedRawSnake);
+    this.localRaw = transformTomlData(this.localSnake, this.registry);
+    this.rawSnake = this.mergeLayers(
+      this.mergeLayers(this.mergeLayers(this.presetSnake, this.baseSnake), this.homeSnake),
+      this.localSnake,
+    );
+    this.raw = transformTomlData(this.rawSnake, this.registry);
+    this.invalidateFresh();
   }
 }
 
