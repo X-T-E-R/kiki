@@ -103,6 +103,7 @@ import {
 } from './middleware/hostnames';
 import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middleware/origin';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
+import { createWireCompressionHook } from './middleware/wireCompression';
 import { createKimiDeviceId } from '@kiki/oauth';
 import { loadOrCreateLocalOwnerToken } from './services/auth/localOwner';
 import { ConnectionAdmission, AdmissionError } from './services/connections/admission';
@@ -791,6 +792,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     reply.header('x-content-type-options', 'nosniff');
     return payload;
   });
+  app.addHook('onSend', createWireCompressionHook({ env: opts.env }));
   registerWebAccessRoutes(app, web);
   const storageController = new StorageMigrationController(createMailboxMigrationService(homeDir), 'normal');
   registerStorageMigrationRoutes(app, storageController);
@@ -1272,6 +1274,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessionViewBroadcaster: broadcaster,
     sessionViewTranscriptService: transcriptService,
     peerBridgeRegistry,
+    env: opts.env,
   });
   wssKlient.peerServer.on('connection', (socket) => {
     socket.on('message', (raw) => {
@@ -1351,6 +1354,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     fsWatchBridge,
     enableTerminals,
     logger,
+    env: opts.env,
   });
   const { server: wssPanelStreams, closeStream: closePanelStream } = createPluginPanelStreamServer(core);
   app.addHook('preClose', () => {
@@ -1537,7 +1541,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   catch (error) { if (startup === undefined) await close(); throw error; }
   remoteConnections.start();
   if (threadBridge !== undefined) {
-    outboundPeerBridge = new OutboundPeerBridgeClient(remoteConnections, threadBridge, shutdownController.signal);
+    outboundPeerBridge = new OutboundPeerBridgeClient(remoteConnections, threadBridge, shutdownController.signal, undefined, { env: opts.env });
     outboundPeerBridge.start();
   }
   usageExport.start();

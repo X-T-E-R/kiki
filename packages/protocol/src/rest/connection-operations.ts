@@ -30,6 +30,7 @@ export const CONNECTION_OPERATIONS = {
   transcriptDetail: ['GET', '/sessions/{sessionId}/transcript/detail'], transcriptDetails: ['GET', '/sessions/{sessionId}/transcript/details'],
   transcriptOps: ['GET', '/sessions/{sessionId}/transcript/ops'], transcriptPlan: ['GET', '/sessions/{sessionId}/transcript/plan'],
   procedure: ['POST', '/klient/call'],
+  procedureBatch: ['POST', '/klient/batch'],
   prompts: ['GET', '/sessions/{sessionId}/prompts'], prompt: ['POST', '/sessions/{sessionId}/prompts'],
   promptRead: ['GET', '/sessions/{sessionId}/prompts/{promptId}'],
   promptResume: ['POST', '/sessions/{sessionId}/prompts/{promptId}:resume'], promptAbort: ['POST', '/sessions/{sessionId}/prompts/{promptId}:abort'],

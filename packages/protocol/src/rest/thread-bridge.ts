@@ -106,8 +106,10 @@ export const peerBridgeInstallSchema = z.object({
   endpoint: z.string().url().max(2048).optional(),
 }).strict();
 export type PeerBridgeInstall = z.infer<typeof peerBridgeInstallSchema>;
+export const PEER_BRIDGE_CAPABILITY_CHUNKED_V1 = 'chunked_v1';
 export const peerBridgeAttachPayloadSchema = z.object({
   operations: z.array(z.enum(['list', 'read', 'send', 'wait', 'create', 'tools_list', 'tools_call'])).min(1).max(7).optional(),
+  capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),
 }).strict();
 export type PeerBridgeAttachPayload = z.infer<typeof peerBridgeAttachPayloadSchema>;
 export const peerBridgeResponsePayloadSchema = z.object({
@@ -115,3 +117,10 @@ export const peerBridgeResponsePayloadSchema = z.object({
   envelope: z.object({ code: z.number().int(), msg: z.string(), data: z.unknown().optional() }).passthrough(),
 }).strict();
 export type PeerBridgeResponsePayload = z.infer<typeof peerBridgeResponsePayloadSchema>;
+export const peerBridgeResponseChunkPayloadSchema = z.object({
+  seq: z.number().int().min(0),
+  total: z.number().int().min(1),
+  status: z.number().int().min(200).max(599).optional(),
+  chunk: z.string(),
+}).strict();
+export type PeerBridgeResponseChunkPayload = z.infer<typeof peerBridgeResponseChunkPayloadSchema>;

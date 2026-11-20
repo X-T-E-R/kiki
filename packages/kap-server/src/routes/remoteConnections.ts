@@ -154,13 +154,75 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     const id = (req.params as { connectionId: string }).connectionId;
     const input = connectionBrokerInputSchema.parse(req.body);
     if (['media', 'file', 'fileUpload', 'appearanceAsset', 'personaAvatar', 'mediaPreview', 'htmlPreviewResource', 'documentPreviewAsset'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'use_explicit_attachment_stream', req.id));
-    const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {}; let detachWeb = () => {};
+    const controller = new AbortController();
+    let batchReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let batchStream: Readable | undefined;
+    const stop = () => {
+      if (!reply.raw.writableEnded) {
+        controller.abort();
+        void batchReader?.cancel().catch(() => {});
+        batchStream?.destroy();
+      }
+    };
+    let release = () => {};
+    let detachWeb = () => {};
+    let streaming = false;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      detachWeb();
+      reply.raw.off('close', stop);
+      release();
+    };
     reply.raw.once('close', stop);
     try {
-      detachWeb = attachWebSharedConnection(req, id, manager, web, () => controller.abort(new AdmissionError(403, 'connection_not_shared')));
+      detachWeb = attachWebSharedConnection(req, id, manager, web, () => {
+        const err = new AdmissionError(403, 'connection_not_shared');
+        controller.abort(err);
+        void batchReader?.cancel(err).catch(() => {});
+        batchStream?.destroy(err);
+      });
       const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation);
       const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
+      if (input.operation === 'procedureBatch') {
+        if (response.status === 404 || response.status === 405 || response.status === 501) {
+          await response.body?.cancel().catch(() => {});
+          return await reply.code(response.status).send(errEnvelope(40401, 'batch_not_supported', req.id));
+        }
+        const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+        if (response.ok && contentType.includes('application/x-ndjson') && response.body !== null) {
+          const reader = response.body.getReader();
+          batchReader = reader;
+          const stream = Readable.from((async function* () {
+            try {
+              let total = 0;
+              for (;;) {
+                const next = await reader.read();
+                if (next.done) break;
+                total += next.value.byteLength;
+                if (total > BROKER_BODY_BYTES) throw new AdmissionError(502, 'broker_batch_response_too_large');
+                yield next.value;
+              }
+            } finally {
+              await reader.cancel().catch(() => {});
+              reader.releaseLock();
+              cleanup();
+            }
+          })());
+          batchStream = stream;
+          stream.once('close', cleanup);
+          streaming = true;
+          reply.raw.socket?.setNoDelay(true);
+          return await reply
+            .code(response.status)
+            .type('application/x-ndjson; charset=utf-8')
+            .header('cache-control', 'no-cache')
+            .header('x-accel-buffering', 'no')
+            .send(stream);
+        }
+      }
       const cap = reading ? SESSION_READ_BODY_BYTES : input.operation === 'fsRead' ? BROKER_FS_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap, lease.signal);
       if (input.operation === 'pluginPanelDocument' && mintPanelDocument !== undefined && response.ok) {
@@ -172,12 +234,13 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       }
       return await reply.code(response.status).send(body);
     } catch (error) {
+      cleanup();
       const reason = controller.signal.reason;
       if (reason instanceof AdmissionError) return await reply.code(reason.status).send(errEnvelope(40101, reason.reason, req.id));
       if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));
       throw error;
     }
-    finally { detachWeb(); reply.raw.off('close', stop); release(); }
+    finally { if (!streaming) cleanup(); }
   });
   app.register(async (uploads) => {
     await uploads.register(multipart, { limits: { fileSize: Number.MAX_SAFE_INTEGER, files: 1 } });

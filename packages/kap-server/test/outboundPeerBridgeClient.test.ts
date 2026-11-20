@@ -1,10 +1,12 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { RemoteConnection } from '@kiki/protocol';
+import { PEER_BRIDGE_CAPABILITY_CHUNKED_V1, type RemoteConnection } from '@kiki/protocol';
+import type { KlientFrame } from '@kiki/klient/host';
 import type { RemoteConnectionManager } from '../src/services/connections/manager';
 import { OutboundPeerBridgeClient } from '../src/services/threadBridge/outboundPeerBridgeClient';
 import type { SpaceThreadBridge } from '../src/services/threadBridge/bridge';
+import { PeerBridgeConnection, PeerBridgeRegistry } from '../src/transport/klient/peerBridgeSocket';
 
 interface Frame {
   readonly type?: string;
@@ -88,7 +90,7 @@ async function fixture(random: () => number = () => 0): Promise<Fixture> {
       try { frame = JSON.parse(Buffer.from(raw as Buffer).toString('utf8')) as Frame; }
       catch { return; }
       if (frame.type === 'bridge_attach') {
-        expect(frame.data).toEqual({});
+        expect(frame.data).toEqual({ capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] });
         socket.send(JSON.stringify({ type: 'bridge_attached', id: frame.id, data: { operations: ['list', 'read', 'send', 'wait'] } }));
         attachments.push({ socket, index });
       } else if (frame.type === 'ping') {
@@ -277,5 +279,302 @@ describe('outbound peer bridge reconnect policy', () => {
     if (retryHandle !== undefined) clearTimeout(retryHandle);
     await waitUntil(() => f.sockets.length === 1 && f.attachedCount() === 1);
     expect(f.failed).not.toHaveBeenCalled();
+  });
+});
+
+describe('PeerBridge chunked_v1 framing and two-lane anti-HOL scheduler', () => {
+  const validBridgeReq = {
+    bridgeId: '55555555-5555-4555-8555-555555555555',
+    revision: 1,
+    source: { hostId: 'source-host', workspaceId: 'ws-1', sessionId: 'sess-1' },
+  };
+  const validTarget = { hostId: 'target-host', workspaceId: 'ws-2', sessionId: 'sess-2' };
+
+  it('transfers a 1.5 MiB tools_call response in 64 KiB chunks while a concurrent wait/list overtakes it mid-flight', async () => {
+    const grantId = '11111111-1111-4111-8111-111111111111';
+    const registry = new PeerBridgeRegistry();
+    const receivedFrames: Array<{ type: string; id?: string; seq?: number; total?: number; at: number }> = [];
+    const sockets: WebSocket[] = [];
+    const connections: PeerBridgeConnection[] = [];
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/thread-bridges/peer/outbound') {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ code: 0, msg: 'OK' }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    const wss = new WebSocketServer({ noServer: true, maxPayload: 24 * 1024 * 1024 });
+    server.on('upgrade', (request, socket, head) => {
+      wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+    });
+    wss.on('connection', (ws) => {
+      sockets.push(ws);
+      const conn = new PeerBridgeConnection(grantId, registry, (frame) => {
+        if (ws.readyState !== WebSocket.OPEN) return false;
+        ws.send(JSON.stringify(frame));
+        return true;
+      });
+      connections.push(conn);
+      ws.on('message', (raw) => {
+        const frame = JSON.parse(Buffer.from(raw as Buffer).toString('utf8')) as KlientFrame;
+        const data = frame.data as { seq?: number; total?: number } | undefined;
+        receivedFrames.push({
+          type: frame.type,
+          id: frame.id,
+          seq: data?.seq,
+          total: data?.total,
+          at: performance.now(),
+        });
+        if (frame.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong', data: frame.data }));
+          return;
+        }
+        conn.receive(frame);
+      });
+      ws.on('close', () => conn.dispose());
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    const record = {
+      id: '22222222-2222-4222-8222-222222222222',
+      label: 'Peer chunk fixture',
+      endpoint: `http://127.0.0.1:${port}`,
+      target: { hostId: 'peer-host' },
+      credentialRef: '22222222-2222-4222-8222-222222222222',
+      purposes: ['gui', 'bridge'],
+      enabled: true,
+      backgroundSummary: false,
+      state: 'offline',
+      activeLeases: 0,
+      transport: undefined,
+    } as unknown as RemoteConnection;
+    const credential = { ownerToken: 'peer-token-one', grant: 'peer-token-one', grantId, revision: 1 };
+    const largeText = `${'你好世界🚀-'.repeat(256)}${'A'.repeat(1536 * 1024)}`;
+    const largeListText = 'L'.repeat(512 * 1024);
+    let releaseWait!: () => void;
+    const waitGate = new Promise<void>((resolve) => { releaseWait = resolve; });
+    const bridge = {
+      admission: { identity: { homeId: '66666666-6666-4666-8666-666666666666', hostId: 'target-host', protocol: 1 } },
+      onDidChange: () => ({ dispose: () => {} }),
+      ensureReversePeerBridge: vi.fn(async () => ({
+        grant: { id: '33333333-3333-4333-8333-333333333333', revision: 1 },
+        credential: 'reverse-peer-credential',
+      })),
+      revokeReversePeerBridges: vi.fn(async () => {}),
+      retry: vi.fn(async () => {}),
+      authorizeCredential: () => ({ id: 'grant-1' }),
+      attach: () => () => {},
+      inboundToolsCall: vi.fn(async () => ({ output: largeText })),
+      inboundWait: vi.fn(async () => {
+        await waitGate;
+        return { ready: true, tag: 'fast-wait' };
+      }),
+      inboundList: vi.fn(async () => ({ items: [largeListText] })),
+    } as unknown as SpaceThreadBridge;
+    const manager = {
+      list: () => [record],
+      get: () => record,
+      secrets: { read: async () => ({ ...credential }) },
+      credentialEpoch: () => 0,
+      lease: (_id: string, signal: AbortSignal) => ({ signal, release: () => {} }),
+      connect: async () => ({ record, credential: { ...credential }, transport: record }),
+      onDidChange: () => ({ dispose: () => {} }),
+      failed: vi.fn(),
+      pollSummaries: vi.fn(async () => {}),
+    } as unknown as RemoteConnectionManager;
+
+    const client = new OutboundPeerBridgeClient(manager, bridge, new AbortController().signal, () => 0);
+    try {
+      client.start();
+      await waitUntil(() => registry.isAttached(grantId, 'tools_call'));
+      expect(connections[0]!.supportsChunkedResponses()).toBe(true);
+
+      const toolsPromise = registry.forward(
+        grantId,
+        'tools_call',
+        'reverse-peer-credential',
+        { ...validBridgeReq, remoteName: 'big_tool', arguments: {}, callId: 'call-1' },
+        new AbortController().signal,
+      );
+      const waitPromise = registry.forward(
+        grantId,
+        'wait',
+        'reverse-peer-credential',
+        { ...validBridgeReq, target: validTarget, timeoutMs: 5_000 },
+        new AbortController().signal,
+      );
+
+      await waitUntil(() => receivedFrames.some((frame) => frame.type === 'bridge_response_chunk' && frame.seq === 0));
+      const waitReleasedAt = performance.now();
+      releaseWait();
+
+      const waitReply = await waitPromise;
+      const waitSettledAt = performance.now();
+      const toolsReply = await toolsPromise;
+      const toolsSettledAt = performance.now();
+
+      expect(waitReply.status).toBe(200);
+      expect((waitReply.envelope.data as { result: { tag: string } }).result.tag).toBe('fast-wait');
+      expect(toolsReply.status).toBe(200);
+      expect((toolsReply.envelope.data as { result: { output: string } }).result.output).toBe(largeText);
+
+      const chunkFrames = receivedFrames.filter((frame) => frame.type === 'bridge_response_chunk');
+      const waitFrameIndex = receivedFrames.findIndex((frame) => frame.type === 'bridge_response');
+      const lastChunkIndex = receivedFrames.findLastIndex((frame) => frame.type === 'bridge_response_chunk');
+      expect(chunkFrames.length).toBeGreaterThanOrEqual(24);
+      expect(waitFrameIndex).toBeGreaterThan(-1);
+      expect(waitFrameIndex).toBeLessThan(lastChunkIndex);
+
+      const listReply = await registry.forward(
+        grantId,
+        'list',
+        'reverse-peer-credential',
+        { ...validBridgeReq },
+        new AbortController().signal,
+      );
+      expect(listReply.status).toBe(200);
+      expect((listReply.envelope.data as { result: { items: string[] } }).result.items[0]).toBe(largeListText);
+
+      process.stdout.write(
+        `[peerBridge] chunks=${chunkFrames.length} waitPreemptedAtFrame=${waitFrameIndex}/${lastChunkIndex} ` +
+        `waitLatency=${(waitSettledAt - waitReleasedAt).toFixed(2)}ms toolsTotal=${(toolsSettledAt - waitReleasedAt).toFixed(2)}ms\n`,
+      );
+    } finally {
+      await client.close();
+      for (const s of sockets) s.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('enforces maxResponseBytes on accumulated chunks before JSON.parse and cleans up partial buffers on abort', async () => {
+    const registry = new PeerBridgeRegistry();
+    const sent: KlientFrame[] = [];
+    const conn = new PeerBridgeConnection('grant-cap', registry, (frame) => {
+      sent.push(frame);
+      return true;
+    }, { maxToolsCallResponseBytes: 4096 });
+    conn.receive({ type: 'bridge_attach', id: 'attach-1', data: { capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] } });
+    expect(sent.at(-1)).toMatchObject({
+      type: 'bridge_attached',
+      id: 'attach-1',
+      data: { capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] },
+    });
+
+    const oversized = conn.forward('tools_call', 'cred', {}, new AbortController().signal);
+    const reqId = sent.at(-1)!.id!;
+    conn.receive({ type: 'bridge_response_chunk', id: reqId, data: { seq: 0, total: 3, status: 200, chunk: 'x'.repeat(2500) } });
+    conn.receive({ type: 'bridge_response_chunk', id: reqId, data: { seq: 1, total: 3, chunk: 'x'.repeat(2500) } });
+    await expect(oversized).rejects.toMatchObject({ status: 502, reason: 'bridge_response_too_large' });
+
+    const abortController = new AbortController();
+    const cancelled = conn.forward('tools_call', 'cred', {}, abortController.signal);
+    const cancelId = sent.at(-1)!.id!;
+    conn.receive({ type: 'bridge_response_chunk', id: cancelId, data: { seq: 0, total: 4, status: 200, chunk: '{"code":0,' } });
+    abortController.abort(new Error('caller_cancelled'));
+    await expect(cancelled).rejects.toThrow('caller_cancelled');
+    expect(sent.at(-1)).toEqual({ type: 'bridge_cancel', id: cancelId });
+    conn.dispose();
+  });
+
+  it('falls back cleanly to legacy bridge_attach and single bridge_response when talking to an older strict peer', async () => {
+    const grantId = '11111111-1111-4111-8111-111111111111';
+    const received: KlientFrame[] = [];
+    const sockets: WebSocket[] = [];
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/thread-bridges/peer/outbound') {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ code: 0, msg: 'OK' }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    const wss = new WebSocketServer({ noServer: true, maxPayload: 24 * 1024 * 1024, perMessageDeflate: false });
+    server.on('upgrade', (request, socket, head) => {
+      wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+    });
+    let attachedSocket: WebSocket | undefined;
+    wss.on('connection', (ws) => {
+      sockets.push(ws);
+      ws.on('message', (raw) => {
+        const frame = JSON.parse(Buffer.from(raw as Buffer).toString('utf8')) as KlientFrame;
+        received.push(frame);
+        if (frame.type === 'bridge_attach') {
+          if (frame.data !== null && typeof frame.data === 'object' && 'capabilities' in (frame.data as Record<string, unknown>)) {
+            ws.send(JSON.stringify({ type: 'bridge_error', id: frame.id, code: 40001, msg: 'invalid_bridge_attach' }));
+          } else {
+            ws.send(JSON.stringify({ type: 'bridge_attached', id: frame.id, data: { operations: ['tools_call'] } }));
+            attachedSocket = ws;
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    const record = {
+      id: '22222222-2222-4222-8222-222222222222',
+      label: 'Legacy peer',
+      endpoint: `http://127.0.0.1:${port}`,
+      target: { hostId: 'legacy-host' },
+      credentialRef: '22222222-2222-4222-8222-222222222222',
+      purposes: ['gui', 'bridge'],
+      enabled: true,
+      backgroundSummary: false,
+      state: 'offline',
+      activeLeases: 0,
+      transport: undefined,
+    } as unknown as RemoteConnection;
+    const credential = { ownerToken: 'peer-token-one', grant: 'peer-token-one', grantId, revision: 1 };
+    const bridge = {
+      admission: { identity: { homeId: '66666666-6666-4666-8666-666666666666', hostId: 'target-host', protocol: 1 } },
+      onDidChange: () => ({ dispose: () => {} }),
+      ensureReversePeerBridge: vi.fn(async () => ({
+        grant: { id: '33333333-3333-4333-8333-333333333333', revision: 1 },
+        credential: 'reverse-peer-credential',
+      })),
+      revokeReversePeerBridges: vi.fn(async () => {}),
+      retry: vi.fn(async () => {}),
+      authorizeCredential: () => ({ id: 'grant-1' }),
+      attach: () => () => {},
+      inboundToolsCall: vi.fn(async () => ({ output: 'B'.repeat(128 * 1024) })),
+    } as unknown as SpaceThreadBridge;
+    const manager = {
+      list: () => [record],
+      get: () => record,
+      secrets: { read: async () => ({ ...credential }) },
+      credentialEpoch: () => 0,
+      lease: (_id: string, signal: AbortSignal) => ({ signal, release: () => {} }),
+      connect: async () => ({ record, credential: { ...credential }, transport: record }),
+      onDidChange: () => ({ dispose: () => {} }),
+      failed: vi.fn(),
+      pollSummaries: vi.fn(async () => {}),
+    } as unknown as RemoteConnectionManager;
+
+    const client = new OutboundPeerBridgeClient(manager, bridge, new AbortController().signal, () => 0);
+    try {
+      client.start();
+      await waitUntil(() => attachedSocket !== undefined);
+      attachedSocket!.send(JSON.stringify({
+        type: 'bridge_request',
+        id: 'legacy-req-1',
+        data: {
+          operation: 'tools_call',
+          authorization: 'Bearer reverse-peer-credential',
+          body: { ...validBridgeReq, remoteName: 'legacy_tool', arguments: {}, callId: 'call-legacy' },
+        },
+      }));
+      await waitUntil(() => received.some((frame) => frame.type === 'bridge_response' && frame.id === 'legacy-req-1'));
+      expect(received.some((frame) => frame.type === 'bridge_response_chunk')).toBe(false);
+    } finally {
+      await client.close();
+      for (const s of sockets) s.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
