@@ -9,15 +9,22 @@ import {
   Event2,
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentPermissionModeService,
   IAppendLogStore,
+  IConfigRegistry,
   IConfigService,
   IEventService,
+  IFileSystemStorageService,
   ILogService,
   IMcpOAuthService,
+  IMemoryScopes,
+  ISessionApprovalService,
   ISessionIndex,
   ISessionIndexMirror,
   ISessionActivityView,
   ISessionInteractionService,
+  MAIN_AGENT_ID,
+  getLiveSessionById,
   ICapabilityService,
   IPluginService,
   IPluginHostService,
@@ -118,6 +125,10 @@ import { OutboundPeerBridgeClient } from './services/threadBridge/outboundPeerBr
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
+import { registerMeshRoutes } from './routes/mesh';
+import { registerSyncRoutes } from './routes/sync';
+import { MeshService } from './services/mesh/meshService';
+import { SyncService } from './services/sync/syncService';
 import { createPluginPanelStreamServer, PLUGIN_PANEL_STREAM_PATH } from './routes/pluginPanelStreams';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
 import { loadPeerTlsIdentity } from './services/connections/tlsIdentity';
@@ -1318,8 +1329,32 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     registerHostMediaPreviewRoutes(app, core, transcriptService, opts.sshManaged !== true);
   }
   const peerTls = exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true ? await preparing(loadPeerTlsIdentity(homeDir)) : undefined;
+  const bootstrapInfo = core.accessor.get(IBootstrapService);
+  const syncService = new SyncService({
+    homeDir,
+    osHomeDir: bootstrapInfo.osHomeDir,
+    configService: core.accessor.get(IConfigService),
+    configRegistry: core.accessor.get(IConfigRegistry),
+    memoryScopes: core.accessor.get(IMemoryScopes),
+  });
+  await preparing(syncService.ensureDeviceKeypair().catch(() => undefined));
+  const meshService = new MeshService({
+    homeDir,
+    storage: core.accessor.get(IFileSystemStorageService),
+    resolveSessionContext: (sessionId) => {
+      const live = getLiveSessionById(core.accessor, sessionId);
+      if (live === undefined) return undefined;
+      const approvalService = live.accessor.get(ISessionApprovalService);
+      const mainAgent = live.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+      const permissionMode = mainAgent?.accessor.get(IAgentPermissionModeService).mode ?? 'auto';
+      return { permissionMode, approvalService };
+    },
+  });
+  registerMeshRoutes(app, meshService);
+  registerSyncRoutes(app, syncService);
+  app.addHook('preClose', async () => { await meshService.close(); });
   const pairingHooks: { current?: PairingHooks } = {};
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument);
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
   const pairedBridge = threadBridge;
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));

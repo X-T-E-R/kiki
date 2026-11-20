@@ -29,13 +29,16 @@ function attachWebSharedConnection(request: object, id: string, manager: RemoteC
   if (!isWebSharedRecord(record, web)) throw new AdmissionError(403, 'connection_not_shared');
   return web!.attachConnection(id, close);
 }
-export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument): WebSocketServer {
+export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument, x25519Recipient: () => string | undefined = () => undefined): WebSocketServer {
   const pairingLimit = new PairingRateLimit();
   const respond = async <T>(requestId: string, reply: { code(status: number): unknown; send(value: unknown): unknown }, work: () => Promise<T>) => {
     try { return reply.send(okEnvelope(await work(), requestId)); }
     catch (error) { if (!(error instanceof AdmissionError)) throw error; reply.code(error.status); return reply.send(errEnvelope(40101, error.reason, requestId)); }
   };
-  app.get('/api/remote-connections/handshake', async (req, reply) => reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled, tlsFingerprint: tlsFingerprint(), platform: currentSpacePlatform(), capabilities: tlsFingerprint() === undefined ? ['handshake-mutual-proof-v1'] : ['tls-spki-pin-v1', 'handshake-mutual-proof-v1'] }, req.id)));
+  app.get('/api/remote-connections/handshake', async (req, reply) => {
+    const recipient = x25519Recipient();
+    return reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled, tlsFingerprint: tlsFingerprint(), platform: currentSpacePlatform(), capabilities: tlsFingerprint() === undefined ? ['handshake-mutual-proof-v1'] : ['tls-spki-pin-v1', 'handshake-mutual-proof-v1'], ...(recipient === undefined ? {} : { x25519Recipient: recipient }) }, req.id));
+  });
   app.post('/api/remote-connections/claim', { bodyLimit: 8192 }, async (req, reply) => respond(req.id, reply, async () => { const input = connectionClaimInputSchema.parse(req.body); return admission.claim(input.invitation, input.source); }));
   app.post('/api/remote-connections/provision', { bodyLimit: 8192 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -54,7 +57,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     return respond(req.id, reply, async () => {
       const created = await admission.createPairCode(pairCodeCreateInputSchema.parse(req.body ?? {}));
       const extras = hooks.current === undefined ? [] : await hooks.current.endpoints();
-      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations };
+      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations, trustTier: created.trustTier, meshCapabilities: created.meshCapabilities };
     });
   });
   app.post('/api/remote-connections/pair/claim', { bodyLimit: 8192 }, async (req, reply) => {
