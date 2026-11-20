@@ -396,6 +396,11 @@ internal static class Program
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Thread.Sleep(75);
+                if (action == "update" && File.Exists(Path.Combine(home, "fixture-hang-on-update")))
+                {
+                    AppendEvent("shutdown-hung|" + pid);
+                    return;
+                }
                 if (action == "update" && File.Exists(Path.Combine(home, "fixture-stderr-reader-closed-" + pid)))
                 {
                     AppendEvent("shutdown-stderr-epipe|" + pid);
@@ -987,6 +992,39 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-Equal $successPauseId $successResumeParts[3] 'Successful switch resumed with a different pause operation ID.'
     Assert-NotEqual $priorPauseId $successPauseId 'Successful switch reused the earlier paused operation ID.'
 
+    function Stop-FixtureDesktopAndServer {
+        Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+        } | ForEach-Object { try { $_.Kill() } catch {}; try { $null = $_.WaitForExit(5000) } catch {} }
+        Stop-OwnFixtureServer
+    }
+
+    function Read-SharedFileBytes([string]$Path) {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $memory = New-Object IO.MemoryStream
+            try {
+                $stream.CopyTo($memory)
+                return ,$memory.ToArray()
+            } finally {
+                $memory.Dispose()
+            }
+        } finally {
+            $stream.Dispose()
+        }
+    }
+
+    function Assert-ValidUtf8Log([string]$LogPath, [string]$ExpectedSubstring, [string]$Message) {
+        Assert-True (Test-Path -LiteralPath $LogPath -PathType Leaf) "$Message (log file missing: $LogPath)"
+        $bytes = Read-SharedFileBytes $LogPath
+        Assert-True ($bytes.Length -gt 0) "$Message (log file is empty)"
+        Assert-True (-not ($bytes -contains [byte]0)) "$Message (log file contains UTF-16LE NUL bytes)"
+        $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+        $text = $strictUtf8.GetString($bytes)
+        Assert-Contains $ExpectedSubstring $text "$Message`nLog contents:`n$text"
+    }
+
+    # 1. Broken new binary during phase='starting' automatically rolls back to the previous release
     $failureOutput = Invoke-Script $hotSwitch @(
         '-RuntimeRoot', $runtimeRoot,
         '-KikiHome', $homePath,
@@ -996,80 +1034,52 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
         '-StartupSeconds', '15'
     ) 1
     Assert-Contains 'code 23' $failureOutput 'A failed launcher did not make hot-switch fail with its launcher exit code.'
-    $failureState = Get-Content -LiteralPath (Join-Path $runtimeRoot 'hot-switch.json') -Raw | ConvertFrom-Json
-    Assert-Equal 'starting' ([string]$failureState.phase) 'A failed launch did not leave the switch recoverable at starting.'
-    $stateAfterFailure = Read-FixtureState
-    $runningAfterFailure = $stateAfterFailure.sessions.PSObject.Properties[$runningSessionId].Value
-    $priorAfterFailure = $stateAfterFailure.sessions.PSObject.Properties[$priorPausedSessionId].Value
-    Assert-Equal 'paused' ([string]$runningAfterFailure.phase) 'A failed launch lost the newly created pause state before recovery.'
-    $failedPauseId = [string]$runningAfterFailure.pauseOperationId
-    Assert-True ($failedPauseId -match '^hot-switch:[0-9a-f]{32}$') 'A failed launch did not retain its new pause operation ID.'
-    Assert-NotEqual $successPauseId $failedPauseId 'Two hot-switch attempts reused one pause operation ID.'
-    Assert-Equal $taskId ([string]$runningAfterFailure.taskId) 'A failed launch lost the original task identity.'
-    Assert-Equal $terminalReceiptId ([string]$runningAfterFailure.terminalReceiptId) 'A failed launch lost the persisted terminal receipt.'
-    Assert-Equal $notificationId ([string]$runningAfterFailure.notificationId) 'A failed launch lost the original notification ID.'
-    Assert-Equal 1 ([int]$runningAfterFailure.taskRunCount) 'A failed launch reran the original task.'
-    Assert-Equal 1 ([int]$runningAfterFailure.notificationDeliveryCount) 'A failed launch changed the already delivered notification count.'
-    Assert-Equal 'paused' ([string]$priorAfterFailure.phase) 'A failed launch changed the earlier paused session.'
-    Assert-Equal $priorPauseId ([string]$priorAfterFailure.pauseOperationId) 'A failed launch changed the earlier paused operation ID.'
-    $eventsAfterFailure = Read-FixtureEvents
-    $settledAfterFailure = @($eventsAfterFailure | Where-Object { $_ -match ('^task-settled\|{0}\|' -f [regex]::Escape($taskId)) })
-    $deliveryAfterFailure = @($eventsAfterFailure | Where-Object { $_ -match ('^notification-delivery\|{0}\|' -f [regex]::Escape($taskId)) })
-    Assert-Equal 1 $settledAfterFailure.Count 'A failed launch reran or re-settled the original task.'
-    Assert-Equal 1 $deliveryAfterFailure.Count 'A failed launch duplicated the original notification delivery.'
-    $failedManifest = Read-CurrentManifest
-    Assert-Equal $failedReleaseId ([string]$failedManifest.releaseId) 'The failed launch did not select the candidate release before reporting failure.'
-    Assert-True ($null -eq (Get-ActiveFixtureServer)) 'The failed launcher unexpectedly left a backend process running.'
-
-    $recoverOutput = Invoke-Script $hotSwitch @(
-        '-RuntimeRoot', $runtimeRoot,
-        '-KikiHome', $homePath,
-        '-Recover',
-        '-StartupSeconds', '15'
-    )
-    Assert-Contains ("Recovery complete: {0}" -f $goodReleaseId) $recoverOutput 'Recovery did not report the old release selected by the switch record.'
-    $recoverManifest = Read-CurrentManifest
-    Assert-Equal $goodReleaseId ([string]$recoverManifest.releaseId) 'Recovery did not restore the previously running release.'
+    Assert-Contains ("Rolled back to previous release {0}" -f $goodReleaseId) $failureOutput 'A failed launch did not automatically roll back to the previous release.'
+    $recoveredManifest = Read-CurrentManifest
+    Assert-Equal $goodReleaseId ([string]$recoveredManifest.releaseId) 'Automatic rollback did not restore the previously running release.'
     $recoveredServer = Wait-ForFixtureServer $goodCommit
-    Assert-Equal $goodCommit ([string]$recoveredServer.meta.build_id) 'Recovery did not launch the old build.'
-    Assert-NotEqual ([int]$goodServer.process.Id) ([int]$recoveredServer.process.Id) 'Recovery reused the failed-switch backend PID.'
+    Assert-Equal $goodCommit ([string]$recoveredServer.meta.build_id) 'Automatic rollback did not relaunch the old build.'
+    Assert-NotEqual ([int]$goodServer.process.Id) ([int]$recoveredServer.process.Id) 'Automatic rollback reused the failed-switch backend PID.'
     $recoveredState = Get-Content -LiteralPath (Join-Path $runtimeRoot 'hot-switch.json') -Raw | ConvertFrom-Json
-    Assert-Equal 'complete' ([string]$recoveredState.phase) 'Recovery did not complete the switch state record.'
+    Assert-Equal 'complete' ([string]$recoveredState.phase) 'Automatic rollback did not complete the switch state record.'
     $stateAfterRecovery = Read-FixtureState
     $runningAfterRecovery = $stateAfterRecovery.sessions.PSObject.Properties[$runningSessionId].Value
     $priorAfterRecovery = $stateAfterRecovery.sessions.PSObject.Properties[$priorPausedSessionId].Value
-    Assert-Equal 'running' ([string]$runningAfterRecovery.phase) 'Recovery did not resume the session paused by the failed switch.'
-    Assert-Equal $failedPauseId ([string]$runningAfterRecovery.pauseOperationId) 'Recovery did not use the failed switch pause operation ID.'
-    Assert-Equal $taskId ([string]$runningAfterRecovery.taskId) 'Recovery lost the original task identity.'
-    Assert-Equal $terminalReceiptId ([string]$runningAfterRecovery.terminalReceiptId) 'Recovery lost the persisted terminal receipt.'
-    Assert-Equal $notificationId ([string]$runningAfterRecovery.notificationId) 'Recovery lost the original notification ID.'
-    Assert-Equal 1 ([int]$runningAfterRecovery.taskRunCount) 'Recovery reran the original task.'
-    Assert-Equal 1 ([int]$runningAfterRecovery.notificationDeliveryCount) 'Recovery duplicated or lost the original notification delivery count.'
-    Assert-Equal 'paused' ([string]$priorAfterRecovery.phase) 'Recovery changed the earlier paused session.'
-    Assert-Equal $priorPauseId ([string]$priorAfterRecovery.pauseOperationId) 'Recovery changed the earlier paused operation ID.'
+    Assert-Equal 'running' ([string]$runningAfterRecovery.phase) 'Automatic rollback did not resume the session paused by the failed switch.'
+    $failedPauseId = [string]$runningAfterRecovery.pauseOperationId
+    Assert-True ($failedPauseId -match '^hot-switch:[0-9a-f]{32}$') 'Automatic rollback did not retain its new pause operation ID.'
+    Assert-NotEqual $successPauseId $failedPauseId 'Two hot-switch attempts reused one pause operation ID.'
+    Assert-Equal $taskId ([string]$runningAfterRecovery.taskId) 'Automatic rollback lost the original task identity.'
+    Assert-Equal $terminalReceiptId ([string]$runningAfterRecovery.terminalReceiptId) 'Automatic rollback lost the persisted terminal receipt.'
+    Assert-Equal $notificationId ([string]$runningAfterRecovery.notificationId) 'Automatic rollback lost the original notification ID.'
+    Assert-Equal 1 ([int]$runningAfterRecovery.taskRunCount) 'Automatic rollback reran the original task.'
+    Assert-Equal 1 ([int]$runningAfterRecovery.notificationDeliveryCount) 'Automatic rollback duplicated or lost the original notification delivery count.'
+    Assert-Equal 'paused' ([string]$priorAfterRecovery.phase) 'Automatic rollback changed the earlier paused session.'
+    Assert-Equal $priorPauseId ([string]$priorAfterRecovery.pauseOperationId) 'Automatic rollback changed the earlier paused operation ID.'
     $recoveredExecution = Read-FixtureExecution $recoveredServer $runningSessionId
-    Assert-Equal 'running' ([string]$recoveredExecution.phase) 'Recovery did not leave the task session running.'
-    Assert-Equal 1 ([int]$recoveredExecution.taskRunCount) 'Recovery reran the original task on the restored backend.'
-    Assert-Equal 1 ([int]$recoveredExecution.notificationDeliveryCount) 'Recovery delivered the original notification more than once.'
+    Assert-Equal 'running' ([string]$recoveredExecution.phase) 'Automatic rollback did not leave the task session running.'
+    Assert-Equal 1 ([int]$recoveredExecution.taskRunCount) 'Automatic rollback reran the original task on the restored backend.'
+    Assert-Equal 1 ([int]$recoveredExecution.notificationDeliveryCount) 'Automatic rollback delivered the original notification more than once.'
     $recoveredPriorExecution = Read-FixtureExecution $recoveredServer $priorPausedSessionId
-    Assert-Equal 'paused' ([string]$recoveredPriorExecution.phase) 'Recovery changed the prior paused session collection.'
-    Assert-Equal $priorPauseId ([string]$recoveredPriorExecution.pauseOperationId) 'Recovery changed the prior paused operation ID.'
+    Assert-Equal 'paused' ([string]$recoveredPriorExecution.phase) 'Automatic rollback changed the prior paused session collection.'
+    Assert-Equal $priorPauseId ([string]$recoveredPriorExecution.pauseOperationId) 'Automatic rollback changed the prior paused operation ID.'
 
     $eventsAfterRecovery = Read-FixtureEvents
     $allPauseEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^pause\|{0}\|hot-switch:' -f [regex]::Escape($runningSessionId)) })
     $allResumeEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^resume\|{0}\|' -f [regex]::Escape($runningSessionId)) })
     Assert-Equal 2 $allPauseEvents.Count 'The two switch attempts did not create two distinct active-session pauses.'
-    Assert-Equal 2 $allResumeEvents.Count 'The successful switch and recovery did not each resume one active-session pause.'
+    Assert-Equal 2 $allResumeEvents.Count 'The successful switch and automatic rollback did not each resume one active-session pause.'
     $allSettledEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^task-settled\|{0}\|' -f [regex]::Escape($taskId)) })
     $allDeliveryEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^notification-delivery\|{0}\|' -f [regex]::Escape($taskId)) })
     $allRecoverableLifecycleEvents = @($eventsAfterRecovery | Where-Object { $_ -match ('^lifecycle-recoverable-notification\|{0}\|work_pending=0\|task=settled$' -f [regex]::Escape($taskId)) })
-    Assert-Equal 1 $allSettledEvents.Count 'The failed launch or recovery reran the original task settlement.'
-    Assert-Equal 1 $allDeliveryEvents.Count 'The failed launch or recovery duplicated the original notification delivery.'
+    Assert-Equal 1 $allSettledEvents.Count 'The failed launch or automatic rollback reran the original task settlement.'
+    Assert-Equal 1 $allDeliveryEvents.Count 'The failed launch or automatic rollback duplicated the original notification delivery.'
     Assert-True ($allRecoverableLifecycleEvents.Count -ge 1) 'The lifecycle did not preserve the receipt-only recovery state.'
     $recoveredResumeParts = $allResumeEvents[1].Split('|')
-    Assert-Equal $failedPauseId $recoveredResumeParts[3] 'Recovery resumed a pause operation other than the failed switch pause.'
-    Assert-True ($recoveredResumeParts[2] -match '^hot-switch:[0-9a-f]{32}:resume$') 'Recovery did not record a fresh resume operation ID.'
+    Assert-Equal $failedPauseId $recoveredResumeParts[3] 'Automatic rollback resumed a pause operation other than the failed switch pause.'
+    Assert-True ($recoveredResumeParts[2] -match '^hot-switch:[0-9a-f]{32}:resume$') 'Automatic rollback did not record a fresh resume operation ID.'
 
+    # 2. Prior-pointer -Recover validation (rejects unrecorded release, accepts recorded priorPointerReleaseId)
     $pointerPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
     Invoke-Fixture $recoveredServer 'klient/call' @{
         procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
@@ -1098,6 +1108,7 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-Equal 1 ([int]$pointerExecution.notificationDeliveryCount) 'Prior-pointer recovery duplicated the notification.'
     Assert-Equal $priorPauseId ([string](Read-FixtureExecution $recoveredServer $priorPausedSessionId).pauseOperationId) 'Prior-pointer recovery changed an unrelated pause.'
 
+    # 3. Promote-First: settle timeout keeps current.json promoted to targetReleaseId so manual quit+restart boots the NEW release
     $blockedExit = Join-Path $homePath 'fixture-block-exit'
     [IO.File]::WriteAllText($blockedExit, 'pending task')
     $timeoutOutput = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath,
@@ -1106,18 +1117,141 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-Equal 'running' ([string](Read-FixtureExecution $recoveredServer $runningSessionId).phase) 'A failed switch left its session paused.'
     Assert-Equal 'paused' ([string](Read-FixtureExecution $recoveredServer $priorPausedSessionId).phase) 'Failed-switch cleanup resumed an earlier pause.'
     Assert-Equal 'complete' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Failed-switch cleanup left an unfinished pause record.'
-    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) 'Failed-switch cleanup changed the release.'
+    Assert-Equal $oldReleaseId ([string](Read-CurrentManifest).releaseId) 'Promote-First did not keep current.json promoted to targetReleaseId after settle timeout.'
     Assert-True (!$recoveredServer.process.HasExited) 'Failed-switch cleanup stopped the original service.'
     Remove-Item -LiteralPath $blockedExit
     Assert-Equal $continuedPauseId ([string]$successState.sessions[0].pauseId) 'A resumed switch replaced the original saved pause.'
 
+    # Simulate user manually quitting and relaunching Kiki: must boot the NEW target release ($oldCommit), NOT the old running release ($goodCommit)
+    Stop-FixtureDesktopAndServer
+    Invoke-Script $controller @('-Action', 'Launch', '-RuntimeRoot', $runtimeRoot) | Out-Null
+    $manualRestartServer = Wait-ForFixtureServer $oldCommit 15
+    Assert-Equal $oldCommit ([string]$manualRestartServer.meta.build_id) 'Manual quit+restart did not boot the newly promoted target release.'
+
+    # 4. -Recover behavior: prefers targetReleaseId on 'stopping' (no downgrade!), honors 'starting_failed', and honors explicit -Rollback
+    $recoverTargetPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+    Invoke-Fixture $manualRestartServer 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
+        params = @(@{ operationId = $recoverTargetPauseId })
+    } | Out-Null
+    $stoppingState = [ordered]@{
+        schemaVersion = 1; phase = 'stopping'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = $manualRestartServer.instance.server_id; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $oldReleaseId; targetReleaseId = $goodReleaseId; targetBuildId = $goodCommit; hadDesktop = $true
+        sessions = @(@{ id = $runningSessionId; pauseId = $recoverTargetPauseId })
+    }
+    [IO.File]::WriteAllText($switchStatePath, ($stoppingState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    Stop-FixtureDesktopAndServer
+    $recoverToTargetOut = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath, '-Recover', '-StartupSeconds', '15')
+    Assert-Contains ("Recovery complete: {0}" -f $goodReleaseId) $recoverToTargetOut '-Recover on stopping did not prefer targetReleaseId.'
+    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) '-Recover on stopping did not keep/select targetReleaseId in current.json.'
+    $recoverTargetServer = Wait-ForFixtureServer $goodCommit 15
+    Assert-Equal 'running' ([string](Read-FixtureExecution $recoverTargetServer $runningSessionId).phase) '-Recover to target did not resume paused session.'
+
+    # -Recover when targetReleaseId is already running (e.g. user manually restarted) clears pauses without downgrading
+    $manualTargetPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+    Invoke-Fixture $recoverTargetServer 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
+        params = @(@{ operationId = $manualTargetPauseId })
+    } | Out-Null
+    $stoppingState.sessions = @(@{ id = $runningSessionId; pauseId = $manualTargetPauseId })
+    [IO.File]::WriteAllText($switchStatePath, ($stoppingState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    $recoverRunningTargetOut = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath, '-Recover', '-StartupSeconds', '15')
+    Assert-Contains ("Recovery complete: {0}" -f $goodReleaseId) $recoverRunningTargetOut '-Recover with target already running failed.'
+    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) '-Recover with target already running altered current.json.'
+    Assert-Equal 'running' ([string](Read-FixtureExecution $recoverTargetServer $runningSessionId).phase) '-Recover with target already running did not clear pause.'
+
+    # -Recover -Rollback explicitly rolls back to oldReleaseId even when targetReleaseId is valid on 'stopping'
+    $explicitRollbackState = [ordered]@{
+        schemaVersion = 1; phase = 'stopping'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = $recoverTargetServer.instance.server_id; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $oldReleaseId; targetReleaseId = $goodReleaseId; targetBuildId = $goodCommit; hadDesktop = $true
+        sessions = @()
+    }
+    [IO.File]::WriteAllText($switchStatePath, ($explicitRollbackState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    Stop-FixtureDesktopAndServer
+    $explicitRollbackOut = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath, '-Recover', '-Rollback', '-StartupSeconds', '15')
+    Assert-Contains ("Recovery complete: {0}" -f $oldReleaseId) $explicitRollbackOut '-Recover -Rollback did not roll back to oldReleaseId.'
+    Assert-Equal $oldReleaseId ([string](Read-CurrentManifest).releaseId) '-Recover -Rollback did not restore current.json to oldReleaseId.'
+    $explicitRollbackServer = Wait-ForFixtureServer $oldCommit 15
+
+    # -Recover on starting_failed restores oldReleaseId
+    $startingFailedState = [ordered]@{
+        schemaVersion = 1; phase = 'starting_failed'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = $explicitRollbackServer.instance.server_id; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $oldReleaseId; targetReleaseId = $failedReleaseId; targetBuildId = $failedCommit; hadDesktop = $true
+        sessions = @()
+    }
+    [IO.File]::WriteAllText($switchStatePath, ($startingFailedState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    Stop-FixtureDesktopAndServer
+    $recoverRollbackOut = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath, '-Recover', '-StartupSeconds', '15')
+    Assert-Contains ("Recovery complete: {0}" -f $oldReleaseId) $recoverRollbackOut '-Recover on starting_failed did not roll back to oldReleaseId.'
+    Assert-Equal $oldReleaseId ([string](Read-CurrentManifest).releaseId) '-Recover on starting_failed did not restore current.json.'
+    $rolledBackServer = Wait-ForFixtureServer $oldCommit 15
+
+    # 5. Hung old server during stopping is bounded-stopped and switches cleanly to goodCandidate
+    $hangFlag = Join-Path $homePath 'fixture-hang-on-update'
+    [IO.File]::WriteAllText($hangFlag, 'hang')
+    $hungOldPid = [int]$rolledBackServer.process.Id
+    $hungOldInstanceFile = Join-Path (Join-Path $homePath 'server\instances') ($rolledBackServer.instance.server_id + '.json')
+    try {
+        $hungSwitchOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $goodCandidate,
+            '-ExpectedCommit', $goodCommit,
+            '-SettleSeconds', '15',
+            '-StopGraceSeconds', '2',
+            '-StartupSeconds', '15'
+        )
+    } finally {
+        if (Test-Path -LiteralPath $hangFlag) { Remove-Item -LiteralPath $hangFlag -Force }
+    }
+    Assert-Contains $goodReleaseId $hungSwitchOut 'Hung-server hot switch did not switch to goodCandidate.'
+    Assert-Contains 'force-stopping original service' $hungSwitchOut 'Hung-server hot switch did not log bounded force-stop fallback.'
+    $hungOldProc = Get-Process -Id $hungOldPid -ErrorAction SilentlyContinue
+    if ($null -ne $hungOldProc) { Assert-True $hungOldProc.HasExited 'Hung old server was not force-stopped.' }
+    Assert-True (-not (Test-Path -LiteralPath $hungOldInstanceFile -PathType Leaf)) 'Stale instance JSON of force-stopped old server was not cleaned up.'
+    $afterHungServer = Wait-ForFixtureServer $goodCommit 15
+    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) 'Hung-server switch did not keep goodReleaseId current.'
+    Assert-Equal 'running' ([string](Read-FixtureExecution $afterHungServer $runningSessionId).phase) 'Hung-server switch did not resume paused session.'
+    Assert-Equal 'complete' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Hung-server switch did not complete hot-switch.json.'
+
+    # 6. Auto-reconcile stale hot-switch.json on a new switch without requiring manual -Recover
+    $stalePauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+    Invoke-Fixture $afterHungServer 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
+        params = @(@{ operationId = $stalePauseId })
+    } | Out-Null
+    $staleState = [ordered]@{
+        schemaVersion = 1; phase = 'stopping'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = 'stale-server-id'; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $oldReleaseId; targetReleaseId = $goodReleaseId; targetBuildId = $goodCommit; hadDesktop = $true
+        sessions = @(@{ id = $runningSessionId; pauseId = $stalePauseId })
+    }
+    [IO.File]::WriteAllText($switchStatePath, ($staleState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    $reconcileSwitchOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-CandidateRoot', $oldCandidate,
+        '-ExpectedCommit', $oldCommit,
+        '-SettleSeconds', '15',
+        '-StartupSeconds', '15'
+    )
+    Assert-Contains 'Reconciling stale hot-switch record' $reconcileSwitchOut 'New switch did not auto-reconcile stale hot-switch.json.'
+    Assert-Contains $oldReleaseId $reconcileSwitchOut 'New switch after auto-reconcile did not switch to target release.'
+    $afterReconcileServer = Wait-ForFixtureServer $oldCommit 15
+    Assert-Equal 'running' ([string](Read-FixtureExecution $afterReconcileServer $runningSessionId).phase) 'Auto-reconciled switch did not leave session running.'
+    Assert-Equal 'complete' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Auto-reconciled switch did not complete state.'
+
+    # 7. Detached hot-switch promotes immediately BEFORE worker delay AND writes clean UTF-8 hot-switch.log
     $shortcutDesktopDir = Join-Path $testRoot 'DesktopShortcuts'
     Invoke-Script $controller @(
         '-Action', 'InstallShortcuts',
         '-RuntimeRoot', $runtimeRoot,
-        '-CandidateRoot', $oldCandidate,
+        '-CandidateRoot', $goodCandidate,
         '-DesktopPath', $shortcutDesktopDir,
-        '-ExpectedCommit', $oldCommit
+        '-ExpectedCommit', $goodCommit
     ) | Out-Null
     $installedHotSwitch = Join-Path $runtimeRoot 'controller\desktop-hot-switch.ps1'
     Assert-True (Test-Path -LiteralPath $installedHotSwitch -PathType Leaf) 'InstallShortcuts did not sync desktop-hot-switch.ps1 into controller/.'
@@ -1125,13 +1259,14 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
         '-RuntimeRoot', $runtimeRoot,
         '-KikiHome', $homePath,
         '-Detach',
-        '-DetachDelaySeconds', '1',
+        '-DetachDelaySeconds', '2',
         '-SettleSeconds', '15',
         '-StartupSeconds', '15'
     )
     Assert-Contains 'Detached hot-switch scheduled' $detachOutput 'Detached hot-switch did not schedule its Job-escaped worker.'
-    $detachedServer = Wait-ForFixtureServer $oldCommit 25
-    Assert-Equal $oldCommit ([string]$detachedServer.meta.build_id) 'Detached controller hot-switch did not switch to the settings.json candidate.'
+    Assert-Equal $goodReleaseId ([string](Read-CurrentManifest).releaseId) 'Detached hot-switch did not promote current.json BEFORE spawning the delayed worker.'
+    $detachedServer = Wait-ForFixtureServer $goodCommit 25
+    Assert-Equal $goodCommit ([string]$detachedServer.meta.build_id) 'Detached controller hot-switch did not switch to the settings.json candidate.'
     $detachWaitDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $detachWaitDeadline) {
         $detachState = Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json
@@ -1139,9 +1274,54 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
         Start-Sleep -Milliseconds 200
     }
     Assert-Equal 'complete' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Detached hot-switch did not complete its state record.'
+    $detachLogPath = Join-Path $runtimeRoot 'hot-switch.log'
+    Assert-ValidUtf8Log $detachLogPath $goodReleaseId 'Detached hot-switch.log was not clean UTF-8 or missed completion output.'
+
+    # Detached failure also writes clean UTF-8 error message to hot-switch.log
+    [IO.File]::WriteAllText($blockedExit, 'pending task')
+    try {
+        $detachFailOutput = Invoke-Script $installedHotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $oldCandidate,
+            '-ExpectedCommit', $oldCommit,
+            '-Detach',
+            '-DetachDelaySeconds', '1',
+            '-SettleSeconds', '1',
+            '-NoInterruptAfterSettle'
+        )
+        Assert-Contains 'Detached hot-switch scheduled' $detachFailOutput 'Detached failure test did not schedule worker.'
+        $failLogDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        $sawStillSettling = $false
+        while ([DateTime]::UtcNow -lt $failLogDeadline) {
+            if (Test-Path -LiteralPath $detachLogPath -PathType Leaf) {
+                $rawBytes = Read-SharedFileBytes $detachLogPath
+                if ($rawBytes.Length -gt 0 -and (-not ($rawBytes -contains [byte]0))) {
+                    $logText = (New-Object Text.UTF8Encoding($false, $true)).GetString($rawBytes)
+                    if ($logText.Contains('Still settling')) { $sawStillSettling = $true; break }
+                }
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        Assert-True $sawStillSettling 'Detached failure worker did not log Still settling in clean UTF-8.'
+        Assert-ValidUtf8Log $detachLogPath 'Still settling' 'Detached failure hot-switch.log was not valid UTF-8.'
+        # Wait briefly for the detached worker process to release hot-switch.log before test cleanup
+        $unlockDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        while ([DateTime]::UtcNow -lt $unlockDeadline) {
+            try {
+                $probe = [IO.File]::Open($detachLogPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                $probe.Dispose()
+                break
+            } catch {
+                Start-Sleep -Milliseconds 100
+            }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $blockedExit) { Remove-Item -LiteralPath $blockedExit -Force }
+    }
 
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: automatic window close, unrelated service preservation, saved-pause continuation, one task receipt, failed launch recovery, prior-pointer recovery, and settle-failure pause cleanup.'
+    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, and clean UTF-8 detached logging.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome
