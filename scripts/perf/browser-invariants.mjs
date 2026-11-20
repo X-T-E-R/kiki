@@ -251,6 +251,7 @@ export async function verifyColdContextMeter(page) {
   });
 
   await page.keyboard.press('Escape').catch(() => undefined);
+  await page.locator('[data-context-details]').waitFor({ state: 'hidden', timeout: 1_000 }).catch(() => undefined);
   const ok = panelState.hasNativeCompactSection && panelState.hasStrategySection;
   const reason = ok
     ? null
@@ -346,11 +347,12 @@ export async function verifyAddMenuSecondaryScrollable(page) {
 
   await page.waitForTimeout(200);
   const check = await page.evaluate(() => {
+    const addPanel = document.querySelector('[data-add-panel]');
     const menuRoot = document.querySelector('[data-add-menu]');
-    const candidates = [
-      ...(menuRoot ? Array.from(menuRoot.querySelectorAll('div')) : []),
-      ...Array.from(document.querySelectorAll('[role="dialog"], [role="menu"]')),
-    ];
+    const scope = addPanel ?? menuRoot;
+    const candidates = scope
+      ? Array.from(scope.querySelectorAll('div'))
+      : Array.from(document.querySelectorAll('[data-add-panel] div, [data-add-menu] div'));
     let bestScroller = null;
     for (const el of candidates) {
       const rect = el.getBoundingClientRect();
@@ -362,7 +364,7 @@ export async function verifyAddMenuSecondaryScrollable(page) {
         }
       }
     }
-    const panel = bestScroller?.closest('[role="menu"], [role="dialog"], [data-add-menu] > div') ?? bestScroller;
+    const panel = addPanel ?? bestScroller?.closest('[role="menu"], [role="dialog"], [data-add-menu] > div') ?? bestScroller;
     const panelRect = panel ? panel.getBoundingClientRect() : null;
     const clipsViewport = panelRect !== null && (panelRect.bottom > window.innerHeight + 4 || panelRect.top < -4);
     if (!bestScroller) {

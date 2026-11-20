@@ -657,10 +657,11 @@ export class WireService extends Service implements IWireService {
       end: size - 1,
     })) {
       pending += decoder.decode(chunk, { stream: true });
-      let newline = pending.indexOf('\n');
+      let cursor = 0;
+      let newline = pending.indexOf('\n', cursor);
       while (newline !== -1) {
-        const raw = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
+        const raw = pending.slice(cursor, newline);
+        cursor = newline + 1;
         const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
         if (line.length > 0) {
           let parsed: unknown;
@@ -672,7 +673,10 @@ export class WireService extends Service implements IWireService {
           if (!isWireRecord(parsed)) throw new JournalTailUnreadableError();
           yield parsed;
         }
-        newline = pending.indexOf('\n');
+        newline = pending.indexOf('\n', cursor);
+      }
+      if (cursor > 0) {
+        pending = cursor < pending.length ? pending.slice(cursor) : '';
       }
     }
     pending += decoder.decode();

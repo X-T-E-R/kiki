@@ -378,7 +378,9 @@ export function ContextMeter({
           role="dialog"
           aria-label={t('context.detailsTitle')}
           className={`anim-enter w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
-            placement === 'below' ? 'absolute right-0 z-40 top-full mt-2 max-w-[calc(100vw-48px)]' : COMPOSER_PANEL_END
+            placement === 'below'
+              ? 'absolute right-0 z-40 top-full mt-2 max-w-[calc(100vw-48px)] max-h-[calc(100dvh-96px)] overflow-y-auto overscroll-contain'
+              : `${COMPOSER_PANEL_END} max-h-[min(var(--cp-max-h,480px),calc(100dvh-96px))] overflow-y-auto overscroll-contain`
           }`}
         >
           <div className="flex items-baseline justify-between gap-3">

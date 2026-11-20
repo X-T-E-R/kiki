@@ -48,6 +48,7 @@ export interface ReplayableOptions<S> {
   readonly schema: z.ZodType<S>;
   readonly durable?: boolean;
   readonly blobs?: StateBlobCodec<S>;
+  readonly directSilentFold?: boolean;
 }
 
 export interface UndoableOptions<S> {
@@ -58,6 +59,7 @@ export interface ReplayableStateMeta<S> {
   readonly schema: z.ZodType<S>;
   readonly durable: boolean;
   readonly blobs?: StateBlobCodec<S>;
+  readonly directSilentFold?: boolean;
   readonly undoable?: UndoableOptions<S>;
   readonly folds: ReadonlyMap<Event2Class<any, any>, StateFold<S, any>>;
 }
@@ -80,6 +82,7 @@ class ReplayableStateKeyImpl<S> implements ReplayableStateKey<S> {
     readonly schema: z.ZodType<S>;
     readonly durable: boolean;
     readonly blobs?: StateBlobCodec<S>;
+    readonly directSilentFold?: boolean;
     undoable?: UndoableOptions<S>;
     readonly folds: Map<Event2Class<any, any>, StateFold<S, any>>;
   };
@@ -94,6 +97,7 @@ class ReplayableStateKeyImpl<S> implements ReplayableStateKey<S> {
       schema: opts.schema,
       durable: opts.durable ?? true,
       blobs: opts.blobs,
+      directSilentFold: opts.directSilentFold,
       folds: new Map(),
     };
   }

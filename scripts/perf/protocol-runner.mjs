@@ -326,7 +326,7 @@ export async function bootPerfServer(homeDir) {
   return { server, endpoint, token, bootMs };
 }
 
-export async function runProtocolSuite({ endpoint, token, samples, maxScrollPages = 4 }) {
+export async function runProtocolSuite({ endpoint, token, samples, warmupSessionId = null, maxScrollPages = 4 }) {
   const [{ createKlient }, { TRANSCRIPT_COVERAGE_VERSION }] = await Promise.all([
     import(new URL('../../packages/klient/src/transports/http/index.ts', import.meta.url).href),
     import(new URL('../../packages/transcript/src/index.ts', import.meta.url).href),
@@ -375,13 +375,33 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
     netCounter.headerBytes = 0;
     eld.beginWindow();
     const listStarted = performance.now();
-    const [sessionsList, sessionHeads, sessionsQuery] = await Promise.all([
+    let [sessionsList, sessionHeads, sessionsQuery] = await Promise.all([
       getJson('/api/sessions?page_size=50'),
       getJson('/api/personas/session-heads?per_persona_limit=5'),
-      getJson('/api/sessions/query?limit=50'),
+      getJson('/api/sessions/query?page_size=50'),
     ]);
+    const catalogDeadline = performance.now() + 5_000;
+    while (
+      performance.now() < catalogDeadline &&
+      (sessionsList.body?.code === 40939 || sessionHeads.body?.code === 40939 || sessionsQuery.body?.code === 40939)
+    ) {
+      await sleep(50);
+      [sessionsList, sessionHeads, sessionsQuery] = await Promise.all([
+        sessionsList.body?.code === 40939 ? getJson('/api/sessions?page_size=50') : Promise.resolve(sessionsList),
+        sessionHeads.body?.code === 40939 ? getJson('/api/personas/session-heads?per_persona_limit=5') : Promise.resolve(sessionHeads),
+        sessionsQuery.body?.code === 40939 ? getJson('/api/sessions/query?page_size=50') : Promise.resolve(sessionsQuery),
+      ]);
+    }
     const coldCatalogMs = roundMs(performance.now() - listStarted);
     const coldCatalogEld = eld.endWindow();
+    if (warmupSessionId) {
+      const warmupKlient = createKlient({ endpoint, token, fetch, WebSocket, timeoutMs: 15_000 });
+      await Promise.all([
+        fetch(`${endpoint}/api/sessions/${warmupSessionId}/status`, { headers }).then((r) => r.text()).catch(() => null),
+        warmupKlient.global.agentPanel.read({ session_id: warmupSessionId, agent_id: 'main' }).catch(() => null),
+      ]);
+      await warmupKlient.close?.().catch?.(() => undefined);
+    }
     trace(`catalog done in ${coldCatalogMs}ms (queryItems=${Array.isArray(sessionsQuery.body?.data?.items) ? sessionsQuery.body.data.items.length : 0}, headsStatus=${sessionHeads.status})`);
     const catalogSummary = {
       coldCatalogMs,

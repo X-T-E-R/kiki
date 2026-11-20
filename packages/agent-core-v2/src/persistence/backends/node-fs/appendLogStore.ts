@@ -248,8 +248,9 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   async *read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R> {
     await waitForSignal(this.flushLog(scope, key), options?.signal);
     const onTruncate = options?.onTruncate;
-    const textDecoder = new TextDecoder();
-    let pending = '';
+    const lineFilter = options?.lineFilter;
+    let pendingChunks: Uint8Array[] = [];
+    let pendingBytes = 0;
     let lineNumber = 0;
     let position = options?.startOffset ?? 0;
     const end = options?.endOffset ?? (options?.startOffset === undefined ? undefined : await this.storage.size(scope, key));
@@ -262,42 +263,77 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       signal: options?.signal,
       chunkBytes: options?.chunkBytes,
     })) {
-      pending += textDecoder.decode(chunk, { stream: true });
-      let newlineIndex = pending.indexOf('\n');
+      let cursor = 0;
+      let newlineIndex = chunk.indexOf(0x0a, cursor);
       while (newlineIndex !== -1) {
-        const raw = pending.slice(0, newlineIndex);
-        pending = pending.slice(newlineIndex + 1);
+        let lineBytes: number;
+        let line: string;
+        if (pendingBytes > 0) {
+          const head = chunk.subarray(cursor, newlineIndex);
+          lineBytes = pendingBytes + head.byteLength + 1;
+          pendingChunks.push(head);
+          const merged = Buffer.concat(pendingChunks, pendingBytes + head.byteLength);
+          pendingChunks = [];
+          pendingBytes = 0;
+          const trimEnd = merged.byteLength > 0 && merged[merged.byteLength - 1] === 0x0d ? merged.byteLength - 1 : merged.byteLength;
+          line = merged.toString('utf8', 0, trimEnd);
+        } else {
+          lineBytes = newlineIndex - cursor + 1;
+          const trimEnd = newlineIndex > cursor && chunk[newlineIndex - 1] === 0x0d ? newlineIndex - 1 : newlineIndex;
+          line = Buffer.from(chunk.buffer, chunk.byteOffset + cursor, trimEnd - cursor).toString('utf8');
+        }
+        cursor = newlineIndex + 1;
         lineNumber++;
-        let record: R | undefined;
+        if (line.length === 0) {
+          position += lineBytes;
+          options?.onPosition?.(position);
+          newlineIndex = chunk.indexOf(0x0a, cursor);
+          continue;
+        }
+        if (lineFilter !== undefined && !lineFilter(line)) {
+          position += lineBytes;
+          options?.onPosition?.(position);
+          options?.signal?.throwIfAborted();
+          newlineIndex = chunk.indexOf(0x0a, cursor);
+          continue;
+        }
+        let record: R;
         try {
-          record = this.parseLine<R>(raw, scope, key, lineNumber, false);
+          record = JSON.parse(line) as R;
         } catch (error) {
-          if (onTruncate === undefined) throw error;
-          onTruncate({ lineNumber, reason: 'corrupted', cause: error });
+          const corrupted = new AppendLogCorruptedError(scope, key, lineNumber, error);
+          if (onTruncate === undefined) throw corrupted;
+          onTruncate({ lineNumber, reason: 'corrupted', cause: corrupted });
           return;
         }
-        position += Buffer.byteLength(raw, 'utf8') + 1;
-        options?.onPosition?.(position);
-        if (record !== undefined) {
-          options?.signal?.throwIfAborted();
-          options?.onRecordBytes?.(Buffer.byteLength(raw, 'utf8') + 1);
-          yield record;
-        }
-        newlineIndex = pending.indexOf('\n');
-      }
-    }
-    pending += textDecoder.decode();
-    if (pending.length > 0) {
-      lineNumber++;
-      const record = this.parseLine<R>(pending, scope, key, lineNumber, true);
-      if (record !== undefined) {
-        position += Buffer.byteLength(pending, 'utf8');
+        position += lineBytes;
         options?.onPosition?.(position);
         options?.signal?.throwIfAborted();
-        options?.onRecordBytes?.(Buffer.byteLength(pending, 'utf8'));
+        options?.onRecordBytes?.(lineBytes);
+        yield record;
+        newlineIndex = chunk.indexOf(0x0a, cursor);
+      }
+      if (cursor < chunk.byteLength) {
+        const tail = Buffer.from(chunk.subarray(cursor));
+        pendingChunks.push(tail);
+        pendingBytes += tail.byteLength;
+      }
+    }
+    if (pendingBytes > 0) {
+      lineNumber++;
+      const merged = pendingChunks.length === 1
+        ? Buffer.from(pendingChunks[0]!.buffer, pendingChunks[0]!.byteOffset, pendingChunks[0]!.byteLength)
+        : Buffer.concat(pendingChunks, pendingBytes);
+      const raw = merged.toString('utf8');
+      const record = this.parseLine<R>(raw, scope, key, lineNumber, true);
+      if (record !== undefined) {
+        position += pendingBytes;
+        options?.onPosition?.(position);
+        options?.signal?.throwIfAborted();
+        options?.onRecordBytes?.(pendingBytes);
         yield record;
       } else if (onTruncate !== undefined) {
-        const line = pending.endsWith('\r') ? pending.slice(0, -1) : pending;
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
         if (line.length > 0) onTruncate({ lineNumber, reason: 'truncated' });
       }
     }

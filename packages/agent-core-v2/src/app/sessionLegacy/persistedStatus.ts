@@ -12,13 +12,21 @@ type PersistedStatus = Omit<WireContextProjection, 'transcript'>;
 
 export class PersistedStatusReader {
   private readonly cache = new Map<string, { readonly revision: string; readonly status: PersistedStatus }>();
+  private readonly snapshotHost: {
+    readonly storage: IFileSystemStorageService;
+    readonly appendLog: IAppendLogStore;
+    readonly docs: IAtomicDocumentStore;
+    readonly workers: ICpuWorkerService;
+  };
 
   constructor(
     private readonly workers: ICpuWorkerService,
     private readonly logs: IAppendLogStore,
     private readonly storage: IFileSystemStorageService,
     private readonly docs: IAtomicDocumentStore,
-  ) {}
+  ) {
+    this.snapshotHost = { storage: this.storage, appendLog: this.logs, docs: this.docs, workers: this.workers };
+  }
 
   async read(workspaceId: string, sessionId: string, metadata?: AgentMeta): Promise<PersistedStatus> {
     const scope = `sessions/${workspaceId}/${sessionId}/agents/main`;
@@ -31,7 +39,7 @@ export class PersistedStatusReader {
       return cached.status;
     }
     const facts = await readPersistedAgentRuntimeFacts(
-      { storage: this.storage, appendLog: this.logs, docs: this.docs, workers: this.workers }, workspaceId, sessionId, 'main', metadata, undefined, { includeStatus: true },
+      this.snapshotHost, workspaceId, sessionId, 'main', metadata, undefined, { includeStatus: true },
     );
     let status: PersistedStatus;
     if (facts.complete && facts.status !== undefined) {

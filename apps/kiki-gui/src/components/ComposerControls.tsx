@@ -105,7 +105,7 @@ export const ComposerCardContext = createContext<RefObject<HTMLElement | null> |
  * above the trigger". Re-measured when the card resizes (chips, a growing
  * draft), on window resize, and right before a pointer or key opens a panel.
  */
-export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, open?: boolean): void {
+export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, open?: unknown): void {
   const cardRef = useContext(ComposerCardContext);
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -123,6 +123,7 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
         if (observed !== null) observer?.unobserve(observed);
         observed = card;
         observer?.observe(card);
+        if (card.parentElement !== null) observer?.observe(card.parentElement);
       }
       // Offsets are relative to the panel's containing block: the root, or
       // the positioned root of a wrapped SearchableSelect (ComposerPanelOrigin).
@@ -139,6 +140,7 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
       // scrolls instead.
       let clipTop = 0;
       for (let node = origin.parentElement; node !== null; node = node.parentElement) {
+        if (card.contains(node)) continue;
         const style = getComputedStyle(node);
         if (style.overflowY !== 'visible' || style.overflowX !== 'visible') {
           clipTop = Math.max(clipTop, node.getBoundingClientRect().top);
@@ -146,7 +148,8 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
         }
       }
       const viewportLimit = typeof window === 'undefined' ? 600 : Math.max(160, window.innerHeight - 120);
-      const roomAbove = Math.min(viewportLimit, Math.max(160, Math.floor(cardRect.top - clipTop - PANEL_GAP_PX - 8)));
+      const hardCap = typeof window === 'undefined' ? 600 : Math.max(80, Math.floor(cardRect.top - PANEL_GAP_PX - 8));
+      const roomAbove = Math.min(viewportLimit, hardCap, Math.max(Math.min(160, hardCap), Math.floor(cardRect.top - clipTop - PANEL_GAP_PX - 8)));
       root.style.setProperty('--cp-max-h', `${roomAbove}px`);
     };
     measure();
@@ -1032,7 +1035,7 @@ export function AddMenu({
     onViewChange('root');
   };
   const popoverKeyDown = usePopover(open, close, rootRef, 'composer-add');
-  useComposerPanelAnchor(rootRef, open);
+  useComposerPanelAnchor(rootRef, open ? view : false);
   useEffect(() => {
     if (!open) setQuery('');
   }, [open]);

@@ -340,10 +340,18 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         const ctx = new FoldContextImpl(this, silent, pluginRegistry, anchor);
         let previous = this.agentState.get(key);
         const tracksPatches = !silent || keepsUndoCheckpoints(key) || meta.checkpoints.length > 0;
-        const recipe = (draft: any) => fold(draft, event, ctx) as any;
-        let [next, patches, inversePatches]: readonly [any, readonly import('immer').Patch[], readonly import('immer').Patch[]] = tracksPatches
-          ? produceWithPatches<any>(previous, recipe)
-          : [produce<any>(previous, recipe), [], []];
+        let next: any;
+        let patches: readonly import('immer').Patch[] = [];
+        let inversePatches: readonly import('immer').Patch[] = [];
+        if (!tracksPatches && key.replayable.directSilentFold === true) {
+          const direct = fold(previous, event, ctx);
+          next = direct === undefined ? previous : direct;
+        } else {
+          const recipe = (draft: any) => fold(draft, event, ctx) as any;
+          [next, patches, inversePatches] = tracksPatches
+            ? produceWithPatches<any>(previous, recipe)
+            : [produce<any>(previous, recipe), [], []];
+        }
         if (!tracksPatches && ctx.pendingCheckpoint && next !== previous) {
           patches = [{ op: 'replace', path: [], value: next }];
           inversePatches = [{ op: 'replace', path: [], value: previous }];
@@ -796,6 +804,14 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       }
       this.executeEvent(event, true);
       recordIndex++;
+    }
+    for (const key of this.folded.states) {
+      if (key.replayable.directSilentFold === true) {
+        const value = this.agentState.get(key);
+        if (Array.isArray(value) && !Object.isFrozen(value)) {
+          Object.freeze(value);
+        }
+      }
     }
   }
 

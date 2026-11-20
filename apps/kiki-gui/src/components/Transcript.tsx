@@ -3052,9 +3052,20 @@ function HistoryFoldRow({
   ].filter((part): part is string => part !== null);
   const summary = parts.join(' · ');
   const incompleteNote = incomplete ? t('transcript.fold.incomplete') : undefined;
+  const hasSystemOriginMember = fold.members.some(
+    (member) =>
+      member.kind === 'system' ||
+      member.kind === 'system-reminder' ||
+      member.kind === 'skill' ||
+      member.kind === 'subagent-ended',
+  );
   return (
     <ActivityRow
-      attrs={{ 'data-history-fold': fold.members.length, 'data-history-fold-open': expanded || undefined }}
+      attrs={{
+        'data-history-fold': fold.members.length,
+        'data-history-fold-open': expanded || undefined,
+        'data-history-fold-origin': hasSystemOriginMember ? 'system' : undefined,
+      }}
       glyph={<DisclosureChevron open={expanded} className="text-ink-faint" />}
       chevronInGlyph
       label={t('transcript.fold.worked')}

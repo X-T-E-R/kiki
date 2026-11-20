@@ -96,23 +96,47 @@ export class PersistedGoalReader {
     let deadline = performance.now() + 4;
     if (state.offset < state.size) {
       let exhausted = true;
-      for await (const record of this.logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
-        startOffset: state.offset, endOffset: state.size, onPosition: (offset) => { state.offset = offset; },
-      })) {
-        const entry = this.folds.get(record.type);
-        if (entry !== undefined) {
-          const event = event2FromRecord(entry.event, record);
-          if (event !== undefined) state.goal = produce(state.goal, (draft) => entry.fold(draft, event, silent));
+      let lastFilteredOut = false;
+      const sliceAbort = new AbortController();
+      try {
+        for await (const record of this.logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
+          startOffset: state.offset,
+          endOffset: state.size,
+          signal: sliceAbort.signal,
+          lineFilter: (line) => {
+            const keep = line.includes('"goal.') || line.includes('"forked"');
+            lastFilteredOut = !keep;
+            return keep;
+          },
+          onPosition: (offset) => {
+            state.offset = offset;
+            if (lastFilteredOut) {
+              lastFilteredOut = false;
+              records++;
+              if (offset - start >= READ_BYTES || records >= READ_RECORDS) {
+                exhausted = false;
+                sliceAbort.abort();
+              }
+            }
+          },
+        })) {
+          const entry = this.folds.get(record.type);
+          if (entry !== undefined) {
+            const event = event2FromRecord(entry.event, record);
+            if (event !== undefined) state.goal = produce(state.goal, (draft) => entry.fold(draft, event, silent));
+          }
+          records++;
+          if (performance.now() >= deadline) {
+            await yieldToEventLoop();
+            deadline = performance.now() + 4;
+          }
+          if (state.offset - start >= READ_BYTES || records >= READ_RECORDS) {
+            exhausted = false;
+            break;
+          }
         }
-        records++;
-        if (performance.now() >= deadline) {
-          await yieldToEventLoop();
-          deadline = performance.now() + 4;
-        }
-        if (state.offset - start >= READ_BYTES || records >= READ_RECORDS) {
-          exhausted = false;
-          break;
-        }
+      } catch (error) {
+        if (!sliceAbort.signal.aborted) throw error;
       }
       if (exhausted) state.offset = state.size;
     }

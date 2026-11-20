@@ -304,6 +304,7 @@ export async function runRealCorpusBenchmark(rawOptions = {}) {
       endpoint: serverHandle.endpoint,
       token: serverHandle.token,
       samples,
+      warmupSessionId: backgroundRecords[0]?.sandboxId ?? null,
       maxScrollPages: rawOptions.quick ? 3 : 5,
     });
     if (rawOptions.browser !== false) {

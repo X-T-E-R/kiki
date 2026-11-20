@@ -25,7 +25,10 @@ import {
 import { isPromptOwnedInjection, isUndoAnchor } from './conversationTime';
 import {
   foldAppendMessage,
+  foldAppendMessageSilent,
+  foldExternalMessageSilent,
   foldLoopEvent,
+  foldLoopEventSilent,
   resetFold,
   type LoopRecordedEvent,
 } from './loopEventFold';
@@ -107,6 +110,7 @@ async function dehydrateRecord(
 export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[] => [])
   .replayable({
     schema: z.custom<ContextMessage[]>(),
+    directSilentFold: true,
     blobs: {
       dehydrate: dehydrateRecord,
       dehydrateState: async (state, transform) => {
@@ -127,21 +131,28 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
       return resetFold(s.slice(0, cut.cutIndex)) as ContextMessage[];
     },
   })
-  .on(ContextAppendMessage, (s, e) => foldAppendMessage(s, e.message) as ContextMessage[])
-  .on(ExternalText, (s, e) => [...s, {
-    role: 'user',
-    content: [{ type: 'text', text: e.text }],
-    toolCalls: [],
-    origin: {
-      kind: 'external_record',
-      recordId: e.recordId,
-      recordKind: e.kind,
-      title: e.title,
-      ...e.source,
-    },
-    source: { ref: `external.text:${e.recordId}` },
-  } as ContextMessage])
-  .on(ContextAppendLoopEvent, (s, e) => foldLoopEvent(s, e.event) as ContextMessage[])
+  .on(ContextAppendMessage, (s, e, ctx) => (
+    ctx.silent ? foldAppendMessageSilent(s, e.message) : foldAppendMessage(s, e.message)
+  ) as ContextMessage[])
+  .on(ExternalText, (s, e, ctx) => {
+    const message: ContextMessage = {
+      role: 'user',
+      content: [{ type: 'text', text: e.text }],
+      toolCalls: [],
+      origin: {
+        kind: 'external_record',
+        recordId: e.recordId,
+        recordKind: e.kind,
+        title: e.title,
+        ...e.source,
+      },
+      source: { ref: `external.text:${e.recordId}` },
+    };
+    return (ctx.silent ? foldExternalMessageSilent(s, message) : [...s, message]) as ContextMessage[];
+  })
+  .on(ContextAppendLoopEvent, (s, e, ctx) => (
+    ctx.silent ? foldLoopEventSilent(s, e.event) : foldLoopEvent(s, e.event)
+  ) as ContextMessage[])
   .on(ContextClear, (s) => (s.length === 0 ? undefined : (resetFold([]) as ContextMessage[])))
   .on(ContextApplyCompaction, (s, e) => {
     const result = buildContextCompactionShape(
@@ -154,7 +165,7 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
   .on(BranchBase, (s) => s.length === 0 ? undefined : resetFold(s.map((message) => message.inheritedSeed === true ? message : { ...message, inheritedSeed: true })) as ContextMessage[]);
 
 export const contextRevisionKey = defineState('contextMemory.revision', () => 0)
-  .replayable({ schema: z.number().int().nonnegative() })
+  .replayable({ schema: z.number().int().nonnegative(), directSilentFold: true })
   .on(ContextAppendMessage, (revision) => revision + 1)
   .on(ExternalText, (revision) => revision + 1)
   .on(ContextAppendLoopEvent, (revision) => revision + 1)

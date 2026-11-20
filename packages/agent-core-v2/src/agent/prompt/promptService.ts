@@ -9,7 +9,7 @@ import { prepareAgentReferences } from '#/agent/prompt/agentReferences';
 import { findAgentRefs } from '@kiki/protocol';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ILogService } from '#/_base/log/log';
-import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
+import { timeRestorePhase, withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
 import { IWorkAdmissionService, type WorkAdmission } from '#/app/workAdmission/workAdmission';
 import { RefCountedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { renderCronFireXml } from '#/app/cron/format';
@@ -2043,7 +2043,7 @@ export class AgentPromptService implements IAgentPromptService {
     const terminal: PromptTerminalResult = { promptId: record.id, turnId: turn?.id, state: completion.state,
       result: result?.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
         : result?.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result };
-    void this.timePhase(record.id, 'prompt_outcome_commit', () => this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal })));
+    void withoutRestoreAttempt(() => this.timePhase(record.id, 'prompt_outcome_commit', () => this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }))).catch(onUnexpectedError));
   }
 
   private timePhase<T>(promptId: string, phase: string, action: () => Promise<T>): Promise<T> {
@@ -3002,7 +3002,9 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private scheduleNext(): void {
-    this.startNext().catch(onUnexpectedError);
+    withoutRestoreAttempt(() => {
+      this.startNext().catch(onUnexpectedError);
+    });
   }
 
   private async startNext(): Promise<void> {

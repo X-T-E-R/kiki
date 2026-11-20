@@ -240,7 +240,11 @@ export async function readPersistedAgentPanelMetrics(
     }
     if (missing.length === 0) return finish();
     const foregroundDeadlineAt = options.complete === true ? Date.now() + 650 : undefined;
-    const runtimeBudgetDeadlineAt = foregroundDeadlineAt === undefined ? undefined : foregroundDeadlineAt - 200;
+    const runtimeBudgetDeadlineAt = foregroundDeadlineAt !== undefined
+      ? foregroundDeadlineAt - 200
+      : options.settle === false
+        ? Date.now() + 250
+        : undefined;
     const primaryTarget = options.agentIds?.[0];
     missing.sort((left, right) => {
       const rank = (id: string) => id === 'main' ? 0 : id === primaryTarget ? 1 : 2;
@@ -273,7 +277,8 @@ export async function readPersistedAgentPanelMetrics(
     const runtime = new Map(await mapBounded(missing, PERSISTED_METRICS_RUNTIME_CONCURRENCY, async (agentId): Promise<readonly [string, RuntimePrepassEntry]> => {
       options.signal?.throwIfAborted();
       const meta = metadata?.agents?.[agentId];
-      if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
+      const budgetApplies = options.complete === true || (agentId !== 'main' && agentId !== primaryTarget);
+      if (budgetApplies && runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
         return deadlineFallbackEntry(agentId, meta, false);
       }
       try {
@@ -282,7 +287,7 @@ export async function readPersistedAgentPanelMetrics(
         if (size === undefined || size === 0) {
           return deadlineFallbackEntry(agentId, meta, size === 0);
         }
-        if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
+        if (budgetApplies && runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
           return deadlineFallbackEntry(agentId, meta, false);
         }
         const [facts, profile] = await Promise.all([

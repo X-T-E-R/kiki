@@ -39,6 +39,8 @@ export interface AppendLogReadOptions {
   readonly onPosition?: (endOffset: number) => void;
   /** Called before each yielded record with its UTF-8 source line length, including a present newline. */
   readonly onRecordBytes?: (byteLength: number) => void;
+  /** Optional raw-line prefilter on complete newline-terminated lines; returning false skips JSON.parse while advancing byte position. */
+  readonly lineFilter?: (line: string) => boolean;
 }
 
 export interface AppendLogWrite {

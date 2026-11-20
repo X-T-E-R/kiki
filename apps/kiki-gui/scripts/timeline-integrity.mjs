@@ -214,8 +214,18 @@ export async function inspectTranscriptVisibility(page, targetAgentId = 'main') 
       '[data-compaction-history]',
       '[data-compaction-summary]',
       '[data-notice-key]',
+      '[data-history-fold-origin="system"]',
+      '[data-history-fold-incomplete]',
+      '[data-turn-gap="start"]',
+      '[data-turn-gap="turn"]',
       '[data-block-id^="system-"]',
       '[data-block-id^="reminder-"]',
+      '[data-block-id^="skill-"]',
+      '[data-block-id^="shell-"]',
+      '[data-block-id^="fold-system-"]',
+      '[data-block-id^="fold-reminder-"]',
+      '[data-block-id^="fold-skill-"]',
+      '[data-block-id^="fold-shell-"]',
     ].join(', ');
     let nonSystemTurnsChecked = 0;
     for (let i = 1; i < turnIds.length; i += 1) {
@@ -229,10 +239,7 @@ export async function inspectTranscriptVisibility(page, targetAgentId = 'main') 
       }
     }
     const totalVisibleUserBlocks = [...byTurn.values()].reduce((acc, v) => acc + v.visibleUserBlocks, 0);
-    const hasAnyNonSystemTurn = [...byTurn.values()].some(
-      (info) => !info.rows.some((r) => r.querySelector(systemSelector) !== null),
-    );
-    const ok = hiddenUserTurns.length === 0 && (!hasAnyNonSystemTurn || totalVisibleUserBlocks > 0 || turnIds.length <= 1);
+    const ok = hiddenUserTurns.length === 0 && (nonSystemTurnsChecked === 0 || totalVisibleUserBlocks > 0);
     return {
       ok,
       reason: ok ? null : hiddenUserTurns.length > 0 ? 'hidden_user_turns' : 'no_visible_user_blocks',

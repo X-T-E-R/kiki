@@ -116,7 +116,7 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
     path: '/personas/session-heads',
     querystring: personaSessionHeadsQuerySchema,
     success: { data: personaSessionHeadsResponseSchema },
-    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SESSION_INDEX_BUILDING]: {} },
     description: 'List aggregated conversation counts and recent head sessions per persona in one index scan',
     tags: ['personas'],
     operationId: 'listPersonaSessionHeads',
@@ -633,6 +633,9 @@ function personaErrorCode(error: unknown): number | undefined {
     case 'persona.revision_conflict':
     case ProtocolErrorCode.PERSONA_REVISION_CONFLICT:
       return ErrorCode.PERSONA_REVISION_CONFLICT;
+    case 'session.index_building':
+    case ProtocolErrorCode.SESSION_INDEX_BUILDING:
+      return ErrorCode.SESSION_INDEX_BUILDING;
     case 'request.invalid':
     case 'persona.validation_failed':
     case 'persona.import_invalid':

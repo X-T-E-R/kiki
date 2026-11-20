@@ -249,6 +249,7 @@ interface BoundFold {
 }
 
 const boundFoldMap = new WeakMap<object, BoundFold>();
+const boundSilentFoldMap = new WeakMap<object, BoundFold>();
 
 export function foldAppendMessage(
   state: readonly ContextMessage[],
@@ -257,6 +258,15 @@ export function foldAppendMessage(
   const bound = boundOf(state);
   bound.fold.appendMessage(message, undefined);
   return bind(bound, bound.sink.current());
+}
+
+export function foldAppendMessageSilent(
+  state: readonly ContextMessage[],
+  message: ContextMessage,
+): readonly ContextMessage[] {
+  const bound = boundSilentOf(state);
+  bound.fold.appendMessage(message, undefined);
+  return bound.sink.current();
 }
 
 export function foldLoopEvent(
@@ -268,10 +278,100 @@ export function foldLoopEvent(
   return bind(bound, bound.sink.current());
 }
 
+export function foldLoopEventSilent(
+  state: readonly ContextMessage[],
+  event: LoopRecordedEvent,
+): readonly ContextMessage[] {
+  const bound = boundSilentOf(state);
+  bound.fold.loopEvent(event, undefined);
+  return bound.sink.current();
+}
+
+export function foldExternalMessageSilent(
+  state: readonly ContextMessage[],
+  message: ContextMessage,
+): readonly ContextMessage[] {
+  const bound = boundSilentOf(state);
+  const current = bound.sink.current() as ContextMessage[];
+  current.push(message);
+  return current;
+}
+
 export function resetFold(state: readonly ContextMessage[]): readonly ContextMessage[] {
   const sink = createImmutableFoldSink(state);
   boundFoldMap.set(state, { fold: createLoopEventFold(sink), sink });
   return state;
+}
+
+function boundSilentOf(state: readonly ContextMessage[]): BoundFold {
+  let bound = boundSilentFoldMap.get(state);
+  if (bound === undefined || bound.sink.current() !== state || Object.isFrozen(state)) {
+    const sink = createMutableSilentFoldSink(state);
+    const current = sink.current();
+    bound = { fold: createLoopEventFoldWithState(sink, recoverFoldState(current)), sink };
+    boundSilentFoldMap.set(current, bound);
+  }
+  return bound;
+}
+
+function createMutableSilentFoldSink(initial: readonly ContextMessage[]): ImmutableFoldSink {
+  const current: ContextMessage[] = initial.slice();
+  let openIndex = findOpenAssistantIndex(current);
+  if (openIndex !== -1) {
+    const existing = current[openIndex]!;
+    current[openIndex] = {
+      ...existing,
+      content: [...existing.content],
+      toolCalls: [...existing.toolCalls],
+      toolCallSources: existing.toolCallSources === undefined ? undefined : { ...existing.toolCallSources },
+    };
+  }
+  return {
+    current: () => current,
+    openAssistant: (_time, source) => {
+      current.push({ role: 'assistant', content: [], toolCalls: [], partial: true, source });
+      openIndex = current.length - 1;
+    },
+    appendOpenContent: (part) => {
+      if (openIndex === -1) return;
+      const open = current[openIndex]!;
+      (open.content as ContentPart[]).push(part);
+    },
+    appendOpenToolCall: (call, source) => {
+      if (openIndex === -1) return;
+      const open = current[openIndex]!;
+      (open.toolCalls as ToolCall[]).push(call);
+      if (source !== undefined) {
+        if (open.toolCallSources === undefined) {
+          (open as { toolCallSources?: Record<string, ContextMessageSource> }).toolCallSources = { [call.id]: source };
+        } else {
+          (open.toolCallSources as Record<string, ContextMessageSource>)[call.id] = source;
+        }
+      }
+    },
+    dropOpenAssistant: () => {
+      if (openIndex === -1) return;
+      current.splice(openIndex, 1);
+      openIndex = -1;
+    },
+    sealOpenAssistant: () => {
+      if (openIndex === -1) return;
+      const open = current[openIndex]! as { partial?: true };
+      delete open.partial;
+      openIndex = -1;
+    },
+    pushToolMessage: (message, _time, source) => {
+      current.push(source === undefined ? message : { ...message, source });
+    },
+    pushMessage: (message) => {
+      const revision = findProviderMessageRevision(current, message, (entry) => entry);
+      if (revision !== undefined) {
+        current[revision.index] = revision.message;
+        return;
+      }
+      current.push(message);
+    },
+  };
 }
 
 function boundOf(state: readonly ContextMessage[]): BoundFold {
