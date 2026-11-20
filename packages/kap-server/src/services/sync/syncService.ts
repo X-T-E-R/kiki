@@ -231,7 +231,9 @@ export class SyncService {
       const sanitized = extractPortableConfigLayer(bundle.portableConfig, this.options.configRegistry);
       for (const [domain, value] of Object.entries(sanitized)) {
         if (domain === CREDENTIALS_POOL_SECTION) continue;
-        await this.options.configService.replace(domain, value, ConfigTarget.User);
+        const existingUser = this.options.configService.inspect(domain).userValue;
+        const merged = deepMergePortableConfig(existingUser, value);
+        await this.options.configService.replace(domain, merged, ConfigTarget.User);
         configDomainsApplied.push(domain);
       }
     }
@@ -247,9 +249,16 @@ export class SyncService {
           continue;
         }
         const scope = { kind: 'workspace' as const, workspaceId: item.projectId };
-        const existing = await this.options.memoryStore.get(scope, item.id);
+        let existing = await this.options.memoryStore.get(scope, item.id);
+        if (existing === undefined) {
+          const listed = await this.options.memoryStore.list(scope);
+          const normalizedTitle = item.title.trim().toLowerCase();
+          existing = listed.find(
+            (entry) => entry.status === 'active' && entry.title.trim().toLowerCase() === normalizedTitle,
+          );
+        }
         if (existing !== undefined) {
-          if (existing.updated >= item.updated || existing.body === item.body) {
+          if (existing.body === item.body || item.updated < existing.updated) {
             memoriesSkipped += 1;
             continue;
           }
@@ -295,31 +304,41 @@ export class SyncService {
     if (bundle.skills !== undefined && bundle.skills.length > 0) {
       const targetRoot = resolve(join(this.options.homeDir, 'skills'));
       await mkdir(targetRoot, { recursive: true });
+      const grouped = new Map<string, SyncSkillFileEntry[]>();
       for (const file of bundle.skills) {
-        if (
-          isSkillSyncExcluded({ name: file.skillName, targetPlatform: process.platform }) ||
-          !isSafeRelativeSkillPath(file.relativePath)
-        ) {
-          skillsSkipped += 1;
+        const list = grouped.get(file.skillName) ?? [];
+        list.push(file);
+        grouped.set(file.skillName, list);
+      }
+      for (const [skillName, group] of grouped) {
+        if (isSkillSyncExcluded({ name: skillName, targetPlatform: process.platform })) {
+          skillsSkipped += group.length;
           continue;
         }
-        const dest = resolve(targetRoot, file.skillName, file.relativePath);
-        const rel = relative(targetRoot, dest);
-        if (rel.startsWith('..') || isAbsolute(rel)) {
-          skillsSkipped += 1;
-          continue;
-        }
-        const bytes = Buffer.from(file.contentBase64, 'base64');
-        if (file.relativePath === 'SKILL.md') {
-          const fm = parseSkillFrontmatter(bytes.toString('utf8'));
-          if (isSkillSyncExcluded({ name: file.skillName, frontmatter: fm, targetPlatform: process.platform })) {
-            skillsSkipped += 1;
+        const skillMdFile = group.find((entry) => entry.relativePath.replaceAll('\\', '/') === 'SKILL.md');
+        if (skillMdFile !== undefined) {
+          const fm = parseSkillFrontmatter(Buffer.from(skillMdFile.contentBase64, 'base64').toString('utf8'));
+          if (isSkillSyncExcluded({ name: skillName, frontmatter: fm, targetPlatform: process.platform })) {
+            skillsSkipped += group.length;
             continue;
           }
         }
-        await mkdir(dirname(dest), { recursive: true });
-        await writeFile(dest, bytes);
-        skillsApplied += 1;
+        for (const file of group) {
+          if (!isSafeRelativeSkillPath(file.relativePath) || isSecretSkillSidecar(file.relativePath)) {
+            skillsSkipped += 1;
+            continue;
+          }
+          const dest = resolve(targetRoot, skillName, file.relativePath);
+          const rel = relative(targetRoot, dest);
+          if (rel.startsWith('..') || isAbsolute(rel)) {
+            skillsSkipped += 1;
+            continue;
+          }
+          const bytes = Buffer.from(file.contentBase64, 'base64');
+          await mkdir(dirname(dest), { recursive: true });
+          await writeFile(dest, bytes);
+          skillsApplied += 1;
+        }
       }
     }
 
@@ -475,6 +494,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function deepMergePortableConfig(existing: unknown, incoming: unknown): unknown {
+  if (!isRecord(existing) || !isRecord(incoming)) {
+    return incoming;
+  }
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    merged[key] = deepMergePortableConfig(existing[key], value);
+  }
+  return merged;
+}
+
+const SECRET_SKILL_FILE_PATTERN =
+  /(?:^\.env(?:\.|$)|\.(?:pem|key|p12|pfx|jks|kdbx)$|^id_(?:rsa|ed25519|ecdsa)|(?:secret|credential|private[_-]?key|service[_-]?account))/i;
+
+function isSecretSkillSidecar(relPath: string): boolean {
+  const normalized = relPath.replaceAll('\\', '/');
+  return normalized.split('/').some((seg) => SECRET_SKILL_FILE_PATTERN.test(seg));
+}
+
 function isSafeRelativeSkillPath(relPath: string): boolean {
   const normalized = relPath.replaceAll('\\', '/');
   if (normalized === '' || normalized.startsWith('/') || isAbsolute(relPath)) return false;
@@ -539,6 +577,7 @@ async function collectSkillFiles(
       } else if (entry.isFile()) {
         if (out.length >= MAX_BUNDLE_SKILL_FILES) return;
         const rel = relative(skillDir, fullPath).replaceAll('\\', '/');
+        if (isSecretSkillSidecar(rel)) continue;
         const key = `${skillName}\0${rel}`;
         if (seen.has(key)) continue;
         const bytes = await readFile(fullPath);

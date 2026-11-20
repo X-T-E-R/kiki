@@ -252,7 +252,7 @@ export class WorkspaceCopyManager {
     const record = await this.requireCopy(copyId);
     const checkTakeover = (): void => {
       if (options.takeoverManager !== undefined) {
-        options.takeoverManager.assertWritable(options.targetId ?? record.nodeId, {
+        options.takeoverManager.assertWritable(record.nodeId, {
           overrideHumanLease: options.overrideHumanLease,
           expectedEpoch: options.expectedEpoch,
         });
@@ -331,8 +331,13 @@ export class WorkspaceCopyManager {
   async exportWipDelta(
     copyId: string,
     casStaging?: CasStagingStore,
+    takeover?: { readonly takeoverManager?: HumanTakeoverManager; readonly overrideHumanLease?: boolean; readonly expectedEpoch?: number },
   ): Promise<GitWipDeltaExportResult & { readonly bundleBase64: string; readonly stagedSha256?: string }> {
     const record = await this.requireCopy(copyId);
+    takeover?.takeoverManager?.assertWritable(record.nodeId, {
+      overrideHumanLease: takeover.overrideHumanLease,
+      expectedEpoch: takeover.expectedEpoch,
+    });
     const wipId = `${copyId}-${randomUUID().slice(0, 8)}`;
     const bundlePath = join(this.metaDir, `${wipId}.bundle`);
     try {
@@ -353,8 +358,13 @@ export class WorkspaceCopyManager {
     copyId: string,
     input: { readonly wipId: string; readonly bundleBase64: string },
     casStaging?: CasStagingStore,
+    takeover?: { readonly takeoverManager?: HumanTakeoverManager; readonly overrideHumanLease?: boolean; readonly expectedEpoch?: number },
   ): Promise<GitWipDeltaApplyResult> {
     const record = await this.requireCopy(copyId);
+    takeover?.takeoverManager?.assertWritable(record.nodeId, {
+      overrideHumanLease: takeover.overrideHumanLease,
+      expectedEpoch: takeover.expectedEpoch,
+    });
     const bytes = Buffer.from(input.bundleBase64, 'base64');
     let bundlePath: string;
     let cleanupTemp = false;

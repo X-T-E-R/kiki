@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream';
-import type { Scope } from '@kiki/agent-core-v2';
+import { getLiveSessionById, ISessionApprovalService, ISessionInteractionService, type Scope } from '@kiki/agent-core-v2';
 import { HTTP_REQUEST_BODY_LIMIT_BYTES } from '@kiki/klient/http';
 import {
   createKlientDispatcher,
@@ -76,6 +76,35 @@ interface ActiveStream {
   cancel(): void;
 }
 
+function assertPeerInteractionProcedureAllowed(
+  scope: Scope,
+  procedure: { readonly scope: string; readonly sessionId?: string; readonly service: string; readonly method: string },
+  params: readonly unknown[],
+): void {
+  if (procedure.scope !== 'session' || typeof procedure.sessionId !== 'string') return;
+  if (procedure.service === 'sessionInteractionService' && procedure.method === 'respond') {
+    const interactionId = typeof params[0] === 'string' ? params[0] : undefined;
+    const live = getLiveSessionById(scope.accessor, procedure.sessionId);
+    const pending = interactionId === undefined || live === undefined
+      ? undefined
+      : live.accessor.get(ISessionInteractionService).listPending().find((item) => item.id === interactionId);
+    if (pending === undefined || pending.kind !== 'question') {
+      throw new RPCError(40301, 'local_owner_required');
+    }
+    return;
+  }
+  if (procedure.service === 'sessionApprovalService' && procedure.method === 'decide') {
+    const approvalId = typeof params[0] === 'string' ? params[0] : undefined;
+    const live = getLiveSessionById(scope.accessor, procedure.sessionId);
+    const pending = approvalId === undefined || live === undefined
+      ? undefined
+      : live.accessor.get(ISessionApprovalService).listPending().find((item) => item.id === approvalId);
+    if (pending !== undefined && pending.requireHumanInteraction === true) {
+      throw new RPCError(40301, 'local_owner_required');
+    }
+  }
+}
+
 export function registerKlientHttp(
   app: FastifyInstance,
   scope: Scope,
@@ -96,6 +125,7 @@ export function registerKlientHttp(
       target = { scope: procedure.scope, service: procedure.service, method: procedure.method };
       const peer = peerAudience(req);
       if ((peer !== undefined && !isPeerProcedureAllowed(procedure, peer.meshCapabilities)) || (webPrincipal(req) !== undefined && !isWebProcedureAllowed(procedure))) throw new RPCError(40301, 'local_owner_required');
+      if (peer !== undefined) assertPeerInteractionProcedureAllowed(scope, procedure, params);
       const data = await dispatcher.call(
         scopeRefFromProcedure(procedure),
         procedure.service,
@@ -165,6 +195,7 @@ export function registerKlientHttp(
         if ((isPeer && !isPeerProcedureAllowed(procedure, peerAudience(req)?.meshCapabilities)) || (isWeb && !isWebProcedureAllowed(procedure))) {
           throw new RPCError(40301, 'local_owner_required');
         }
+        if (isPeer) assertPeerInteractionProcedureAllowed(scope, procedure, params);
         const data = await dispatcher.call(
           scopeRefFromProcedure(procedure),
           procedure.service,

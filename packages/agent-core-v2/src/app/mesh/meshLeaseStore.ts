@@ -26,6 +26,7 @@ export const DEFAULT_SESSION_LEASE_TTL_MS = 3_600_000;
 interface StoredLeaseBook {
   readonly version: 1;
   readonly sessions: Record<string, MeshSessionLease>;
+  readonly highWaterEpochs?: Record<string, number>;
 }
 
 export interface IMeshLeaseStore {
@@ -33,10 +34,10 @@ export interface IMeshLeaseStore {
   load(): Promise<void>;
   getLease(sessionId: string): Promise<MeshSessionLease>;
   listLeasedSessionIds(): Promise<readonly string[]>;
-  pinNode(sessionId: string, node: Omit<LeasedPeerNode, 'pinnedAt'>): Promise<MeshSessionLease>;
-  pinSeat(sessionId: string, seat: Omit<LeasedSeat, 'pinnedAt' | 'updatedAt'>): Promise<MeshSessionLease>;
-  pinWorkspaceCopy(sessionId: string, copy: LeasedWorkspaceCopy): Promise<MeshSessionLease>;
-  pinPortTunnel(sessionId: string, tunnel: LeasedPortTunnel): Promise<MeshSessionLease>;
+  pinNode(sessionId: string, node: Omit<LeasedPeerNode, 'pinnedAt'>, expectedEpoch?: number): Promise<MeshSessionLease>;
+  pinSeat(sessionId: string, seat: Omit<LeasedSeat, 'pinnedAt' | 'updatedAt'>, expectedEpoch?: number): Promise<MeshSessionLease>;
+  pinWorkspaceCopy(sessionId: string, copy: LeasedWorkspaceCopy, expectedEpoch?: number): Promise<MeshSessionLease>;
+  pinPortTunnel(sessionId: string, tunnel: LeasedPortTunnel, expectedEpoch?: number): Promise<MeshSessionLease>;
   unpin(
     sessionId: string,
     kind: 'node' | 'seat' | 'workspace_copy' | 'port_tunnel',
@@ -55,6 +56,7 @@ export class MeshLeaseStore implements IMeshLeaseStore {
   declare readonly _serviceBrand: undefined;
   private loaded = false;
   private readonly sessions = new Map<string, MeshSessionLease>();
+  private readonly highWaterEpochs = new Map<string, number>();
   private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -73,7 +75,17 @@ export class MeshLeaseStore implements IMeshLeaseStore {
       if (parsed.version === 1 && parsed.sessions !== undefined && typeof parsed.sessions === 'object') {
         for (const [sessionId, raw] of Object.entries(parsed.sessions)) {
           const valid = meshSessionLeaseSchema.safeParse(raw);
-          if (valid.success) this.sessions.set(sessionId, valid.data);
+          if (valid.success) {
+            this.sessions.set(sessionId, valid.data);
+            this.highWaterEpochs.set(sessionId, Math.max(this.highWaterEpochs.get(sessionId) ?? 0, valid.data.epoch ?? 0));
+          }
+        }
+      }
+      if (parsed.highWaterEpochs !== undefined && typeof parsed.highWaterEpochs === 'object') {
+        for (const [sessionId, epoch] of Object.entries(parsed.highWaterEpochs)) {
+          if (typeof epoch === 'number' && Number.isInteger(epoch) && epoch >= 0) {
+            this.highWaterEpochs.set(sessionId, Math.max(this.highWaterEpochs.get(sessionId) ?? 0, epoch));
+          }
         }
       }
     } catch {
@@ -82,11 +94,13 @@ export class MeshLeaseStore implements IMeshLeaseStore {
 
   async getLease(sessionId: string): Promise<MeshSessionLease> {
     await this.load();
+    const highWater = this.highWaterEpochs.get(sessionId) ?? 0;
     const existing = this.sessions.get(sessionId);
-    if (existing === undefined) return emptyLease(sessionId, this.now());
+    if (existing === undefined) return emptyLease(sessionId, this.now(), highWater);
     if (existing.expiresAt !== undefined && existing.expiresAt <= this.now()) {
+      this.highWaterEpochs.set(sessionId, Math.max(highWater, existing.epoch ?? 0));
       this.sessions.delete(sessionId);
-      return emptyLease(sessionId, this.now());
+      return emptyLease(sessionId, this.now(), this.highWaterEpochs.get(sessionId) ?? 0);
     }
     return existing;
   }
@@ -96,48 +110,73 @@ export class MeshLeaseStore implements IMeshLeaseStore {
     return [...this.sessions.keys()].toSorted();
   }
 
-  async pinNode(sessionId: string, node: Omit<LeasedPeerNode, 'pinnedAt'>): Promise<MeshSessionLease> {
-    return this.mutate(sessionId, (lease, ts) => {
-      const entry: LeasedPeerNode = { ...node, pinnedAt: ts };
-      const nodes = [...lease.nodes.filter((item) => item.nodeId !== node.nodeId), entry];
-      return { ...lease, nodes };
-    });
+  async pinNode(sessionId: string, node: Omit<LeasedPeerNode, 'pinnedAt'>, expectedEpoch?: number): Promise<MeshSessionLease> {
+    return this.mutate(
+      sessionId,
+      (lease, ts) => {
+        const entry: LeasedPeerNode = { ...node, pinnedAt: ts };
+        const nodes = [...lease.nodes.filter((item) => item.nodeId !== node.nodeId), entry];
+        return { ...lease, nodes };
+      },
+      expectedEpoch,
+    );
   }
 
   async pinSeat(
     sessionId: string,
     seat: Omit<LeasedSeat, 'pinnedAt' | 'updatedAt'>,
+    expectedEpoch?: number,
   ): Promise<MeshSessionLease> {
-    return this.mutate(sessionId, (lease, ts) => {
-      const existing = lease.seats.find((item) => item.seatId === seat.seatId);
-      const entry: LeasedSeat = {
-        ...seat,
-        pinnedAt: existing?.pinnedAt ?? ts,
-        updatedAt: ts,
-      };
-      const seats = [...lease.seats.filter((item) => item.seatId !== seat.seatId), entry];
-      return { ...lease, seats };
-    });
+    return this.mutate(
+      sessionId,
+      (lease, ts) => {
+        const existing = lease.seats.find((item) => item.seatId === seat.seatId);
+        const entry: LeasedSeat = {
+          ...seat,
+          pinnedAt: existing?.pinnedAt ?? ts,
+          updatedAt: ts,
+        };
+        const seats = [...lease.seats.filter((item) => item.seatId !== seat.seatId), entry];
+        return { ...lease, seats };
+      },
+      expectedEpoch,
+    );
   }
 
-  async pinWorkspaceCopy(sessionId: string, copy: LeasedWorkspaceCopy): Promise<MeshSessionLease> {
-    return this.mutate(sessionId, (lease) => {
-      const workspaceCopies = [
-        ...lease.workspaceCopies.filter((item) => item.copyId !== copy.copyId),
-        copy,
-      ];
-      return { ...lease, workspaceCopies };
-    });
+  async pinWorkspaceCopy(
+    sessionId: string,
+    copy: LeasedWorkspaceCopy,
+    expectedEpoch?: number,
+  ): Promise<MeshSessionLease> {
+    return this.mutate(
+      sessionId,
+      (lease) => {
+        const workspaceCopies = [
+          ...lease.workspaceCopies.filter((item) => item.copyId !== copy.copyId),
+          copy,
+        ];
+        return { ...lease, workspaceCopies };
+      },
+      expectedEpoch,
+    );
   }
 
-  async pinPortTunnel(sessionId: string, tunnel: LeasedPortTunnel): Promise<MeshSessionLease> {
-    return this.mutate(sessionId, (lease) => {
-      const portTunnels = [
-        ...lease.portTunnels.filter((item) => item.tunnelId !== tunnel.tunnelId),
-        tunnel,
-      ];
-      return { ...lease, portTunnels };
-    });
+  async pinPortTunnel(
+    sessionId: string,
+    tunnel: LeasedPortTunnel,
+    expectedEpoch?: number,
+  ): Promise<MeshSessionLease> {
+    return this.mutate(
+      sessionId,
+      (lease) => {
+        const portTunnels = [
+          ...lease.portTunnels.filter((item) => item.tunnelId !== tunnel.tunnelId),
+          tunnel,
+        ];
+        return { ...lease, portTunnels };
+      },
+      expectedEpoch,
+    );
   }
 
   async unpin(
@@ -198,20 +237,23 @@ export class MeshLeaseStore implements IMeshLeaseStore {
       await this.load();
       const ts = this.now();
       const existing = this.sessions.get(sessionId);
+      const highWater = Math.max(this.highWaterEpochs.get(sessionId) ?? 0, existing?.epoch ?? 0);
       const current =
         existing !== undefined && (existing.expiresAt === undefined || existing.expiresAt > ts)
           ? existing
-          : emptyLease(sessionId, ts);
-      const currentEpoch = current.epoch ?? 0;
+          : emptyLease(sessionId, ts, highWater);
+      const currentEpoch = highWater;
       if (expectedEpoch !== undefined && currentEpoch !== expectedEpoch) {
         throw new StaleEpochError(sessionId, expectedEpoch, currentEpoch);
       }
       const updated = updater(current, ts);
+      const nextEpoch = currentEpoch + 1;
+      this.highWaterEpochs.set(sessionId, nextEpoch);
       const next: MeshSessionLease = {
         ...updated,
         sessionId,
         revision: current.revision + 1,
-        epoch: currentEpoch + 1,
+        epoch: nextEpoch,
         updatedAt: ts,
         expiresAt: updated.expiresAt ?? ts + DEFAULT_SESSION_LEASE_TTL_MS,
       };
@@ -232,6 +274,7 @@ export class MeshLeaseStore implements IMeshLeaseStore {
     const payload: StoredLeaseBook = {
       version: 1,
       sessions: Object.fromEntries([...this.sessions.entries()].toSorted(([a], [b]) => a.localeCompare(b))),
+      highWaterEpochs: Object.fromEntries([...this.highWaterEpochs.entries()].toSorted(([a], [b]) => a.localeCompare(b))),
     };
     await this.storage.write(
       LEASE_SCOPE,
@@ -370,11 +413,11 @@ export class MeshStateCoalescer {
   }
 }
 
-function emptyLease(sessionId: string, updatedAt: number): MeshSessionLease {
+function emptyLease(sessionId: string, updatedAt: number, epoch = 0): MeshSessionLease {
   return {
     sessionId,
     revision: 0,
-    epoch: 0,
+    epoch,
     updatedAt,
     nodes: [],
     seats: [],

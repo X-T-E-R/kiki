@@ -110,7 +110,6 @@ const PEER_EXECUTE_OPERATIONS = new Set([
   'messageRegenerate',
   'agentPromote',
   'taskCancel',
-  'meshInboundExecute',
 ]);
 const PEER_SYNC_OPERATIONS = new Set([
   'syncBundleExport',

@@ -25,6 +25,8 @@ export interface MeshFacade {
   workspaceCopyStatus(copyId: string): Promise<Record<string, unknown>>;
   workspaceCopyDiff(copyId: string): Promise<{ readonly copyId: string; readonly diff: string }>;
   workspaceCopySnapshot(copyId: string, label?: string): Promise<Record<string, unknown>>;
+  exportWorkspaceCopyDelta(copyId: string): Promise<Record<string, unknown>>;
+  applyWorkspaceCopyDelta(copyId: string, input: { readonly wipId: string; readonly bundleBase64: string }): Promise<Record<string, unknown>>;
   applyWorkspaceCopy(copyId: string, input?: MeshWorkspaceCopyApplyInput): Promise<Record<string, unknown>>;
   removeWorkspaceCopy(copyId: string): Promise<{ readonly removed: boolean }>;
   listTunnels(): Promise<readonly LeasedPortTunnel[]>;

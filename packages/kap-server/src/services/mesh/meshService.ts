@@ -212,7 +212,7 @@ export class MeshService {
   async pinResource(sessionId: string, input: MeshLeasePinInput): Promise<MeshContextProjection> {
     switch (input.kind) {
       case 'node':
-        await this.leases.pinNode(sessionId, input.node);
+        await this.leases.pinNode(sessionId, input.node, input.expectedEpoch);
         this.recordTransition({
           sessionId,
           resourceKind: 'node',
@@ -223,7 +223,7 @@ export class MeshService {
         });
         break;
       case 'seat':
-        await this.leases.pinSeat(sessionId, input.seat);
+        await this.leases.pinSeat(sessionId, input.seat, input.expectedEpoch);
         this.recordTransition({
           sessionId,
           resourceKind: 'seat',
@@ -234,7 +234,7 @@ export class MeshService {
         });
         break;
       case 'workspace_copy':
-        await this.leases.pinWorkspaceCopy(sessionId, input.copy);
+        await this.leases.pinWorkspaceCopy(sessionId, input.copy, input.expectedEpoch);
         this.recordTransition({
           sessionId,
           resourceKind: 'workspace_copy',
@@ -245,7 +245,7 @@ export class MeshService {
         });
         break;
       case 'port_tunnel':
-        await this.leases.pinPortTunnel(sessionId, input.tunnel);
+        await this.leases.pinPortTunnel(sessionId, input.tunnel, input.expectedEpoch);
         this.recordTransition({
           sessionId,
           resourceKind: 'port_tunnel',
@@ -326,25 +326,47 @@ export class MeshService {
     return this.workspaceCopies.snapshot(copyId, label);
   }
 
-  exportWorkspaceCopyDelta(
+  async exportWorkspaceCopyDelta(
     copyId: string,
   ): Promise<GitWipDeltaExportResult & { readonly bundleBase64: string; readonly stagedSha256?: string }> {
-    return this.workspaceCopies.exportWipDelta(copyId, this.casStaging);
+    const copy = await this.workspaceCopies.getCopy(copyId);
+    if (copy === undefined) {
+      throw new Error(`Workspace copy '${copyId}' not found`);
+    }
+    if (copy.nodeId !== 'local') {
+      this.assertPeerCapability(copy.nodeId, 'cow_apply');
+    }
+    return this.workspaceCopies.exportWipDelta(copyId, this.casStaging, {
+      takeoverManager: this.takeover,
+    });
   }
 
-  applyWorkspaceCopyDelta(
+  async applyWorkspaceCopyDelta(
     copyId: string,
     input: { readonly wipId: string; readonly bundleBase64: string },
   ): Promise<GitWipDeltaApplyResult> {
-    return this.workspaceCopies.applyWipDelta(copyId, input, this.casStaging);
+    const copy = await this.workspaceCopies.getCopy(copyId);
+    if (copy === undefined) {
+      throw new Error(`Workspace copy '${copyId}' not found`);
+    }
+    if (copy.nodeId !== 'local') {
+      this.assertPeerCapability(copy.nodeId, 'cow_apply');
+    }
+    return this.workspaceCopies.applyWipDelta(copyId, input, this.casStaging, {
+      takeoverManager: this.takeover,
+    });
   }
 
   async applyWorkspaceCopy(
     copyId: string,
     input: MeshWorkspaceCopyApplyInput,
   ): Promise<WorkspaceCopyApplyResult> {
-    if (input.targetId !== undefined && input.targetId !== 'local') {
-      this.assertPeerCapability(input.targetId, 'cow_apply');
+    const copy = await this.workspaceCopies.getCopy(copyId);
+    if (copy === undefined) {
+      throw new Error(`Workspace copy '${copyId}' not found`);
+    }
+    if (copy.nodeId !== 'local') {
+      this.assertPeerCapability(copy.nodeId, 'cow_apply');
     }
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
     return this.workspaceCopies.apply(copyId, {
@@ -352,7 +374,7 @@ export class MeshService {
       approvalService: ctx.approvalService,
       sessionId: input.sessionId,
       takeoverManager: this.takeover,
-      targetId: input.targetId,
+      targetId: copy.nodeId,
       overrideHumanLease: input.overrideHumanLease,
       expectedEpoch: input.expectedEpoch,
       deleteRemoved: input.deleteRemoved,
@@ -455,29 +477,35 @@ export class MeshService {
     targetId: string,
     input: MeshTargetDispatchInput,
   ): Promise<MeshDispatchResult> {
-    const checkWritable = (): void => {
+    const checkLocalWritable = (): void => {
       this.takeover.assertWritable(targetId, {
         overrideHumanLease: input.overrideHumanLease,
-        expectedEpoch: input.expectedEpoch,
+        ...(targetId === 'local' ? { expectedEpoch: input.expectedEpoch } : {}),
       });
     };
-    checkWritable();
+    checkLocalWritable();
     const peer = targetId === 'local' ? undefined : this.assertPeerCapability(targetId, input.operation);
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
-    const approval = await evaluateMeshApproval({
-      operation: input.operation,
-      permissionMode: ctx.permissionMode,
-      action: input.action,
-      targetLabel: targetId,
-      sessionId: input.sessionId,
-      approvalService: ctx.approvalService,
-    });
+    const delegateRemoteLoginApproval =
+      targetId !== 'local' &&
+      input.operation === 'interactive_login' &&
+      ctx.approvalService === undefined;
+    const approval: MeshApprovalOutcome = delegateRemoteLoginApproval
+      ? { decision: 'approved', via: 'session_approval_service' }
+      : await evaluateMeshApproval({
+          operation: input.operation,
+          permissionMode: ctx.permissionMode,
+          action: input.action,
+          targetLabel: targetId,
+          sessionId: input.sessionId,
+          approvalService: ctx.approvalService,
+        });
     if (approval.decision !== 'approved') {
       throw new MeshApprovalRejectedError(
         approval.feedback ?? `Action '${input.operation}' on '${targetId}' rejected (${approval.decision})`,
       );
     }
-    checkWritable();
+    checkLocalWritable();
     let forwardedResult: unknown;
     if (targetId !== 'local') {
       if (peer === undefined) {
@@ -495,6 +523,16 @@ export class MeshService {
         );
       }
       forwardedResult = await this.executeRemoteAction(peer, input);
+    } else if (input.operation === 'interactive_login') {
+      forwardedResult = {
+        executed: true,
+        hostId: this.hostId,
+        targetId: 'local',
+        operation: input.operation,
+        action: input.action,
+        epoch: this.takeover.currentEpoch('local'),
+        output: { approved: true, decision: approval.decision },
+      };
     } else {
       forwardedResult = await this.executeInboundAction({
         operation: input.operation,
@@ -506,12 +544,18 @@ export class MeshService {
         payload: input.payload,
       });
     }
+    const remoteEpoch =
+      forwardedResult !== null &&
+      typeof forwardedResult === 'object' &&
+      typeof (forwardedResult as { epoch?: unknown }).epoch === 'number'
+        ? (forwardedResult as { epoch: number }).epoch
+        : undefined;
     return {
       targetId,
       operation: input.operation,
       accepted: true,
       approval,
-      epoch: this.takeover.currentEpoch(targetId),
+      epoch: remoteEpoch ?? this.takeover.currentEpoch(targetId),
       ...(peer === undefined ? {} : { peerId: peer.id, trustTier: peer.trustTier ?? 'restricted_peer' }),
       ...(forwardedResult === undefined ? {} : { forwardedResult }),
     };
@@ -597,10 +641,12 @@ export class MeshService {
   }
 }
 
-function requiredCapabilityForOperation(operation: MeshOperationKind): MeshCapability {
+/** Maps a mesh operation to the minimum peer capability required to invoke it. */
+export function requiredCapabilityForOperation(operation: MeshOperationKind): MeshCapability {
   switch (operation) {
     case 'remote_command':
     case 'out_of_workspace':
+    case 'interactive_login':
       return 'execute';
     case 'cow_apply':
       return 'cow_workspace';
@@ -608,7 +654,6 @@ function requiredCapabilityForOperation(operation: MeshOperationKind): MeshCapab
       return 'file_sync';
     case 'port_tunnel':
       return 'port_tunnel';
-    case 'interactive_login':
     case 'remote_question':
       return 'send';
   }

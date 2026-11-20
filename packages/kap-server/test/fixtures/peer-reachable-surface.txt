@@ -163,6 +163,12 @@ REST memoryEntries: GET /memory/{scope}
 REST memoryEntry: GET /memory/{scope}/{entryId}
 REST memoryJournal: GET /memory/{scope}/journal
 REST memoryInbox: GET /memory/{scope}/inbox
+REST meshInboundExecute: POST /mesh/inbound/execute
+REST meshTakeoverInspect: GET /mesh/takeover/{targetId}
+REST syncDeviceKey: GET /sync/device-key
+REST syncBundleExport: POST /sync/bundle/export
+REST syncBundleImport: POST /sync/bundle/import
+REST syncCredentialsMerge: POST /sync/credentials/merge
 FRAME bridge_attach
 FRAME bridge_detach
 FRAME bridge_response
@@ -356,7 +362,7 @@ WEB PATH /api/runtime-switch: GET only
 WEB PATH /api/web-access*: only /api/web-access/session,/api/web-access/logout,/api/web-access/exchange
 WEB PATH all other paths: allowed
 WEB PATH denied exact: /mcp
-WEB PATH denied pattern: ^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown)(?:\/|$)
+WEB PATH denied pattern: ^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)
 WEB PROCEDURE all other services: allowed
 WEB PROCEDURE bootstrapService: only platform,arch,cwd,osHomeDir,homeDir,configPath,clientVersion,clientIdentity,sessionsDir,blobsDir,storeDir,cacheDir,logsDir
 WEB PROCEDURE denied services: authTokenService,externalDelegationService,externalDelegationSeatService

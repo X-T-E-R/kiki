@@ -252,9 +252,11 @@ Search returns complete stored units when they fit the response budget (24,000 U
       try {
         const persona = this.memorySnapshot.getPersona();
         if (input.scope !== undefined) resolveScope(input.scope, this.session, persona);
-        const page = await this.store.query(scopes(this.session, persona), input.cursor !== undefined ? { cursor: input.cursor } : {
+        const hostId = currentMemoryHostId(this.instantiation);
+        const page = await this.store.query(scopes(this.session, persona), input.cursor !== undefined ? { cursor: input.cursor, hostId } : {
           mode: input.mode, query: input.query, scope: input.scope, type: input.type, page_size: input.page_size,
           statuses: input.statuses ?? (input.include_superseded === true ? ['active', 'superseded'] : undefined),
+          hostId,
         }, signal);
         const items: Array<(ReturnType<typeof memoryResult> | ReturnType<typeof memoryResultReference>) & { score?: number; score_details?: MemoryScoreDetails }> = page.items.map((entry) => memoryResultReference(entry, entry.scope));
         const output = () => JSON.stringify({ ...page, items });

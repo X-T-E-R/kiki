@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  DEFAULT_RESTRICTED_PEER_CAPABILITIES,
   humanTakeoverAcquireInputSchema,
   meshInboundExecuteInputSchema,
   meshLeasePinInputSchema,
@@ -19,10 +20,12 @@ import {
 } from '@kiki/agent-core-v2';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { peerAudience } from '../services/connections/audience';
 import {
   MeshApprovalRejectedError,
   MeshCapabilityDeniedError,
   MeshPeerUnavailableError,
+  requiredCapabilityForOperation,
   type MeshService,
 } from '../services/mesh/meshService';
 
@@ -110,6 +113,10 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
       if (error instanceof Error && (error.message.includes('rejected') || error.message.includes('not allowed') || error.message.includes('does not match'))) {
         reply.code(403);
         return reply.send(errEnvelope(40301, error.message, requestId));
+      }
+      if (error instanceof Error && (error.message.includes('Upstream tunnel') || error.message.includes('ECONNREFUSED') || error.message.includes('readiness probe failed'))) {
+        reply.code(503);
+        return reply.send(errEnvelope(50302, error.message, requestId));
       }
       throw error;
     }
@@ -304,8 +311,17 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
   );
 
   app.post('/api/mesh/inbound/execute', { bodyLimit: 65_536 }, async (req, reply) =>
-    handle(req.id, reply, () =>
-      mesh.executeInboundAction(meshInboundExecuteInputSchema.parse(req.body)),
-    ),
+    handle(req.id, reply, () => {
+      const input = meshInboundExecuteInputSchema.parse(req.body);
+      const peer = peerAudience(req);
+      if (peer !== undefined) {
+        const capabilities = peer.meshCapabilities ?? DEFAULT_RESTRICTED_PEER_CAPABILITIES;
+        const required = requiredCapabilityForOperation(input.operation);
+        if (!capabilities.includes(required)) {
+          throw new MeshCapabilityDeniedError(peer.grantId, 'restricted_peer', required);
+        }
+      }
+      return mesh.executeInboundAction(input);
+    }),
   );
 }

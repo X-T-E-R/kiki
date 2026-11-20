@@ -10,11 +10,14 @@ import {
   IAgentContextInjectorService,
   IAgentContextMemoryService,
   IAgentPermissionModeService,
+  IConfigService,
   IMemoryScopes,
   IMemoryStore,
   ISessionApprovalService,
   ISessionInteractionService,
   ISessionManager,
+  ISessionQuestionService,
+  IWorkspaceService,
   MESH_CONTEXT_INJECTION_VARIANT,
 } from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
@@ -121,9 +124,12 @@ describe('kap-server mesh, sync, and two-server integration', () => {
     mkdirSync(join(skillsA, 'nosync-skill'), { recursive: true });
 
     writeFileSync(join(skillsA, 'portable-skill', 'SKILL.md'), '---\nname: portable-skill\ndescription: Syncs\n---\nPortable body\n', 'utf8');
+    writeFileSync(join(skillsA, 'portable-skill', '.env'), 'SECRET_SKILL_TOKEN=do-not-export\n', 'utf8');
+    writeFileSync(join(skillsA, 'portable-skill', 'private.key'), 'PRIVATE-KEY-MATERIAL\n', 'utf8');
     writeFileSync(join(skillsA, '_private-skill', 'SKILL.md'), '---\nname: _private-skill\ndescription: Private\n---\nPrivate\n', 'utf8');
     writeFileSync(join(skillsA, 'draft-wip', 'SKILL.md'), '---\nname: draft-wip\ndescription: Draft\n---\nDraft\n', 'utf8');
     writeFileSync(join(skillsA, 'nosync-skill', 'SKILL.md'), '---\nname: nosync-skill\nsync: false\n---\nNo sync\n', 'utf8');
+    writeFileSync(join(skillsA, 'nosync-skill', 'helper.sh'), '#!/bin/sh\necho secret-helper\n', 'utf8');
 
     runGit(workA, ['init']);
     writeFileSync(join(workA, 'hello.txt'), 'v1\n', 'utf8');
@@ -145,6 +151,8 @@ describe('kap-server mesh, sync, and two-server integration', () => {
         '[providers.cloud.custom_headers]',
         'Authorization = "Bearer sk-must-not-export"',
         'X-Client-Name = "kiki-portable"',
+        '[providers.cloud.env]',
+        'PROVIDER_SECRET_TOKEN = "sk-provider-env-must-not-export"',
         '',
         '[credentials.shared_team]',
         'kind = "api_key"',
@@ -173,6 +181,11 @@ describe('kap-server mesh, sync, and two-server integration', () => {
         '',
         '[thinking]',
         'effort = "low"',
+        '',
+        '[providers.cloud]',
+        'type = "openai"',
+        'base_url = "https://old.example.test/v1"',
+        'api_key = "sk-server-b-destination-kept-key"',
       ].join('\n'),
       [
         '[thinking]',
@@ -215,6 +228,7 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       const portableA = await clientA.rest!.sync.exportPortableConfig();
       const portableJson = JSON.stringify(portableA);
       expect(portableJson).not.toContain('sk-must-not-export');
+      expect(portableJson).not.toContain('sk-provider-env-must-not-export');
       expect(portableJson).not.toContain('sk-synced-secret-value');
       expect(portableJson).not.toContain('sk-local-machine-only-value');
       expect(portableJson).toContain('kiki-portable');
@@ -268,6 +282,67 @@ describe('kap-server mesh, sync, and two-server integration', () => {
         restrictedLease.release();
       }
 
+      const createSessRes = await authedFetch(serverA, baseA, '/api/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: workA }, agent_config: { profile: 'agent', model: 'stub' } }),
+      });
+      const sessionIdA = ((await createSessRes.json()) as { data: { id: string } }).data.id;
+      const liveSessionA = serverA.core.accessor.get(ISessionManager).get(sessionIdA)!;
+      const mainAgentA = await ensureMainAgent(liveSessionA);
+      mainAgentA.accessor.get(IAgentPermissionModeService).setMode('yolo');
+
+      const createSessBRes = await authedFetch(serverB, baseB, '/api/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: workB }, agent_config: { profile: 'agent', model: 'stub' } }),
+      });
+      const sessionIdB = ((await createSessBRes.json()) as { data: { id: string } }).data.id;
+      const liveSessionB = serverB.core.accessor.get(ISessionManager).get(sessionIdB)!;
+      const mainAgentB = await ensureMainAgent(liveSessionB);
+      mainAgentB.accessor.get(IAgentPermissionModeService).setMode('yolo');
+      const interactionB = liveSessionB.accessor.get(ISessionInteractionService);
+      const questionServiceB = liveSessionB.accessor.get(ISessionQuestionService);
+      const approvalServiceB = liveSessionB.accessor.get(ISessionApprovalService);
+      interactionB.acquireConsumer('server-b-test-consumer');
+
+      const pendingQuestionPromise = questionServiceB.request({
+        toolCallId: 'tc-remote-q-1',
+        questions: [
+          { question: 'Choose mode?', header: 'Mode', options: [{ label: 'strict', description: 'Strict' }] },
+        ],
+      });
+      const restrictedResolve = await clientA.rest!.mesh.resolveQuestion(restrictedPeer.id, {
+        answer: 'strict',
+        sessionId: sessionIdB,
+      });
+      expect(restrictedResolve['accepted']).toBe(true);
+      expect((restrictedResolve['forwardedResult'] as { output?: { resolved?: boolean; answer?: string } }).output).toMatchObject({
+        resolved: true,
+        answer: 'strict',
+      });
+      expect(await pendingQuestionPromise).toEqual({ 'Choose mode?': 'strict' });
+
+      const missingQuestionRes = await authedFetch(serverA, baseA, `/api/mesh/targets/${encodeURIComponent(restrictedPeer.id)}/resolve-question`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessionIdB, answer: 'none-pending' }),
+      });
+      expect(missingQuestionRes.status).toBe(404);
+
+      const restrictedCowCopy = await clientA.rest!.mesh.createWorkspaceCopy({
+        sourceRoot: workA,
+        nodeId: restrictedPeer.id,
+        sessionId: sessionIdA,
+      });
+      const spoofedCowRes = await authedFetch(serverA, baseA, `/api/mesh/workspace-copies/${encodeURIComponent(restrictedCowCopy['copyId'] as string)}/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessionIdA, targetId: 'local' }),
+      });
+      expect(spoofedCowRes.status).toBe(403);
+      expect(((await spoofedCowRes.json()) as { msg: string }).msg).toBe('mesh_capability_denied');
+
       const inboundBeforeUpgrade = await clientB.rest!.connections.inbound();
       const activeGrant = inboundBeforeUpgrade.grants.find((g) => g.status === 'approved');
       expect(activeGrant).toBeDefined();
@@ -291,16 +366,6 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       expect(trustedPeer.trustTier).toBe('trusted_personal');
       expect(trustedPeer.meshCapabilities).toContain('execute');
 
-      const createSessRes = await authedFetch(serverA, baseA, '/api/sessions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ metadata: { cwd: workA }, agent_config: { profile: 'agent', model: 'stub' } }),
-      });
-      const sessionIdA = ((await createSessRes.json()) as { data: { id: string } }).data.id;
-      const liveSessionA = serverA.core.accessor.get(ISessionManager).get(sessionIdA)!;
-      const mainAgentA = await ensureMainAgent(liveSessionA);
-      mainAgentA.accessor.get(IAgentPermissionModeService).setMode('yolo');
-
       const remoteExec = await clientA.rest!.mesh.dispatchTargetAction(trustedPeer.id, {
         operation: 'remote_command',
         action: 'echo hello-from-peer',
@@ -314,14 +379,91 @@ describe('kap-server mesh, sync, and two-server integration', () => {
         operation: 'remote_command',
         action: 'echo hello-from-peer',
       });
+      const cmdOutput = (remoteExec['forwardedResult'] as { output?: { exitCode?: number; stdout?: string } }).output;
+      expect(cmdOutput?.exitCode).toBe(0);
+      expect(cmdOutput?.stdout).toContain('hello-from-peer');
 
-      const resolvedQuestion = await clientA.rest!.mesh.resolveQuestion(trustedPeer.id, {
-        questionId: 'q-1',
-        answer: 'Use strict mode',
+      const syncTargetDir = join(homeB, 'synced-target');
+      const remoteFileSync = await clientA.rest!.mesh.dispatchTargetAction(trustedPeer.id, {
+        operation: 'file_sync',
+        action: 'sync staged files',
         sessionId: sessionIdA,
+        payload: {
+          targetRoot: syncTargetDir,
+          files: [
+            { relativePath: 'nested/synced.txt', contentBase64: Buffer.from('real-file-sync-bytes', 'utf8').toString('base64') },
+          ],
+        },
       });
-      expect(resolvedQuestion['accepted']).toBe(true);
-      expect((resolvedQuestion['forwardedResult'] as { operation: string }).operation).toBe('remote_question');
+      expect(remoteFileSync['accepted']).toBe(true);
+      expect(readFileSync(join(syncTargetDir, 'nested', 'synced.txt'), 'utf8')).toBe('real-file-sync-bytes');
+      expect(
+        ((remoteFileSync['forwardedResult'] as { output?: { stagedSha256s?: string[] } }).output?.stagedSha256s ?? []).length,
+      ).toBe(1);
+
+      const remoteLoginPromise = clientA.rest!.mesh.dispatchTargetAction(trustedPeer.id, {
+        operation: 'interactive_login',
+        action: 'Authenticate remote OAuth on Peer B',
+        sessionId: sessionIdB,
+      });
+      let pendingLoginApprovalId: string | undefined;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const pending = interactionB.listPending('approval');
+        if (pending.length > 0) {
+          pendingLoginApprovalId = pending[0]!.id;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(pendingLoginApprovalId).toBeDefined();
+
+      const trustedLease = serverA.remoteConnections.lease(trustedPeer.id);
+      try {
+        const peerRespondAttempt = await serverA.remoteConnections.forward(
+          trustedPeer.id,
+          {
+            operation: 'procedure',
+            body: {
+              procedure: {
+                scope: 'session',
+                sessionId: sessionIdB,
+                service: 'sessionInteractionService',
+                method: 'respond',
+              },
+              params: [pendingLoginApprovalId!, { decision: 'approved' }],
+            },
+          },
+          trustedLease.signal,
+        );
+        const peerRespondJson = (await peerRespondAttempt.json()) as { code: number };
+        expect(peerRespondJson.code).toBe(40301);
+
+        const peerDecideAttempt = await serverA.remoteConnections.forward(
+          trustedPeer.id,
+          {
+            operation: 'procedure',
+            body: {
+              procedure: {
+                scope: 'session',
+                sessionId: sessionIdB,
+                service: 'sessionApprovalService',
+                method: 'decide',
+              },
+              params: [pendingLoginApprovalId!, { decision: 'approved' }],
+            },
+          },
+          trustedLease.signal,
+        );
+        const peerDecideJson = (await peerDecideAttempt.json()) as { code: number };
+        expect(peerDecideJson.code).toBe(40301);
+      } finally {
+        trustedLease.release();
+      }
+
+      approvalServiceB.decide(pendingLoginApprovalId!, { decision: 'approved' });
+      const remoteLoginResult = await remoteLoginPromise;
+      expect(remoteLoginResult['accepted']).toBe(true);
+      expect((remoteLoginResult['forwardedResult'] as { output?: { approved?: boolean } }).output?.approved).toBe(true);
 
       const humanLeaseB = await clientB.rest!.mesh.acquireTakeover('local', {
         holder: 'human',
@@ -348,6 +490,15 @@ describe('kap-server mesh, sync, and two-server integration', () => {
 
       await clientB.rest!.mesh.releaseTakeover('local', { holder: 'human', expectedEpoch: humanLeaseB.epoch });
 
+      const authoritativeEpochExec = await clientA.rest!.mesh.dispatchTargetAction(trustedPeer.id, {
+        operation: 'remote_command',
+        action: 'echo epoch-match',
+        sessionId: sessionIdA,
+        expectedEpoch: 2,
+      });
+      expect(authoritativeEpochExec['accepted']).toBe(true);
+      expect(authoritativeEpochExec['epoch']).toBe(2);
+
       const staleEpochRes = await authedFetch(serverA, baseA, `/api/mesh/targets/${encodeURIComponent(trustedPeer.id)}/dispatch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -355,7 +506,7 @@ describe('kap-server mesh, sync, and two-server integration', () => {
           operation: 'remote_command',
           action: 'stale-write',
           sessionId: sessionIdA,
-          expectedEpoch: 999,
+          expectedEpoch: 0,
         }),
       });
       expect(staleEpochRes.status).toBe(409);
@@ -427,7 +578,12 @@ describe('kap-server mesh, sync, and two-server integration', () => {
 
       const serverBConfigFile = readFileSync(join(homeB, 'config.toml'), 'utf8');
       const serverBLocalFile = readFileSync(join(homeB, 'config.local.toml'), 'utf8');
+      const providersB = serverB.core.accessor.get(IConfigService).get<Record<string, { apiKey?: string; customHeaders?: Record<string, string> }>>('providers');
+      expect(providersB['cloud']?.apiKey).toBe('sk-server-b-destination-kept-key');
+      expect(providersB['cloud']?.customHeaders?.['X-Client-Name']).toBe('kiki-portable');
       expect(serverBConfigFile).toContain('shared_team');
+      expect(serverBConfigFile).toContain('kiki-portable');
+      expect(serverBConfigFile).not.toContain('sk-provider-env-must-not-export');
       expect(serverBConfigFile).not.toContain('pinned_local_b');
       expect(serverBLocalFile).toContain('effort = "xhigh"');
       expect(serverBLocalFile).toContain('pinned_local_b');
@@ -436,10 +592,79 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       const syncedMemoriesB = await memStoreB.list({ kind: 'workspace', workspaceId: resolvedIdentityA.projectId });
       expect(syncedMemoriesB.map((m) => m.title)).toEqual(['Portable Project Rule']);
 
+      const v1EntryA = (await memStoreA.list({ kind: 'workspace', workspaceId: resolvedIdentityA.projectId }))
+        .find((m) => m.title === 'Portable Project Rule')!;
+      await memStoreA.put({
+        action: 'update',
+        scope: { kind: 'workspace', workspaceId: resolvedIdentityA.projectId },
+        id: v1EntryA.id,
+        expectedRevision: v1EntryA.revision,
+        type: 'project',
+        title: 'Portable Project Rule',
+        body: 'Shared across Server A and Server B v2.',
+        reason: 'v2 update',
+        source: { writer: 'user' },
+        applicability: 'portable',
+      });
+      const pushReceiptV2 = await clientA.rest!.sync.pushToPeer(trustedPeer.id, {
+        projectIds: [resolvedIdentityA.projectId],
+        workDir: workA,
+        includeConfig: false,
+        includeCredentials: false,
+        includeSkills: false,
+        includeMemories: true,
+      });
+      expect(pushReceiptV2.memoriesApplied).toBe(1);
+      const syncedMemoriesBV2 = await memStoreB.list({ kind: 'workspace', workspaceId: resolvedIdentityA.projectId });
+      expect(syncedMemoriesBV2.find((m) => m.title === 'Portable Project Rule')?.body).toBe('Shared across Server A and Server B v2.');
+
+      const wsB = await serverB.core.accessor.get(IWorkspaceService).createOrTouch(workB);
+      const foreignLocal = await memStoreB.put({
+        action: 'create',
+        scope: { kind: 'workspace', workspaceId: wsB.id },
+        type: 'reference',
+        title: 'Foreign Machine Local Memory',
+        body: 'Only for foreign-host-xyz',
+        reason: 'Visibility check',
+        source: { writer: 'user' },
+        applicability: 'machine-local',
+        origin_host_id: 'foreign-host-xyz',
+      });
+      const directGetForeign = await authedFetch(
+        serverB,
+        baseB,
+        `/api/memory/workspace/${encodeURIComponent(foreignLocal.entry.id)}?workspace_id=${encodeURIComponent(wsB.id)}`,
+      );
+      const directGetJson = (await directGetForeign.json()) as { code: number };
+      expect(directGetJson.code).not.toBe(0);
+      const journalForeign = await authedFetch(
+        serverB,
+        baseB,
+        `/api/memory/workspace/journal?workspace_id=${encodeURIComponent(wsB.id)}`,
+      );
+      const journalJson = (await journalForeign.json()) as { code: number; data: Array<{ id: string }> };
+      expect(journalJson.code).toBe(0);
+      expect(journalJson.data.some((row) => row.id === foreignLocal.entry.id)).toBe(false);
+
       expect(readFileSync(join(homeB, 'skills', 'portable-skill', 'SKILL.md'), 'utf8')).toContain('Portable body');
+      expect(() => readFileSync(join(homeB, 'skills', 'portable-skill', '.env'), 'utf8')).toThrow();
+      expect(() => readFileSync(join(homeB, 'skills', 'portable-skill', 'private.key'), 'utf8')).toThrow();
       expect(() => readFileSync(join(homeB, 'skills', '_private-skill', 'SKILL.md'), 'utf8')).toThrow();
       expect(() => readFileSync(join(homeB, 'skills', 'draft-wip', 'SKILL.md'), 'utf8')).toThrow();
       expect(() => readFileSync(join(homeB, 'skills', 'nosync-skill', 'SKILL.md'), 'utf8')).toThrow();
+      expect(() => readFileSync(join(homeB, 'skills', 'nosync-skill', 'helper.sh'), 'utf8')).toThrow();
+
+      const handCraftedImport = await clientB.rest!.sync.importBundle({
+        format: 'kiki.sync-bundle.v1',
+        exportedAt: new Date().toISOString(),
+        skills: [
+          { skillName: 'blocked-group', relativePath: 'SKILL.md', contentBase64: Buffer.from('---\nname: blocked-group\nsync: false\n---\nNo\n', 'utf8').toString('base64') },
+          { skillName: 'blocked-group', relativePath: 'sibling.sh', contentBase64: Buffer.from('echo leaked\n', 'utf8').toString('base64') },
+        ],
+      });
+      expect(handCraftedImport.skillsApplied).toBe(0);
+      expect(handCraftedImport.skillsSkipped).toBe(2);
+      expect(() => readFileSync(join(homeB, 'skills', 'blocked-group', 'sibling.sh'), 'utf8')).toThrow();
 
       const cowCopy = await clientA.rest!.mesh.createWorkspaceCopy({
         sourceRoot: workA,
@@ -449,6 +674,8 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       const copyId = cowCopy['copyId'] as string;
       const copyPath = cowCopy['copyPath'] as string;
       writeFileSync(join(copyPath, 'hello.txt'), 'from-copy\n', 'utf8');
+      const deltaExport = await clientA.rest!.mesh.exportWorkspaceCopyDelta(copyId);
+      expect(typeof deltaExport['bundleBase64']).toBe('string');
       writeFileSync(join(workA, 'hello.txt'), 'concurrent-owner-edit\n', 'utf8');
 
       const conflictApplyRes = await authedFetch(serverA, baseA, `/api/mesh/workspace-copies/${encodeURIComponent(copyId)}/apply`, {
@@ -458,8 +685,29 @@ describe('kap-server mesh, sync, and two-server integration', () => {
       });
       expect(conflictApplyRes.status).toBe(409);
       expect(((await conflictApplyRes.json()) as { msg: string }).msg).toBe('source_modified');
-    } finally {
+
       await new Promise<void>((resolve) => echoServer.close(() => resolve()));
+      const deadUpstreamTunnelRes = await authedFetch(serverA, baseA, '/api/mesh/tunnels', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          nodeId: trustedPeer.id,
+          remoteHost: '127.0.0.1',
+          remotePort: echoAddr.port,
+          sessionId: sessionIdA,
+        }),
+      });
+      expect(deadUpstreamTunnelRes.status).toBe(503);
+      expect(((await deadUpstreamTunnelRes.json()) as { code: number }).code).toBe(50302);
+      interactionB.releaseConsumer('server-b-test-consumer');
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (!echoServer.listening) {
+          resolve();
+          return;
+        }
+        echoServer.close(() => resolve());
+      });
     }
   }, 90_000);
 

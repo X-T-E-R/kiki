@@ -13,6 +13,8 @@ export function createMeshFacade(transport: HttpRestTransport): MeshFacade {
     workspaceCopyStatus: (copyId) => transport.json(`/mesh/workspace-copies/${id(copyId)}/status`),
     workspaceCopyDiff: (copyId) => transport.json(`/mesh/workspace-copies/${id(copyId)}/diff`),
     workspaceCopySnapshot: (copyId, label) => transport.json(`/mesh/workspace-copies/${id(copyId)}/snapshot`, { method: 'POST', body: label === undefined ? {} : { label } }),
+    exportWorkspaceCopyDelta: (copyId) => transport.json(`/mesh/workspace-copies/${id(copyId)}/delta/export`, { method: 'POST', body: {} }),
+    applyWorkspaceCopyDelta: (copyId, input) => transport.json(`/mesh/workspace-copies/${id(copyId)}/delta/apply`, { method: 'POST', body: input }),
     applyWorkspaceCopy: (copyId, input) => transport.json(`/mesh/workspace-copies/${id(copyId)}/apply`, { method: 'POST', body: input ?? {} }),
     removeWorkspaceCopy: (copyId) => transport.json(`/mesh/workspace-copies/${id(copyId)}`, { method: 'DELETE' }),
     listTunnels: () => transport.json('/mesh/tunnels'),

@@ -133,6 +133,7 @@ export function classifyConfigSyncScope(
     const segment = keyPath[i]!;
     const compact = segment.replaceAll(/[_-]/g, '').toLowerCase();
     if (SECRET_KEY_PATTERN.test(compact)) return 'machine';
+    if (camelDomain === 'providers' && compact === 'env') return 'machine';
     const parent = i > 0 ? keyPath[i - 1]! : '';
     if (CUSTOM_HEADER_CONTAINER_PATTERN.test(parent) && /(?:auth|token|secret|key|cookie|session|credential|bearer|signature|pass)/i.test(segment)) {
       return 'machine';

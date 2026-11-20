@@ -312,6 +312,7 @@ describe('credential pool, X25519 envelopes, and 3-layer config.local.toml', () 
       expect(classifyConfigSyncScope('cpu_workers', ['max_workers'], registry)).toBe('machine');
       expect(classifyConfigSyncScope('unknown_custom_section', ['flag'], registry)).toBe('machine');
       expect(classifyConfigSyncScope('providers', ['demo', 'api_key'], registry)).toBe('machine');
+      expect(classifyConfigSyncScope('providers', ['demo', 'env', 'MY_SECRET'], registry)).toBe('machine');
       expect(classifyConfigSyncScope('providers', ['demo', 'local_port'], registry)).toBe('machine');
       expect(classifyConfigSyncScope('providers', ['demo', 'binary_path'], registry)).toBe('machine');
 

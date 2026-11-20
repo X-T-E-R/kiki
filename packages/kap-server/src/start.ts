@@ -133,11 +133,14 @@ import { registerMeshRoutes } from './routes/mesh';
 import { registerSyncRoutes } from './routes/sync';
 import {
   createPeerTcpDialer,
+  MeshApprovalRejectedError,
   MeshCapabilityDeniedError,
   MeshPeerUnavailableError,
   MeshService,
+  requiredCapabilityForOperation,
   type MeshPeerDescriptor,
 } from './services/mesh/meshService';
+import { createInboundMeshExecutor } from './services/mesh/inboundExecute';
 import { SyncService } from './services/sync/syncService';
 import { createPluginPanelStreamServer, PLUGIN_PANEL_STREAM_PATH } from './routes/pluginPanelStreams';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
@@ -1445,6 +1448,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     }
     return undefined;
   };
+  let meshServiceRef!: MeshService;
   const meshService = new MeshService({
     homeDir,
     hostId: connectionIdentity.hostId,
@@ -1452,6 +1456,11 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     leaseStore: core.accessor.get(IMeshLeaseStore),
     resolvePeer: resolveMeshPeer,
     dialRemote: createPeerTcpDialer(resolveMeshPeer),
+    onInboundExecute: createInboundMeshExecutor({
+      core,
+      homeDir,
+      getMeshService: () => meshServiceRef,
+    }),
     executeRemoteAction: async (peer, input) => {
       const { status, envelope } = await forwardPeerJson<Record<string, unknown>>(
         peer.id,
@@ -1483,7 +1492,14 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         );
       }
       if (status === 403 && envelope.msg === 'mesh_capability_denied') {
-        throw new MeshCapabilityDeniedError(peer.id, peer.trustTier ?? 'restricted_peer', 'execute');
+        const data = envelope.data as { requiredCapability?: unknown } | undefined;
+        const required = typeof data?.requiredCapability === 'string'
+          ? (data.requiredCapability as ReturnType<typeof requiredCapabilityForOperation>)
+          : requiredCapabilityForOperation(input.operation);
+        throw new MeshCapabilityDeniedError(peer.id, peer.trustTier ?? 'restricted_peer', required);
+      }
+      if (status === 403) {
+        throw new MeshApprovalRejectedError(envelope.msg ?? 'Remote mesh execution rejected');
       }
       if (status >= 400 || envelope.code !== 0) {
         throw new Error(envelope.msg ?? `Remote mesh execution failed (HTTP ${status})`);
@@ -1502,6 +1518,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       return { permissionMode, approvalService };
     },
   });
+  meshServiceRef = meshService;
   registerMeshRoutes(app, meshService);
   registerSyncRoutes(app, syncService);
   app.addHook('preClose', async () => { await meshService.close(); });

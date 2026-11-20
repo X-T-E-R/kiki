@@ -116,10 +116,10 @@ export const meshContextProjectionSchema = z.object({
 export type MeshContextProjection = z.infer<typeof meshContextProjectionSchema>;
 
 export const meshLeasePinInputSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('node'), node: leasedPeerNodeSchema.omit({ pinnedAt: true }) }).strict(),
-  z.object({ kind: z.literal('seat'), seat: leasedSeatSchema.omit({ pinnedAt: true, updatedAt: true }) }).strict(),
-  z.object({ kind: z.literal('workspace_copy'), copy: leasedWorkspaceCopySchema }).strict(),
-  z.object({ kind: z.literal('port_tunnel'), tunnel: leasedPortTunnelSchema }).strict(),
+  z.object({ kind: z.literal('node'), node: leasedPeerNodeSchema.omit({ pinnedAt: true }), expectedEpoch: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ kind: z.literal('seat'), seat: leasedSeatSchema.omit({ pinnedAt: true, updatedAt: true }), expectedEpoch: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ kind: z.literal('workspace_copy'), copy: leasedWorkspaceCopySchema, expectedEpoch: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ kind: z.literal('port_tunnel'), tunnel: leasedPortTunnelSchema, expectedEpoch: z.number().int().nonnegative().optional() }).strict(),
 ]);
 export type MeshLeasePinInput = z.infer<typeof meshLeasePinInputSchema>;
 

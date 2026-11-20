@@ -50,8 +50,23 @@ export class LoopbackPortTunnelManager {
     if (existingId !== undefined) {
       const existing = this.tunnelsById.get(existingId);
       if (existing !== undefined) {
-        const alive = await probeTcpReady(existing.tunnel.localHost, existing.tunnel.localPort, options.probeTimeoutMs ?? 1500);
-        if (alive && (options.localPort === undefined || options.localPort === 0 || existing.tunnel.localPort === options.localPort)) {
+        const probeMs = options.probeTimeoutMs ?? 1500;
+        const localAlive = await probeTcpReady(existing.tunnel.localHost, existing.tunnel.localPort, probeMs);
+        let upstreamAlive = false;
+        if (localAlive) {
+          upstreamAlive = await probeUpstreamDial(
+            this.dialRemote,
+            { nodeId: options.nodeId, remoteHost, remotePort: options.remotePort },
+            options.connectTimeoutMs ?? probeMs,
+          )
+            .then(() => true)
+            .catch(() => false);
+        }
+        if (
+          localAlive &&
+          upstreamAlive &&
+          (options.localPort === undefined || options.localPort === 0 || existing.tunnel.localPort === options.localPort)
+        ) {
           existing.tunnel = { ...existing.tunnel, healthy: true };
           return { tunnel: existing.tunnel, reused: true };
         }

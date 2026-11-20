@@ -402,4 +402,74 @@ describe('multi-machine mesh foundation', () => {
     expect(takeover.inspect('desktop-main')).toBeUndefined();
     expect(() => takeover.assertWritable('desktop-main')).not.toThrow();
   });
+
+  it('keeps MeshLeaseStore epochs strictly monotonic across last-unpin and expiry and enforces expectedEpoch on pin', async () => {
+    let now = 1_000_000;
+    const store = new MeshLeaseStore(undefined, () => now);
+    const lease1 = await store.pinNode('sess-mono', {
+      nodeId: 'peer-1',
+      label: 'Peer 1',
+      trustTier: 'trusted_personal',
+      capabilities: ['read', 'send', 'execute'],
+      state: 'online',
+      platform: 'linux',
+      createdBySession: true,
+    });
+    expect(lease1.epoch).toBe(1);
+
+    await store.unpin('sess-mono', 'node', 'peer-1', 1);
+    const afterUnpin = await store.getLease('sess-mono');
+    expect(afterUnpin.epoch).toBe(2);
+
+    await expect(
+      store.pinNode(
+        'sess-mono',
+        {
+          nodeId: 'peer-2',
+          label: 'Peer 2',
+          trustTier: 'trusted_personal',
+          capabilities: ['read', 'send'],
+          state: 'online',
+          platform: 'linux',
+          createdBySession: true,
+        },
+        0,
+      ),
+    ).rejects.toThrow(/stale_epoch|Stale epoch|epoch/i);
+
+    const lease3 = await store.pinNode(
+      'sess-mono',
+      {
+        nodeId: 'peer-2',
+        label: 'Peer 2',
+        trustTier: 'trusted_personal',
+        capabilities: ['read', 'send'],
+        state: 'online',
+        platform: 'linux',
+        createdBySession: true,
+      },
+      2,
+    );
+    expect(lease3.epoch).toBe(3);
+
+    now += 3_600_001;
+    const expired = await store.getLease('sess-mono');
+    expect(expired.nodes).toEqual([]);
+    expect(expired.epoch).toBe(3);
+
+    const afterExpiryPin = await store.pinNode(
+      'sess-mono',
+      {
+        nodeId: 'peer-3',
+        label: 'Peer 3',
+        trustTier: 'trusted_personal',
+        capabilities: ['read', 'send'],
+        state: 'online',
+        platform: 'linux',
+        createdBySession: true,
+      },
+      3,
+    );
+    expect(afterExpiryPin.epoch).toBe(4);
+  });
 });
