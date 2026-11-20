@@ -7849,3 +7849,145 @@ it('does not re-scan from byte zero when a contiguous cold window contains a leg
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('resolves historical cold lookupToolCall on a >40 MiB wire via coldToolTurnIds and turnId hint in <100ms with zero detailLocator scans', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-cold-tool-lookup-40m-'));
+  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const padLine = `${JSON.stringify({ type: 'fixture.padding', padding: 'p'.repeat(512 << 10) })}\n`;
+  await writeFixtureFile(wirePath, padLine.repeat(82));
+  const tailRecords: object[] = [
+    {
+      type: 'turn.prompt',
+      turnId: 150,
+      promptId: 'prompt-150',
+      input: [{ type: 'text', text: 'inspect large build logs' }],
+      origin: { kind: 'user' },
+      time: 10_000,
+    },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 150, step: 1, uuid: 'step-150-0' } },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.call',
+        turnId: 150,
+        stepUuid: 'step-150-0',
+        uuid: 'frame-150-call-a',
+        toolCallId: 'call-cold-150-a',
+        name: 'Bash',
+        input: { command: 'cat huge.log' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        turnId: 150,
+        stepUuid: 'step-150-0',
+        toolCallId: 'call-cold-150-a',
+        result: { output: `COLD_TOOL_OUTPUT_A:${'x'.repeat(1_200_000)}`, isError: false },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.call',
+        turnId: 150,
+        stepUuid: 'step-150-0',
+        uuid: 'frame-150-call-b',
+        toolCallId: 'call-cold-150-b',
+        name: 'Read',
+        input: { path: 'src/app.ts' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        turnId: 150,
+        stepUuid: 'step-150-0',
+        toolCallId: 'call-cold-150-b',
+        result: { output: 'COLD_TOOL_OUTPUT_B_EXACT', isError: false },
+      },
+    },
+    { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 150, step: 1, uuid: 'step-150-0' } },
+    { type: 'turn.ended', turnId: 150, reason: 'completed', time: 10_500 },
+  ];
+  for (let turnId = 151; turnId <= 165; turnId += 1) {
+    tailRecords.push(
+      { type: 'turn.prompt', turnId, promptId: `prompt-${turnId}`, input: [{ type: 'text', text: `recent turn ${turnId}` }], origin: { kind: 'user' }, time: 11_000 + turnId },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `step-${turnId}` } },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId, stepUuid: `step-${turnId}`, uuid: `frame-${turnId}`, part: { type: 'text', text: `reply ${turnId}` } } },
+      { type: 'turn.ended', turnId, reason: 'completed', time: 11_100 + turnId },
+    );
+  }
+  await appendFixtureFile(wirePath, `${tailRecords.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const wireSize = (await fsPromises.stat(wirePath)).size;
+  expect(wireSize).toBeGreaterThan(40 << 20);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  const db = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+  const nav = new HistoryLocatorStore(db, service);
+  const locatorLookupSpy = vi.spyOn(nav, 'lookupToolCall');
+  service.setHistoryLocatorReader(() => nav);
+  const signal = new AbortController().signal;
+  try {
+    const firstScreen = await service.readColdPageSnapshot('s1', 'main', (value) => value, signal, false, undefined, false, true, true);
+    const partialT150 = firstScreen?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't150');
+    expect(partialT150?.stepsPartial).toBe(true);
+
+    const t0 = performance.now();
+    const byIndex = await service.lookupToolCall('s1', 'main', 'call-cold-150-a', signal);
+    const elapsedByIndexMs = performance.now() - t0;
+    expect(locatorLookupSpy).not.toHaveBeenCalled();
+    expect(elapsedByIndexMs).toBeLessThan(100);
+    expect(byIndex.status).toBe('found');
+    if (byIndex.status === 'found') {
+      expect(byIndex.turnId).toBe('t150');
+      expect(byIndex.stepId).toBe('step-150-0');
+      expect(byIndex.frame.toolCallId).toBe('call-cold-150-a');
+      expect(String(byIndex.frame.output)).toContain('COLD_TOOL_OUTPUT_A:');
+    }
+
+    const t1 = performance.now();
+    const byHint = await readSessionViewTranscriptDetail(service, 's1', {
+      agentId: 'main',
+      kind: 'tool',
+      id: 'call-cold-150-b',
+      turnId: 't150',
+      signal,
+    });
+    const elapsedByHintMs = performance.now() - t1;
+    expect(locatorLookupSpy).not.toHaveBeenCalled();
+    expect(elapsedByHintMs).toBeLessThan(100);
+    expect(byHint).toMatchObject({
+      kind: 'tool',
+      lookup: {
+        status: 'found',
+        turnId: 't150',
+        stepId: 'step-150-0',
+        frame: expect.objectContaining({
+          toolCallId: 'call-cold-150-b',
+          output: 'COLD_TOOL_OUTPUT_B_EXACT',
+        }),
+      },
+    });
+
+    await appendFixtureFile(wirePath, `${JSON.stringify({ type: 'context.undo', count: 1, time: 12_000 })}\n`);
+    const undoneService = new TranscriptService({ homeDir: home, core: coldCore() });
+    const undoneNav = new HistoryLocatorStore(db, undoneService);
+    const undoneSpy = vi.spyOn(undoneNav, 'lookupToolCall');
+    undoneService.setHistoryLocatorReader(() => undoneNav);
+    try {
+      await undoneService.readColdPageSnapshot('s1', 'main', (value) => value, signal, false, undefined, false, true, true);
+      const afterUndo = await undoneService.lookupToolCall('s1', 'main', 'call-cold-150-a', signal, 't150');
+      expect(undoneSpy).toHaveBeenCalledTimes(1);
+      expect(afterUndo.status).toBe('preparing');
+    } finally {
+      undoneService.dispose();
+    }
+  } finally {
+    service.dispose();
+    await db.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);

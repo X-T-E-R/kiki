@@ -222,3 +222,100 @@ describe('external tool rows use the native display', () => {
     replaceCard.container.remove();
   });
 });
+
+describe('large tool output and diff virtualization on expand', () => {
+  it('virtualizes large command_output stdout and multiline file_content via VirtualToolText while keeping short text plain', async () => {
+    const largeStdout = Array.from({ length: 400 }, (_, i) => `stdout-line-${i}: ${'x'.repeat(40)}`).join('\n');
+    expect(largeStdout.length).toBeGreaterThan(20_000);
+    const commandBlock = tool({
+      toolCallId: 'bash-large-stdout',
+      name: 'Bash',
+      display: { kind: 'command', command: 'cat big.log' },
+      output: { kind: 'command_output', exit_code: 0, stdout: largeStdout },
+    });
+    const shown = await renderCard(commandBlock);
+    try {
+      await act(async () => { shown.container.querySelector<HTMLButtonElement>('[data-activity-toggle]')?.click(); });
+      const virtualWell = shown.container.querySelector('[data-virtual-tool-text]');
+      expect(virtualWell).not.toBeNull();
+      expect(virtualWell?.className).toContain('overflow-auto');
+      expect(virtualWell?.textContent).toContain('stdout-line-0:');
+      expect(virtualWell?.textContent).not.toContain('stdout-line-399:');
+    } finally {
+      await act(async () => shown.root.unmount());
+      shown.container.remove();
+    }
+
+    const manyShortLines = Array.from({ length: 120 }, (_, i) => `l${i}`).join('\n');
+    expect(manyShortLines.length).toBeLessThan(6_144);
+    const fileBlock = tool({
+      toolCallId: 'read-many-lines',
+      name: 'Read',
+      display: { kind: 'file_io', operation: 'read', path: 'src/many.ts' },
+      output: { kind: 'file_content', path: 'src/many.ts', content: manyShortLines },
+    });
+    const fileShown = await renderCard(fileBlock);
+    try {
+      await act(async () => { fileShown.container.querySelector<HTMLButtonElement>('[data-activity-toggle]')?.click(); });
+      expect(fileShown.container.querySelector('[data-virtual-tool-text]')).not.toBeNull();
+      expect(fileShown.container.querySelector('[data-virtual-tool-text]')?.textContent).toContain('l0');
+    } finally {
+      await act(async () => fileShown.root.unmount());
+      fileShown.container.remove();
+    }
+
+    const shortBlock = tool({
+      toolCallId: 'bash-short',
+      name: 'Bash',
+      display: { kind: 'command', command: 'echo hi' },
+      output: { kind: 'command_output', exit_code: 0, stdout: 'hello world\n' },
+    });
+    const shortShown = await renderCard(shortBlock);
+    try {
+      await act(async () => { shortShown.container.querySelector<HTMLButtonElement>('[data-activity-toggle]')?.click(); });
+      expect(shortShown.container.querySelector('[data-virtual-tool-text]')).toBeNull();
+      expect(shortShown.container.textContent).toContain('hello world');
+    } finally {
+      await act(async () => shortShown.root.unmount());
+      shortShown.container.remove();
+    }
+  });
+
+  it('virtualizes DiffCard when total diff lines exceed the threshold while preserving small diff DOM', async () => {
+    const beforeLarge = Array.from({ length: 220 }, (_, i) => `old line ${i}`).join('\n');
+    const afterLarge = Array.from({ length: 220 }, (_, i) => `new line ${i}`).join('\n');
+    const largeEdit = tool({
+      toolCallId: 'edit-large-diff',
+      name: 'Edit',
+      display: { kind: 'diff', path: 'src/huge.ts', before: beforeLarge, after: afterLarge },
+    });
+    const shown = await renderCard(largeEdit);
+    try {
+      await act(async () => { shown.container.querySelector<HTMLButtonElement>('[data-activity-toggle]')?.click(); });
+      const virtualDiff = shown.container.querySelector('[data-virtual-diff-card]');
+      expect(virtualDiff).not.toBeNull();
+      const renderedRows = virtualDiff!.querySelectorAll('[data-diff-tag]');
+      expect(renderedRows.length).toBeGreaterThan(0);
+      expect(renderedRows.length).toBeLessThan(120);
+      expect(virtualDiff!.textContent).toContain('old line 0');
+    } finally {
+      await act(async () => shown.root.unmount());
+      shown.container.remove();
+    }
+
+    const smallEdit = tool({
+      toolCallId: 'edit-small-diff',
+      name: 'Edit',
+      display: { kind: 'diff', path: 'src/small.ts', before: 'const a = 1;\n', after: 'const a = 2;\n' },
+    });
+    const smallShown = await renderCard(smallEdit);
+    try {
+      await act(async () => { smallShown.container.querySelector<HTMLButtonElement>('[data-activity-toggle]')?.click(); });
+      expect(smallShown.container.querySelector('[data-virtual-diff-card]')).toBeNull();
+      expect(smallShown.container.querySelectorAll('[data-diff-tag]')).toHaveLength(2);
+    } finally {
+      await act(async () => smallShown.root.unmount());
+      smallShown.container.remove();
+    }
+  });
+});

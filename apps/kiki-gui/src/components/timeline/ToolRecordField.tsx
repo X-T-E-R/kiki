@@ -24,10 +24,15 @@ export function ToolRecordField({ block, agentId, field, children }: {
     .some((ref) => ref.path.length === 1 && roots.includes(String(ref.path[0])) && controller.isContentRange(agentId, ref));
   const prepare = controller === undefined || source === undefined ? undefined
     : (signal: AbortSignal) => field === 'output'
-      ? controller.copyToolCallField(agentId, block.toolCallId, 'output', signal)
+      ? (block.turnId === undefined
+        ? controller.copyToolCallField(agentId, block.toolCallId, 'output', signal)
+        : controller.copyToolCallField(agentId, block.toolCallId, 'output', signal, block.turnId))
       : controller.copyContentField(agentId, source, [root], signal);
   const text = field === 'output' ? recordText(block.output)
     : block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput');
+  const fallbackPrefixText = field === 'output'
+    ? (typeof block.output === 'string' ? block.output : undefined)
+    : root === 'inputText' ? block.argsText : undefined;
   const label = t(field === 'input' ? 'tc.input' : 'tc.output');
   const absent = field === 'output' && block.output === undefined;
   return <div data-tool-record-field={field}>
@@ -37,6 +42,6 @@ export function ToolRecordField({ block, agentId, field, children }: {
     </div>
     {absent ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', locale)}</p>
       : range ? null : children ?? <LoadedToolText copy={false} text={text} />}
-    <ContentContinuation source={source} roots={roots} callerAgentId={agentId} label={label} headingPresent className="mt-1" />
+    <ContentContinuation source={source} roots={roots} callerAgentId={agentId} label={label} headingPresent fallbackPrefixText={fallbackPrefixText} className="mt-1" />
   </div>;
 }

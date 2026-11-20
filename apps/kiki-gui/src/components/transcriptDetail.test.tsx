@@ -1046,15 +1046,30 @@ it.each(['MemoryRead', 'MemoryWrite', 'MemorySearch', 'ExampleTool'])('%s reads 
     await click(container.querySelector('[data-content-continuation="error"] button'));
     await act(async () => { await vi.waitFor(() => expect(controller.getAgentState('reader').contentRefs).toEqual([])); });
     expect(container.textContent).toContain('REASON_TAIL');
+    expect(container.textContent).toContain('BODY_TAIL_0');
+    expect(container.textContent).toContain('old-revision');
+    const virtualOutput = container.querySelector<HTMLElement>('[data-tool-record-field="output"] [data-virtual-tool-text]');
+    if (virtualOutput !== null) {
+      await act(async () => {
+        virtualOutput.scrollTop = 900;
+        virtualOutput.dispatchEvent(new Event('scroll'));
+      });
+    }
     expect(container.textContent).toContain('BODY_TAIL_9');
     expect(container.textContent).toContain('actual-next-page');
-    expect(container.textContent).toContain('old-revision');
     expect(read.mock.calls.every(([request]) => request.ref.revision === inputRef.revision)).toBe(true);
     await click(container.querySelector('[data-tool-record-field="output"] [data-copy-state]'));
     expect(copied).toHaveBeenCalledWith(JSON.stringify(output, null, 2));
     const calls = read.mock.calls.length;
     await click(container.querySelector('[data-tool] button'));
     await click(container.querySelector('[data-tool] button'));
+    const reopenedVirtual = container.querySelector<HTMLElement>('[data-tool-record-field="output"] [data-virtual-tool-text]');
+    if (reopenedVirtual !== null) {
+      await act(async () => {
+        reopenedVirtual.scrollTop = 900;
+        reopenedVirtual.dispatchEvent(new Event('scroll'));
+      });
+    }
     expect(container.textContent).toContain('BODY_TAIL_9');
     expect(read).toHaveBeenCalledTimes(calls);
   } finally { copied.mockRestore(); controller.close(); }
@@ -1177,4 +1192,126 @@ it('counts backward structural progress from the suffix while preserving forward
   expect(contentRefProgress({ ...base, direction: 'backward' }, translate)).toBe('8/17');
   expect(contentRefProgress({ ...base, direction: 'backward', offset: 17 }, translate)).toBe('0/17');
   expect(contentRefProgress({ ...base, direction: 'backward', offset: 0, total: 0 }, translate)).toBe('0/0');
+});
+
+it('upgrades a truncated ToolRecordField into ContentRangeText on frame 1 with zero loading flash', async () => {
+  const preview = `FIRST_CHUNK_PREVIEW:${'A'.repeat(16_384)}`;
+  const ref = boundedRef(FRAME_SOURCE, ['output'], 'text', preview.length, 600_000);
+  const contentRead = vi.fn(async () => ({ ref, value: '', contentRefs: [] }));
+  const view = {
+    snapshot: async () => ({ session: { id: 'test', title: 'Range instant' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
+    transcript: { content: contentRead },
+    subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
+  } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController(
+    {} as import('@kiki/session-core/transport').SessionTransport,
+    view,
+    'test',
+    { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+  );
+  try {
+    await controller.open();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      session_id: 'test',
+      agent_id: 'main',
+      grade: 'delta',
+      cursor: { seq: 1, epoch: 'e' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: {
+        items: [{
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          steps: [{
+            kind: 'step',
+            turnId: 't1',
+            stepId: 't1.1',
+            ordinal: 1,
+            state: 'completed',
+            frames: [{
+              kind: 'tool',
+              frameId: FRAME_SOURCE.id,
+              toolCallId: 'call-huge-output',
+              name: 'CustomLargeTool',
+              state: 'done',
+              input: { query: 'logs' },
+              output: preview,
+              contentRefs: [ref],
+            }],
+          }],
+        }],
+        tasks: [],
+        attachments: [],
+        prompts: [],
+        interactions: [],
+        todos: [],
+        meta: {},
+      },
+    });
+    expect(controller.isContentRange('main', ref)).toBe(true);
+    expect(controller.peekContentRange('main', ref, 0)).toBe(preview.slice(0, 4096));
+    expect(controller.peekContentRange('main', ref, 4096)).toBe(preview.slice(4096, 8192));
+
+    function ExpandableTool() {
+      const state = useSyncExternalStore(controller.subscribe, controller.getState);
+      const tool = state.blocks.find((block): block is Tool => block.kind === 'tool')!;
+      return (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="main">
+          <ToolCard block={tool} agentId="main" />
+        </TranscriptDetailProvider>
+      );
+    }
+
+    const container = await render(<ExpandableTool />);
+    await click(container.querySelector('[data-tool] button'));
+    const rangeView = container.querySelector('[data-content-range-text]');
+    expect(rangeView).not.toBeNull();
+    expect(rangeView?.querySelector('[role="status"]')).toBeNull();
+    expect(rangeView?.textContent).toContain('FIRST_CHUNK_PREVIEW:');
+    expect(contentRead).not.toHaveBeenCalled();
+
+    const resolvers = new Map<number, (value: string) => void>();
+    const shortPreview = 'SHORT_PREFIX_VISIBLE_IMMEDIATELY';
+    const shortRef = boundedRef(FRAME_SOURCE, ['output'], 'text', shortPreview.length, 600_000);
+    const readRange = vi.fn((_agentId: string, _contentRef: ContentRef, offset: number) => new Promise<string>((resolve) => { resolvers.set(offset, resolve); }));
+    const mockController = {
+      contentRefsFor: () => [shortRef],
+      isContentRange: () => true,
+      beginContentRead: () => ({ release() {}, retry() {} }),
+      readContentRange: readRange,
+    } as unknown as SessionController;
+    const shortBlock = {
+      kind: 'tool',
+      id: 'tool-short-range',
+      frameId: FRAME_SOURCE.id,
+      turnId: FRAME_SOURCE.turnId,
+      stepId: FRAME_SOURCE.stepId,
+      toolCallId: 'call-short-range',
+      name: 'CustomLargeTool',
+      status: 'done',
+      argsText: '',
+      args: {},
+      output: shortPreview,
+    } as Tool;
+    const fallbackContainer = await render(
+      <TranscriptDetailProvider controller={mockController} load={async () => false} loads={{}} sessionId="test" agentId="main">
+        <ToolCard block={shortBlock} agentId="main" />
+      </TranscriptDetailProvider>,
+    );
+    await click(fallbackContainer.querySelector('[data-tool] button'));
+    const fallbackRange = fallbackContainer.querySelector('[data-content-range-text]');
+    expect(fallbackRange).not.toBeNull();
+    const firstChunk = fallbackRange?.querySelector('[data-index="0"]');
+    expect(firstChunk).not.toBeNull();
+    expect(firstChunk?.querySelector('[role="status"]')).toBeNull();
+    expect(firstChunk?.textContent).toContain(shortPreview);
+    expect(readRange).toHaveBeenCalledWith('main', shortRef, 0, expect.any(AbortSignal));
+    await act(async () => { resolvers.get(0)?.(`${shortPreview}_AND_FULL_CHUNK_0`); });
+    expect(firstChunk?.textContent).toContain(`${shortPreview}_AND_FULL_CHUNK_0`);
+  } finally {
+    controller.close();
+  }
 });

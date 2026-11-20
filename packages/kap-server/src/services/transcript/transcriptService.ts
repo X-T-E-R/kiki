@@ -131,6 +131,7 @@ const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
 const DEFAULT_DIRECT_TURN_MAX_BYTES = 64 << 20;
 const DEFAULT_COLD_TURN_SPAN_MAX_TURNS = 16_384;
 const DEFAULT_COLD_TURN_SPAN_MAX_WIRES = 32;
+const DEFAULT_COLD_TOOL_TURN_IDS_MAX_PER_WIRE = 32_768;
 const DEFAULT_COMPACT_TURN_LOOP_BYTES = 32 << 10;
 const DEFAULT_COMPACT_TURNS_RESERVE_BYTES = 1 << 20;
 const COLD_TURN_SPAN_PRE_RECORD_MAX_GAP_BYTES = 256 << 10;
@@ -419,6 +420,7 @@ export interface TranscriptColdTurnSpanLimits {
   readonly maxDirectTurnBytes?: number;
   readonly maxTurnsPerWire?: number;
   readonly maxWires?: number;
+  readonly maxToolIdsPerWire?: number;
   readonly firstScreenLoopBudgetBytes?: number;
   readonly compactTurnLoopBytes?: number;
   readonly compactTurnsReserveBytes?: number;
@@ -654,6 +656,11 @@ interface ColdTurnSpanIndex {
   visibilityResetOffset?: number;
 }
 
+interface ColdToolTurnIndex {
+  readonly fingerprint: string;
+  readonly toolTurnIds: Map<string, string>;
+}
+
 interface ScannedSpanMarker {
   readonly kind: 'turn.prompt' | 'turn_begin' | 'pre_turn' | 'visibility_reset' | 'implicit_turn';
   readonly startByteOffset: number;
@@ -849,6 +856,50 @@ function wireTurnId(record: ContextRecord): string | undefined {
   return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function extractRecordToolCallIds(record: ContextRecord): string[] {
+  const ids: string[] = [];
+  const push = (value: unknown): void => {
+    const id = nonEmptyString(value);
+    if (id !== undefined) ids.push(id);
+  };
+  if (record.type === 'context.append_loop_event') {
+    const event = (record as { event?: Record<string, unknown> }).event;
+    if (event !== undefined && event !== null && typeof event === 'object') {
+      push(event['toolCallId']);
+      push(event['tool_call_id']);
+    }
+    return ids;
+  }
+  const raw = record as Record<string, unknown>;
+  push(raw['toolCallId']);
+  push(raw['tool_call_id']);
+  const value = raw['value'];
+  if (value !== null && typeof value === 'object') {
+    push((value as Record<string, unknown>)['toolCallId']);
+    push((value as Record<string, unknown>)['tool_call_id']);
+  }
+  if (record.type === 'context.append_message') {
+    const message = raw['message'];
+    if (message !== null && typeof message === 'object') {
+      const msg = message as Record<string, unknown>;
+      push(msg['toolCallId']);
+      push(msg['tool_call_id']);
+      if (Array.isArray(msg['toolCalls'])) {
+        for (const call of msg['toolCalls']) {
+          if (call !== null && typeof call === 'object') {
+            push((call as Record<string, unknown>)['id']);
+          }
+        }
+      }
+    }
+  }
+  return ids;
+}
+
 function hasImplicitTurnRecords(records: readonly ColdWireRecord[]): boolean {
   let activeExplicitTurnId: string | undefined;
   let explicitTurnSlotOpen = false;
@@ -1021,6 +1072,7 @@ export class TranscriptService {
   private readonly retainedColdTurns = new Map<string, { fingerprint: string; turns: Map<string, TranscriptTurn>; bytes: number }>();
   private readonly coldWireWindows = new Map<string, ColdWireWindow>();
   private readonly coldTurnSpans = new Map<string, ColdTurnSpanIndex>();
+  private readonly coldToolTurnIds = new Map<string, ColdToolTurnIndex>();
   private coldWireWindowBytes = 0;
   private readonly anchorSeeks = new Map<string, AnchorSeek>();
   private readonly anchorWindows = new Map<string, { fingerprint: string; at: number; snapshot: AgentTranscriptSnapshot; bytes: number }>();
@@ -2551,6 +2603,7 @@ export class TranscriptService {
       this.forgetColdWindow(wirePath);
       this.retainedColdTurns.delete(wirePath);
       this.coldTurnSpans.delete(wirePath);
+      this.coldToolTurnIds.delete(wirePath);
       const projected = project({ ...partialColdWindowSnapshot(window), hasMoreOlder: window.start > 0 });
       this.contiguousColdSnapshots.add(projected);
       return projected;
@@ -2849,8 +2902,10 @@ export class TranscriptService {
     const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
     if (discovered !== undefined) {
       this.recordColdTurnSpans(wirePath, spanFingerprint, discovered.spanMarkers, start, info.size, discovered.complete, info.size);
+      this.recordColdToolTurnIds(wirePath, spanFingerprint, discovered.toolTurnIds);
     } else {
       this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, read.records, start, info.size, read.complete, info.size);
+      this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, read.records);
     }
     if (start > 0 && read.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(read.records)) {
       return undefined;
@@ -2893,6 +2948,7 @@ export class TranscriptService {
       ?? this.nextKnownTurnStartAtOrAfter(wirePath, spanFingerprint, window.start)
       ?? (window.end === info.size && window.droppedTail !== true ? info.size : undefined);
     this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, read.records, next, window.start, read.complete, info.size, nextBoundary);
+    this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, read.records);
     const merged = [...read.records, ...window.records];
     if (next > 0 && merged[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(merged)) {
       this.forgetColdWindow(wirePath);
@@ -3123,6 +3179,9 @@ export class TranscriptService {
     for (const wirePath of this.coldTurnSpans.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.coldTurnSpans.delete(wirePath);
     }
+    for (const wirePath of this.coldToolTurnIds.keys()) {
+      if (wirePath.split(/[/\\]/).includes(sessionId)) this.coldToolTurnIds.delete(wirePath);
+    }
     for (const wirePath of this.anchorWindows.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.anchorWindows.delete(wirePath);
     }
@@ -3182,13 +3241,14 @@ export class TranscriptService {
     return { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: false };
   }
 
-  private firstScreenRecords(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[] }> {
+  private firstScreenRecords(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[]; toolTurnIds: Array<readonly [string, string]> }> {
     return this.scheduleHistoryRead(signal, owned => this.firstScreenRecordsInLane(agentId, wirePath, end, owned), true);
   }
 
-  private async firstScreenRecordsInLane(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[] }> {
+  private async firstScreenRecordsInLane(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[]; spanMarkers: ScannedSpanMarker[]; toolTurnIds: Array<readonly [string, string]> }> {
     const records: ColdWireRecord[] = [];
     const spanMarkers: ScannedSpanMarker[] = [];
+    const toolTurnIds: Array<readonly [string, string]> = [];
     const skippedTurnIds = new Set<string>();
     const loopBudgetBytes = this.resolveFirstScreenLoopBudgetBytes();
     const compactTurnLoopBytes = this.resolveCompactTurnLoopBytes();
@@ -3206,13 +3266,14 @@ export class TranscriptService {
       if (skippedUnknownTurn) skippedTurnIds.add('*');
       records.reverse();
       spanMarkers.reverse();
+      toolTurnIds.reverse();
       this.coldReadRecords += scannedRecords;
       this.coldReadsCompleted++;
       this.coldReadDurationMs += performance.now() - startedAt;
-      return { start: boundary, records, complete, skippedTurnIds: [...skippedTurnIds], spanMarkers };
+      return { start: boundary, records, complete, skippedTurnIds: [...skippedTurnIds], spanMarkers, toolTurnIds };
     };
     const opened = await openLogicalWire(wirePath, signal);
-    if (opened === undefined) return { start: end, records, complete: false, skippedTurnIds: [], spanMarkers: [] };
+    if (opened === undefined) return { start: end, records, complete: false, skippedTurnIds: [], spanMarkers: [], toolTurnIds: [] };
     let position = end;
     let recordEnd = end;
     const suffix: Buffer[] = [];
@@ -3297,6 +3358,12 @@ export class TranscriptService {
               if (skippedUnknownTurn) {
                 skippedTurnIds.add(owningTurn);
                 skippedUnknownTurn = false;
+              }
+            }
+            const effectiveTurn = owningTurn ?? reverseTurn;
+            if (effectiveTurn !== undefined) {
+              for (const toolId of extractRecordToolCallIds(record)) {
+                toolTurnIds.push([toolId, effectiveTurn]);
               }
             }
             if (record.type === 'context.append_loop_event') {
@@ -3499,6 +3566,13 @@ export class TranscriptService {
     );
   }
 
+  private resolveColdToolTurnIdsMaxPerWire(): number {
+    return positiveLimit(
+      this.deps.coldTurnSpanLimits?.maxToolIdsPerWire ?? envNonNegativeLimit('KIKI_TRANSCRIPT_COLD_TOOL_TURN_IDS_MAX'),
+      DEFAULT_COLD_TOOL_TURN_IDS_MAX_PER_WIRE,
+    );
+  }
+
   private resolveFirstScreenLoopBudgetBytes(): number {
     return nonNegativeLimit(
       this.deps.coldTurnSpanLimits?.firstScreenLoopBudgetBytes ?? envNonNegativeLimit('KIKI_TRANSCRIPT_FIRST_SCREEN_LOOP_BUDGET_BYTES'),
@@ -3677,11 +3751,87 @@ export class TranscriptService {
     return best;
   }
 
+  private recordColdToolTurnIdsFromRecords(
+    wirePath: string,
+    fingerprint: string,
+    records: readonly ColdWireRecord[],
+  ): void {
+    const pairs: Array<readonly [string, string]> = [];
+    let currentTurnId: string | undefined;
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index]!.record;
+      if (record.type === 'context.undo' || record.type === 'context.clear' || record.type === 'branch.base') {
+        currentTurnId = undefined;
+        continue;
+      }
+      const recordTurn = wireTurnId(record);
+      if (recordTurn !== undefined) currentTurnId = recordTurn;
+      const effectiveTurn = recordTurn ?? currentTurnId;
+      if (effectiveTurn === undefined) continue;
+      for (const toolId of extractRecordToolCallIds(record)) {
+        pairs.push([toolId, effectiveTurn]);
+      }
+    }
+    this.recordColdToolTurnIds(wirePath, fingerprint, pairs);
+  }
+
+  private recordColdToolTurnIds(
+    wirePath: string,
+    fingerprint: string,
+    pairs: readonly (readonly [string, string])[],
+  ): void {
+    if (pairs.length === 0) return;
+    const maxWires = this.resolveColdTurnSpanMaxWires();
+    const maxToolIds = this.resolveColdToolTurnIdsMaxPerWire();
+    let index = this.coldToolTurnIds.get(wirePath);
+    if (index !== undefined && index.fingerprint !== fingerprint) {
+      this.coldToolTurnIds.delete(wirePath);
+      index = undefined;
+    }
+    if (index === undefined) {
+      index = { fingerprint, toolTurnIds: new Map() };
+    } else {
+      this.coldToolTurnIds.delete(wirePath);
+    }
+    this.coldToolTurnIds.set(wirePath, index);
+    while (this.coldToolTurnIds.size > maxWires) {
+      const oldest = this.coldToolTurnIds.keys().next().value;
+      if (oldest === undefined || oldest === wirePath) break;
+      this.coldToolTurnIds.delete(oldest);
+    }
+    for (let i = 0; i < pairs.length; i += 1) {
+      const [toolCallId, turnId] = pairs[i]!;
+      if (toolCallId.length === 0 || turnId.length === 0) continue;
+      index.toolTurnIds.delete(toolCallId);
+      index.toolTurnIds.set(toolCallId, turnId);
+      while (index.toolTurnIds.size > maxToolIds) {
+        const oldest = index.toolTurnIds.keys().next().value;
+        if (oldest === undefined) break;
+        index.toolTurnIds.delete(oldest);
+      }
+    }
+  }
+
+  private lookupColdToolTurnId(wirePath: string, spanFingerprint: string, toolCallId: string): string | undefined {
+    const index = this.coldToolTurnIds.get(wirePath);
+    if (index === undefined) return undefined;
+    if (index.fingerprint !== spanFingerprint) {
+      this.coldToolTurnIds.delete(wirePath);
+      return undefined;
+    }
+    const turnId = index.toolTurnIds.get(toolCallId);
+    if (turnId === undefined) return undefined;
+    index.toolTurnIds.delete(toolCallId);
+    index.toolTurnIds.set(toolCallId, turnId);
+    return turnId;
+  }
+
   private lookupColdTurnSpan(wirePath: string, spanFingerprint: string, turnId: string): ColdTurnByteSpan | undefined {
     const index = this.coldTurnSpans.get(wirePath);
     if (index === undefined) return undefined;
     if (index.fingerprint !== spanFingerprint) {
       this.coldTurnSpans.delete(wirePath);
+      this.coldToolTurnIds.delete(wirePath);
       return undefined;
     }
     const span = index.spans.get(turnId);
@@ -3769,6 +3919,7 @@ export class TranscriptService {
     signal.throwIfAborted();
     if (after === undefined || `${fileIdentity(after)}:${fileFingerprint(after)}:${stampAfter}` !== spanFingerprint) {
       this.coldTurnSpans.delete(wirePath);
+      this.coldToolTurnIds.delete(wirePath);
       return undefined;
     }
     const snapshot = await this.projectColdRecords(agentId, records, span.startOffset === 0, undefined, undefined, undefined, signal);
@@ -4163,8 +4314,46 @@ export class TranscriptService {
     return undefined;
   }
 
+  private async readDirectColdToolCall(
+    sessionId: string,
+    agentId: string,
+    toolCallId: string,
+    hintTurnId?: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly turnId: string; readonly stepId: string; readonly frame: ToolCallFrame } | undefined> {
+    signal?.throwIfAborted();
+    if (this.coldTurnSpans === undefined || typeof this.historyWireLocation !== 'function') return undefined;
+    const location = await this.historyWireLocation(sessionId, agentId);
+    signal?.throwIfAborted();
+    if (location === undefined) return undefined;
+    const info = await stat(location.wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    if (info === undefined) return undefined;
+    const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
+    const spanFingerprint = `${fingerprint}:${await sealStamp(location.wirePath)}`;
+    signal?.throwIfAborted();
+    const indexedTurnId = this.lookupColdToolTurnId(location.wirePath, spanFingerprint, toolCallId);
+    const candidates: string[] = [];
+    if (hintTurnId !== undefined && hintTurnId.length > 0) candidates.push(hintTurnId);
+    if (indexedTurnId !== undefined && !candidates.includes(indexedTurnId)) candidates.push(indexedTurnId);
+    if (candidates.length === 0) return undefined;
+    const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
+    const opened = signal ?? new AbortController().signal;
+    for (const candidateTurnId of candidates) {
+      if (transcript?.getTurn(candidateTurnId)?.state === 'running') continue;
+      const direct = await this.readDirectColdTurn(agentId, location.wirePath, fingerprint, candidateTurnId, opened);
+      if (direct === undefined) continue;
+      const hit = findToolCallInTurns([direct], toolCallId);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+
   async lookupToolCall(sessionId: string, agentId: string, toolCallId: string,
-    signal?: AbortSignal): Promise<CanonicalToolLookup> {
+    signal?: AbortSignal, turnId?: string): Promise<CanonicalToolLookup> {
     signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
     const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
@@ -4174,6 +4363,8 @@ export class TranscriptService {
     }
     const warmCold = await this.readWarmColdToolCall(sessionId, agentId, toolCallId, signal);
     if (warmCold !== undefined) return { status: 'found', ...warmCold };
+    const directCold = await this.readDirectColdToolCall(sessionId, agentId, toolCallId, turnId, signal);
+    if (directCold !== undefined) return { status: 'found', ...directCold };
     return this.detailLocator().lookupToolCall(sessionId, agentId, toolCallId, signal);
   }
 
@@ -5127,6 +5318,7 @@ export class TranscriptService {
     const records = opening === undefined ? window.records : [...window.records, opening];
     const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
     this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, window.records, start, readEnd, readEnd >= fileSize, fileSize);
+    this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, window.records);
     const snapshot = await this.projectColdRecords(agentId, records, start === 0, undefined, undefined, undefined, opened);
     opened.throwIfAborted();
     this.rememberAnchorSeek(key, { fingerprint, at: seek.at });
@@ -5241,6 +5433,8 @@ export class TranscriptService {
     const starts = new Map(index.starts);
     const records: ColdWireRecord[] = [];
     const spanMarkers: ScannedSpanMarker[] = [];
+    const toolTurnIds: Array<readonly [string, string]> = [];
+    let scanTurnId: string | undefined;
     const startedAt = Date.now();
     const read = await this.wireRecordReader(wirePath, {
       startByteOffset: index.scannedTo,
@@ -5255,8 +5449,18 @@ export class TranscriptService {
       onRecord: (record, span) => {
         const marker = classifySpanMarker(record, span.startByteOffset, span.endByteOffset);
         if (marker !== undefined) spanMarkers.push(marker);
+        if (marker?.kind === 'visibility_reset') scanTurnId = undefined;
         const found = wireTurnId(record);
-        if (found !== undefined && !starts.has(found)) starts.set(found, span.startByteOffset);
+        if (found !== undefined) {
+          scanTurnId = found;
+          if (!starts.has(found)) starts.set(found, span.startByteOffset);
+        }
+        const effectiveTurn = found ?? scanTurnId;
+        if (effectiveTurn !== undefined) {
+          for (const toolId of extractRecordToolCallIds(record)) {
+            toolTurnIds.push([toolId, effectiveTurn]);
+          }
+        }
         records.push({ record, position: { startByteOffset: span.startByteOffset, endByteOffset: span.endByteOffset } });
         return found !== turnId;
       },
@@ -5278,6 +5482,7 @@ export class TranscriptService {
     }
     const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
     this.recordColdTurnSpans(wirePath, spanFingerprint, spanMarkers, index.scannedTo, read.nextByteOffset, read.complete, info.size);
+    this.recordColdToolTurnIds(wirePath, spanFingerprint, toolTurnIds);
     if (read.continuation !== undefined) this.clearRecordContinuations();
     this.turnStartIndexes.set(wirePath, { fingerprint, scannedTo: read.nextByteOffset, complete: read.complete, proofThrough, proof, starts, continuation: read.continuation });
     const found = starts.get(turnId);
@@ -5406,6 +5611,7 @@ export class TranscriptService {
     for (const key of this.coldSnapshotCache.keys()) this.deleteColdSnapshotCache(key);
     this.coldWireWindows.clear();
     this.coldTurnSpans.clear();
+    this.coldToolTurnIds.clear();
     this.coldWireWindowBytes = 0;
     for (const flight of this.coldWindowFlights.values()) {
       if (!flight.settled) flight.controller.abort(new DOMException('Transcript service is disposing', 'AbortError'));

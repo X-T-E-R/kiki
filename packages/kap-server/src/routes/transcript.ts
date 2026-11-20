@@ -254,6 +254,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
           agentId: query.agent_id,
           kind: query.kind,
           id: query.id,
+          turnId: query.turn_id,
           signal,
         }),
       );

@@ -3073,7 +3073,7 @@ export class SessionController {
    * the agent's store. Loading and failure states publish through
    * `detailLoads`; a retry is just another call.
    */
-  async loadTranscriptDetail(agentId: string, kind: TranscriptDetailKind, id: string): Promise<boolean> {
+  async loadTranscriptDetail(agentId: string, kind: TranscriptDetailKind, id: string, turnId?: string): Promise<boolean> {
     const read = this.view.transcript.detail?.bind(this.view.transcript);
     const key = transcriptDetailKey(kind, id);
     if (this.closed || read === undefined) return false;
@@ -3085,7 +3085,7 @@ export class SessionController {
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
-        const detail = await this.readPreparedContent(() => read({ agentId, kind, id }, { signal: controller.signal }), controller.signal);
+        const detail = await this.readPreparedContent(() => read({ agentId, kind, id, turnId }, { signal: controller.signal }), controller.signal);
         if (this.closed || this.generationOf(agentId) !== generation) return false;
         const applied = this.applyTranscriptDetail(agentId, detail);
         this.setDetailLoad(agentId, key, undefined);
@@ -3106,17 +3106,17 @@ export class SessionController {
     return run;
   }
 
-  async copyToolCallField(agentId: string, toolCallId: string, root: 'input' | 'output', signal?: AbortSignal): Promise<string> {
-    const lookup = await this.lookupToolCallForCopy(agentId, toolCallId, signal);
+  async copyToolCallField(agentId: string, toolCallId: string, root: 'input' | 'output', signal?: AbortSignal, turnId?: string): Promise<string> {
+    const lookup = await this.lookupToolCallForCopy(agentId, toolCallId, signal, turnId);
     const source = { kind: 'frame' as const, id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId };
     const field = root === 'input' && lookup.frame.input === undefined ? 'inputText' : root === 'output' && lookup.frame.output === undefined ? 'error' : root;
     return this.copyResolvedContentField(agentId, source, [field], signal);
   }
 
-  private async lookupToolCallForCopy(agentId: string, toolCallId: string, signal?: AbortSignal) {
+  private async lookupToolCallForCopy(agentId: string, toolCallId: string, signal?: AbortSignal, turnId?: string) {
     for (;;) {
       signal?.throwIfAborted();
-      const lookup = await this.lookupToolCall(agentId, toolCallId, signal);
+      const lookup = await this.lookupToolCall(agentId, toolCallId, signal, turnId);
       if (lookup.status === 'preparing') {
         await this.waitForToolDetailPreparation(signal);
         continue;
@@ -3147,7 +3147,7 @@ export class SessionController {
     return this.toolDetails.get(`${agentId}/${toolCallId}`);
   }
 
-  async lookupToolCall(agentId: string, toolCallId: string, signal?: AbortSignal): Promise<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']> {
+  async lookupToolCall(agentId: string, toolCallId: string, signal?: AbortSignal, turnId?: string): Promise<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']> {
     signal?.throwIfAborted();
     const key = `${agentId}/${toolCallId}`;
     const local = this.timelines.get(agentId)?.store?.getToolCall(toolCallId);
@@ -3166,7 +3166,7 @@ export class SessionController {
       const controller = new AbortController();
       this.snapshotControllers.add(controller);
       const promise = (async () => {
-        const detail = await this.readPreparedContent(() => read.call(this.view.transcript, { agentId, kind: 'tool', id: toolCallId }, { signal: controller.signal }), controller.signal);
+        const detail = await this.readPreparedContent(() => read.call(this.view.transcript, { agentId, kind: 'tool', id: toolCallId, turnId }, { signal: controller.signal }), controller.signal);
         controller.signal.throwIfAborted();
         if (this.closed || this.generationOf(agentId) !== generation) throw new Error('Tool detail scope changed');
         if (detail.kind !== 'tool' || detail.agent_id !== agentId || detail.session_id !== this.sessionId) throw new Error('Tool detail target mismatch');
@@ -3230,11 +3230,60 @@ export class SessionController {
     return index;
   }
 
+  private residentRangeText(agentId: string, ref: ContentRef): string | undefined {
+    if (ref.kind !== 'text' || ref.direction === 'backward') return undefined;
+    const entity = this.contentEntity(agentId, ref.source);
+    if (entity === undefined) return undefined;
+    const matched = entity.contentRefs?.some((candidate) =>
+      candidate.revision === ref.revision &&
+      candidate.kind === 'text' &&
+      candidate.path.length === ref.path.length &&
+      candidate.path.every((part, index) => part === ref.path[index]),
+    );
+    if (matched !== true) return undefined;
+    const value = contentPathValue(entity, ref.path);
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  /**
+   * Synchronously read an already-resident range slice when cached in memory or
+   * fully covered by the entity's loaded preview text, avoiding async loading flashes.
+   */
+  peekContentRange(agentId: string, ref: ContentRef, offset: number): string | undefined {
+    const key = JSON.stringify([agentId, ref.source, ref.path, ref.revision, offset]);
+    const cached = this.contentRanges.get(key);
+    if (cached !== undefined) return cached;
+    if (offset < 0) return undefined;
+    const value = this.residentRangeText(agentId, ref);
+    if (value === undefined || offset >= value.length) return undefined;
+    const expectedEnd = Math.min(ref.total, offset + CONTENT_RANGE_CHARS);
+    if (value.length < expectedEnd) return undefined;
+    let start = offset;
+    let end = expectedEnd;
+    if (start > 0 && /[\uD800-\uDBFF]/u.test(value[start - 1]!)) start += 1;
+    if (end < value.length && /[\uD800-\uDBFF]/u.test(value[end - 1]!)) end += 1;
+    return value.slice(start, end);
+  }
+
+  /**
+   * Synchronously read whatever initial prefix text is already resident for
+   * offset 0 while a full range block loads in the background.
+   */
+  peekContentPrefix(agentId: string, ref: ContentRef): string | undefined {
+    const value = this.residentRangeText(agentId, ref);
+    if (value === undefined) return undefined;
+    let end = Math.min(value.length, CONTENT_RANGE_CHARS);
+    if (end < value.length && /[\uD800-\uDBFF]/u.test(value[end - 1]!)) end += 1;
+    return value.slice(0, end);
+  }
+
   async readContentRange(agentId: string, ref: ContentRef, offset: number, signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
     const key = JSON.stringify([agentId, ref.source, ref.path, ref.revision, offset]);
     const cached = this.contentRanges.get(key);
     if (cached !== undefined) { this.contentRanges.delete(key); this.contentRanges.set(key, cached); return cached; }
+    const resident = this.peekContentRange(agentId, ref, offset);
+    if (resident !== undefined) return resident;
     const read = this.view.transcript.content?.bind(this.view.transcript);
     if (this.closed || read === undefined) throw new Error('Content reader unavailable');
     const generation = this.generationOf(agentId);
@@ -3274,7 +3323,7 @@ export class SessionController {
     if (source.kind === 'frame') {
       for (const [key, cached] of this.toolDetails) {
         if (!key.startsWith(`${agentId}/`) || cached.status !== 'found' || cached.frame.frameId !== source.id || cached.turnId !== source.turnId || cached.stepId !== source.stepId) continue;
-        const lookup = await this.lookupToolCallForCopy(agentId, cached.frame.toolCallId, signal);
+        const lookup = await this.lookupToolCallForCopy(agentId, cached.frame.toolCallId, signal, source.turnId);
         if (lookup.frame.frameId !== source.id || lookup.turnId !== source.turnId || lookup.stepId !== source.stepId) throw new Error('Copy target changed');
         break;
       }
