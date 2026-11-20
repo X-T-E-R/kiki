@@ -416,7 +416,7 @@ describe('a new revision read back while the editor is open', () => {
     await rerender();
     expect(container.querySelector('[data-persona-start-chat]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-actions]')!.click(); });
-    const menuStart = container.querySelector<HTMLButtonElement>('[data-persona-action="start"]')!;
+    const menuStart = document.body.querySelector<HTMLButtonElement>('[data-persona-actions-menu] [data-persona-action="start"]')!;
     expect(menuStart.disabled).toBe(true);
   });
 });

@@ -172,7 +172,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                       className={`rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
                         asrProvider === ''
                           ? 'border-selected-border bg-selected text-selected-ink font-medium'
-                          : 'border-hairline bg-surface text-ink-soft hover:bg-hover hover:text-ink'
+                          : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                       }`}
                     >
                       {t('st.im.asr.providerDefault')}
@@ -196,7 +196,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                           className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
                             active
                               ? 'border-selected-border bg-selected text-selected-ink font-medium'
-                              : 'border-hairline bg-surface text-ink-soft hover:bg-hover hover:text-ink'
+                              : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                           }`}
                           onClick={() => {
                             if (!active) setPolicy({ asr_provider: item.id });
@@ -263,7 +263,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                       className={`rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
                         ttsProvider === ''
                           ? 'border-selected-border bg-selected text-selected-ink font-medium'
-                          : 'border-hairline bg-surface text-ink-soft hover:bg-hover hover:text-ink'
+                          : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                       }`}
                     >
                       {t('st.im.tts.providerDefault')}
@@ -283,7 +283,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                           className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
                             active
                               ? 'border-selected-border bg-selected text-selected-ink font-medium'
-                              : 'border-hairline bg-surface text-ink-soft hover:bg-hover hover:text-ink'
+                              : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                           }`}
                         >
                           {item.shortLabel}

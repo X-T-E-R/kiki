@@ -509,23 +509,6 @@ export function firstLevelBranchIds(forest: AgentForest, rootAgentId: string = M
     .map((node) => node.agentId);
 }
 
-/**
- * Levels below the graph's root agent, which draws no lane of its own in the
- * expanded rows. So a first-level child is depth 1 and its workers depth 2,
- * which is also how far the label is indented.
- */
-function depthIn(forest: AgentForest, agentId: string, rootAgentId: string = MAIN_AGENT_ID): number {
-  let depth = 0;
-  let current: string | undefined = agentId;
-  const seen = new Set<string>();
-  while (current !== undefined && current !== rootAgentId && !seen.has(current)) {
-    seen.add(current);
-    depth += 1;
-    current = forest.byId[current]?.parentAgentId;
-  }
-  return Math.max(1, depth);
-}
-
 /** The axis window: the session's own earliest known start through now. */
 export function sessionWindow(from: number | undefined, now: number): LaneWindow {
   return laneWindow({ starts: [from], markers: [], now });
@@ -580,7 +563,10 @@ export function compactionTimes(blocks: readonly Block[]): number[] {
 export function useNow(ms = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = window.setInterval(() => { setNow(Date.now()); }, ms);
+    const id = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      setNow(Date.now());
+    }, ms);
     return () => { window.clearInterval(id); };
   }, [ms]);
   return now;

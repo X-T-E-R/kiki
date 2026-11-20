@@ -145,12 +145,14 @@
 
 .status-dot-busy {
   animation: kiki-breath var(--kiki-motion-loop-breath) var(--kiki-ease-loop) infinite;
+  will-change: transform, opacity;
 }
 
 /* The streaming caret breathes instead of blinking: a hard blink at 1Hz reads
  * as a terminal cursor; a soft fade reads as someone still writing. */
 .stream-caret {
   animation: kiki-caret-breath var(--kiki-motion-caret) var(--kiki-ease-loop) infinite;
+  will-change: opacity;
 }
 
 .expand-collapse {
@@ -214,9 +216,11 @@
 }
 .kiki-life[data-life='working'] {
   animation: kiki-breath var(--kiki-motion-loop-breath) var(--kiki-ease-loop) infinite;
+  will-change: transform, opacity;
 }
 .kiki-life[data-life='waiting']::after {
   animation: kiki-beckon var(--kiki-motion-loop-beckon) var(--kiki-ease-out) infinite;
+  will-change: transform, opacity;
 }
 .kiki-life[data-life='done'][data-life-changed] {
   animation: kiki-settle var(--kiki-motion-slow) var(--kiki-ease-pop) both;
@@ -358,4 +362,17 @@
   :root:not([data-kiki-motion='full']) [data-steer-line] .steer-mark::after {
     animation: none;
   }
+}
+
+/* Pause perpetual compositor animations while the window/tab is hidden or
+ * inside collapsed/hidden containers so offscreen surfaces do zero GPU work. */
+:root[data-kiki-doc-hidden='true']
+  :is(.status-dot-busy, .stream-caret, .kiki-life, .kiki-wordmark-dot, .spinner, .animate-pulse, .animate-spin),
+:root[data-kiki-doc-hidden='true']
+  :is(.kiki-life, .kiki-wordmark-dot, [data-steer-line] .steer-mark)::after,
+:is([hidden], details:not([open]) > :not(summary))
+  :is(.status-dot-busy, .stream-caret, .kiki-life, .spinner, .animate-pulse, .animate-spin),
+:is([hidden], details:not([open]) > :not(summary))
+  :is(.kiki-life, [data-steer-line] .steer-mark)::after {
+  animation-play-state: paused !important;
 }

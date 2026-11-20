@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutorModelCatalogResponse } from '@kiki/protocol';
 import { writeSettings } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { Composer } from './Composer';
 import { resolveCompiledGuiStylesheet } from '../testSupport/compiledGuiStylesheet';
 
@@ -95,9 +96,10 @@ beforeEach(() => {
   listDraftSkills.mockResolvedValue({ skills: [] });
   getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true, targets: [] });
   meta.mockResolvedValue({ experimental_flags: {} });
-  container = document.createElement('div');
-  document.body.append(container);
-  root = createRoot(container);
+  const rawContainer = document.createElement('div');
+  document.body.append(rawContainer);
+  root = createRoot(rawContainer);
+  container = withPortalQueries(rawContainer);
 });
 
 afterEach(async () => {

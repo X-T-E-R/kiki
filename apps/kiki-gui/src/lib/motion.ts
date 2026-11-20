@@ -89,3 +89,24 @@ export function useLifeChanged(markId: string, life: LifeState | undefined): boo
   }, [markId, life]);
   return latch.current.changed;
 }
+
+let visibilityGuardInstalled = false;
+
+/**
+ * Mirror `document.visibilityState === 'hidden'` onto `<html data-kiki-doc-hidden>`
+ * so infinite compositor animations pause automatically while the window or tab
+ * is hidden, preventing idle WebView2 GPU burn.
+ */
+export function installDocumentVisibilityMotionGuard(): void {
+  if (visibilityGuardInstalled || typeof document === 'undefined') return;
+  visibilityGuardInstalled = true;
+  const sync = () => {
+    if (document.visibilityState === 'hidden') {
+      document.documentElement.dataset['kikiDocHidden'] = 'true';
+    } else {
+      delete document.documentElement.dataset['kikiDocHidden'];
+    }
+  };
+  sync();
+  document.addEventListener('visibilitychange', sync);
+}

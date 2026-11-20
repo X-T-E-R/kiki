@@ -22,6 +22,7 @@
  */
 
 import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PersonaSnapshot, PersonaSummary, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -32,7 +33,7 @@ import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { ApiError, PERSONA_ALREADY_EXISTS, PERSONA_REVISION_CONFLICT } from '../../lib/client';
 import { pushToast, pushUndoToast } from '../../lib/toasts';
-import { registerOverlay } from '../../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { DEFAULT_AGENT_PROFILE } from '../Composer';
@@ -633,6 +634,8 @@ function PersonaActions({ snapshot, archived: archivedProp, dirty, onChanged, on
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState<null | { readonly kind: 'delete' }>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const { id, name } = snapshot.definition;
   const listed = queryClient.getQueryData<readonly PersonaSummary[]>(['personas', { includeArchived: true }]);
   const archived = archivedProp ?? listed?.find((item) => item.id === id)?.archived === true;
@@ -640,7 +643,10 @@ function PersonaActions({ snapshot, archived: archivedProp, dirty, onChanged, on
   useEffect(() => {
     if (!open) return;
     const unregister = registerOverlay('persona-actions');
-    const onDown = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); } };
     document.addEventListener('pointerdown', onDown);
     window.addEventListener('keydown', onKey, true);
@@ -718,6 +724,7 @@ function PersonaActions({ snapshot, archived: archivedProp, dirty, onChanged, on
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
+        ref={triggerRef}
         type="button"
         data-persona-actions
         aria-haspopup="menu"
@@ -730,23 +737,56 @@ function PersonaActions({ snapshot, archived: archivedProp, dirty, onChanged, on
         <Icon name="more" size={16} />
       </button>
       {open ? (
-        <div role="menu" data-persona-actions-menu className={`anim-enter absolute right-0 top-full z-30 mt-1 w-52 p-1 ${POPOVER_SURFACE_CLASS}`}>
-          {items.map((item) => (
-            <div key={item.key}>
-              {item.separatorBefore === true ? <div role="separator" className="my-1 h-px bg-hairline" /> : null}
-              <button
-                type="button"
-                role="menuitem"
-                data-persona-action={item.key}
-                disabled={item.key === 'start' && (dirty || archived)}
-                onClick={() => { void run(item.key); }}
-                className={`flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none disabled:opacity-50 pointer-coarse:min-h-11 ${item.danger === true ? 'text-danger' : 'text-ink'}`}
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              setOpen(false);
+              triggerRef.current?.focus();
+              return;
+            }
+            eventDetails.cancel();
+          }}
+        >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="end"
+              sideOffset={4}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={menuRef}
+                role="menu"
+                data-persona-actions-menu
+                initialFocus={false}
+                finalFocus={false}
+                className={`anim-enter w-52 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
               >
-                {item.label}
-              </button>
-            </div>
-          ))}
-        </div>
+                {items.map((item) => (
+                  <div key={item.key}>
+                    {item.separatorBefore === true ? <div role="separator" className="my-1 h-px bg-hairline" /> : null}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-persona-action={item.key}
+                      disabled={item.key === 'start' && (dirty || archived)}
+                      onClick={() => { void run(item.key); }}
+                      className={`flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none disabled:opacity-50 pointer-coarse:min-h-11 ${item.danger === true ? 'text-danger' : 'text-ink'}`}
+                    >
+                      {item.label}
+                    </button>
+                  </div>
+                ))}
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
       <ConfirmDialog
         open={confirm?.kind === 'delete'}

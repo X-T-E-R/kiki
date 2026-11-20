@@ -45,7 +45,12 @@ import {
   type SshHost,
 } from '../../lib/ssh';
 import { pushToast } from '../../lib/toasts';
-import { registerOverlay } from '../../lib/uiBusy';
+import {
+  COMPOSER_FLOATING_GROUP,
+  notifyFloatingGroupOpen,
+  registerOverlay,
+  subscribeFloatingGroup,
+} from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
 import { Icon } from '../icons';
@@ -173,7 +178,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
       ) : hosts.length === 0 ? (
         <p data-composer-ssh-empty className="px-3 py-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.empty')}</p>
       ) : (
-        <div className="max-h-64 overflow-y-auto divide-y divide-hairline/40">
+        <div className="divide-y divide-hairline/40">
           {hosts.map((host) => {
             const on = joinedIds.has(host.id);
             const target = sshTargetLabel(host);
@@ -270,8 +275,13 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   // The resident list: the same rows the ＋ menu shows, docked under the
   // trigger so the strip can stand on its own without the add menu.
   const listId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'composer-ssh-strip', () => {
+    setListOpen(false);
+  }), []);
   useEffect(() => {
     if (!listOpen) return;
+    notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, 'composer-ssh-strip', triggerRef.current);
     return registerOverlay('composer-ssh-strip');
   }, [listOpen]);
 
@@ -297,6 +307,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     >
       <Popover.Root open={listOpen} onOpenChange={setListOpen}>
         <Popover.Trigger
+          ref={triggerRef}
           type="button"
           data-composer-ssh-toggle
           data-composer-ssh-summary=""

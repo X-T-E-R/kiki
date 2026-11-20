@@ -76,7 +76,7 @@ export const TimelineOffshootRail = memo(function TimelineOffshootRail({
                   onOpenBranch(item.id);
                 }
               }}
-              className="group/pill inline-flex max-w-[17rem] items-center gap-1.5 rounded-full border border-hairline bg-surface/65 px-2.5 py-0.5 text-[12px] leading-5 text-ink-soft transition-colors hover:border-hairline-strong hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+              className="group/pill inline-flex max-w-[17rem] items-center gap-1.5 rounded-full border border-hairline bg-paper/75 px-2.5 py-0.5 text-[12px] leading-5 text-ink-soft transition-colors hover:border-hairline-strong hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
             >
               <Icon
                 name="branch"

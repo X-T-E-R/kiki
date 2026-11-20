@@ -21,6 +21,7 @@
  */
 
 import { createContext, useContext, useId, useRef, useState, type ReactNode } from 'react';
+import { Popover } from '@base-ui/react/popover';
 
 import { Link } from 'react-router-dom';
 
@@ -32,12 +33,22 @@ import type { ContextBreakdown } from '@kiki/session-core/wire';
 import { useI18n } from '../i18n';
 import { compactUsageLevel } from '../lib/autoCompact';
 import { pushToast } from '../lib/toasts';
+import {
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
+  owningModalId,
+  resolveFloatingOwners,
+} from '../lib/uiBusy';
 import { usageSessionDeepLink } from '../lib/usageV2';
+import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
+import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { useCanonicalAgentUsage } from './agent-panel/useCanonicalAgentUsage';
 import { useCanonicalSessionUsage } from './agent-panel/useCanonicalSessionUsage';
 import { KnownSubtotalMarker } from './usage/usageShared';
 import { ContextCompactSection, type ContextCompactSectionProps } from './ContextCompactSection';
-import { COMPOSER_PANEL_END, useComposerPanelAnchor, usePopoverDismiss } from './ComposerControls';
+import { usePopoverDismiss } from './ComposerControls';
 import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
 import { Icon } from './icons';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
@@ -250,14 +261,11 @@ export function ContextMeter({
       : undefined;
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // Same dismissal and placement as the other status-line panels: outside
-  // pointer or Escape closes, and above the composer the card floats flush
-  // with the composer card's right edge.
+  const panelRef = useRef<HTMLDivElement>(null);
   const onPanelKeyDown = usePopoverDismiss(open, (refocus) => {
     setOpen(false);
     if (refocus === true) triggerRef.current?.focus();
-  }, rootRef, 'composer-context');
-  useComposerPanelAnchor(rootRef, open);
+  }, rootRef, 'composer-context', panelRef);
   // The percent answers "how full is the usable window"; colour answers
   // "is compaction close", so it keys on the point once one is known.
   // When `used` is temporarily unmeasured on a cold session with a known limit,
@@ -372,17 +380,48 @@ export function ContextMeter({
         </span>
       ) : null}
       {open ? (
-        <div
-          id={detailsId}
-          data-context-details
-          role="dialog"
-          aria-label={t('context.detailsTitle')}
-          className={`anim-enter w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
-            placement === 'below'
-              ? 'absolute right-0 z-40 top-full mt-2 max-w-[calc(100vw-48px)] max-h-[calc(100dvh-96px)] overflow-y-auto overscroll-contain'
-              : `${COMPOSER_PANEL_END} max-h-[min(var(--cp-max-h,480px),calc(100dvh-96px))] overflow-y-auto overscroll-contain`
-          }`}
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              if (hasOpenOwnedFloatingPortal('composer-context')) {
+                eventDetails.cancel();
+                return;
+              }
+              setOpen(false);
+              triggerRef.current?.focus();
+              return;
+            }
+            eventDetails.cancel();
+          }}
         >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side={placement === 'below' ? 'bottom' : 'top'}
+              align="end"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={panelRef}
+                id={detailsId}
+                data-context-details
+                role="dialog"
+                aria-label={t('context.detailsTitle')}
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'composer-context',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-context'),
+                  [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                }}
+                className={`composer-floating-panel anim-enter w-72 max-w-[calc(100vw-24px)] max-h-[min(var(--available-height,480px),calc(100dvh-96px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
           <div className="flex items-baseline justify-between gap-3">
             <p className="font-display text-[15px] font-semibold text-ink">{t('context.detailsTitle')}</p>
             <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-soft tabular-nums">
@@ -576,7 +615,10 @@ export function ContextMeter({
             />
             )
           ) : null}
-        </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
   );

@@ -8,6 +8,7 @@ import type { Session } from '@kiki/protocol';
 import { createViewState, type AgentForest, type AgentTreeNode, type Block, type SessionController } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
+import { withPortalQueries } from '../../test/portalQuery';
 import { BtwFloatingCard } from './BtwFloatingCard';
 import { ForkLaunchPopover } from './ForkLaunchPopover';
 import { ForkProvenanceMark } from './ForkProvenanceMark';
@@ -77,7 +78,7 @@ function mount(ui: React.ReactNode, initialEntry = '/s/s-main', locale: 'zh' | '
     );
   });
   return {
-    container: mountedContainer,
+    container: withPortalQueries(mountedContainer),
     getPath: () => currentPath,
   };
 }

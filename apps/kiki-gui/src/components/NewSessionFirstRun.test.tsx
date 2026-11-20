@@ -46,6 +46,7 @@ const firstRun = vi.hoisted(() => ({
   workspacesError: null as string | null,
   retryWorkspaces: (() => {}) as () => void,
   workspaceId: '',
+  workspaces: [] as Workspace[],
   effectiveWorkspace: undefined as any,
   execution: { executor: 'native', profile: 'agent', overrides: undefined } as any,
   client: {
@@ -140,7 +141,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
         goalObjective: '',
         modelOverride: undefined,
         agentProfile: '',
-        workspaces: [],
+        workspaces: firstRun.workspaces,
         workspacesLoading: false,
         effectiveWorkspace: firstRun.effectiveWorkspace,
         autoWorkspace: true,
@@ -686,6 +687,54 @@ describe('the /new page', () => {
     expect(footer.querySelectorAll('[data-hero-starter]').length).toBeGreaterThan(0);
     for (const scope of [container, footer]) {
       expect(scope.querySelector('[data-hero-recents], [data-hero-team], [data-hero-pulse], [data-agent-capabilities]')).toBeNull();
+    }
+  });
+
+  it('closes only the nested workspace SearchableSelect on first Escape and keeps HeroWorkspaceChip open until second Escape', async () => {
+    firstRun.workspaces = [
+      {
+        id: 'wd_proj',
+        root: 'C:/proj',
+        name: 'proj',
+        created_at: '2026-10-07T00:00:00.000Z',
+        last_opened_at: '2026-10-07T00:00:00.000Z',
+        session_count: 2,
+        pinned: false,
+        isGit: true,
+      },
+    ];
+    try {
+      const container = await mountNewSessionPage();
+      const chipTrigger = container.querySelector<HTMLButtonElement>('[data-hero-target] [data-hero-workspace] button[data-anchor="workspace-picker"]');
+      expect(chipTrigger).not.toBeNull();
+
+      await act(async () => { chipTrigger!.click(); });
+      const panel = document.body.querySelector<HTMLElement>('[data-hero-workspace-panel]');
+      expect(panel).not.toBeNull();
+
+      const selectTrigger = panel!.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]');
+      expect(selectTrigger).not.toBeNull();
+      await act(async () => { selectTrigger!.click(); });
+
+      const nestedListbox = document.body.querySelector<HTMLElement>('[data-floating-owners~="hero-workspace"] [role="listbox"]');
+      expect(nestedListbox).not.toBeNull();
+
+      // First Escape closes only the inner SearchableSelect, not the outer HeroWorkspaceChip popover.
+      await act(async () => {
+        const target = document.activeElement instanceof HTMLElement ? document.activeElement : nestedListbox!;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(document.body.querySelector('[data-floating-owners~="hero-workspace"] [role="listbox"]')).toBeNull();
+      expect(document.body.querySelector('[data-hero-workspace-panel]')).not.toBeNull();
+
+      // Second Escape closes the outer HeroWorkspaceChip popover cleanly.
+      await act(async () => {
+        const currentPanel = document.body.querySelector<HTMLElement>('[data-hero-workspace-panel]')!;
+        currentPanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(document.body.querySelector('[data-hero-workspace-panel]')).toBeNull();
+    } finally {
+      firstRun.workspaces = [];
     }
   });
 

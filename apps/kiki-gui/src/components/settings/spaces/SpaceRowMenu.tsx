@@ -1,7 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { Popover } from '@base-ui/react/popover';
 
-import { clampOverlayPosition } from '../../../lib/overlayPosition';
 import {
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
@@ -10,7 +9,7 @@ import {
   resolveFloatingOwners,
 } from '../../../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../../Dialog';
-import { unzoomedRect, unzoomedViewport } from '../../../lib/uiZoom';
+import { POPOVER_SURFACE_CLASS } from '../../SearchableSelect';
 
 export interface SpaceMenuItem {
   readonly key: string;
@@ -41,14 +40,12 @@ export function SpaceRowMenu({ anchor, anchorElement, items, ariaLabel, onClose 
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState<{ width: number; height: number }>({ width: 240, height: 0 });
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const virtualAnchor = useMemo(() => ({ getBoundingClientRect: () => anchor }), [anchor]);
 
   useLayoutEffect(() => {
-    const node = ref.current;
-    if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
-    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+    ref.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }, []);
 
   useEffect(() => {
@@ -75,33 +72,50 @@ export function SpaceRowMenu({ anchor, anchorElement, items, ariaLabel, onClose 
     };
   }, []);
 
-  const box = unzoomedRect(anchor);
-  const position = clampOverlayPosition(box.right - size.width, box.bottom + 4, size, unzoomedViewport());
-  return createPortal(
-    <div ref={ref} role="menu" aria-label={ariaLabel} data-space-row-menu
-      {...{
-        [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(anchorElement ?? null),
-        [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(anchorElement ?? null),
-      }}
-      className="anim-enter fixed w-60 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      style={{ left: position.left, top: position.top, zIndex: floatingSurfaceZIndex(anchorElement ?? null) }}>
-      {items.map((item) => (
-        <div key={item.key}>
-          {item.separatorBefore === true ? <div className="mx-1 my-1 border-t border-hairline" /> : null}
-          <button type="button" role="menuitem" data-space-menu-item={item.key} disabled={item.blockedReason !== undefined}
-            aria-describedby={item.blockedReason !== undefined ? `space-menu-${item.key}-why` : undefined}
-            onClick={() => { onClose(); item.run(); }}
-            className={`flex min-h-9 w-full flex-col justify-center rounded-md px-3 py-1.5 text-left text-[13px] outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:hover:bg-transparent ${
-              item.blockedReason !== undefined ? 'text-ink-faint' : item.danger === true ? 'text-danger' : 'text-ink'
-            }`}>
-            <span>{item.label}</span>
-            {item.blockedReason !== undefined ? (
-              <span id={`space-menu-${item.key}-why`} className="mt-0.5 text-[11.5px] leading-4 text-ink-faint">{item.blockedReason}</span>
-            ) : null}
-          </button>
-        </div>
-      ))}
-    </div>,
-    document.body,
+  return (
+    <Popover.Root open modal={false} onOpenChange={(next) => { if (!next) closeRef.current(); }}>
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={virtualAnchor}
+          side="bottom"
+          align="end"
+          sideOffset={4}
+          collisionPadding={8}
+          positionMethod="fixed"
+          style={{ zIndex: floatingSurfaceZIndex(anchorElement ?? null) }}
+        >
+          <Popover.Popup
+            ref={ref}
+            role="menu"
+            aria-label={ariaLabel}
+            data-space-row-menu
+            initialFocus={false}
+            finalFocus={false}
+            {...{
+              [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(anchorElement ?? null),
+              [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(anchorElement ?? null),
+            }}
+            className={`anim-enter w-60 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+          >
+            {items.map((item) => (
+              <div key={item.key}>
+                {item.separatorBefore === true ? <div className="mx-1 my-1 border-t border-hairline" /> : null}
+                <button type="button" role="menuitem" data-space-menu-item={item.key} disabled={item.blockedReason !== undefined}
+                  aria-describedby={item.blockedReason !== undefined ? `space-menu-${item.key}-why` : undefined}
+                  onClick={() => { onClose(); item.run(); }}
+                  className={`flex min-h-9 w-full flex-col justify-center rounded-md px-3 py-1.5 text-left text-[13px] outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:hover:bg-transparent ${
+                    item.blockedReason !== undefined ? 'text-ink-faint' : item.danger === true ? 'text-danger' : 'text-ink'
+                  }`}>
+                  <span>{item.label}</span>
+                  {item.blockedReason !== undefined ? (
+                    <span id={`space-menu-${item.key}-why`} className="mt-0.5 text-[11.5px] leading-4 text-ink-faint">{item.blockedReason}</span>
+                  ) : null}
+                </button>
+              </div>
+            ))}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

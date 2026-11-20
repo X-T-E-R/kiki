@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { writeSettings } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { Composer } from './Composer';
 import { composerInput } from './composerInputTestUtils';
 
@@ -87,7 +88,7 @@ async function renderComposer(props: Props) {
     });
   };
   await rerender(props);
-  return { container, rerender };
+  return { container: withPortalQueries(container), rerender };
 }
 
 const body = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-composer-body]')!;

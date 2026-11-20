@@ -93,3 +93,19 @@ describe('undo toast', () => {
     }
   });
 });
+
+describe('error toast chrome and deduplication', () => {
+  it('renders a distinct warning mark with exactly one close icon and coalesces duplicates', () => {
+    render(false);
+    act(() => {
+      pushToast({ tone: 'error', text: 'Could not load earlier messages.' });
+      pushToast({ tone: 'error', text: 'Could not load earlier messages.' });
+    });
+    const cards = container.querySelectorAll('[data-toast="error"]');
+    expect(cards).toHaveLength(1);
+    const card = cards[0]!;
+    expect(card.querySelectorAll('[data-icon="cross"]')).toHaveLength(0);
+    expect(card.querySelectorAll('[data-icon="warning"]')).toHaveLength(1);
+    expect(card.querySelectorAll('[data-icon="close"]')).toHaveLength(1);
+  });
+});

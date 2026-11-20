@@ -120,18 +120,18 @@ export const FLOATING_OWNER_ATTRIBUTE = 'data-floating-owner';
 export const FLOATING_PORTAL_OWNERS_ATTRIBUTE = 'data-floating-owners';
 
 /** Space-separated ancestor floating-owner chain for a trigger/anchor element. */
-export function resolveFloatingOwners(anchor: Element | null): string | undefined {
+export function resolveFloatingOwners(anchor: Element | null, excludeOwnerId?: string): string | undefined {
   const seen: string[] = [];
   const collect = (start: Element | null) => {
     for (let node: Element | null = start; node !== null; node = node.parentElement) {
       const inherited = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
       if (inherited !== null && inherited !== '') {
         for (const id of inherited.split(/\s+/)) {
-          if (id !== '' && !seen.includes(id)) seen.push(id);
+          if (id !== '' && id !== excludeOwnerId && !seen.includes(id)) seen.push(id);
         }
       }
       const own = node.getAttribute(FLOATING_OWNER_ATTRIBUTE);
-      if (own !== null && own !== '' && !seen.includes(own)) seen.push(own);
+      if (own !== null && own !== '' && own !== excludeOwnerId && !seen.includes(own)) seen.push(own);
     }
   };
   collect(anchor);
@@ -160,8 +160,58 @@ export function containsOrOwnsFloatingTarget(
 export function hasOpenOwnedFloatingPortal(ownerId: string | undefined): boolean {
   if (ownerId === undefined || ownerId === '' || typeof document === 'undefined') return false;
   for (const node of document.querySelectorAll(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}]`)) {
+    if (node.getAttribute(FLOATING_OWNER_ATTRIBUTE) === ownerId) continue;
     const owners = node.getAttribute(FLOATING_PORTAL_OWNERS_ATTRIBUTE);
     if (owners !== null && owners.split(/\s+/).includes(ownerId)) return true;
   }
   return false;
+}
+
+/** Shared coordination group for composer toolbar and shelf floating surfaces. */
+export const COMPOSER_FLOATING_GROUP = 'composer';
+
+type FloatingGroupListener = (activeId: string, keepOpen: ReadonlySet<string>) => void;
+const floatingGroupListeners = new Map<string, Map<string, FloatingGroupListener>>();
+
+/** Subscribe a floating surface to close whenever a sibling in the same group opens. */
+export function subscribeFloatingGroup(
+  group: string,
+  memberId: string,
+  onOtherOpen: () => void,
+): () => void {
+  let members = floatingGroupListeners.get(group);
+  if (members === undefined) {
+    members = new Map();
+    floatingGroupListeners.set(group, members);
+  }
+  const listener: FloatingGroupListener = (activeId, keepOpen) => {
+    if (activeId !== memberId && !keepOpen.has(memberId)) onOtherOpen();
+  };
+  members.set(memberId, listener);
+  return () => {
+    const current = floatingGroupListeners.get(group);
+    if (current === undefined) return;
+    current.delete(memberId);
+    if (current.size === 0) floatingGroupListeners.delete(group);
+  };
+}
+
+/** Announce that `memberId` opened, closing all non-ancestor siblings in `group`. */
+export function notifyFloatingGroupOpen(
+  group: string,
+  memberId: string,
+  anchor?: Element | null,
+): void {
+  const members = floatingGroupListeners.get(group);
+  if (members === undefined) return;
+  const keepOpen = new Set<string>([memberId]);
+  const owners = anchor === undefined ? undefined : resolveFloatingOwners(anchor);
+  if (owners !== undefined) {
+    for (const id of owners.split(/\s+/)) {
+      if (id !== '') keepOpen.add(id);
+    }
+  }
+  for (const [id, listener] of Array.from(members.entries())) {
+    if (!keepOpen.has(id)) listener(memberId, keepOpen);
+  }
 }

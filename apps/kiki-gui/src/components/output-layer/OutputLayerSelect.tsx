@@ -8,16 +8,23 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { Icon } from '../icons';
 import {
-  COMPOSER_PANEL_END,
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  owningModalId,
+  resolveFloatingOwners,
+} from '../../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
+import {
   MENU_ROW_CLASS,
   MENU_ROW_SELECTED_CLASS,
   POPOVER_LABEL_CLASS,
   STATUS_SEGMENT_CLASS,
   STATUS_SEGMENT_ICON_CLASS,
   STATUS_SEGMENT_SET,
-  useComposerPanelAnchor,
   usePopover,
 } from '../ComposerControls';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
@@ -50,6 +57,7 @@ export function OutputLayerSelect({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -75,12 +83,11 @@ export function OutputLayerSelect({
     if (refocus) triggerRef.current?.focus();
   };
 
-  const onKeyDown = usePopover(open, close, rootRef, 'composer-output-layer');
-  useComposerPanelAnchor(rootRef, open);
+  const onKeyDown = usePopover(open, close, rootRef, 'composer-output-layer', panelRef);
 
   useEffect(() => {
     if (!open) return;
-    rootRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
+    panelRef.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
   }, [open]);
 
   if (!isPluginEnabled) return null;
@@ -110,10 +117,41 @@ export function OutputLayerSelect({
         </button>
 
         {open ? (
-          <div
-            data-output-layer-panel
-            className={`anim-enter ${COMPOSER_PANEL_END} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1.5 ${POPOVER_SURFACE_CLASS}`}
+          <Popover.Root
+            open
+            modal={false}
+            onOpenChange={(nextOpen, eventDetails) => {
+              if (nextOpen) return;
+              if (eventDetails.reason === 'escape-key') {
+                close(true);
+                return;
+              }
+              eventDetails.cancel();
+            }}
           >
+            <Popover.Portal>
+              <Popover.Positioner
+                anchor={triggerRef}
+                side="top"
+                align="end"
+                sideOffset={6}
+                collisionPadding={8}
+                positionMethod="fixed"
+                style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+              >
+                <Popover.Popup
+                  ref={panelRef}
+                  data-output-layer-panel
+                  initialFocus={false}
+                  finalFocus={false}
+                  onKeyDown={onKeyDown}
+                  {...{
+                    [FLOATING_OWNER_ATTRIBUTE]: 'composer-output-layer',
+                    [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-output-layer'),
+                    [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                  }}
+                  className={`composer-floating-panel anim-enter flex max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1.5 outline-none ${POPOVER_SURFACE_CLASS}`}
+                >
             {/* View Mode Switcher Header */}
             {isEnabled ? (
               <div className="mb-2 flex shrink-0 items-center justify-between rounded-md bg-paper p-1 border border-hairline">
@@ -248,7 +286,10 @@ export function OutputLayerSelect({
                 <span>新增预设...</span>
               </button>
             </div>
-          </div>
+                </Popover.Popup>
+              </Popover.Positioner>
+            </Popover.Portal>
+          </Popover.Root>
         ) : null}
       </div>
 

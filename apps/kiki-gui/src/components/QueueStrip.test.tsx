@@ -456,7 +456,7 @@ describe('QueueStrip scheduled delivery modes', () => {
     expect(container.querySelector('[data-queue-item="user-1"] [data-queue-runtime-controls]')?.textContent)
       .toBe('reviewer · example/captured · max');
     expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
-    expect(container.textContent).toContain('8 / 12 message records loaded');
+    expect(container.querySelector('[data-content-continuation-action]')?.getAttribute('title')).toContain('8 / 12 message records loaded');
     await click(container.querySelector('[data-content-continuation-action]')!);
     expect(onRequest).toHaveBeenCalledOnce();
     const secondUser = container.querySelector('[data-queue-item="user-2"]')!;

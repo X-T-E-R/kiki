@@ -24,9 +24,9 @@
  */
 
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { createPortal } from 'react-dom';
+import { Popover } from '@base-ui/react/popover';
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual';
 import { useLocation } from 'react-router-dom';
 
 import type { RoomListItem, Session, SessionSeedMode, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -1633,19 +1633,24 @@ export function Sidebar({
   const listRef = useRef<HTMLDivElement>(null);
   const scrollRestored = useRef(false);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [listScrolled, setListScrolled] = useState(false);
   const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const top = event.currentTarget.scrollTop;
+    setListScrolled((prev) => (prev === (top > 2) ? prev : top > 2));
     clearTimeout(scrollTimer.current);
     scrollTimer.current = setTimeout(() => { writeWorkspaceGroupMemory(scopeId, { scrollTop: top }); }, 150);
   };
   useEffect(() => () => { clearTimeout(scrollTimer.current); }, []);
-  useEffect(() => { scrollRestored.current = false; }, [search.active, scopeId]);
+  useEffect(() => { scrollRestored.current = false; setListScrolled(false); }, [search.active, scopeId]);
   useLayoutEffect(() => {
     const node = listRef.current;
     if (node === null || scrollRestored.current || sessionGroups.length === 0) return;
     scrollRestored.current = true;
     const top = readWorkspaceGroupMemory(scopeId).scrollTop;
-    if (top > 0) node.scrollTop = top;
+    if (top > 0) {
+      node.scrollTop = top;
+      setListScrolled(top > 2);
+    }
   });
 
   // Threads a session started (ThreadCreate) and branches forked off it nest
@@ -1864,13 +1869,68 @@ export function Sidebar({
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
-    observer.observe(scroller);
-    return () => { observer.disconnect(); };
+    const observePrecedingSiblings = () => {
+      observer.disconnect();
+      observer.observe(scroller);
+      const parent = anchor.parentElement;
+      if (parent !== null && parent !== scroller) observer.observe(parent);
+      // Dynamic content above the virtualized list (such as the expandable
+      // Persona section, filters, or ephemeral group) shifts `anchor.top`
+      // without changing `scroller.clientHeight`, so observe every preceding
+      // sibling inside the scroll container.
+      let child: Element | null = (parent ?? scroller).firstElementChild;
+      while (child !== null && child !== anchor) {
+        observer.observe(child);
+        child = child.nextElementSibling;
+      }
+    };
+    observePrecedingSiblings();
+    const mutation = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(() => {
+        observePrecedingSiblings();
+        measure();
+      });
+    mutation?.observe(anchor.parentElement ?? scroller, { childList: true });
+    return () => {
+      mutation?.disconnect();
+      observer.disconnect();
+    };
   }, [listWindowed, flatSessionEntries.length, ephemeralSessions.length, filterChips.length]);
+
+  const stickyHeaderIndices = useMemo(() => {
+    if (groupBy !== 'workspace') return [];
+    const indices: number[] = [];
+    for (let i = 0; i < flatSessionEntries.length; i += 1) {
+      if (flatSessionEntries[i]?.kind === 'ws-header') indices.push(i);
+    }
+    return indices;
+  }, [flatSessionEntries, groupBy]);
+
+  const activeStickyIndexRef = useRef<number | null>(null);
+  const extractVirtualRange = useCallback((range: Range) => {
+    if (stickyHeaderIndices.length === 0) {
+      activeStickyIndexRef.current = null;
+      return defaultRangeExtractor(range);
+    }
+    let active: number | null = null;
+    for (let i = stickyHeaderIndices.length - 1; i >= 0; i -= 1) {
+      const idx = stickyHeaderIndices[i]!;
+      if (idx <= range.startIndex) {
+        active = idx;
+        break;
+      }
+    }
+    activeStickyIndexRef.current = active;
+    const base = defaultRangeExtractor(range);
+    if (active === null || base.includes(active)) return base;
+    return [active, ...base];
+  }, [stickyHeaderIndices]);
 
   const listVirtualizer = useVirtualizer({
     count: listWindowed ? flatSessionEntries.length : 0,
     getScrollElement: () => listRef.current,
+    rangeExtractor: extractVirtualRange,
     estimateSize: (index) => {
       const entry = flatSessionEntries[index];
       if (entry === undefined) return 46;
@@ -2026,7 +2086,7 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] pointer-coarse:h-10"
+          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.045] pointer-coarse:h-10"
         >
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent-ink"><Icon name="plus" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
@@ -2130,7 +2190,15 @@ export function Sidebar({
           />
         </>
       ) : (
-      <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
+      <div
+        ref={listRef}
+        onScroll={onListScroll}
+        data-session-list-scrolled={listScrolled ? 'true' : undefined}
+        className={`min-h-0 flex-1 overflow-y-auto border-t px-2.5 pb-2 transition-colors duration-[var(--kiki-motion-quick)] ${listScrolled ? 'border-hairline/75' : 'border-transparent'}`}
+        data-session-list
+        role="region"
+        aria-label={t('sidebar.listAria')}
+      >
         <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
         <div className="flex items-center gap-0.5 pt-2 pr-0 pb-0.5 pl-2">
@@ -2363,13 +2431,29 @@ export function Sidebar({
             {listVirtualizer.getVirtualItems().map((virtualRow) => {
               const entry = flatSessionEntries[virtualRow.index];
               if (entry === undefined) return null;
+              const scrollOffset = listVirtualizer.scrollOffset ?? 0;
+              const isActiveSticky = entry.kind === 'ws-header'
+                && virtualRow.index === activeStickyIndexRef.current
+                && scrollOffset > virtualRow.start;
+              let stickyPushY = 0;
+              if (isActiveSticky) {
+                const pos = stickyHeaderIndices.indexOf(virtualRow.index);
+                const nextHeaderIdx = pos >= 0 ? stickyHeaderIndices[pos + 1] : undefined;
+                if (nextHeaderIdx !== undefined) {
+                  const nextMetric = listVirtualizer.measurementsCache[nextHeaderIdx];
+                  if (nextMetric !== undefined) {
+                    const overlap = nextMetric.start - scrollOffset - virtualRow.size;
+                    if (overlap < 0) stickyPushY = overlap;
+                  }
+                }
+              }
               let content: React.ReactNode;
               if (entry.kind === 'ws-header') {
                 content = (
                   <div
                     data-session-group-block={entry.group.key}
                     data-session-group-folded={entry.collapsed ? '' : undefined}
-                    className={entry.isFirst ? '' : entry.collapsed ? 'pt-0.5' : 'pt-3'}
+                    className={isActiveSticky || entry.isFirst ? '' : entry.collapsed ? 'pt-0.5' : 'pt-3'}
                   >
                     <WorkspaceGroupHeader
                       groupKey={entry.group.key}
@@ -2481,9 +2565,12 @@ export function Sidebar({
                 <div
                   key={entry.key}
                   data-index={virtualRow.index}
-                  ref={listVirtualizer.measureElement}
-                  className="absolute inset-x-0"
-                  style={{ top: virtualRow.start - listScrollMargin }}
+                  ref={isActiveSticky ? undefined : listVirtualizer.measureElement}
+                  data-sticky-active={isActiveSticky ? '' : undefined}
+                  className={isActiveSticky ? 'sticky top-0 z-[2] bg-canvas' : 'absolute inset-x-0'}
+                  style={isActiveSticky
+                    ? (stickyPushY < 0 ? { transform: `translateY(${stickyPushY}px)` } : undefined)
+                    : { top: virtualRow.start - listScrollMargin }}
                 >
                   {content}
                 </div>
@@ -5357,6 +5444,15 @@ function SidebarRenameEditor({
   }, [item.kind, item.id]);
 
   const hasAnchor = anchor !== null;
+  const inputCallbackRef = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node;
+    if (node !== null && !didAutoFocusRef.current) {
+      didAutoFocusRef.current = true;
+      node.focus();
+      node.select();
+    }
+  }, []);
+
   useEffect(() => {
     if (!hasAnchor || didAutoFocusRef.current) return;
     const input = inputRef.current;
@@ -5442,37 +5538,63 @@ function SidebarRenameEditor({
   if (anchor === null) return null;
   const trimmed = title.trim();
   const dirty = trimmed !== '' && trimmed !== persistedTitle;
-  return createPortal(
-    <div
-      ref={fieldRef}
-      role="dialog"
-      aria-label={heading}
-      aria-busy={busy || undefined}
-      data-rename-editor={item.id}
-      data-rename-saving={busy ? '' : undefined}
-      onBlur={(event) => {
-        if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
-        const next = event.relatedTarget;
-        if (next instanceof Node) {
-          if (fieldRef.current.contains(next)) return;
-          commitOrCloseOnExit();
-          return;
-        }
-        if (!tabKeyActiveRef.current) return;
-        tabKeyActiveRef.current = false;
-        queueMicrotask(() => {
-          if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
-          const active = document.activeElement;
-          if (active instanceof Node && fieldRef.current.contains(active)) return;
-          commitOrCloseOnExit();
-        });
-      }}
-      className="anim-enter fixed z-50 flex flex-col justify-center rounded-xl border border-hairline-strong bg-panel px-2 py-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.32)] focus-within:border-selected-ink focus-within:ring-2 focus-within:ring-selected-ink/25"
-      style={{ left: anchor.left, top: anchor.top, width: anchor.width, minHeight: anchor.minHeight }}
-    >
+  const virtualAnchor = {
+    getBoundingClientRect: () => ({
+      x: anchor.left,
+      y: anchor.top,
+      top: anchor.top,
+      left: anchor.left,
+      right: anchor.left + anchor.width,
+      bottom: anchor.top,
+      width: anchor.width,
+      height: 0,
+      toJSON: () => ({}),
+    }),
+  };
+  return (
+    <Popover.Root open modal={false}>
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={virtualAnchor}
+          side="bottom"
+          align="start"
+          sideOffset={0}
+          collisionPadding={8}
+          positionMethod="fixed"
+          className="z-50"
+        >
+          <Popover.Popup
+            ref={fieldRef}
+            role="dialog"
+            aria-label={heading}
+            aria-busy={busy || undefined}
+            data-rename-editor={item.id}
+            data-rename-saving={busy ? '' : undefined}
+            initialFocus={inputRef}
+            finalFocus={false}
+            onBlur={(event) => {
+              if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
+              const next = event.relatedTarget;
+              if (next instanceof Node) {
+                if (fieldRef.current.contains(next)) return;
+                commitOrCloseOnExit();
+                return;
+              }
+              if (!tabKeyActiveRef.current) return;
+              tabKeyActiveRef.current = false;
+              queueMicrotask(() => {
+                if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
+                const active = document.activeElement;
+                if (active instanceof Node && fieldRef.current.contains(active)) return;
+                commitOrCloseOnExit();
+              });
+            }}
+            className="anim-enter flex flex-col justify-center rounded-xl border border-hairline-strong bg-panel px-2 py-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.32)] outline-none focus-within:border-selected-ink focus-within:ring-2 focus-within:ring-selected-ink/25"
+            style={{ width: anchor.width, minHeight: anchor.minHeight }}
+          >
       <div className="flex items-center gap-1">
         <input
-          ref={inputRef}
+          ref={inputCallbackRef}
           data-autofocus
           data-rename-input
           aria-label={heading}
@@ -5533,7 +5655,9 @@ function SidebarRenameEditor({
           {error}
         </p>
       ) : null}
-    </div>,
-    document.body,
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

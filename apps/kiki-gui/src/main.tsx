@@ -10,6 +10,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 
 import { HostProvider, hostAdapter } from './host';
 import { installAppShellCredentialListener } from './lib/appShell';
+import { installDocumentVisibilityMotionGuard } from './lib/motion';
 import { initializeSpaceStorage, activeSpace, configureSpaceStorage } from './lib/spaceStorage';
 import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
 import { adoptWindowModeFromHost } from './lib/workModeStartup';
@@ -119,6 +120,7 @@ async function start(): Promise<void> {
   startSkinSync();
   // Apply device interface zoom (native WebView zoom on desktop, CSS root zoom on web).
   startZoomSync(hostAdapter);
+  installDocumentVisibilityMotionGuard();
 
   // ConnectionProvider consumes/scrubs deep-link credentials before mounting
   // its children. Create history afterwards so that scrub cannot erase the

@@ -18,6 +18,7 @@ import { useCoarsePointer } from '../lib/layoutHooks';
 import { runToastAction } from '../lib/toasts';
 import { floatingSurfaceZIndex, owningModalId, registerOverlay, topModalId } from '../lib/uiBusy';
 import { ActionSheet } from './overlays/ActionSheet';
+import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { unzoomedPoint } from '../lib/uiZoom';
 
 export type MiniMenuEntry =
@@ -100,6 +101,7 @@ function PointerMenu({
   autofocus = true,
 }: MiniContextMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const focusedForOpenRef = useRef(false);
   // Whatever held focus when the menu opened — the link/chip/button for a
   // keyboard trigger, or just where the caret was for a right-click. Escape
   // and item activation hand focus back to it; an outside pointerdown never
@@ -202,7 +204,8 @@ function PointerMenu({
           <Popover.Popup
             ref={(node) => {
               menuRef.current = node;
-              if (autofocus && node !== null && !node.contains(document.activeElement)) {
+              if (autofocus && node !== null && !focusedForOpenRef.current && !node.contains(document.activeElement)) {
+                focusedForOpenRef.current = true;
                 node.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
               }
             }}
@@ -242,7 +245,7 @@ function PointerMenu({
                 restoreTriggerFocus();
               });
             }}
-            className="anim-enter max-h-[min(var(--available-height,calc(100dvh-16px)),calc(100dvh-16px))] w-52 overflow-y-auto overscroll-contain rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+            className={`anim-enter max-h-[min(var(--available-height,calc(100dvh-16px)),calc(100dvh-16px))] w-52 overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
           >
             {menuItems(entries, onClose, itemDataAttribute)}
           </Popover.Popup>

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OutputLayerSelect } from './OutputLayerSelect';
 import { outputLayerStore } from './outputLayerStore';
 import { I18nProvider } from '../../i18n';
+import { withPortalQueries } from '../../test/portalQuery';
 
 // Mock connection
 vi.mock('../../state/connection', () => ({
@@ -40,9 +41,10 @@ beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  container = document.createElement('div');
-  document.body.appendChild(container);
-  root = createRoot(container);
+  const rawContainer = document.createElement('div');
+  document.body.appendChild(rawContainer);
+  root = createRoot(rawContainer);
+  container = withPortalQueries(rawContainer);
 });
 
 afterEach(() => {

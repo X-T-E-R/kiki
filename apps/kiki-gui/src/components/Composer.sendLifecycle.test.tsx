@@ -265,9 +265,9 @@ async function joinHost(container: ParentNode): Promise<void> {
   const trigger = container.querySelector<HTMLButtonElement>('[data-add-menu-trigger]');
   if (trigger === null) throw new Error('add menu trigger missing');
   if (trigger.getAttribute('aria-expanded') !== 'true') await click(trigger);
-  const sshRow = container.querySelector('[data-add-menu-ssh]');
+  const sshRow = container.querySelector('[data-add-menu-ssh]') ?? document.querySelector('[data-add-menu-ssh]');
   if (sshRow !== null) await click(sshRow);
-  const hostRow = container.querySelector('[data-composer-ssh-host="example-host"]');
+  const hostRow = container.querySelector('[data-composer-ssh-host="example-host"]') ?? document.querySelector('[data-composer-ssh-host="example-host"]');
   if (hostRow === null) throw new Error('ssh host row missing');
   const button = hostRow.querySelector('button') ?? hostRow;
   await click(button);

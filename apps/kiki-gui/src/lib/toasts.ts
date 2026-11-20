@@ -112,7 +112,37 @@ export function subscribeToasts(listener: Listener): () => void {
   };
 }
 
+function toastDedupKey(input: ToastInput): string | null {
+  // Undo toasts carry distinct inverse callbacks and must remain separate.
+  if (input.undo !== undefined) return null;
+  return JSON.stringify([
+    input.tone,
+    input.text,
+    input.detail ?? '',
+    input.code ?? '',
+    input.requestId ?? '',
+  ]);
+}
+
 export function pushToast(input: ToastInput): number {
+  const dedupKey = toastDedupKey(input);
+  if (dedupKey !== null) {
+    const existingIndex = toasts.findIndex((candidate) => toastDedupKey(candidate) === dedupKey);
+    if (existingIndex !== -1) {
+      const existing = toasts[existingIndex]!;
+      const updated: ToastItem = { ...input, id: existing.id };
+      toasts = [...toasts.slice(0, existingIndex), ...toasts.slice(existingIndex + 1), updated];
+      toastManager.update(String(existing.id), {
+        title: updated.text,
+        type: updated.tone,
+        timeout: toastTimeoutFor(updated),
+        priority: updated.tone === 'error' ? 'high' : 'low',
+        data: updated,
+      });
+      emit();
+      return existing.id;
+    }
+  }
   const id = nextId;
   nextId += 1;
   const item: ToastItem = { ...input, id };

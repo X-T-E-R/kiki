@@ -11,7 +11,10 @@ function imageUrl(source: string | undefined): URL | undefined {
 export function remoteImageUrl(source: string | undefined, serverBaseUrl: string | undefined): URL | undefined {
   const url = imageUrl(source);
   if (url === undefined || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.origin === window.location.origin) return undefined;
-  const serverMedia = url.origin === imageUrl(serverBaseUrl)?.origin && /^\/(?:api\/sessions\/[^/]+\/media\/|api\/fs:content$|(?:html|media)-preview\/)/u.test(url.pathname);
+  const serverMedia =
+    url.origin === imageUrl(serverBaseUrl)?.origin &&
+    !url.pathname.includes('..') &&
+    /^\/(?:api\/sessions\/[A-Za-z0-9._~%-]+\/media\/[A-Za-z0-9._~%-]+(?:\/preview)?|api\/fs:content|media-preview\/[A-Za-z0-9._~%-]+|html-preview\/[A-Za-z0-9._~%-]+\/[^?#]+)$/u.test(url.pathname);
   return serverMedia ? undefined : url;
 }
 

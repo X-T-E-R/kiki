@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AutoCompactStatus, AutoCompactWriteResult } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { ContextMeter, type ContextMeterAutoCompact } from './ContextMeter';
 
@@ -38,6 +39,10 @@ const result = (effective: AutoCompactStatus, fallback: AutoCompactStatus, extra
 });
 
 async function render(props: { used: number; limit?: number; autoCompact?: ContextMeterAutoCompact }) {
+  for (const { root: prevRoot, container: prevContainer } of mounted.splice(0)) {
+    await act(async () => { prevRoot.unmount(); });
+    prevContainer.remove();
+  }
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -49,7 +54,7 @@ async function render(props: { used: number; limit?: number; autoCompact?: Conte
   };
   await draw(props);
   await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
-  return { container, draw };
+  return { container: withPortalQueries(container), draw };
 }
 
 function wiring(overrides: Partial<ContextMeterAutoCompact> = {}): ContextMeterAutoCompact {

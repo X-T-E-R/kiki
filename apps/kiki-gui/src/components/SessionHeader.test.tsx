@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { registerFindHost } from '../lib/timelineFind';
 import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import {
@@ -77,7 +78,7 @@ function mount(node: React.ReactNode): HTMLDivElement {
   act(() => {
     root.render(<I18nProvider>{node}</I18nProvider>);
   });
-  return container;
+  return withPortalQueries(container);
 }
 
 function click(element: Element | null): void {

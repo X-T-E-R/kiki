@@ -26,6 +26,8 @@ import {
 export type ContextChipVariant = 'compact' | 'shelf';
 
 const TILE = 'context-chip anim-enter relative flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] text-[12px]';
+const SHELF_CAPSULE =
+  'context-chip anim-enter relative flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-full bg-ink/[0.05] text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.08] hover:text-ink pointer-coarse:h-9';
 const SHELF_CARD =
   'context-chip anim-enter relative flex h-11 min-w-0 max-w-[180px] shrink-0 items-center gap-2 rounded-[10px] border border-hairline bg-canvas/65 py-1 pl-2.5 pr-1.5 text-left';
 
@@ -64,16 +66,10 @@ export function QuoteChip({
         data-quote-chip
         data-chip-variant="shelf"
         title={quote}
-        className={`${SHELF_CARD} ${onRemove === undefined ? 'pr-2.5' : 'pr-1'}`}
+        className={`${SHELF_CAPSULE} max-w-[16rem] pl-3 ${onRemove === undefined ? 'pr-3' : 'pr-1'}`}
       >
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12px] leading-4 font-medium text-ink">
-            “{oneLine(quote)}”
-          </span>
-          <span className="block truncate text-[10.5px] leading-3.5 text-ink-faint">
-            {t('composer.quoteSelection')}
-          </span>
-        </span>
+        <span aria-hidden className="context-chip-quote-mark shrink-0">“</span>
+        <span className="min-w-0 truncate">{oneLine(quote)}</span>
         {onRemove !== undefined ? <RemoveButton label={t('composer.removeQuote')} onRemove={onRemove} /> : null}
       </div>
     );
@@ -189,15 +185,12 @@ export function SkillChip({
         data-skill-chip={name}
         data-chip-variant="shelf"
         title={description}
-        className={`${SHELF_CARD} ${onRemove === undefined ? 'pr-2.5' : 'pr-1'}`}
+        className={`${SHELF_CAPSULE} max-w-[14rem] pl-3 ${onRemove === undefined ? 'pr-3' : 'pr-1'}`}
       >
         <span aria-hidden className="flex shrink-0 text-accent-ink/80">
-          <Icon name="skill" size={14} />
+          <Icon name="skill" size={12} />
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12px] leading-4 font-medium text-ink">{name}</span>
-          <span className="block truncate text-[10.5px] leading-3.5 text-ink-faint">{t('composer.skillChip')}</span>
-        </span>
+        <span className="min-w-0 truncate">{name}</span>
         {onRemove !== undefined ? (
           <RemoveButton label={t('composer.removeSkill', { name })} onRemove={onRemove} />
         ) : null}

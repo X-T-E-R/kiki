@@ -8,6 +8,7 @@ import type { ExecutorCatalogItem } from '@kiki/protocol';
 import type { ExecutionChoice } from '@kiki/session-core/composer';
 
 import { I18nProvider } from '../../i18n';
+import { withPortalQueries } from '../../test/portalQuery';
 import { HostProvider } from '../../host';
 import type { HostAdapter } from '../../host';
 import { ExecutorLabelProvider, TurnExecutionBadge } from '../timeline/ExecutorNotes';
@@ -77,7 +78,7 @@ function mount(node: ReactNode): { root: Root; host: HTMLDivElement } {
       </QueryClientProvider>,
     );
   });
-  return { root, host };
+  return { root, host: withPortalQueries(host) };
 }
 
 afterEach(() => {

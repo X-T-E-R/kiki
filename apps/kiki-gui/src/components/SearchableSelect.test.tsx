@@ -433,15 +433,15 @@ describe('SearchableSelect panel container', () => {
     expect(document.activeElement).toBe(button);
   });
 
-  it('keeps a caller-owned panel inline, so the composer can anchor it itself', async () => {
+  it('portals a caller-styled panel through Base UI so overflow-hidden ancestors never clip it', async () => {
     const { container } = await renderSelect({
-      panelClassName: 'absolute bottom-full left-0 w-96',
+      panelClassName: 'w-96 custom-composer-panel',
       placement: 'above',
     });
     await act(async () => { trigger(container).click(); });
     const panel = document.querySelector<HTMLElement>('[data-select-panel]')!;
-    expect(container.contains(panel)).toBe(true);
-    expect(panel.className).toBe('absolute bottom-full left-0 w-96');
+    expect(panel.closest('[data-base-ui-portal]')).not.toBeNull();
+    expect(panel.className).toContain('w-96 custom-composer-panel');
   });
 });
 

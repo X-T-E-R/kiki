@@ -268,7 +268,7 @@ describe('wallpaper material', () => {
     const sidebar = readFileSync(resolve(import.meta.dirname, '../../components/Sidebar.tsx'), 'utf8');
     expect(sidebar).toContain('data-new-session');
     expect(sidebar).toContain('data-session-selected');
-    expect(sidebar).not.toMatch(/data-new-session[\s\S]{0,400}shadow-\[var\(--kiki-sheet-shadow\)\]/);
+    expect(sidebar).toMatch(/data-new-session[\s\S]{0,400}shadow-\[var\(--kiki-sheet-shadow\)\]/);
   });
 
   it('speaks the lifted chips in the dial’s paper and panel over a picture', () => {

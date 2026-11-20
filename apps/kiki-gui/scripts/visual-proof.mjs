@@ -28,6 +28,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FIXTURE_TOKEN } from './fixture-server.mjs';
+import { applyFixtureTheme } from './lib/theme-preference.mjs';
 import { spaceDesktopMock } from './space-desktop-mock.mjs';
 import { assertTimelineIntegrity, drainTimeline } from './timeline-integrity.mjs';
 import { runProof } from '../proof/runner.mjs';
@@ -7709,6 +7710,929 @@ async function scenarioWorkspaceHistory() {
   }
 }
 
+async function scenarioGuiPresetStates() {
+  // Navigate directly to the preset Persona + Audio + 85-session fixture thread.
+  const SID = 'session_preset_persona_audio';
+  await page.goto(job().link(`/s/${SID}`), { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-session-persona-identity="nia"]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-composer-input][contenteditable="true"]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+  await page.waitForTimeout(350);
+
+  // ---- Scenario 1: Persona single-row h-12 header + stripped redundant prefix + audio ----
+  const headerCheck = await page.evaluate(() => {
+    const personaName = document.querySelector('[data-session-persona-name]');
+    const header = personaName?.closest('header') ?? document.querySelector('header');
+    const titleEl = header?.querySelector('[data-session-title]') ?? null;
+    if (!header || !personaName || !titleEl) return { ok: false, reason: 'missing header elements' };
+    const hRect = header.getBoundingClientRect();
+    const pRect = personaName.getBoundingClientRect();
+    const tRect = titleEl.getBoundingClientRect();
+    const pFont = getComputedStyle(personaName).fontFamily;
+    const tFont = getComputedStyle(titleEl).fontFamily;
+    return {
+      ok: true,
+      headerHeight: Math.round(hRect.height),
+      sameRowDeltaY: Math.abs(Math.round((pRect.top + pRect.height / 2) - (tRect.top + tRect.height / 2))),
+      titleText: (titleEl.textContent ?? '').trim(),
+      personaFont: pFont,
+      titleFont: tFont,
+      clipped: tRect.top < hRect.top - 1 || tRect.bottom > hRect.bottom + 1,
+    };
+  });
+  console.log(`[check] preset-01 header=${JSON.stringify(headerCheck)}`);
+  if (!headerCheck.ok) throw new Error(`preset-01 failed: ${headerCheck.reason}`);
+  if (headerCheck.headerHeight > 52) throw new Error(`header taller than h-12: ${headerCheck.headerHeight}px`);
+  if (headerCheck.sameRowDeltaY > 6) throw new Error(`persona & title not single-row inline (dy=${headerCheck.sameRowDeltaY}px)`);
+  if (headerCheck.titleText.startsWith('大妮娅')) throw new Error(`redundant persona prefix not stripped: "${headerCheck.titleText}"`);
+  if (headerCheck.personaFont !== headerCheck.titleFont) throw new Error(`header font mismatch: "${headerCheck.personaFont}" vs "${headerCheck.titleFont}"`);
+  if (headerCheck.clipped) throw new Error('header title vertically clipped');
+  await shot('preset-01-persona-header-audio');
+
+  // ---- Scenario 2: Sidebar >80 sessions + Persona expanded + scrolled mid-list + flat circular + New session ----
+  const newSessionRow = await page.evaluate(() => {
+    const btn = document.querySelector('[data-new-session]');
+    if (!btn) return null;
+    const cs = getComputedStyle(btn);
+    const badge = btn.querySelector('span');
+    const badgeCs = badge ? getComputedStyle(badge) : null;
+    return {
+      shadow: cs.boxShadow,
+      bg: cs.backgroundColor,
+      height: Math.round(btn.getBoundingClientRect().height),
+      badgeRadius: badgeCs ? Number.parseFloat(badgeCs.borderTopLeftRadius) : 0,
+    };
+  });
+  console.log(`[check] preset-02 newSession=${JSON.stringify(newSessionRow)}`);
+  if (!newSessionRow || newSessionRow.shadow !== 'none' || newSessionRow.badgeRadius < 8) {
+    throw new Error(`+ 新会话 button must be flat Zone-1 rail row with circular + badge, got ${JSON.stringify(newSessionRow)}`);
+  }
+  // Load page 2 so >60 sessions cross SIDEBAR_VIRTUALIZE_THRESHOLD.
+  const loadMoreBtn = page.locator('[data-session-load-more]');
+  if ((await loadMoreBtn.count()) > 0) {
+    await loadMoreBtn.click();
+    await page.locator('[data-session-list-virtualized="true"]').waitFor({ timeout: 10_000 });
+  }
+  const personaSectionToggle = page.locator('[data-sidebar-personas] button[aria-expanded]').first();
+  if ((await personaSectionToggle.count()) > 0) {
+    if ((await personaSectionToggle.getAttribute('aria-expanded')) === 'true') {
+      await personaSectionToggle.click();
+      await page.waitForTimeout(120);
+    }
+    await personaSectionToggle.click();
+    await page.waitForTimeout(200);
+  }
+  const sidebarCheck = await page.evaluate(async () => {
+    const scroller = document.querySelector('[data-session-list]');
+    const vList = document.querySelector('[data-session-list-virtualized="true"]');
+    if (!scroller || !vList) return { ok: false, reason: 'sidebar not virtualized' };
+    const anchorBefore = vList.getBoundingClientRect().top;
+    const firstRowBefore = vList.querySelector('[data-index]');
+    const gapBefore = firstRowBefore ? Math.round(firstRowBefore.getBoundingClientRect().top - anchorBefore) : 999;
+    scroller.scrollTop = 480;
+    scroller.dispatchEvent(new Event('scroll'));
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const sticky = vList.querySelector('[data-sticky-active]') ?? vList.querySelector('[data-session-group-header]');
+    const stickyTop = sticky ? Math.round(sticky.getBoundingClientRect().top - scroller.getBoundingClientRect().top) : 999;
+    return {
+      ok: true,
+      gapBefore,
+      scrollTop: scroller.scrollTop,
+      hasStickyHeader: sticky !== null,
+      stickyTop,
+    };
+  });
+  console.log(`[check] preset-02 sidebar=${JSON.stringify(sidebarCheck)}`);
+  if (!sidebarCheck.ok) throw new Error(`preset-02 failed: ${sidebarCheck.reason}`);
+  if (sidebarCheck.gapBefore > 24) throw new Error(`sidebar virtualized list blank gap after Persona expand: ${sidebarCheck.gapBefore}px`);
+  await shot('preset-02-sidebar-virtualized');
+  await page.evaluate(() => {
+    const scroller = document.querySelector('[data-session-list]');
+    if (scroller) scroller.scrollTop = 0;
+  });
+
+  // ---- Scenario 3: Sweep ALL 5 composer triggers for mutual exclusion, unified surface, radius >= 10px, and 5-point elementFromPoint non-occlusion ----
+  const assertPopoverUnoccluded = async (selector, label) => {
+    const hit = await page.evaluate((sel) => {
+      const panel = document.querySelector(sel);
+      if (!panel) return { ok: false, reason: 'missing' };
+      const r = panel.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const inViewport = r.left >= -1 && r.top >= -1 && r.right <= vw + 1 && r.bottom <= vh + 1 && r.width > 0 && r.height > 0;
+      const inset = Math.min(4, r.width / 4, r.height / 4);
+      const points = [
+        { name: 'center', x: r.left + r.width / 2, y: r.top + r.height / 2 },
+        { name: 'tl', x: r.left + inset, y: r.top + inset },
+        { name: 'tr', x: r.right - inset, y: r.top + inset },
+        { name: 'bl', x: r.left + inset, y: r.bottom - inset },
+        { name: 'br', x: r.right - inset, y: r.bottom - inset },
+      ];
+      const misses = [];
+      for (const pt of points) {
+        const el = document.elementFromPoint(pt.x, pt.y);
+        if (!el || !panel.contains(el)) {
+          misses.push({
+            point: pt.name,
+            x: Math.round(pt.x),
+            y: Math.round(pt.y),
+            hitTag: el ? `${el.tagName.toLowerCase()}${el.className ? `.${String(el.className).slice(0, 40)}` : ''}` : null,
+          });
+        }
+      }
+      return {
+        ok: inViewport && misses.length === 0,
+        inViewport,
+        rect: { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), vw, vh },
+        misses,
+      };
+    }, selector);
+    console.log(`[check] non-occlusion ${label}=${JSON.stringify(hit)}`);
+    if (!hit.ok) throw new Error(`popover occlusion/clipping breach on ${label}: ${JSON.stringify(hit)}`);
+    return hit;
+  };
+
+  const checkSinglePopup = async (label) => {
+    const metrics = await page.evaluate(() => {
+      const panels = [
+        ...document.querySelectorAll('.composer-floating-panel, [data-add-panel], [data-permission-panel], [data-composer-ssh-list], [data-composer-notes-panel]'),
+      ].filter((el) => {
+        const cs = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return cs.visibility !== 'hidden' && cs.display !== 'none' && r.width > 0 && r.height > 0;
+      });
+      const panel = panels[0];
+      const cs = panel ? getComputedStyle(panel) : null;
+      const r = panel ? panel.getBoundingClientRect() : null;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const inViewport = r !== null && r.left >= -1 && r.top >= -1 && r.right <= vw + 1 && r.bottom <= vh + 1;
+      const misses = [];
+      if (panel && r) {
+        const inset = Math.min(4, r.width / 4, r.height / 4);
+        const points = [
+          { name: 'center', x: r.left + r.width / 2, y: r.top + r.height / 2 },
+          { name: 'tl', x: r.left + inset, y: r.top + inset },
+          { name: 'tr', x: r.right - inset, y: r.top + inset },
+          { name: 'bl', x: r.left + inset, y: r.bottom - inset },
+          { name: 'br', x: r.right - inset, y: r.bottom - inset },
+        ];
+        for (const pt of points) {
+          const el = document.elementFromPoint(pt.x, pt.y);
+          if (!el || !panel.contains(el)) {
+            misses.push({ point: pt.name, hitTag: el?.tagName?.toLowerCase() ?? null });
+          }
+        }
+      }
+      return {
+        visiblePopupCount: panels.length,
+        radius: cs ? Number.parseFloat(cs.borderTopLeftRadius) : 0,
+        fontFamily: cs?.fontFamily ?? '',
+        inViewport,
+        occlusionMisses: misses.length,
+        misses,
+      };
+    });
+    console.log(`[check] preset-03 ${label}=${JSON.stringify(metrics)}`);
+    if (metrics.visiblePopupCount !== 1) throw new Error(`popup mutual exclusion breach on ${label}: visiblePopupCount=${metrics.visiblePopupCount}`);
+    if (metrics.radius < 9.5) throw new Error(`popup radius breach on ${label}: ${metrics.radius}px`);
+    if (!metrics.inViewport) throw new Error(`popup viewport clip breach on ${label}`);
+    if (metrics.occlusionMisses > 0) throw new Error(`popup 5-point occlusion breach on ${label}: ${JSON.stringify(metrics.misses)}`);
+    return metrics;
+  };
+
+  await page.locator('#composer-profile-select').click();
+  await page.locator('[data-execution-panel]').waitFor({ timeout: 5_000 });
+  const profileMetrics = await checkSinglePopup('profile');
+  const selectedProfileRows = await page.evaluate(() =>
+    document.querySelectorAll('[data-execution-panel] [role="option"][aria-selected="true"]').length,
+  );
+  console.log(`[check] preset-03a selectedProfileRows=${selectedProfileRows}`);
+  if (selectedProfileRows !== 1) {
+    throw new Error(`ProfileSelect showed ${selectedProfileRows} selected options (expected exactly 1)`);
+  }
+  await shot('preset-03a-composer-profile-picker');
+
+  await page.locator('#composer-execution-select').click();
+  await page.waitForTimeout(120);
+  const execMetrics = await checkSinglePopup('execution');
+  if (profileMetrics.fontFamily !== execMetrics.fontFamily) {
+    throw new Error(`Profile/Execution popup font mismatch: "${profileMetrics.fontFamily}" vs "${execMetrics.fontFamily}"`);
+  }
+  await shot('preset-03b-composer-execution-picker');
+
+  await page.locator('[data-add-menu-trigger]').click();
+  await page.locator('[data-add-panel]').waitFor({ timeout: 5_000 });
+  await checkSinglePopup('addMenu');
+
+  await page.locator('[data-mode-select] > button').click();
+  await page.locator('[data-permission-panel]').waitFor({ timeout: 5_000 });
+  await checkSinglePopup('permission');
+
+  // ---- Scenario 4: Composer SSH popover with 14 hosts (<= 1 scroll container, mutual exclusion from Permission) ----
+  const sshToggle = page.locator('[data-composer-ssh-toggle]');
+  await sshToggle.waitFor({ timeout: 5_000 });
+  await sshToggle.click();
+  await page.locator('[data-composer-ssh-list]').waitFor({ timeout: 5_000 });
+  await checkSinglePopup('ssh');
+  const sshMetrics = await page.evaluate(() => {
+    const popup = document.querySelector('[data-composer-ssh-list]');
+    if (!popup) return { ok: false };
+    const scrollable = [...popup.querySelectorAll('*')].filter((el) => {
+      const oy = getComputedStyle(el).overflowY;
+      return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 2;
+    });
+    return { ok: true, hostRows: popup.querySelectorAll('[data-composer-ssh-host]').length, scrollableDescendantCount: scrollable.length };
+  });
+  console.log(`[check] preset-04 sshPopover=${JSON.stringify(sshMetrics)}`);
+  if (!sshMetrics.ok || sshMetrics.hostRows < 12) throw new Error(`expected >=12 SSH hosts, got ${JSON.stringify(sshMetrics)}`);
+  if (sshMetrics.scrollableDescendantCount > 1) throw new Error(`SSH popover has nested scroll containers: ${sshMetrics.scrollableDescendantCount}`);
+  await shot('preset-04-composer-ssh-popover');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(100);
+
+  // ---- Scenario 5: Context shelf (2 real notes capsule leftmost + 3 images in 1,2,3 order + 1 PDF + Notes popover) ----
+  const createAnnotationFromParagraph = async (paragraphIndex, commentText) => {
+    const ok = await page.evaluate((idx) => {
+      const inView = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.height > 0 && r.bottom > 60 && r.top < window.innerHeight - 160;
+      };
+      const proseParas = [...document.querySelectorAll('[data-transcript-scroll] .kiki-prose p')].filter((p) => (p.textContent ?? '').trim().length >= 8 && inView(p));
+      const paras = proseParas.length > 0
+        ? proseParas
+        : [...document.querySelectorAll('[data-transcript-scroll] p')].filter((p) => (p.textContent ?? '').trim().length >= 8 && inView(p));
+      const target = paras[idx] ?? paras[0];
+      if (!target || !target.firstChild) return false;
+      const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+      const textNode = walker.nextNode();
+      if (!textNode || (textNode.textContent ?? '').length < 4) return false;
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, Math.min(12, (textNode.textContent ?? '').length));
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      return true;
+    }, paragraphIndex);
+    if (!ok) throw new Error(`could not select text in transcript paragraph ${paragraphIndex}`);
+    await page.locator('[data-selection-annotate-action]').waitFor({ timeout: 5_000 });
+    await page.locator('[data-selection-annotate-action]').click();
+    const noteInput = page.locator('[data-selection-annotate-input]');
+    await noteInput.waitFor({ timeout: 5_000 });
+    await noteInput.fill(commentText);
+    await noteInput.press('Enter');
+    await page.waitForTimeout(120);
+  };
+  await createAnnotationFromParagraph(0, '确认第一条批注胶囊高度');
+  await createAnnotationFromParagraph(1, '确认第二条批注计数汇总');
+  await page.locator('[data-composer-notes-pill]').waitFor({ timeout: 5_000 });
+  const pngBuffer = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const fileInput = page.locator('[data-composer-toolbar] input[type="file"]');
+  await fileInput.setInputFiles([
+    { name: 'img-1.png', mimeType: 'image/png', buffer: pngBuffer },
+    { name: 'img-2.png', mimeType: 'image/png', buffer: pngBuffer },
+    { name: 'img-3.png', mimeType: 'image/png', buffer: pngBuffer },
+    { name: 'spec.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%preset\n') },
+  ]);
+  await page.waitForTimeout(350);
+  await page.locator('[data-composer-notes-pill]').click();
+  await page.locator('[data-composer-notes-panel]').waitFor({ timeout: 5_000 });
+  const shelfMetrics = await page.evaluate(() => {
+    const shelf = document.querySelector('[data-context-shelf]');
+    const pill = document.querySelector('[data-composer-notes-pill]');
+    const panel = document.querySelector('[data-composer-notes-panel]');
+    if (!shelf || !pill || !panel) return { ok: false };
+    const pillRect = pill.getBoundingClientRect();
+    const pillCs = getComputedStyle(pill);
+    const firstChild = shelf.firstElementChild;
+    const imageNames = [...shelf.querySelectorAll('[data-image-tile]')].map((el) => el.getAttribute('title') ?? el.getAttribute('aria-label') ?? el.textContent ?? '');
+    return {
+      ok: true,
+      pillHeight: Math.round(pillRect.height),
+      pillRadius: Number.parseFloat(pillCs.borderTopLeftRadius),
+      pillText: (pill.textContent ?? '').trim(),
+      notesIsLeftmost: firstChild !== null && (firstChild === pill || firstChild.contains(pill)),
+      notesPortaledOutsideCard: panel.closest('[data-composer-card]') === null,
+      imageCount: imageNames.length,
+      imageNames,
+      hasStandingRecordsLoaded: /已加载|message records loaded/i.test(document.body.innerText),
+    };
+  });
+  console.log(`[check] preset-05 shelf=${JSON.stringify(shelfMetrics)}`);
+  if (!shelfMetrics.ok) throw new Error('preset-05 shelf elements missing');
+  if (shelfMetrics.pillHeight > 30) throw new Error(`notes capsule taller than 30px: ${shelfMetrics.pillHeight}px`);
+  if (!shelfMetrics.notesIsLeftmost) throw new Error('notes capsule is not leftmost in context shelf');
+  if (!shelfMetrics.notesPortaledOutsideCard) throw new Error('notes popover is not portaled outside composer card');
+  if (shelfMetrics.imageCount !== 3) throw new Error(`expected 3 images in shelf, got ${shelfMetrics.imageCount}`);
+  if (shelfMetrics.hasStandingRecordsLoaded) throw new Error('standing recordsLoaded prose leaked into UI');
+  await assertPopoverUnoccluded('[data-composer-notes-panel]', 'preset-05-notes');
+  await shot('preset-05-context-shelf-notes-queue');
+  await page.keyboard.press('Escape');
+  // Reload cleanly to clear in-memory draft annotations/attachments before Scenarios 6-9.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+
+  // ---- Scenario 6: Right Rail (1 running + 5 settled folded, read-only 能力 vs collapsed 环境与扩展) ----
+  const rail = page.locator('[data-session-rail]');
+  if ((await rail.count()) === 0) {
+    await page.locator('[data-rail-toggle]').click();
+    await rail.waitFor({ timeout: 10_000 });
+  }
+  await page.waitForTimeout(250);
+  const railMetrics = await page.evaluate(() => {
+    const r = document.querySelector('[data-session-rail]');
+    if (!r) return { ok: false };
+    return {
+      ok: true,
+      runningTaskRows: r.querySelectorAll('[data-rail-section="tasks"] [data-rail-item]').length,
+      settledToggleText: r.querySelector('[data-tasks-settled-toggle]')?.textContent?.trim() ?? '',
+      settledListMounted: r.querySelector('[data-tasks-settled-list]') !== null,
+      duplicatePluginTabs: r.querySelectorAll('[data-plugin-inspector-open]').length,
+      hasCapabilitiesFold: r.querySelector('[data-rail-capabilities]') !== null,
+      hasEnvironmentFold: r.querySelector('[data-rail-environment]') !== null,
+      envExpanded: r.querySelector('[data-rail-environment] [aria-expanded]')?.getAttribute('aria-expanded'),
+    };
+  });
+  console.log(`[check] preset-06 rightRail=${JSON.stringify(railMetrics)}`);
+  if (!railMetrics.ok) throw new Error('preset-06 rail missing');
+  if (railMetrics.runningTaskRows !== 1) throw new Error(`expected 1 expanded running task row, got ${railMetrics.runningTaskRows}`);
+  if (railMetrics.settledListMounted) throw new Error('5 settled tasks should be folded by default');
+  if (railMetrics.duplicatePluginTabs !== 0) throw new Error(`duplicate plugin inspector tabs in rail tail: ${railMetrics.duplicatePluginTabs}`);
+  if (!railMetrics.hasCapabilitiesFold || !railMetrics.hasEnvironmentFold || railMetrics.envExpanded !== 'false') {
+    throw new Error(`Right Rail IA mismatch: ${JSON.stringify(railMetrics)}`);
+  }
+  await shot('preset-06-right-rail-tasks-ia');
+
+  // ---- Scenario 7: <480px mobile CompactModelSheet open ----
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(250);
+  const compactTrigger = page.locator('[data-compact-model-sheet-trigger]');
+  await compactTrigger.waitFor({ timeout: 5_000 });
+  await compactTrigger.click();
+  await page.locator('[data-compact-model-sheet]').waitFor({ timeout: 5_000 });
+  await page.waitForTimeout(150);
+  await shot('preset-07-mobile-compact-sheet');
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(250);
+
+  // ---- Scenario 8: Ctrl+K QuickSwitcher with >60 virtualized items navigated to index 25 ----
+  await page.keyboard.press('Control+k');
+  const switcherInput = page.locator('[role="dialog"] input[type="text"]').first();
+  await switcherInput.waitFor({ timeout: 5_000 });
+  await switcherInput.fill('preset');
+  await page.waitForFunction(
+    () => document.querySelectorAll('[role="dialog"] [data-switcher-hit-turn]').length >= 3,
+    undefined,
+    { timeout: 10_000 },
+  );
+  await page.waitForTimeout(150);
+  for (let step = 0; step < 10; step += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await page.waitForTimeout(200);
+  const switcherMetrics = await page.evaluate(() => {
+    const highlighted = document.querySelector('[role="dialog"] [data-highlighted]');
+    const list = highlighted?.closest('#quick-switcher-list') ?? highlighted?.closest('[role="listbox"]');
+    if (!highlighted || !list) return { ok: false };
+    const hRect = highlighted.getBoundingClientRect();
+    const lRect = list.getBoundingClientRect();
+    return {
+      ok: true,
+      index: Number(highlighted.getAttribute('data-index') ?? -1),
+      inViewport: hRect.top >= lRect.top - 4 && hRect.bottom <= lRect.bottom + 4,
+      scrollTop: Math.round(list.scrollTop),
+    };
+  });
+  console.log(`[check] preset-08 quickSwitcher=${JSON.stringify(switcherMetrics)}`);
+  if (!switcherMetrics.ok || switcherMetrics.index < 9 || !switcherMetrics.inViewport || switcherMetrics.scrollTop <= 0) {
+    throw new Error(`QuickSwitcher highlight out of view: ${JSON.stringify(switcherMetrics)}`);
+  }
+  await shot('preset-08-quick-switcher-virtualized');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+
+  // ---- Scenario 9A (P0 t564 + t565): Audio click/open rAF + MutationObserver flight recorder ----
+  let playbackPostCount = 0;
+  page.on('request', (req) => {
+    if (req.method() === 'POST' && req.url().includes('/media-playback')) {
+      playbackPostCount += 1;
+    }
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+  const inlineAudio = page.locator('[data-transcript-scroll] audio').last();
+  await inlineAudio.waitFor({ timeout: 10_000 });
+  await page.waitForFunction(
+    () => {
+      const audios = [...document.querySelectorAll('[data-transcript-scroll] audio')];
+      return audios.some((a) => (a.getAttribute('src') ?? '').includes('/media-preview/'));
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+  const postCountBeforeOpen = playbackPostCount;
+  console.log(`[check] p0-audio initial POST /media-playback count=${postCountBeforeOpen}`);
+  if (postCountBeforeOpen !== 1) {
+    throw new Error(`expected exactly 1 POST /media-playback on load (shared cache dedupes duplicate audio refs), got ${postCountBeforeOpen}`);
+  }
+  await page.evaluate(() => {
+    const audios = [...document.querySelectorAll('[data-transcript-scroll] audio')];
+    const targetAudio = audios[audios.length - 1];
+    const log = {
+      active: true,
+      audioUnmounted: false,
+      busyPulseMounts: 0,
+      frames: 0,
+    };
+    window.__kikiAudioFlight = log;
+    const obs = new MutationObserver(() => {
+      if (targetAudio && !document.contains(targetAudio)) log.audioUnmounted = true;
+      const busyPulses = document.querySelectorAll('[data-audio-card] [aria-busy="true"], [data-audio-card] .animate-pulse, [data-preview-workspace] [aria-busy="true"], [data-preview-workspace] .animate-pulse');
+      if (busyPulses.length > 0) log.busyPulseMounts += busyPulses.length;
+    });
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-busy', 'class', 'src'] });
+    const tick = () => {
+      if (!log.active) { obs.disconnect(); return; }
+      log.frames += 1;
+      if (targetAudio && !document.contains(targetAudio)) log.audioUnmounted = true;
+      const busyPulses = document.querySelectorAll('[data-audio-card] [aria-busy="true"], [data-audio-card] .animate-pulse, [data-preview-workspace] [aria-busy="true"], [data-preview-workspace] .animate-pulse');
+      if (busyPulses.length > 0) log.busyPulseMounts += busyPulses.length;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const openAudioBtn = page.locator('[data-transcript-scroll] [data-audio-open], [data-transcript-scroll] [data-attachment-open]').last();
+  if ((await openAudioBtn.count()) > 0) {
+    await openAudioBtn.click();
+    await page.locator('[data-preview-workspace] audio').waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(250);
+  }
+  const audioFlight = await page.evaluate(() => {
+    const log = window.__kikiAudioFlight;
+    log.active = false;
+    return {
+      ...log,
+      previewAudioSrc: document.querySelector('[data-preview-workspace] audio')?.getAttribute('src') ?? null,
+    };
+  });
+  console.log(`[check] p0-audio flight=${JSON.stringify(audioFlight)} postAfterOpen=${playbackPostCount}`);
+  if (audioFlight.audioUnmounted) throw new Error('P0 audio regression: inline <audio> unmounted while opening preview');
+  if (audioFlight.busyPulseMounts > 0) throw new Error(`P0 audio regression: mounted ${audioFlight.busyPulseMounts} aria-busy/animate-pulse flash frames`);
+  if (playbackPostCount !== postCountBeforeOpen) {
+    throw new Error(`P0 audio regression: opening preview triggered duplicate POST /media-playback (${postCountBeforeOpen} -> ${playbackPostCount})`);
+  }
+  await shot('preset-09a-p0-audio-preview-reuse');
+
+  const closePreview = page.locator('[data-preview-close]').first();
+  if ((await closePreview.count()) > 0) {
+    await closePreview.click();
+    await page.waitForTimeout(150);
+  }
+
+  // ---- Scenario 9B (P0 t564 + t565): Mid-session send rAF + MutationObserver flight recorder ----
+  await page.evaluate(() => {
+    const shell = document.querySelector('.conversation-shell');
+    const scroller = document.querySelector('[data-transcript-scroll]');
+    const initialScrollTop = scroller ? scroller.scrollTop : 0;
+    const log = {
+      active: true,
+      frames: 0,
+      settlingFlips: 0,
+      scrollNodeReplaced: false,
+      clientHeightCollapsed: false,
+      scrollHeightCollapsed: false,
+      jumpedToTop: false,
+      minScrollTop: initialScrollTop,
+      initialScrollTop,
+    };
+    window.__kikiSendFlight = log;
+    const sample = () => {
+      if (shell && shell.getAttribute('data-phase') === 'settling') log.settlingFlips += 1;
+      const curScroller = document.querySelector('[data-transcript-scroll]');
+      if (!curScroller || curScroller !== scroller) log.scrollNodeReplaced = true;
+      if (curScroller) {
+        if (curScroller.clientHeight === 0) log.clientHeightCollapsed = true;
+        if (curScroller.scrollHeight === 0) log.scrollHeightCollapsed = true;
+        if (curScroller.scrollTop < log.minScrollTop) log.minScrollTop = curScroller.scrollTop;
+        if (initialScrollTop > 120 && curScroller.scrollTop <= 10) log.jumpedToTop = true;
+      }
+    };
+    const obs = new MutationObserver(sample);
+    if (shell) obs.observe(shell, { attributes: true, attributeFilter: ['data-phase'], childList: true, subtree: true });
+    const tick = () => {
+      if (!log.active) { obs.disconnect(); return; }
+      log.frames += 1;
+      sample();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await sendPrompt('验证发消息零闪屏与发送后持续可用');
+  await waitForText('发送完成：整个发送过程中界面零闪屏');
+  await page.waitForTimeout(250);
+  const midSendFlight = await page.evaluate(() => {
+    const log = window.__kikiSendFlight;
+    log.active = false;
+    const input = document.querySelector('[data-composer-input][contenteditable="true"]');
+    return {
+      ...log,
+      finalPhase: document.querySelector('.conversation-shell')?.getAttribute('data-phase') ?? null,
+      composerUsable: input !== null && input.getAttribute('aria-disabled') !== 'true',
+    };
+  });
+  console.log(`[check] p0-mid-send flight=${JSON.stringify(midSendFlight)}`);
+  if (midSendFlight.settlingFlips > 0) throw new Error(`P0 send flash: .conversation-shell flipped to data-phase="settling" ${midSendFlight.settlingFlips} times`);
+  if (midSendFlight.scrollNodeReplaced) throw new Error('P0 send flash: [data-transcript-scroll] unmounted/remounted mid-send');
+  if (midSendFlight.clientHeightCollapsed || midSendFlight.scrollHeightCollapsed) throw new Error('P0 send flash: transcript scroll container collapsed to 0');
+  if (midSendFlight.jumpedToTop) throw new Error(`P0 send flash: transcript jumped to top (initial=${midSendFlight.initialScrollTop}, min=${midSendFlight.minScrollTop})`);
+  if (!midSendFlight.composerUsable) throw new Error('P0 send degraded: composer not usable after send without reload');
+  await shot('preset-09b-p0-mid-session-send-stable');
+
+  // ---- Scenario 9C (P0 t564 + t565): /new -> /s/:id first-send rAF + MutationObserver flight recorder ----
+  await page.locator('[data-new-session]').click();
+  await page.waitForURL(/\/new(?:\?|$)/, { timeout: 10_000 });
+  await page.locator('[data-phase="hero"]').waitFor({ timeout: 10_000 });
+  await page.locator('[data-composer-input][contenteditable="true"]').waitFor({ timeout: 10_000 });
+  await page.evaluate(() => {
+    let firstScroller = null;
+    const log = {
+      active: true,
+      frames: 0,
+      reachedActive: false,
+      anySettlingFlips: 0,
+      regressedToSettling: 0,
+      transcriptRootRemounts: 0,
+      scrollCollapsed: false,
+    };
+    window.__kikiNewSendFlight = log;
+    const sample = () => {
+      const shell = document.querySelector('.conversation-shell');
+      const phase = shell?.getAttribute('data-phase');
+      if (phase === 'active') log.reachedActive = true;
+      else if (phase === 'settling') {
+        log.anySettlingFlips += 1;
+        if (log.reachedActive) log.regressedToSettling += 1;
+      }
+      const scroller = document.querySelector('[data-transcript-scroll]');
+      if (scroller) {
+        if (firstScroller === null) firstScroller = scroller;
+        else if (scroller !== firstScroller) {
+          log.transcriptRootRemounts += 1;
+          firstScroller = scroller;
+        }
+        if (scroller.clientHeight === 0) log.scrollCollapsed = true;
+      }
+    };
+    const obs = new MutationObserver(sample);
+    obs.observe(document.body, { attributes: true, attributeFilter: ['data-phase'], childList: true, subtree: true });
+    const tick = () => {
+      if (!log.active) { obs.disconnect(); return; }
+      log.frames += 1;
+      sample();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await sendPrompt('新建会话首次发送零闪屏验证');
+  await page.waitForURL(/\/s\//, { timeout: 15_000 });
+  await waitForText('发送完成：整个发送过程中界面零闪屏');
+  await page.waitForTimeout(250);
+  const newSendFlight = await page.evaluate(() => {
+    const log = window.__kikiNewSendFlight;
+    log.active = false;
+    return {
+      ...log,
+      finalPhase: document.querySelector('.conversation-shell')?.getAttribute('data-phase') ?? null,
+      composerUsable: document.querySelector('[data-composer-input][contenteditable="true"]:not([aria-disabled="true"])') !== null,
+    };
+  });
+  console.log(`[check] p0-new-send flight=${JSON.stringify(newSendFlight)}`);
+  if (newSendFlight.anySettlingFlips > 0) throw new Error(`P0 /new send flash: .conversation-shell flashed data-phase="settling" ${newSendFlight.anySettlingFlips} times on /new -> /s/:id handoff`);
+  if (newSendFlight.transcriptRootRemounts > 0) throw new Error(`P0 /new send flash: [data-transcript-scroll] remounted ${newSendFlight.transcriptRootRemounts} times`);
+  if (newSendFlight.scrollCollapsed) throw new Error('P0 /new send flash: scroll container collapsed to 0');
+  if (!newSendFlight.composerUsable) throw new Error('P0 /new send degraded: composer not usable after first send');
+  await shot('preset-09c-p0-new-session-send-stable');
+
+  // ---- Scenario 10: Error toast visual & deduplication proof (single × close, warning icon, zero duplicate stack) ----
+  const interceptCompact = async (route) => {
+    const req = route.request();
+    const url = req.url();
+    const body = req.postData() ?? '';
+    if (url.includes('compact') || body.includes('compact')) {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 50001, msg: 'Compact failed for toast proof' }),
+      });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route('**/api/**', interceptCompact);
+  await page.goto(job().link(`/s/${SID}`), { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-composer-input][contenteditable="true"]').waitFor({ timeout: 15_000 });
+  const triggerCompactFailure = async () => {
+    await page.locator('[data-context-meter]').first().click();
+    const compactBtn = page.locator('[data-context-details] [data-context-compact]').first();
+    await compactBtn.waitFor({ timeout: 5_000 });
+    await compactBtn.click();
+    await page.waitForTimeout(250);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(100);
+  };
+  await triggerCompactFailure();
+  await triggerCompactFailure();
+  await page.locator('[data-toast="error"]').first().waitFor({ timeout: 5_000 });
+  const toastMetrics = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('[data-toast="error"]')];
+    const first = cards[0];
+    return {
+      errorToastCount: cards.length,
+      crossIconCount: first ? first.querySelectorAll('[data-icon="cross"]').length : -1,
+      warningIconCount: first ? first.querySelectorAll('[data-icon="warning"]').length : -1,
+      closeIconCount: first ? first.querySelectorAll('[data-icon="close"]').length : -1,
+      text: first?.textContent?.trim() ?? '',
+    };
+  });
+  console.log(`[check] preset-10 errorToast=${JSON.stringify(toastMetrics)}`);
+  if (toastMetrics.errorToastCount !== 1) throw new Error(`duplicate error toasts stacked: count=${toastMetrics.errorToastCount}`);
+  if (toastMetrics.crossIconCount !== 0) throw new Error(`error toast rendered bare cross icon alongside close: ${toastMetrics.crossIconCount}`);
+  if (toastMetrics.warningIconCount !== 1) throw new Error(`error toast missing distinct warning icon: ${toastMetrics.warningIconCount}`);
+  if (toastMetrics.closeIconCount !== 1) throw new Error(`error toast must have exactly 1 close icon, got ${toastMetrics.closeIconCount}`);
+  await shot('preset-10-error-toast-single-close');
+  await page.unroute('**/api/**', interceptCompact);
+  const closeToast = page.locator('[data-toast="error"] button').last();
+  if (await closeToast.count() > 0) await closeToast.click().catch(() => {});
+
+  // ── Preset 11: Renderer Idle CPU, Layout/Style Recalc & GPU Animation Guard ─
+  await page.waitForTimeout(350);
+  const cdp = await page.context().newCDPSession(job().page);
+  await cdp.send('Performance.enable');
+  const readMetrics = async () => {
+    const { metrics } = await cdp.send('Performance.getMetrics');
+    return Object.fromEntries(metrics.map((m) => [m.name, m.value]));
+  };
+  const perfBefore = await readMetrics();
+  const idleAudit = await page.evaluate(() => new Promise((resolve) => {
+    let mutations = 0;
+    let layoutShifts = 0;
+    const mo = new MutationObserver((records) => { mutations += records.length; });
+    mo.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+    let po = null;
+    try {
+      po = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!entry.hadRecentInput) layoutShifts += entry.value;
+        }
+      });
+      po.observe({ type: 'layout-shift', buffered: false });
+    } catch { /* unsupported */ }
+    setTimeout(() => {
+      mo.disconnect();
+      po?.disconnect();
+      const runningInfinite = document.getAnimations().filter((anim) => {
+        const timing = anim.effect?.getTiming?.();
+        return anim.playState === 'running' && timing?.iterations === Infinity;
+      }).length;
+      // Verify document-hidden pause guard halts infinite compositor loops.
+      const probe = document.createElement('span');
+      probe.className = 'status-dot-busy';
+      probe.style.cssText = 'position:fixed;top:0;left:0;width:6px;height:6px;';
+      document.body.append(probe);
+      const visibleProbeRunning = probe.getAnimations().filter((a) => a.playState === 'running').length;
+      document.documentElement.dataset.kikiDocHidden = 'true';
+      void probe.offsetHeight;
+      const hiddenRunningInfinite = document.getAnimations().filter((anim) => {
+        const timing = anim.effect?.getTiming?.();
+        return anim.playState === 'running' && timing?.iterations === Infinity;
+      }).length;
+      delete document.documentElement.dataset.kikiDocHidden;
+      probe.remove();
+      resolve({ mutations, layoutShifts, runningInfinite, visibleProbeRunning, hiddenRunningInfinite });
+    }, 1200);
+  }));
+  const perfAfter = await readMetrics();
+  await cdp.detach();
+  const idleMetrics = {
+    ...idleAudit,
+    deltaLayoutCount: Math.round((perfAfter.LayoutCount ?? 0) - (perfBefore.LayoutCount ?? 0)),
+    deltaRecalcStyleCount: Math.round((perfAfter.RecalcStyleCount ?? 0) - (perfBefore.RecalcStyleCount ?? 0)),
+    deltaTaskDurationMs: Math.round(((perfAfter.TaskDuration ?? 0) - (perfBefore.TaskDuration ?? 0)) * 1000),
+  };
+  console.log(`[check] preset-11 idlePerf=${JSON.stringify(idleMetrics)}`);
+  if (idleMetrics.hiddenRunningInfinite !== 0) {
+    throw new Error(`document-hidden guard failed to pause infinite animations: ${idleMetrics.hiddenRunningInfinite}`);
+  }
+  if (idleMetrics.deltaLayoutCount > 2) {
+    throw new Error(`idle session triggered repeated layouts: deltaLayoutCount=${idleMetrics.deltaLayoutCount}`);
+  }
+  if (idleMetrics.deltaTaskDurationMs > 120) {
+    throw new Error(`idle session burned excessive main-thread CPU over 1.2s: ${idleMetrics.deltaTaskDurationMs}ms`);
+  }
+  if (idleMetrics.layoutShifts > 0) {
+    throw new Error(`idle session had unexpected layout shifts: ${idleMetrics.layoutShifts}`);
+  }
+
+  // ── Preset 9D (A1): Cold/preparing -> live/ready send zero-remount proof ───
+  const coldId = 'session_preset_cold_preparing';
+  let injectedPreparingOnce = false;
+  const interceptColdPreparing = async (route) => {
+    const url = route.request().url();
+    if (!injectedPreparingOnce && url.includes(`/api/sessions/${coldId}/transcript/page`) && route.request().method() === 'GET') {
+      injectedPreparingOnce = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            agent_id: 'main',
+            items: [],
+            has_more: true,
+            read: { readiness: 'preparing' },
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route('**/api/**', interceptColdPreparing);
+  await page.goto(job().link(`/s/${coldId}`), { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-composer-input][contenteditable="true"]').waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(250);
+  await page.evaluate(() => {
+    const scroller = document.querySelector('[data-transcript-scroll]');
+    const shell = document.querySelector('.conversation-shell');
+    const log = {
+      active: true,
+      frames: 0,
+      settlingFlips: 0,
+      transcriptRootRemounts: 0,
+      scrollCollapsed: false,
+      sawLoadingSpinner: false,
+    };
+    window.__kikiColdSendFlight = log;
+    const sample = () => {
+      if (shell && shell.getAttribute('data-phase') === 'settling') log.settlingFlips += 1;
+      if (document.querySelector('[data-transcript-loading]') !== null) log.sawLoadingSpinner = true;
+      const cur = document.querySelector('[data-transcript-scroll]');
+      if (!cur || cur !== scroller) log.transcriptRootRemounts += 1;
+      if (cur && (cur.clientHeight === 0 || cur.scrollHeight === 0)) log.scrollCollapsed = true;
+    };
+    const obs = new MutationObserver(sample);
+    if (shell) obs.observe(shell, { attributes: true, attributeFilter: ['data-phase'], childList: true, subtree: true });
+    const tick = () => {
+      if (!log.active) { obs.disconnect(); return; }
+      log.frames += 1;
+      sample();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await sendPrompt('验证冷开历史会话在 preparing 到 ready 升级期间滚动根零卸载');
+  await waitForText('发送完成：整个发送过程中界面零闪屏');
+  await page.waitForTimeout(200);
+  const coldSendFlight = await page.evaluate(() => {
+    const log = window.__kikiColdSendFlight;
+    log.active = false;
+    return log;
+  });
+  await page.unroute('**/api/**', interceptColdPreparing);
+  console.log(`[check] preset-09d coldPreparingToLive=${JSON.stringify(coldSendFlight)}`);
+  if (coldSendFlight.transcriptRootRemounts > 0) {
+    throw new Error(`A1 cold->live send remounted [data-transcript-scroll] ${coldSendFlight.transcriptRootRemounts} times`);
+  }
+  if (coldSendFlight.sawLoadingSpinner) {
+    throw new Error('A1 cold->live send flashed <TranscriptLoading />');
+  }
+  if (coldSendFlight.settlingFlips > 0 || coldSendFlight.scrollCollapsed) {
+    throw new Error(`A1 cold->live send flash/collapse: ${JSON.stringify(coldSendFlight)}`);
+  }
+
+  // ── Preset 12 (C10): Dense combined preset (QueueStrip + open ComposerNotes + attachments + deduped error toast + 520 subagents) in wide/light & narrow/dark ─
+  const denseId = 'session_preset_dense_combined';
+  const interceptDenseCompact = async (route) => {
+    const req = route.request();
+    const url = req.url();
+    const body = req.postData() ?? '';
+    if (req.method() === 'POST' && (url.includes('compact') || body.includes('compact'))) {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 50001, msg: 'Dense preset toast proof' }),
+      });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route('**/api/**', interceptDenseCompact);
+
+  const runDenseCombinedPass = async ({ label, viewport, theme }) => {
+    await page.setViewportSize(viewport);
+    await page.emulateMedia({ colorScheme: theme });
+    await applyFixtureTheme(fixtureUrl(), theme, FIXTURE_TOKEN);
+    await page.goto(job().link(`/s/${denseId}`), { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(`html[data-theme="${theme}"]`, { timeout: 10_000 });
+    await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+    await page.locator('[data-queue-strip], [data-queue-count]').first().waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(300);
+    // Create 2 annotations + attach 2 images + 1 PDF first, then ensure QueueStrip is expanded,
+    // trigger 2 identical compact errors, and open ComposerNotes popover on top of all of them.
+    await createAnnotationFromParagraph(0, '密集态批注一：核验队列条不遮挡');
+    await createAnnotationFromParagraph(1, '密集态批注二：核验暗色窄屏视口边界');
+    await page.locator('[data-composer-notes-pill]').waitFor({ timeout: 5_000 });
+    const denseFileInput = page.locator('[data-composer-toolbar] input[type="file"]');
+    await denseFileInput.setInputFiles([
+      { name: 'dense-1.png', mimeType: 'image/png', buffer: pngBuffer },
+      { name: 'dense-2.png', mimeType: 'image/png', buffer: pngBuffer },
+      { name: 'dense-spec.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%dense\n') },
+    ]);
+    await page.waitForTimeout(250);
+    // On narrow viewports QueueStrip expands into a modal bottom sheet with backdrop,
+    // so keep the collapsed QueueStrip bar mounted right above Composer while opening Notes.
+    if (viewport.width >= 640) {
+      const queueCount = page.locator('[data-queue-count]');
+      if ((await page.locator('[data-queue-strip]').count()) === 0 && (await queueCount.count()) > 0) {
+        await queueCount.first().click();
+        await page.locator('[data-queue-strip]').waitFor({ timeout: 5_000 });
+      }
+    }
+    // Trigger 2 identical compact errors to verify deduplicated single-X toast alongside QueueStrip + Notes popover.
+    const fireDenseToast = async () => {
+      const meter = page.locator('[data-context-meter]').first();
+      if (await meter.isVisible().catch(() => false)) {
+        await meter.click();
+        const compactBtn = page.locator('[data-context-details] [data-context-compact]').first();
+        await compactBtn.waitFor({ timeout: 5_000 });
+        await compactBtn.click();
+        await page.waitForTimeout(220);
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(80);
+      } else {
+        await sendPrompt('/compact');
+        await page.waitForTimeout(250);
+      }
+    };
+    await fireDenseToast();
+    await fireDenseToast();
+    await page.locator('[data-toast="error"]').first().waitFor({ timeout: 5_000 });
+    // Now open ComposerNotes popover while QueueStrip + attachments + error toast are ALL mounted!
+    await page.locator('[data-composer-notes-pill]').click();
+    await page.locator('[data-composer-notes-panel]').waitFor({ timeout: 5_000 });
+    await page.waitForTimeout(150);
+    const notesHit = await assertPopoverUnoccluded('[data-composer-notes-panel]', `preset-12-${label}-notes`);
+    const denseMetrics = await page.evaluate(() => {
+      const queueBar = document.querySelector('[data-queue-strip], [data-queue-count]');
+      const notesPanel = document.querySelector('[data-composer-notes-panel]');
+      const toasts = [...document.querySelectorAll('[data-toast="error"]')];
+      const firstToast = toasts[0];
+      const bgColor = getComputedStyle(document.body).backgroundColor;
+      const hasSessionError = /Could not open session|Session recovery failed/i.test(document.body.innerText);
+      return {
+        hasQueueStrip: queueBar !== null && queueBar.getBoundingClientRect().height > 0,
+        queueText: (queueBar?.closest('[data-composer-header]')?.textContent ?? queueBar?.textContent ?? '').trim().slice(0, 60),
+        notesPortaledOutsideCard: notesPanel !== null && notesPanel.closest('[data-composer-card]') === null,
+        imageTiles: document.querySelectorAll('[data-context-shelf] [data-image-tile]').length,
+        errorToastCount: toasts.length,
+        crossIconCount: firstToast ? firstToast.querySelectorAll('[data-icon="cross"]').length : -1,
+        warningIconCount: firstToast ? firstToast.querySelectorAll('[data-icon="warning"]').length : -1,
+        closeIconCount: firstToast ? firstToast.querySelectorAll('[data-icon="close"]').length : -1,
+        theme: document.documentElement.dataset.theme ?? '',
+        bgColor,
+        hasSessionError,
+      };
+    });
+    console.log(`[check] preset-12-${label}=${JSON.stringify({ ...denseMetrics, notesInViewport: notesHit.inViewport })}`);
+    if (denseMetrics.hasSessionError) throw new Error(`preset-12-${label}: session failed to open or recover cleanly`);
+    if (theme === 'dark' && denseMetrics.bgColor === 'rgb(251, 250, 246)') {
+      throw new Error(`preset-12-${label}: dark theme did not apply to body background (${denseMetrics.bgColor})`);
+    }
+    if (!denseMetrics.hasQueueStrip) throw new Error(`preset-12-${label}: active QueueStrip missing`);
+    if (!denseMetrics.notesPortaledOutsideCard) throw new Error(`preset-12-${label}: notes popover not portaled`);
+    if (denseMetrics.imageTiles < 2) throw new Error(`preset-12-${label}: expected >=2 image tiles, got ${denseMetrics.imageTiles}`);
+    if (denseMetrics.errorToastCount !== 1 || denseMetrics.crossIconCount !== 0 || denseMetrics.warningIconCount !== 1 || denseMetrics.closeIconCount !== 1) {
+      throw new Error(`preset-12-${label}: error toast integrity breach: ${JSON.stringify(denseMetrics)}`);
+    }
+    await shot(`preset-12-${label}`);
+  };
+
+  await runDenseCombinedPass({ label: 'dense-combined-wide-light', viewport: { width: 1440, height: 900 }, theme: 'light' });
+  await runDenseCombinedPass({ label: 'dense-combined-narrow-dark', viewport: { width: 390, height: 844 }, theme: 'dark' });
+  await applyFixtureTheme(fixtureUrl(), 'light', FIXTURE_TOKEN);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.unroute('**/api/**', interceptDenseCompact);
+  await page.setViewportSize({ width: 1440, height: 900 });
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -7854,6 +8778,7 @@ const BODIES = [
   ['tool-groups', scenarioToolGroups],
   ['tool-groups-dark', scenarioToolGroupsDark],
   ['cockpit', scenarioCockpit],
+  ['gui-preset-states', scenarioGuiPresetStates],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.
   ['responsive', scenarioResponsive],

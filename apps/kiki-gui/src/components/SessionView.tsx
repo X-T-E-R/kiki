@@ -7,6 +7,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { Popover } from '@base-ui/react/popover';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
@@ -37,7 +38,6 @@ import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { AdmissionScope, filterIngressForAgent, useAdmissionScope, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
-import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext } from './model-switch/ModelSwitchNotice';
@@ -186,7 +186,8 @@ import { useViewedSession } from '../lib/useAwayNotifications';
 import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
-import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { anyOverlayOpen, floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
+import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
 import { resolveControllerSubagentSearch } from '../lib/subagentSearch';
@@ -538,15 +539,14 @@ function Header({
       <NavBackButton />
       {session !== undefined ? (
         <>
-          <div className="flex min-w-0 flex-1 flex-col justify-center">
+          <div className="flex min-w-0 flex-1 items-center">
             {persona !== undefined ? (
-              // Who this conversation is with and which one it is: two lines,
-              // with the switcher on the name's own chevron.
               <PersonaSessionIdentity
                 session={session}
                 title={
                   <SessionTitle
                     title={session.title}
+                    stripPrefix={persona.name}
                     cwd={session.metadata.cwd}
                     worktree={session.worktree}
                     promotedFrom={session.promoted_from}
@@ -733,8 +733,21 @@ function Header({
  * opens the rail when that surface is available, which is where the rest of
  * that context lives.
  */
+function stripLeadingPersonaPrefix(title: string, prefix: string | undefined): string {
+  const cleanPrefix = prefix?.trim();
+  if (cleanPrefix === undefined || cleanPrefix === '') return title;
+  const trimmed = title.trimStart();
+  if (!trimmed.startsWith(cleanPrefix)) return title;
+  const rest = trimmed.slice(cleanPrefix.length);
+  const sepMatch = /^[\s·—–\-:：/|]+/.exec(rest);
+  if (sepMatch === null) return title;
+  const stripped = rest.slice(sepMatch[0].length).trimStart();
+  return stripped !== '' ? stripped : title;
+}
+
 export function SessionTitle({
   title,
+  stripPrefix,
   cwd,
   worktree,
   promotedFrom,
@@ -745,6 +758,7 @@ export function SessionTitle({
   onOpenRail,
 }: {
   title: string;
+  stripPrefix?: string;
   cwd: string | undefined;
   /** Present only for a session running in a Kiki-managed worktree. */
   worktree?: Session['worktree'];
@@ -806,14 +820,15 @@ export function SessionTitle({
     void flight.then(() => { if (renameFlight.current === flight) renameFlight.current = undefined; });
   };
 
-  const shown = useThreadTitle(current !== '' ? current : t('sidebar.untitled'));
+  const displaySource = current !== '' ? stripLeadingPersonaPrefix(current, stripPrefix) : t('sidebar.untitled');
+  const shown = useThreadTitle(displaySource);
   // On a phone the title fills the top of the screen, where a stray tap would
   // open the rename field and its keyboard; there rename is the ⋯ menu's row.
   const phoneMode = usePhoneMode();
   // Title keeps its width; the cwd beside it yields first (shrink-[100]) so a
   // roomy header never truncates the name to make space for the path.
   return (
-    <div className="flex min-w-0 flex-1 items-baseline gap-2">
+    <div className="flex min-w-0 flex-1 items-center gap-2">
       {editing ? (
         <input
           ref={inputRef}
@@ -836,14 +851,14 @@ export function SessionTitle({
             }
           }}
           onBlur={commit}
-          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-display text-[15px] font-semibold tracking-tight text-ink outline-none focus:border-accent"
+          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-sans text-[13.5px] font-medium text-ink outline-none focus:border-accent"
         />
       ) : (
         <h1 className="-ml-1.5 min-w-0 max-w-full">
           {phoneMode ? (
             <span
               data-session-title
-              className="block max-w-full truncate px-1.5 py-0.5 font-display text-[15px] leading-tight font-semibold tracking-tight text-ink"
+              className="block max-w-full truncate px-1.5 py-0.5 font-sans text-[13.5px] leading-5 font-medium text-ink"
             >
               {shown}
             </span>
@@ -854,7 +869,7 @@ export function SessionTitle({
               onClick={() => { onEditingChange(true); }}
               title={t('sv.renameAria')}
               aria-label={`${shown} — ${t('sv.renameAria')}`}
-              className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-display text-[15px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:bg-canvas"
+              className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-sans text-[13.5px] leading-5 font-medium text-ink transition-colors hover:bg-canvas"
             >
               {shown}
             </button>
@@ -992,7 +1007,8 @@ export function SessionActionsMenu({
     const onPointerDown = (event: PointerEvent) => {
       if (
         !(event.target instanceof HTMLElement) ||
-        event.target.closest('[data-session-actions]') === null
+        (event.target.closest('[data-session-actions]') === null &&
+          event.target.closest('[data-session-actions-menu]') === null)
       ) {
         setOpen(false);
       }
@@ -1180,7 +1196,36 @@ export function SessionActionsMenu({
           ) : null}
         </ActionSheet>
       ) : open ? (
-        <div role="menu" className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              setOpen(false);
+              triggerRef.current?.focus();
+              return;
+            }
+            eventDetails.cancel();
+          }}
+        >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="end"
+              sideOffset={4}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                role="menu"
+                data-session-actions-menu
+                initialFocus={false}
+                finalFocus={false}
+                className={`anim-enter w-56 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
           {leading !== undefined ? (
             <>
               {leading(() => { setOpen(false); })}
@@ -1307,7 +1352,10 @@ export function SessionActionsMenu({
           >
             {t('menu.undo')}
           </button>
-        </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
   );
@@ -1750,19 +1798,24 @@ function sameExecutionIdentity(left: ExecutionChoice | undefined, right: Executi
 
 function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNullable<Parameters<typeof QueueStrip>[0]['promptContinuation']> }): ReactNode {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  return <section data-prompt-records-remainder className="relative flex min-w-0 flex-col">
-    <button type="button" aria-expanded={open} onClick={() => { setOpen(value => !value); }}
-      className="inline-flex w-fit items-center gap-1.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
-      <Icon name="chevron" size={12} className={open ? 'rotate-90' : ''} />
-      {t('queue.moreRecords')}
-    </button>
-    {open ? <div className="absolute bottom-full right-0 z-30 mb-1.5 w-72 rounded-lg border border-hairline bg-paper p-2 shadow-lg">
-      <ContinuationRow kind="prompt" state={continuation.status?.status ?? 'idle'}
-        progress={t('queue.recordsLoaded', { shown: continuation.coverage.returned, total: continuation.coverage.total })}
-        error={t('queue.recordsFailed')} label={t('queue.records')} onRequest={continuation.onRequest} />
-    </div> : null}
-  </section>;
+  const status = continuation.status?.status ?? 'idle';
+  const label = status === 'error' ? t('queue.recordsFailed') : t('queue.records');
+  return (
+    <div data-prompt-records-remainder className="flex shrink-0 items-center">
+      <button
+        type="button"
+        disabled={status === 'loading'}
+        onClick={() => { void continuation.onRequest(); }}
+        title={label}
+        aria-label={label}
+        className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50 ${
+          status === 'error' ? 'text-danger' : 'text-ink-faint hover:text-ink'
+        }`}
+      >
+        <Icon name="refresh" size={12} className={status === 'loading' ? 'spinner' : undefined} />
+      </button>
+    </div>
+  );
 }
 
 /** Whether the server saved this prompt as a durable ingress record. */
@@ -2270,6 +2323,10 @@ export function SessionView({
   }, [turnLocator, stepLocator, queryLocator, blockLocator, interactionLocator, sessionId, selectedAgentId, navVisitId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
+  const hadInitialHandoffRef = useRef(
+    createHandoff.initialPrompt !== undefined || createHandoff.initialSkill !== undefined,
+  );
+  const seatReachedActiveRef = useRef(hadInitialHandoffRef.current);
   const initialOptionsRef = useRef(createHandoff);
   const defaults = useMemo(() => readSettings(), []);
   // Composer chrome captured the last time this session was open (memory
@@ -5562,19 +5619,22 @@ boundExecution,
   );
   // Child routes dock their mailbox composer locally in AgentWorkspace;
   // only main publishes the resident prompt composer to ConversationShell.
+  // Phase is monotonic per SessionView mount: once active (from /new hand-off
+  // or first load), consuming initialPromptRef or a transient resync must
+  // never regress back to 'settling' (which hides .conversation-seat).
+  if (state.loaded) seatReachedActiveRef.current = true;
+  const seatPhase =
+    selectedAgentId !== undefined
+      ? 'active'
+      : seatReachedActiveRef.current
+        ? 'active'
+        : resolveSessionSeatPhase({
+            loaded: state.loaded,
+            hasInitialPrompt: hadInitialHandoffRef.current,
+          });
   const seat = useMemo<ConversationSeat>(() => ({
     cockpit,
-    phase:
-      selectedAgentId === undefined
-        ? // initialPromptRef / initialSkillRef are mount-time constants until
-          // the auto-send consumes them post-load — safe to read here, and
-          // `state.loaded` covers the reactive edge.
-          resolveSessionSeatPhase({
-            loaded: state.loaded,
-            hasInitialPrompt:
-              initialPromptRef.current !== undefined || initialSkillRef.current !== undefined,
-          })
-        : 'active',
+    phase: seatPhase,
     composer:
       selectedAgentId !== undefined ? null : externalClient !== undefined ? (
         // An externally driven session has no Kiki model behind it, so it gets
@@ -5676,6 +5736,7 @@ boundExecution,
     composerStatusNotice,
     selectedAgentId,
     cockpit,
+    seatPhase,
     state.loaded,
     state.resyncing,
     state.resyncFailed,

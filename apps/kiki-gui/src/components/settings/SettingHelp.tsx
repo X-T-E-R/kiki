@@ -16,8 +16,8 @@
  * `SettingsGroup.help` keep rendering a visible `Hint` on every other page.
  */
 
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 
 import { useI18n } from '../../i18n';
 import {
@@ -27,15 +27,14 @@ import {
   registerOverlay,
   resolveFloatingOwners,
 } from '../../lib/uiBusy';
-import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
-import { placeAnchored } from '../overlays/anchoredPosition';
 import { Icon } from '../icons';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 
 const TRIGGER =
   'inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[1px] focus-visible:outline-selected-ink pointer-coarse:size-7';
 const BUBBLE =
-  'fixed z-50 w-72 max-w-[calc(100%-1.5rem)] rounded-lg border border-hairline bg-panel px-2.5 py-2 text-[12px] leading-relaxed text-ink shadow-[0_8px_24px_-12px_rgba(28,25,23,0.4)]';
+  `w-72 max-w-[calc(100vw-1.5rem)] px-2.5 py-2 text-[12px] leading-relaxed text-ink outline-none ${POPOVER_SURFACE_CLASS}`;
 
 /** Long enough to cross the 6px gap between the `i` and its bubble. */
 const CLOSE_GRACE_MS = 150;
@@ -49,40 +48,14 @@ export function SettingHelp({ children, className = '' }: {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   // True once a click has opened the bubble, so the next click on the same
   // trigger puts it away.
   const openedByClick = useRef(false);
   const helpId = useId();
 
-  // The shared anchored placement: below the `i` while it fits, flipped when
-  // the viewport is tighter, clamped inside the window.
-  const place = () => {
-    const rawAnchor = triggerRef.current?.getBoundingClientRect();
-    const bubble = bubbleRef.current;
-    if (rawAnchor === undefined || bubble === null) return;
-    const anchor = unzoomedRect(rawAnchor);
-    const size = unzoomedRect(bubble.getBoundingClientRect());
-    const placed = placeAnchored(anchor, { width: size.width, height: size.height },
-      unzoomedViewport(), { gap: 6 });
-    setPosition({ left: placed.left, top: placed.top });
-  };
-
-  // Measure, then place against the trigger, flipping above when there is no
-  // room below. A layout effect so the bubble never paints at an unplaced spot.
-  useLayoutEffect(() => {
-    if (!open) { setPosition(null); return; }
-    place();
-  }, [open]);
-
   useEffect(() => {
     if (!open) return;
     const unregister = registerOverlay(`setting-help:${helpId}`);
-    // A card scrolls and a window resizes: re-place instead of letting the
-    // bubble drift off its label. Escape closes. It only hands focus to the
-    // trigger when the trigger already had it: a reader who merely hovered
-    // never focused the `i`, and focusing it there would fire `onFocus`, which
-    // opens the bubble straight back up.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
@@ -99,14 +72,10 @@ export function SettingHelp({ children, className = '' }: {
       if (triggerRef.current?.contains(target) === true) return;
       setOpen(false);
     };
-    window.addEventListener('scroll', place, true);
-    window.addEventListener('resize', place);
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
       unregister();
-      window.removeEventListener('scroll', place, true);
-      window.removeEventListener('resize', place);
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
@@ -161,26 +130,48 @@ export function SettingHelp({ children, className = '' }: {
       >
         <Icon name="info" size={12} />
       </button>
-      {open ? createPortal(
-        <div
-          ref={bubbleRef}
-          id={helpId}
-          role="tooltip"
-          data-setting-help-bubble
-          {...{
-            [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
-            [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+      {open ? (
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(next, details) => {
+            if (!next) {
+              const target = details.event?.target;
+              if (target instanceof Node && triggerRef.current?.contains(target)) return;
+              close();
+            }
           }}
-          onMouseEnter={enter}
-          onMouseLeave={leaveLater}
-          className={BUBBLE}
-          style={position === null
-            ? { visibility: 'hidden', top: 0, left: 0, zIndex: floatingSurfaceZIndex(triggerRef.current) }
-            : { top: position.top, left: position.left, zIndex: floatingSurfaceZIndex(triggerRef.current) }}
         >
-          {children}
-        </div>,
-        document.body,
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="start"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={bubbleRef}
+                id={helpId}
+                role="tooltip"
+                data-setting-help-bubble
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                }}
+                onMouseEnter={enter}
+                onMouseLeave={leaveLater}
+                className={BUBBLE}
+              >
+                {children}
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </>
   );

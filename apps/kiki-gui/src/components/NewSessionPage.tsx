@@ -26,10 +26,19 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Popover } from '@base-ui/react/popover';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 
 import { Composer } from './Composer';
 import { usePopoverDismiss } from './ComposerControls';
+import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
+import {
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
+  resolveFloatingOwners,
+} from '../lib/uiBusy';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { Icon } from './icons';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -106,10 +115,11 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const onPanelKeyDown = usePopoverDismiss(open, (refocus) => {
     setOpen(false);
     if (refocus === true) triggerRef.current?.focus();
-  }, rootRef, 'hero-workspace');
+  }, rootRef, 'hero-workspace', panelRef);
   const label = workspaceChipLabel(state);
 
   return (
@@ -151,9 +161,49 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
         </svg>
       </button>
       {open ? (
-        <div className="anim-enter absolute top-9 left-0 z-30 w-[26rem] max-w-[calc(100vw-32px)] rounded-[10px] border border-hairline bg-panel p-3 text-left shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
-          <WorkspacePickerFields state={state} />
-        </div>
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            if (eventDetails.reason === 'escape-key') {
+              if (hasOpenOwnedFloatingPortal('hero-workspace')) {
+                eventDetails.cancel();
+                return;
+              }
+              setOpen(false);
+              triggerRef.current?.focus();
+              return;
+            }
+            eventDetails.cancel();
+          }}
+        >
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="start"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={panelRef}
+                data-hero-workspace-panel
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'hero-workspace',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'hero-workspace'),
+                }}
+                className={`anim-enter w-[26rem] max-w-[calc(100vw-32px)] p-3 text-left outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
+                <WorkspacePickerFields state={state} />
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
   );

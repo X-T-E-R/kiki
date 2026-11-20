@@ -306,7 +306,10 @@ describe('message-view controls and the persona menu', () => {
         expect(view.host.querySelector('[data-timeline-view-switch]') !== null).toBe(session.message);
         expect(view.host.querySelector('[data-session-persona-identity]') !== null).toBe(session.bound);
         await act(async () => { view.host.querySelector<HTMLButtonElement>('[data-session-actions] > button')!.click(); });
-        const menu = document.body.querySelector<HTMLElement>('[data-session-actions-sheet]') ?? view.host;
+        const menu =
+          document.body.querySelector<HTMLElement>('[data-session-actions-sheet]') ??
+          document.body.querySelector<HTMLElement>('[data-session-actions-menu]') ??
+          view.host;
         expect(menu.querySelectorAll('[data-timeline-view-menu]').length).toBe(session.message && width === 'narrow' ? 2 : 0);
         // The menu carries the reply-mode rows for either reason: a persona's
         // session, or a session whose delivery is the message mode itself.

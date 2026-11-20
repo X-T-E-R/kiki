@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -23,12 +24,13 @@ import type { PluginUsageTarget } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { pickWorkspace } from '../../lib/capabilities';
+import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { SidePanel } from '../SidePanel';
 import { Icon } from '../icons';
 import { MediaPreviewProvider } from '../mediaPreview';
 import { PAGE_WIDTH, PageHeader, PageMoreMenu } from '../PageChrome';
-import { SearchableSelect } from '../SearchableSelect';
+import { POPOVER_SURFACE_CLASS, SearchableSelect } from '../SearchableSelect';
 import { AddSourceDialog } from './AddSourceDialog';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { McpView } from './McpView';
@@ -142,6 +144,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const route = pluginsRouteFrom(params);
   const { workspaces, workspace, workspaceId, setWorkspaceId, query: workspacesQuery } = useCapabilityWorkspace();
   const [addMenu, setAddMenu] = useState(false);
+  const addTriggerRef = useRef<HTMLButtonElement>(null);
   const [adding, setAdding] = useState(false);
   const [install, setInstall] = useState<InstallRequest | null>(null);
   const [settingsPluginId, setSettingsPluginId] = useState<string | null>(null);
@@ -228,6 +231,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const addControl = (
     <div className="relative">
       <button
+        ref={addTriggerRef}
         type="button"
         aria-haspopup="menu"
         aria-expanded={addMenu}
@@ -240,6 +244,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
       </button>
       {addMenu ? (
         <AddMenu
+          anchor={addTriggerRef}
           onClose={() => { setAddMenu(false); }}
           onPick={(kind) => {
             setAddMenu(false);
@@ -404,16 +409,25 @@ export function CapabilityTabBody({
   return <ToolsView />;
 }
 
-function AddMenu({ onClose, onPick }: { readonly onClose: () => void; readonly onPick: (kind: 'plugin' | 'mcp' | 'skill') => void }) {
+function AddMenu({ anchor, onClose, onPick }: {
+  readonly anchor: React.RefObject<HTMLButtonElement | null>;
+  readonly onClose: () => void;
+  readonly onPick: (kind: 'plugin' | 'mcp' | 'skill') => void;
+}) {
   const { t } = useI18n();
   useEffect(() => {
+    const unregister = registerOverlay('capabilities-add-menu');
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
     const onDown = (event: MouseEvent) => {
       if (!(event.target instanceof Element) || event.target.closest('[data-capabilities-add-menu],[data-capabilities-add]') === null) onClose();
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onDown);
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('mousedown', onDown); };
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
   }, [onClose]);
   const items: readonly { kind: 'plugin' | 'mcp' | 'skill'; label: string; hint: string }[] = [
     { kind: 'plugin', label: t('cap.add.plugin'), hint: t('cap.add.pluginHint') },
@@ -421,25 +435,53 @@ function AddMenu({ onClose, onPick }: { readonly onClose: () => void; readonly o
     { kind: 'mcp', label: t('cap.add.mcp'), hint: t('cap.add.mcpHint') },
   ];
   return (
-    <div
-      role="menu"
-      data-capabilities-add-menu
-      className="anim-enter absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-hairline bg-panel p-1 shadow-[0_12px_32px_-12px_rgb(var(--kiki-shadow-ink)/0.35)]"
+    <Popover.Root
+      open
+      modal={false}
+      onOpenChange={(nextOpen, eventDetails) => {
+        if (nextOpen) return;
+        if (eventDetails.reason === 'escape-key') {
+          onClose();
+          anchor.current?.focus();
+          return;
+        }
+        eventDetails.cancel();
+      }}
     >
-      {items.map((item) => (
-        <button
-          key={item.kind}
-          type="button"
-          role="menuitem"
-          data-capabilities-add-item={item.kind}
-          onClick={() => { onPick(item.kind); }}
-          className="flex w-full flex-col items-start rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={anchor}
+          side="bottom"
+          align="end"
+          sideOffset={4}
+          collisionPadding={8}
+          positionMethod="fixed"
+          style={{ zIndex: floatingSurfaceZIndex(anchor.current) }}
         >
-          <span className="text-[13px] text-ink">{item.label}</span>
-          <span className="text-[12px] leading-4 text-ink-faint">{item.hint}</span>
-        </button>
-      ))}
-    </div>
+          <Popover.Popup
+            role="menu"
+            data-capabilities-add-menu
+            initialFocus={false}
+            finalFocus={false}
+            className={`anim-enter w-64 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+          >
+            {items.map((item) => (
+              <button
+                key={item.kind}
+                type="button"
+                role="menuitem"
+                data-capabilities-add-item={item.kind}
+                onClick={() => { onPick(item.kind); }}
+                className="flex w-full flex-col items-start rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                <span className="text-[13px] text-ink">{item.label}</span>
+                <span className="text-[12px] leading-4 text-ink-faint">{item.hint}</span>
+              </button>
+            ))}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

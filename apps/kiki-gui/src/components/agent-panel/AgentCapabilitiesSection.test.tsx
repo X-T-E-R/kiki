@@ -407,8 +407,8 @@ describe('capability tool groups', () => {
     expect(preview?.textContent).toContain('2/2 开启');
     expect(preview?.textContent).toContain('其中 1 个待确认');
     expect(target.getAttribute('aria-describedby')).not.toBeNull();
-    // It is a layer, not a row: the card is outside the column's own flow.
-    expect(preview?.parentElement).toBe(document.body);
+    // It is a layer, not a row: the card is portaled outside the column's own flow.
+    expect(preview?.closest('[data-base-ui-portal]')?.parentElement ?? preview?.parentElement).toBe(document.body);
     expect(container.contains(preview as Node)).toBe(false);
     await act(async () => {
       target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));

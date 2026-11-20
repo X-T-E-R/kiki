@@ -32,6 +32,7 @@ import {
   Compass,
   Copy,
   CornerDownRight,
+  Cpu,
   Ellipsis,
   ExternalLink,
   Eye,
@@ -152,6 +153,7 @@ export type IconName =
   | 'smartphone'
   | 'plugin'
   | 'lock'
+  | 'cpu'
   // Agent profile archetypes
   | 'profileMain'
   | 'profileCode'
@@ -267,6 +269,7 @@ const LUCIDE_ICONS: Record<LucideIconName, LucideEntry> = {
   smartphone: { component: Smartphone },
   plugin: { component: Puzzle },
   lock: { component: Lock },
+  cpu: { component: Cpu },
 };
 
 const CUSTOM_PATHS: Record<CustomIconName, ReactNode> = {

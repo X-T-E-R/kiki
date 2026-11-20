@@ -1,11 +1,21 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { Link } from 'react-router-dom';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import { registerOverlay } from '../../lib/uiBusy';
+import {
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  owningModalId,
+  registerOverlay,
+  resolveFloatingOwners,
+} from '../../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { Icon } from '../icons';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import type { SessionHarness } from './sessionHarness';
 
 type CapabilityKey = 'image' | 'audio' | 'fork' | 'native_steering' | 'question_form' | 'plan_approval';
@@ -30,12 +40,17 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const rootRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const unregister = registerOverlay('harness-mark');
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
     const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || rootRef.current?.contains(event.target) !== true) setOpen(false);
+      if (
+        !(event.target instanceof Node)
+        || (rootRef.current?.contains(event.target) !== true && panelRef.current?.contains(event.target) !== true)
+      ) setOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
@@ -49,7 +64,7 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
   const summary = [harness.label, harness.version].filter((part) => part !== undefined).join(' ');
   return (
     <span ref={rootRef} data-harness-caps={harness.executorId} className="relative hidden shrink-0 self-center sm:inline-flex">
-      <button type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog"
+      <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog"
         title={t('harness.markTitle', { engine: summary })}
         onClick={() => { setOpen((value) => !value); }}
         className="inline-flex h-[18px] max-w-[14rem] items-center gap-1 rounded-[5px] border border-hairline-strong px-1.5 text-[11px] leading-none font-medium text-ink-soft transition-colors hover:border-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
@@ -58,8 +73,32 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
         {harness.version !== undefined ? <span className="shrink-0 font-mono text-[10.5px] font-normal text-ink-faint">{harness.version}</span> : null}
       </button>
       {open ? (
-        <div id={panelId} role="dialog" aria-label={t('harness.panelTitle', { engine: harness.label })} data-harness-panel
-          className="anim-enter absolute top-full right-0 z-40 mt-1.5 w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
+        <Popover.Root open modal={false} onOpenChange={(next) => { if (!next) setOpen(false); }}>
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="bottom"
+              align="end"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+            >
+              <Popover.Popup
+                ref={panelRef}
+                id={panelId}
+                role="dialog"
+                aria-label={t('harness.panelTitle', { engine: harness.label })}
+                data-harness-panel
+                initialFocus={false}
+                finalFocus={false}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'harness-mark',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+                  [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+                }}
+                className={`anim-enter w-72 max-h-[min(var(--available-height,calc(100dvh-24px)),calc(100dvh-24px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
           <p className="text-[12.5px] font-medium text-ink">{t('harness.panelTitle', { engine: harness.label })}</p>
           <p className="mt-0.5 font-mono text-[11px] text-ink-faint">
             {[harness.executorId, harness.protocol, harness.version].filter((part) => part !== undefined && part !== '').join(' · ')}
@@ -92,7 +131,10 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
             className="mt-1.5 inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
             {t('harness.manage')}
           </Link>
-        </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </span>
   );

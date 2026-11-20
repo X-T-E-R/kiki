@@ -10,16 +10,26 @@
  */
 
 import { useEffect, useId, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 
 import type { SelectionAnnotation } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
 import {
+  COMPOSER_FLOATING_GROUP,
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
   hasOpenOwnedFloatingPortal,
+  notifyFloatingGroupOpen,
+  owningModalId,
   registerOverlay,
+  resolveFloatingOwners,
+  subscribeFloatingGroup,
 } from '../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
+import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 
 /** Hover intent: open after a short dwell, close a beat after leaving. */
 const HOVER_OPEN_MS = 120;
@@ -50,6 +60,7 @@ export function ComposerNotes({
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   // 'hover' follows the pointer; 'pinned' (a click) stays until dismissed.
   const [open, setOpen] = useState<'hover' | 'pinned' | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -62,9 +73,17 @@ export function ComposerNotes({
 
   // An edit in progress holds the panel open like a click does.
   const pinned = open === 'pinned' || editingId !== null;
+  const isOpen = open !== null;
+
+  useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'composer-notes', () => {
+    clearTimer();
+    setEditingId(null);
+    setOpen(null);
+  }), []);
 
   useEffect(() => {
-    if (open === null) return;
+    if (!isOpen) return;
+    notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, 'composer-notes', triggerRef.current);
     const unregister = registerOverlay('composer-notes');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
@@ -75,7 +94,12 @@ export function ComposerNotes({
       triggerRef.current?.focus();
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (containsOrOwnsFloatingTarget(rootRef.current, event.target, 'composer-notes')) return;
+      if (
+        containsOrOwnsFloatingTarget(rootRef.current, event.target, 'composer-notes')
+        || containsOrOwnsFloatingTarget(panelRef.current, event.target, 'composer-notes')
+      ) {
+        return;
+      }
       setEditingId(null);
       setOpen(null);
     };
@@ -86,7 +110,7 @@ export function ComposerNotes({
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [open]);
+  }, [isOpen]);
 
   // The last note removed: nothing left to list.
   useEffect(() => {
@@ -109,61 +133,102 @@ export function ComposerNotes({
     if (!pinned) timerRef.current = setTimeout(() => { setOpen(null); }, HOVER_CLOSE_MS);
   };
 
+  const modalOwner = isOpen ? owningModalId(triggerRef.current) : undefined;
+  const floatingOwners = isOpen ? resolveFloatingOwners(rootRef.current?.parentElement ?? null) : undefined;
+  const zIndex = isOpen ? floatingSurfaceZIndex(triggerRef.current) : undefined;
+
   return (
     <div
       ref={rootRef}
       data-composer-notes
       {...{ [FLOATING_OWNER_ATTRIBUTE]: 'composer-notes' }}
-      className="relative"
+      className="relative shrink-0"
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
-      <button
-        ref={triggerRef}
-        type="button"
-        data-composer-notes-pill
-        aria-expanded={open !== null}
-        aria-controls={panelId}
-        onClick={() => {
-          clearTimer();
-          setOpen((current) => (current === 'pinned' ? null : 'pinned'));
+      <Popover.Root
+        open={isOpen}
+        modal={false}
+        onOpenChange={(nextOpen, eventDetails) => {
+          if (nextOpen) return;
+          if (eventDetails.reason === 'escape-key') {
+            if (hasOpenOwnedFloatingPortal('composer-notes')) {
+              eventDetails.cancel();
+              return;
+            }
+            setEditingId(null);
+            setOpen(null);
+            triggerRef.current?.focus();
+            return;
+          }
+          eventDetails.cancel();
         }}
-        className={variant === 'shelf'
-          ? `context-chip anim-enter flex h-11 shrink-0 items-center gap-2 rounded-[10px] border border-hairline px-2.5 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
-            open !== null ? 'bg-canvas text-ink' : 'bg-canvas/65 hover:bg-canvas'
-          }`
-          : `context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
-            open !== null ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.05] hover:bg-ink/[0.08] hover:text-ink'
-          }`
-        }
       >
-        <Icon name="edit" size={12} className="text-accent-ink/80" />
-        <span className="tabular-nums">{tp('composer.notes.pill', annotations.length)}</span>
-      </button>
-      {open !== null ? (
-        <div
-          id={panelId}
-          role="region"
-          aria-label={t('composer.notes.aria')}
-          data-composer-notes-panel
-          className="anim-enter absolute bottom-full left-0 z-40 mb-1.5 w-[min(30rem,calc(100vw-48px))] rounded-[12px] bg-panel p-1 shadow-[var(--kiki-sheet-shadow)]"
+        <button
+          ref={triggerRef}
+          type="button"
+          data-composer-notes-pill
+          data-chip-variant={variant === 'shelf' ? 'shelf' : undefined}
+          aria-expanded={isOpen}
+          aria-controls={isOpen ? panelId : undefined}
+          onClick={() => {
+            clearTimer();
+            setOpen((current) => (current === 'pinned' ? null : 'pinned'));
+          }}
+          className={`context-chip anim-enter flex h-7 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
+            isOpen ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.05] hover:bg-ink/[0.08] hover:text-ink'
+          }`}
         >
-          <ul className="max-h-[min(40vh,280px)] overflow-y-auto">
-            {annotations.map((note) => (
-              <NoteRow
-                key={note.id}
-                note={note}
-                editing={editingId === note.id}
-                onStartEdit={onUpdate === undefined ? undefined : () => { setEditingId(note.id); }}
-                onEndEdit={() => { setEditingId(null); }}
-                onSave={(comment) => { onUpdate?.(note.id, comment); setEditingId(null); }}
-                onRemove={onRemove === undefined ? undefined : () => { onRemove(note.id); }}
-                onLocate={onLocate === undefined ? undefined : () => { onLocate(note); }}
-              />
-            ))}
-          </ul>
-        </div>
-      ) : null}
+          <Icon name="edit" size={12} className="text-accent-ink/80" />
+          <span className="tabular-nums">{tp('composer.notes.pill', annotations.length)}</span>
+        </button>
+        {isOpen ? (
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="top"
+              align="start"
+              sideOffset={8}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex }}
+            >
+              <Popover.Popup
+                ref={panelRef}
+                id={panelId}
+                role="region"
+                aria-label={t('composer.notes.aria')}
+                data-composer-notes-panel
+                initialFocus={false}
+                finalFocus={false}
+                onPointerEnter={onPointerEnter}
+                onPointerLeave={onPointerLeave}
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: 'composer-notes',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+                  [MODAL_ESCAPE_ATTRIBUTE]: modalOwner,
+                }}
+                className={`anim-enter w-[min(30rem,calc(100vw-48px))] p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
+                <ul className="max-h-[min(40vh,280px)] overflow-y-auto overscroll-contain">
+                  {annotations.map((note) => (
+                    <NoteRow
+                      key={note.id}
+                      note={note}
+                      editing={editingId === note.id}
+                      onStartEdit={onUpdate === undefined ? undefined : () => { setEditingId(note.id); }}
+                      onEndEdit={() => { setEditingId(null); }}
+                      onSave={(comment) => { onUpdate?.(note.id, comment); setEditingId(null); }}
+                      onRemove={onRemove === undefined ? undefined : () => { onRemove(note.id); }}
+                      onLocate={onLocate === undefined ? undefined : () => { onLocate(note); }}
+                    />
+                  ))}
+                </ul>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        ) : null}
+      </Popover.Root>
     </div>
   );
 }

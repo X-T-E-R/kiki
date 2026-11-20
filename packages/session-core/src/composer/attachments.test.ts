@@ -300,13 +300,13 @@ describe('buildPromptContent with uploads', () => {
     expect(buildPromptContent('   ', [upload('a.pdf', 10)])).toBeNull();
   });
 
-  it('orders text, then images, then files', () => {
+  it('preserves attachment insertion order across images and files after text', () => {
     const content = buildPromptContent('see', [
       upload('a.pdf', 10, 'f_1'),
       mention('src/server.ts'),
       image('a.png', 10),
     ]);
-    expect(content?.map((part) => part.type)).toEqual(['text', 'image', 'file']);
+    expect(content?.map((part) => part.type)).toEqual(['text', 'file', 'image']);
     expect(content?.[0]).toEqual({ type: 'text', text: '@src/server.ts\n\nsee' });
   });
 

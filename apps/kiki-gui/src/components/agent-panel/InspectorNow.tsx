@@ -46,7 +46,12 @@ export function latestSaid(blocks: readonly Block[]): string | undefined {
     const paragraphs = block.text.split(/\n\s*\n/).map((part) => part.trim()).filter((part) => part !== '' && !part.startsWith('```'));
     const last = paragraphs[paragraphs.length - 1];
     if (last === undefined) continue;
-    const plain = last.replace(/^[#>*\-\s]+/gm, '').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim();
+    const plain = last
+      .replace(/^[#>*\-\s]+/gm, '')
+      .replace(/[`*]/g, '')
+      .replace(/(^|[^\p{L}\p{N}_])_+|_+([^\p{L}\p{N}_]|$)/gu, '$1$2')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (plain !== '') return plain.length > 280 ? `${plain.slice(0, 280)}…` : plain;
   }
   return undefined;

@@ -510,18 +510,16 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
 });
 
 /**
- * What the focused agent can use, as one fold: the observation tabs (tools,
- * skills, dispatch targets) sit directly beside the session's own switches
- * (plugins, system capabilities, MCP servers), because the reader's question
- * — "能力" — covers both. Plugin and MCP tools remain in the tools
- * inventory because they are still part of the observed, complete tool list.
+ * Read-only capability inspection for the focused agent (tools, skills,
+ * subagent targets). Lazy-loaded only when expanded so collapsed sessions do
+ * not fire eager capability reads.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const query = { session_id: sessionId, agent_id: agentId };
   const state = useAgentState(sessionId, agentId);
-  const read = useAgentPanelCatalog(query, true,
+  const read = useAgentPanelCatalog(query, open,
     JSON.stringify([state?.profile, state?.model, state?.permissionMode, state?.planMode]));
   const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
@@ -550,7 +548,7 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
         onToggle={() => { setOpen((value) => !value); }}
       />
       {open ? (
-        <div className="pt-1 space-y-4">
+        <div className="pt-1 space-y-3">
           {!capUnsupported ? (
             <div>
               <ExecutorAuthStatus observation={data?.executor_auth} />
@@ -566,11 +564,35 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
               />
             </div>
           ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * Mutable session-scoped environment & extension switches (session plugins,
+ * optional system capabilities, session MCP servers). Kept separate from the
+ * read-only Capabilities inspector and collapsed by default.
+ */
+export function EnvironmentBlock({ sessionId }: { sessionId: string }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <section data-rail-environment="">
+      <FoldHead
+        title={t('rail.group.environment')}
+        open={open}
+        onToggle={() => { setOpen((value) => !value); }}
+      />
+      {open ? (
+        <div className="pt-1 space-y-4">
           <div className="-mx-2" data-rail-control-group="plugins">
             <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
               {t('inspector.cap.plugins')}
             </h4>
-            <SessionPluginsPanel sessionId={sessionId} />
+            <SessionPluginsPanel sessionId={sessionId} showStoreActions={false} />
           </div>
           <div data-rail-control-group="system">
             <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>

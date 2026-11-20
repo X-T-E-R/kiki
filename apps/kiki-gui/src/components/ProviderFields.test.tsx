@@ -24,6 +24,7 @@ import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 import type { OAuthMethodStatus } from '@kiki/klient';
 
 import { I18nProvider } from '../i18n';
+import { withPortalQueries } from '../test/portalQuery';
 import { accountState, needsSignInAction } from './accountSignInState';
 import { AccountConnectionPanel } from './AccountConnectionPanel';
 import { NewProviderWizard, ProviderEditor } from './ProviderFields';
@@ -277,7 +278,7 @@ async function renderSurface(children: ReactNode) {
   };
   await rerender(children);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  return { container, client, rerender };
+  return { container: withPortalQueries(container), client, rerender };
 }
 
 async function renderEditor(

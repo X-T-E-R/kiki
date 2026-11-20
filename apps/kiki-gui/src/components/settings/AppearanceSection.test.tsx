@@ -357,13 +357,10 @@ describe('AppearanceSection', () => {
     trigger.getBoundingClientRect = () => ({ left: 880, right: 1000, top: 200, bottom: 232, width: 120, height: 32, x: 880, y: 200, toJSON: () => ({}) });
     await act(async () => { trigger.click(); });
     const panel = openPanel();
-    // Viewport-fixed, hung from the trigger's right edge, never past the viewport.
-    expect(panel.className).toContain('fixed');
-    const left = Number.parseFloat(panel.style.left);
-    const width = Number.parseFloat(panel.style.width);
-    expect(left + width).toBeLessThanOrEqual(1000);
-    expect(left + width).toBeLessThanOrEqual(window.innerWidth - 8);
-    expect(panel.style.top).toBe('236px');
+    // Portaled through Base UI with fixed positioning so overflow ancestors cannot clip it.
+    const positioner = panel.parentElement as HTMLElement | null;
+    expect(panel.closest('[data-base-ui-portal]')).not.toBeNull();
+    expect(positioner?.style.position).toBe('fixed');
   });
 
   it('lists pack colors in the skin picker and applies a pack as colors plus background', async () => {

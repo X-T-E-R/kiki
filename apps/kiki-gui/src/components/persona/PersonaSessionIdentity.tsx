@@ -31,7 +31,6 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { useLayoutPreferences, useMediaQuery } from '../../lib/layoutHooks';
 import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
-import { DisclosureChevron } from '../icons';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
 import { PersonaConversationSwitcher } from './PersonaConversationSwitcher';
 import { buildPersonaDirectory } from './usePersonaDirectory';
@@ -153,15 +152,12 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
     <div
       ref={block}
       data-session-persona-identity={bound.id}
-      // `flex-1` is what keeps the header's actions on the right: the identity
-      // is the growing cell, the same role the plain title plays in a session
-      // without a persona.
-      className="flex min-w-0 flex-1 flex-col justify-center gap-px py-0.5"
+      // Single-row inline header inside h-12: [avatar · Persona ▾] / [title] [cwd].
+      className="flex min-w-0 flex-1 items-center gap-1.5"
     >
-      <div className="flex min-w-0 items-center gap-1.5">
-        <PersonaAvatar persona={face} size={22} decorative />
-        {/* Who this is stays readable at every width; only the length gives. */}
-        <span data-session-persona-name className="min-w-0 max-w-[9rem] truncate text-[13px] leading-[19px] font-medium text-ink">{displayName}</span>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <PersonaAvatar persona={face} size={20} decorative />
+        <span data-session-persona-name className="max-w-[9rem] truncate font-sans text-[13.5px] leading-5 font-medium text-ink">{displayName}</span>
         <button
           type="button"
           ref={toggle}
@@ -173,26 +169,33 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
           onClick={() => { setOpen((value) => !value); }}
           className="flex h-5 w-4 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
-          <DisclosureChevron open={open} />
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 12 12"
+            fill="none"
+            aria-hidden
+            data-persona-chevron
+            className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${open ? 'rotate-180' : ''}`}
+          >
+            <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       </div>
-      <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+      <span aria-hidden className="shrink-0 text-[13px] text-ink-faint/70">/</span>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13.5px] leading-5 text-ink-soft">
         {isDaily ? (
-          <span data-session-conversation-kind="daily" className={narrow ? 'min-w-0 flex-1 truncate' : 'shrink-0'}>{t('persona.dailyTitle')}</span>
+          <span data-session-conversation-kind="daily" className="min-w-0 truncate font-sans text-[13.5px] font-medium text-ink">{t('persona.dailyTitle')}</span>
         ) : roomId !== undefined ? (
-          <span className={`flex min-w-0 items-center gap-1 ${narrow ? 'flex-1' : ''}`}>
-            <span aria-hidden className="shrink-0 font-mono">#</span>
-            <span data-session-conversation-kind="room" className="min-w-0 truncate">{roomName ?? t('persona.roomSeat')}</span>
+          <span className="flex min-w-0 items-center gap-1">
+            <span aria-hidden className="shrink-0 font-mono text-ink-faint">#</span>
+            <span data-session-conversation-kind="room" className="min-w-0 truncate font-sans text-[13.5px] font-medium text-ink">{roomName ?? t('persona.roomSeat')}</span>
           </span>
         ) : (
-          // The session's own title element, handed in so in-place renaming
-          // keeps working. It carries its own `flex-1` (it grows inside the
-          // plain header on its own); on wide screens it must not grow past the
-          // project beside it, while below 640px it takes the whole line.
-          <span data-session-identity-title className={`flex min-w-0 items-center ${narrow ? 'flex-1' : 'shrink'}`}>{title}</span>
+          <span data-session-identity-title className="flex min-w-0 flex-1 items-center">{title}</span>
         )}
         {narrow || workspaceName === undefined || titleNamesProject ? null : (
-          <span className="flex min-w-0 shrink-[100] items-center gap-1.5">
+          <span className="flex min-w-0 shrink-[100] items-center gap-1.5 text-[12px] text-ink-faint">
             <span aria-hidden className="shrink-0">·</span>
             <span data-session-workspace className="min-w-0 truncate">{workspaceName}</span>
           </span>

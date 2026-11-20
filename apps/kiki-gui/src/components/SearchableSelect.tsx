@@ -25,15 +25,18 @@ import { isCoarsePointer, usePhoneMode } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
 import { DEFAULT_PICKER_SCALE_CONFIG, getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import {
+  COMPOSER_FLOATING_GROUP,
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
   hasOpenOwnedFloatingPortal,
   MODAL_BASE_Z_INDEX,
+  notifyFloatingGroupOpen,
   owningModalId,
   registerOverlay,
   resolveFloatingOwners,
+  subscribeFloatingGroup,
 } from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
@@ -98,7 +101,7 @@ const optionHaystackCache = new WeakMap<readonly SearchableSelectOption[], reado
 function getOptionHaystacks(options: readonly SearchableSelectOption[]): readonly string[] {
   const cached = optionHaystackCache.get(options);
   if (cached !== undefined) return cached;
-  const haystacks = new Array<string>(options.length);
+  const haystacks: string[] = [];
   for (let i = 0; i < options.length; i += 1) {
     const option = options[i]!;
     haystacks[i] = `${option.label}\0${option.hint ?? ''}\0${option.description ?? ''}\0${option.keywords ?? ''}`.toLowerCase();
@@ -268,13 +271,28 @@ export function SearchableSelect(props: SearchableSelectProps) {
     listRef.current = node;
     setListEl(node);
   }, []);
+  const focusedForOpenRef = useRef(false);
+  if (!open) focusedForOpenRef.current = false;
 
-  const ownsPanel = panelClassName === undefined;
   const asSheet = phoneMode;
-  const isPortaled = ownsPanel || asSheet;
+  const isPortaled = true;
+  const isComposerScoped = id?.startsWith('composer-') === true;
 
-  const ownerId = open && isPortaled ? owningModalId(triggerRef.current) : undefined;
-  const floatingOwners = open && isPortaled ? resolveFloatingOwners(triggerRef.current) : undefined;
+  const ownerId = open ? owningModalId(triggerRef.current) : undefined;
+  const floatingOwners = open ? resolveFloatingOwners(triggerRef.current) : undefined;
+
+  useEffect(() => {
+    if (!isComposerScoped) return undefined;
+    return subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, surfaceOwnerId, () => {
+      setOpen(false);
+      setQuery('');
+    });
+  }, [isComposerScoped, surfaceOwnerId]);
+
+  useEffect(() => {
+    if (!open || !isComposerScoped) return;
+    notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, surfaceOwnerId, triggerRef.current);
+  }, [open, isComposerScoped, surfaceOwnerId]);
 
   const optionLookup = useMemo(() => {
     const byValue = new Map<string, SearchableSelectOption>();
@@ -737,7 +755,12 @@ export function SearchableSelect(props: SearchableSelectProps) {
           <input
             type="text"
             data-autofocus
-            ref={(input) => { if (!isCoarsePointer()) input?.focus(); }}
+            ref={(input) => {
+              if (input !== null && !focusedForOpenRef.current && !isCoarsePointer()) {
+                focusedForOpenRef.current = true;
+                input.focus();
+              }
+            }}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -982,8 +1005,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
               </BaseDialog.Portal>
             </BaseDialog.Root>
           )
-          : ownsPanel
-            ? (
+          : (
               <Popover.Root
                 open
                 modal={false}
@@ -1013,9 +1035,12 @@ export function SearchableSelect(props: SearchableSelectProps) {
                     <Popover.Popup
                       ref={(node) => {
                         panelRef.current = node;
-                        if (node !== null && !showFilter && (!isCoarsePointer() || asSheet)) {
+                        if (node !== null && !showFilter && !focusedForOpenRef.current && (!isCoarsePointer() || asSheet)) {
                           const list = listRef.current ?? node.querySelector<HTMLElement>('[role="listbox"]');
-                          if (list !== null && document.activeElement !== list) list.focus();
+                          if (list !== null) {
+                            focusedForOpenRef.current = true;
+                            if (document.activeElement !== list) list.focus();
+                          }
                         }
                       }}
                       role="presentation"
@@ -1035,28 +1060,26 @@ export function SearchableSelect(props: SearchableSelectProps) {
                         close();
                         triggerRef.current?.focus();
                       }}
-                      className={`anim-enter flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
-                      style={{
-                        width: `min(max(var(--anchor-width, ${PANEL_MIN_WIDTH}px), ${PANEL_MIN_WIDTH}px), calc(100vw - ${VIEWPORT_MARGIN * 2}px))`,
-                        maxHeight: `min(var(--available-height, ${PANEL_MAX_HEIGHT}px), ${PANEL_MAX_HEIGHT}px)`,
-                        zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX,
-                      }}
+                      className={
+                        panelClassName !== undefined
+                          ? `anim-enter flex flex-col overflow-hidden outline-none ${POPOVER_SURFACE_CLASS} ${panelClassName}`
+                          : `anim-enter flex flex-col overflow-hidden outline-none ${POPOVER_SURFACE_CLASS}`
+                      }
+                      style={
+                        panelClassName !== undefined
+                          ? { zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }
+                          : {
+                              width: `min(max(var(--anchor-width, ${PANEL_MIN_WIDTH}px), ${PANEL_MIN_WIDTH}px), calc(100vw - ${VIEWPORT_MARGIN * 2}px))`,
+                              maxHeight: `min(var(--available-height, ${PANEL_MAX_HEIGHT}px), ${PANEL_MAX_HEIGHT}px)`,
+                              zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX,
+                            }
+                      }
                     >
                       {renderPanel()}
                     </Popover.Popup>
                   </Popover.Positioner>
                 </Popover.Portal>
               </Popover.Root>
-            )
-            : (
-              <div
-                ref={panelRef}
-                data-select-panel
-                {...panelData}
-                className={panelClassName}
-              >
-                {renderPanel()}
-              </div>
             )
         : null}
     </div>

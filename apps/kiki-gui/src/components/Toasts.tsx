@@ -29,11 +29,13 @@ const TONE_CLASS: Record<ToastItem['tone'], string> = {
 };
 
 // A toast IS the "just finished, you should know" moment, so success keeps
-// its check here — unlike a timeline row, where success is silent.
+// its check here — unlike a timeline row, where success is silent. Error uses
+// a warning triangle instead of a bare cross so it never pairs two `×` glyphs
+// with the right-hand dismiss button.
 const TONE_ICON: Record<ToastItem['tone'], IconName | null> = {
   success: 'check',
   info: null,
-  error: 'cross',
+  error: 'warning',
 };
 
 function ToastCard({
@@ -80,9 +82,11 @@ function ToastCard({
       className={`anim-enter pointer-events-auto relative flex w-88 max-w-full flex-col overflow-hidden rounded-xl border bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${toast.undo !== undefined ? TONE_CLASS.info : TONE_CLASS[toast.tone]}`}
     >
       <div className="flex items-start gap-2">
-        <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">
-          {toast.undo !== undefined ? null : TONE_ICON[toast.tone] === null ? null : <Icon name={TONE_ICON[toast.tone]!} />}
-        </span>
+        {toast.undo === undefined && TONE_ICON[toast.tone] !== null ? (
+          <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">
+            <Icon name={TONE_ICON[toast.tone]!} />
+          </span>
+        ) : null}
         <div className="min-w-0 flex-1">
           <Toast.Title className="text-[12px] leading-snug break-words">{toast.text}</Toast.Title>
           {metaLine !== '' ? (
@@ -94,11 +98,11 @@ function ToastCard({
             <button
               type="button"
               onClick={handleCopy}
-              className="inline-flex items-center gap-1 rounded-md border border-current px-1.5 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-75"
+              className="inline-flex items-center gap-1 rounded-md bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 focus-visible:outline-2 focus-visible:outline-selected-ink"
               title={copyPayload}
             >
               {copied ? <Icon name="check" size={12} /> : null}
-              {copied ? t('cb.copied') : t('cb.copy')}
+              {copied ? t('connect.desktopCopied') : t('contextMenu.copy')}
             </button>
           ) : null}
           {toast.action !== undefined ? (
@@ -127,15 +131,6 @@ function ToastCard({
               {toast.undo.label ?? t('toast.undo')}
             </button>
           ) : null}
-          {toast.undo !== undefined ? (
-            <Toast.Close
-              aria-label={t('toast.dismissAria')}
-              onClick={() => { dismissToast(toast.id); }}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9"
-            >
-              <Icon name="close" size={12} />
-            </Toast.Close>
-          ) : null}
           {toast.retry !== undefined ? (
             <button
               type="button"
@@ -148,11 +143,15 @@ function ToastCard({
               {toast.retry.label ?? t('common.retry')}
             </button>
           ) : null}
-          {toast.tone === 'error' ? (
+          {toast.undo !== undefined || toast.tone === 'error' ? (
             <Toast.Close
               aria-label={t('toast.dismissAria')}
               onClick={() => { dismissToast(toast.id); }}
-              className="flex h-5 w-5 items-center justify-center rounded-md transition-opacity hover:opacity-70"
+              className={
+                toast.undo !== undefined
+                  ? 'flex h-6 w-6 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9'
+                  : 'flex h-5 w-5 items-center justify-center rounded-md transition-opacity hover:opacity-70'
+              }
             >
               <Icon name="close" size={12} />
             </Toast.Close>
