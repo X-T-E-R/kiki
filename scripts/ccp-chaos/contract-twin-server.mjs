@@ -383,6 +383,9 @@ function planToolCalls({ profile, arg, declaredToolNames, workspaceDir, seq }) {
     push('HistorySearch', { query: 'Synthetic', include_tool_output: true, scope: 'session' });
     push('HistoryRead', { turn: 0 });
   }
+  if (profile === 'AGENT_LIST_10K') {
+    push('AgentList', { include_finished: true });
+  }
   void arg;
   return calls;
 }
@@ -534,6 +537,26 @@ export async function createContractTwinServer(options = {}) {
       counters.toolResultsReceived += 1;
       const name = toolIdToName.get(tr.tool_use_id) ?? 'unknown';
       if (!toolStats[name]) toolStats[name] = { issued: 0, resultsOk: 0, resultsError: 0 };
+      const rawText = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content ?? '');
+      const rawBytes = Buffer.byteLength(rawText, 'utf8');
+      toolStats[name].lastResultBytes = rawBytes;
+      toolStats[name].lastResultChars = rawText.length;
+      toolStats[name].lastResultLineCount = rawText.length > 0 ? rawText.split('\n').length : 0;
+      toolStats[name].lastResultHead = rawText.slice(0, 320);
+      toolStats[name].lastResultTail = rawText.length > 320 ? rawText.slice(-240) : '';
+      if (name === 'AgentList') {
+        const subMatches = rawText.match(/subagent_\d{4,5}/gu);
+        toolStats[name].lastSubagentMentionCount = subMatches ? new Set(subMatches).size : 0;
+        let parsedCount = null;
+        try {
+          const parsed = JSON.parse(rawText);
+          if (Array.isArray(parsed)) parsedCount = parsed.length;
+          else if (Array.isArray(parsed?.agents)) parsedCount = parsed.agents.length;
+          else if (Array.isArray(parsed?.children)) parsedCount = parsed.children.length;
+        } catch {}
+        toolStats[name].lastParsedEntryCount = parsedCount;
+        toolStats[name].lastHasOmissionNotice = /\bomitted\b|\btruncated\b|\bfurther\b|\bmore\b/iu.test(rawText);
+      }
       if (tr.is_error === true) {
         counters.toolResultsErrored += 1;
         toolStats[name].resultsError += 1;

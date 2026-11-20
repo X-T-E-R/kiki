@@ -316,6 +316,22 @@ function readExistingManifest(manifestPath) {
   return null;
 }
 
+function buildRemoteSyncCodeOnlyScript(deletedFiles = []) {
+  return [
+    'set -euo pipefail',
+    `export PATH="/tmp/kiki-tools/node-v${NODE_TARGET_VERSION}-linux-x64/bin:$PATH"`,
+    'mkdir -p /tmp/kiki-work',
+    'tar -xzf /tmp/kiki-chaos-src.tar.gz -C /tmp/kiki-work',
+    'rm -f /tmp/kiki-chaos-src.tar.gz',
+    'if [ -f /tmp/kiki-chaos-overlay.tar.gz ]; then tar -xzf /tmp/kiki-chaos-overlay.tar.gz -C /tmp/kiki-work && rm -f /tmp/kiki-chaos-overlay.tar.gz; fi',
+    ...deletedFiles.map((f) => `rm -f ${JSON.stringify(`/tmp/kiki-work/${f}`)}`),
+    'cd /tmp/kiki-work',
+    'echo "=== INCREMENTAL BUILD TS WORKSPACE PACKAGES ==="',
+    'pnpm --filter @kiki/plugin-sdk --filter @kiki/lexical --filter @kiki/protocol --filter @kiki/transcript --filter @kiki/transcript-live --filter @kiki/kaos --filter @kiki/oauth --filter @kiki/cordis-runtime --filter @kiki/agent-profiles --filter @kiki/tree-sitter-bash --filter @kiki/klient --filter @kiki/session-core run build',
+    'echo "SYNC_CODE_ONLY_OK"',
+  ].join('\n');
+}
+
 function buildRemotePrepareScript(deletedFiles = []) {
   return [
     'set -euo pipefail',
@@ -382,6 +398,20 @@ export async function runChaosOnCcp(options = {}) {
   const runVitest = options.runVitest !== false;
   const runBrowser = options.runBrowser !== false;
   const regenCorpus = Boolean(options.regenCorpus);
+  const s6Only = Boolean(options.s6Only);
+  const s7Only = Boolean(options.s7Only);
+  const s8Only = Boolean(options.s8Only);
+  const runS7S8 = Boolean(options.runS7S8);
+  const isolatedOnly = s6Only || s7Only || s8Only || runS7S8;
+  const runS6 = s6Only || Boolean(options.runS6);
+  const s7Cycles = options.s7Cycles ?? 200;
+  const tenKSubagentCount = options.tenKSubagentCount ?? 10_000;
+  const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
+  const keepRuntime = Boolean(options.keepRuntime);
+  const syncCodeOnly = Boolean(options.syncCodeOnly);
+  const runtimeTtlMinutes = options.ttlMinutes ?? 240;
+  const idleTimeoutMinutes = options.idleTimeoutMinutes ?? 60;
+  const runtimeStateFile = options.runtimeStateFile ? path.resolve(options.runtimeStateFile) : null;
   const outDir = path.resolve(options.outDir ?? path.join(REPO_ROOT, '.tmp', 'ccp-chaos-live'));
   fs.mkdirSync(outDir, { recursive: true });
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-ccp-orch-'));
@@ -447,11 +477,11 @@ export async function runChaosOnCcp(options = {}) {
         'HIGHMEM',
         '--no-mount-drive',
         '--ttl',
-        '240',
+        String(runtimeTtlMinutes),
         '--idle-timeout',
-        '60',
+        String(idleTimeoutMinutes),
         '--label',
-        'kiki-chaos-scale-suite',
+        s6Only ? 'kiki-chaos-10k-subagents' : 'kiki-chaos-scale-suite',
         '--idempotency-key',
         idemKey,
         '--follow',
@@ -460,7 +490,7 @@ export async function runChaosOnCcp(options = {}) {
         reqArgs.push('--prefer-account-id', acc);
       }
 
-      log(`Requesting CCP CPU HIGHMEM runtime (--no-mount-drive --ttl 240 --idle-timeout 60)...`);
+      log(`Requesting CCP CPU HIGHMEM runtime (--no-mount-drive --ttl ${runtimeTtlMinutes} --idle-timeout ${idleTimeoutMinutes})...`);
       const reqRes = runCcp(reqArgs, { timeoutMs: 180_000 });
       rtInfo = parseJsonFromOutput(reqRes.stdout);
       runtimeId =
@@ -473,6 +503,28 @@ export async function runChaosOnCcp(options = {}) {
     }
     const accountId = rtInfo.account_id;
     log(`Active CCP runtime ${runtimeId} (account=${accountId}, shape=${rtInfo.shape})`);
+    if (keepRuntime && runtimeStateFile) {
+      fs.mkdirSync(path.dirname(runtimeStateFile), { recursive: true });
+      fs.writeFileSync(
+        runtimeStateFile,
+        `${JSON.stringify(
+          {
+            runtimeId,
+            accountId,
+            providerEndpoint: rtInfo?.provider_endpoint ?? null,
+            shape: rtInfo?.shape ?? 'HIGHMEM',
+            accelerator: rtInfo?.accelerator ?? 'CPU',
+            state: 'READY',
+            provisionedAt: new Date().toISOString(),
+            corpusDir: '/tmp/kiki-chaos-nvme',
+            workDir: '/tmp/kiki-work',
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+    }
 
     const sshRes = runCcp(['ssh', 'prepare', runtimeId, '--ttl-seconds', '7200'], { timeoutMs: 60_000 });
     const sshInfo = parseJsonFromOutput(sshRes.stdout);
@@ -483,7 +535,11 @@ export async function runChaosOnCcp(options = {}) {
     if (!options.skipUploadAndPrep) {
       const pkg = options._pkg;
       const prepScriptLocal = path.join(scratchDir, 'prep-remote.sh');
-      fs.writeFileSync(prepScriptLocal, buildRemotePrepareScript(pkg.deletedFiles), 'utf8');
+      fs.writeFileSync(
+        prepScriptLocal,
+        syncCodeOnly ? buildRemoteSyncCodeOnlyScript(pkg.deletedFiles) : buildRemotePrepareScript(pkg.deletedFiles),
+        'utf8',
+      );
       const sftpPuts = [
         `put "${pkg.tarPath.replaceAll('\\', '/')}" /tmp/kiki-chaos-src.tar.gz`,
         ...(pkg.overlayTarPath ? [`put "${pkg.overlayTarPath.replaceAll('\\', '/')}" /tmp/kiki-chaos-overlay.tar.gz`] : []),
@@ -491,7 +547,11 @@ export async function runChaosOnCcp(options = {}) {
       ];
       runSftpBatch(sshSessionId, sftpPuts, scratchDir, { timeoutMs: 300_000 });
 
-      log('Bootstrapping Node 24.22.1 + pnpm + deps + Playwright Chromium on CCP Linux...');
+      log(
+        syncCodeOnly
+          ? 'Syncing updated code onto warm CCP Linux runtime and running incremental package build...'
+          : 'Bootstrapping Node 24.22.1 + pnpm + deps + Playwright Chromium on CCP Linux...',
+      );
       const prepOut = await runSshCommandWithSentinel(sshSessionId, 'chmod +x /tmp/prep-remote.sh && /tmp/prep-remote.sh', {
         timeoutMs: 900_000,
       });
@@ -506,7 +566,11 @@ export async function runChaosOnCcp(options = {}) {
     const driveTransferMetrics = { mode: 'generated', restoreMs: null, extractMs: null, saveMs: null, archiveBytes: null, sha256: null };
     let usedExistingCorpus = false;
 
-    if (existingManifest && existingManifest.account_id === accountId) {
+    if (syncCodeOnly || options.reuseWarmCorpus) {
+      log('Reusing warm NVMe corpus already staged in /tmp/kiki-chaos-nvme...');
+      driveTransferMetrics.mode = 'reused_warm_nvme';
+      usedExistingCorpus = true;
+    } else if (existingManifest && existingManifest.account_id === accountId) {
       log(`Restoring sanitized 3.1 GiB corpus from Google Drive via DIRECT_HTTPS (${existingManifest.binding.drive_file_id})...`);
       const bindingsFile = path.join(scratchDir, 'corpus-bindings.json');
       fs.writeFileSync(bindingsFile, JSON.stringify([existingManifest.binding], null, 2), 'utf8');
@@ -648,7 +712,28 @@ export async function runChaosOnCcp(options = {}) {
       }
     }
 
-    log('Running test hygiene, node --test, full S1-S5 Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...');
+    log(
+      isolatedOnly
+        ? `Running targeted Chaos-Scale scenarios (s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}) on CCP Linux (keepRuntime=${keepRuntime})...`
+        : 'Running test hygiene, node --test, full S1-S5 Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...',
+    );
+    const runnerFlags = [
+      '--dir /tmp/kiki-chaos-nvme',
+      `--giant-gib ${giantGiB}`,
+      `--concurrency ${concurrency}`,
+      `--extreme-concurrency ${extremeConcurrency}`,
+      `--max-old-space-mb ${maxOldSpaceMb}`,
+      ...(usedExistingCorpus ? ['--existing-corpus'] : []),
+      ...(runBrowser ? [] : ['--no-browser']),
+      ...(s6Only ? ['--s6-only'] : runS6 ? ['--run-s6'] : []),
+      ...(s7Only ? ['--s7-only'] : options.runS7 ? ['--run-s7'] : []),
+      ...(s8Only ? ['--s8-only'] : options.runS8 ? ['--run-s8'] : []),
+      ...(runS7S8 ? ['--run-s7-s8'] : []),
+      ...(s7Only || runS7S8 || options.runS7 ? [`--s7-cycles ${s7Cycles}`] : []),
+      ...(runS6 ? [`--tenk-subagents ${tenKSubagentCount}`, `--s6-step-timeout-ms ${s6StepTimeoutMs}`] : []),
+      ...(syncCodeOnly || options.reuseWarmCorpus ? ['--reuse-10k-session'] : []),
+      '--out /tmp/kiki-chaos-results.json',
+    ].join(' ');
     const runScript = [
       'set -o pipefail',
       `export PATH="${nodeBinPath}:$PATH"`,
@@ -656,17 +741,17 @@ export async function runChaosOnCcp(options = {}) {
       'cd /tmp/kiki-work',
       'node scripts/ccp-chaos/check-test-hygiene.mjs --json > /tmp/kiki-hygiene-results.json || true',
       'node --test scripts/ccp-chaos/ccp-chaos.test.mjs',
-      `node scripts/ccp-chaos/chaos-scale-runner.mjs --dir /tmp/kiki-chaos-nvme --giant-gib ${giantGiB} --concurrency ${concurrency} --extreme-concurrency ${extremeConcurrency} --max-old-space-mb ${maxOldSpaceMb} ${usedExistingCorpus ? '--existing-corpus' : ''} ${runBrowser ? '' : '--no-browser'} --out /tmp/kiki-chaos-results.json`,
+      `node scripts/ccp-chaos/chaos-scale-runner.mjs ${runnerFlags}`,
       'CHAOS_RC=$?',
       'echo "CHAOS_RUNNER_EXIT=$CHAOS_RC"',
-      ...(runVitest
+      ...(runVitest && !isolatedOnly
         ? [
             'pnpm exec vitest run packages/protocol/test packages/transcript/test packages/kap-server/test/remotePairing.test.ts --reporter=json --outputFile=/tmp/kiki-vitest-results.json',
             'VITEST_RC=$?',
             'echo "VITEST_EXIT=$VITEST_RC"',
           ]
         : ['VITEST_RC=0', 'echo "{}" > /tmp/kiki-vitest-results.json']),
-      'rm -rf /tmp/kiki-chaos-nvme',
+      ...(keepRuntime ? ['echo "KEEPING_WARM_NVME_CORPUS=/tmp/kiki-chaos-nvme"'] : ['rm -rf /tmp/kiki-chaos-nvme']),
       'exit 0',
     ].join('\n');
     const runScriptLocal = path.join(scratchDir, 'exec-chaos-remote.sh');
@@ -707,11 +792,36 @@ export async function runChaosOnCcp(options = {}) {
       'utf8',
     );
 
+    if (keepRuntime && runtimeStateFile) {
+      fs.mkdirSync(path.dirname(runtimeStateFile), { recursive: true });
+      fs.writeFileSync(
+        runtimeStateFile,
+        `${JSON.stringify(
+          {
+            runtimeId,
+            accountId,
+            providerEndpoint: rtInfo?.provider_endpoint ?? null,
+            shape: rtInfo?.shape ?? 'HIGHMEM',
+            accelerator: rtInfo?.accelerator ?? 'CPU',
+            state: 'READY',
+            keptAliveAt: new Date().toISOString(),
+            corpusDir: '/tmp/kiki-chaos-nvme',
+            workDir: '/tmp/kiki-work',
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      log(`Recorded warm CCP runtime state to ${runtimeStateFile}`);
+    }
+
     return {
       runtimeId,
       accountId,
       providerEndpoint: rtInfo.provider_endpoint,
       sshSessionId,
+      keptAlive: keepRuntime,
       remoteExitCode: execOutcome.exitCode,
       driveTransferMetrics,
       totalOrchestratorWallMs: Number((performance.now() - startedAt).toFixed(2)),
@@ -721,22 +831,29 @@ export async function runChaosOnCcp(options = {}) {
       hygieneResults,
     };
   } finally {
-    releasedSnapshot = await releaseAndVerifyRuntime(runtimeId, sshSessionId);
-    fs.rmSync(scratchDir, { recursive: true, force: true });
-    if (runtimeId) {
-      log(`Final runtime ${runtimeId} state: ${releasedSnapshot?.state ?? 'UNKNOWN'}`);
-      fs.writeFileSync(
-        path.join(outDir, 'ccp-release-receipt.json'),
-        `${JSON.stringify({ runtimeId, sshSessionId, releasedSnapshot }, null, 2)}\n`,
-        'utf8',
-      );
+    if (keepRuntime) {
+      if (sshSessionId) {
+        log(`Revoking temporary SSH session ${sshSessionId} while KEEPING CCP runtime ${runtimeId} alive for Pass 2...`);
+        runCcp(['ssh', 'revoke', sshSessionId], { allowFail: true, timeoutMs: 30_000 });
+      }
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+      log(`Warm CCP runtime ${runtimeId} kept ALIVE (caller owns future release via ccp runtimes release ${runtimeId}).`);
+    } else {
+      releasedSnapshot = await releaseAndVerifyRuntime(runtimeId, sshSessionId);
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+      if (runtimeId) {
+        log(`Final runtime ${runtimeId} state: ${releasedSnapshot?.state ?? 'UNKNOWN'}`);
+        fs.writeFileSync(
+          path.join(outDir, 'ccp-release-receipt.json'),
+          `${JSON.stringify({ runtimeId, sshSessionId, releasedSnapshot }, null, 2)}\n`,
+          'utf8',
+        );
+      }
     }
   }
 }
 
-const isMain = Boolean(process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename);
-if (isMain) {
-  const args = process.argv.slice(2);
+export function parseCcpCliArgs(args) {
   const opts = {
     giantGiB: 3.1,
     concurrency: 128,
@@ -745,6 +862,21 @@ if (isMain) {
     runVitest: true,
     runBrowser: true,
     regenCorpus: false,
+    s6Only: false,
+    s7Only: false,
+    s8Only: false,
+    runS7S8: false,
+    runS6: false,
+    runS7: false,
+    runS8: false,
+    s7Cycles: 200,
+    tenKSubagentCount: 10_000,
+    s6StepTimeoutMs: 45_000,
+    keepRuntime: false,
+    syncCodeOnly: false,
+    reuseWarmCorpus: false,
+    ttlMinutes: 240,
+    idleTimeoutMinutes: 60,
   };
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--giant-gib' && args[i + 1]) opts.giantGiB = Number(args[++i]);
@@ -754,17 +886,40 @@ if (isMain) {
     else if (args[i] === '--no-vitest') opts.runVitest = false;
     else if (args[i] === '--no-browser') opts.runBrowser = false;
     else if (args[i] === '--regen-corpus') opts.regenCorpus = true;
+    else if (args[i] === '--s6-only') opts.s6Only = true;
+    else if (args[i] === '--s7-only') opts.s7Only = true;
+    else if (args[i] === '--s8-only') opts.s8Only = true;
+    else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
+    else if (args[i] === '--run-s6') opts.runS6 = true;
+    else if (args[i] === '--run-s7') opts.runS7 = true;
+    else if (args[i] === '--run-s8') opts.runS8 = true;
+    else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
+    else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
+    else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);
+    else if (args[i] === '--keep-runtime') opts.keepRuntime = true;
+    else if (args[i] === '--sync-code-only') opts.syncCodeOnly = true;
+    else if (args[i] === '--reuse-warm-corpus') opts.reuseWarmCorpus = true;
+    else if (args[i] === '--ttl' && args[i + 1]) opts.ttlMinutes = Number(args[++i]);
+    else if (args[i] === '--idle-timeout' && args[i + 1]) opts.idleTimeoutMinutes = Number(args[++i]);
+    else if (args[i] === '--runtime-state-file' && args[i + 1]) opts.runtimeStateFile = args[++i];
     else if (args[i] === '--reuse-runtime' && args[i + 1]) opts.reuseRuntimeId = args[++i];
     else if (args[i] === '--skip-upload-and-prep') opts.skipUploadAndPrep = true;
     else if (args[i] === '--baseline-head-code') opts.baselineHeadCode = true;
     else if (args[i] === '--out-dir' && args[i + 1]) opts.outDir = args[++i];
   }
+  return opts;
+}
+
+const isMain = Boolean(process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename);
+if (isMain) {
+  const opts = parseCcpCliArgs(process.argv.slice(2));
   const outcome = await runChaosOnCcp(opts);
   process.stdout.write(
     `${JSON.stringify(
       {
         runtimeId: outcome.runtimeId,
         providerEndpoint: outcome.providerEndpoint,
+        keptAlive: outcome.keptAlive,
         remoteExitCode: outcome.remoteExitCode,
         driveTransferMetrics: outcome.driveTransferMetrics,
         totalOrchestratorWallMs: outcome.totalOrchestratorWallMs,

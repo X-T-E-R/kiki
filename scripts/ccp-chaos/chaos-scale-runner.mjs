@@ -11,8 +11,15 @@ import { pathToFileURL } from 'node:url';
 import v8 from 'node:v8';
 import { deflateSync } from 'node:zlib';
 
+import { clone10kSubagents } from './clone-10k-subagents.mjs';
 import { createContractTwinServer } from './contract-twin-server.mjs';
 import { buildChaosConfigToml, generateChaosCorpus, retargetRestoredCorpus } from './corpus-generator.mjs';
+import { runScenarioS6TenKSubagents } from './scenario-10k-subagents.mjs';
+import {
+  generateExtremeMediaSession,
+  runScenarioS7LongRunningSoak,
+  runScenarioS8MediaWeakNetStorm,
+} from './scenario-soak-and-media-weaknet.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -1739,6 +1746,17 @@ export async function runChaosScaleSuite(options = {}) {
   const maxOldSpaceMb = options.maxOldSpaceMb ?? 2048;
   const existingCorpus = Boolean(options.existingCorpus);
   const runBrowser = options.runBrowser !== false;
+  const s6Only = Boolean(options.s6Only);
+  const s7Only = Boolean(options.s7Only);
+  const s8Only = Boolean(options.s8Only);
+  const runS7S8 = Boolean(options.runS7S8);
+  const isolatedOnly = s6Only || s7Only || s8Only || runS7S8;
+  const runS6 = s6Only || Boolean(options.runS6);
+  const runS7 = s7Only || runS7S8 || Boolean(options.runS7);
+  const runS8 = s8Only || runS7S8 || Boolean(options.runS8);
+  const s7Cycles = options.s7Cycles ?? 200;
+  const tenKSubagentCount = options.tenKSubagentCount ?? 10_000;
+  const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
   const progress = (msg) => process.stderr.write(`[ccp-chaos] ${msg}\n`);
 
   const { createKlient } = await import(
@@ -1771,6 +1789,59 @@ export async function runChaosScaleSuite(options = {}) {
     `Corpus ready (${corpus.restoredFromArchive ? 'RESTORED from Drive DIRECT_HTTPS' : `generated in ${corpus.elapsedMs}ms`}): giant=${corpus.giantMainWireGiB} GiB, subagents=${corpus.subagentCount}, bg=${corpus.backgroundSessionCount}`,
   );
 
+  let tenKCorpus = null;
+  if (runS6) {
+    const existing10kState = path.join(corpus.homeDir, 'sessions', corpus.workspaceId, 'chaos_10k_subagents', 'state.json');
+    if (options.reuse10kSession && fs.existsSync(existing10kState)) {
+      const stateBytes = fs.statSync(existing10kState).size;
+      const stateObj = JSON.parse(fs.readFileSync(existing10kState, 'utf8'));
+      const totalSubs = Math.max(0, Object.keys(stateObj.agents ?? {}).length - 1);
+      tenKCorpus = {
+        rootDir: corpus.rootDir,
+        homeDir: corpus.homeDir,
+        workspaceDir: corpus.workspaceDir,
+        workspaceId: corpus.workspaceId,
+        sessionId: 'chaos_10k_subagents',
+        lightSessionId: 'chaos_bg_0001',
+        subagentCount: totalSubs,
+        coldHistoricalNeedleIds: ['subagent_00042', `subagent_${String(Math.max(2, Math.floor(totalSubs / 2))).padStart(5, '0')}`],
+        familyPopoverTargetId: 'subagent_00001',
+        deepestInspectTargetId: `subagent_${String(totalSubs).padStart(5, '0')}`,
+        stateJsonPath: existing10kState,
+        stateJsonBytes: stateBytes,
+        stateJsonMiB: Number((stateBytes / (1024 * 1024)).toFixed(2)),
+        exceeds16MiBColdMetaCap: stateBytes > 16 * 1024 * 1024,
+        reusedExisting: true,
+      };
+      progress(`Reused existing 10k-subagent corpus: session=${tenKCorpus.sessionId}, subagents=${tenKCorpus.subagentCount}, state.json=${tenKCorpus.stateJsonMiB} MiB`);
+    } else {
+      tenKCorpus = clone10kSubagents({
+        dir,
+        sourceSessionId: corpus.giantSessionId,
+        targetSessionId: 'chaos_10k_subagents',
+        subagentCount: tenKSubagentCount,
+      });
+      progress(
+        `Cloned 10k-subagent corpus in ${tenKCorpus.elapsedMs}ms: subagents=${tenKCorpus.subagentCount}, state.json=${tenKCorpus.stateJsonMiB} MiB (exceeds16MiB=${tenKCorpus.exceeds16MiBColdMetaCap}), links=${JSON.stringify(tenKCorpus.wireLinkStats)}`,
+      );
+    }
+  }
+
+  let mediaCorpus = null;
+  if (runS7 || runS8) {
+    mediaCorpus = generateExtremeMediaSession({
+      dir,
+      sessionId: 'chaos_extreme_media',
+      imageCount: options.s8ImageCount ?? 600,
+      giantImageCount: options.s8GiantImageCount ?? 8,
+      videoCount: options.s8VideoCount ?? 40,
+      audioCount: options.s8AudioCount ?? 30,
+    });
+    progress(
+      `Extreme media corpus ready in ${mediaCorpus.elapsedMs}ms: session=${mediaCorpus.sessionId}, imgs=${mediaCorpus.imageCount} (${mediaCorpus.giantImageCount} giant @ ${mediaCorpus.giantPngMiB} MiB), AV=${mediaCorpus.totalPlaybackAssets} (${mediaCorpus.videoCount} MP4 + ${mediaCorpus.audioCount} WAV)`,
+    );
+  }
+
   const osHomeDir = path.join(dir, 'os-home');
   let mainServer = null;
   const report = {
@@ -1785,6 +1856,20 @@ export async function runChaosScaleSuite(options = {}) {
       corpusDir: dir,
     },
     corpus,
+    tenKCorpus,
+    mediaCorpus: mediaCorpus
+      ? {
+          sessionId: mediaCorpus.sessionId,
+          anchorSessionId: mediaCorpus.anchorSessionId,
+          imageCount: mediaCorpus.imageCount,
+          giantImageCount: mediaCorpus.giantImageCount,
+          giantPngMiB: mediaCorpus.giantPngMiB,
+          videoCount: mediaCorpus.videoCount,
+          audioCount: mediaCorpus.audioCount,
+          totalPlaybackAssets: mediaCorpus.totalPlaybackAssets,
+          elapsedMs: mediaCorpus.elapsedMs,
+        }
+      : null,
     scenarios: {},
     overallPassed: false,
     totalWallMs: 0,
@@ -1804,85 +1889,134 @@ export async function runChaosScaleSuite(options = {}) {
     report.initialServerMetrics = mainServer.initialMetrics;
     persistCheckpoint();
 
-    report.scenarios.S1_giantColdSession = await runScenarioS1({
-      server: mainServer,
-      twin,
-      corpus,
-      createKlient,
-      WebSocket,
-      progress,
-    });
-    await mainServer.closeSession(corpus.giantSessionId).catch(() => undefined);
-    persistCheckpoint();
-
-    report.scenarios.S2a_concurrencyChaosStorm128 = await runScenarioS2a({
-      server: mainServer,
-      twin,
-      workspaceDir: corpus.workspaceDir,
-      concurrency,
-      createKlient,
-      WebSocket,
-      progress,
-    });
-    persistCheckpoint();
-
-    if (runBrowser) {
-      report.scenarios.S5_frontendBrowserUx = await runScenarioS5BrowserUx({
+    if (!isolatedOnly) {
+      report.scenarios.S1_giantColdSession = await runScenarioS1({
         server: mainServer,
+        twin,
         corpus,
+        createKlient,
+        WebSocket,
+        progress,
+      });
+      await mainServer.closeSession(corpus.giantSessionId).catch(() => undefined);
+      persistCheckpoint();
+
+      report.scenarios.S2a_concurrencyChaosStorm128 = await runScenarioS2a({
+        server: mainServer,
+        twin,
+        workspaceDir: corpus.workspaceDir,
+        concurrency,
+        createKlient,
+        WebSocket,
+        progress,
+      });
+      persistCheckpoint();
+
+      if (runBrowser) {
+        report.scenarios.S5_frontendBrowserUx = await runScenarioS5BrowserUx({
+          server: mainServer,
+          corpus,
+          progress,
+        });
+        persistCheckpoint();
+      }
+
+      report.scenarios.S3_enospcAndSigkill = await runScenarioS3({
+        workRoot: dir,
+        twin,
+        createKlient,
+        WebSocket,
+        progress,
+      });
+      persistCheckpoint();
+
+      report.scenarios.S4_multiSpaceAndPairing = await runScenarioS4({
+        workRoot: dir,
+        twin,
+        createKlient,
+        progress,
+      });
+      persistCheckpoint();
+
+      if (extremeConcurrency > 0) {
+        try {
+          report.scenarios.S2b_extremeBreakingPoint1000 = await runScenarioS2bExtreme1000({
+            server: mainServer,
+            twin,
+            workspaceDir: corpus.workspaceDir,
+            extremeConcurrency,
+            progress,
+          });
+        } catch (err) {
+          report.scenarios.S2b_extremeBreakingPoint1000 = {
+            diagnosticOnly: true,
+            targetConcurrency: extremeConcurrency,
+            error: String(err?.stack ?? err).slice(0, 800),
+            serverExitInfo: mainServer?.getExitInfo?.() ?? null,
+            serverStderrTail: mainServer?.stderrLines?.slice(-10) ?? [],
+          };
+        }
+        persistCheckpoint();
+      }
+    }
+
+    if (runS6 && tenKCorpus) {
+      report.scenarios.S6_tenKSubagentsScale = await runScenarioS6TenKSubagents({
+        server: mainServer,
+        twin,
+        target: tenKCorpus,
+        createKlient,
+        WebSocket,
+        runBrowser,
+        stepTimeoutMs: s6StepTimeoutMs,
         progress,
       });
       persistCheckpoint();
     }
 
-    report.scenarios.S3_enospcAndSigkill = await runScenarioS3({
-      workRoot: dir,
-      twin,
-      createKlient,
-      WebSocket,
-      progress,
-    });
-    persistCheckpoint();
+    if (runS7 && mediaCorpus && runBrowser) {
+      report.scenarios.S7_longRunningSoak = await runScenarioS7LongRunningSoak({
+        server: mainServer,
+        corpus,
+        mediaCorpus,
+        tenKCorpus,
+        totalCycles: s7Cycles,
+        progress,
+      });
+      persistCheckpoint();
+    }
 
-    report.scenarios.S4_multiSpaceAndPairing = await runScenarioS4({
-      workRoot: dir,
-      twin,
-      createKlient,
-      progress,
-    });
-    persistCheckpoint();
-
-    if (extremeConcurrency > 0) {
-      try {
-        report.scenarios.S2b_extremeBreakingPoint1000 = await runScenarioS2bExtreme1000({
-          server: mainServer,
-          twin,
-          workspaceDir: corpus.workspaceDir,
-          extremeConcurrency,
-          progress,
-        });
-      } catch (err) {
-        report.scenarios.S2b_extremeBreakingPoint1000 = {
-          diagnosticOnly: true,
-          targetConcurrency: extremeConcurrency,
-          error: String(err?.stack ?? err).slice(0, 800),
-          serverExitInfo: mainServer?.getExitInfo?.() ?? null,
-          serverStderrTail: mainServer?.stderrLines?.slice(-10) ?? [],
-        };
-      }
+    if (runS8 && mediaCorpus && runBrowser) {
+      report.scenarios.S8_extremeMediaWeakNet = await runScenarioS8MediaWeakNetStorm({
+        server: mainServer,
+        mediaCorpus,
+        stepTimeoutMs: s6StepTimeoutMs,
+        progress,
+      });
       persistCheckpoint();
     }
 
     await mainServer.shutdown().catch(() => undefined);
     mainServer = null;
 
-    report.overallPassed = Boolean(
-      report.scenarios.S1_giantColdSession?.passed &&
-        report.scenarios.S2a_concurrencyChaosStorm128?.passed &&
-        report.scenarios.S3_enospcAndSigkill?.passed &&
-        report.scenarios.S4_multiSpaceAndPairing?.passed &&
-        (!runBrowser || report.scenarios.S5_frontendBrowserUx?.passed),
-    );
+    if (isolatedOnly) {
+      const checks = [];
+      if (runS6) checks.push(Boolean(report.scenarios.S6_tenKSubagentsScale?.passed));
+      if (runS7) checks.push(Boolean(report.scenarios.S7_longRunningSoak?.passed));
+      if (runS8) checks.push(Boolean(report.scenarios.S8_extremeMediaWeakNet?.passed));
+      report.overallPassed = checks.length > 0 && checks.every(Boolean);
+    } else {
+      report.overallPassed = Boolean(
+        report.scenarios.S1_giantColdSession?.passed &&
+          report.scenarios.S2a_concurrencyChaosStorm128?.passed &&
+          report.scenarios.S3_enospcAndSigkill?.passed &&
+          report.scenarios.S4_multiSpaceAndPairing?.passed &&
+          (!runBrowser || report.scenarios.S5_frontendBrowserUx?.passed) &&
+          (!runS6 || report.scenarios.S6_tenKSubagentsScale?.passed) &&
+          (!runS7 || report.scenarios.S7_longRunningSoak?.passed) &&
+          (!runS8 || report.scenarios.S8_extremeMediaWeakNet?.passed),
+      );
+    }
   } finally {
     if (mainServer) await mainServer.shutdown().catch(() => undefined);
     await twin.close().catch(() => undefined);
@@ -1907,6 +2041,17 @@ if (isCliMain && !isServerWorker) {
     maxOldSpaceMb: 2048,
     existingCorpus: false,
     runBrowser: true,
+    s6Only: false,
+    s7Only: false,
+    s8Only: false,
+    runS7S8: false,
+    runS6: false,
+    runS7: false,
+    runS8: false,
+    s7Cycles: 200,
+    reuse10kSession: false,
+    tenKSubagentCount: 10_000,
+    s6StepTimeoutMs: 45_000,
     outPath: '/tmp/kiki-chaos-results.json',
   };
   for (let i = 0; i < args.length; i += 1) {
@@ -1918,6 +2063,17 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--max-old-space-mb' && args[i + 1]) opts.maxOldSpaceMb = Number(args[++i]);
     else if (args[i] === '--existing-corpus') opts.existingCorpus = true;
     else if (args[i] === '--no-browser') opts.runBrowser = false;
+    else if (args[i] === '--s6-only') opts.s6Only = true;
+    else if (args[i] === '--s7-only') opts.s7Only = true;
+    else if (args[i] === '--s8-only') opts.s8Only = true;
+    else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
+    else if (args[i] === '--run-s6') opts.runS6 = true;
+    else if (args[i] === '--run-s7') opts.runS7 = true;
+    else if (args[i] === '--run-s8') opts.runS8 = true;
+    else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
+    else if (args[i] === '--reuse-10k-session') opts.reuse10kSession = true;
+    else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
+    else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);
     else if (args[i] === '--out' && args[i + 1]) opts.outPath = args[++i];
   }
   const report = await runChaosScaleSuite(opts);
