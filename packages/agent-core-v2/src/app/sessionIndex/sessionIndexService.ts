@@ -19,7 +19,7 @@ import {
   type Page,
   type QueryFilter,
 } from '#/persistence/interface/queryStore';
-import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 import {
   CHILD_SESSION_KIND,
@@ -45,6 +45,7 @@ import {
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
 import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from './errors';
+import { isSessionIndexResourceExhaustionError } from './sessionIndexMirrorService';
 import { readSessionArchiveFamily } from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
@@ -81,13 +82,7 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
 }
 
 function isResourceExhaustionError(error: unknown): boolean {
-  if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_DISK_FULL) return true;
-  const candidate = error as { code?: unknown; errcode?: unknown } | null;
-  const code = candidate?.code;
-  if (code === 'ENOSPC' || code === 'SQLITE_FULL' || code === 'ERR_OUT_OF_MEMORY') return true;
-  if (typeof candidate?.errcode === 'number' && (candidate.errcode & 255) === 13) return true;
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  return /\b(?:ENOSPC|SQLITE_FULL|database or disk is full|out of memory|heap limit)\b/iu.test(message);
+  return isSessionIndexResourceExhaustionError(error);
 }
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -370,10 +365,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
     if (this._store.isDisposed || !this.readModelEnabled()) return this.status();
-    if (this.recoveryRequired && (this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS || Date.now() < this.resourceExhaustionCooldownUntil)) {
+    if (this.recoveryRequired && (this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS || Date.now() < this.activeResourceExhaustionCooldownUntil())) {
       return this.status();
     }
     if (!this.recoveryRequired && this.mirror.dirtyEpoch() !== undefined) {
+      if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return this.status();
       await this.ensureDirtyCatchUp();
       return this.status();
     }
@@ -474,8 +470,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private projectionRetryAt = 0;
   private resourceExhaustionCooldownUntil = 0;
 
+  private activeResourceExhaustionCooldownUntil(): number {
+    return Math.max(
+      this.resourceExhaustionCooldownUntil,
+      this.mirror.resourceExhaustionCooldownUntil?.() ?? 0,
+    );
+  }
+
   private ensureProjection(fresh = false): Promise<boolean> {
-    if (this.projectFlight === undefined && Date.now() < this.projectionRetryAt) return Promise.resolve(false);
+    if (
+      this.projectFlight === undefined &&
+      (Date.now() < this.projectionRetryAt || Date.now() < this.activeResourceExhaustionCooldownUntil())
+    ) {
+      return Promise.resolve(false);
+    }
     this.projectFlight ??= this.runProjection(fresh).finally(() => {
       this.projectFlight = undefined;
     });
@@ -516,12 +524,27 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       }
     } catch (error) {
       if (this.recoveryRequired) throw error;
+      const resourceExhausted = isResourceExhaustionError(error);
+      if (resourceExhausted) {
+        this.resourceExhaustionCooldownUntil = Math.max(
+          this.resourceExhaustionCooldownUntil,
+          Date.now() + RECONCILE_RETRY_MAX_MS,
+        );
+      }
       const published = await this.queryStore
         .getCheckpoint(SESSION_INDEX_MANIFEST)
         .catch(() => undefined);
       if (published !== undefined) {
         this.generation = published.seq;
-        this.markReady();
+        if (resourceExhausted) {
+          this.state = 'ready';
+          this.statusReason = undefined;
+          this.recoveryAttempts = 0;
+          this.ensureReconcileTimer();
+          this.emitStatusIfChanged();
+        } else {
+          this.markReady();
+        }
         this.log.warn('session index re-projection failed; staying on the previous generation', {
           generation: published.seq,
           error: String(error),
@@ -530,11 +553,14 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.markDegraded('projection failed', error);
       }
     }
-    if (this.state === 'ready') await this.mirror.drain();
+    if (this.state === 'ready' && Date.now() >= this.activeResourceExhaustionCooldownUntil()) await this.mirror.drain();
     return projected;
   }
 
   private ensureDirtyCatchUp(): Promise<boolean> {
+    if (this.catchUpFlight === undefined && Date.now() < this.activeResourceExhaustionCooldownUntil()) {
+      return Promise.resolve(false);
+    }
     this.catchUpFlight ??= this.runDirtyCatchUp().finally(() => {
       this.catchUpFlight = undefined;
     });
@@ -544,9 +570,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async runDirtyCatchUp(): Promise<boolean> {
     if (!this.readModelEnabled()) return false;
     if (this.mirror.dirtyEpoch() === undefined) return true;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return false;
     const projection = this.projectFlight;
     if (projection !== undefined) await projection.catch(() => false);
     if (!this.readModelEnabled()) return false;
+    if (Date.now() < this.activeResourceExhaustionCooldownUntil()) return false;
     const dirty = this.mirror.dirtyEpoch();
     if (dirty === undefined) return true;
     const projected = await this.ensureProjection(true).catch(() => false);
@@ -695,9 +723,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.recoveryAttempts = 0;
       this.nextPrepareRetryAt = 0;
       this.resourceExhaustionCooldownUntil = 0;
+      this.mirror.clearResourceExhaustionCooldown?.();
       await this.prepare();
       return;
     }
+    this.resourceExhaustionCooldownUntil = 0;
+    this.mirror.clearResourceExhaustionCooldown?.();
     await this.ensureProjection();
   }
 
@@ -731,6 +762,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     if (this.recoveryRequired) return;
     this.recoveryAttempts = 0;
     this.resourceExhaustionCooldownUntil = 0;
+    this.mirror.clearResourceExhaustionCooldown?.();
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
@@ -879,13 +911,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const readRevision = this.readModelRevision;
     if (!this.readModelEnabled()) return legacy();
     if (this.recoveryRequired) {
-      if (Date.now() >= this.resourceExhaustionCooldownUntil && (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0)) {
+      if (Date.now() >= this.activeResourceExhaustionCooldownUntil() && (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0)) {
         this.kickPrepare(true);
       }
       throw new SessionIndexBuildingError();
     }
     if (this.mirror.dirtyEpoch() !== undefined) {
-      void this.ensureDirtyCatchUp().catch(() => false);
+      if (Date.now() >= this.activeResourceExhaustionCooldownUntil()) {
+        void this.ensureDirtyCatchUp().catch(() => false);
+      }
       throw new SessionIndexBuildingError();
     }
     let manifest: Checkpoint | undefined;
@@ -907,7 +941,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const read = async (): Promise<T> => {
       if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
       if (this.mirror.dirtyEpoch() !== undefined) {
-        void this.ensureDirtyCatchUp().catch(() => false);
+        if (Date.now() >= this.activeResourceExhaustionCooldownUntil()) {
+          void this.ensureDirtyCatchUp().catch(() => false);
+        }
         throw new SessionIndexBuildingError();
       }
       let generation = publishedManifest.seq;

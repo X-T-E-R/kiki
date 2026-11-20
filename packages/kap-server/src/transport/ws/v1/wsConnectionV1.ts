@@ -137,6 +137,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private gotClientHello = false;
   /** Per-session subscription state: legacy agent allowlist + opt-in transcript grades. */
   readonly subscriptions = new Map<string, SessionSubscription>();
+  private readonly legacySubscribedSessions = new Set<string>();
   private readonly pendingAttaches = new Set<string>();
   private readonly replayHolds = new Set<string>();
   private readonly heldDuringReplay = new Map<string, EventEnvelope[]>();
@@ -442,6 +443,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         this.subscriptions.get(sid)?.transcriptGrades,
         undefined,
         { accepted, resyncRequired, serverCursors },
+        true,
       );
     }
 
@@ -473,6 +475,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         this.subscriptions.get(sid)?.transcriptGrades,
         undefined,
         { accepted, resyncRequired, serverCursors, notFound },
+        true,
       );
     }
 
@@ -524,6 +527,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       parsed.data.transcript,
       parsed.data.transcript_since,
       { accepted, resyncRequired, serverCursors, notFound },
+      this.legacySubscribedSessions.has(sid),
     );
 
     this.sendImmediateFrame(
@@ -579,6 +583,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     for (const sid of sessionIds) {
       this.broadcaster.unsubscribe(sid, this);
       this.subscriptions.delete(sid);
+      this.legacySubscribedSessions.delete(sid);
     }
     this.sendImmediateFrame(
       buildAck(frame.id ?? '', 0, 'success', {
@@ -820,10 +825,13 @@ export class WsConnectionV1 implements BroadcastTarget {
       serverCursors: Record<string, { seq: number; epoch?: string }>;
       notFound?: string[];
     },
+    legacySubscribed = false,
   ): Promise<void> {
     if (this.closed) return;
     const { accepted, resyncRequired, serverCursors, notFound } = collectors;
     const prior = this.subscriptions.get(sid);
+    const effectiveLegacySubscribed = legacySubscribed || this.legacySubscribedSessions.has(sid);
+    const suppressUngradedTokenDeltas = !effectiveLegacySubscribed && transcriptGrades !== undefined;
     this.pendingAttaches.add(sid);
     if (cursor !== undefined) this.replayHolds.add(sid);
     let attached = false;
@@ -833,6 +841,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
         deferTranscriptReset: cursor !== undefined,
         transcriptSince,
+        ...(suppressUngradedTokenDeltas ? { suppressUngradedTokenDeltas: true } : {}),
       });
       if (this.closed) return;
       if (!ok) {
@@ -849,6 +858,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         serverCursors[sid] = await this.broadcaster.getCursor(sid);
       }
       if (this.closed) return;
+      if (effectiveLegacySubscribed) this.legacySubscribedSessions.add(sid);
       this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });
       accepted.push(sid);
       attached = true;
@@ -866,6 +876,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         if (this.closed || notFoundSession || prior === undefined) {
           this.broadcaster.unsubscribe(sid, this);
           this.subscriptions.delete(sid);
+          this.legacySubscribedSessions.delete(sid);
         } else {
           if (subscribedInBroadcaster && typeof this.broadcaster.restoreSubscription === 'function') {
             this.broadcaster.restoreSubscription(sid, this, prior);
@@ -1122,6 +1133,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.broadcaster.unsubscribe(sid, this);
     }
     this.subscriptions.clear();
+    this.legacySubscribedSessions.clear();
     this.pendingAttaches.clear();
     this.replayHolds.clear();
     this.discardReplayHeld();

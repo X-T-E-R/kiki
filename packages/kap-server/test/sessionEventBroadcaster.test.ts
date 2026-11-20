@@ -4792,6 +4792,29 @@ describe('SessionEventBroadcaster', () => {
       expect(turns.map((e) => (e.payload as { agentId: string }).agentId)).toEqual(['agent-0']);
     });
 
+    it('suppresses ungraded sibling assistant.delta and thinking.delta when suppressUngradedTokenDeltas is enabled while keeping lifecycle events', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const sub = lc.addAgent('agent-0');
+      sessions.set('s1', lc);
+      bc = makeBroadcasterWithTranscript();
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target, undefined, { main: 'delta' }, { suppressUngradedTokenDeltas: true });
+
+      sub.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      sub.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'unsubscribed-token' }));
+      sub.bus.emit(agentEvent('thinking.delta', { turnId: 1, delta: 'unsubscribed-thought' }));
+      await bc.getCursor('s1');
+
+      const subTypes = view.envelopes
+        .filter((e) => (e.payload as { agentId?: string }).agentId === 'agent-0')
+        .map((e) => e.type);
+      expect(subTypes).toContain('turn.started');
+      expect(subTypes).not.toContain('assistant.delta');
+      expect(subTypes).not.toContain('thinking.delta');
+    });
+
     it('filters the replayed backlog by transcript grades', async () => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');

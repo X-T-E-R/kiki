@@ -32,6 +32,9 @@ vi.mock('node:fs/promises', async importOriginal => {
 
 import { ExternalClientHost } from '../src/externalClients/host';
 import { connectionInputSchema, connectionSchema, sessionSchema } from '../src/externalClients/contracts';
+import { startServer } from '../src/start';
+import { authHeaders } from './helpers/auth';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 type FileDecision = { veto: { isError: boolean; output: string } };
 interface FileCheckEvent {
@@ -307,4 +310,44 @@ describe('external client access and session binding', () => {
     expect(await fileDecision('Read', file)).toBeUndefined();
     expect(await fileDecision('Write', file, 'write')).toMatchObject({ veto: { isError: true } });
   });
+
+  it('drives ExternalClientHost createConnection, prepareOwnerSession, live session binding, and stopSession against real startServer DI', async () => {
+    const realHome = await mkdtemp(join(tmpdir(), 'kiki-real-ext-client-'));
+    const realCwd = join(realHome, 'workspace');
+    await mkdir(realCwd, { recursive: true });
+    await writeFile(join(realHome, 'config.toml'), '[search]\nenabled = false\n[cron]\nmanualTick = true\n');
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: realHome,
+      logLevel: 'silent',
+    });
+    const realHost = new ExternalClientHost(server.core);
+    try {
+      await realHost.initialize();
+      const { connection } = await realHost.createConnection({
+        name: 'Real DI Client',
+        tools: ['Read', 'Write'],
+      });
+      const base = `http://127.0.0.1:${server.port}`;
+      const sessionId = 'session_real_ext_binding';
+      await realHost.prepareOwnerSession(connection.id, sessionId, realCwd, 'manual');
+      await server.core.accessor.get(ISessionManager).create({
+        sessionId,
+        workDir: realCwd,
+        mainAgentBinding: { driver: 'external' } as never,
+      });
+      const stopped = await realHost.stopSession(sessionId);
+      expect(stopped.session.sessionId).toBe(sessionId);
+      const revoked = await realHost.revoke(connection.id);
+      expect(revoked.connection.status).toBe('revoked');
+      const res = await fetch(`${base}/api/healthz`);
+      expect(res.status).toBe(200);
+    } finally {
+      await realHost.close();
+      await server.close();
+      await rm(realHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }, 30_000);
 });

@@ -4372,7 +4372,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(25);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(27);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4382,7 +4382,74 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it('invalidates persisted format-26 EOF checkpoints under format 27 and recovers token_counting.measured contextTokens', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      await appendFile(wirePath, `${[
+        { type: 'turn.ended', turnId: 0, reason: 'completed', time: 5_500 },
+        { type: 'turn.prompt', turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: 'hello' }], time: 6_000 },
+        { type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1', time: 6_010 },
+        { type: 'token_counting.measured', tokens: 61_234, time: 6_050 },
+        { type: 'turn.ended', turnId: 1, reason: 'completed', time: 6_100 },
+        ...Array.from({ length: 300 }, (_, index) => ({ type: 'executor.runtime.update', kind: 'stable', index })),
+      ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+      const originalWire = await fsPromises.readFile(wirePath);
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const query = core.accessor.get(IQueryStore);
+      const key = 'ws\0s1\0main';
+      const starts: (number | undefined)[] = [];
+      const read = async () => {
+        const service = new TranscriptService({
+          homeDir: home,
+          core,
+          wireRecordReader: async (path, options) => {
+            starts.push(options.startByteOffset);
+            return streamWireRecords(path, options);
+          },
+        });
+        try { return await service.readColdSnapshot('s1', 'main'); }
+        finally { service.dispose(); }
+      };
+      try {
+        const expected = await read();
+        expect(expected?.meta.agent?.contextTokens).toBe(61_234);
+        const saved = await query.get<{
+          format: number;
+          nextByteOffset: number;
+          snapshot: AgentTranscriptSnapshot;
+        }>('__transcript_projection_checkpoint__', key);
+        expect(saved?.format).toBe(27);
+        expect(saved?.nextByteOffset).toBe(originalWire.byteLength);
+
+        const legacy = {
+          ...structuredClone(saved!),
+          format: 26,
+          snapshot: {
+            ...structuredClone(saved!.snapshot),
+            meta: {
+              ...structuredClone(saved!.snapshot.meta),
+              agent: saved!.snapshot.meta.agent === undefined
+                ? undefined
+                : { ...structuredClone(saved!.snapshot.meta.agent), contextTokens: 0 },
+            },
+          },
+        };
+        await query.put('__transcript_projection_checkpoint__', key, legacy);
+
+        const recovered = await read();
+        expect(recovered?.meta.agent?.contextTokens).toBe(61_234);
+        expect(starts).toEqual([undefined, undefined]);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(27);
+
+        const cached = await read();
+        expect(cached?.meta.agent?.contextTokens).toBe(61_234);
+        expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4485,7 +4552,7 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(25);
+        expect(checkpoint?.format).toBe(27);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary).toMatchObject({ state: 'failed',
           error: 'example_stream_reset: Example worker connection was reset.',
@@ -8148,59 +8215,3 @@ it('bounds retainedColdTurns globally to 8 MiB and within the 32 MiB combined co
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
-
-it('invalidates persisted format-26 EOF checkpoints under format 27 and recovers token_counting.measured contextTokens', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'kiki-transcript-ckpt27-'));
-  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
-  await mkdir(dirname(wirePath), { recursive: true });
-  const records: Record<string, unknown>[] = [
-    { type: 'metadata', protocol_version: '1.1', time: 1_000 },
-    { type: 'turn.prompt', turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: 'hello' }], time: 1_010 },
-    { type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1', time: 1_020 },
-    { type: 'token_counting.measured', tokens: 61_234, time: 1_050 },
-    { type: 'turn.ended', turnId: 1, reason: 'completed', time: 1_100 },
-  ];
-  await writeFixtureFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
-  const stat = await fsPromises.stat(wirePath);
-  const checkpoints = new Map<string, unknown>([
-    ['s1:main', {
-      format: 26,
-      fingerprint: { size: stat.size, mtimeMs: stat.mtimeMs },
-      wireOffset: stat.size,
-      adapter: {},
-      reducer: {},
-      snapshot: {
-        agentId: 'main',
-        turns: [],
-        tasks: [],
-        interactions: [],
-        prompts: [],
-        meta: { agent: { contextTokens: 0 } },
-      },
-    }],
-  ]);
-  const queryStore = {
-    get: vi.fn(async (_collection: string, key: string) => checkpoints.get(key)),
-    put: vi.fn(async (_collection: string, key: string, value: unknown) => { checkpoints.set(key, value); }),
-    delete: vi.fn(async (_collection: string, key: string) => { checkpoints.delete(key); }),
-  };
-  const core = {
-    accessor: {
-      get: (token: unknown) => {
-        if (token === ISessionIndex) return { get: async (id: string) => id === 's1' ? { id: 's1', workspaceId: 'ws', updatedAt: 1 } : undefined };
-        if (token === IQueryStore) return queryStore;
-        if (token === ISessionManager) return {};
-        return undefined;
-      },
-    },
-  } as unknown as Scope;
-  const service = new TranscriptService({ homeDir: home, core });
-  const signal = new AbortController().signal;
-  try {
-    const cold = await service.readColdSnapshot('s1', 'main', undefined, signal);
-    expect(cold?.meta.agent?.contextTokens).toBe(61_234);
-  } finally {
-    service.dispose();
-    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-  }
-});

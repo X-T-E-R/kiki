@@ -136,6 +136,8 @@ export interface ISessionIndexMirror {
   epoch(): number;
   dirtyEpoch(): number | undefined;
   settleDirty(epoch: number): void;
+  resourceExhaustionCooldownUntil?(): number;
+  clearResourceExhaustionCooldown?(): void;
   invalidate(id: string): void;
   /** Summaries accepted but not yet flushed (read-your-writes window). */
   pending(): readonly SessionSummary[];

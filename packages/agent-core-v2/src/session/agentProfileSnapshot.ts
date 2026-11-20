@@ -361,14 +361,21 @@ async function* filteredProfileRecords(
     if (record !== undefined) yield record;
   };
   if (start >= size) return;
-  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
+  let yieldedAt = performance.now();
+  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 }, { chunkBytes: 1024 * 1024 })) {
     pending += decoder.decode(chunk, { stream: true });
-    let newline = pending.indexOf('\n');
-    while (newline !== -1) {
-      const line = pending.slice(0, newline).replace(/\r$/, '');
-      pending = pending.slice(newline + 1);
+    let lineStart = 0;
+    let newline: number;
+    while ((newline = pending.indexOf('\n', lineStart)) !== -1) {
+      const rawLine = pending.slice(lineStart, newline);
+      const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+      lineStart = newline + 1;
       if (line.length > 0) yield* emit(line);
-      newline = pending.indexOf('\n');
+    }
+    pending = lineStart === 0 ? pending : pending.slice(lineStart);
+    if (performance.now() - yieldedAt >= 4) {
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      yieldedAt = performance.now();
     }
   }
   pending += decoder.decode();

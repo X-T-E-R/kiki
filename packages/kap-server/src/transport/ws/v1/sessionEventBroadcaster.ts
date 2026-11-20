@@ -158,6 +158,7 @@ export interface TargetSubscription {
   readonly transcriptGeneration?: number;
   readonly residencyLease?: SessionLease;
   readonly prevTranscriptSeeded?: boolean;
+  readonly suppressUngradedTokenDeltas?: boolean;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -516,7 +517,12 @@ export class SessionEventBroadcaster {
     target: BroadcastTarget,
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
-    opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince; timing?: SessionViewTimingContext },
+    opts?: {
+      deferTranscriptReset?: boolean;
+      transcriptSince?: TranscriptSince;
+      timing?: SessionViewTimingContext;
+      suppressUngradedTokenDeltas?: boolean;
+    },
   ): Promise<boolean> {
     if (this.closed) return false;
     const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, AbortController>();
@@ -563,6 +569,7 @@ export class SessionEventBroadcaster {
         transcriptGeneration: generation,
         residencyLease,
         prevTranscriptSeeded: prevSeeded,
+        suppressUngradedTokenDeltas: opts?.suppressUngradedTokenDeltas ?? prev?.suppressUngradedTokenDeltas,
       });
       attached = { state, generation, prev, prevSeeded };
       if (transcriptGrades === undefined) {
@@ -2060,7 +2067,7 @@ export class SessionEventBroadcaster {
       for (const [target, sub] of targets) {
         if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
         try {
-          if (suppressedByTranscript(envelope, sub.transcriptGrades)) {
+          if (suppressedByTranscript(envelope, sub.transcriptGrades, sub.suppressUngradedTokenDeltas)) {
             if (target.sendRosterHint !== undefined && (
               (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed' ||
                 event.type === 'turn.started' || event.type === 'turn.ended') && event.agentId !== MAIN_AGENT_ID ||
@@ -2280,6 +2287,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
 function suppressedByTranscript(
   envelope: EventEnvelope,
   spec: TranscriptGradeSpec | undefined,
+  suppressUngradedTokenDeltas?: boolean,
 ): boolean {
   if (spec === undefined) return false;
   if (isGlobalEvent(envelope.type)) return false;
@@ -2290,7 +2298,9 @@ function suppressedByTranscript(
       ? (payload as { agentId?: unknown }).agentId
       : undefined;
   if (typeof agentId !== 'string') return false;
-  if (gradeFor(spec, agentId) === 'off') return false;
+  if (gradeFor(spec, agentId) === 'off') {
+    return suppressUngradedTokenDeltas === true && (envelope.type === 'assistant.delta' || envelope.type === 'thinking.delta');
+  }
   return TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type);
 }
 

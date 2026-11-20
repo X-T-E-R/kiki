@@ -564,11 +564,8 @@ describe('seat klient delegation HTTP routes', () => {
       expect(live.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
 
       const realHost = new ExternalDelegationProcedureHost(server.core);
-      const listed = await realHost.call(
-        { seatId: 'seat-real', principalId: 'principal-real', sessionId, workspacePath: cwd },
-        'list',
-        {},
-      );
+      const seat = { seatId: 'seat-real', principalId: 'principal-real', sessionId, workspacePath: cwd };
+      const listed = await realHost.call(seat, 'list', {});
       expect(listed).toMatchObject({
         version: 1,
         lifecycle: 'active',
@@ -580,6 +577,10 @@ describe('seat klient delegation HTTP routes', () => {
         },
       });
       expect(live.accessor.get(IAgentLifecycleService).get('main')).toBeDefined();
+      await expect(realHost.call(seat, 'status', { dispatchId: 'missing-dispatch' })).rejects.toThrow();
+      await expect(realHost.call(seat, 'send', { taskName: 'missing-task', message: 'hello', idempotencyKey: 'k1' })).rejects.toThrow();
+      await expect(realHost.call(seat, 'wait', { dispatchId: 'missing-dispatch', timeoutMs: 50 })).rejects.toThrow();
+      await expect(realHost.call(seat, 'cancel', { dispatchId: 'missing-dispatch' })).rejects.toThrow();
     } finally {
       await server.close();
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

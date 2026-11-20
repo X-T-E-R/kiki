@@ -5204,4 +5204,85 @@ describe('FileSessionIndex (read model)', () => {
       doPrepareSpy.mockRestore();
     }
   });
+
+  it('does not double-apply an archive transition when watched reconcile races a concurrent full reconcile and sibling mirror flush', async () => {
+    await seedSession('s-race-a', { title: 'a-active', createdAt: 1, updatedAt: 10, archived: false });
+    await seedSession('s-race-b', { title: 'b-active', createdAt: 1, updatedAt: 11, archived: false });
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+    store.stopReconcileLoop();
+
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: false })).toBe(2);
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
+
+    await seedSession('s-race-a', { title: 'a-archived', createdAt: 1, updatedAt: 20, archived: true });
+    const internals = store as unknown as {
+      projector: SessionIndexProjector;
+      watchedSessions: Map<string, { workspaceId: string; id: string }>;
+      reconcileWatched(): Promise<void>;
+    };
+    internals.watchedSessions.set(`${workspaceId}\0s-race-a`, { workspaceId, id: 's-race-a' });
+
+    const originalPlan = internals.projector.planReconcile.bind(internals.projector);
+    let raced = false;
+    const planSpy = vi.spyOn(internals.projector, 'planReconcile').mockImplementation(async (gen, opts) => {
+      const commit = await originalPlan(gen, opts);
+      if (!raced && opts?.changedSessions !== undefined) {
+        raced = true;
+        await store.reconcileNow();
+        await seedSession('s-race-b', { title: 'b-archived', createdAt: 1, updatedAt: 25, archived: true });
+        mirror.record(summary('s-race-b', { title: 'b-archived', updatedAt: 25, archived: true }));
+        await mirror.drain();
+      }
+      return commit;
+    });
+    try {
+      await internals.reconcileWatched();
+      expect((await store.get('s-race-a'))?.archived).toBe(true);
+      expect((await store.get('s-race-b'))?.archived).toBe(true);
+      expect(await store.count({ workspaceIds: [workspaceId], includeArchived: false })).toBe(0);
+      expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
+    } finally {
+      planSpy.mockRestore();
+    }
+  });
+
+  it('enforces 60s SQLITE_FULL cooldown across mirror flush failure and dirty catch-up projection failure', async () => {
+    await seedSession('s-full-a', { title: 'a-initial', createdAt: 1, updatedAt: 10, archived: false });
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+    store.stopReconcileLoop();
+
+    const sqliteFull = Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
+    const batchSpy = vi.spyOn(queryStore, 'batch').mockRejectedValue(sqliteFull);
+    const projectSpy = vi.spyOn(
+      (store as unknown as { projector: SessionIndexProjector }).projector,
+      'project',
+    );
+    try {
+      mirror.record(summary('s-full-a', { title: 'a-next', updatedAt: 20 }));
+      await mirror.drain();
+      expect(mirror.dirtyEpoch()).toBeDefined();
+      expect((mirror.resourceExhaustionCooldownUntil?.() ?? 0) - Date.now()).toBeGreaterThan(50_000);
+
+      await expect(store.listRecent({ limit: 10 })).rejects.toThrow();
+      await expect(store.count({})).rejects.toThrow();
+      await store.prepare();
+      expect(projectSpy).not.toHaveBeenCalled();
+
+      mirror.clearResourceExhaustionCooldown?.();
+      await expect(store.listRecent({ limit: 10 })).rejects.toThrow();
+      await vi.waitFor(() => { expect(projectSpy).toHaveBeenCalledTimes(1); });
+      await expect(store.listRecent({ limit: 10 })).rejects.toThrow();
+      await store.prepare();
+      expect(projectSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      batchSpy.mockRestore();
+      projectSpy.mockRestore();
+    }
+  });
 });

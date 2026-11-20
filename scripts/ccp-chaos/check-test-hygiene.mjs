@@ -27,6 +27,8 @@ export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set([
   'packages/kap-server/test/documentPreview.officeRender.test.ts',
   'packages/kap-server/test/externalDelegationRouteProjection.test.ts',
   'packages/kap-server/test/externalDelegationSeats.test.ts',
+  'packages/kap-server/test/notifications.integration.ts',
+  'packages/kap-server/test/pluginOutboundIm.test.ts',
   'packages/kap-server/test/prompts.delivery.integration.ts',
   'packages/kap-server/test/prompts.integration.ts',
   'packages/kap-server/test/prompts.lifecycle.integration.ts',
@@ -38,10 +40,12 @@ export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set([
 const TEST_FILE_RE = /\.(?:test|spec|integration|e2e)\.[cm]?[jt]sx?$/u;
 const INTEGRATION_TEST_FILE_RE = /\.integration\.[cm]?[jt]sx?$/u;
 const DISABLED_TEST_RE = /^\s*(?:it|test|describe)\.(?:skip|todo)\s*\(/u;
-const INTRA_MONOREPO_MOCK_GLOBAL_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\s*['"`]((?:#\/|@kiki\/|@nb-corp\/|\.\.?\/)[^'"`]+)['"`]/gu;
+const INTRA_MONOREPO_MOCK_GLOBAL_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\s*(?:import\s*\(\s*)?['"`]((?:#\/|@kiki\/|@nb-corp\/|\.\.?\/)[^'"`]+)['"`]/gu;
 const SPY_OPTION_RE = /,\s*\{\s*spy\s*:\s*true\s*\}\s*\)$/u;
 const IMPORT_ORIGINAL_FACTORY_RE = /,\s*(?:async\s*)?\(?\s*(?:importOriginal|original)\b/u;
 const FAKE_OVERRIDE_IN_FACTORY_RE = /\bvi\.fn\s*\(|\bclass\s*\{/u;
+const OBJECT_RETURN_KEY_OVERRIDE_RE = /\{\s*\.\.\.[^,}]+,[\s\S]*?(?:[A-Za-z_$][\w$]*|['"`][^'"`]+['"`])\s*:/u;
+const PURE_SPY_ON_RE = /\bvi\.spyOn\s*\(/u;
 const WEAK_ASSERTION_RE = /\bexpect\.anything\s*\(\s*\)/u;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 
@@ -76,7 +80,9 @@ function extractBalancedCall(text, openParenIndex) {
 
 function isExemptMockCall(callExpr) {
   if (SPY_OPTION_RE.test(callExpr)) return true;
-  if (IMPORT_ORIGINAL_FACTORY_RE.test(callExpr) && !FAKE_OVERRIDE_IN_FACTORY_RE.test(callExpr)) {
+  if (IMPORT_ORIGINAL_FACTORY_RE.test(callExpr)) {
+    if (FAKE_OVERRIDE_IN_FACTORY_RE.test(callExpr)) return false;
+    if (OBJECT_RETURN_KEY_OVERRIDE_RE.test(callExpr) && !PURE_SPY_ON_RE.test(callExpr)) return false;
     return true;
   }
   return false;

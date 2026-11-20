@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import { PROMOTE_TEST_COMMANDS, pnpmLaunch, pnpmSpawnArgs, pnpmSpawnOptions, runPromoteTests } from './run-promote-tests.mjs';
+import { PROMOTE_TEST_COMMANDS, pnpmLaunch, pnpmSpawnArgs, pnpmSpawnOptions, runPromoteTests, verifyPromoteReceipt } from './run-promote-tests.mjs';
 import {
   collectBaseChanges,
   fullCommands,
@@ -266,4 +267,40 @@ void test('uses pnpm.cmd directly when npm_execpath is absent on Windows', () =>
   assert.deepEqual(pnpmSpawnArgs(['exec', 'node', 'file with space.mjs'], { npm_execpath: undefined }), process.platform === 'win32'
     ? ['exec', 'node', '"file with space.mjs"']
     : ['exec', 'node', 'file with space.mjs']);
+});
+
+void test('promote receipt binds verified git HEAD SHA and rejects mismatched or failed receipts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kiki-promote-receipt-'));
+  const receiptPath = join(dir, 'promote-receipt.json');
+  const fakeHead = 'a'.repeat(40);
+  const spawnStub = (command, args) => {
+    if (command === 'git' && args[0] === 'rev-parse') return { status: 0, stdout: `${fakeHead}\n` };
+    if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' };
+    return { status: 0 };
+  };
+  try {
+    const code = runPromoteTests({
+      env: { ...process.env, npm_execpath: '/fixture/pnpm.cjs' },
+      spawn: spawnStub,
+      receiptPath,
+      cwd: dir,
+    });
+    assert.equal(code, 0);
+    const verified = verifyPromoteReceipt(receiptPath, { cwd: dir, spawn: spawnStub });
+    assert.equal(verified.gitHead, fakeHead);
+    assert.equal(verified.passed, true);
+    assert.equal(verified.commands.length, PROMOTE_TEST_COMMANDS.length);
+
+    assert.throws(
+      () => verifyPromoteReceipt(receiptPath, {
+        cwd: dir,
+        spawn: (command, args) => command === 'git' && args[0] === 'rev-parse'
+          ? { status: 0, stdout: `${'b'.repeat(40)}\n` }
+          : { status: 0, stdout: '' },
+      }),
+      /HEAD mismatch/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

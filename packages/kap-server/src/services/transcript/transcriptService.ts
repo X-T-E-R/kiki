@@ -129,6 +129,9 @@ const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
 const COLD_ROSTER_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
 const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
+const FIRST_SCREEN_CHUNK_BYTES = 2 << 20;
+const LOOP_EVENT_LINE_PREFIX = Buffer.from('{"type":"context.append_loop_event",');
+const APPEND_MESSAGE_LINE_PREFIX = Buffer.from('{"type":"context.append_message",');
 const DEFAULT_DIRECT_TURN_MAX_BYTES = 64 << 20;
 const DEFAULT_COLD_TURN_SPAN_MAX_TURNS = 16_384;
 const DEFAULT_COLD_TURN_SPAN_MAX_WIRES = 32;
@@ -2852,8 +2855,11 @@ export class TranscriptService {
       return existing;
     }
     if (existing !== undefined) this.forgetColdWindow(wirePath);
-    if (preserveOpenTurnIds === undefined && captureReplayState === undefined) {
-      const flightKey = `${wirePath}\0${fingerprint}\0${mode}`;
+    const flightKey = `${wirePath}\0${fingerprint}\0${mode}`;
+    const canShareFlight =
+      (preserveOpenTurnIds === undefined && captureReplayState === undefined) ||
+      mode === 'first-screen';
+    if (canShareFlight) {
       let flight = this.coldWindowFlights.get(flightKey);
       if (flight !== undefined && !flight.controller.signal.aborted) this.coldReadsShared += 1;
       if (flight === undefined || flight.controller.signal.aborted) {
@@ -2869,7 +2875,12 @@ export class TranscriptService {
         flight = created;
         this.coldWindowFlights.set(flightKey, flight);
       }
-      return this.awaitColdWindowFlight(flight, signal);
+      const shared = await this.awaitColdWindowFlight(flight, signal);
+      if (shared !== undefined && (preserveOpenTurnIds !== undefined || captureReplayState !== undefined)) {
+        const snapshot = await this.projectColdRecords(agentId, shared.records, shared.entire, preserveOpenTurnIds, captureReplayState, shared, signal);
+        return { ...shared, snapshot };
+      }
+      return shared;
     }
     return this.buildColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, mode);
   }
@@ -3346,7 +3357,7 @@ export class TranscriptService {
     try {
       while (position > floor && scannedRecords < WIRE_COLD_READ_MAX_RECORDS) {
         signal.throwIfAborted();
-        const start = Math.max(floor, position - WIRE_READ_CHUNK_BYTES);
+        const start = Math.max(floor, position - FIRST_SCREEN_CHUNK_BYTES);
         const chunk = Buffer.from(await opened.readAt(start, position - start));
         this.coldReadBytes += chunk.byteLength;
         let lineEnd = chunk.length;
@@ -3370,6 +3381,12 @@ export class TranscriptService {
           const lineStart = previous + 1;
           const prefix = chunk.subarray(lineStart, lineEnd);
           boundary = start + lineStart;
+          if (!oversizedLine && suffixBytes + prefix.length > FIRST_SCREEN_WINDOW_MAX_BYTES) {
+            oversizedLine = true;
+            oversizedLeading = prefix.subarray(0, Math.min(64, prefix.length));
+            suffix.length = 0;
+            suffixBytes = 0;
+          }
           if (oversizedLine) {
             const head = prefix.length >= 64 ? prefix : Buffer.concat([prefix, oversizedLeading]);
             const opaque = transcriptOpaqueHeaderRecord(head);
@@ -3393,6 +3410,72 @@ export class TranscriptService {
           suffixBytes = 0;
           if (line.length > 0) {
             scannedRecords++;
+            const isClosedLoopEvent =
+              line.length >= LOOP_EVENT_LINE_PREFIX.length &&
+              line.subarray(0, LOOP_EVENT_LINE_PREFIX.length).equals(LOOP_EVENT_LINE_PREFIX) &&
+              hasClosedJsonObjectFrame(line);
+            if (isClosedLoopEvent) {
+              const recordBytes = line.byteLength;
+              const headText = line.toString('utf8', 0, Math.min(512, line.length));
+              const turnMatch = /"turnId"\s*:\s*(?:"([^"]+)"|(\d+))/.exec(headText);
+              const rawTurn = turnMatch?.[1] ?? turnMatch?.[2];
+              const headTurn = rawTurn === undefined ? undefined : (rawTurn.startsWith('t') ? rawTurn : `t${rawTurn}`);
+              const projectedReverse = headTurn ?? reverseTurn;
+              const projectedCurrentBytes = headTurn !== undefined && reverseTurn !== undefined && reverseTurn !== headTurn ? 0 : currentTurnLoopBytes;
+              const turnAlreadySkipped = skippedUnknownTurn || (projectedReverse !== undefined && skippedTurnIds.has(projectedReverse));
+              const fitsPrimary = !turnAlreadySkipped && timelineBytes + recordBytes <= loopBudgetBytes;
+              const fitsCompact = !turnAlreadySkipped && projectedCurrentBytes + recordBytes <= compactTurnLoopBytes && compactLoopBytes + recordBytes <= compactTurnsReserveBytes;
+              if (!fitsPrimary && !fitsCompact) {
+                if (headTurn !== undefined) {
+                  if (reverseTurn !== undefined && reverseTurn !== headTurn) currentTurnLoopBytes = 0;
+                  reverseTurn = headTurn;
+                  if (skippedUnknownTurn) {
+                    skippedTurnIds.add(headTurn);
+                    skippedUnknownTurn = false;
+                  }
+                }
+                const effectiveTurn = headTurn ?? reverseTurn;
+                if (effectiveTurn !== undefined) {
+                  const toolMatch = /"(?:toolCallId|tool_call_id)"\s*:\s*"([^"]+)"/.exec(headText);
+                  if (toolMatch?.[1] !== undefined) toolTurnIds.push([toolMatch[1], effectiveTurn]);
+                  skippedTurnIds.add(effectiveTurn);
+                } else {
+                  skippedUnknownTurn = true;
+                }
+                recordEnd = boundary;
+                lineEnd = previous;
+                if (performance.now() - yieldedAt >= 4) {
+                  await new Promise<void>(resolve => { setImmediate(resolve); });
+                  signal.throwIfAborted();
+                  yieldedAt = performance.now();
+                }
+                continue;
+              }
+            }
+            const isClosedAppendMessage =
+              !isClosedLoopEvent &&
+              line.length >= APPEND_MESSAGE_LINE_PREFIX.length &&
+              line.subarray(0, APPEND_MESSAGE_LINE_PREFIX.length).equals(APPEND_MESSAGE_LINE_PREFIX) &&
+              hasClosedJsonObjectFrame(line);
+            if (isClosedAppendMessage && (skippedUnknownTurn || (reverseTurn !== undefined && skippedTurnIds.has(reverseTurn)))) {
+              const headText = line.toString('utf8', 0, Math.min(512, line.length));
+              const roleMatch = /"role"\s*:\s*"([^"]+)"/.exec(headText);
+              const role = roleMatch?.[1];
+              if ((role === 'tool' || (role === 'assistant' && !headText.includes('"hook_result"'))) && !headText.includes('"delivery"')) {
+                if (reverseTurn !== undefined) {
+                  const toolMatch = /"(?:toolCallId|tool_call_id)"\s*:\s*"([^"]+)"/.exec(headText);
+                  if (toolMatch?.[1] !== undefined) toolTurnIds.push([toolMatch[1], reverseTurn]);
+                }
+                recordEnd = boundary;
+                lineEnd = previous;
+                if (performance.now() - yieldedAt >= 4) {
+                  await new Promise<void>(resolve => { setImmediate(resolve); });
+                  signal.throwIfAborted();
+                  yieldedAt = performance.now();
+                }
+                continue;
+              }
+            }
             let record: ContextRecord;
             try {
               record = transcriptWindowRecord(line) ?? JSON.parse(line.toString('utf8')) as ContextRecord;

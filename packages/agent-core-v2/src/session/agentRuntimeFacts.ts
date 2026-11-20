@@ -57,6 +57,9 @@ const STATUS_KEYS = [permissionModeKey, permissionModeConfiguredKey, planKey, ru
 const ALL_KEYS = [...KEYS, ...STATUS_KEYS] as const;
 const CONTROL_KEY_NAMES = new Set<string>(CONTROL_KEYS.map(key => key.name));
 const FOLDS = ALL_KEYS.map(key => ({ key, folds: new Map([...expandedStateFolds(key)].map(([event, fold]) => [event.type, { event, fold }])) }));
+const BASE_FOLD_TYPES = new Set<string>(FOLDS.filter(entry => entry.key !== contextMemoryKey && !CONTROL_KEY_NAMES.has(entry.key.name)).flatMap(entry => [...entry.folds.keys()]));
+const CONTROL_FOLD_TYPES = new Set<string>([...BASE_FOLD_TYPES, 'permission.set_mode', ...FOLDS.filter(entry => CONTROL_KEY_NAMES.has(entry.key.name)).flatMap(entry => [...entry.folds.keys()])]);
+const STATUS_FOLD_TYPES = new Set<string>([...CONTROL_FOLD_TYPES, ...FOLDS.filter(entry => entry.key === contextMemoryKey).flatMap(entry => [...entry.folds.keys()])]);
 const BYTE_BUDGET = 8 << 20;
 const CONTEXT = { silent: true, emit: () => {}, checkpoint: () => {}, clearCheckpoints: () => {}, undoToCheckpoint: () => {} };
 interface RuntimeFactsCacheEntry {
@@ -126,7 +129,15 @@ export async function readPersistedAgentRuntimeFacts(
     let permissionConfigured = controlsComplete && states.get(permissionModeConfiguredKey.name) === true;
     let valid = true;
     let tokensSeen = usable;
+    const relevantTypes = statusComplete ? STATUS_FOLD_TYPES : controlsComplete ? CONTROL_FOLD_TYPES : BASE_FOLD_TYPES;
     const foldLine = (line: string) => {
+      if (line.length === 0) return;
+      const trimmedEnd = line.endsWith('\r') ? line.length - 1 : line.length;
+      if (trimmedEnd === 0) return;
+      if (line.charCodeAt(0) === 123 && line.charCodeAt(trimmedEnd - 1) === 125) {
+        const type = /^\{\s*"type"\s*:\s*"([^"]+)"/.exec(line.slice(0, Math.min(128, trimmedEnd)))?.[1];
+        if (type !== undefined && !relevantTypes.has(type)) return;
+      }
       if (line.trim().length === 0) return;
       let record: unknown;
       try { record = JSON.parse(line); } catch { valid = false; return; }
@@ -153,13 +164,22 @@ export async function readPersistedAgentRuntimeFacts(
       const decoder = new TextDecoder();
       let pending = '';
       let bytesRead = 0;
-      for await (const bytes of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
+      let yieldedAt = performance.now();
+      for await (const bytes of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 }, { chunkBytes: 1024 * 1024 })) {
+        signal?.throwIfAborted();
         bytesRead += bytes.byteLength;
         pending += decoder.decode(bytes, { stream: true });
+        let lineStart = 0;
         let newline: number;
-        while ((newline = pending.indexOf('\n')) !== -1) {
-          foldLine(pending.slice(0, newline));
-          pending = pending.slice(newline + 1);
+        while ((newline = pending.indexOf('\n', lineStart)) !== -1) {
+          foldLine(pending.slice(lineStart, newline));
+          lineStart = newline + 1;
+        }
+        pending = lineStart === 0 ? pending : pending.slice(lineStart);
+        if (performance.now() - yieldedAt >= 4) {
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+          signal?.throwIfAborted();
+          yieldedAt = performance.now();
         }
       }
       foldLine(pending + decoder.decode());

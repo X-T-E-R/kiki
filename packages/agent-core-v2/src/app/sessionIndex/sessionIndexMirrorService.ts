@@ -5,6 +5,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { IntervalTimer } from '#/_base/utils/timer';
 import { IFlagService } from '#/app/flag/flag';
+import { StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 
 import { ISessionIndexMirror, type SessionIndexMutation, type SessionSummary } from './sessionIndex';
@@ -24,6 +25,17 @@ const FLUSH_INTERVAL_MS = 100;
 const FLUSH_BATCH_SIZE = 500;
 const MAX_PENDING = FLUSH_BATCH_SIZE;
 const MAX_CONSECUTIVE_FAILURES = 5;
+const RESOURCE_EXHAUSTION_COOLDOWN_MS = 60_000;
+
+export function isSessionIndexResourceExhaustionError(error: unknown): boolean {
+  if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_DISK_FULL) return true;
+  const candidate = error as { code?: unknown; errcode?: unknown } | null;
+  const code = candidate?.code;
+  if (code === 'ENOSPC' || code === 'SQLITE_FULL' || code === 'ERR_OUT_OF_MEMORY') return true;
+  if (typeof candidate?.errcode === 'number' && (candidate.errcode & 255) === 13) return true;
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return /\b(?:ENOSPC|SQLITE_FULL|database or disk is full|out of memory|heap limit)\b/iu.test(message);
+}
 
 const pendingDrains = new Set<Promise<void>>();
 
@@ -41,6 +53,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   private exclusiveTail: Promise<void> = Promise.resolve();
   private flushing: Promise<void> | undefined;
   private consecutiveFailures = 0;
+  private resourceExhaustionCooldownUntilValue = 0;
   private mutationEpochValue = 0;
   private dirtyEpochValue = 0;
   private settledDirtyEpoch = 0;
@@ -103,7 +116,18 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
       this.settledDirtyEpoch,
       Math.min(epoch, this.dirtyEpochValue),
     );
-    if (!this.isDirty()) this.consecutiveFailures = 0;
+    if (!this.isDirty()) {
+      this.consecutiveFailures = 0;
+      this.resourceExhaustionCooldownUntilValue = 0;
+    }
+  }
+
+  resourceExhaustionCooldownUntil(): number {
+    return this.resourceExhaustionCooldownUntilValue;
+  }
+
+  clearResourceExhaustionCooldown(): void {
+    this.resourceExhaustionCooldownUntilValue = 0;
   }
 
   invalidate(id: string): void {
@@ -193,7 +217,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     if (!this.observeReadModelFlag() || this.isDirty()) return Promise.resolve();
     this.flushing = this.runExclusive(() => this.flushChunk())
       .catch((error: unknown) => {
-        this.registerFlushFailure();
+        this.registerFlushFailure(error);
         this.log.warn('failed to acquire session index mirror lock', { error: String(error) });
       })
       .finally(() => {
@@ -202,7 +226,8 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
           this.observeReadModelFlag() &&
           !this.isDirty() &&
           this.pendingMap.size > 0 &&
-          this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES
+          this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES &&
+          Date.now() >= this.resourceExhaustionCooldownUntilValue
         ) {
           this.timer.cancelAndSet(() => void this.flush(), FLUSH_INTERVAL_MS);
         }
@@ -210,7 +235,16 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     return this.flushing;
   }
 
-  private registerFlushFailure(): boolean {
+  private registerFlushFailure(error?: unknown): boolean {
+    if (error !== undefined && isSessionIndexResourceExhaustionError(error)) {
+      this.resourceExhaustionCooldownUntilValue = Math.max(
+        this.resourceExhaustionCooldownUntilValue,
+        Date.now() + RESOURCE_EXHAUSTION_COOLDOWN_MS,
+      );
+      this.consecutiveFailures = MAX_CONSECUTIVE_FAILURES;
+      this.markDirty();
+      return true;
+    }
     this.consecutiveFailures += 1;
     if (this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES) return false;
     this.markDirty();
@@ -283,7 +317,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
       this.consecutiveFailures = 0;
     } catch (error) {
       const pending = this.pendingMap.size;
-      const dirty = this.registerFlushFailure();
+      const dirty = this.registerFlushFailure(error);
       this.log.warn('failed to flush session index mirror chunk', {
         pending,
         failures: this.consecutiveFailures,
