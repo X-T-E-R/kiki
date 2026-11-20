@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type {
   CatalogModelItem,
@@ -63,6 +64,7 @@ import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { compactIdentifier } from '../lib/compactIdentifier';
 import { usePhoneMode } from '../lib/layoutHooks';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { DisclosureChevron, Icon } from './icons';
 import { useConnection } from '../state/connection';
 import { ChipSelect } from './ChipSelect';
@@ -576,7 +578,8 @@ function ModelDraftRow({
   index,
   isDefault,
   canRemove,
-  catalogModels,
+  catalogByRemoteId,
+  catalogOptions,
   protocol,
   onProtocolChange,
   onChange,
@@ -587,7 +590,8 @@ function ModelDraftRow({
   index: number;
   isDefault: boolean;
   canRemove: boolean;
-  catalogModels: readonly ProviderModelCatalogChoice[];
+  catalogByRemoteId: ReadonlyMap<string, ProviderModelCatalogChoice>;
+  catalogOptions: readonly SearchableSelectOption[];
   /** This row's request format choice; the parent keeps one per row, index-aligned. */
   protocol: ModelProtocolChoice;
   onProtocolChange: (next: ModelProtocolChoice) => void;
@@ -605,7 +609,7 @@ function ModelDraftRow({
       ? 'custom'
       : model.requestIdentityChoice as Exclude<typeof model.requestIdentityChoice, `profile:${string}`>;
   const rowLabel = model.id || model.remoteId;
-  const selectedChoice = catalogModels.find((candidate) => candidate.remoteId === model.remoteId);
+  const selectedChoice = catalogByRemoteId.get(model.remoteId);
   // A row without a stored alias does not exist on the server yet, so a
   // suggestion picked here is configured only by the next save.
   const selectedIsSuggestion = model.remoteId !== ''
@@ -619,35 +623,8 @@ function ModelDraftRow({
   const resolvedProtocol = selectedChoice?.source === 'configured' && selectedChoice.protocol === undefined
     ? selectedChoice.effectiveProtocol
     : undefined;
-  const catalogOptions = useMemo<readonly SearchableSelectOption[]>(() =>
-    catalogModels.map((candidate) => ({
-      value: candidate.remoteId,
-      label: candidate.remoteId,
-      description: candidate.name,
-      keywords: candidate.name,
-      group: candidate.source === 'configured'
-        ? t('st.providers.catalogGroupConfigured')
-        : candidate.source === 'draft'
-          ? t('st.providers.catalogGroupDraft')
-          : t('st.providers.catalogGroupSuggested'),
-      badges: [
-        ...(candidate.source === 'directory' || candidate.source === 'discovered'
-          ? [{
-              label: candidate.source === 'discovered'
-                ? t('st.providers.catalogFromProvider')
-                : t('st.providers.catalogFromDirectory'),
-              accent: true,
-            }]
-          : []),
-        ...(candidate.maxContextSize > 0 ? [{ label: formatTokens(candidate.maxContextSize) }] : []),
-        ...candidate.capabilities.slice(0, 2).map((capability) => ({ label: capability })),
-        ...(candidate.supportEfforts.length > 0
-          ? [{ label: t('st.providers.catalogEfforts', { count: candidate.supportEfforts.length }) }]
-          : []),
-      ],
-    })), [catalogModels, t]);
   const selectModelId = (remoteId: string) => {
-    const catalogModel = catalogModels.find((candidate) => candidate.remoteId === remoteId);
+    const catalogModel = catalogByRemoteId.get(remoteId);
     if (catalogModel === undefined) {
       onChange({ remoteId });
       return;
@@ -930,6 +907,111 @@ export function ProviderFields({
     draft.models.filter((model) => model.remoteId !== '').map(draftCatalogChoice),
   ), [catalogModels, localSuggestions, draft.models]);
 
+  const catalogByRemoteId = useMemo(() => {
+    const map = new Map<string, ProviderModelCatalogChoice>();
+    for (let i = 0; i < availableCatalogModels.length; i += 1) {
+      const candidate = availableCatalogModels[i]!;
+      map.set(candidate.remoteId, candidate);
+    }
+    return map;
+  }, [availableCatalogModels]);
+
+  const catalogOptions = useMemo<readonly SearchableSelectOption[]>(() =>
+    availableCatalogModels.map((candidate) => ({
+      value: candidate.remoteId,
+      label: candidate.remoteId,
+      description: candidate.name,
+      keywords: candidate.name,
+      group: candidate.source === 'configured'
+        ? t('st.providers.catalogGroupConfigured')
+        : candidate.source === 'draft'
+          ? t('st.providers.catalogGroupDraft')
+          : t('st.providers.catalogGroupSuggested'),
+      badges: [
+        ...(candidate.source === 'directory' || candidate.source === 'discovered'
+          ? [{
+              label: candidate.source === 'discovered'
+                ? t('st.providers.catalogFromProvider')
+                : t('st.providers.catalogFromDirectory'),
+              accent: true,
+            }]
+          : []),
+        ...(candidate.maxContextSize > 0 ? [{ label: formatTokens(candidate.maxContextSize) }] : []),
+        ...candidate.capabilities.slice(0, 2).map((capability) => ({ label: capability })),
+        ...(candidate.supportEfforts.length > 0
+          ? [{ label: t('st.providers.catalogEfforts', { count: candidate.supportEfforts.length }) }]
+          : []),
+      ],
+    })), [availableCatalogModels, t]);
+
+  const defaultModelChoices = useMemo(() => {
+    const out: { value: string; label: string; hint?: string }[] = [
+      { value: '', label: t('st.auth.none') },
+    ];
+    let hasDefault = draft.defaultModel === '';
+    for (let i = 0; i < draft.models.length; i += 1) {
+      const model = draft.models[i]!;
+      const value = model.id || model.remoteId;
+      if (value === draft.defaultModel) hasDefault = true;
+      if (model.remoteId === '') continue;
+      out.push({
+        value,
+        label: model.displayName || value,
+        hint: model.displayName !== '' ? model.remoteId : undefined,
+      });
+    }
+    if (!hasDefault && draft.defaultModel !== '') {
+      out.splice(1, 0, { value: draft.defaultModel, label: draft.defaultModel });
+    }
+    return out;
+  }, [draft.defaultModel, draft.models, t]);
+
+  const visibleDraftEntries = useMemo(() => {
+    const out: { readonly model: ProviderModelDraft; readonly index: number }[] = [];
+    for (let i = 0; i < draft.models.length; i += 1) {
+      const model = draft.models[i]!;
+      if (storedModels !== undefined && model.id !== '') continue;
+      out.push({ model, index: i });
+    }
+    return out;
+  }, [draft.models, storedModels]);
+
+  const pickerScale = getPickerScaleConfig();
+  const [draftScrollEl, setDraftScrollEl] = useState<HTMLDivElement | null>(null);
+  const setDraftScrollNode = useCallback((node: HTMLDivElement | null) => { setDraftScrollEl(node); }, []);
+  const virtualizeDraftRows = visibleDraftEntries.length > pickerScale.catalogVirtualizeThreshold;
+  const draftVirtualizer = useVirtualizer({
+    count: virtualizeDraftRows ? visibleDraftEntries.length : 0,
+    getScrollElement: () => draftScrollEl,
+    estimateSize: () => 56,
+    getItemKey: (i) => {
+      const entry = visibleDraftEntries[i];
+      return entry === undefined ? i : (entry.model.id || `new-${entry.index}`);
+    },
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 640, height: 480 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 56;
+    },
+    useFlushSync: false,
+  });
+
   const updateModel = (index: number, patch: Partial<ProviderModelDraft>) => {
     onChange({
       ...draft,
@@ -1084,17 +1166,7 @@ export function ProviderFields({
               ariaLabel={t('st.models.providerDefault')}
               value={draft.defaultModel}
               onChange={(defaultModel) => { onChange({ ...draft, defaultModel }); }}
-              choices={[
-                { value: '', label: t('st.auth.none') },
-                ...(draft.defaultModel !== '' && !draft.models.some((model) => (model.id || model.remoteId) === draft.defaultModel)
-                  ? [{ value: draft.defaultModel, label: draft.defaultModel }]
-                  : []),
-                ...draft.models.filter((model) => model.remoteId !== '').map((model) => ({
-                  value: model.id || model.remoteId,
-                  label: model.displayName || model.id || model.remoteId,
-                  hint: model.displayName !== '' ? model.remoteId : undefined,
-                })),
-              ]}
+              choices={defaultModelChoices}
             />
           </div>
         ) : null}
@@ -1102,41 +1174,107 @@ export function ProviderFields({
         {storedModels !== undefined && draft.models.some((model) => model.id === '') ? (
           <p className={`${FORM_LABEL} pt-2`} data-provider-new-models>{t('st.providerModels.newRows')}</p>
         ) : null}
-        {draft.models.map((model, index) => storedModels !== undefined && model.id !== '' ? null : (
-          <ModelDraftRow
-            key={model.id || `new-${index}`}
-            model={model}
-            index={index}
-            isDefault={
-              model.remoteId !== ''
-              && (model.id === draft.defaultModel || model.remoteId === draft.defaultModel)
-            }
-            canRemove
-            catalogModels={availableCatalogModels}
-            protocol={modelProtocols[index] ?? 'inherit'}
-            onProtocolChange={(next) => {
-              onModelProtocolsChange(modelProtocols.map((choice, choiceIndex) => choiceIndex === index ? next : choice));
-            }}
-            onChange={(patch) => { updateModel(index, patch); }}
-            onRemove={() => {
-              const models = draft.models.filter((_, modelIndex) => modelIndex !== index);
-              const first = models[0];
-              onChange({
-                ...draft,
-                models,
-                defaultModel:
-                  model.id === draft.defaultModel || model.remoteId === draft.defaultModel
-                    ? (first === undefined ? '' : first.id || first.remoteId)
-                    : draft.defaultModel,
-              });
-              onModelProtocolsChange(alignProtocolChoices(
-                modelProtocols.filter((_, choiceIndex) => choiceIndex !== index),
-                models.length,
-              ));
-            }}
-            onSetDefault={() => { onChange({ ...draft, defaultModel: model.id || model.remoteId }); }}
-          />
-        ))}
+        {virtualizeDraftRows ? (
+          <div
+            ref={setDraftScrollNode}
+            data-provider-draft-models-virtual
+            className="max-h-[min(520px,65vh)] overflow-y-auto pr-0.5"
+          >
+            <div style={{ height: draftVirtualizer.getTotalSize(), position: 'relative' }}>
+              {draftVirtualizer.getVirtualItems().map((vRow) => {
+                const entry = visibleDraftEntries[vRow.index];
+                if (entry === undefined) return null;
+                const { model, index } = entry;
+                return (
+                  <div
+                    key={vRow.key}
+                    data-index={vRow.index}
+                    ref={draftVirtualizer.measureElement}
+                    className="pb-2"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vRow.start}px)`,
+                    }}
+                  >
+                    <ModelDraftRow
+                      model={model}
+                      index={index}
+                      isDefault={
+                        model.remoteId !== ''
+                        && (model.id === draft.defaultModel || model.remoteId === draft.defaultModel)
+                      }
+                      canRemove
+                      catalogByRemoteId={catalogByRemoteId}
+                      catalogOptions={catalogOptions}
+                      protocol={modelProtocols[index] ?? 'inherit'}
+                      onProtocolChange={(next) => {
+                        onModelProtocolsChange(modelProtocols.map((choice, choiceIndex) => choiceIndex === index ? next : choice));
+                      }}
+                      onChange={(patch) => { updateModel(index, patch); }}
+                      onRemove={() => {
+                        const models = draft.models.filter((_, modelIndex) => modelIndex !== index);
+                        const first = models[0];
+                        onChange({
+                          ...draft,
+                          models,
+                          defaultModel:
+                            model.id === draft.defaultModel || model.remoteId === draft.defaultModel
+                              ? (first === undefined ? '' : first.id || first.remoteId)
+                              : draft.defaultModel,
+                        });
+                        onModelProtocolsChange(alignProtocolChoices(
+                          modelProtocols.filter((_, choiceIndex) => choiceIndex !== index),
+                          models.length,
+                        ));
+                      }}
+                      onSetDefault={() => { onChange({ ...draft, defaultModel: model.id || model.remoteId }); }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          visibleDraftEntries.map(({ model, index }) => (
+            <ModelDraftRow
+              key={model.id || `new-${index}`}
+              model={model}
+              index={index}
+              isDefault={
+                model.remoteId !== ''
+                && (model.id === draft.defaultModel || model.remoteId === draft.defaultModel)
+              }
+              canRemove
+              catalogByRemoteId={catalogByRemoteId}
+              catalogOptions={catalogOptions}
+              protocol={modelProtocols[index] ?? 'inherit'}
+              onProtocolChange={(next) => {
+                onModelProtocolsChange(modelProtocols.map((choice, choiceIndex) => choiceIndex === index ? next : choice));
+              }}
+              onChange={(patch) => { updateModel(index, patch); }}
+              onRemove={() => {
+                const models = draft.models.filter((_, modelIndex) => modelIndex !== index);
+                const first = models[0];
+                onChange({
+                  ...draft,
+                  models,
+                  defaultModel:
+                    model.id === draft.defaultModel || model.remoteId === draft.defaultModel
+                      ? (first === undefined ? '' : first.id || first.remoteId)
+                      : draft.defaultModel,
+                });
+                onModelProtocolsChange(alignProtocolChoices(
+                  modelProtocols.filter((_, choiceIndex) => choiceIndex !== index),
+                  models.length,
+                ));
+              }}
+              onSetDefault={() => { onChange({ ...draft, defaultModel: model.id || model.remoteId }); }}
+            />
+          ))
+        )}
       </div>
       {decisionCapabilitiesExtra}
       <AdvancedDisclosure

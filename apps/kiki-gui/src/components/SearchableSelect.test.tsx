@@ -737,4 +737,42 @@ describe('SearchableSelect large option catalog virtualization', () => {
     await press(input, 'Enter');
     expect(onChange).toHaveBeenCalledWith('gateway/model-2456');
   });
+
+  it('scales cleanly to 10,000 models with <= 40 mounted options, fast filter, and keyboard selection', async () => {
+    const TEN_K_MODELS: readonly SearchableSelectOption[] = Array.from({ length: 10_000 }, (_, index) => ({
+      value: `provider-${index % 20}/model-${index}`,
+      label: `Model ${index}`,
+      hint: `provider-${index % 20}/model-${index}`,
+      keywords: index % 2 === 0 ? `gemini-${index}` : `claude-${index}`,
+      group: `provider-${Math.floor(index / 500)}`,
+      badges: [{ label: '256k' }],
+    }));
+
+    const { container, onChange } = await renderSelect({
+      id: 'ten-k-models',
+      options: TEN_K_MODELS,
+      value: 'provider-0/model-0',
+      density: 'compact',
+    });
+
+    const openStart = performance.now();
+    await act(async () => { trigger(container).click(); });
+    const openMs = performance.now() - openStart;
+    const mounted = options(container);
+    expect(mounted.length).toBeGreaterThan(0);
+    expect(mounted.length).toBeLessThanOrEqual(40);
+    expect(openMs).toBeLessThan(1000);
+
+    const input = searchInput(container);
+    const filterStart = performance.now();
+    await typeIn(input, 'model-9999');
+    const filterMs = performance.now() - filterStart;
+    const matched = options(container);
+    expect(matched).toHaveLength(1);
+    expect(matched[0]?.getAttribute('data-option-value')).toBe('provider-19/model-9999');
+    expect(filterMs).toBeLessThan(500);
+
+    await press(input, 'Enter');
+    expect(onChange).toHaveBeenCalledWith('provider-19/model-9999');
+  });
 });

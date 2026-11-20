@@ -2,7 +2,7 @@ import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode }
 import { Link, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ProviderCatalogItem } from '@kiki/protocol';
+import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { DECISION_CONNECTION_PARAM, decisionProtocolOf, isDecisionConnection } from '@kiki/session-core/settings';
 
@@ -27,6 +27,7 @@ import { SectionCard, SettingsCardMountContext } from './SectionCard';
 import { SettingsLoadFailure, SettingsLoading, TEXT_BUTTON } from './SettingsPrimitives';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local', 'decision'];
+const EMPTY_MODELS: readonly ModelCatalogItem[] = [];
 
 export function OAuthAccountCard({
   configuredProviderIds,
@@ -103,12 +104,27 @@ export function ProvidersSection() {
   const methods = methodsQuery.data ?? [];
   const accountProviders = useMemo(() => new Set(methods.map((method) => method.provider)), [methods]);
 
+  const methodByProvider = useMemo(() => {
+    const map = new Map<string, (typeof methods)[number]>();
+    for (const method of methods) map.set(method.provider, method);
+    return map;
+  }, [methods]);
   const methodFor = useCallback(
-    (providerId: string) => methods.find((method) => method.provider === providerId),
-    [methods],
+    (providerId: string) => methodByProvider.get(providerId),
+    [methodByProvider],
   );
-  const modelCount = (providerId: string) =>
-    (modelsQuery.data?.items ?? []).filter((model) => model.provider_id === providerId).length;
+  const modelsByProvider = useMemo(() => {
+    const map = new Map<string, ModelCatalogItem[]>();
+    const items = modelsQuery.data?.items ?? EMPTY_MODELS;
+    for (let i = 0; i < items.length; i += 1) {
+      const model = items[i]!;
+      const bucket = map.get(model.provider_id);
+      if (bucket !== undefined) bucket.push(model);
+      else map.set(model.provider_id, [model]);
+    }
+    return map;
+  }, [modelsQuery.data]);
+  const modelCount = (providerId: string) => modelsByProvider.get(providerId)?.length ?? 0;
   const empty = providersQuery.isSuccess && providerItems.length === 0;
 
   const attentionItems = useMemo(
@@ -121,10 +137,10 @@ export function ProvidersSection() {
     (provider: ProviderCatalogItem) => [
       provider.id, methodFor(provider.id)?.label, provider.base_url, provider.default_model,
       decisionProtocolOf(provider),
-      ...(modelsQuery.data?.items ?? []).filter((model) => model.provider_id === provider.id)
+      ...(modelsByProvider.get(provider.id) ?? EMPTY_MODELS)
         .flatMap((model) => [model.id, model.remote_id, model.display_name]),
     ],
-    [methodFor, modelsQuery.data],
+    [methodFor, modelsByProvider],
   );
   const filters = useMemo<readonly ListFilterSpec<ProviderCatalogItem>[]>(() => [
     ...KIND_ORDER.map((kind) => ({
@@ -159,20 +175,20 @@ export function ProvidersSection() {
       );
     }
     const method = methodFor(provider.id);
-    const models = modelsQuery.data?.items ?? [];
+    const providerModels = modelsByProvider.get(provider.id) ?? EMPTY_MODELS;
     const modelRequested = requestedModel !== null
-      && models.some((model) => model.id === requestedModel && model.provider_id === provider.id);
+      && providerModels.some((model) => model.id === requestedModel);
     return (
       <ProviderEditor
         provider={provider}
-        models={models}
+        models={providerModels}
         defaultOpen={modelRequested || requestedDecision === provider.id || openRowRequest === provider.id}
         openFocusKeySignal={focusKeyRequest?.providerId === provider.id ? focusKeyRequest.nonce : 0}
         modelList={(
-          <ProviderModelList providerId={provider.id} models={models} />
+          <ProviderModelList providerId={provider.id} models={providerModels} />
         )}
         managed={accountProviders.has(provider.id)}
-        modelCount={modelCount(provider.id)}
+        modelCount={providerModels.length}
         onSaved={refreshProviderData}
         accountLabel={method?.label}
         accountMethod={method}
@@ -397,7 +413,6 @@ export function ProvidersSection() {
                     keyOf={keyOf}
                     density={view.density}
                     label={t('st.ai.tab.connections')}
-                    virtualizeAfter={Number.POSITIVE_INFINITY}
                     renderRow={renderProvider}
                   />
                 </div>

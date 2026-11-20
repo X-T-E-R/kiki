@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useLocation } from 'react-router-dom';
 
 import type {
@@ -128,6 +129,7 @@ import { OriginBadge } from './spaces/OriginBadge';
 import { DetailBack, DetailRailGroup, DetailRailItem, DetailSplit, useDetailParam } from '../overlays';
 import { LIST_ROW_HEIGHT, ListBody, type ListDensity } from './list';
 import { isImeKeyEvent } from '../../lib/shortcuts';
+import { getPickerScaleConfig } from '../../lib/subagentScaleConfig';
 
 const EMPTY_CATALOG_MODELS: readonly ModelCatalogItem[] = [];
 
@@ -258,6 +260,9 @@ export function ProviderModelList({ providerId, models }: {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+  const pickerScale = getPickerScaleConfig();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const defaultModel = configQuery.data?.default_model;
   const roles = useModelRoles();
@@ -267,6 +272,20 @@ export function ProviderModelList({ providerId, models }: {
         || (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
     [models, providerId, defaultModel],
   );
+  const isLarge = own.length > pickerScale.catalogVirtualizeThreshold;
+  const ownHaystacks = useMemo(() => {
+    if (!isLarge) return [];
+    return own.map((item) => `${item.display_name ?? ''}\0${item.id}\0${item.remote_id}`.toLowerCase());
+  }, [isLarge, own]);
+  const filteredOwn = useMemo(() => {
+    const needle = deferredQuery.trim().toLowerCase();
+    if (!isLarge || needle === '') return own;
+    const out: ModelCatalogItem[] = [];
+    for (let i = 0; i < own.length; i += 1) {
+      if (ownHaystacks[i]!.includes(needle)) out.push(own[i]!);
+    }
+    return out;
+  }, [isLarge, own, ownHaystacks, deferredQuery]);
 
   const selectDefaultModel = async (item: ModelCatalogItem) => {
     setBusy(true);
@@ -283,22 +302,44 @@ export function ProviderModelList({ providerId, models }: {
 
   return (
     <div className="space-y-2" data-provider-models={providerId}>
-      {own.length > 0 ? (
-        <ListBody items={own} keyOf={(item) => item.id} density="comfortable" label={t('st.providerModels.title')}
-          virtualizeAfter={Number.POSITIVE_INFINITY}
-          renderRow={(item) => (
-            <ModelRow
-              item={item}
-              density="comfortable"
-              isDefault={item.id === defaultModel}
-              roles={roles.get(item.id)}
-              attention={false}
-              busy={busy}
-              open={item.id === detail.selected}
-              onSetDefault={() => void selectDefaultModel(item)}
-              onOpen={() => { detail.open(item.id); }}
-            />
-          )} />
+      {isLarge ? (
+        <div className="relative flex h-8 items-center">
+          <Icon name="search" size={14} className="pointer-events-none absolute left-2.5 text-ink-faint" />
+          <input
+            type="search"
+            data-provider-models-search={providerId}
+            aria-label={t('st.models.searchPlaceholder')}
+            placeholder={t('st.models.searchPlaceholder')}
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); }}
+            className="h-8 w-full min-w-0 rounded-md bg-ink/[0.04] pr-20 pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] [&::-webkit-search-cancel-button]:hidden"
+          />
+          <span className="pointer-events-none absolute right-2.5 text-[12px] text-ink-faint tabular-nums">
+            {query.trim() === '' ? own.length : `${filteredOwn.length} / ${own.length}`}
+          </span>
+        </div>
+      ) : null}
+      {filteredOwn.length > 0 ? (
+        <div className={isLarge ? 'max-h-[min(480px,60vh)] overflow-y-auto' : undefined} data-provider-models-scroll={isLarge ? '' : undefined}>
+          <ListBody items={filteredOwn} keyOf={(item) => item.id} density="comfortable" label={t('st.providerModels.title')}
+            renderRow={(item) => (
+              <ModelRow
+                item={item}
+                density="comfortable"
+                isDefault={item.id === defaultModel}
+                roles={roles.get(item.id)}
+                attention={false}
+                busy={busy}
+                open={item.id === detail.selected}
+                onSetDefault={() => void selectDefaultModel(item)}
+                onOpen={() => { detail.open(item.id); }}
+              />
+            )} />
+        </div>
+      ) : own.length > 0 ? (
+        <p className="text-[12px] leading-4 text-ink-faint" data-provider-models-no-match>
+          {t('select.noMatches', { query: query.trim() })}
+        </p>
       ) : (
         <p className="text-[12px] leading-4 text-ink-faint" data-provider-models-empty>{t('st.providerModels.empty')}</p>
       )}
@@ -368,7 +409,91 @@ export function ModelDetailSplit({ list, models, providers, ready, providerLabel
     }
   };
 
-  const rail = <div data-model-rail>
+  const pickerScale = getPickerScaleConfig();
+  const [railScrollEl, setRailScrollEl] = useState<HTMLDivElement | null>(null);
+  const setRailScrollNode = useCallback((node: HTMLDivElement | null) => { setRailScrollEl(node); }, []);
+  const flatRail = useMemo(() => {
+    const out: (
+      | { readonly kind: 'group'; readonly key: string; readonly label: string; readonly count: number }
+      | { readonly kind: 'model'; readonly key: string; readonly model: ModelCatalogItem }
+    )[] = [];
+    for (const group of groups) {
+      out.push({ kind: 'group', key: `g:${group.id}`, label: providerLabel?.(group.id) ?? group.id, count: group.models.length });
+      for (const model of group.models) {
+        out.push({ kind: 'model', key: `m:${model.id}`, model });
+      }
+    }
+    return out;
+  }, [groups, providerLabel]);
+  const virtualizeRail = detail.selected !== null && models.length > pickerScale.catalogVirtualizeThreshold;
+  const railVirtualizer = useVirtualizer({
+    count: virtualizeRail ? flatRail.length : 0,
+    getScrollElement: () => railScrollEl,
+    estimateSize: (index) => (flatRail[index]?.kind === 'group' ? 28 : 34),
+    getItemKey: (index) => flatRail[index]?.key ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 240, height: 560 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 34;
+    },
+    useFlushSync: false,
+  });
+
+  const rail = virtualizeRail ? (
+    <div ref={setRailScrollNode} data-model-rail className="max-h-[calc(100dvh-10rem)] overflow-y-auto">
+      <div style={{ height: railVirtualizer.getTotalSize(), position: 'relative' }}>
+        {railVirtualizer.getVirtualItems().map((vRow) => {
+          const entry = flatRail[vRow.index];
+          if (entry === undefined) return null;
+          return (
+            <div
+              key={vRow.key}
+              data-index={vRow.index}
+              ref={railVirtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vRow.start}px)`,
+              }}
+            >
+              {entry.kind === 'group' ? (
+                <p className="flex items-baseline justify-between gap-2 px-2 pt-2 pb-1 text-[11px] font-medium text-ink-faint">
+                  <span className="truncate">{entry.label}</span>
+                  <span className="shrink-0 tabular-nums">{entry.count}</span>
+                </p>
+              ) : (
+                <DetailRailItem
+                  itemKey={entry.model.id}
+                  label={entry.model.display_name ?? entry.model.id}
+                  current={entry.model.id === item?.id}
+                  trailing={entry.model.id === defaultModel ? <Icon name="starFilled" size={12} className="shrink-0 text-ink-soft" /> : undefined}
+                  onSelect={() => { detail.open(entry.model.id); }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ) : <div data-model-rail>
     {groups.map((group) => (
       <DetailRailGroup key={group.id} label={providerLabel?.(group.id) ?? group.id} count={group.models.length}>
         {group.models.map((model) => (
@@ -992,9 +1117,12 @@ export function ModelGenerationMigrationCard() {
               <div>
                 <p className="text-xs font-medium text-ink">{t('st.modelMigration.changesTitle')}</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-ink-soft">
-                  {preview.changes.map(({ model_id: model, fields }) => (
+                  {preview.changes.slice(0, 60).map(({ model_id: model, fields }) => (
                     <li key={model}>{t('st.modelMigration.changeRow', { model, fields: fields.join(', ') })}</li>
                   ))}
+                  {preview.changes.length > 60 ? (
+                    <li className="list-none text-ink-faint">+{preview.changes.length - 60}</li>
+                  ) : null}
                 </ul>
                 <button type="button" className={`${PRIMARY_BUTTON} mt-2`} disabled={busy !== null} onClick={() => { setConfirmation({ type: 'apply' }); }}>
                   {t(busy === 'apply' ? 'st.modelMigration.applying' : 'st.modelMigration.apply')}
@@ -1005,11 +1133,14 @@ export function ModelGenerationMigrationCard() {
               <div>
                 <p className="text-xs font-medium text-ink">{t('st.modelMigration.needsReviewTitle')}</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-ink-soft">
-                  {preview.needs_review.map(({ model_id: model, code, field }, index) => (
+                  {preview.needs_review.slice(0, 60).map(({ model_id: model, code, field }, index) => (
                     <li key={`${model}-${code}-${index}`}>{t('st.modelMigration.needsReviewRow', {
                       model, reason: t(MIGRATION_REASON_KEYS[code], { field: field ?? '' }),
                     })}</li>
                   ))}
+                  {preview.needs_review.length > 60 ? (
+                    <li className="list-none text-ink-faint">+{preview.needs_review.length - 60}</li>
+                  ) : null}
                 </ul>
               </div>
             ) : null}

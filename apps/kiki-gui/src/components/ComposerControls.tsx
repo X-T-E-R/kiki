@@ -20,14 +20,16 @@
  * when opened from the right, whatever the trigger's own position.
  */
 
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type UIEvent, type RefObject } from 'react';
+import { createContext, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type UIEvent, type RefObject } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { DeferredAppendTiming, FsSearchHit, PermissionMode } from '@kiki/protocol';
 import type { McpServerLocator } from '@kiki/klient';
-import { filterSlashItems, type SlashItem } from '@kiki/session-core/commands';
+import { type SlashItem } from '@kiki/session-core/commands';
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import {
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
@@ -593,6 +595,94 @@ export interface AddMenuFiles {
 
 const SEARCH_ROW_LIMIT = 5;
 const FILE_DEBOUNCE_MS = 200;
+const ADD_MENU_LIST_EST_HEIGHT = 280;
+
+function VirtualizedAddMenuList<T>({
+  items,
+  keyOf,
+  estimateHeight,
+  renderItem,
+  className,
+  onScroll,
+  dataAttrs,
+  footer,
+}: {
+  readonly items: readonly T[];
+  readonly keyOf: (item: T, index: number) => string;
+  readonly estimateHeight: number;
+  readonly renderItem: (item: T, index: number) => ReactNode;
+  readonly className: string;
+  readonly onScroll?: (event: UIEvent<HTMLDivElement>) => void;
+  readonly dataAttrs?: Readonly<Record<string, string | undefined>>;
+  readonly footer?: ReactNode;
+}) {
+  const pickerScale = getPickerScaleConfig();
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setScrollNode = useCallback((node: HTMLDivElement | null) => { setScrollEl(node); }, []);
+  const isVirtualized = items.length > pickerScale.selectVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? items.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => estimateHeight,
+    getItemKey: (index) => keyOf(items[index]!, index),
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 312, height: ADD_MENU_LIST_EST_HEIGHT },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : estimateHeight;
+    },
+    useFlushSync: false,
+  });
+
+  return (
+    <div ref={setScrollNode} className={className} onScroll={onScroll} {...dataAttrs}>
+      {isVirtualized ? (
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          {virtualizer.getVirtualItems().map((row) => {
+            const item = items[row.index];
+            if (item === undefined) return null;
+            return (
+              <div
+                key={row.key}
+                data-index={row.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${row.start}px)`,
+                }}
+              >
+                {renderItem(item, row.index)}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        items.map((item, index) => (
+          <div key={keyOf(item, index)}>{renderItem(item, index)}</div>
+        ))
+      )}
+      {footer}
+    </div>
+  );
+}
 
 function useDebounced<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -1061,7 +1151,8 @@ export function AddMenu({
     || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
 
   const trimmed = query.trim();
-  const needle = trimmed.toLowerCase();
+  const deferredTrimmed = useDeferredValue(trimmed);
+  const needle = deferredTrimmed.toLowerCase();
   const searching = view === 'root' && trimmed !== '';
   // The view the panel actually draws. A data-driven sub-view whose source has
   // gone away (an SSH availability flag briefly resolving undefined mid-add,
@@ -1095,30 +1186,100 @@ export function AddMenu({
   const rootFilePreview = fileItems.slice(0, SEARCH_ROW_LIMIT);
   const fileWaiting = files !== undefined && (view === 'mention' || trimmed !== '') && fileItems.length === 0
     && (!fileCurrent || fileFeed.pendingInitial);
-  const skillMatches = skills === undefined ? [] : trimmed === '' ? skills.items : filterSlashItems(skills.items, trimmed);
-  const hostMatches = (ssh?.hosts ?? []).filter(
-    (host) => host.name.toLowerCase().includes(needle) || (host.detail ?? '').toLowerCase().includes(needle),
+
+  // Pre-compute normalized lowercase search indices once per source identity
+  // so typing across 1,000+ skills / plugins / MCP servers stays O(N) & < 2ms.
+  const skillIndex = useMemo(() => {
+    const items = skills?.items;
+    if (items === undefined || items.length === 0) return [];
+    return items.map((item) => ({
+      item,
+      nameLower: item.name.toLowerCase(),
+      descLower: item.description.toLowerCase(),
+    }));
+  }, [skills?.items]);
+
+  const skillMatches = useMemo(() => {
+    if (!open || skills === undefined) return [];
+    if (needle === '') return skills.items;
+    const r0: SlashItem[] = [];
+    const r1: SlashItem[] = [];
+    const r2: SlashItem[] = [];
+    for (let i = 0; i < skillIndex.length; i += 1) {
+      const entry = skillIndex[i]!;
+      if (entry.nameLower.startsWith(needle)) r0.push(entry.item);
+      else if (entry.nameLower.includes(needle)) r1.push(entry.item);
+      else if (entry.descLower.includes(needle)) r2.push(entry.item);
+    }
+    return [...r0, ...r1, ...r2];
+  }, [open, skills, skillIndex, needle]);
+
+  const hostIndex = useMemo(
+    () => (ssh?.hosts ?? []).map((host) => ({
+      host,
+      haystack: `${host.name}\0${host.detail ?? ''}`.toLowerCase(),
+    })),
+    [ssh?.hosts],
   );
-  const pluginMatches = plugins === undefined
-    ? []
-    : trimmed === ''
-      ? plugins.items
-      : plugins.items.filter((plugin) =>
-        plugin.name.toLowerCase().includes(needle)
-        || plugin.contributions.toLowerCase().includes(needle));
-  const mcpMatches = mcp === undefined
-    ? []
-    : trimmed === ''
-      ? mcp.items
-      : mcp.items.filter((row) => mcpRowMatches(row, needle));
-  const extensionMatches = extensions === undefined
-    ? []
-    : trimmed === ''
-      ? extensions.items
-      : extensions.items.filter((item) =>
-        item.label.toLowerCase().includes(needle)
-        || (item.tooltip ?? '').toLowerCase().includes(needle)
-        || item.pluginId.toLowerCase().includes(needle));
+  const hostMatches = useMemo(() => {
+    if (!open || hostIndex.length === 0) return [];
+    if (needle === '') return ssh?.hosts ?? [];
+    const out: AddMenuHost[] = [];
+    for (let i = 0; i < hostIndex.length; i += 1) {
+      if (hostIndex[i]!.haystack.includes(needle)) out.push(hostIndex[i]!.host);
+    }
+    return out;
+  }, [open, hostIndex, ssh?.hosts, needle]);
+
+  const pluginIndex = useMemo(
+    () => (plugins?.items ?? []).map((plugin) => ({
+      plugin,
+      haystack: `${plugin.name}\0${plugin.contributions}`.toLowerCase(),
+    })),
+    [plugins?.items],
+  );
+  const pluginMatches = useMemo(() => {
+    if (!open || plugins === undefined) return [];
+    if (needle === '') return plugins.items;
+    const out: AddMenuPlugin[] = [];
+    for (let i = 0; i < pluginIndex.length; i += 1) {
+      if (pluginIndex[i]!.haystack.includes(needle)) out.push(pluginIndex[i]!.plugin);
+    }
+    return out;
+  }, [open, plugins, pluginIndex, needle]);
+
+  const mcpMatches = useMemo(() => {
+    if (!open || mcp === undefined) return [];
+    if (needle === '') return mcp.items;
+    return mcp.items.filter((row) => mcpRowMatches(row, needle));
+  }, [open, mcp, needle]);
+
+  const extensionIndex = useMemo(
+    () => (extensions?.items ?? []).map((item) => ({
+      item,
+      haystack: `${item.label}\0${item.tooltip ?? ''}\0${item.pluginId}`.toLowerCase(),
+    })),
+    [extensions?.items],
+  );
+  const extensionMatches = useMemo(() => {
+    if (!open || extensions === undefined) return [];
+    if (needle === '') return extensions.items;
+    const out: AddMenuExtensionItem[] = [];
+    for (let i = 0; i < extensionIndex.length; i += 1) {
+      if (extensionIndex[i]!.haystack.includes(needle)) out.push(extensionIndex[i]!.item);
+    }
+    return out;
+  }, [open, extensions, extensionIndex, needle]);
+
+  const enabledPluginCount = useMemo(() => {
+    if (plugins === undefined) return 0;
+    let count = 0;
+    for (let i = 0; i < plugins.items.length; i += 1) {
+      if (plugins.items[i]!.enabled) count += 1;
+    }
+    return count;
+  }, [plugins]);
+  const heldMcpCount = useMemo(() => (mcp === undefined ? 0 : heldCount(mcp.items)), [mcp]);
 
   const onShowSkills = skills?.onShow;
   const onShowPlugins = plugins?.onShow;
@@ -1480,8 +1641,8 @@ export function AddMenu({
             : null}
           {plugins !== undefined
             ? drillRow('plugins', <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.plugins'),
-                plugins.items.filter((plugin) => plugin.enabled).length > 0
-                  ? <span className="text-[12px] text-ink-faint tabular-nums">{plugins.items.filter((plugin) => plugin.enabled).length}</span>
+                enabledPluginCount > 0
+                  ? <span className="text-[12px] text-ink-faint tabular-nums">{enabledPluginCount}</span>
                   : undefined, { 'data-add-menu-plugins': '' })
             : null}
           {optional !== undefined
@@ -1489,8 +1650,8 @@ export function AddMenu({
             : null}
           {mcp !== undefined
             ? drillRow('mcp', <McpIcon />, t('composer.addMenu.mcp'),
-                heldCount(mcp.items) > 0
-                  ? <span className="text-[12px] text-ink-faint tabular-nums">{heldCount(mcp.items)}</span>
+                heldMcpCount > 0
+                  ? <span className="text-[12px] text-ink-faint tabular-nums">{heldMcpCount}</span>
                   : undefined, { 'data-add-menu-mcp': '' })
             : null}
           {runMode !== undefined
@@ -1526,12 +1687,23 @@ export function AddMenu({
     <div data-add-skills-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.skills'))}
       {searchField(t('composer.addMenu.searchSkills'))}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {skills.status === 'loading' && skills.items.length === 0 ? note(t('composer.addMenu.skillsLoading'))
-          : skills.status === 'error' && skills.items.length === 0 ? note(t('composer.addMenu.skillsFailed'), 'danger')
-          : skillMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.skillsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
-          : skillMatches.map((item) => <SkillRow key={item.name} item={item} onInsert={insertSkill} />)}
-      </div>
+      {skills.status === 'loading' && skills.items.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{note(t('composer.addMenu.skillsLoading'))}</div>
+      ) : skills.status === 'error' && skills.items.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{note(t('composer.addMenu.skillsFailed'), 'danger')}</div>
+      ) : skillMatches.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {note(trimmed === '' ? t('composer.addMenu.skillsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))}
+        </div>
+      ) : (
+        <VirtualizedAddMenuList
+          items={skillMatches}
+          keyOf={(item) => item.name}
+          estimateHeight={44}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          renderItem={(item) => <SkillRow item={item} onInsert={insertSkill} />}
+        />
+      )}
     </div>
   );
 
@@ -1543,14 +1715,25 @@ export function AddMenu({
           its own two lines. A partially scrolled row is a normal state for a
           long list, so the clip is left to mean "more below" rather than
           being hidden. */}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">
-        {plugins.loading && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsLoading'))
-          : plugins.failed && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsFailed'), 'danger')
-          : pluginMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.pluginsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
-          : pluginMatches.map((plugin) => (
-            <PluginRow key={plugin.id} plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} />
-          ))}
-      </div>
+      {plugins.loading && plugins.items.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">{note(t('composer.addMenu.pluginsLoading'))}</div>
+      ) : plugins.failed && plugins.items.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">{note(t('composer.addMenu.pluginsFailed'), 'danger')}</div>
+      ) : pluginMatches.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">
+          {note(trimmed === '' ? t('composer.addMenu.pluginsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))}
+        </div>
+      ) : (
+        <VirtualizedAddMenuList
+          items={pluginMatches}
+          keyOf={(plugin) => plugin.id}
+          estimateHeight={48}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5"
+          renderItem={(plugin) => (
+            <PluginRow plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} />
+          )}
+        />
+      )}
       <p className="shrink-0 px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.pluginsHint')}</p>
     </div>
   );
@@ -1571,13 +1754,22 @@ export function AddMenu({
       {/* The engine boundary comes before the rows: it changes what the list
           below can mean, so it is read before any row is read as usable. */}
       {mcp.externalEngine === undefined ? null : note(t('composer.addMenu.mcpExternalHint', { engine: mcp.externalEngine }))}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">
-        {mcp.failed && mcp.items.length === 0 ? note(t('composer.addMenu.mcpFailed'), 'danger')
-          : mcp.loading && mcp.items.length === 0 ? note(t('composer.addMenu.mcpLoading'))
-          : mcpMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.mcpEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
-          : mcpMatches.map((row) => (
+      {mcp.failed && mcp.items.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">{note(t('composer.addMenu.mcpFailed'), 'danger')}</div>
+      ) : mcp.loading && mcp.items.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">{note(t('composer.addMenu.mcpLoading'))}</div>
+      ) : mcpMatches.length === 0 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">
+          {note(trimmed === '' ? t('composer.addMenu.mcpEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))}
+        </div>
+      ) : (
+        <VirtualizedAddMenuList
+          items={mcpMatches}
+          keyOf={(row) => row.name}
+          estimateHeight={64}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5"
+          renderItem={(row) => (
             <McpRow
-              key={row.name}
               row={row}
               busy={busyMcp === row.name}
               retrying={busyMcp === row.name && mcp.busyAction === 'retry'}
@@ -1585,8 +1777,9 @@ export function AddMenu({
               onOverride={mcp.onOverride}
               onReconnect={mcp.onReconnect}
             />
-          ))}
-      </div>
+          )}
+        />
+      )}
       {/* A refused write is about the row it was made on, so it stays until the
           reader has seen it rather than flashing past with the panel. */}
       {mcp.failure === undefined ? null : (
@@ -1609,19 +1802,37 @@ export function AddMenu({
     <div data-add-mention-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.mention'))}
       {searchField(t('composer.addMenu.searchFiles'))}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-add-file-list data-file-order={fileFeed.order} onScroll={onFileScroll}>
-        {fileWaiting ? note(t('composer.filesSearching'))
-          : fileFeed.failed && fileItems.length === 0 ? note(t('composer.filesFailed'), 'danger')
-          : fileItems.length === 0 && fileFeed.exhausted ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
-          : fileItems.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} />)}
-        {showFileContinue ? (
-          <FileContinueRow
-            pending={fileFeed.pendingMore || fileFeed.pendingRestart}
-            failed={fileFeed.failed}
-            onMore={continueFiles}
-          />
-        ) : null}
-      </div>
+      {fileWaiting || (fileFeed.failed && fileItems.length === 0) || (fileItems.length === 0 && fileFeed.exhausted) ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-add-file-list data-file-order={fileFeed.order} onScroll={onFileScroll}>
+          {fileWaiting ? note(t('composer.filesSearching'))
+            : fileFeed.failed && fileItems.length === 0 ? note(t('composer.filesFailed'), 'danger')
+            : note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))}
+          {showFileContinue ? (
+            <FileContinueRow
+              pending={fileFeed.pendingMore || fileFeed.pendingRestart}
+              failed={fileFeed.failed}
+              onMore={continueFiles}
+            />
+          ) : null}
+        </div>
+      ) : (
+        <VirtualizedAddMenuList
+          items={fileItems}
+          keyOf={(hit) => hit.path}
+          estimateHeight={34}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          onScroll={onFileScroll}
+          dataAttrs={{ 'data-add-file-list': '', 'data-file-order': fileFeed.order }}
+          renderItem={(hit) => <FileRow hit={hit} onMention={mentionFile} />}
+          footer={showFileContinue ? (
+            <FileContinueRow
+              pending={fileFeed.pendingMore || fileFeed.pendingRestart}
+              failed={fileFeed.failed}
+              onMore={continueFiles}
+            />
+          ) : null}
+        />
+      )}
       <p className="shrink-0 px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
     </div>
   );

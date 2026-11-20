@@ -1,9 +1,11 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { ModelCatalogItem } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
 import type { NamedAgentProfile } from '../../../lib/client';
 import { resolveProfileIcon } from '../../../lib/profileIcon';
+import { getPickerScaleConfig } from '../../../lib/subagentScaleConfig';
 import { Icon } from '../../icons';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
 import { SettingsLoading, TEXT_BUTTON } from '../SettingsPrimitives';
@@ -66,9 +68,11 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
     { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.profile.name.localeCompare(b.profile.name) },
   ], [t]);
+  const keyOf = useCallback((row: TeamRow) => row.key, []);
+  const textOf = useCallback((row: TeamRow) => [row.profile.name, row.profile.description], []);
   const view = useListView({
-    listId: 'agent-profiles', items: rows, keyOf: (row) => row.key, sorts,
-    textOf: (row) => [row.profile.name, row.profile.description],
+    listId: 'agent-profiles', items: rows, keyOf, sorts,
+    textOf,
   });
   const kindOf = (row: TeamRow): KindGroup => row.profile.main ? 'main' : 'subagent';
   const groups = KIND_ORDER.map((id) => ({
@@ -114,7 +118,7 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
         return <div key={group.id} data-team-group={group.id}>
           <ListGroup groupKey={group.id} label={label} count={group.rows.length} total={group.total}
             folded={view.isFolded(group.id)} onToggle={() => { view.toggleFold(group.id); }}>
-            <ul className="border-t border-hairline">{group.rows.map(renderRow)}</ul>
+            <TeamGroupRows rows={group.rows} renderRow={renderRow} />
           </ListGroup>
         </div>;
       })}
@@ -214,4 +218,73 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
       </button>
     </li>;
   }
+}
+
+function TeamGroupRows({ rows, renderRow }: {
+  readonly rows: readonly TeamRow[];
+  readonly renderRow: (row: TeamRow) => React.ReactNode;
+}) {
+  const pickerScale = getPickerScaleConfig();
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setScrollNode = useCallback((node: HTMLDivElement | null) => { setScrollEl(node); }, []);
+  const isVirtualized = rows.length > pickerScale.catalogVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? rows.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 58,
+    getItemKey: (index) => rows[index]?.key ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 640, height: 480 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 58;
+    },
+    useFlushSync: false,
+  });
+
+  if (!isVirtualized) {
+    return <ul className="border-t border-hairline">{rows.map(renderRow)}</ul>;
+  }
+
+  return (
+    <div ref={setScrollNode} className="max-h-[min(520px,65vh)] overflow-y-auto border-t border-hairline" data-team-virtual>
+      <ul style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((vRow) => {
+          const row = rows[vRow.index];
+          if (row === undefined) return null;
+          return (
+            <div
+              key={vRow.key}
+              data-index={vRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vRow.start}px)`,
+              }}
+            >
+              {renderRow(row)}
+            </div>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }

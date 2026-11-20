@@ -490,7 +490,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
                 onClear={view.clear} />
             ) : (
               <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.spaces.listTitle')}
-                virtualizeAfter={Number.POSITIVE_INFINITY} renderRow={renderRow} />
+                renderRow={renderRow} />
             )}
           </>
         ) : null}

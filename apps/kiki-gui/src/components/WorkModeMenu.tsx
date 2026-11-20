@@ -14,9 +14,12 @@
  * the user removed.
  */
 
+import { useCallback, useMemo, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { WorkPresetItem } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { useWindowModeId, type WorkModeCatalog } from '../lib/workModeCatalog';
 import { Icon } from './icons';
 import { AnchoredPopover, usePopover } from './overlays/AnchoredPopover';
@@ -48,8 +51,79 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
   const [modeId, chooseMode] = useWindowModeId();
   const labels = { ready: t('workMode.enabled'), setup: t('workMode.needsSetup') };
 
-  const modes = catalog.items.filter((item) => !item.removed);
-  const current = modes.find((item) => item.id === modeId) ?? modes.find((item) => item.enabled) ?? modes[0];
+  const modes = useMemo(() => catalog.items.filter((item) => !item.removed), [catalog.items]);
+  const current = useMemo(
+    () => modes.find((item) => item.id === modeId) ?? modes.find((item) => item.enabled) ?? modes[0],
+    [modes, modeId],
+  );
+  const pickerScale = getPickerScaleConfig();
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setScrollNode = useCallback((node: HTMLDivElement | null) => { setScrollEl(node); }, []);
+  const isVirtualized = open && modes.length > pickerScale.selectVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? modes.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 74,
+    getItemKey: (index) => modes[index]?.id ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 292, height: 320 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 74;
+    },
+    useFlushSync: false,
+  });
+
+  const renderModeOption = (mode: WorkPresetItem) => {
+    const active = mode.id === current?.id;
+    return (
+      <div className="mt-1">
+        <button
+          type="button"
+          role="menuitemradio"
+          aria-checked={active}
+          data-work-mode-option={mode.id}
+          onClick={() => {
+            setOpen(false);
+            if (mode.enabled) chooseMode(mode.id);
+            else onSetup(mode);
+          }}
+          className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-ink/[0.04] ${active ? 'bg-selected' : ''}`}
+        >
+          <span aria-hidden className={`mt-1.5 h-2 w-2 shrink-0 rounded-[2px] ${active ? 'bg-selected-ink' : 'bg-hairline-strong'}`} />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13px] font-medium text-ink">{mode.name}</span>
+            <span className="mt-0.5 block text-[11.5px] leading-[1.45] text-ink-faint">{mode.description}</span>
+            <ModeStateTag mode={mode} labels={labels} />
+          </span>
+        </button>
+        {onOpenInNewWindow !== undefined ? (
+          <button
+            type="button"
+            onClick={() => { onOpenInNewWindow(mode); setOpen(false); }}
+            className={`ml-7 mt-0.5 mb-1 rounded-md px-2 py-1 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
+          >
+            {t('workMode.open')}
+          </button>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className={`relative ${className ?? ''}`} data-work-mode-menu>
@@ -113,41 +187,36 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
           <p className="px-2.5 py-3 text-[12px] text-ink-faint">{t('workMode.empty')}</p>
         ) : null}
 
-        {modes.map((mode) => {
-          const active = mode.id === current?.id;
-          return (
-            <div key={mode.id} className="mt-1">
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={active}
-                data-work-mode-option={mode.id}
-                onClick={() => {
-                  setOpen(false);
-                  if (mode.enabled) chooseMode(mode.id);
-                  else onSetup(mode);
-                }}
-                className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-ink/[0.04] ${active ? 'bg-selected' : ''}`}
-              >
-                <span aria-hidden className={`mt-1.5 h-2 w-2 shrink-0 rounded-[2px] ${active ? 'bg-selected-ink' : 'bg-hairline-strong'}`} />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-medium text-ink">{mode.name}</span>
-                  <span className="mt-0.5 block text-[11.5px] leading-[1.45] text-ink-faint">{mode.description}</span>
-                  <ModeStateTag mode={mode} labels={labels} />
-                </span>
-              </button>
-              {onOpenInNewWindow !== undefined ? (
-                <button
-                  type="button"
-                  onClick={() => { onOpenInNewWindow(mode); setOpen(false); }}
-                  className={`ml-7 mt-0.5 mb-1 rounded-md px-2 py-1 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
-                >
-                  {t('workMode.open')}
-                </button>
-              ) : null}
+        {isVirtualized ? (
+          <div ref={setScrollNode} className="max-h-[320px] overflow-y-auto overscroll-contain">
+            <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+              {virtualizer.getVirtualItems().map((vRow) => {
+                const mode = modes[vRow.index];
+                if (mode === undefined) return null;
+                return (
+                  <div
+                    key={vRow.key}
+                    data-index={vRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vRow.start}px)`,
+                    }}
+                  >
+                    {renderModeOption(mode)}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </div>
+        ) : (
+          modes.map((mode) => (
+            <div key={mode.id}>{renderModeOption(mode)}</div>
+          ))
+        )}
 
         <p className="mt-1 border-t border-hairline px-2.5 pb-1 pt-2 text-[11px] leading-[1.5] text-ink-faint">{t('workMode.sameSpaceSecondWindow')}</p>
       </AnchoredPopover>

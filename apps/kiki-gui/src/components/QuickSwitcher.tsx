@@ -5,16 +5,21 @@
  * settings matches, and global-search hits (`POST /search`).
  */
 
-import { useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useRef, useState } from 'react';
 import { Autocomplete } from '@base-ui/react/autocomplete';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   buildSwitcherItems,
   highlightTerms,
+  resolveWorkspaceTerm,
   settingsCardRoute,
   splitByRanges,
+  SWITCHER_RECENT_LIMIT,
+  SWITCHER_TITLE_MATCH_LIMIT,
+  switcherSessionLabel,
   type MatchRange,
   type SwitcherItem,
   type SwitcherSettingItem,
@@ -28,6 +33,7 @@ import {
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { isImeKeyEvent } from '../lib/shortcuts';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { pushToast } from '../lib/toasts';
 import { useMemoryAdvisor } from './memory/useMemoryAdvisor';
 import { useSessionSearch } from '../lib/sessionSearch';
@@ -37,6 +43,125 @@ import { Icon } from './icons';
 import { ThreadTitle } from './ThreadTitle';
 
 const ADVISOR_ACTION = 'memory-advisor-toggle';
+const EMPTY_SESSIONS: readonly Session[] = [];
+const SWITCHER_LIST_MAX_HEIGHT = 340;
+const SWITCHER_EST_ROW_HEIGHT = 50;
+
+interface IndexedSessionRow {
+  readonly session: Session;
+  readonly titleLower: string;
+  readonly cwdLower: string;
+  readonly workspaceId: string;
+  readonly updatedAt: string;
+}
+
+/** O(N * K) top-K recent sessions by `updated_at` descending without sorting all N sessions. */
+function selectTopRecentSessions(sessions: readonly Session[], limit: number): Session[] {
+  if (sessions.length <= limit) {
+    return sessions.toSorted((a, b) => (b.updated_at > a.updated_at ? 1 : b.updated_at < a.updated_at ? -1 : 0));
+  }
+  const top: Session[] = [];
+  for (let i = 0; i < sessions.length; i += 1) {
+    const candidate = sessions[i]!;
+    if (top.length === limit && candidate.updated_at <= top[limit - 1]!.updated_at) {
+      continue;
+    }
+    let pos = top.length;
+    while (pos > 0 && candidate.updated_at > top[pos - 1]!.updated_at) {
+      pos -= 1;
+    }
+    top.splice(pos, 0, candidate);
+    if (top.length > limit) top.pop();
+  }
+  return top;
+}
+
+function fastMatchScore(haystack: string, needle: string): number {
+  const idx = haystack.indexOf(needle);
+  if (idx >= 0) {
+    if (idx === 0) return haystack.length === needle.length ? 1000 : 800;
+    const prev = haystack.charCodeAt(idx - 1);
+    const boundary = prev === 32 || prev === 47 || prev === 92 || prev === 45 || prev === 95 || prev === 46;
+    return boundary ? 600 - Math.min(idx, 100) : 400 - Math.min(idx, 100);
+  }
+  if (needle.length > 24) return -1;
+  let hi = 0;
+  for (let ni = 0; ni < needle.length; ni += 1) {
+    const ch = needle.charCodeAt(ni);
+    let found = false;
+    while (hi < haystack.length) {
+      if (haystack.charCodeAt(hi) === ch) {
+        found = true;
+        hi += 1;
+        break;
+      }
+      hi += 1;
+    }
+    if (!found) return -1;
+  }
+  return 100 - Math.min(hi, 90);
+}
+
+/** Single-pass O(N) top-K local session match (avoids sorting 10,000+ matches per keystroke). */
+function selectTopLocalSessionMatches(
+  indexed: readonly IndexedSessionRow[],
+  queryText: string,
+  workspaceId: string | undefined,
+  workspaceNamesLower: ReadonlyMap<string, string>,
+  limit: number,
+): Session[] {
+  const needle = queryText.trim().toLowerCase();
+  if (needle === '') {
+    if (workspaceId === undefined) return [];
+    const scoped: Session[] = [];
+    for (let i = 0; i < indexed.length; i += 1) {
+      const row = indexed[i]!;
+      if (row.workspaceId !== workspaceId) continue;
+      if (scoped.length === limit && row.updatedAt <= scoped[limit - 1]!.updated_at) continue;
+      let pos = scoped.length;
+      while (pos > 0 && row.updatedAt > scoped[pos - 1]!.updated_at) pos -= 1;
+      scoped.splice(pos, 0, row.session);
+      if (scoped.length > limit) scoped.pop();
+    }
+    return scoped;
+  }
+  const top: { readonly session: Session; readonly score: number; readonly updatedAt: string }[] = [];
+  for (let i = 0; i < indexed.length; i += 1) {
+    const row = indexed[i]!;
+    if (workspaceId !== undefined && row.workspaceId !== workspaceId) continue;
+    let score = fastMatchScore(row.titleLower, needle);
+    if (score < 0) {
+      const cwdScore = fastMatchScore(row.cwdLower, needle);
+      if (cwdScore >= 0) score = cwdScore - 200;
+    }
+    if (score < 0 && workspaceId === undefined) {
+      const wsName = workspaceNamesLower.get(row.workspaceId);
+      if (wsName !== undefined) {
+        const wsScore = fastMatchScore(wsName, needle);
+        if (wsScore >= 0) score = wsScore - 400;
+      }
+    }
+    if (score < 0) continue;
+    if (top.length === limit) {
+      const last = top[limit - 1]!;
+      if (score < last.score || (score === last.score && row.updatedAt <= last.updatedAt)) {
+        continue;
+      }
+    }
+    let pos = top.length;
+    while (pos > 0) {
+      const prev = top[pos - 1]!;
+      if (score > prev.score || (score === prev.score && row.updatedAt > prev.updatedAt)) {
+        pos -= 1;
+      } else {
+        break;
+      }
+    }
+    top.splice(pos, 0, { session: row.session, score, updatedAt: row.updatedAt });
+    if (top.length > limit) top.pop();
+  }
+  return top.map((entry) => entry.session);
+}
 
 interface IndexedSwitcherItem {
   readonly key: string;
@@ -83,22 +208,87 @@ export function QuickSwitcher({
       : t(advisor.view.on ? 'memory.advisor.turnOff' : 'memory.advisor.turnOn');
   const [input, setInput] = useState(initialQuery ?? '');
   const [includeToolOutput, setIncludeToolOutput] = useState(false);
+  const pickerScale = getPickerScaleConfig();
+  const listRef = useRef<HTMLDivElement>(null);
 
   const untitled = t('sidebar.untitled');
+  const useFastLocalIndex = sessions.length > pickerScale.fastFilterThreshold;
+  const deferredInput = useDeferredValue(input);
+
+  // Pre-compute top-K recent sessions in O(N) once per `sessions` identity so
+  // `buildSwitcherItems` never re-sorts 10,000 sessions on every keystroke.
+  const recentSessions = useMemo(
+    () => selectTopRecentSessions(sessions, SWITCHER_RECENT_LIMIT),
+    [sessions],
+  );
+
+  // For 10,000-session workspaces, build a pre-lowercased index once per
+  // `sessions` array and bypass `useSessionSearch`'s per-render full mapping.
+  const indexedSessions = useMemo<readonly IndexedSessionRow[]>(() => {
+    if (!useFastLocalIndex) return [];
+    const rows = new Array<IndexedSessionRow>(sessions.length);
+    for (let i = 0; i < sessions.length; i += 1) {
+      const session = sessions[i]!;
+      rows[i] = {
+        session,
+        titleLower: switcherSessionLabel(session, untitled).toLowerCase(),
+        cwdLower: session.metadata.cwd.toLowerCase(),
+        workspaceId: session.workspace_id,
+        updatedAt: session.updated_at,
+      };
+    }
+    return rows;
+  }, [useFastLocalIndex, sessions, untitled]);
+
+  const workspaceNamesLower = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const workspace of workspaces) {
+      map.set(workspace.id, workspace.name.toLowerCase());
+    }
+    return map;
+  }, [workspaces]);
+
   // The same two-layer engine as the sidebar: instant local ranking plus the
-  // debounced, abortable content search.
+  // debounced, abortable content search. When `useFastLocalIndex` is active,
+  // local matching runs through the O(N) top-K index below while content search
+  // (`POST /search`) stays wired identically.
   const search = useSessionSearch({
     text: input,
-    sessions,
+    sessions: useFastLocalIndex ? EMPTY_SESSIONS : sessions,
     workspaces,
     untitled,
     queryKeyPrefix: 'quick-switcher-search',
     includeToolOutput,
   });
-  const localMatches = useMemo(
-    () => (search.parsed.text.trim() === '' ? undefined : search.local.sessions.map((match) => match.session.source)),
-    [search.local.sessions, search.parsed.text],
+
+  const inWorkspaceId = useMemo(
+    () => resolveWorkspaceTerm(search.parsed.workspaceTerm, workspaces)?.id,
+    [search.parsed.workspaceTerm, workspaces],
   );
+
+  const localMatches = useMemo(() => {
+    if (!useFastLocalIndex) {
+      return search.parsed.text.trim() === ''
+        ? undefined
+        : search.local.sessions.map((match) => match.session.source);
+    }
+    if (deferredInput.trim() === '') return undefined;
+    return selectTopLocalSessionMatches(
+      indexedSessions,
+      search.parsed.text,
+      inWorkspaceId,
+      workspaceNamesLower,
+      SWITCHER_TITLE_MATCH_LIMIT,
+    );
+  }, [
+    useFastLocalIndex,
+    search.parsed.text,
+    search.local.sessions,
+    deferredInput,
+    indexedSessions,
+    inWorkspaceId,
+    workspaceNamesLower,
+  ]);
   const usageActionTitle = t('switcher.action.usage');
   const settingsActionTitle = t('switcher.action.settings');
   // The settings index is the same one the settings page searches, so a name
@@ -122,7 +312,7 @@ export function QuickSwitcher({
     () =>
       buildSwitcherItems({
         query: input,
-        sessions,
+        sessions: recentSessions,
         hits: search.hits,
         untitled,
         localMatches,
@@ -142,7 +332,7 @@ export function QuickSwitcher({
       }),
     [
       input,
-      sessions,
+      recentSessions,
       search.hits,
       localMatches,
       untitled,
@@ -215,6 +405,107 @@ export function QuickSwitcher({
   const searchStatus = input.trim() !== ''
     && (contentProblem || unavailable !== undefined || search.building !== undefined || search.incomplete);
 
+  const isVirtualized = indexedItems.length > pickerScale.selectVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? indexedItems.length : 0,
+    getScrollElement: () => listRef.current,
+    estimateSize: (index) => (indexedItems[index]?.headerText !== null ? SWITCHER_EST_ROW_HEIGHT + 24 : SWITCHER_EST_ROW_HEIGHT),
+    getItemKey: (index) => indexedItems[index]?.key ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 528, height: SWITCHER_LIST_MAX_HEIGHT },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : SWITCHER_EST_ROW_HEIGHT;
+    },
+    useFlushSync: false,
+  });
+
+  const renderEntry = (entry: IndexedSwitcherItem) => {
+    const { item, index, headerText } = entry;
+    return (
+      <>
+        {headerText !== null ? (
+          <p className={`px-2 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
+            {headerText}
+          </p>
+        ) : null}
+        <Autocomplete.Item
+          value={entry}
+          index={index}
+          data-index={index}
+          onClick={() => { openItem(item); }}
+          className="flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] data-[highlighted]:bg-paper data-[highlighted]:shadow-[var(--kiki-sheet-shadow)]"
+        >
+          {item.kind === 'action' ? (
+            <span className="flex items-center gap-2">
+              <Icon name="arrowUpRight" size={14} className="text-ink-faint" />
+              <span className="truncate text-[13px] font-medium text-ink">
+                {item.title}
+              </span>
+            </span>
+          ) : item.kind === 'setting' ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="shrink-0 text-[12px] text-ink-faint">
+                {item.sectionLabel}
+              </span>
+              <Icon name="chevron" size={12} className="text-ink-faint" />
+              <span className="truncate text-[13px] font-medium text-ink">
+                {item.title}
+              </span>
+            </span>
+          ) : item.kind === 'session' ? (
+            <>
+              <span className="truncate text-[13px] font-medium text-ink">
+                <ThreadTitle text={item.title} />
+              </span>
+              <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
+                <span className="truncate">{item.cwd}</span>
+                <span className="shrink-0">· {time.relativeTime(item.updatedAt)}</span>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="line-clamp-2 text-[12px] leading-snug text-ink">
+                <Highlighted text={item.snippet} ranges={highlightTerms(item.snippet, search.contentQuery || search.parsed.text)} />
+              </span>
+              <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
+                <span className="truncate">
+                  <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
+                </span>
+                {item.turn !== undefined ? (
+                  <span data-switcher-hit-turn className="shrink-0 rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft tabular-nums">
+                    #{item.turn}
+                  </span>
+                ) : null}
+                {item.agentId !== undefined && item.agentId !== '' && item.agentId !== 'main' ? (
+                  <span data-switcher-hit-agent className="max-w-28 shrink-0 truncate rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft">
+                    {item.agentId}
+                  </span>
+                ) : null}
+                <span className="shrink-0">· {t(item.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${item.role}`)}</span>
+              </span>
+            </>
+          )}
+        </Autocomplete.Item>
+      </>
+    );
+  };
+
   return (
     <Dialog
       onClose={onClose}
@@ -270,6 +561,7 @@ export function QuickSwitcher({
         </div>
 
         <Autocomplete.List
+          ref={listRef}
           id="quick-switcher-list"
           className="max-h-[340px] overflow-y-auto p-2"
         >
@@ -281,77 +573,35 @@ export function QuickSwitcher({
                 {searching ? t('sidebar.searching') : input.trim() === '' ? t('switcher.empty') : t('switcher.noMatches', { query: input.trim() })}
               </p>
             )
-          ) : (
-            indexedItems.map((entry) => {
-              const { item, index, headerText } = entry;
-              return (
-                <div key={entry.key}>
-                  {headerText !== null ? (
-                    <p className={`px-2 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
-                      {headerText}
-                    </p>
-                  ) : null}
-                  <Autocomplete.Item
-                    value={entry}
-                    index={index}
-                    data-index={index}
-                    onClick={() => { openItem(item); }}
-                    className="flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] data-[highlighted]:bg-paper data-[highlighted]:shadow-[var(--kiki-sheet-shadow)]"
+          ) : isVirtualized ? (
+            <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+              {virtualizer.getVirtualItems().map((row) => {
+                const entry = indexedItems[row.index];
+                if (entry === undefined) return null;
+                return (
+                  <div
+                    key={row.key}
+                    data-index={row.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${row.start}px)`,
+                    }}
                   >
-                    {item.kind === 'action' ? (
-                      <span className="flex items-center gap-2">
-                        <Icon name="arrowUpRight" size={14} className="text-ink-faint" />
-                        <span className="truncate text-[13px] font-medium text-ink">
-                          {item.title}
-                        </span>
-                      </span>
-                    ) : item.kind === 'setting' ? (
-                      <span className="flex min-w-0 items-center gap-1">
-                        <span className="shrink-0 text-[12px] text-ink-faint">
-                          {item.sectionLabel}
-                        </span>
-                        <Icon name="chevron" size={12} className="text-ink-faint" />
-                        <span className="truncate text-[13px] font-medium text-ink">
-                          {item.title}
-                        </span>
-                      </span>
-                    ) : item.kind === 'session' ? (
-                      <>
-                        <span className="truncate text-[13px] font-medium text-ink">
-                          <ThreadTitle text={item.title} />
-                        </span>
-                        <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
-                          <span className="truncate">{item.cwd}</span>
-                          <span className="shrink-0">· {time.relativeTime(item.updatedAt)}</span>
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="line-clamp-2 text-[12px] leading-snug text-ink">
-                          <Highlighted text={item.snippet} ranges={highlightTerms(item.snippet, search.contentQuery || search.parsed.text)} />
-                        </span>
-                        <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
-                          <span className="truncate">
-                            <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
-                          </span>
-                          {item.turn !== undefined ? (
-                            <span data-switcher-hit-turn className="shrink-0 rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft tabular-nums">
-                              #{item.turn}
-                            </span>
-                          ) : null}
-                          {item.agentId !== undefined && item.agentId !== '' && item.agentId !== 'main' ? (
-                            <span data-switcher-hit-agent className="max-w-28 shrink-0 truncate rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft">
-                              {item.agentId}
-                            </span>
-                          ) : null}
-                          <span className="shrink-0">· {t(item.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${item.role}`)}</span>
-                        </span>
-                      </>
-                    )}
-                  </Autocomplete.Item>
-                </div>
-              );
-            })
+                    {renderEntry(entry)}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            indexedItems.map((entry) => (
+              <div key={entry.key}>
+                {renderEntry(entry)}
+              </div>
+            ))
           )}
           {searchStatus ? (
             <div data-switcher-search-status className="border-t border-hairline px-2 pt-1.5 pb-0.5 text-[12px] leading-snug text-ink-faint">

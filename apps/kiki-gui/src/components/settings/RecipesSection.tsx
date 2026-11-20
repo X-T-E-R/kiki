@@ -15,14 +15,16 @@
  * would use, which is exactly what the save confirmation says.
  */
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { errorText } from '@kiki/session-core/i18n';
 import type { RecipeMarket, RecipeSummary } from '@kiki/protocol';
 import { recipeSettingsPath } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import { getPickerScaleConfig } from '../../lib/subagentScaleConfig';
 import {
   useRecipeDetail, useRecipeList, useRecipeMarkets, useRecipeMutation,
 } from '../../lib/recipeQueries';
@@ -157,16 +159,14 @@ function RecipeLibrary({ onOpen }: { onOpen: (installationId: string) => void })
         ) : installed.length === 0 ? (
           <p className="text-[12px] leading-5 text-ink-faint" data-recipes-empty>{t('st.recipe.noneInstalled')}</p>
         ) : (
-          <ul className="divide-y divide-hairline border-y border-hairline" data-recipes-list>
-            {installed.map((summary) => (
-              <RecipeLibraryRow key={summary.installation_id} summary={summary}
-                busy={setMode.isPending || applyUpdate.isPending || remove.isPending}
-                onOpen={onOpen}
-                onSetMode={(mode) => { setFeedback(null); setMode.mutate({ summary, mode }); }}
-                onUpdate={() => { setFeedback(null); applyUpdate.mutate(summary); }}
-                onRemove={() => { setFeedback(null); setRemovingSummary(summary); }} />
-            ))}
-          </ul>
+          <RecipeLibraryList
+            installed={installed}
+            busy={setMode.isPending || applyUpdate.isPending || remove.isPending}
+            onOpen={onOpen}
+            onSetMode={(summary, mode) => { setFeedback(null); setMode.mutate({ summary, mode }); }}
+            onUpdate={(summary) => { setFeedback(null); applyUpdate.mutate(summary); }}
+            onRemove={(summary) => { setFeedback(null); setRemovingSummary(summary); }}
+          />
         )}
         <FeedbackLine feedback={feedback} />
       </SectionCard>
@@ -190,6 +190,96 @@ function RecipeLibrary({ onOpen }: { onOpen: (installationId: string) => void })
 
       <RecipeImportCard />
       <RecipeMarketsCard />
+    </div>
+  );
+}
+
+function RecipeLibraryList({ installed, busy, onOpen, onSetMode, onUpdate, onRemove }: {
+  readonly installed: readonly RecipeSummary[];
+  readonly busy: boolean;
+  readonly onOpen: (installationId: string) => void;
+  readonly onSetMode: (summary: RecipeSummary, mode: 'follow' | 'pinned') => void;
+  readonly onUpdate: (summary: RecipeSummary) => void;
+  readonly onRemove: (summary: RecipeSummary) => void;
+}) {
+  const pickerScale = getPickerScaleConfig();
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setScrollNode = useCallback((node: HTMLDivElement | null) => { setScrollEl(node); }, []);
+  const isVirtualized = installed.length > pickerScale.catalogVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? installed.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 68,
+    getItemKey: (index) => installed[index]?.installation_id ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 640, height: 480 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 68;
+    },
+    useFlushSync: false,
+  });
+
+  if (!isVirtualized) {
+    return (
+      <ul className="divide-y divide-hairline border-y border-hairline" data-recipes-list>
+        {installed.map((summary) => (
+          <RecipeLibraryRow key={summary.installation_id} summary={summary}
+            busy={busy}
+            onOpen={onOpen}
+            onSetMode={(mode) => { onSetMode(summary, mode); }}
+            onUpdate={() => { onUpdate(summary); }}
+            onRemove={() => { onRemove(summary); }} />
+        ))}
+      </ul>
+    );
+  }
+
+  return (
+    <div ref={setScrollNode} className="max-h-[min(520px,65vh)] overflow-y-auto border-y border-hairline" data-recipes-list>
+      <ul style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((vRow) => {
+          const summary = installed[vRow.index];
+          if (summary === undefined) return null;
+          return (
+            <div
+              key={vRow.key}
+              data-index={vRow.index}
+              ref={virtualizer.measureElement}
+              className="border-b border-hairline last:border-b-0"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vRow.start}px)`,
+              }}
+            >
+              <RecipeLibraryRow summary={summary}
+                busy={busy}
+                onOpen={onOpen}
+                onSetMode={(mode) => { onSetMode(summary, mode); }}
+                onUpdate={() => { onUpdate(summary); }}
+                onRemove={() => { onRemove(summary); }} />
+            </div>
+          );
+        })}
+      </ul>
     </div>
   );
 }

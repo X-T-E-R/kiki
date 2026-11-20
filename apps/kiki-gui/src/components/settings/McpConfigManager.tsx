@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -502,36 +502,61 @@ export function McpConfigManager({
         </fieldset>
   );
 
-  const runtimeFor = (entry: McpManagedServer) => {
+  const runtimeLookup = useMemo(() => {
+    const byName = new Map<string, McpServer>();
+    const byId = new Map<string, McpServer>();
+    if (runtime !== undefined) {
+      for (const server of runtime.servers) {
+        if (!byName.has(server.name)) byName.set(server.name, server);
+        if (!byId.has(server.id)) byId.set(server.id, server);
+      }
+    }
+    return { byName, byId };
+  }, [runtime]);
+
+  const runtimeFor = useCallback((entry: McpManagedServer) => {
     if (runtime === undefined) return undefined;
-    const runtimeId = entry.source === 'plugin' && entry.plugin !== undefined ? undefined : entry.name;
-    return runtime.servers.find((server) => server.name === entry.name || server.id === runtimeId);
-  };
+    const hit = runtimeLookup.byName.get(entry.name);
+    if (hit !== undefined) return hit;
+    if (entry.source === 'plugin' && entry.plugin !== undefined) return undefined;
+    return runtimeLookup.byId.get(entry.name);
+  }, [runtime, runtimeLookup]);
 
   // Servers that need attention lead; everything else keeps config order.
-  const needsAttention = (entry: McpManagedServer) => {
+  const needsAttention = useCallback((entry: McpManagedServer) => {
     const status = runtimeFor(entry)?.status;
     return status === 'error' || status === 'disconnected';
-  };
-  const liveCount = entries.filter((entry) => runtimeFor(entry)?.status === 'connected').length;
-  const failing = entries.filter(needsAttention).length;
+  }, [runtimeFor]);
 
-  const keyOf = (entry: McpManagedServer) => `${entry.source}:${entry.name}`;
-  const textOf = (entry: McpManagedServer) => [
+  const { liveCount, failing, attentionFirst } = useMemo(() => {
+    let live = 0;
+    const attn: McpManagedServer[] = [];
+    const rest: McpManagedServer[] = [];
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i]!;
+      const status = runtimeFor(entry)?.status;
+      if (status === 'connected') live += 1;
+      if (status === 'error' || status === 'disconnected') attn.push(entry);
+      else rest.push(entry);
+    }
+    return { liveCount: live, failing: attn.length, attentionFirst: [...attn, ...rest] };
+  }, [entries, runtimeFor]);
+
+  const keyOf = useCallback((entry: McpManagedServer) => `${entry.source}:${entry.name}`, []);
+  const textOf = useCallback((entry: McpManagedServer) => [
     entry.name,
     entry.plugin?.name,
     entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
-  ];
-  const filters: readonly ListFilterSpec<McpManagedServer>[] = [
+  ], []);
+  const filters = useMemo<readonly ListFilterSpec<McpManagedServer>[]>(() => [
     { id: 'attention', label: t('st.mcp.filter.attention'), tone: 'attention', test: needsAttention },
     { id: 'connected', label: t('st.mcp.filter.connected'), test: (entry) => runtimeFor(entry)?.status === 'connected' },
-  ];
-  const sorts: readonly ListSortSpec<McpManagedServer>[] = [
+  ], [t, needsAttention, runtimeFor]);
+  const sorts = useMemo<readonly ListSortSpec<McpManagedServer>[]>(() => [
     { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.name.localeCompare(b.name) },
-  ];
+  ], [t]);
   // Attention leads in the default order; `useListView` keeps that stable.
-  const attentionFirst = [...entries.filter(needsAttention), ...entries.filter((entry) => !needsAttention(entry))];
   const view = useListView({ listId: 'mcp-servers', items: attentionFirst, keyOf, textOf, filters, sorts });
 
   // One handoff element, rendered beside whichever add verb is on screen.
@@ -606,7 +631,6 @@ export function McpConfigManager({
       ) : null}
       {view.visible.length > 0 ? (
         <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.mcp.configTitle')}
-          virtualizeAfter={Number.POSITIVE_INFINITY}
           renderRow={(entry) => {
           const live = runtimeFor(entry);
           const open = expanded === `${entry.source}:${entry.name}`;

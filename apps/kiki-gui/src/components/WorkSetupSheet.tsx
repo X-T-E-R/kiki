@@ -12,13 +12,15 @@
  * succeeded stays, the rest is named, and retrying is the same one action.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { WorkPresetItem } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import type { KikiClient } from '../lib/client';
+import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { Spinner } from './icons';
 import { SidePanel } from './SidePanel';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
@@ -47,6 +49,78 @@ function ItemMark({ state }: { state: 'have' | 'missing' }) {
 
 function PrerequisiteSize(): string {
   return '84 MB';
+}
+
+function SetupPluginRows<T extends { readonly id: string }>({
+  items,
+  renderRow,
+}: {
+  readonly items: readonly T[];
+  readonly renderRow: (item: T) => ReactNode;
+}) {
+  const pickerScale = getPickerScaleConfig();
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setScrollNode = useCallback((node: HTMLDivElement | null) => { setScrollEl(node); }, []);
+  const isVirtualized = items.length > pickerScale.catalogVirtualizeThreshold;
+  const virtualizer = useVirtualizer({
+    count: isVirtualized ? items.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 68,
+    getItemKey: (index) => items[index]?.id ?? index,
+    overscan: pickerScale.virtualOverscan,
+    initialRect: { width: 480, height: 320 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    measureElement: (el) => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      return height > 0 ? height : 68;
+    },
+    useFlushSync: false,
+  });
+
+  if (!isVirtualized) {
+    return <>{items.map((item) => <div key={item.id}>{renderRow(item)}</div>)}</>;
+  }
+
+  return (
+    <div ref={setScrollNode} className="max-h-[320px] overflow-y-auto overscroll-contain">
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((vRow) => {
+          const item = items[vRow.index];
+          if (item === undefined) return null;
+          return (
+            <div
+              key={vRow.key}
+              data-index={vRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vRow.start}px)`,
+              }}
+            >
+              {renderRow(item)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }: WorkSetupSheetProps) {
@@ -147,34 +221,40 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
           {ready.length > 0 ? (
             <>
               <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workSetup.haveHeading')}</p>
-              {ready.map((plugin) => (
-                <div key={plugin.id} className="flex items-start gap-2.5 border-b border-hairline py-2.5 last:border-b-0">
-                  <ItemMark state="have" />
-                  <div className="min-w-0 flex-1">
-                    <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
-                    <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
-                    <span className="mt-1 block text-[10.5px] font-medium uppercase tracking-[0.03em] text-ink-faint">{t('workSetup.itemInstalledOn')}</span>
+              <SetupPluginRows
+                items={ready}
+                renderRow={(plugin) => (
+                  <div className="flex items-start gap-2.5 border-b border-hairline py-2.5 last:border-b-0">
+                    <ItemMark state="have" />
+                    <div className="min-w-0 flex-1">
+                      <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
+                      <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
+                      <span className="mt-1 block text-[10.5px] font-medium uppercase tracking-[0.03em] text-ink-faint">{t('workSetup.itemInstalledOn')}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                )}
+              />
             </>
           ) : null}
 
           {missing.length > 0 ? (
             <>
               <p className="mb-2 mt-3 text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workSetup.addHeading')}</p>
-              {missing.map((plugin) => (
-                <div key={plugin.id} className="flex items-start gap-2.5 border-b border-hairline py-2.5 last:border-b-0">
-                  <ItemMark state="missing" />
-                  <div className="min-w-0 flex-1">
-                    <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
-                    <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
-                    <span className="mt-1 block text-[10.5px] font-medium uppercase tracking-[0.03em] text-ink-faint">
-                      {plugin.required ? t('workSetup.itemMissing') : t('workSetup.itemOptional')}
-                    </span>
+              <SetupPluginRows
+                items={missing}
+                renderRow={(plugin) => (
+                  <div className="flex items-start gap-2.5 border-b border-hairline py-2.5 last:border-b-0">
+                    <ItemMark state="missing" />
+                    <div className="min-w-0 flex-1">
+                      <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
+                      <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
+                      <span className="mt-1 block text-[10.5px] font-medium uppercase tracking-[0.03em] text-ink-faint">
+                        {plugin.required ? t('workSetup.itemMissing') : t('workSetup.itemOptional')}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                )}
+              />
             </>
           ) : null}
 
