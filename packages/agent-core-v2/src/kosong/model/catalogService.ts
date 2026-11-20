@@ -36,6 +36,7 @@ import {
 import {
   explainProviderEndpoint,
   getProviderDefinition,
+  providerEndpointEnvNames,
   resolveProviderApiKey,
 } from '../provider/providerDefinition';
 import { resolveImagePolicy } from '../provider/providerImagePolicy';
@@ -503,6 +504,9 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         continue;
       }
       const adapter = providerType === undefined ? undefined : this.protocolRegistry.providerDefinition?.(providerType);
+      for (const envName of providerEndpointEnvNames(providerType, adapter)) {
+        envKeys.add(envName);
+      }
       const explainedProtocol = explainModelProtocol({}, providerConfig, undefined, adapter);
       const protocolSource = providerType === undefined
         ? undefined

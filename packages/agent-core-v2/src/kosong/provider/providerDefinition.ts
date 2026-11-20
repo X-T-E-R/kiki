@@ -145,6 +145,18 @@ export function resolveProviderEndpoint(
   };
 }
 
+export function providerEndpointEnvNames(
+  providerType: string | undefined,
+  definition: ProviderAdapterDefinition | undefined = providerType === undefined ? undefined : getProviderDefinition(providerType),
+): readonly string[] {
+  if (providerType === undefined || providerType === 'openai_decisions') return [];
+  if (providerType === 'system_one') return ['TYPESAFE_API_KEY'];
+  if (definition === undefined) return [];
+  const endpoint = normalizeEndpointDeclaration(definition.endpoint) ?? aggregateTraitEndpoints(definition);
+  if (endpoint === undefined) return [];
+  return [...endpoint.apiKeyEnv, ...endpoint.baseUrlEnv];
+}
+
 interface AggregatedEndpointDeclaration {
   readonly apiKeyEnv: readonly string[];
   readonly baseUrlEnv: readonly string[];

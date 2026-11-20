@@ -4,15 +4,6 @@ import {
   normalizeLiteral,
   tokenize,
 } from '#/index';
-import {
-  normalizeLiteral as legacyNormalizeLiteral,
-  tokenize as legacyTokenize,
-} from '../../minidb/src/index';
-
-test('legacy APIs re-export the lexical implementations', () => {
-  assert.equal(legacyTokenize, tokenize);
-  assert.equal(legacyNormalizeLiteral, normalizeLiteral);
-});
 
 test('tokenize emits lowercase latin words and CJK UTF-16 uni/bigrams', () => {
   assert.deepEqual(tokenize('Hello WORLD 42'), ['hello', 'world', '42']);

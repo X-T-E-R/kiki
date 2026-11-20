@@ -20,6 +20,16 @@ export interface MemoryRecallOptions {
   readonly semanticWeight?: number;
   readonly diversity?: number;
 }
+const defaultCollator = new Intl.Collator();
+const scopeKeyCache = new WeakMap<MemoryScope, string>();
+function cachedScopeKey(scope: MemoryScope): string {
+  let cached = scopeKeyCache.get(scope);
+  if (cached === undefined) {
+    cached = JSON.stringify(scope);
+    scopeKeyCache.set(scope, cached);
+  }
+  return cached;
+}
 function key(entry: Pick<MemoryRecallEntry, 'id' | 'scope'>): string {
   return JSON.stringify([entry.scope.kind, 'workspaceId' in entry.scope ? entry.scope.workspaceId : null, 'personaId' in entry.scope ? entry.scope.personaId : null, entry.id]);
 }
@@ -127,7 +137,7 @@ export function buildMemoryRecallIndex(entries: readonly MemoryRecallEntry[]): M
     docs[docIndex] = {
       entry,
       entryKey: key(entry),
-      scopeKey: JSON.stringify(entry.scope),
+      scopeKey: cachedScopeKey(entry.scope),
       titleNorm,
       bodyNorm,
       idNorm,
@@ -236,7 +246,7 @@ export function rankMemoryRecallIndexed(
     });
   }
   const compare = (a: typeof scored[number], b: typeof scored[number]): number =>
-    b.result.score - a.result.score || a.result.title.localeCompare(b.result.title) || a.result.id.localeCompare(b.result.id) || a.scopeKey.localeCompare(b.scopeKey);
+    b.result.score - a.result.score || defaultCollator.compare(a.result.title, b.result.title) || defaultCollator.compare(a.result.id, b.result.id) || defaultCollator.compare(a.scopeKey, b.scopeKey);
   const exact = scored.filter((item) => item.result.score_details.exactIdentifier).toSorted(compare).map((item) => item.result);
   const other = scored.filter((item) => !item.result.score_details.exactIdentifier).toSorted(compare).map((item) => item.result);
   return [...diversify(exact, options.diversity ?? 1), ...diversify(other, options.diversity ?? 1)];
@@ -270,35 +280,36 @@ export function rankMemoryRecall(entries: readonly MemoryRecallEntry[], query: s
     let counts: Int32Array | undefined;
     let inTitle: Uint8Array | undefined;
     let hasTermHit = false;
-    const titleTokens = termsFromNormalized(titleNorm);
-    const bodyTokens = termsFromNormalized(bodyNorm);
-    length = titleTokens.length + bodyTokens.length;
-    totalLength += length;
-    if (queryTermIndex.size > 0) {
-      for (const token of titleTokens) {
-        const termIdx = queryTermIndex.get(token);
-        if (termIdx === undefined) continue;
-        if (counts === undefined) {
-          counts = new Int32Array(queryTerms.length);
-          inTitle = new Uint8Array(queryTerms.length);
-        }
-        if (counts[termIdx] === 0) docFreq[termIdx] = docFreq[termIdx]! + 1;
-        counts[termIdx] = counts[termIdx]! + 1;
-        inTitle![termIdx] = 1;
-        hasTermHit = true;
+    const rawTitleTokens = tokenize(titleNorm);
+    const rawBodyTokens = tokenize(bodyNorm);
+    for (const token of rawTitleTokens) {
+      if (stopWords.has(token)) continue;
+      length++;
+      const termIdx = queryTermIndex.get(token);
+      if (termIdx === undefined) continue;
+      if (counts === undefined) {
+        counts = new Int32Array(queryTerms.length);
+        inTitle = new Uint8Array(queryTerms.length);
       }
-      for (const token of bodyTokens) {
-        const termIdx = queryTermIndex.get(token);
-        if (termIdx === undefined) continue;
-        if (counts === undefined) {
-          counts = new Int32Array(queryTerms.length);
-          inTitle = new Uint8Array(queryTerms.length);
-        }
-        if (counts[termIdx] === 0) docFreq[termIdx] = docFreq[termIdx]! + 1;
-        counts[termIdx] = counts[termIdx]! + 1;
-        hasTermHit = true;
-      }
+      if (counts[termIdx] === 0) docFreq[termIdx] = docFreq[termIdx]! + 1;
+      counts[termIdx] = counts[termIdx]! + 1;
+      inTitle![termIdx] = 1;
+      hasTermHit = true;
     }
+    for (const token of rawBodyTokens) {
+      if (stopWords.has(token)) continue;
+      length++;
+      const termIdx = queryTermIndex.get(token);
+      if (termIdx === undefined) continue;
+      if (counts === undefined) {
+        counts = new Int32Array(queryTerms.length);
+        inTitle = new Uint8Array(queryTerms.length);
+      }
+      if (counts[termIdx] === 0) docFreq[termIdx] = docFreq[termIdx]! + 1;
+      counts[termIdx] = counts[termIdx]! + 1;
+      hasTermHit = true;
+    }
+    totalLength += length;
     const literalMatch = normalized.length > 0 && (titleNorm.includes(normalized) || bodyNorm.includes(normalized));
     const idNorm = normalized.length > 0 ? normalizeLiteral(entry.id) : '';
     const exactIdentifier = normalized.length > 0 && (
@@ -331,7 +342,7 @@ export function rankMemoryRecall(entries: readonly MemoryRecallEntry[], query: s
     const lexical = bm25 / (1 + bm25) + (candidate.literalMatch ? 0.1 : 0);
     if (!candidate.exactIdentifier && lexical === 0 && candidate.semanticScore === 0) continue;
     scored.push({
-      scopeKey: JSON.stringify(candidate.entry.scope),
+      scopeKey: cachedScopeKey(candidate.entry.scope),
       result: {
         ...candidate.entry,
         score: candidate.exactIdentifier ? 1 : Math.min(0.999, semanticWeight * candidate.semanticScore + (1 - semanticWeight) * Math.min(1, lexical)),
@@ -340,7 +351,7 @@ export function rankMemoryRecall(entries: readonly MemoryRecallEntry[], query: s
     });
   }
   const compare = (a: typeof scored[number], b: typeof scored[number]): number =>
-    b.result.score - a.result.score || a.result.title.localeCompare(b.result.title) || a.result.id.localeCompare(b.result.id) || a.scopeKey.localeCompare(b.scopeKey);
+    b.result.score - a.result.score || defaultCollator.compare(a.result.title, b.result.title) || defaultCollator.compare(a.result.id, b.result.id) || defaultCollator.compare(a.scopeKey, b.scopeKey);
   const exact = scored.filter((item) => item.result.score_details.exactIdentifier).toSorted(compare).map((item) => item.result);
   const other = scored.filter((item) => !item.result.score_details.exactIdentifier).toSorted(compare).map((item) => item.result);
   return [...diversify(exact, options.diversity ?? 1), ...diversify(other, options.diversity ?? 1)];

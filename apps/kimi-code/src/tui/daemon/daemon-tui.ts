@@ -324,7 +324,7 @@ export class DaemonTUI {
     if (this.stopped || this.connection.localOwner !== true) return Promise.resolve();
     this.rediscovery ??= (async () => {
       const next = await discoverDaemon(resolveDaemonHome(), this.startup.workDir);
-      if (this.stopped || next === null || (next.url === this.connection.url && next.serverId === this.connection.serverId)) return;
+      if (this.stopped || next === null || next.localOwner !== true || (next.url === this.connection.url && next.serverId === this.connection.serverId)) return;
       this.connection = next;
       this.client.rebind(next);
       await this.programStatus.reconnect(next);
