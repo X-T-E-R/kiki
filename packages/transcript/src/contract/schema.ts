@@ -980,6 +980,7 @@ export const transcriptDetailQuerySchema = z
     agent_id: agentIdSchema,
     kind: z.enum(['task', 'attachment', 'prompt', 'tool']),
     id: z.string().min(1),
+    turn_id: z.string().min(1).optional(),
   })
   .superRefine((value, ctx) => {
     if (!isPlainAgentId(value.agent_id)) {

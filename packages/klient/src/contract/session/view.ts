@@ -57,6 +57,7 @@ export const sessionViewTranscriptDetailInputSchema = z
     agentId: z.string().min(1),
     kind: z.enum(['task', 'attachment', 'prompt', 'tool']),
     id: z.string().min(1),
+    turnId: z.string().min(1).optional(),
   })
   .refine((value) => isPlainAgentId(value.agentId), {
     message: 'agentId must be a plain agent id',

@@ -665,6 +665,7 @@ async function readSessionViewTranscriptDetailRaw(
     readonly agentId: string;
     readonly kind: 'task' | 'attachment' | 'prompt' | 'tool';
     readonly id: string;
+    readonly turnId?: string;
     readonly signal?: AbortSignal;
   },
 ): Promise<
@@ -693,7 +694,7 @@ async function readSessionViewTranscriptDetailRaw(
   | undefined
 > {
   if (input.kind === 'tool') {
-    const lookup = await transcriptService.lookupToolCall(sessionId, input.agentId, input.id, input.signal);
+    const lookup = await transcriptService.lookupToolCall(sessionId, input.agentId, input.id, input.signal, input.turnId);
     return {
       session_id: sessionId, agent_id: input.agentId, kind: 'tool', lookup,
       read: lookup.status === 'preparing'

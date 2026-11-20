@@ -285,6 +285,7 @@ export function ContentContinuation({
   excludeRanges = false,
   presentation,
   renderText,
+  fallbackPrefixText,
 }: {
   headingPresent?: boolean;
   autoRead?: boolean;
@@ -299,6 +300,7 @@ export function ContentContinuation({
   excludeRanges?: boolean;
   presentation?: TextPresentation;
   renderText?: (text: string) => ReactNode;
+  fallbackPrefixText?: string;
 }): ReactNode {
   const { t, tp } = useI18n();
   const { pending, statusOf, request } = useContentContinuation(source, roots, callerAgentId, paths);
@@ -315,7 +317,7 @@ export function ContentContinuation({
   if (ref === undefined && ranges.length === 0) return null;
   const progress = ref === undefined ? '' : contentRefProgress(ref, t);
   return <>
-    {ranges.map((range) => <div key={JSON.stringify([range.source, range.path, range.revision])} className={className}><ContentRangeText contentRef={range} callerAgentId={callerAgentId} headingPresent={headingPresent && range.path.length === 1} label={range.path.length === 1 ? label : `${label} · ${range.path.slice(1).join('.')}`} presentation={presentation} renderText={renderText} /><ContentOriginalDownload ref={range} label={label} callerAgentId={callerAgentId} /></div>)}
+    {ranges.map((range) => <div key={JSON.stringify([range.source, range.path, range.revision])} className={className}><ContentRangeText contentRef={range} callerAgentId={callerAgentId} headingPresent={headingPresent && range.path.length === 1} label={range.path.length === 1 ? label : `${label} · ${range.path.slice(1).join('.')}`} presentation={presentation} renderText={renderText} fallbackPrefixText={range.path.length === 1 ? fallbackPrefixText : undefined} /><ContentOriginalDownload ref={range} label={label} callerAgentId={callerAgentId} /></div>)}
     {ref === undefined ? null : <ContinuationRow
       kind="content"
       state={statusOf(ref)?.status === 'error' ? 'error' : automatic ? 'loading' : statusOf(ref)?.status ?? 'idle'}

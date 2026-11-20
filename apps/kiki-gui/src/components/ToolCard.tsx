@@ -398,7 +398,7 @@ function ExternalOutput({ output, agentId, island = false }: { output: unknown; 
   const preserved = externalOutput(output);
   if (preserved === undefined) {
     return typeof output === 'string'
-      ? <pre className={wellClass(island)}>{output}</pre>
+      ? <ReadableToolText text={output} className={wellClass(island)} />
       : <LoadedToolText text={recordText(output)} className={wellClass(island)} />;
   }
   const media = extractToolOutputMedia(preserved.media);
@@ -436,9 +436,7 @@ function OutputView({ output, media, agentId, outputPending = false, island = fa
     return (
       <div className="space-y-2">
         {mediaOutput.text !== '' ? (
-          <pre className={wellClass(island)}>
-            {mediaOutput.text}
-          </pre>
+          <ReadableToolText text={mediaOutput.text} className={wellClass(island)} />
         ) : null}
         {resultList}
       </div>
@@ -476,10 +474,10 @@ function outputBody(output: unknown, agentId: string, island: boolean, t: Transl
       return (
         <div className="space-y-1">
           {o.stdout !== undefined && o.stdout !== '' ? (
-            <pre className={wellClass(island)}>{o.stdout}</pre>
+            <ReadableToolText text={o.stdout} className={wellClass(island)} />
           ) : null}
           {o.stderr !== undefined && o.stderr !== '' ? (
-            <pre className={wellClass(island, 'danger')}>{o.stderr}</pre>
+            <ReadableToolText text={o.stderr} className={wellClass(island, 'danger')} />
           ) : null}
           <p className={`text-[12px] ${island ? 'text-shell-ink-soft' : 'text-ink-faint'}`}>{t('tc.exit', { code: o.exit_code })}</p>
         </div>
@@ -488,19 +486,19 @@ function outputBody(output: unknown, agentId: string, island: boolean, t: Transl
     if (candidate.kind === 'text') {
       const o = output as { text: string };
       return (
-        <pre className={wellClass(island)}>{o.text}</pre>
+        <ReadableToolText text={o.text} className={wellClass(island)} />
       );
     }
     if (candidate.kind === 'error') {
       const o = output as { message: string };
       return (
-        <pre className={wellClass(island, 'danger')}>{o.message}</pre>
+        <ReadableToolText text={o.message} className={wellClass(island, 'danger')} />
       );
     }
     if (candidate.kind === 'file_content') {
       const o = output as { path: string; content: string };
       return (
-        <pre className={wellClass(island)}>{o.content}</pre>
+        <ReadableToolText text={o.content} className={wellClass(island)} />
       );
     }
   }
@@ -715,7 +713,12 @@ ${engineError}`;
                 roots={EDIT_ROOTS}
                 label={editSource === undefined ? t('tc.input') : t('tc.changes')}
               />
-              <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} />
+              <ContentContinuation
+                source={frameSource}
+                roots={OUTPUT_ROOTS}
+                label={t('tc.output')}
+                fallbackPrefixText={typeof block.output === 'string' ? block.output : undefined}
+              />
             </div>
           </>
         ) : undefined}
@@ -777,7 +780,12 @@ ${engineError}`;
                   the output below it are the two bodies this card reads. */}
               <ContentContinuation source={frameSource} roots={DISPLAY_ROOTS} label={t('transcript.content.command')} />
               {block.output === undefined ? null : (
-                <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} />
+                <ContentContinuation
+                source={frameSource}
+                roots={OUTPUT_ROOTS}
+                label={t('tc.output')}
+                fallbackPrefixText={typeof block.output === 'string' ? block.output : undefined}
+              />
               )}
             </>
           ) : (

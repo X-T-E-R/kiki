@@ -179,7 +179,7 @@ export class HttpChannel implements KlientChannel {
     }, options),
     transcriptDetail: (sessionId, input, options) => this.viewRequest(
       `/api/sessions/${encodeURIComponent(sessionId)}/transcript/detail`,
-      { agent_id: input.agentId, kind: input.kind, id: input.id },
+      { agent_id: input.agentId, kind: input.kind, id: input.id, turn_id: input.turnId },
       { signal: options?.signal, timeoutMs: options?.timeoutMs },
     ),
     transcriptEntities: (sessionId, input, options) => this.viewRequest(
