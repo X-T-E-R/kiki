@@ -31,7 +31,7 @@ import {
 } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { pushToast } from '../lib/toasts';
-import type { AnnotationRecord } from './MediaLightbox';
+import type { AnnotationRecord, MediaLightboxThumbnail } from './MediaLightbox';
 import { useOptionalConnection } from '../state/connection';
 import type { PreviewResource } from '../state/previewResource';
 import {
@@ -697,6 +697,7 @@ export function MediaPreviewProvider({
         ) : null}
         {gallery !== null && gallery.client === clientIdentity && gallery.sessionId === sessionId && gallery.scopeAgentId === snapshotAgentId && gallery.images[gallery.selected] !== undefined ? (
           <GalleryLightbox
+            images={gallery.images}
             image={gallery.images[gallery.selected]!}
             sessionId={sessionId}
             localKikiComputer={localKikiComputer}
@@ -775,7 +776,7 @@ function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | unde
   return typed?.url;
 }
 
-function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSrc, index, count, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage, onSelect, onClose }: { image: GalleryImage; sessionId?: string; localKikiComputer?: boolean; seededSrc?: string; index: number; count: number; savedAnnotations?: Readonly<Record<string, AnnotationRecord>>; onAnnotationsChange?: (updater: (previous: Record<string, AnnotationRecord>) => Record<string, AnnotationRecord>) => void; onAttachAnnotatedImage?: (blob: Blob, filename: string) => Promise<boolean> | boolean; onSelect: (index: number) => void; onClose: () => void }) {
+function GalleryLightbox({ images, image, sessionId, localKikiComputer = false, seededSrc, index, count, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage, onSelect, onClose }: { images: readonly GalleryImage[]; image: GalleryImage; sessionId?: string; localKikiComputer?: boolean; seededSrc?: string; index: number; count: number; savedAnnotations?: Readonly<Record<string, AnnotationRecord>>; onAnnotationsChange?: (updater: (previous: Record<string, AnnotationRecord>) => Record<string, AnnotationRecord>) => void; onAttachAnnotatedImage?: (blob: Blob, filename: string) => Promise<boolean> | boolean; onSelect: (index: number) => void; onClose: () => void }) {
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
@@ -815,6 +816,17 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
     };
   }, [client, sessionId, hostPath, image.item.fileId]);
 
+  const thumbnails = useMemo<readonly MediaLightboxThumbnail[] | undefined>(
+    () => (images.length > 1
+      ? images.map((entry, entryIndex) => ({
+          id: entry.occurrenceId ?? `${entry.id}:${entryIndex}`,
+          src: entry.item.url,
+          label: safeImagePreviewName({ name: entry.item.name, path: entry.item.path }),
+        }))
+      : undefined),
+    [images],
+  );
+
   const resolvedName = safeImagePreviewName({
     name: image.item.name,
     metadataName: load.status === 'ready' ? load.name : undefined,
@@ -847,6 +859,7 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
           onAttachAnnotatedImage={onAttachAnnotatedImage}
           index={index}
           count={count}
+          thumbnails={thumbnails}
           onSelect={onSelect}
           onClose={onClose}
         />

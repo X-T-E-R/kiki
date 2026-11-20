@@ -2422,4 +2422,33 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
 
     await act(async () => { root.unmount(); });
   });
+
+  it('virtualizes 10,000 session rows into a bounded DOM window and filters cleanly', async () => {
+    const tenThousand = Array.from({ length: 10_000 }, (_, i) => ({
+      id: `s_scale_${i}`,
+      title: i === 7777 ? 'Needle target session' : `Session ${i}`,
+      cost: Math.max(0.01, (10_000 - i) * 0.001),
+    }));
+    getUsage.mockResolvedValue(usageResponse({ sessions: tenThousand }));
+
+    const { container, root } = await renderPage('/usage?panel=history&view=sessions');
+    const list = container.querySelector('[data-usage-sessions-virtualized="true"]');
+    expect(list).not.toBeNull();
+    const mountedRows = container.querySelectorAll('[data-usage-session]');
+    expect(mountedRows.length).toBeGreaterThan(5);
+    expect(mountedRows.length).toBeLessThanOrEqual(50);
+
+    const searchInput = container.querySelector<HTMLInputElement>('[data-usage-sessions-search]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(searchInput, 'Needle target');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const filteredRows = container.querySelectorAll('[data-usage-session]');
+    expect(filteredRows).toHaveLength(1);
+    expect(filteredRows[0]?.getAttribute('data-usage-session')).toBe('s_scale_7777');
+    expect(filteredRows[0]?.textContent).toContain('7778');
+
+    await act(async () => { root.unmount(); });
+  });
 });

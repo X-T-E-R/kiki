@@ -9,8 +9,9 @@
  * header's back arrow, like every other page.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { DeleteArchivedSessionsResponse, Session } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -32,6 +33,7 @@ import { MiniContextMenu } from './MiniContextMenu';
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
 const DELETE_ALL = 'all';
+export const ARCHIVE_VIRTUALIZE_THRESHOLD = 60;
 
 interface FailedEntry {
   readonly id: string;
@@ -261,12 +263,66 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
   // Delete-all reaches the whole archive, so it does not disappear with a
   // search that misses; only a genuinely empty archive withdraws it.
   const archiveEmpty = loaded === 0 && !searching;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const windowed = loaded > ARCHIVE_VIRTUALIZE_THRESHOLD;
+
+  useLayoutEffect(() => {
+    if (!windowed) return;
+    const list = listRef.current;
+    const scroller = scrollRef.current;
+    if (list === null || scroller === null) return;
+    const measure = () => {
+      const listRect = list.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      if (listRect.height === 0 && scrollerRect.height === 0) return;
+      const next = Math.max(0, Math.round(listRect.top - scrollerRect.top + scroller.scrollTop));
+      setScrollMargin((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    if (list.parentElement !== null && list.parentElement !== scroller) observer.observe(list.parentElement);
+    return () => { observer.disconnect(); };
+  }, [windowed, loaded]);
+
+  const virtualizer = useVirtualizer({
+    count: windowed ? loaded : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 56,
+    getItemKey: (index) => sessions[index]?.id ?? index,
+    overscan: 8,
+    scrollMargin,
+    initialRect: { width: 720, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
 
   return (
     <>
       <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar} width="reading" />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-12 lg:px-6">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-12 lg:px-6">
         <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-4`}>
           <div className="flex flex-col gap-1">
             <p className="max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('archive.lede')}</p>
@@ -354,6 +410,35 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                 {searching ? t('archive.emptySearchHint') : t('archive.emptyHint')}
               </p>
             </div>
+          ) : windowed ? (
+            <ul
+              ref={listRef}
+              aria-label={t('archive.listAria')}
+              data-archive-list
+              data-archive-virtualized="true"
+              className="relative"
+              style={{ height: virtualizer.getTotalSize() }}
+            >
+              {virtualizer.getVirtualItems().map((row) => {
+                const session = sessions[row.index];
+                if (session === undefined) return null;
+                return (
+                  <ArchivedRow
+                    key={session.id}
+                    session={session}
+                    title={titles.get(session.id) ?? session.id}
+                    workspaceName={workspaceNames.get(session.workspace_id)}
+                    divider={row.index > 0}
+                    busy={busy}
+                    deleting={deleting === session.id}
+                    virtualRow={{ index: row.index, top: row.start - scrollMargin, measureRef: virtualizer.measureElement }}
+                    onOpen={() => { void navigate(`/s/${encodeURIComponent(session.id)}`); }}
+                    onRestore={() => { restore(session); }}
+                    onDelete={() => { setConfirmOne(session); }}
+                  />
+                );
+              })}
+            </ul>
           ) : (
             <ul aria-label={t('archive.listAria')} data-archive-list className="flex flex-col">
               {sessions.map((session, index) => (
@@ -459,6 +544,7 @@ function ArchivedRow({
   divider,
   busy,
   deleting,
+  virtualRow,
   onOpen,
   onRestore,
   onDelete,
@@ -469,6 +555,7 @@ function ArchivedRow({
   readonly divider: boolean;
   readonly busy: boolean;
   readonly deleting: boolean;
+  readonly virtualRow?: { readonly index: number; readonly top: number; readonly measureRef: (node: HTMLElement | null) => void };
   readonly onOpen: () => void;
   readonly onRestore: () => void;
   readonly onDelete: () => void;
@@ -478,8 +565,11 @@ function ArchivedRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <li
+      ref={virtualRow?.measureRef}
+      data-index={virtualRow?.index}
       data-archive-item={session.id}
-      className={`group flex min-w-0 items-start gap-1 py-1 ${divider ? 'border-t border-hairline' : ''}`}
+      style={virtualRow !== undefined ? { top: virtualRow.top } : undefined}
+      className={`group flex min-w-0 items-start gap-1 py-1 ${virtualRow !== undefined ? 'absolute inset-x-0 ' : ''}${divider ? 'border-t border-hairline' : ''}`}
     >
       <button
         type="button"

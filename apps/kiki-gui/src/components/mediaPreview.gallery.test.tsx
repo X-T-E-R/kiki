@@ -232,4 +232,45 @@ describe('image gallery', () => {
     act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Next image"]')!.click(); });
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('3 / 3');
   });
+
+  it('opens a 5,000-image session gallery with bounded filmstrip thumbnail nodes', () => {
+    const count = 5000;
+    const blocks = Array.from({ length: count }, (_, index) => ({
+      kind: 'tool' as const,
+      id: `tool-${index}`,
+      toolCallId: `call-${index}`,
+      name: 'ReadMediaFile',
+      status: 'done' as const,
+      argsText: '',
+      args: {},
+      display: undefined,
+      description: undefined,
+      output: undefined,
+      isError: undefined,
+      durationMs: undefined,
+      progressText: undefined,
+      media: [{ kind: 'image' as const, url: `data:image/png;base64,AA${index}`, name: `shot-${index}.png` }],
+    }));
+    const target = blocks[1234]!.media![0]!;
+    function OpenTarget() {
+      const preview = useMediaPreview();
+      return (
+        <button type="button" data-open-huge-gallery onClick={() => { preview?.openGalleryImage?.(target, 'main'); }}>
+          open
+        </button>
+      );
+    }
+    const view = { sessionId: 'session-huge', blocks } as unknown as SessionViewState;
+    const container = render(
+      <MediaPreviewProvider sessionId="session-huge" sessionViewState={view}>
+        <OpenTarget />
+      </MediaPreviewProvider>,
+    );
+    act(() => { container.querySelector<HTMLButtonElement>('[data-open-huge-gallery]')!.click(); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.textContent).toContain('1235 / 5000');
+    expect(dialog.querySelectorAll('[data-lightbox-thumb]').length).toBeLessThanOrEqual(40);
+    expect(dialog.querySelectorAll('img').length).toBeLessThanOrEqual(41);
+  });
 });

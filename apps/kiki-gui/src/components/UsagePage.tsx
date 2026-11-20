@@ -5,8 +5,9 @@
  * header's `⋯`.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { ErrorCode } from '@kiki/protocol';
@@ -83,6 +84,7 @@ import {
 
 const SESSION_PAGE_SIZE = 25;
 const SESSION_LOCATOR_MAX_AUTO_PAGES = 4;
+export const USAGE_SESSIONS_VIRTUALIZE_THRESHOLD = 50;
 
 type DetailTab = 'sources' | 'sessions' | 'breakdown';
 
@@ -297,6 +299,7 @@ function SessionsTab({
   locatorSearching,
   workspaceName,
   summaryCost,
+  scrollElementRef,
 }: {
   data: { pages: readonly UsageResponseWire[] };
   search: string;
@@ -308,13 +311,23 @@ function SessionsTab({
   locatorSearching: boolean;
   workspaceName: (id: string) => string | undefined;
   summaryCost: number;
+  scrollElementRef: RefObject<HTMLElement | null>;
 }) {
   const { t, time } = useI18n();
   const navigate = useNavigate();
+  const deferredSearch = useDeferredValue(search);
   const items = useMemo(() => data.pages.flatMap((page) => page.sessions.items), [data.pages]);
+  const rankById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let index = 0; index < items.length; index += 1) {
+      const id = items[index]!.id;
+      if (!map.has(id)) map.set(id, index + 1);
+    }
+    return map;
+  }, [items]);
   const total = data.pages[0]?.sessions.total ?? items.length;
-  const located = sessionLocator !== undefined && items.some((item) => item.id === sessionLocator);
-  const needle = search.trim().toLocaleLowerCase();
+  const located = sessionLocator !== undefined && rankById.has(sessionLocator);
+  const needle = deferredSearch.trim().toLocaleLowerCase();
   const visible = useMemo(() => {
     const base = sessionLocator !== undefined && located
       ? items.filter((item) => item.id === sessionLocator)
@@ -332,7 +345,159 @@ function SessionsTab({
     });
   }, [items, located, needle, sessionLocator, workspaceName]);
 
+  const listRef = useRef<HTMLOListElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const windowed = visible.length > USAGE_SESSIONS_VIRTUALIZE_THRESHOLD;
+
+  useLayoutEffect(() => {
+    if (!windowed) return;
+    const list = listRef.current;
+    const scroller = scrollElementRef.current;
+    if (list === null || scroller === null) return;
+    const measure = () => {
+      const listRect = list.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      if (listRect.height === 0 && scrollerRect.height === 0) return;
+      const next = Math.max(0, Math.round(listRect.top - scrollerRect.top + scroller.scrollTop));
+      setScrollMargin((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    if (list.parentElement !== null && list.parentElement !== scroller) observer.observe(list.parentElement);
+    return () => { observer.disconnect(); };
+  }, [windowed, scrollElementRef, visible.length]);
+
+  const virtualizer = useVirtualizer({
+    count: windowed ? visible.length : 0,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: () => 48,
+    getItemKey: (index) => visible[index]?.id ?? index,
+    overscan: 8,
+    scrollMargin,
+    initialRect: { width: 960, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+
   const grid = 'grid grid-cols-[1.75rem_minmax(0,1fr)_5.5rem] items-center gap-x-3 sm:grid-cols-[1.75rem_minmax(0,1fr)_8rem_4.5rem_4rem_5rem_5.5rem]';
+
+  const renderSessionRow = (
+    item: UsageResponseWire['sessions']['items'][number],
+    virtualStyle?: { readonly top: number; readonly index: number; readonly isLast: boolean },
+  ) => {
+    const rank = rankById.get(item.id) ?? 1;
+    const itemTokens = totalTokensOf(item.usage);
+    const unknownTotal = usageTokenTotalIsUnknown(item.usage);
+    const unpricedZero = item.usage.cost_unknown && item.usage.cost_usd_estimated === 0 && (itemTokens > 0 || unknownTotal);
+    const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
+    const profiles = item.profile_names ?? [];
+    const updatedLabel = time.relativeTime(new Date(item.updated_at).toISOString());
+    const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
+    const fillPct = share > 0 ? Math.max(1.5, Math.min(100, share * 100)) : 0;
+    return (
+      <li
+        key={item.id}
+        data-index={virtualStyle?.index}
+        ref={virtualStyle !== undefined ? virtualizer.measureElement : undefined}
+        style={virtualStyle !== undefined ? { top: virtualStyle.top } : undefined}
+        className={
+          virtualStyle !== undefined
+            ? `absolute inset-x-0 overflow-hidden ${virtualStyle.isLast ? '' : 'border-b border-hairline'}`
+            : 'relative overflow-hidden'
+        }
+      >
+        {fillPct > 0 ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-accent/[0.05]"
+            style={{ width: `${fillPct}%` }}
+          />
+        ) : null}
+        <button
+          type="button"
+          data-usage-session={item.id}
+          onClick={() => void navigate(`/s/${item.id}`)}
+          className={`${grid} relative w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
+        >
+          <span className={`text-right text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
+            {rank}
+          </span>
+          <span className="min-w-0">
+            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="min-w-0 truncate text-[13px] text-ink">
+                <ThreadTitle text={item.title ?? t('sidebar.untitled')} />
+              </span>
+              {item.primary_model ? (
+                <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10.5px] text-ink-soft">
+                  {item.primary_model}
+                </span>
+              ) : null}
+              {profiles.slice(0, 2).map((profile) => (
+                <span key={profile} className="shrink-0 rounded border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
+                  {profile}
+                </span>
+              ))}
+              {item.archived ? (
+                <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[10.5px] text-ink-faint">{t('sidebar.archived')}</span>
+              ) : null}
+              {item.deleted ? (
+                <span className="shrink-0 rounded-full border border-danger/40 px-1.5 text-[10.5px] text-danger">{t('usage.reliability.deleted.included')}</span>
+              ) : null}
+              {item.unknown_price_models.length > 0 ? (
+                <span className="flex shrink-0 text-amber-ink" title={item.unknown_price_models.join(', ')}><Icon name="partial" size={12} /></span>
+              ) : null}
+            </span>
+            <span className="mt-1 block text-[11px] text-ink-faint tabular-nums sm:hidden">
+              {unknownTotal ? '—' : time.formatTokens(itemTokens)}
+              {' · '}
+              {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
+              {' · '}
+              {updatedLabel}
+            </span>
+          </span>
+          <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
+            {wsDisplay}
+          </span>
+          <span data-usage-session-tokens={item.id} className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
+            {unknownTotal ? '—' : time.formatTokens(itemTokens)}
+            {item.usage.tokens_unknown === true && !unknownTotal ? <KnownSubtotalMarker /> : null}
+          </span>
+          <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
+            {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
+          </span>
+          <span className="hidden text-right text-[12px] text-ink-faint sm:block">
+            {updatedLabel}
+          </span>
+          <span data-usage-session-cost={item.id} className="text-right text-[13px] font-semibold text-ink tabular-nums">
+            {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
+            {item.usage.cost_unknown ? (
+              <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
+            ) : null}
+          </span>
+        </button>
+      </li>
+    );
+  };
 
   return (
     <div data-usage-sessions>
@@ -359,92 +524,26 @@ function SessionsTab({
         <p className="py-8 text-center text-[13px] text-ink-faint">
           {items.length > 0 && needle !== '' ? t('usage.sessions.noMatch') : t('usage.empty')}
         </p>
+      ) : windowed ? (
+        <ol
+          ref={listRef}
+          data-usage-sessions-virtualized="true"
+          className="relative border-t border-hairline"
+          style={{ height: virtualizer.getTotalSize() }}
+        >
+          {virtualizer.getVirtualItems().map((row) => {
+            const item = visible[row.index];
+            if (item === undefined) return null;
+            return renderSessionRow(item, {
+              top: row.start - scrollMargin,
+              index: row.index,
+              isLast: row.index === visible.length - 1,
+            });
+          })}
+        </ol>
       ) : (
         <ol className="divide-y divide-hairline border-t border-hairline">
-          {visible.map((item) => {
-            const rank = items.indexOf(item) + 1;
-            const itemTokens = totalTokensOf(item.usage);
-            const unknownTotal = usageTokenTotalIsUnknown(item.usage);
-            const unpricedZero = item.usage.cost_unknown && item.usage.cost_usd_estimated === 0 && (itemTokens > 0 || unknownTotal);
-            const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
-            const profiles = item.profile_names ?? [];
-            const updatedLabel = time.relativeTime(new Date(item.updated_at).toISOString());
-            const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
-            const fillPct = share > 0 ? Math.max(1.5, Math.min(100, share * 100)) : 0;
-            return (
-              <li key={item.id} className="relative overflow-hidden">
-                {fillPct > 0 ? (
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-accent/[0.05]"
-                    style={{ width: `${fillPct}%` }}
-                  />
-                ) : null}
-                <button
-                  type="button"
-                  data-usage-session={item.id}
-                  onClick={() => void navigate(`/s/${item.id}`)}
-                  className={`${grid} relative w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
-                >
-                  <span className={`text-right text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
-                    {rank}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-                      <span className="min-w-0 truncate text-[13px] text-ink">
-                        <ThreadTitle text={item.title ?? t('sidebar.untitled')} />
-                      </span>
-                      {item.primary_model ? (
-                        <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10.5px] text-ink-soft">
-                          {item.primary_model}
-                        </span>
-                      ) : null}
-                      {profiles.slice(0, 2).map((profile) => (
-                        <span key={profile} className="shrink-0 rounded border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
-                          {profile}
-                        </span>
-                      ))}
-                      {item.archived ? (
-                        <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[10.5px] text-ink-faint">{t('sidebar.archived')}</span>
-                      ) : null}
-                      {item.deleted ? (
-                        <span className="shrink-0 rounded-full border border-danger/40 px-1.5 text-[10.5px] text-danger">{t('usage.reliability.deleted.included')}</span>
-                      ) : null}
-                      {item.unknown_price_models.length > 0 ? (
-                        <span className="flex shrink-0 text-amber-ink" title={item.unknown_price_models.join(', ')}><Icon name="partial" size={12} /></span>
-                      ) : null}
-                    </span>
-                    <span className="mt-1 block text-[11px] text-ink-faint tabular-nums sm:hidden">
-                      {unknownTotal ? '—' : time.formatTokens(itemTokens)}
-                      {' · '}
-                      {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
-                      {' · '}
-                      {updatedLabel}
-                    </span>
-                  </span>
-                  <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
-                    {wsDisplay}
-                  </span>
-                  <span data-usage-session-tokens={item.id} className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
-                    {unknownTotal ? '—' : time.formatTokens(itemTokens)}
-                    {item.usage.tokens_unknown === true && !unknownTotal ? <KnownSubtotalMarker /> : null}
-                  </span>
-                  <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
-                    {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
-                  </span>
-                  <span className="hidden text-right text-[12px] text-ink-faint sm:block">
-                    {updatedLabel}
-                  </span>
-                  <span data-usage-session-cost={item.id} className="text-right text-[13px] font-semibold text-ink tabular-nums">
-                    {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
-                    {item.usage.cost_unknown ? (
-                      <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
-                    ) : null}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
+          {visible.map((item) => renderSessionRow(item))}
         </ol>
       )}
       {hasNextPage || isFetchNextPageError ? (
@@ -890,13 +989,39 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     }
     return map;
   }, [usageData]);
-  const resolveTitle = useThreadTitleResolver([...sessionTitles.values()]);
-  const workspaceName = (id: string) => workspaceNames.get(id);
+  const sessionTitleRefCandidates = useMemo(() => {
+    const out: string[] = [];
+    for (const title of sessionTitles.values()) {
+      if (title.includes('[[') || title.includes('/s/')) out.push(title);
+    }
+    return out;
+  }, [sessionTitles]);
+  const resolveTitle = useThreadTitleResolver(sessionTitleRefCandidates);
+  const workspaceName = useCallback((id: string) => workspaceNames.get(id), [workspaceNames]);
   const sessionTitle = (id: string) => {
     const title = sessionTitles.get(id);
     return title === undefined ? undefined : resolveTitle(title);
   };
   const sourceLookups = { unknownLabel: t(`usage.sources.unknown.${filters.groupBy}`), workspaceName };
+  const trendGroupByKey = useMemo(() => {
+    const map = new Map<string, UsageTrendBucketWire['groups'][number]>();
+    for (const bucket of trend) {
+      for (const entry of bucket.groups) {
+        if (!map.has(entry.key)) map.set(entry.key, entry);
+      }
+    }
+    return map;
+  }, [trend]);
+  const trendGroupBySourceKey = useMemo(() => {
+    const map = new Map<string, UsageTrendBucketWire['groups'][number]>();
+    for (const bucket of trend) {
+      for (const entry of bucket.groups) {
+        const k = usageSourceKey(entry, filters.groupBy);
+        if (!map.has(k)) map.set(k, entry);
+      }
+    }
+    return map;
+  }, [trend, filters.groupBy]);
 
   const summary = firstPage?.summary;
   const reliability = firstPage?.reliability;
@@ -1084,7 +1209,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     onSelect={selectBucketKeyWithSnapshot}
                     labelForKey={(key) => {
                       if (legacyDimension !== undefined) {
-                        const group = trend.flatMap((bucket) => bucket.groups).find((entry) => entry.key === key);
+                        const group = trendGroupByKey.get(key);
                         return dimensionKeyLabelLegacy(
                           {
                             key,
@@ -1097,7 +1222,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                           sessionTitle,
                         );
                       }
-                      return sourceKeyToLabel(key, groupBy, trend, sourceLookups);
+                      return sourceKeyToLabel(key, groupBy, trendGroupBySourceKey, sourceLookups);
                     }}
                   />
                 )}
@@ -1255,6 +1380,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         locatorSearching={locatorSearching}
                         workspaceName={workspaceName}
                         summaryCost={summary?.cost_usd_estimated ?? 0}
+                        scrollElementRef={scrollRef}
                       />
                     ) : tab === 'breakdown' && legacyDimension !== undefined ? (
                       <DimensionBreakdown
@@ -1305,11 +1431,11 @@ function sourceRowLabel(
 function sourceKeyToLabel(
   key: string,
   groupBy: UsageGroupBy,
-  trend: readonly UsageTrendBucketWire[],
+  trendGroupBySourceKey: ReadonlyMap<string, UsageTrendBucketWire['groups'][number]>,
   lookups: { readonly unknownLabel: string; readonly workspaceName: (id: string) => string | undefined },
 ): string {
   if (key === USAGE_SOURCE_KEY_UNKNOWN) return lookups.unknownLabel;
-  const group = trend.flatMap((bucket) => bucket.groups).find((entry) => usageSourceKey(entry, groupBy) === key);
+  const group = trendGroupBySourceKey.get(key);
   const value = group === undefined ? key : (usageSourceFilterValue(group, groupBy) ?? key);
   return groupBy === 'workspace' ? (lookups.workspaceName(value) ?? compactIdentifier(value)) : value;
 }

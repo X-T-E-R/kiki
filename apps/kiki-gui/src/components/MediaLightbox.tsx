@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatBytes } from '@kiki/session-core/composer/media';
 
 import { useHost } from '../host';
@@ -67,9 +67,30 @@ function projectAnnotations(
   return scaleAnnotationMarks(record.marks, targetWidth / record.baseWidth, targetHeight / record.baseHeight);
 }
 
-export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, onSelect, onClose, sourcePath, linkUrl, outcomeKey, localKikiComputer, remote, mime, size, onSaveOriginal, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage }: {
+export const LIGHTBOX_THUMB_WINDOW_RADIUS = 16;
+
+export interface MediaLightboxThumbnail {
+  readonly id: string;
+  readonly src?: string;
+  readonly label?: string;
+}
+
+export function computeLightboxThumbWindow(
+  index: number,
+  count: number,
+  radius = LIGHTBOX_THUMB_WINDOW_RADIUS,
+): { readonly start: number; readonly end: number } {
+  if (count <= 0) return { start: 0, end: 0 };
+  const maxWindow = radius * 2 + 1;
+  if (count <= maxWindow) return { start: 0, end: count };
+  const clamped = Math.max(0, Math.min(count - 1, index));
+  const start = Math.max(0, Math.min(clamped - radius, count - maxWindow));
+  return { start, end: Math.min(count, start + maxWindow) };
+}
+
+export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, thumbnails, onSelect, onClose, sourcePath, linkUrl, outcomeKey, localKikiComputer, remote, mime, size, onSaveOriginal, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage }: {
   src?: string; name?: string; identity?: string; loading?: boolean; failed?: boolean; onRetry?: () => void;
-  index?: number; count?: number; onSelect?: (index: number) => void; onClose: () => void;
+  index?: number; count?: number; thumbnails?: readonly MediaLightboxThumbnail[]; onSelect?: (index: number) => void; onClose: () => void;
   sourcePath?: string; linkUrl?: string; outcomeKey?: string; localKikiComputer?: boolean; remote?: boolean;
   /** What the viewer actually holds, when the caller knows it — never inferred here. */
   mime?: string; size?: number;
@@ -109,6 +130,11 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     [currentAnnotationRecord, natural?.width, natural?.height],
   );
   const scroller = useRef<HTMLDivElement>(null);
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
+  const handleScrollerRef = useCallback((node: HTMLDivElement | null) => {
+    scroller.current = node;
+    setScrollerEl((current) => (current === node ? current : node));
+  }, []);
   const image = useRef<HTMLImageElement>(null);
   const zoomAnchor = useRef<{ fx: number; fy: number; px: number; py: number } | null>(null);
   const dpr = useDevicePixelRatio();
@@ -132,7 +158,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   }, []);
 
   useLayoutEffect(() => {
-    const node = scroller.current;
+    const node = scrollerEl;
     if (node === null) return;
     const measure = () => {
       const width = node.clientWidth;
@@ -144,7 +170,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     return () => { observer.disconnect(); };
-  }, [identity, loading, failed, sourceFailed]);
+  }, [scrollerEl, identity, loading, failed, sourceFailed]);
 
   useLayoutEffect(() => {
     setZoom('fit');
@@ -393,7 +419,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const wheelZoomRef = useRef({ zoomable, percent, sliderMin, applyZoom });
   wheelZoomRef.current = { zoomable, percent, sliderMin, applyZoom };
   useEffect(() => {
-    const node = scroller.current;
+    const node = scrollerEl;
     if (node === null) return;
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
@@ -408,7 +434,11 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     };
     node.addEventListener('wheel', onWheel, { passive: false });
     return () => { node.removeEventListener('wheel', onWheel); };
-  }, []);
+  }, [scrollerEl]);
+  const thumbWindow = useMemo(
+    () => (thumbnails !== undefined && thumbnails.length > 1 ? computeLightboxThumbWindow(index, thumbnails.length) : null),
+    [thumbnails, index],
+  );
   const details = [
     natural === undefined ? undefined : `${natural.width} × ${natural.height}`,
     mime,
@@ -530,7 +560,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
         </div>
       ) : null}
       {saveFailed ? <div role="alert" className="text-sm text-shell-ink">{t('media.annotationDownloadFailed')}</div> : null}
-      <div ref={scroller} tabIndex={0} data-lightbox-viewport={mode} aria-label={label}
+      <div ref={handleScrollerRef} tabIndex={0} data-lightbox-viewport={mode} aria-label={label}
         {...pan.handlers}
         onContextMenu={(event) => { if (src === undefined) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top }); }}
         onKeyDown={(event) => {
@@ -572,6 +602,63 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
               {natural === undefined ? null : <ImageViewportAnnotations key={`${identity}:${editing}`} width={natural.width} height={natural.height} marks={marks} tool={tool} editing={editing} selected={selected} onSelect={setSelected} onChange={changeMarks} />}
             </div>}
       </div>
+
+      {/* Windowed filmstrip for multi-image galleries: mounts only ~33 thumbnails around active index */}
+      {!editing && thumbnails !== undefined && thumbWindow !== null ? (
+        <div
+          data-lightbox-filmstrip
+          role="listbox"
+          aria-label={t('media.image')}
+          className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-full border border-shell-hairline bg-shell/75 px-2.5 py-1.5 backdrop-blur-md"
+        >
+          {thumbWindow.start > 0 ? (
+            <span data-lightbox-filmstrip-before className="shrink-0 px-1 font-mono text-[10.5px] text-shell-ink/60 tabular-nums">
+              +{thumbWindow.start}
+            </span>
+          ) : null}
+          {thumbnails.slice(thumbWindow.start, thumbWindow.end).map((thumb, offset) => {
+            const thumbIndex = thumbWindow.start + offset;
+            const active = thumbIndex === index;
+            const thumbLabel = thumb.label ?? `${t('media.image')} ${thumbIndex + 1}`;
+            return (
+              <button
+                key={thumb.id}
+                type="button"
+                role="option"
+                aria-selected={active}
+                data-lightbox-thumb={thumbIndex}
+                title={thumbLabel}
+                aria-label={thumbLabel}
+                onClick={() => { onSelect?.(thumbIndex); }}
+                className={`relative flex h-8 w-10 shrink-0 items-center justify-center overflow-hidden rounded border transition-opacity focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${
+                  active
+                    ? 'border-accent opacity-100 ring-1 ring-accent'
+                    : 'border-shell-hairline/70 opacity-60 hover:opacity-100'
+                }`}
+              >
+                {thumb.src !== undefined ? (
+                  <img
+                    src={thumb.src}
+                    alt={thumbLabel}
+                    referrerPolicy="no-referrer"
+                    loading="lazy"
+                    decoding="async"
+                    draggable={false}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <span className="font-mono text-[10px] text-shell-ink/75 tabular-nums">{thumbIndex + 1}</span>
+                )}
+              </button>
+            );
+          })}
+          {thumbWindow.end < thumbnails.length ? (
+            <span data-lightbox-filmstrip-after className="shrink-0 px-1 font-mono text-[10.5px] text-shell-ink/60 tabular-nums">
+              +{thumbnails.length - thumbWindow.end}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Bottom dock: viewing mode has clear entry; editing mode has explicit state badge & full toolset */}
       <div className="flex max-w-full flex-wrap items-center justify-center gap-2">

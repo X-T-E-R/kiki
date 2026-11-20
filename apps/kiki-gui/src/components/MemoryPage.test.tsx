@@ -2941,4 +2941,26 @@ describe('MemoryPage unsaved-edit guards and search debounce/validation', () => 
     expect(container.querySelector('[data-memory-search-hint]')).not.toBeNull();
     expect(rowIds(container)).toEqual(['m_a']);
   });
+
+  it('virtualizes 10,000 memories into <= 40 mounted DOM cards and narrows cleanly on search', async () => {
+    const tenThousand = Array.from({ length: 10_000 }, (_, i) => fixtureEntry({
+      id: `m_scale_${i}`,
+      type: MEMORY_TYPES[i % MEMORY_TYPES.length]!,
+      title: i === 6789 ? 'Golden scale needle' : `Memory entry ${i}`,
+      body: i === 6789 ? 'Exact needle body' : `Body text ${i}`,
+    }));
+    seedMemories({ 'global::': tenThousand });
+    const container = await renderPage();
+
+    expect(container.querySelector('[data-memory-virtualized="true"]')).not.toBeNull();
+    const mountedRows = container.querySelectorAll('[data-memory-row]');
+    expect(mountedRows.length).toBeGreaterThan(5);
+    expect(mountedRows.length).toBeLessThanOrEqual(40);
+    expect(container.querySelector('[data-memory-count]')?.textContent).toContain('10000');
+
+    await search(container, 'Golden scale needle', 230);
+    const narrowedRows = container.querySelectorAll('[data-memory-row]');
+    expect(narrowedRows).toHaveLength(1);
+    expect(narrowedRows[0]?.getAttribute('data-memory-row')).toBe('m_scale_6789');
+  });
 });

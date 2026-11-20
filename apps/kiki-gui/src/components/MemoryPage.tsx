@@ -35,8 +35,9 @@
  * `auto` there is nothing pending, so there is no tab.
  */
 
-import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
+import { useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMemorySources, type MemorySource } from './useMemorySources';
 import { MemorySharingControls } from './MemorySharingControls';
 import { invalidateMemoryAdvisorReads, useMemoryAdvisor } from './memory/useMemoryAdvisor';
@@ -88,6 +89,11 @@ const MEMORY_WORKSPACE_SETTINGS_KEY = ['memory-workspace-settings'] as const;
 const MEMORY_SEARCH_DEBOUNCE_MS = 200;
 const MEMORY_SEARCH_MAX_CHARS = 200;
 const MEMORY_SEARCH_MAX_WORDS = 10;
+export const MEMORY_VIRTUALIZE_THRESHOLD = 40;
+
+type FlatMemoryRow =
+  | { readonly kind: 'heading'; readonly key: string; readonly sourceKey: string; readonly label: string; readonly count: number; readonly isFirst: boolean }
+  | { readonly kind: 'entry'; readonly key: string; readonly sourceKey: string; readonly entry: MemoryEntry };
 
 type MemorySearchValidation =
   | { readonly kind: 'empty' }
@@ -688,13 +694,67 @@ function MemoryScopeView({
     void queryClient.invalidateQueries({ queryKey: ['memory-related'] });
     void queryClient.invalidateQueries({ queryKey: ['memory-inbox'] });
   };
-  const groups = sources.map((source, index) => ({
-    ...source,
-    entries: (lists[index]?.data?.items ?? []).filter((entry) => entry.status !== 'pending'),
-  }));
-  const entries = groups.flatMap((source) => source.entries.map((entry) => ({
-    entry, source, key: `${targetKey(source.target)}:${entry.id}`,
-  })));
+  // Stabilize list data snapshots so typing in search does not re-flatten 10k entries per keystroke.
+  const listDataCacheRef = useRef<{
+    readonly sources: readonly MemorySource[];
+    readonly pages: readonly (typeof lists[number]['data'])[];
+    readonly groups: readonly (MemorySource & { readonly entries: readonly MemoryEntry[] })[];
+    readonly entries: readonly { readonly entry: MemoryEntry; readonly source: MemorySource; readonly key: string }[];
+    readonly entriesByKey: ReadonlyMap<string, { readonly entry: MemoryEntry; readonly source: MemorySource; readonly key: string }>;
+    readonly flatRows: readonly FlatMemoryRow[];
+    readonly inactiveCount: number;
+  } | null>(null);
+  const currentPages = lists.map((query) => query.data);
+  const prevCache = listDataCacheRef.current;
+  const cacheHit = prevCache !== null
+    && prevCache.sources === sources
+    && prevCache.pages.length === currentPages.length
+    && prevCache.pages.every((page, index) => page === currentPages[index]);
+  let snapshot = prevCache;
+  if (!cacheHit || snapshot === null) {
+    const nextGroups = sources.map((source, index) => ({
+      ...source,
+      entries: (currentPages[index]?.items ?? []).filter((entry) => entry.status !== 'pending'),
+    }));
+    const nextEntries: { readonly entry: MemoryEntry; readonly source: MemorySource; readonly key: string }[] = [];
+    const nextEntriesByKey = new Map<string, { readonly entry: MemoryEntry; readonly source: MemorySource; readonly key: string }>();
+    const nextFlatRows: FlatMemoryRow[] = [];
+    let nextInactiveCount = 0;
+    let firstGroup = true;
+    for (const group of nextGroups) {
+      if (group.entries.length === 0) continue;
+      const sourceKey = targetKey(group.target);
+      nextFlatRows.push({
+        kind: 'heading',
+        key: `source:${sourceKey}`,
+        sourceKey,
+        label: group.label,
+        count: group.entries.length,
+        isFirst: firstGroup,
+      });
+      firstGroup = false;
+      for (const entry of group.entries) {
+        const key = `${sourceKey}:${entry.id}`;
+        const item = { entry, source: group, key };
+        nextEntries.push(item);
+        nextEntriesByKey.set(key, item);
+        nextFlatRows.push({ kind: 'entry', key, sourceKey, entry });
+        if (entry.status === 'archived' || entry.status === 'superseded') nextInactiveCount += 1;
+      }
+    }
+    snapshot = {
+      sources,
+      pages: currentPages,
+      groups: nextGroups,
+      entries: nextEntries,
+      entriesByKey: nextEntriesByKey,
+      flatRows: nextFlatRows,
+      inactiveCount: nextInactiveCount,
+    };
+    listDataCacheRef.current = snapshot;
+  }
+  const { groups, entries, entriesByKey, flatRows, inactiveCount } = snapshot;
+  const deferredFlatRows = useDeferredValue(flatRows);
   const inbox = inboxQuery.data?.items ?? [];
   const readingEntries = lists.some((query) => query.isFetching || query.data?.coverage?.exhausted === false);
   const readingInbox = inboxQuery.isFetching || inboxQuery.data?.coverage?.exhausted === false;
@@ -705,7 +765,7 @@ function MemoryScopeView({
   // whether the same check has run out.
   const now = Date.now();
   // Namespace is part of identity: copied/imported memories can share an id.
-  const selected = entries.find((item) => item.key === selectedId);
+  const selected = selectedId === null ? undefined : entriesByKey.get(selectedId);
   const selectedDetail = useQuery({
     queryKey: ['memory-detail', selected?.key, selected?.entry.revision],
     queryFn: () => client.getMemory(selected!.source.target, selected!.entry.id),
@@ -726,7 +786,6 @@ function MemoryScopeView({
         ? (locale === 'zh' ? '请输入文字或数字关键词进行搜索。' : 'Enter letters or numbers to search memory.')
         : null;
   const filtersActive = debouncedSearch !== '' || typeFilter !== 'all' || showInactive;
-  const inactiveCount = entries.filter(({ entry }) => entry.status === 'archived' || entry.status === 'superseded').length;
 
   const detail = creating ? (
     <MemoryEditor
@@ -750,13 +809,13 @@ function MemoryScopeView({
       onClosed={() => { setSelectedId(null); }}
       onOpenCoveredBy={
         selected.entry.covered_by !== undefined &&
-        entries.some((item) => item.key === `${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`)
+        entriesByKey.has(`${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`)
           ? () => { setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`); }
           : undefined
       }
       onOpenReplacement={
         selected.entry.superseded_by !== undefined &&
-        entries.some((item) => item.key === `${targetKey(selected.source.target)}:${selected.entry.superseded_by}`)
+        entriesByKey.has(`${targetKey(selected.source.target)}:${selected.entry.superseded_by}`)
           ? () => { setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.superseded_by}`); }
           : undefined
       }
@@ -771,6 +830,45 @@ function MemoryScopeView({
   const consoleRef = useRef<HTMLDivElement | null>(null);
   const detailPaneRef = useRef<HTMLDivElement | null>(null);
   const listColumnRef = useRef<HTMLDivElement | null>(null);
+  const rowsRef = useRef<HTMLDivElement | null>(null);
+  const windowed = entries.length > MEMORY_VIRTUALIZE_THRESHOLD;
+  const rowsVirtualizer = useVirtualizer({
+    count: windowed ? deferredFlatRows.length : 0,
+    getScrollElement: () => rowsRef.current,
+    estimateSize: (index) => {
+      const row = deferredFlatRows[index];
+      if (row === undefined) return 70;
+      return row.kind === 'heading' ? (row.isFirst ? 28 : 44) : 70;
+    },
+    getItemKey: (index) => deferredFlatRows[index]?.key ?? index,
+    overscan: 6,
+    initialRect: { width: 340, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+  useEffect(() => {
+    if (!windowed || selectedId === null) return;
+    const index = deferredFlatRows.findIndex((row) => row.kind === 'entry' && row.key === selectedId);
+    if (index >= 0) rowsVirtualizer.scrollToIndex(index, { align: 'auto' });
+  }, [windowed, selectedId, deferredFlatRows, rowsVirtualizer]);
   /** Where the list was left, while one entry's detail covers it under `lg`. */
   const listOffset = useRef(0);
   const detailOpen = selected !== undefined || creating;
@@ -945,7 +1043,15 @@ function MemoryScopeView({
                   because a row's hover bleeds past the column by design, and a
                   single-axis scroller computes the other axis to `auto` — that
                   would add a scrollbar nobody can use. */}
-              <div data-memory-rows className="lg:min-h-0 lg:flex-1 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-y-contain">
+              <div
+                ref={rowsRef}
+                data-memory-rows
+                className={
+                  windowed
+                    ? 'overflow-x-hidden overflow-y-auto overscroll-y-contain max-lg:max-h-[65dvh] lg:min-h-0 lg:flex-1'
+                    : 'lg:min-h-0 lg:flex-1 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-y-contain'
+                }
+              >
                 {upgrading && entries.length === 0 ? null : listQuery.isPending || readingEntries && entries.length === 0 && !listQuery.isError ? (
                   <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
                     <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
@@ -970,6 +1076,45 @@ function MemoryScopeView({
                         <p className="mt-1 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">{t('memory.empty.body')}</p>
                       </>
                     )}
+                  </div>
+                ) : windowed ? (
+                  <div
+                    data-memory-virtualized="true"
+                    className="relative pt-1"
+                    style={{ height: rowsVirtualizer.getTotalSize() }}
+                  >
+                    {rowsVirtualizer.getVirtualItems().map((virtualRow) => {
+                      const row = deferredFlatRows[virtualRow.index];
+                      if (row === undefined) return null;
+                      return (
+                        <div
+                          key={row.key}
+                          data-index={virtualRow.index}
+                          ref={rowsVirtualizer.measureElement}
+                          className="absolute inset-x-0"
+                          style={{ top: virtualRow.start }}
+                        >
+                          {row.kind === 'heading' ? (
+                            <h2
+                              data-memory-source={row.sourceKey}
+                              className={`flex items-center gap-2 text-[12px] font-medium text-ink-soft ${row.isFirst ? 'pb-2' : 'pt-4 pb-2'}`}
+                            >
+                              {row.label}
+                              <span className="font-mono text-[11px] font-normal text-ink-faint">{row.count}</span>
+                            </h2>
+                          ) : (
+                            <div className="pb-1">
+                              <MemoryListRow
+                                entry={row.entry}
+                                active={row.key === selectedId}
+                                now={now}
+                                onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(row.key); }); }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="space-y-6 pt-1">
@@ -1562,19 +1707,56 @@ function MemoryInbox({
   const { client } = useConnection();
   const { writable } = useMemoryAuthority();
   const locatedRef = useRef<HTMLLIElement>(null);
+  const inboxScrollRef = useRef<HTMLDivElement | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const expanded = useQuery({
     queryKey: ['memory-inbox-detail', targetKey(target), expandedId],
     queryFn: () => client.getMemory(target, expandedId!),
     enabled: expandedId !== null, gcTime: 0,
   });
-  const locatedId = entries.find((entry) => entry.id === linkedEntry)?.id;
+  const locatedIndex = useMemo(
+    () => (linkedEntry === null ? -1 : entries.findIndex((entry) => entry.id === linkedEntry)),
+    [entries, linkedEntry],
+  );
+  const locatedId = locatedIndex >= 0 ? entries[locatedIndex]?.id : undefined;
   const namespace = targetKey(target);
+  const inboxWindowed = entries.length > MEMORY_VIRTUALIZE_THRESHOLD;
+  const inboxVirtualizer = useVirtualizer({
+    count: inboxWindowed ? entries.length : 0,
+    getScrollElement: () => inboxScrollRef.current,
+    estimateSize: () => 120,
+    getItemKey: (index) => entries[index]?.id ?? index,
+    overscan: 5,
+    initialRect: { width: 720, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
   useEffect(() => {
     if (loading || locatedId === undefined) return;
+    if (inboxWindowed && locatedIndex >= 0) {
+      inboxVirtualizer.scrollToIndex(locatedIndex, { align: 'auto' });
+    }
     locatedRef.current?.scrollIntoView?.({ block: 'nearest' });
     locatedRef.current?.focus({ preventScroll: true });
-  }, [loading, linkedEntry, locatedId, namespace]);
+  }, [loading, linkedEntry, locatedId, locatedIndex, inboxWindowed, inboxVirtualizer, namespace]);
   const fail = (error: unknown) => {
     pushToast({ tone: 'error', text: t('memory.actionFailed', { detail: errorText(locale, error) }) });
   };
@@ -1616,73 +1798,104 @@ function MemoryInbox({
     return incomplete ? null : <p data-memory-inbox-empty className="py-8 text-[13px] text-ink-soft">{t('memory.inbox.empty')}</p>;
   }
   const busy = keep.isPending || discard.isPending || !writable;
+  const renderInboxRow = (
+    entry: MemoryEntry,
+    virtualRow?: { readonly index: number; readonly start: number; readonly isLast: boolean },
+  ) => (
+    <li
+      key={entry.id}
+      ref={(node) => {
+        if (entry.id === linkedEntry) locatedRef.current = node;
+        if (virtualRow !== undefined) inboxVirtualizer.measureElement(node);
+      }}
+      data-index={virtualRow?.index}
+      tabIndex={entry.id === linkedEntry ? -1 : undefined}
+      aria-current={entry.id === linkedEntry ? 'true' : undefined}
+      data-memory-inbox-row={entry.id}
+      style={virtualRow !== undefined ? { top: virtualRow.start } : undefined}
+      className={`flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-3 ${
+        virtualRow !== undefined
+          ? `absolute inset-x-0 ${virtualRow.isLast ? '' : 'border-b border-hairline'}`
+          : ''
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="flex min-w-0 items-center gap-1.5 text-[13px] text-ink">
+          <TypeTag type={entry.type} />
+          <span className="min-w-0 truncate">{entry.title}</span>
+        </p>
+        <p className={`mt-0.5 text-[12px] leading-relaxed text-ink-soft ${expandedId === entry.id ? 'whitespace-pre-wrap' : 'line-clamp-2'}`}>{expandedId === entry.id && expanded.data !== undefined ? expanded.data.body : entry.body}{entry.content_complete === false && expandedId !== entry.id ? '…' : ''}</p>
+        {entry.content_complete === false ? (
+          <button type="button" data-memory-inbox-read onClick={() => { setExpandedId(expandedId === entry.id ? null : entry.id); }} className="mt-1 text-[12px] text-ink-soft underline">{t('memory.tool.view')}</button>
+        ) : null}
+        {expandedId === entry.id && expanded.isPending ? <p role="status" className="text-[12px] text-ink-faint">{t('memory.loading')}</p> : null}
+        {expandedId === entry.id && expanded.isError ? (
+          <div className="mt-1 space-y-1">
+            <InlineError error={expanded.error} />
+            <button type="button" onClick={() => { void expanded.refetch(); }} className={`mt-1.5 ${SECONDARY_BUTTON}`}>
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : null}
+        {entry.reason !== '' ? (
+          <p className="mt-0.5 text-[12px] text-ink-faint">{t('memory.tool.reason')}: {entry.reason}</p>
+        ) : null}
+        {/* What accepting does is the consequence the reader is deciding
+            on, and it differs by proposal: an update replaces the entry's
+            text under the same id, an archive retires the entry. Saying
+            "keep" alone would present a retirement as a re-activation. */}
+        {entry.pending_action !== undefined ? (
+          <p data-memory-inbox-action={entry.pending_action} className="mt-0.5 text-[12px] text-ink-soft">
+            {t(entry.pending_action === 'archive' ? 'memory.inbox.proposesArchive' : 'memory.inbox.proposesUpdate')}
+          </p>
+        ) : null}
+        {/* What the proposal is based on, so a review is a decision about
+            real content rather than about a title and a paragraph. */}
+        {parseMemoryEntry(entry) !== undefined ? (
+          <div data-memory-inbox-provenance className="mt-1.5 space-y-1 border-l border-hairline pl-2.5">
+            <BasisLine entry={parseMemoryEntry(entry)!} />
+            <ValidityLine validity={entry.validity} />
+          </div>
+        ) : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          data-memory-inbox-keep
+          data-memory-inbox-keep-action={entry.pending_action ?? 'none'}
+          disabled={busy}
+          onClick={() => { keep.mutate(entry); }}
+          className={PRIMARY_BUTTON}
+        >
+          {t(entry.pending_action === 'archive' ? 'memory.inbox.acceptArchive' : 'memory.inbox.keep')}
+        </button>
+        <button type="button" data-memory-inbox-discard disabled={busy} onClick={() => { discard.mutate(entry); }} className={SECONDARY_BUTTON}>
+          {t('memory.inbox.discard')}
+        </button>
+      </div>
+    </li>
+  );
+
+  if (inboxWindowed) {
+    return (
+      <div ref={inboxScrollRef} className="max-h-[70dvh] overflow-y-auto overscroll-y-contain rounded-xl border border-hairline bg-panel">
+        <ul data-memory-inbox data-memory-inbox-virtualized="true" className="relative" style={{ height: inboxVirtualizer.getTotalSize() }}>
+          {inboxVirtualizer.getVirtualItems().map((virtualRow) => {
+            const entry = entries[virtualRow.index];
+            if (entry === undefined) return null;
+            return renderInboxRow(entry, {
+              index: virtualRow.index,
+              start: virtualRow.start,
+              isLast: virtualRow.index === entries.length - 1,
+            });
+          })}
+        </ul>
+      </div>
+    );
+  }
   return (
     <ul data-memory-inbox className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
-      {entries.map((entry) => (
-        <li
-          key={entry.id}
-          ref={entry.id === linkedEntry ? locatedRef : undefined}
-          tabIndex={entry.id === linkedEntry ? -1 : undefined}
-          aria-current={entry.id === linkedEntry ? 'true' : undefined}
-          data-memory-inbox-row={entry.id}
-          className="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-3"
-        >
-          <div className="min-w-0 flex-1">
-            <p className="flex min-w-0 items-center gap-1.5 text-[13px] text-ink">
-              <TypeTag type={entry.type} />
-              <span className="min-w-0 truncate">{entry.title}</span>
-            </p>
-            <p className={`mt-0.5 text-[12px] leading-relaxed text-ink-soft ${expandedId === entry.id ? 'whitespace-pre-wrap' : 'line-clamp-2'}`}>{expandedId === entry.id && expanded.data !== undefined ? expanded.data.body : entry.body}{entry.content_complete === false && expandedId !== entry.id ? '…' : ''}</p>
-            {entry.content_complete === false ? (
-              <button type="button" data-memory-inbox-read onClick={() => { setExpandedId(expandedId === entry.id ? null : entry.id); }} className="mt-1 text-[12px] text-ink-soft underline">{t('memory.tool.view')}</button>
-            ) : null}
-            {expandedId === entry.id && expanded.isPending ? <p role="status" className="text-[12px] text-ink-faint">{t('memory.loading')}</p> : null}
-            {expandedId === entry.id && expanded.isError ? (
-              <div className="mt-1 space-y-1">
-                <InlineError error={expanded.error} />
-                <button type="button" onClick={() => { void expanded.refetch(); }} className={`mt-1.5 ${SECONDARY_BUTTON}`}>
-                  {t('common.retry')}
-                </button>
-              </div>
-            ) : null}
-            {entry.reason !== '' ? (
-              <p className="mt-0.5 text-[12px] text-ink-faint">{t('memory.tool.reason')}: {entry.reason}</p>
-            ) : null}
-            {/* What accepting does is the consequence the reader is deciding
-                on, and it differs by proposal: an update replaces the entry's
-                text under the same id, an archive retires the entry. Saying
-                "keep" alone would present a retirement as a re-activation. */}
-            {entry.pending_action !== undefined ? (
-              <p data-memory-inbox-action={entry.pending_action} className="mt-0.5 text-[12px] text-ink-soft">
-                {t(entry.pending_action === 'archive' ? 'memory.inbox.proposesArchive' : 'memory.inbox.proposesUpdate')}
-              </p>
-            ) : null}
-            {/* What the proposal is based on, so a review is a decision about
-                real content rather than about a title and a paragraph. */}
-            {parseMemoryEntry(entry) !== undefined ? (
-              <div data-memory-inbox-provenance className="mt-1.5 space-y-1 border-l border-hairline pl-2.5">
-                <BasisLine entry={parseMemoryEntry(entry)!} />
-                <ValidityLine validity={entry.validity} />
-              </div>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              data-memory-inbox-keep
-              data-memory-inbox-keep-action={entry.pending_action ?? 'none'}
-              disabled={busy}
-              onClick={() => { keep.mutate(entry); }}
-              className={PRIMARY_BUTTON}
-            >
-              {t(entry.pending_action === 'archive' ? 'memory.inbox.acceptArchive' : 'memory.inbox.keep')}
-            </button>
-            <button type="button" data-memory-inbox-discard disabled={busy} onClick={() => { discard.mutate(entry); }} className={SECONDARY_BUTTON}>
-              {t('memory.inbox.discard')}
-            </button>
-          </div>
-        </li>
-      ))}
+      {entries.map((entry) => renderInboxRow(entry))}
     </ul>
   );
 }
