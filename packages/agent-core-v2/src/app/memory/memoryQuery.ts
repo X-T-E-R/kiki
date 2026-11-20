@@ -11,6 +11,7 @@ const querySchema = z.object({
   type: z.enum(['user', 'feedback', 'project', 'reference']).optional(),
   statuses: z.array(z.enum(['active', 'pending', 'superseded', 'archived'])).min(1).max(4).optional(),
   page_size: z.number().int().min(1).max(20).optional(),
+  hostId: z.string().min(1).max(200).optional(),
 }).strict();
 const positionSchema = z.object({
   sourceOffset: z.number().int().nonnegative(), offset: z.number().int().nonnegative(),
@@ -44,7 +45,7 @@ export function rankMemoryEntries(entries: readonly (MemoryEntry & { scope: Memo
 export function memoryQueryRequest(scopes: readonly MemoryScope[], input: MemoryQuery, salt: string): { request: z.infer<typeof querySchema>; position: MemoryQueryPosition } {
   try {
     if (input.cursor !== undefined) {
-      if (Object.keys(input).some((key) => key !== 'cursor' && input[key as keyof MemoryQuery] !== undefined) || input.cursor.length > 8_192) throw new Error('Cursor must be used alone');
+      if (Object.keys(input).some((key) => key !== 'cursor' && key !== 'hostId' && input[key as keyof MemoryQuery] !== undefined) || input.cursor.length > 8_192) throw new Error('Cursor must be used alone');
       const [payload, signature, extra] = input.cursor.split('.');
       if (!payload || !signature || extra !== undefined || createHmac('sha256', salt).update(payload).digest('hex') !== signature) throw new Error('Invalid cursor');
       const cursor = cursorSchema.parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));

@@ -1,3 +1,6 @@
+import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope } from '#/app/scopes';
 import {
   meshSessionLeaseSchema,
   type LeasedPeerNode,
@@ -8,7 +11,7 @@ import {
   type MeshSessionLease,
 } from '@kiki/protocol';
 
-import type { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 const LEASE_SCOPE = 'mesh';
 const LEASE_KEY = 'session-leases.json';
@@ -23,8 +26,29 @@ interface StoredLeaseBook {
   readonly sessions: Record<string, MeshSessionLease>;
 }
 
+export interface IMeshLeaseStore {
+  readonly _serviceBrand: undefined;
+  load(): Promise<void>;
+  getLease(sessionId: string): Promise<MeshSessionLease>;
+  listLeasedSessionIds(): Promise<readonly string[]>;
+  pinNode(sessionId: string, node: Omit<LeasedPeerNode, 'pinnedAt'>): Promise<MeshSessionLease>;
+  pinSeat(sessionId: string, seat: Omit<LeasedSeat, 'pinnedAt' | 'updatedAt'>): Promise<MeshSessionLease>;
+  pinWorkspaceCopy(sessionId: string, copy: LeasedWorkspaceCopy): Promise<MeshSessionLease>;
+  pinPortTunnel(sessionId: string, tunnel: LeasedPortTunnel): Promise<MeshSessionLease>;
+  unpin(
+    sessionId: string,
+    kind: 'node' | 'seat' | 'workspace_copy' | 'port_tunnel',
+    id: string,
+  ): Promise<MeshSessionLease>;
+  projectContext(sessionId: string): Promise<MeshContextProjection>;
+}
+
+export const IMeshLeaseStore: ServiceIdentifier<IMeshLeaseStore> =
+  createDecorator<IMeshLeaseStore>('meshLeaseStore');
+
 /** Persists session-scoped active mesh leases so only resources created by or pinned to a session enter its prompt context. */
-export class MeshLeaseStore {
+export class MeshLeaseStore implements IMeshLeaseStore {
+  declare readonly _serviceBrand: undefined;
   private loaded = false;
   private readonly sessions = new Map<string, MeshSessionLease>();
   private writeChain: Promise<unknown> = Promise.resolve();
@@ -343,3 +367,18 @@ function compact(value: string, maxChars: number): string {
 function escapeAttr(value: string): string {
   return value.replaceAll('"', '').replaceAll(/[\r\n]/g, '');
 }
+
+/** App-scoped DI service sharing persistent mesh session leases between kap-server routes and agent context injectors. */
+export class MeshLeaseStoreService extends MeshLeaseStore {
+  constructor(@IFileSystemStorageService storage: IFileSystemStorageService) {
+    super(storage);
+  }
+}
+
+registerScopedService(
+  LifecycleScope.App,
+  IMeshLeaseStore,
+  MeshLeaseStoreService,
+  ScopeActivation.OnDemand,
+  'mesh',
+);

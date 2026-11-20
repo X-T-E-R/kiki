@@ -12,6 +12,7 @@ import { MemoryAuthorityAccess } from '#/persistence/memoryAuthority';
 import { IMemoryScopes, MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
 import { redactMemorySecrets } from './memorySafety';
 import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryHostApplicability, normalizeMemoryValidity, normalizeOriginHostId, type MemoryBasis, type MemoryHostApplicability, type MemoryValidity } from './memoryMetadata';
+import { isMemoryVisibleOnHost, resolveMemoryHostId } from './projectIdentityBindings';
 export * from './memoryMetadata';
 
 const encoder = new TextEncoder();
@@ -88,6 +89,7 @@ export interface MemoryQuery {
   readonly statuses?: readonly MemoryStatus[];
   readonly page_size?: number;
   readonly cursor?: string;
+  readonly hostId?: string;
 }
 export interface MemoryQueryPage {
   readonly items: readonly (MemoryEntry & { readonly scope: MemoryScope; readonly score?: number; readonly score_details?: import('./memoryRecall').MemoryScoreDetails })[];
@@ -140,7 +142,7 @@ export interface IMemoryStore {
   readonly onDidChange: Event<MemoryStoreChange>;
   prepare?(): Promise<void>;
   checkpoint?(): Promise<string>;
-  snapshot?(scopes: readonly MemoryScope[], options?: { readonly statuses?: readonly MemoryStatus[] }): Promise<MemoryStoreSnapshot>;
+  snapshot?(scopes: readonly MemoryScope[], options?: { readonly statuses?: readonly MemoryStatus[]; readonly hostId?: string }): Promise<MemoryStoreSnapshot>;
   inventory(scope: MemoryScope): Promise<MemoryInventory>;
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
   get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined>;
@@ -260,6 +262,12 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     }
   }
 
+  private async readBasesFor(scope: MemoryScope): Promise<readonly string[]> {
+    return this.scopes.resolveReadBases !== undefined
+      ? this.scopes.resolveReadBases(scope)
+      : [await this.scopes.resolve(scope)];
+  }
+
   private async raw(scope: string, id: string): Promise<{ key: string; text: string } | undefined> {
     const active = entryKey(id, false);
     if ((await this.storage.size(scope, active) ?? 0) > 64 * 1024) throw new Error('Memory entry too large');
@@ -272,45 +280,51 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   }
 
   async inventory(scope: MemoryScope): Promise<MemoryInventory> {
-    const base = await this.scopes.resolve(scope);
+    const bases = await this.readBasesFor(scope);
+    const seenIds = new Set<string>();
     const entries: MemoryEntry[] = [];
     const fingerprint = createHash('sha256');
     let skipped = 0;
     let totalBytes = 0;
     let visited = 0;
-    for (const folder of ['entries', 'inbox'] as const) {
-      const names = (await this.storage.list(`${base}/${folder}`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted();
-      fingerprint.update(JSON.stringify([folder, names]));
-      for (let offset = 0; offset < names.length; offset += 16) {
-        if (visited >= 10_000 || totalBytes >= 16 * 1024 * 1024) { skipped += names.length - offset; fingerprint.update('inventory_budget'); break; }
-        const stats = await Promise.all(names.slice(offset, offset + 16).map(async (name) => {
-          const key = `${folder}/${name}`;
-          try { return { name, key, size: await this.storage.size(base, key) }; }
-          catch { return { name, key, size: undefined }; }
-        }));
-        const accepted = stats.filter(({ key, size }) => {
-          fingerprint.update(JSON.stringify([key, size]));
-          if (++visited > 10_000 || size === undefined || size > 64 * 1024 || (totalBytes += size) > 16 * 1024 * 1024) { skipped++; return false; }
-          return true;
-        });
-        const records = await Promise.all(accepted.map(async ({ name, key }) => {
-          try {
-            let bytes = await this.storage.read(base, key, { recoverMissing: false });
-            if (bytes === undefined) {
-              await new Promise<void>((resolve) => { setTimeout(resolve, 20); });
-              bytes = await this.storage.read(base, key, { recoverMissing: false });
-            }
-            return { name, key, bytes };
-          } catch { return { name, key, bytes: undefined }; }
-        }));
-        for (const { name, key, bytes } of records) {
-          if (bytes === undefined) { skipped++; fingerprint.update(`unavailable:${key}`); continue; }
-          fingerprint.update(bytes);
-          try {
-            const entry = decode(decoder.decode(bytes));
-            if (entry.id !== name.slice(0, -3)) { skipped++; continue; }
-            entries.push(entry);
-          } catch { skipped++; }
+    for (const base of bases) {
+      for (const folder of ['entries', 'inbox'] as const) {
+        const names = (await this.storage.list(`${base}/${folder}`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted();
+        fingerprint.update(JSON.stringify([base, folder, names]));
+        for (let offset = 0; offset < names.length; offset += 16) {
+          if (visited >= 10_000 || totalBytes >= 16 * 1024 * 1024) { skipped += names.length - offset; fingerprint.update('inventory_budget'); break; }
+          const stats = await Promise.all(names.slice(offset, offset + 16).map(async (name) => {
+            const key = `${folder}/${name}`;
+            try { return { name, key, size: await this.storage.size(base, key) }; }
+            catch { return { name, key, size: undefined }; }
+          }));
+          const accepted = stats.filter(({ key, size }) => {
+            fingerprint.update(JSON.stringify([base, key, size]));
+            if (++visited > 10_000 || size === undefined || size > 64 * 1024 || (totalBytes += size) > 16 * 1024 * 1024) { skipped++; return false; }
+            return true;
+          });
+          const records = await Promise.all(accepted.map(async ({ name, key }) => {
+            try {
+              let bytes = await this.storage.read(base, key, { recoverMissing: false });
+              if (bytes === undefined) {
+                await new Promise<void>((resolve) => { setTimeout(resolve, 20); });
+                bytes = await this.storage.read(base, key, { recoverMissing: false });
+              }
+              return { name, key, bytes };
+            } catch { return { name, key, bytes: undefined }; }
+          }));
+          for (const { name, key, bytes } of records) {
+            if (bytes === undefined) { skipped++; fingerprint.update(`unavailable:${base}:${key}`); continue; }
+            fingerprint.update(bytes);
+            try {
+              const entry = decode(decoder.decode(bytes));
+              if (entry.id !== name.slice(0, -3)) { skipped++; continue; }
+              if (!seenIds.has(entry.id)) {
+                seenIds.add(entry.id);
+                entries.push(entry);
+              }
+            } catch { skipped++; }
+          }
         }
       }
     }
@@ -325,8 +339,11 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   }
 
   async get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined> {
-    const found = await this.raw(await this.scopes.resolve(scope), id);
-    return found === undefined ? undefined : decode(found.text);
+    for (const base of await this.readBasesFor(scope)) {
+      const found = await this.raw(base, id);
+      if (found !== undefined) return decode(found.text);
+    }
+    return undefined;
   }
 
   async put(input: MemoryMutation): Promise<MemoryPutResult> {
@@ -512,21 +529,23 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     const sources: { scope: MemoryScope; base: string; key: string }[] = [];
     const directoryProof: unknown[] = [];
     const directoryChecks: (() => Promise<unknown>)[] = [];
+    const effectiveHostId = input.hostId ?? resolveMemoryHostId();
     for (const scope of scopes) {
       if (request.scope !== undefined && scope.kind !== request.scope) continue;
-      const base = await this.scopes.resolve(scope);
-      const statuses = request.statuses ?? ['active'];
-      const folders = statuses.every((status) => status === 'pending') ? ['inbox'] : statuses.includes('pending') ? ['entries', 'inbox'] : ['entries'];
-      for (const folder of folders) {
-        const proof = async () => [scope, folder, (await this.storage.list(`${base}/${folder}`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted(), await this.storage.mtime(base, folder)] as const;
-        const current = await proof();
-        directoryProof.push(current);
+      for (const base of await this.readBasesFor(scope)) {
+        const statuses = request.statuses ?? ['active'];
+        const folders = statuses.every((status) => status === 'pending') ? ['inbox'] : statuses.includes('pending') ? ['entries', 'inbox'] : ['entries'];
+        for (const folder of folders) {
+          const proof = async () => [scope, base, folder, (await this.storage.list(`${base}/${folder}`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted(), await this.storage.mtime(base, folder)] as const;
+          const current = await proof();
+          directoryProof.push(current);
+          directoryChecks.push(proof);
+          for (const name of current[3]) sources.push({ scope, base, key: `${folder}/${name}` });
+        }
+        const proof = async () => [scope, base, await this.storage.mtime(base, 'journal.jsonl'), await this.storage.size(base, 'journal.jsonl')];
+        directoryProof.push(await proof());
         directoryChecks.push(proof);
-        for (const name of current[2]) sources.push({ scope, base, key: `${folder}/${name}` });
       }
-      const proof = async () => [scope, await this.storage.mtime(base, 'journal.jsonl'), await this.storage.size(base, 'journal.jsonl')];
-      directoryProof.push(await proof());
-      directoryChecks.push(proof);
     }
     const namesFingerprint = revision(JSON.stringify(directoryProof));
     const invalidated = (): never => { throw new MemoryDomainError('cursor_invalidated', 'Memory source changed during pagination', 'Restart the original query and reconcile scope plus ID across pages.'); };
@@ -635,7 +654,10 @@ export class MemoryStore extends Disposable implements IMemoryStore {
           chunkHash = revision(JSON.stringify([chunkHash, key, revision(text)]));
           const entry = decode(text);
           if (entry.id !== key.slice(key.lastIndexOf('/') + 1, -3)) throw new Error('Memory identity mismatch');
-          entries.push({ ...entry, scope });
+          if (!wholeChunk && !isMemoryVisibleOnHost(entry, effectiveHostId)) continue;
+          if (!entries.some((existing) => existing.id === entry.id && JSON.stringify(existing.scope) === JSON.stringify(scope))) {
+            entries.push({ ...entry, scope });
+          }
         } catch { skipped++; }
       }
       nextSourceOffset += batch.length;
@@ -652,9 +674,10 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   }
 
   async search(scopes: readonly MemoryScope[], query: string, type?: MemoryType, includeInactive = false): Promise<readonly (MemoryEntry & { score: number; scope: MemoryScope })[]> {
+    const hostId = resolveMemoryHostId();
     const lists = await Promise.all(scopes.map((scope) => this.list(scope, includeInactive)));
     const entries = lists.flatMap((list, index) => list.map((entry) => ({ ...entry, scope: scopes[index]! })))
-      .filter((entry) => includeInactive || entry.status === 'active');
+      .filter((entry) => (includeInactive || entry.status === 'active') && isMemoryVisibleOnHost(entry, hostId));
     return rankMemoryEntries(entries, query, type);
   }
 

@@ -11,13 +11,18 @@ import {
 } from '#/_base/utils/workdir-slug';
 import { MemoryScopes } from '#/app/memory/memoryScopes';
 import { MemoryStore } from '#/app/memory/memoryStore';
+import { renderMemoryWorkingSet } from '#/app/memory/memoryContext';
+import { SqliteMemoryStore } from '#/app/memory/sqliteMemoryStore';
 import {
   filterMemoriesForHost,
   filterMemoriesForSync,
 } from '#/app/memory/projectIdentityBindings';
 import { discoverFileSkills } from '#/app/skillCatalog/fileSkillDiscovery';
 import { detectSkillRootTransport, planSkillSync } from '#/app/skillCatalog/skillSyncTransport';
+import { estimateTokens } from '#/kosong/contract/tokens';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
+import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IWorkspacePersistence } from '#/app/workspace/workspacePersistence';
 
 const tempDirs: string[] = [];
@@ -240,5 +245,161 @@ describe('cross-machine project identity, memory portability, and git-aware skil
       { path: plainSkillsDir, source: 'user' },
     ]);
     expect(discovered.skills.map((s) => s.name)).toEqual(['local-skill', 'real-skill']);
+  }, 30_000);
+
+  it('auto-binds wd_* to prj_* without manual API calls while keeping pre-existing legacy wd_* memories visible across worktrees and filtering foreign machine-local entries in workset and query', async () => {
+    const sandbox = makeTempDir('kiki-mem-seam-');
+    const homeDir = join(sandbox, 'home');
+    const mainRepo = join(sandbox, 'repo');
+    const wtA = join(sandbox, 'wt-a');
+    const wtB = join(sandbox, 'wt-b');
+
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(mainRepo, { recursive: true });
+
+    runGit(mainRepo, ['init']);
+    writeFileSync(join(mainRepo, 'app.ts'), 'export const v = 1;\n', 'utf8');
+    runGit(mainRepo, ['add', 'app.ts']);
+    runGit(mainRepo, ['commit', '-m', 'init']);
+    runGit(mainRepo, ['remote', 'add', 'origin', 'https://github.com/example-org/seam-repo.git']);
+    runGit(mainRepo, ['worktree', 'add', '-b', 'wt-branch-a', wtA]);
+    runGit(mainRepo, ['worktree', 'add', '-b', 'wt-branch-b', wtB]);
+
+    const wdA = encodeWorkDirKey(wtA);
+    const wdB = encodeWorkDirKey(wtB);
+    expect(wdA).not.toBe(wdB);
+
+    const storage = new FileStorageService(homeDir, 0o700, 0o600, true);
+    const persistence = new SqliteMemoryPersistence({
+      storeDir: join(homeDir, 'store'),
+    } as unknown as IBootstrapService);
+
+    try {
+      const legacyEntry = {
+        id: 'm_legacy_001',
+        type: 'project' as const,
+        title: 'Legacy Worktree A Memory',
+        body: 'Created before prj_* existed under memory/workspaces/wd_*.',
+        status: 'active' as const,
+        pinned: true,
+        created: '2026-10-01T00:00:00.000Z',
+        updated: '2026-10-01T00:00:00.000Z',
+        source: { writer: 'user' as const },
+        reason: 'Pre-existing memory',
+        revision: 'mem2:legacy-rev-1',
+      };
+      await persistence.commit({
+        operationId: 'op-legacy-seed',
+        request: '{}',
+        expectedGeneration: 0,
+        edits: [
+          {
+            scope: `memory/workspaces/${wdA}`,
+            id: legacyEntry.id,
+            expectedRevision: null,
+            entry: legacyEntry,
+            revision: legacyEntry.revision,
+          },
+        ],
+        result: { seeded: true },
+      });
+
+      const catalogWorkspaces: IWorkspacePersistence = {
+        _serviceBrand: undefined,
+        onDidChange: () => ({ dispose: () => undefined }),
+        load: async () => ({
+          workspaces: [
+            { id: wdA, root: wtA, name: 'wt-a', createdAt: 1, lastOpenedAt: 1, pinned: false },
+            { id: wdB, root: wtB, name: 'wt-b', createdAt: 2, lastOpenedAt: 2, pinned: false },
+          ],
+          deletedIds: [],
+        }),
+        save: async () => undefined,
+      };
+
+      const scopes = new MemoryScopes(catalogWorkspaces, storage);
+      const sqliteStore = new SqliteMemoryStore(persistence, scopes);
+
+      const fromB = await sqliteStore.list({ kind: 'workspace', workspaceId: wdB });
+      expect(fromB.map((entry) => entry.id)).toContain('m_legacy_001');
+
+      const canonicalFromB = await scopes.resolve({ kind: 'workspace', workspaceId: wdB });
+      expect(canonicalFromB).toMatch(/^memory\/workspaces\/prj_seam-repo_[0-9a-f]{12}$/);
+
+      await sqliteStore.put({
+        action: 'create',
+        scope: { kind: 'workspace', workspaceId: wdB },
+        type: 'project',
+        title: 'Shared New Memory',
+        body: 'Written via wt-b for GPU workflow and shared across worktrees.',
+        reason: 'Cross-worktree note',
+        source: { writer: 'user' },
+        applicability: 'portable',
+        origin_host_id: 'host-a',
+      });
+
+      await sqliteStore.put({
+        action: 'create',
+        scope: { kind: 'workspace', workspaceId: wdB },
+        type: 'reference',
+        title: 'Host A GPU Driver Note',
+        body: '中文与ASCII混合验证 token 计数精度 CUDA device 0.',
+        reason: 'Machine specific',
+        source: { writer: 'user' },
+        applicability: 'machine-local',
+        origin_host_id: 'host-a',
+      });
+
+      const queryHostA = await sqliteStore.query(
+        [{ kind: 'workspace', workspaceId: wdA }],
+        { mode: 'list', hostId: 'host-a' },
+      );
+      expect(queryHostA.items.map((item) => item.title).toSorted()).toEqual([
+        'Host A GPU Driver Note',
+        'Legacy Worktree A Memory',
+        'Shared New Memory',
+      ]);
+
+      const queryHostB = await sqliteStore.query(
+        [{ kind: 'workspace', workspaceId: wdA }],
+        { mode: 'list', hostId: 'host-b' },
+      );
+      expect(queryHostB.items.map((item) => item.title).toSorted()).toEqual([
+        'Legacy Worktree A Memory',
+        'Shared New Memory',
+      ]);
+
+      const snapHostA = await sqliteStore.snapshot([{ kind: 'workspace', workspaceId: wdA }], {
+        statuses: ['active'],
+        hostId: 'host-a',
+      });
+      const worksetHostA = renderMemoryWorkingSet(snapHostA, 'GPU', 8000, 1000, Date.now(), undefined, 'host-a');
+      expect(worksetHostA.entries.map((e) => e.title)).toContain('Host A GPU Driver Note');
+      expect(worksetHostA.text).toContain('Legacy Worktree A Memory');
+      expect(estimateTokens(worksetHostA.text)).toBeLessThanOrEqual(1000);
+
+      const worksetHostB = renderMemoryWorkingSet(snapHostA, 'GPU', 8000, 1000, Date.now(), undefined, 'host-b');
+      expect(worksetHostB.entries.map((e) => e.title)).not.toContain('Host A GPU Driver Note');
+      expect(worksetHostB.entries.map((e) => e.title)).toContain('Legacy Worktree A Memory');
+      expect(worksetHostB.entries.map((e) => e.title)).toContain('Shared New Memory');
+
+      const updatedLegacy = await sqliteStore.put({
+        action: 'update',
+        scope: { kind: 'workspace', workspaceId: wdB },
+        id: 'm_legacy_001',
+        expectedRevision: legacyEntry.revision,
+        type: 'project',
+        title: 'Legacy Worktree A Memory',
+        body: 'Updated cleanly from wt-b.',
+        reason: 'Verify updates on legacy wd_* entry succeed',
+        source: { writer: 'user' },
+      });
+      expect(updatedLegacy.outcome).toBe('applied');
+      expect((await sqliteStore.get({ kind: 'workspace', workspaceId: wdA }, 'm_legacy_001'))?.body).toBe(
+        'Updated cleanly from wt-b.',
+      );
+    } finally {
+      await persistence.close();
+    }
   }, 30_000);
 });

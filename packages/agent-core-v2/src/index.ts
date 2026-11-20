@@ -230,6 +230,7 @@ export * from '#/app/sync/credentialEnvelope';
 export * from '#/app/mesh/meshApproval';
 export * from '#/app/mesh/humanTakeover';
 export * from '#/app/mesh/meshLeaseStore';
+export * from '#/app/mesh/meshContextInjectorService';
 export * from '#/app/mesh/workspaceCopy';
 export * from '#/app/mesh/gitDeltaSync';
 export * from '#/app/mesh/casStaging';

@@ -34,6 +34,7 @@ import {
 import { runMemoryAdvice } from './memoryAdvisorCatalog';
 import { advisorStatus, memoryAdviceKey, memoryAdviceRecommends, type MemoryAdvice } from './memoryAdvisorTypes';
 import { renderMemoryWorkingSet } from './memoryContext';
+import { resolveMemoryHostId } from './projectIdentityBindings';
 
 export interface IAgentMemoryAdvisor {
   readonly _serviceBrand: undefined;
@@ -343,6 +344,9 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       this.snapshot.advisorRequest ?? '',
       settings.budget,
       Math.min(1_000, settings.budget),
+      Date.now(),
+      undefined,
+      resolveMemoryHostId(),
     );
     const delivered = new Set(view.workset?.entries.map(memoryAdviceKey));
     return {

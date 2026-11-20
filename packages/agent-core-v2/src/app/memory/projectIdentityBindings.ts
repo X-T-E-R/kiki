@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import {
   encodeWorkDirKey,
   isValidProjectId,
@@ -25,6 +26,16 @@ export interface ProjectBindingRecord {
 interface StoredProjectBindings {
   readonly version: 1;
   readonly bindings: Record<string, ProjectBindingRecord>;
+}
+
+/** Resolves the deterministic host identifier used for `applicability: "machine-local"` memory isolation. */
+export function resolveMemoryHostId(
+  getEnv: (name: string) => string | undefined = (name) => process.env[name],
+): string {
+  const explicit = getEnv('KIKI_HOST_ID')?.trim();
+  if (explicit !== undefined && explicit.length > 0) return explicit;
+  const localHost = hostname().trim().toLowerCase();
+  return localHost.length > 0 ? localHost : 'local-host';
 }
 
 /** Per-machine binding index mapping local `wd_*` workspace keys to portable `prj_*` project IDs. */
@@ -59,6 +70,16 @@ export class ProjectIdentityBindingIndex {
     const identity = await resolveProjectIdentity(cwd, options);
     const current = { ...(await this.load()) };
     const workDirKey = encodeWorkDirKey(cwd);
+    const existing = current[workDirKey];
+    if (
+      existing !== undefined &&
+      existing.projectId === identity.projectId &&
+      existing.source === identity.source &&
+      existing.rootPath === cwd &&
+      (options?.hostId === undefined || existing.hostId === options.hostId)
+    ) {
+      return identity;
+    }
     current[workDirKey] = {
       workDirKey,
       projectId: identity.projectId,
@@ -82,6 +103,14 @@ export class ProjectIdentityBindingIndex {
     if (isValidProjectId(workspaceId)) return workspaceId;
     const bindings = await this.load();
     return bindings[workspaceId]?.projectId ?? workspaceId;
+  }
+
+  async findWorkDirKeysForProjectId(projectId: string): Promise<readonly string[]> {
+    const bindings = await this.load();
+    return Object.values(bindings)
+      .filter((binding) => binding.projectId === projectId)
+      .map((binding) => binding.workDirKey)
+      .toSorted();
   }
 
   async listBindings(): Promise<readonly ProjectBindingRecord[]> {
