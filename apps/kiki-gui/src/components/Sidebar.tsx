@@ -23,9 +23,10 @@
  * filter and view menus are bottom sheets (ActionSheet) instead.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useLocation } from 'react-router-dom';
 
 import type { RoomListItem, Session, SessionSeedMode, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -135,6 +136,9 @@ export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
 
 /** How many sessions a workspace group shows before "Show N more". */
 export const WORKSPACE_GROUP_PREVIEW = 8;
+/** Flatten & virtualize the sidebar session list / search results beyond this row count. */
+export const SIDEBAR_VIRTUALIZE_THRESHOLD = 60;
+const EMPTY_SESSIONS: readonly Session[] = [];
 
 // Nav icons all come from the shared family (components/icons.tsx).
 const ICON = 'h-4 w-4 shrink-0';
@@ -252,13 +256,18 @@ function roomRowLife(item: Extract<ConversationListItem, { kind: 'room' }>, stat
  * fold (the bell counts them).
  */
 function foldedGroupLife(nodes: readonly ConversationTreeNode[], seen: SessionSeenMap): LifeState {
-  const states: SessionRowState[] = [];
-  const visit = (node: ConversationTreeNode) => {
-    states.push(conversationRowState(node.item, seen));
-    node.children.forEach(visit);
-  };
-  nodes.forEach(visit);
-  return states.includes('needs-me') || states.includes('cleanup-pending') ? 'waiting' : states.includes('running') ? 'working' : 'idle';
+  let hasRunning = false;
+  const stack: ConversationTreeNode[] = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    const state = conversationRowState(node.item, seen);
+    if (state === 'needs-me' || state === 'cleanup-pending') return 'waiting';
+    if (state === 'running') hasRunning = true;
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      stack.push(node.children[index]!);
+    }
+  }
+  return hasRunning ? 'working' : 'idle';
 }
 
 /** The word for an unseen run that did not complete: failed, or stopped. */
@@ -1056,12 +1065,22 @@ export function Sidebar({
     }
     return excluded;
   }, [narrowsBeyondWorkspace, hasMoreUnloadedSessions, sessions, visibleSessionIdSet]);
+  const workspaceById = useMemo(
+    () => new Map(workspaceOptions.map((workspace) => [workspace.id, workspace])),
+    [workspaceOptions],
+  );
+  const workspaceNameById = useMemo(
+    () => new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name])),
+    [workspaceOptions],
+  );
+  const deferredSearchInput = useDeferredValue(searchInput);
+  const searchMounted = searchOpen || searchInput.trim() !== '' || deferredSearchInput.trim() !== '';
   const searchableSessions = useMemo(
-    () => (narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true)),
-    [narrowsBeyondWorkspace, visibleSessions, sessions],
+    () => (!searchMounted ? EMPTY_SESSIONS : narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true)),
+    [searchMounted, narrowsBeyondWorkspace, visibleSessions, sessions],
   );
   const search = useSessionSearch({
-    text: searchInput,
+    text: deferredSearchInput,
     sessions: searchableSessions,
     workspaces: workspaceOptions,
     untitled,
@@ -1512,6 +1531,14 @@ export function Sidebar({
     // setFilters closes over the latest filters; recompute with them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchingPersonas, search.local, search.hits, filters, navigate]);
+  const resultsByKey = useMemo(() => {
+    const map = new Map<string, { readonly index: number; readonly open: () => void }>();
+    for (let index = 0; index < results.length; index += 1) {
+      const entry = results[index]!;
+      map.set(entry.key, { index, open: entry.open });
+    }
+    return map;
+  }, [results]);
   useEffect(() => { setActiveResult(0); }, [searchInput]);
   const activeKey = search.active ? results[Math.min(activeResult, results.length - 1)]?.key : undefined;
   useEffect(() => {
@@ -1547,7 +1574,7 @@ export function Sidebar({
     })),
     ...filters.workspaces.map((id) => ({
       key: `ws:${id}`,
-      label: workspaceOptions.find((workspace) => workspace.id === id)?.name ?? id,
+      label: workspaceById.get(id)?.name ?? id,
       clear: () => { toggleWorkspace(id); },
     })),
     ...(filters.archived === 'hide'
@@ -1662,7 +1689,10 @@ export function Sidebar({
     refetchInterval: 15_000,
     enabled: inert !== true,
   });
-  const ephemeralSessions = ephemeralQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const ephemeralSessions = useMemo(
+    () => ephemeralQuery.data?.pages.flatMap((page) => page.items) ?? EMPTY_SESSIONS,
+    [ephemeralQuery.data],
+  );
   // While a filter narrows the list, a workspace group shows what matched
   // even if it is folded (the fold is kept for later), and its header counts
   // the matches against everything loaded in that workspace.
@@ -1688,13 +1718,193 @@ export function Sidebar({
     ? sessionTree.map((group) => group.key)
     : [];
   const allFolded = workspaceGroupKeys.length > 0 && workspaceGroupKeys.every((key) => collapsedGroups.has(key));
-  const titleSessions = useMemo(() => [...sessions, ...ephemeralSessions, ...sessionGroups.flatMap((group) =>
-    group.items.flatMap((item) => item.kind === 'session' ? [item.session] : []))], [sessions, ephemeralSessions, sessionGroups]);
-  const resolveTitle = useThreadTitleResolver(titleSessions.map((session) => sessionLabel(session, untitled)), titleSessions);
-  const titleOf = useMemo(
-    () => new Map(sessions.map((session) => [session.id, resolveTitle(sessionLabel(session, untitled))])),
-    [sessions, untitled, resolveTitle],
-  );
+  const titleSessions = useMemo(() => {
+    const byId = new Map<string, Session>();
+    for (const session of sessions) byId.set(session.id, session);
+    for (const session of ephemeralSessions) byId.set(session.id, session);
+    for (const group of sessionGroups) {
+      for (const item of group.items) {
+        if (item.kind === 'session' && !byId.has(item.session.id)) {
+          byId.set(item.session.id, item.session);
+        }
+      }
+    }
+    return [...byId.values()];
+  }, [sessions, ephemeralSessions, sessionGroups]);
+  const titleRefCandidates = useMemo(() => {
+    const out: string[] = [];
+    for (const session of titleSessions) {
+      const text = sessionLabel(session, untitled);
+      if (text.includes('[[') || text.includes('/s/')) out.push(text);
+    }
+    return out;
+  }, [titleSessions, untitled]);
+  const resolveTitle = useThreadTitleResolver(titleRefCandidates, titleSessions);
+  const titleOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const session of sessions) {
+      const label = sessionLabel(session, untitled);
+      map.set(session.id, label.includes('[[') || label.includes('/s/') ? resolveTitle(label) : label);
+    }
+    return map;
+  }, [sessions, untitled, resolveTitle]);
+
+  type SidebarFlatEntry =
+    | {
+        readonly kind: 'ws-header';
+        readonly key: string;
+        readonly group: (typeof sessionTree)[number];
+        readonly collapsed: boolean;
+        readonly foldedLife: LifeState;
+        readonly workspace: WorkspaceCatalogEntry | undefined;
+        readonly workspaceTarget: WorkspaceCatalogEntry | undefined;
+        readonly isFirst: boolean;
+      }
+    | {
+        readonly kind: 'time-header';
+        readonly key: string;
+        readonly group: (typeof sessionTree)[number];
+        readonly isFirst: boolean;
+      }
+    | {
+        readonly kind: 'row';
+        readonly key: string;
+        readonly groupKey: string;
+        readonly node: ConversationTreeNode;
+        readonly nested: boolean;
+        readonly groupNamesWorkspace: boolean;
+      }
+    | {
+        readonly kind: 'group-more';
+        readonly key: string;
+        readonly groupKey: string;
+        readonly hidden: number;
+        readonly expanded: boolean;
+      };
+
+  const flatSessionEntries = useMemo<readonly SidebarFlatEntry[]>(() => {
+    const entries: SidebarFlatEntry[] = [];
+    const collapsible = groupBy === 'workspace';
+    for (let groupIndex = 0; groupIndex < sessionTree.length; groupIndex += 1) {
+      const group = sessionTree[groupIndex]!;
+      const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
+      const expanded = expandedGroups.has(group.key);
+      const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
+      const shown = collapsed ? [] : group.nodes.slice(0, limit);
+      const hidden = collapsed ? 0 : group.nodes.length - shown.length;
+      const groupNamesWorkspace = collapsible && group.key !== 'pinned' && group.key !== WORKSPACE_UNGROUPED_KEY;
+      const isFirst = groupIndex === 0;
+
+      if (collapsible) {
+        const workspace = workspaceById.get(group.key);
+        const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
+        const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
+        entries.push({
+          kind: 'ws-header',
+          key: `hdr:${group.key}`,
+          group,
+          collapsed,
+          foldedLife,
+          workspace,
+          workspaceTarget,
+          isFirst,
+        });
+      } else if (!(groupBy === 'none' && group.key === 'all')) {
+        entries.push({
+          kind: 'time-header',
+          key: `hdr:${group.key}`,
+          group,
+          isFirst,
+        });
+      }
+
+      const pushNode = (node: ConversationTreeNode, nested: boolean) => {
+        entries.push({
+          kind: 'row',
+          key: `${group.key}:${node.item.key}`,
+          groupKey: group.key,
+          node,
+          nested,
+          groupNamesWorkspace,
+        });
+        for (const child of node.children) {
+          pushNode(child, true);
+        }
+      };
+      for (const node of shown) pushNode(node, false);
+
+      if (collapsible && (hidden > 0 || (expanded && !collapsed && group.nodes.length > WORKSPACE_GROUP_PREVIEW))) {
+        entries.push({
+          kind: 'group-more',
+          key: `more:${group.key}`,
+          groupKey: group.key,
+          hidden,
+          expanded,
+        });
+      }
+    }
+    return entries;
+  }, [sessionTree, groupBy, foldsSuspended, collapsedGroups, expandedGroups, workspaceById, seen]);
+
+  const listWindowed = !isCollapsed && !search.active && flatSessionEntries.length > SIDEBAR_VIRTUALIZE_THRESHOLD;
+  const virtualAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [listScrollMargin, setListScrollMargin] = useState(0);
+  useLayoutEffect(() => {
+    if (!listWindowed) return;
+    const anchor = virtualAnchorRef.current;
+    const scroller = listRef.current;
+    if (anchor === null || scroller === null) return;
+    const measure = () => {
+      const anchorRect = anchor.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      if (anchorRect.height === 0 && scrollerRect.height === 0) return;
+      const next = Math.max(0, Math.round(anchorRect.top - scrollerRect.top + scroller.scrollTop));
+      setListScrollMargin((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    return () => { observer.disconnect(); };
+  }, [listWindowed, flatSessionEntries.length, ephemeralSessions.length, filterChips.length]);
+
+  const listVirtualizer = useVirtualizer({
+    count: listWindowed ? flatSessionEntries.length : 0,
+    getScrollElement: () => listRef.current,
+    estimateSize: (index) => {
+      const entry = flatSessionEntries[index];
+      if (entry === undefined) return 46;
+      if (entry.kind === 'ws-header') return entry.isFirst ? 28 : (entry.collapsed ? 30 : 40);
+      if (entry.kind === 'time-header') return entry.isFirst ? 28 : 40;
+      if (entry.kind === 'group-more') return 28;
+      return entry.nested ? 34 : 46;
+    },
+    getItemKey: (index) => flatSessionEntries[index]?.key ?? index,
+    overscan: 8,
+    scrollMargin: listScrollMargin,
+    initialRect: { width: 260, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+
   // Bound once per render so the kind narrowing survives into the menu's
   // callbacks (property-access narrowing does not reach into closures).
   const menuItem = menu?.item ?? null;
@@ -1912,11 +2122,11 @@ export function Sidebar({
             filtersActive={filtersActive}
             activeKey={activeKey}
             onHover={(key) => {
-              const index = results.findIndex((entry) => entry.key === key);
-              if (index >= 0) setActiveResult(index);
+              const entry = resultsByKey.get(key);
+              if (entry !== undefined) setActiveResult(entry.index);
             }}
-            onOpen={(key) => { results.find((entry) => entry.key === key)?.open(); }}
-            workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
+            onOpen={(key) => { resultsByKey.get(key)?.open(); }}
+            workspaceNames={workspaceNameById}
           />
         </>
       ) : (
@@ -2143,7 +2353,144 @@ export function Sidebar({
             ) : null}
           </div>
         ) : null}
-        {sessionTree.map((group) => {
+        {listWindowed ? (
+          <div
+            ref={virtualAnchorRef}
+            data-session-list-virtualized="true"
+            className="relative"
+            style={{ height: listVirtualizer.getTotalSize() }}
+          >
+            {listVirtualizer.getVirtualItems().map((virtualRow) => {
+              const entry = flatSessionEntries[virtualRow.index];
+              if (entry === undefined) return null;
+              let content: React.ReactNode;
+              if (entry.kind === 'ws-header') {
+                content = (
+                  <div
+                    data-session-group-block={entry.group.key}
+                    data-session-group-folded={entry.collapsed ? '' : undefined}
+                    className={entry.isFirst ? '' : entry.collapsed ? 'pt-0.5' : 'pt-3'}
+                  >
+                    <WorkspaceGroupHeader
+                      groupKey={entry.group.key}
+                      label={entry.group.label}
+                      count={entry.group.total}
+                      totalCount={filtersActive ? (entry.group.key === 'pinned' ? pinnedTotal : workspaceTotals.get(entry.group.key)) : undefined}
+                      collapsed={entry.collapsed}
+                      foldable={!foldsSuspended}
+                      current={entry.group.key === activeWorkspaceId}
+                      foldedLife={entry.foldedLife}
+                      workspace={entry.workspace}
+                      pinBusy={workspacePinBusy}
+                      onToggle={() => { toggleGroupCollapsed(entry.group.key); }}
+                      onTogglePin={entry.workspace === undefined ? undefined : () => { toggleWorkspacePin(entry.workspace!); }}
+                      onNewInWorkspace={entry.workspaceTarget === undefined ? undefined : () => {
+                        void navigate(`/new?workspace=${encodeURIComponent(entry.workspaceTarget!.id)}`);
+                      }}
+                    />
+                  </div>
+                );
+              } else if (entry.kind === 'time-header') {
+                content = (
+                  <div data-session-group-block={entry.group.key} className={entry.isFirst ? '' : 'pt-3'}>
+                    <p data-session-group={entry.group.key} className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
+                      <span className="min-w-0 truncate">{entry.group.label}</span>
+                    </p>
+                  </div>
+                );
+              } else if (entry.kind === 'group-more') {
+                content = (
+                  <div className="pt-0.5">
+                    <button
+                      type="button"
+                      data-session-group-more={entry.groupKey}
+                      onClick={() => { toggleGroupExpanded(entry.groupKey); }}
+                      className="row-interactive h-7 self-start pr-2 pl-6 text-[12px] text-ink-faint hover:text-ink"
+                    >
+                      {entry.hidden > 0 ? t('sidebar.showMoreInGroup', { count: entry.hidden }) : t('sidebar.showLessInGroup')}
+                    </button>
+                  </div>
+                );
+              } else {
+                const { node, nested, groupNamesWorkspace } = entry;
+                const item = node.item;
+                if (item.kind === 'room') {
+                  const roomLocation = workspaceNameById.get(item.workspace_id)
+                    ?? (item.room.workspace === '' ? undefined : shortCwd(item.room.workspace));
+                  content = (
+                    <div data-session-node="root" className="py-px">
+                      <RoomConversationRow
+                        item={item}
+                        active={location.pathname === item.href}
+                        menuOpen={menu?.item.key === item.key}
+                        showLocation={!groupNamesWorkspace}
+                        showPin={groupBy === 'none'}
+                        location={roomLocation}
+                        onOpen={() => { void navigate(item.href); }}
+                        onMenu={(x, y, toggle) => {
+                          setMenu((current) =>
+                            toggle && current?.item.key === item.key ? null : { item, x, y });
+                        }}
+                        onTogglePin={() => { toggleRoomPin(item); }}
+                        justRenamed={justRenamed?.key === item.key}
+                        archiving={pendingArchives.has(item.key)}
+                        archiveError={archiveErrors.get(item.key)}
+                      />
+                    </div>
+                  );
+                } else {
+                  const session = item.session;
+                  content = (
+                    <div data-session-node={nested ? 'thread' : 'root'} className="relative py-px">
+                      {nested ? (
+                        <span aria-hidden className="pointer-events-none absolute top-0 bottom-0 left-[13px] w-px bg-hairline" />
+                      ) : null}
+                      <SessionRow
+                        session={session}
+                        active={session.id === activeSessionId}
+                        menuOpen={menu?.item.key === item.key}
+                        untitled={untitled}
+                        resolveTitle={resolveTitle}
+                        activity={activity.byId.get(session.id)}
+                        anchorFor={activity.anchorFor}
+                        relation={node.relation}
+                        nested={nested}
+                        showLocation={!groupNamesWorkspace}
+                        showPin={groupBy === 'none'}
+                        parentTitle={node.relation === undefined
+                          ? undefined
+                          : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
+                        onOpen={() => { void navigate(`/s/${session.id}`); }}
+                        selected={selected.has(session.id)}
+                        onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
+                        onMenu={(x, y, toggle) => {
+                          setMenu((current) =>
+                            toggle && current?.item.key === item.key ? null : { item, x, y });
+                        }}
+                        onTogglePin={() => { togglePin(session); }}
+                        seen={seen}
+                        justRenamed={justRenamed?.key === item.key}
+                        archiving={pendingArchives.has(item.key)}
+                        archiveError={archiveErrors.get(item.key)}
+                      />
+                    </div>
+                  );
+                }
+              }
+              return (
+                <div
+                  key={entry.key}
+                  data-index={virtualRow.index}
+                  ref={listVirtualizer.measureElement}
+                  className="absolute inset-x-0"
+                  style={{ top: virtualRow.start - listScrollMargin }}
+                >
+                  {content}
+                </div>
+              );
+            })}
+          </div>
+        ) : sessionTree.map((group) => {
           // In the workspace view every bucket, Pinned included, uses the one
           // workspace header: fold, count, remembered state. Pinned keeps
           // every row visible (those are the sessions asked to stay on top).
@@ -2161,7 +2508,7 @@ export function Sidebar({
             if (item.kind === 'room') {
               // Location line, like a thread row's cwd: the resolved workspace
               // name when registered, else the room's own root path shortened.
-              const roomLocation = workspaceOptions.find((entry) => entry.id === item.workspace_id)?.name
+              const roomLocation = workspaceNameById.get(item.workspace_id)
                 ?? (item.room.workspace === '' ? undefined : shortCwd(item.room.workspace));
               return (
                 <div key={item.key} data-session-node="root">
@@ -2234,7 +2581,7 @@ export function Sidebar({
           // or is running.
           const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
           if (collapsible) {
-            const workspace = workspaceOptions.find((entry) => entry.id === group.key);
+            const workspace = workspaceById.get(group.key);
             const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
             return (
               <div
@@ -3634,12 +3981,165 @@ function SearchResults({
   const nothingLocal = personas.length === 0 && local.workspaces.length === 0 && local.sessions.length === 0;
   const contentSettledEmpty = search.contentActive && !search.contentPending && search.contentInitialError === null && search.hits.length === 0;
   const personaQuery = parsed.text.trim();
+  const totalResultRows = personas.length + local.workspaces.length + local.sessions.length + search.hits.length;
+  const resultsWindowed = totalResultRows > SIDEBAR_VIRTUALIZE_THRESHOLD;
+
+  type FlatSearchEntry =
+    | { readonly kind: 'heading'; readonly key: string; readonly label: string }
+    | { readonly kind: 'persona'; readonly key: string; readonly optionKey: string; readonly persona: PersonaDirectoryEntry }
+    | { readonly kind: 'workspace'; readonly key: string; readonly optionKey: string; readonly match: SessionSearchState['local']['workspaces'][number] }
+    | { readonly kind: 'session'; readonly key: string; readonly optionKey: string; readonly match: SessionSearchState['local']['sessions'][number] }
+    | { readonly kind: 'message'; readonly key: string; readonly optionKey: string; readonly hit: SessionSearchState['hits'][number] };
+
+  const flatResults = useMemo<readonly FlatSearchEntry[]>(() => {
+    if (!resultsWindowed) return [];
+    const out: FlatSearchEntry[] = [];
+    if (personas.length > 0) {
+      out.push({ kind: 'heading', key: 'hdr:personas', label: t('sidebar.persona.resultsHeading') });
+      for (const persona of personas) {
+        out.push({ kind: 'persona', key: `p:${persona.id}`, optionKey: `p:${persona.id}`, persona });
+      }
+    }
+    if (local.workspaces.length > 0) {
+      out.push({ kind: 'heading', key: 'hdr:workspaces', label: t('sidebar.results.workspaces') });
+      for (const match of local.workspaces) {
+        out.push({ kind: 'workspace', key: `ws:${match.workspace.id}`, optionKey: `ws:${match.workspace.id}`, match });
+      }
+    }
+    if (local.sessions.length > 0) {
+      out.push({ kind: 'heading', key: 'hdr:sessions', label: t('sidebar.results.sessions') });
+      for (const match of local.sessions) {
+        out.push({ kind: 'session', key: `s:${match.session.id}`, optionKey: `s:${match.session.id}`, match });
+      }
+    }
+    if (search.hits.length > 0) {
+      out.push({ kind: 'heading', key: 'hdr:messages', label: t('sidebar.results.messages') });
+      for (let index = 0; index < search.hits.length; index += 1) {
+        const hit = search.hits[index]!;
+        out.push({
+          kind: 'message',
+          key: `h:${hit.session_id}-${hit.turn ?? 'x'}-${hit.role}-${index}`,
+          optionKey: `h:${index}`,
+          hit,
+        });
+      }
+    }
+    return out;
+  }, [resultsWindowed, personas, local.workspaces, local.sessions, search.hits, t]);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: resultsWindowed ? flatResults.length : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => {
+      const entry = flatResults[index];
+      if (entry === undefined) return 48;
+      if (entry.kind === 'heading') return 28;
+      return entry.kind === 'message' ? 62 : 48;
+    },
+    getItemKey: (index) => flatResults[index]?.key ?? index,
+    overscan: 8,
+    initialRect: { width: 260, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+
+  useEffect(() => {
+    if (!resultsWindowed || activeKey === undefined) return;
+    const index = flatResults.findIndex((entry) => entry.kind !== 'heading' && entry.optionKey === activeKey);
+    if (index >= 0) virtualizer.scrollToIndex(index, { align: 'auto' });
+  }, [resultsWindowed, activeKey, flatResults, virtualizer]);
+
+  const messagesFooter = (
+    <>
+      {!isSearchable(parsed.text) && parsed.text.trim() !== '' ? (
+        <p className="px-2 pt-2 text-[12px] text-ink-faint">{t('sidebar.results.typeMore')}</p>
+      ) : null}
+      {search.contentPending && search.hits.length === 0 ? (
+        <p role="status" className="flex items-center gap-2 px-2 py-1 text-[12px] text-ink-faint">
+          <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
+          {t('sidebar.searching')}
+        </p>
+      ) : null}
+      {search.contentInitialError !== null ? (
+        <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3" data-search-error>
+          <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+          <p className="text-[12px] text-ink-soft">{search.contentInitialError.message || t('common.unknownError')}</p>
+          <button type="button" data-search-initial-retry onClick={search.retry} className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2">
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
+      {search.unavailable !== undefined ? (
+        <div data-search-unavailable role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">
+          {t(`sidebar.results.unavailable.${search.unavailable.reason ?? 'generic'}`)}
+          {search.unavailable.reason !== 'disabled' && search.unavailable.reason !== 'runtime_disabled' ? (
+            <button type="button" data-search-unavailable-retry onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
+              className="ml-2 font-medium text-ink underline underline-offset-2">{t('common.retry')}</button>
+          ) : null}
+        </div>
+      ) : search.building !== undefined ? (
+        <p data-search-building role="status" className="flex items-center gap-1.5 px-2 pt-1.5 text-[12px] text-ink-faint">
+          <Spinner label={t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })} size={12} />
+          {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
+        </p>
+      ) : search.incomplete ? (
+        <p data-search-incomplete role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">{t('sidebar.results.incomplete')}</p>
+      ) : null}
+      {search.hasNextPage ? (
+        <button
+          type="button"
+          data-search-load-more
+          disabled={search.isFetchingNextPage || search.isFetching}
+          onClick={search.fetchNextPage}
+          className="mt-1 h-8 w-full rounded-md text-center text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink disabled:opacity-60"
+        >
+          {search.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
+        </button>
+      ) : null}
+      {search.contentAppendError ? (
+        <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3">
+          <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+          <button
+            type="button"
+            data-search-retry
+            disabled={search.isFetchingNextPage}
+            onClick={search.fetchNextPage}
+            className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+
   return (
     <div
+      ref={scrollRef}
       id="sidebar-search-results"
       role="listbox"
       aria-label={t('sidebar.searchAria')}
       data-search-results
+      data-search-results-virtualized={resultsWindowed ? 'true' : undefined}
       className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2"
     >
       {filtersActive || parsed.workspaceTerm !== undefined || parsed.role !== undefined ? (
@@ -3654,143 +4154,179 @@ function SearchResults({
         </p>
       ) : null}
 
-      {personas.length > 0 ? (
-        <div role="group" aria-label={t('sidebar.persona.resultsHeading')} data-search-personas>
-          <ResultHeading>{t('sidebar.persona.resultsHeading')}</ResultHeading>
-          {personas.map((persona) => (
-            <button key={persona.id} type="button" {...option(`p:${persona.id}`)}>
-              <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-ink">
-                  <Highlighted text={persona.name} ranges={highlightTerms(persona.name, personaQuery)} />
-                </span>
-                {persona.title !== undefined && persona.title.trim() !== '' ? (
-                  <span className="block truncate text-[11.5px] text-ink-faint">{persona.title}</span>
-                ) : null}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {local.workspaces.length > 0 ? (
-        <div role="group" aria-label={t('sidebar.results.workspaces')}>
-          <ResultHeading>{t('sidebar.results.workspaces')}</ResultHeading>
-          {local.workspaces.map((match) => (
-            <button key={match.workspace.id} type="button" {...option(`ws:${match.workspace.id}`)}>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-ink">
-                  <Highlighted text={match.workspace.name} ranges={match.nameRanges} />
-                </span>
-                <span className="block truncate font-mono text-[11.5px] text-ink-faint">{shortCwd(match.workspace.root)}</span>
-              </span>
-              <span className="shrink-0 pt-px text-[12px] text-ink-faint">{t('sidebar.results.filterTo', { name: '' }).trim()}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {local.sessions.length > 0 ? (
-        <div role="group" aria-label={t('sidebar.results.sessions')}>
-          <ResultHeading>{t('sidebar.results.sessions')}</ResultHeading>
-          {local.sessions.map((match) => (
-            <button key={match.session.id} type="button" {...option(`s:${match.session.id}`)}>
-              <span className="flex h-[19px] w-[7px] shrink-0 items-center">
-                <StatusMark session={match.session.source} state={sessionRowState(match.session.source, seen)} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-ink">
-                  <Highlighted text={match.session.title} ranges={match.titleRanges} />
-                </span>
-                <span className="block truncate text-[12px] text-ink-faint">
-                  {workspaceNames.get(match.session.workspace_id) ?? shortCwd(match.session.cwd)}
-                  {' · '}
-                  <RelativeTime at={match.session.updated_at} />
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      <div role="group" aria-label={t('sidebar.results.messages')} data-search-messages>
-        {search.hits.length > 0 || search.contentPending || search.contentInitialError !== null || search.unavailable !== undefined ? (
-          <ResultHeading>{t('sidebar.results.messages')}</ResultHeading>
-        ) : null}
-        {!isSearchable(parsed.text) && parsed.text.trim() !== '' ? (
-          <p className="px-2 pt-2 text-[12px] text-ink-faint">{t('sidebar.results.typeMore')}</p>
-        ) : null}
-        {search.contentPending && search.hits.length === 0 ? (
-          <p role="status" className="flex items-center gap-2 px-2 py-1 text-[12px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
-            {t('sidebar.searching')}
-          </p>
-        ) : null}
-        {search.contentInitialError !== null ? (
-          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3" data-search-error>
-            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
-            <p className="text-[12px] text-ink-soft">{search.contentInitialError.message || t('common.unknownError')}</p>
-            <button type="button" data-search-initial-retry onClick={search.retry} className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2">
-              {t('common.retry')}
-            </button>
+      {resultsWindowed ? (
+        <>
+          <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const entry = flatResults[virtualRow.index];
+              if (entry === undefined) return null;
+              let content: React.ReactNode;
+              if (entry.kind === 'heading') {
+                content = <ResultHeading>{entry.label}</ResultHeading>;
+              } else if (entry.kind === 'persona') {
+                const persona = entry.persona;
+                content = (
+                  <button type="button" {...option(entry.optionKey)}>
+                    <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] text-ink">
+                        <Highlighted text={persona.name} ranges={highlightTerms(persona.name, personaQuery)} />
+                      </span>
+                      {persona.title !== undefined && persona.title.trim() !== '' ? (
+                        <span className="block truncate text-[11.5px] text-ink-faint">{persona.title}</span>
+                      ) : null}
+                    </span>
+                  </button>
+                );
+              } else if (entry.kind === 'workspace') {
+                const match = entry.match;
+                content = (
+                  <button type="button" {...option(entry.optionKey)}>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] text-ink">
+                        <Highlighted text={match.workspace.name} ranges={match.nameRanges} />
+                      </span>
+                      <span className="block truncate font-mono text-[11.5px] text-ink-faint">{shortCwd(match.workspace.root)}</span>
+                    </span>
+                    <span className="shrink-0 pt-px text-[12px] text-ink-faint">{t('sidebar.results.filterTo', { name: '' }).trim()}</span>
+                  </button>
+                );
+              } else if (entry.kind === 'session') {
+                const match = entry.match;
+                content = (
+                  <button type="button" {...option(entry.optionKey)}>
+                    <span className="flex h-[19px] w-[7px] shrink-0 items-center">
+                      <StatusMark session={match.session.source} state={sessionRowState(match.session.source, seen)} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] text-ink">
+                        <Highlighted text={match.session.title} ranges={match.titleRanges} />
+                      </span>
+                      <span className="block truncate text-[12px] text-ink-faint">
+                        {workspaceNames.get(match.session.workspace_id) ?? shortCwd(match.session.cwd)}
+                        {' · '}
+                        <RelativeTime at={match.session.updated_at} />
+                      </span>
+                    </span>
+                  </button>
+                );
+              } else {
+                const hit = entry.hit;
+                content = (
+                  <button type="button" {...option(entry.optionKey)}>
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-2 text-[13px] leading-snug text-ink-soft">
+                        <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
+                      </span>
+                      <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
+                        <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
+                        <span className="shrink-0">· {t(hit.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${hit.role}`)}</span>
+                        <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
+                      </span>
+                    </span>
+                  </button>
+                );
+              }
+              return (
+                <div
+                  key={entry.key}
+                  data-index={virtualRow.index}
+                  ref={virtualizer.measureElement}
+                  className="absolute inset-x-0"
+                  style={{ top: virtualRow.start }}
+                >
+                  {content}
+                </div>
+              );
+            })}
           </div>
-        ) : null}
-        {search.hits.map((hit, index) => (
-          <button key={`${hit.session_id}-${hit.turn ?? 'x'}-${hit.role}-${index}`} type="button" {...option(`h:${index}`)}>
-            <span className="min-w-0 flex-1">
-              <span className="line-clamp-2 text-[13px] leading-snug text-ink-soft">
-                <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
-              </span>
-              <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
-                <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
-                <span className="shrink-0">· {t(hit.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${hit.role}`)}</span>
-                <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
-              </span>
-            </span>
-          </button>
-        ))}
-        {search.unavailable !== undefined ? (
-          <div data-search-unavailable role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">
-            {t(`sidebar.results.unavailable.${search.unavailable.reason ?? 'generic'}`)}
-            {search.unavailable.reason !== 'disabled' && search.unavailable.reason !== 'runtime_disabled' ? (
-              <button type="button" data-search-unavailable-retry onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
-                className="ml-2 font-medium text-ink underline underline-offset-2">{t('common.retry')}</button>
+          <div role="group" aria-label={t('sidebar.results.messages')} data-search-messages>
+            {messagesFooter}
+          </div>
+        </>
+      ) : (
+        <>
+          {personas.length > 0 ? (
+            <div role="group" aria-label={t('sidebar.persona.resultsHeading')} data-search-personas>
+              <ResultHeading>{t('sidebar.persona.resultsHeading')}</ResultHeading>
+              {personas.map((persona) => (
+                <button key={persona.id} type="button" {...option(`p:${persona.id}`)}>
+                  <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] text-ink">
+                      <Highlighted text={persona.name} ranges={highlightTerms(persona.name, personaQuery)} />
+                    </span>
+                    {persona.title !== undefined && persona.title.trim() !== '' ? (
+                      <span className="block truncate text-[11.5px] text-ink-faint">{persona.title}</span>
+                    ) : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {local.workspaces.length > 0 ? (
+            <div role="group" aria-label={t('sidebar.results.workspaces')}>
+              <ResultHeading>{t('sidebar.results.workspaces')}</ResultHeading>
+              {local.workspaces.map((match) => (
+                <button key={match.workspace.id} type="button" {...option(`ws:${match.workspace.id}`)}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] text-ink">
+                      <Highlighted text={match.workspace.name} ranges={match.nameRanges} />
+                    </span>
+                    <span className="block truncate font-mono text-[11.5px] text-ink-faint">{shortCwd(match.workspace.root)}</span>
+                  </span>
+                  <span className="shrink-0 pt-px text-[12px] text-ink-faint">{t('sidebar.results.filterTo', { name: '' }).trim()}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {local.sessions.length > 0 ? (
+            <div role="group" aria-label={t('sidebar.results.sessions')}>
+              <ResultHeading>{t('sidebar.results.sessions')}</ResultHeading>
+              {local.sessions.map((match) => (
+                <button key={match.session.id} type="button" {...option(`s:${match.session.id}`)}>
+                  <span className="flex h-[19px] w-[7px] shrink-0 items-center">
+                    <StatusMark session={match.session.source} state={sessionRowState(match.session.source, seen)} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] text-ink">
+                      <Highlighted text={match.session.title} ranges={match.titleRanges} />
+                    </span>
+                    <span className="block truncate text-[12px] text-ink-faint">
+                      {workspaceNames.get(match.session.workspace_id) ?? shortCwd(match.session.cwd)}
+                      {' · '}
+                      <RelativeTime at={match.session.updated_at} />
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <div role="group" aria-label={t('sidebar.results.messages')} data-search-messages>
+            {search.hits.length > 0 || search.contentPending || search.contentInitialError !== null || search.unavailable !== undefined ? (
+              <ResultHeading>{t('sidebar.results.messages')}</ResultHeading>
             ) : null}
+            {search.hits.map((hit, index) => (
+              <button key={`${hit.session_id}-${hit.turn ?? 'x'}-${hit.role}-${index}`} type="button" {...option(`h:${index}`)}>
+                <span className="min-w-0 flex-1">
+                  <span className="line-clamp-2 text-[13px] leading-snug text-ink-soft">
+                    <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
+                  </span>
+                  <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
+                    <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
+                    <span className="shrink-0">· {t(hit.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${hit.role}`)}</span>
+                    <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
+                  </span>
+                </span>
+              </button>
+            ))}
+            {messagesFooter}
           </div>
-        ) : search.building !== undefined ? (
-          <p data-search-building role="status" className="flex items-center gap-1.5 px-2 pt-1.5 text-[12px] text-ink-faint">
-            <Spinner label={t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })} size={12} />
-            {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
-          </p>
-        ) : search.incomplete ? (
-          <p data-search-incomplete role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">{t('sidebar.results.incomplete')}</p>
-        ) : null}
-        {search.hasNextPage ? (
-          <button
-            type="button"
-            data-search-load-more
-            disabled={search.isFetchingNextPage || search.isFetching}
-            onClick={search.fetchNextPage}
-            className="mt-1 h-8 w-full rounded-md text-center text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink disabled:opacity-60"
-          >
-            {search.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
-          </button>
-        ) : null}
-        {search.contentAppendError ? (
-          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3">
-            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
-            <button
-              type="button"
-              data-search-retry
-              disabled={search.isFetchingNextPage}
-              onClick={search.fetchNextPage}
-              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
-            >
-              {t('common.retry')}
-            </button>
-          </div>
-        ) : null}
-      </div>
+        </>
+      )}
 
       {nothingLocal && (contentSettledEmpty || !isSearchable(parsed.text)) && search.contentInitialError === null && !search.contentPending ? (
         <p data-search-empty className="px-2 pt-3 text-[12.5px] text-ink-faint">

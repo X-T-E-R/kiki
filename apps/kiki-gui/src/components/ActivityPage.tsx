@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { PersonaSummary, RoomListItem, Session } from '@kiki/protocol';
 import {
@@ -58,6 +59,26 @@ import { ThreadTitle } from './ThreadTitle';
 import { segmentClass, WorkspaceScopeControl } from './WorkspaceScopeControl';
 
 type ActivityView = 'inbox' | 'comms';
+export const ACTIVITY_VIRTUALIZE_THRESHOLD = 60;
+
+type FlatActivityRow =
+  | {
+      readonly kind: 'header';
+      readonly key: string;
+      readonly groupKey: 'needs-you' | 'unread' | 'running';
+      readonly title: string;
+      readonly hint: string;
+      readonly count: number;
+      readonly isFirst: boolean;
+      readonly action?: ReactNode;
+    }
+  | {
+      readonly kind: 'item';
+      readonly key: string;
+      readonly groupKey: 'needs-you' | 'unread' | 'running';
+      readonly item: InboxItem;
+      readonly dismissible: boolean;
+    };
 
 const VALID_FILTERS = new Set<InboxTriageFilter>(['all', 'needs-you', 'unread', 'running']);
 
@@ -141,6 +162,8 @@ function InboxRow({
   focused,
   expanded,
   canExpandInline,
+  suppressAutoScroll = false,
+  bare = false,
   onFocusRow,
   onToggleExpand,
   onDismiss,
@@ -152,6 +175,8 @@ function InboxRow({
   focused: boolean;
   expanded: boolean;
   canExpandInline: boolean;
+  suppressAutoScroll?: boolean;
+  bare?: boolean;
   onFocusRow: () => void;
   onToggleExpand?: () => void;
   onDismiss?: () => void;
@@ -166,23 +191,22 @@ function InboxRow({
   const modelShort = shortModelLabel(item.model);
 
   useEffect(() => {
-    if (focused) {
+    if (focused && !suppressAutoScroll) {
       rowRef.current?.scrollIntoView?.({ block: 'nearest' });
     }
-  }, [focused]);
+  }, [focused, suppressAutoScroll]);
 
-  return (
-    <li>
-      <div
-        ref={rowRef}
-        data-activity-item={item.sessionId}
-        data-activity-reason={item.reason}
-        data-activity-focused={focused ? 'true' : undefined}
-        onMouseEnter={onFocusRow}
-        className={`group rounded-lg px-2 py-1 transition-colors ${
-          focused ? 'bg-ink/[0.045]' : 'hover:bg-ink/[0.03]'
-        }`}
-      >
+  const body = (
+    <div
+      ref={rowRef}
+      data-activity-item={item.sessionId}
+      data-activity-reason={item.reason}
+      data-activity-focused={focused ? 'true' : undefined}
+      onMouseEnter={onFocusRow}
+      className={`group rounded-lg px-2 py-1 transition-colors ${
+        focused ? 'bg-ink/[0.045]' : 'hover:bg-ink/[0.03]'
+      }`}
+    >
         <div className="flex min-h-10 items-start gap-1.5">
           <button
             type="button"
@@ -293,9 +317,9 @@ function InboxRow({
             onOpenThread={(target) => { onOpen(itemHref(item, target)); }}
           />
         ) : null}
-      </div>
-    </li>
+    </div>
   );
+  return bare ? body : <li>{body}</li>;
 }
 
 function InboxGroup({
@@ -446,12 +470,16 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     return out;
   }, [firstExpandableId, manualExpanded]);
 
+  const visibleItemById = useMemo(
+    () => new Map(model.visibleItems.map((item) => [item.sessionId, item])),
+    [model.visibleItems],
+  );
   const activeFocusedId = useMemo(() => {
-    if (focusedId !== undefined && model.visibleItems.some((item) => item.sessionId === focusedId)) {
+    if (focusedId !== undefined && visibleItemById.has(focusedId)) {
       return focusedId;
     }
     return undefined;
-  }, [focusedId, model.visibleItems]);
+  }, [focusedId, visibleItemById]);
 
   const toggleExpand = (sessionId: string) => {
     setManualExpanded((prev) => {
@@ -512,7 +540,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
         return;
       }
       const currentId = activeFocusedId ?? items[0]?.sessionId;
-      const currentItem = currentId === undefined ? undefined : items.find((entry) => entry.sessionId === currentId);
+      const currentItem = currentId === undefined ? undefined : visibleItemById.get(currentId);
       if (currentItem === undefined) return;
 
       if (event.key === 'x') {
@@ -566,6 +594,103 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
   const showNeedsYou = filter === 'all' || filter === 'needs-you';
   const showUnread = filter === 'all' || filter === 'unread';
   const showRunning = filter === 'all' || filter === 'running';
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const windowed = view === 'inbox' && model.visibleItems.length > ACTIVITY_VIRTUALIZE_THRESHOLD;
+  const markAllReadAction = (
+    <button
+      type="button"
+      data-activity-mark-all-read
+      onClick={markAllRead}
+      className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
+    >
+      {t('activity.markAllRead')}
+    </button>
+  );
+  const flatRows = useMemo<readonly FlatActivityRow[]>(() => {
+    if (!windowed) return [];
+    const out: FlatActivityRow[] = [];
+    const pushGroup = (
+      groupKey: 'needs-you' | 'unread' | 'running',
+      title: string,
+      hint: string,
+      items: readonly InboxItem[],
+      dismissible: boolean,
+      action?: ReactNode,
+    ) => {
+      if (items.length === 0) return;
+      out.push({
+        kind: 'header',
+        key: `hdr:${groupKey}`,
+        groupKey,
+        title,
+        hint,
+        count: items.length,
+        isFirst: out.length === 0,
+        action,
+      });
+      for (const item of items) {
+        out.push({
+          kind: 'item',
+          key: `${item.reason}:${item.sessionId}`,
+          groupKey,
+          item,
+          dismissible,
+        });
+      }
+    };
+    if (showNeedsYou) {
+      pushGroup('needs-you', t('activity.needsYou'), t('activity.needsYouOrder'), model.needsYou, false);
+    }
+    if (showUnread) {
+      pushGroup('unread', t('activity.unread'), t('activity.unreadOrder'), model.unread, true, markAllReadAction);
+    }
+    if (showRunning) {
+      pushGroup('running', t('activity.runningGroup'), t('activity.runningOrder'), model.running, false);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowed, showNeedsYou, showUnread, showRunning, model.needsYou, model.unread, model.running, t]);
+
+  const activityVirtualizer = useVirtualizer({
+    count: windowed ? flatRows.length : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => {
+      const row = flatRows[index];
+      if (row === undefined) return 60;
+      if (row.kind === 'header') return row.isFirst ? 30 : 44;
+      return expandedIds.has(row.item.sessionId) ? 140 : 60;
+    },
+    getItemKey: (index) => flatRows[index]?.key ?? index,
+    overscan: 8,
+    initialRect: { width: 720, height: 640 },
+    measureElement: (element, _entry, instance) => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      return height > 0 ? height : instance.options.estimateSize(Number(element.getAttribute('data-index') ?? 0));
+    },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
+    useFlushSync: false,
+  });
+
+  useEffect(() => {
+    if (!windowed || activeFocusedId === undefined) return;
+    const index = flatRows.findIndex((row) => row.kind === 'item' && row.item.sessionId === activeFocusedId);
+    if (index >= 0) activityVirtualizer.scrollToIndex(index, { align: 'auto' });
+  }, [windowed, activeFocusedId, flatRows, activityVirtualizer]);
 
   return (
     <div data-activity-page data-activity-view={view} className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
@@ -647,10 +772,71 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
         </div>
       </div>
 
-      <div data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 lg:px-6">
+      <div ref={scrollRef} data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 lg:px-6">
         {view === 'comms' ? (
           <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3 pt-1`}>
             <ActivityComms workspaceId={scope} workspaceNames={workspaceNames} onOpen={open} />
+          </div>
+        ) : windowed ? (
+          <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col pt-1`}>
+            <ul
+              data-activity-virtualized="true"
+              className="relative"
+              style={{ height: activityVirtualizer.getTotalSize() }}
+            >
+              {activityVirtualizer.getVirtualItems().map((virtualRow) => {
+                const row = flatRows[virtualRow.index];
+                if (row === undefined) return null;
+                if (row.kind === 'header') {
+                  return (
+                    <li
+                      key={row.key}
+                      data-index={virtualRow.index}
+                      ref={activityVirtualizer.measureElement}
+                      data-activity-group={row.groupKey}
+                      className={`absolute inset-x-0 ${row.isFirst ? '' : 'pt-3.5'}`}
+                      style={{ top: virtualRow.start }}
+                    >
+                      <div className="flex h-7 items-center gap-1.5 px-3 text-[12px] leading-4">
+                        <h2 className="shrink-0 font-medium text-ink-soft">{row.title}</h2>
+                        <span className="shrink-0 text-ink-faint tabular-nums">{row.count}</span>
+                        <span aria-hidden className="hidden text-ink-faint sm:inline">·</span>
+                        <span className="hidden min-w-0 flex-1 truncate text-ink-faint sm:inline">{row.hint}</span>
+                        <span className="flex-1 sm:hidden" />
+                        {row.action}
+                      </div>
+                    </li>
+                  );
+                }
+                const item = row.item;
+                const canExpandInline = canInlineFor(item);
+                const personaLabel = item.personaName ?? (item.personaId !== undefined ? personaNames.get(item.personaId) : undefined);
+                return (
+                  <li
+                    key={row.key}
+                    data-index={virtualRow.index}
+                    ref={activityVirtualizer.measureElement}
+                    className="absolute inset-x-0 pb-0.5"
+                    style={{ top: virtualRow.start }}
+                  >
+                    <InboxRow
+                      item={item}
+                      workspaceName={workspaceNames.get(item.workspaceId)}
+                      personaLabel={personaLabel}
+                      focused={activeFocusedId === item.sessionId}
+                      expanded={expandedIds.has(item.sessionId)}
+                      canExpandInline={canExpandInline}
+                      suppressAutoScroll
+                      bare
+                      onFocusRow={() => { setFocusedId(item.sessionId); }}
+                      onToggleExpand={canExpandInline ? () => { toggleExpand(item.sessionId); } : undefined}
+                      onDismiss={row.dismissible ? () => { dismissOne(item); } : undefined}
+                      onOpen={open}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         ) : (
           <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3.5 pt-1`}>
@@ -688,16 +874,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
                 onToggleExpand={toggleExpand}
                 onDismissItem={dismissOne}
                 onOpen={open}
-                action={(
-                  <button
-                    type="button"
-                    data-activity-mark-all-read
-                    onClick={markAllRead}
-                    className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
-                  >
-                    {t('activity.markAllRead')}
-                  </button>
-                )}
+                action={markAllReadAction}
               />
             ) : null}
 

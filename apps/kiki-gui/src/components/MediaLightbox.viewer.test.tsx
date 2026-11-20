@@ -16,7 +16,7 @@ let container: HTMLDivElement;
 
 function renderLightbox(props: Partial<Parameters<typeof MediaLightbox>[0]> & { src?: string }) {
   act(() => {
-    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} localKikiComputer={props.localKikiComputer ?? (props.remote === undefined ? true : !props.remote)} remote={props.remote} savedAnnotations={props.savedAnnotations} onAnnotationsChange={props.onAnnotationsChange} onAttachAnnotatedImage={props.onAttachAnnotatedImage} /></I18nProvider>);
+    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} thumbnails={props.thumbnails} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} localKikiComputer={props.localKikiComputer ?? (props.remote === undefined ? true : !props.remote)} remote={props.remote} savedAnnotations={props.savedAnnotations} onAnnotationsChange={props.onAnnotationsChange} onAttachAnnotatedImage={props.onAttachAnnotatedImage} /></I18nProvider>);
   });
 }
 
@@ -132,7 +132,7 @@ describe('lightbox viewing', () => {
       expect(svg.querySelector('rect')).not.toBeNull();
       act(() => { [...document.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click(); });
       expect(document.querySelector('[data-image-annotations] rect')).toBeNull();
-      act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+      act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
       expect(onClose).toHaveBeenCalledOnce();
     } finally {
       vi.stubGlobal('Image', OriginalImage);
@@ -611,5 +611,38 @@ describe('annotated export', () => {
     } finally {
       vi.stubGlobal('Image', OriginalImage);
     }
+  });
+
+  it('windows a 5,000-image filmstrip around the active index with bounded thumbnail DOM nodes', () => {
+    const thumbnails = Array.from({ length: 5000 }, (_, i) => ({
+      id: `img-${i}`,
+      src: `https://example.test/thumb-${i}.png`,
+      label: `frame-${i}.png`,
+    }));
+    const onSelect = vi.fn();
+    renderLightbox({
+      name: 'frame-2500.png',
+      identity: 'img-2500',
+      src: thumbnails[2500]!.src,
+      index: 2500,
+      count: thumbnails.length,
+      thumbnails,
+      onSelect,
+    });
+    const strip = document.querySelector('[data-lightbox-filmstrip]')!;
+    expect(strip).not.toBeNull();
+    const thumbButtons = strip.querySelectorAll('[data-lightbox-thumb]');
+    const allDialogImgs = document.querySelectorAll('[role="dialog"] img');
+    expect(thumbButtons.length).toBeLessThanOrEqual(40);
+    expect(thumbButtons.length).toBeGreaterThan(10);
+    expect(allDialogImgs.length).toBeLessThanOrEqual(41);
+    expect(strip.querySelector('[data-lightbox-thumb="2500"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(strip.querySelector('[data-lightbox-filmstrip-before]')?.textContent).toBe('+2484');
+    expect(strip.querySelector('[data-lightbox-filmstrip-after]')?.textContent).toBe('+2483');
+
+    act(() => {
+      strip.querySelector<HTMLButtonElement>('[data-lightbox-thumb="2505"]')!.click();
+    });
+    expect(onSelect).toHaveBeenCalledWith(2505);
   });
 });

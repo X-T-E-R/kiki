@@ -4200,4 +4200,123 @@ describe('Sidebar inline session rename reliability and confirmation UX', () => 
       outsideButton.remove();
     }
   });
+
+  it('virtualizes 10,000 sessions / 200 workspaces and 2,000 expanded workspace rows while preserving 18px keyline classes', async () => {
+    const workspaceCount = 200;
+    const workspaces = Array.from({ length: workspaceCount }, (_, index) => ({
+      id: `ws_scale_${index}`,
+      name: `Workspace ${index}`,
+      root: `/w/scale-${index}`,
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-02T00:00:00.000Z',
+      session_count: index === 0 ? 2000 : 40,
+      pinned: false,
+      isGit: true,
+    }));
+    const sessionsList: Session[] = [];
+    for (let i = 0; i < 2000; i += 1) {
+      sessionsList.push({
+        ...session(`s_big_${i}`),
+        workspace_id: 'ws_scale_0',
+        title: `Big workspace thread ${i}`,
+        updated_at: new Date(Date.UTC(2026, 0, 2) - i * 1000).toISOString(),
+      });
+    }
+    for (let ws = 1; ws < workspaceCount; ws += 1) {
+      for (let j = 0; j < 40; j += 1) {
+        sessionsList.push({
+          ...session(`s_ws${ws}_${j}`),
+          workspace_id: `ws_scale_${ws}`,
+          title: `Thread ws${ws}-${j}`,
+          updated_at: new Date(Date.UTC(2026, 0, 1) - (ws * 40 + j) * 1000).toISOString(),
+        });
+      }
+    }
+    // 2,000 + 199 * 40 = 9,960 sessions (plus 40 extra = 10,000)
+    for (let k = 0; k < 40; k += 1) {
+      sessionsList.push({
+        ...session(`s_tail_${k}`),
+        workspace_id: 'ws_scale_199',
+        title: `Tail thread ${k}`,
+        updated_at: new Date(Date.UTC(2025, 11, 1) - k * 1000).toISOString(),
+      });
+    }
+    expect(sessionsList).toHaveLength(10_000);
+
+    const byWorkspace = new Map<string, Session[]>();
+    for (const item of sessionsList) {
+      const bucket = byWorkspace.get(item.workspace_id);
+      if (bucket === undefined) byWorkspace.set(item.workspace_id, [item]);
+      else bucket.push(item);
+    }
+    const groups = workspaces.map((ws) => ({
+      key: ws.id,
+      label: ws.name,
+      items: byWorkspace.get(ws.id) ?? [],
+    }));
+
+    const { container } = await mount({
+      sessions: sessionsList,
+      sessionGroups: groups,
+      workspaceOptions: workspaces,
+      groupBy: 'workspace',
+    });
+
+    const listEl = container.querySelector('[data-session-list]')!;
+    expect(listEl.className).toContain('px-2.5');
+    expect(container.querySelector('[data-session-list-virtualized="true"]')).not.toBeNull();
+    const initialRows = container.querySelectorAll('[data-session-row]');
+    expect(initialRows.length).toBeGreaterThan(5);
+    expect(initialRows.length).toBeLessThanOrEqual(60);
+    // Preserve 18px keyline: outer px-2.5 (10px) + row button pl-2 (8px)
+    expect(initialRows[0]?.querySelector('button')?.className).toContain('pl-2');
+
+    // Expand workspace 0 (2,000 sessions): DOM stays strictly bounded.
+    const showMore = container.querySelector<HTMLButtonElement>('[data-session-group-more="ws_scale_0"]')!;
+    expect(showMore).not.toBeNull();
+    await act(async () => { showMore.click(); });
+    const expandedRows = container.querySelectorAll('[data-session-row]');
+    expect(expandedRows.length).toBeGreaterThan(5);
+    expect(expandedRows.length).toBeLessThanOrEqual(60);
+  });
+
+  it('virtualizes SearchResults when searching across 10,000 sessions and large server hit pages', async () => {
+    const sessionsList = Array.from({ length: 10_000 }, (_, i) => ({
+      ...session(`s_find_${i}`),
+      workspace_id: 'ws-a',
+      title: `Scale session ${i}`,
+      updated_at: new Date(Date.UTC(2026, 0, 2) - i * 1000).toISOString(),
+    }));
+    const manyHits = Array.from({ length: 200 }, (_, i) => hit({
+      session_id: `s_find_${i}`,
+      session_title: `Scale session ${i}`,
+      snippet: `Scale session match snippet ${i}`,
+      turn: i,
+    }));
+    searchMessages.mockResolvedValue(page(manyHits, false, undefined, {
+      index_state: { state: 'ready', indexed_sessions: 10_000, total_sessions: 10_000, documents: 10_000 },
+    }));
+
+    const { container } = await mount({
+      sessions: sessionsList,
+      sessionGroups: [{ key: 'all', label: 'All', items: sessionsList }],
+      groupBy: 'none',
+    });
+    expect(container.querySelector('[data-session-list-virtualized="true"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-session-row]').length).toBeLessThanOrEqual(60);
+
+    // Open search and type a query matching local + 200 server hits.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-search-toggle]')!.click();
+    });
+    const searchInput = container.querySelector<HTMLInputElement>('[data-search-box]')!;
+    await setInputValue(searchInput, 'Scale session');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, CONTENT_SEARCH_DEBOUNCE_MS + 40)); });
+    await settle();
+
+    expect(container.querySelector('[data-search-results-virtualized="true"]')).not.toBeNull();
+    const renderedResults = container.querySelectorAll('[data-search-result]');
+    expect(renderedResults.length).toBeGreaterThan(5);
+    expect(renderedResults.length).toBeLessThanOrEqual(60);
+  });
 });

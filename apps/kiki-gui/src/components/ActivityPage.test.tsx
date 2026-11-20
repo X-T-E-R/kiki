@@ -599,4 +599,31 @@ describe('ActivityPage', () => {
       '/s/sess%2F2/agent/sub%2Fask?interaction=q%2F2',
     );
   });
+
+  it('virtualizes 10,000 activity sessions (needs-you, unread, running) into bounded DOM rows', async () => {
+    const tenThousand: Session[] = Array.from({ length: 10_000 }, (_, i) => {
+      const updated = new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
+      if (i < 500) {
+        return session({ id: `s_need_${i}`, title: `Needs ${i}`, pending_interaction: 'approval', updated_at: updated });
+      }
+      if (i < 9000) {
+        return session({ id: `s_unread_${i}`, title: `Completed ${i}`, last_turn_reason: 'completed', updated_at: updated });
+      }
+      return session({ id: `s_run_${i}`, title: `Running ${i}`, busy: true, updated_at: updated });
+    });
+
+    const container = await render(tenThousand, '/activity');
+    expect(container.querySelector('[data-activity-virtualized="true"]')).not.toBeNull();
+    const mountedAll = container.querySelectorAll('[data-activity-item]');
+    expect(mountedAll.length).toBeGreaterThan(5);
+    expect(mountedAll.length).toBeLessThanOrEqual(50);
+
+    // Filter to unread completions (8,500 items): still mounts bounded DOM rows
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-activity-filter="unread"]')!.click();
+    });
+    const mountedUnread = container.querySelectorAll('[data-activity-item]');
+    expect(mountedUnread.length).toBeGreaterThan(5);
+    expect(mountedUnread.length).toBeLessThanOrEqual(50);
+  });
 });
