@@ -20,6 +20,20 @@ const DEFAULT_MATRIX = {
   viewports: ['wide'],
 };
 const MAX_SETUP_TIMEOUT_MS = 60_000;
+
+async function detectErrorBoundary(page) {
+  return page.evaluate(() => {
+    try {
+      const renderFail = sessionStorage.getItem('kiki.lastRenderFailure');
+      if (renderFail) return `sessionStorage.lastRenderFailure: ${renderFail.slice(0, 400)}`;
+    } catch { /* storage unavailable */ }
+    const settingsErr = document.querySelector('[data-settings-pane-error]');
+    if (settingsErr) return `SettingsPaneBoundary: ${(settingsErr.textContent ?? '').trim().slice(0, 400)}`;
+    const appAlertPre = document.querySelector('main > section[role="alert"] pre');
+    if (appAlertPre) return `AppErrorBoundary: ${(appAlertPre.textContent ?? '').trim().slice(0, 400)}`;
+    return null;
+  }).catch(() => null);
+}
 const HELP = `
 Headless Kiki GUI visual proof
 
@@ -492,6 +506,14 @@ export async function runGenericVisualProof({ argv = process.argv.slice(2), cwd 
             }
           }, view);
           const page = await context.newPage();
+          const pageErrors = [];
+          const consoleErrors = [];
+          page.on('pageerror', (err) => {
+            pageErrors.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
+          });
+          page.on('console', (msg) => {
+            if (msg.type() === 'error') consoleErrors.push(msg.text());
+          });
           await page.emulateMedia({ colorScheme: view.theme });
           const authToken = config.token ?? (fixtureUrl === undefined ? undefined : FIXTURE_TOKEN);
           if (fixtureUrl !== undefined) {
@@ -510,6 +532,16 @@ export async function runGenericVisualProof({ argv = process.argv.slice(2), cwd 
           await settleAnimations(page, Number(route.animationTimeoutMs ?? 2000));
           await waitNetworkIdle(page);
           await page.waitForSelector(`html[data-theme="${view.theme}"]`, { timeout: MAX_SETUP_TIMEOUT_MS });
+          const boundaryHit = await detectErrorBoundary(page);
+          if (boundaryHit !== null) {
+            throw new Error(`[visual-proof] route ${route.name} (${view.locale}/${view.theme}/${view.viewport}) hit ErrorBoundary: ${boundaryHit}`);
+          }
+          if (pageErrors.length > 0) {
+            throw new Error(`[visual-proof] route ${route.name} (${view.locale}/${view.theme}/${view.viewport}) uncaught pageerror: ${pageErrors.join(' | ')}`);
+          }
+          if (route.allowConsoleErrors !== true && consoleErrors.length > 0) {
+            throw new Error(`[visual-proof] route ${route.name} (${view.locale}/${view.theme}/${view.viewport}) console.error: ${consoleErrors.join(' | ')}`);
+          }
           const file = `${safeName(route.name)}--${view.locale}--${view.theme}--${view.viewport}.png`;
           const path = join(outputDir, file);
           await page.screenshot({ path, fullPage: route.fullPage === true });

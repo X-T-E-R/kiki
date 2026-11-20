@@ -1525,6 +1525,32 @@ export function seedMessages(projector, messages, options = {}) {
       const prompt = textOfMessage(message);
       const attachmentIds = [];
       for (const part of message.content ?? []) {
+        if (part?.type === 'audio') {
+          const fileId = part.source?.file_id ?? part.source?.fileId;
+          const url = part.source?.kind === 'url' ? part.source.url : undefined;
+          if (typeof fileId === 'string' && fileId !== '') {
+            const attachmentId = `att-${turnId}-${attachmentIds.length}`;
+            attachmentIds.push(attachmentId);
+            upsertList(agent.snapshot.attachments, 'attachmentId', attachmentId, {
+              attachmentId,
+              mediaType: part.mime ?? 'audio/wav',
+              name: part.name,
+              source: { kind: 'session_media', fileId },
+            });
+            continue;
+          }
+          if (typeof url === 'string' && url !== '') {
+            const attachmentId = `att-${turnId}-${attachmentIds.length}`;
+            attachmentIds.push(attachmentId);
+            upsertList(agent.snapshot.attachments, 'attachmentId', attachmentId, {
+              attachmentId,
+              mediaType: part.mime ?? 'audio/wav',
+              name: part.name,
+              source: { kind: 'url', url },
+            });
+            continue;
+          }
+        }
         const url = imageUrlOf(part);
         if (typeof url !== 'string' || url === '') continue;
         const attachmentId = `att-${turnId}-${attachmentIds.length}`;
