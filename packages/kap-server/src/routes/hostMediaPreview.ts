@@ -22,11 +22,32 @@ import type { TranscriptService } from '../services/transcript/transcriptService
 import { webPrincipal } from '../services/webAccess';
 import { openSessionMedia } from './sessionMedia';
 
-const TTL_MS = 30 * 60 * 1000;
-const MAX_GRANTS = 64;
+const DEFAULT_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_MAX_GRANTS = 512;
 const ID_RE = /^[a-f0-9]{64}$/u;
 const openSchema = z.object({ path: z.string().min(1).max(4096) }).strict();
 const sessionOpenSchema = z.object({ file_id: z.string().min(1).max(4096) }).strict();
+
+function readPositiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.min(max, parsed);
+}
+
+function configuredMaxGrants(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PLAYBACK_MAX_GRANTS', DEFAULT_MAX_GRANTS, 1, 65_536);
+}
+
+function configuredGrantTtlMs(): number {
+  return readPositiveIntEnv('KIKI_MEDIA_PLAYBACK_TTL_MS', DEFAULT_TTL_MS, 1_000, 86_400_000);
+}
+
+function remoteMediaPlaybackEnabled(): boolean {
+  const raw = process.env['KIKI_REMOTE_MEDIA_PLAYBACK']?.trim().toLowerCase();
+  return raw === 'true' || raw === '1';
+}
 
 const MEDIA_MIME: Readonly<Record<string, string>> = {
   '.mp4': 'video/mp4',
@@ -54,6 +75,8 @@ interface HostGrant {
   readonly mime: string;
   readonly size: number;
   readonly expiresAt: number;
+  lastAccessedAt: number;
+  activeStreams: number;
 }
 
 interface SessionGrant {
@@ -63,6 +86,9 @@ interface SessionGrant {
   readonly mime: string;
   readonly size: number;
   readonly expiresAt: number;
+  readonly boundIp?: string;
+  lastAccessedAt: number;
+  activeStreams: number;
 }
 
 type MediaGrant = HostGrant | SessionGrant;
@@ -249,14 +275,56 @@ export function registerHostMediaPreviewRoutes(
   const timer = setInterval(sweep, 30_000);
   timer.unref();
   const release = (id: string): void => { grants.delete(id); };
-  const issue = (req: FastifyRequest, reply: FastifyReply, grant: Omit<HostGrant, 'expiresAt'> | Omit<SessionGrant, 'expiresAt'>): unknown => {
+  const evictOldestIdle = (): boolean => {
+    let oldestId: string | undefined;
+    let oldestAccess = Number.POSITIVE_INFINITY;
+    for (const [id, grant] of grants) {
+      if (grant.activeStreams > 0) continue;
+      if (grant.lastAccessedAt < oldestAccess) {
+        oldestAccess = grant.lastAccessedAt;
+        oldestId = id;
+      }
+    }
+    if (oldestId === undefined) return false;
+    grants.delete(oldestId);
+    return true;
+  };
+  const issue = (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    grant:
+      | Omit<HostGrant, 'expiresAt' | 'lastAccessedAt' | 'activeStreams'>
+      | Omit<SessionGrant, 'expiresAt' | 'lastAccessedAt' | 'activeStreams'>,
+  ): unknown => {
     sweep();
-    if (grants.size >= MAX_GRANTS) throw new AdmissionError(429, 'too_many_media_previews');
+    const maxGrants = configuredMaxGrants();
+    while (grants.size >= maxGrants) {
+      if (!evictOldestIdle()) throw new AdmissionError(429, 'too_many_media_previews');
+    }
+    const now = Date.now();
     const id = randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + TTL_MS;
+    const expiresAt = now + configuredGrantTtlMs();
     const stored: MediaGrant = grant.kind === 'host'
-      ? { kind: 'host', path: grant.path, mime: grant.mime, size: grant.size, expiresAt }
-      : { kind: 'session', sessionId: grant.sessionId, fileId: grant.fileId, mime: grant.mime, size: grant.size, expiresAt };
+      ? {
+          kind: 'host',
+          path: grant.path,
+          mime: grant.mime,
+          size: grant.size,
+          expiresAt,
+          lastAccessedAt: now,
+          activeStreams: 0,
+        }
+      : {
+          kind: 'session',
+          sessionId: grant.sessionId,
+          fileId: grant.fileId,
+          mime: grant.mime,
+          size: grant.size,
+          expiresAt,
+          boundIp: grant.boundIp,
+          lastAccessedAt: now,
+          activeStreams: 0,
+        };
     grants.set(id, stored);
     return reply.send(okEnvelope({
       preview_id: id,
@@ -298,9 +366,24 @@ export function registerHostMediaPreviewRoutes(
       let sessionId = '';
       let fileId = '';
       try {
-        requireLocalClient(req);
-        if (peerAudience(req) !== undefined || webPrincipal(req) !== undefined) {
-          throw new AdmissionError(403, 'media_preview_forbidden');
+        const localClient = isLoopbackPreviewClient(req);
+        let boundIp: string | undefined;
+        if (localClient) {
+          if (peerAudience(req) !== undefined || webPrincipal(req) !== undefined) {
+            throw new AdmissionError(403, 'media_preview_forbidden');
+          }
+        } else {
+          if (!remoteMediaPlaybackEnabled()) {
+            throw new AdmissionError(403, 'media_preview_requires_local_connection');
+          }
+          if (
+            authenticatedAuthorization(req) === undefined &&
+            peerAudience(req) === undefined &&
+            webPrincipal(req) === undefined
+          ) {
+            throw new AdmissionError(403, 'media_preview_forbidden');
+          }
+          boundIp = req.ip;
         }
         sessionId = (req.params as { sessionId: string }).sessionId;
         if (sessionId.length === 0) throw new AdmissionError(400, 'invalid_media_preview_request');
@@ -311,7 +394,7 @@ export function registerHostMediaPreviewRoutes(
         if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
         const mime = await projectedPlaybackMime(opened.file);
         if (mime === undefined) throw new AdmissionError(400, 'media_preview_type_unsupported');
-        return issue(req, reply, { kind: 'session', sessionId, fileId, mime, size: opened.file.size });
+        return issue(req, reply, { kind: 'session', sessionId, fileId, mime, size: opened.file.size, boundIp });
       } catch (error) {
         return sendError(error, reply);
       } finally {
@@ -330,12 +413,25 @@ export function registerHostMediaPreviewRoutes(
   });
   app.get('/media-preview/:previewId', async (req, reply) => {
     try {
-      requireLocalClient(req);
       sweep();
       const id = (req.params as { previewId: string }).previewId;
-      if (!ID_RE.test(id)) throw new AdmissionError(404, 'media_preview_not_found');
+      if (!ID_RE.test(id)) {
+        if (!remoteMediaPlaybackEnabled()) requireLocalClient(req);
+        throw new AdmissionError(404, 'media_preview_not_found');
+      }
       const grant = grants.get(id);
-      if (grant === undefined) throw new AdmissionError(404, 'media_preview_not_found');
+      if (grant === undefined) {
+        if (!remoteMediaPlaybackEnabled()) requireLocalClient(req);
+        throw new AdmissionError(404, 'media_preview_not_found');
+      }
+      if (grant.kind === 'host') {
+        requireLocalClient(req);
+      } else if (grant.boundIp !== undefined) {
+        if (req.ip !== grant.boundIp) throw new AdmissionError(403, 'media_preview_requires_local_connection');
+      } else {
+        requireLocalClient(req);
+      }
+      grant.lastAccessedAt = Date.now();
       if (grant.kind === 'host') return await sendHost(hostFs, grant, req, reply);
       return await sendSession(core, transcriptService, grant, req, reply);
     } catch (error) {
@@ -349,24 +445,51 @@ export function registerHostMediaPreviewRoutes(
 }
 
 async function sendHost(hostFs: { stat(path: string): Promise<{ isFile: boolean; size: number }> }, grant: HostGrant, req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
-  const stat = await hostFs.stat(grant.path);
-  if (!stat.isFile) throw new AdmissionError(404, 'media_preview_not_found');
-  reply.type(grant.mime);
-  const range = applyRange(reply, pickHeader(req.headers, 'range'), stat.size);
-  if (range === 'unsatisfiable') return reply.send('');
-  const stream = createReadStream(grant.path, range === null ? undefined : { start: range.start, end: range.end });
-  const stop = (): void => { stream.destroy(); };
-  reply.raw.once('close', stop);
-  stream.once('close', () => { reply.raw.off('close', stop); });
-  return reply.send(stream);
+  grant.activeStreams += 1;
+  let releasedStream = false;
+  const releaseStream = (): void => {
+    if (releasedStream) return;
+    releasedStream = true;
+    grant.activeStreams = Math.max(0, grant.activeStreams - 1);
+  };
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  try {
+    const stat = await hostFs.stat(grant.path);
+    if (!stat.isFile) throw new AdmissionError(404, 'media_preview_not_found');
+    reply.type(grant.mime);
+    const range = applyRange(reply, pickHeader(req.headers, 'range'), stat.size);
+    if (range === 'unsatisfiable') {
+      releaseStream();
+      return reply.send('');
+    }
+    const created = createReadStream(grant.path, range === null ? undefined : { start: range.start, end: range.end });
+    stream = created;
+    const stop = (): void => { created.destroy(); releaseStream(); };
+    reply.raw.once('close', stop);
+    reply.raw.once('finish', releaseStream);
+    created.once('close', () => { reply.raw.off('close', stop); releaseStream(); });
+    return reply.send(created);
+  } catch (error) {
+    stream?.destroy();
+    releaseStream();
+    throw error;
+  }
 }
 
 async function sendSession(core: Scope, transcriptService: TranscriptService | undefined, grant: SessionGrant, req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
   return withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
-    const opened = await openSessionMedia(core, grant.sessionId, grant.fileId, transcriptService, signal);
+    grant.activeStreams += 1;
+    let releasedStream = false;
+    const releaseStream = (): void => {
+      if (releasedStream) return;
+      releasedStream = true;
+      grant.activeStreams = Math.max(0, grant.activeStreams - 1);
+    };
+    let opened: Awaited<ReturnType<typeof openSessionMedia>> | undefined;
     let stream: Readable | undefined;
     let responseCleanup: DeferredCleanup | undefined;
     try {
+      opened = await openSessionMedia(core, grant.sessionId, grant.fileId, transcriptService, signal);
       if (signal.aborted) return;
       if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
       const file = opened.file;
@@ -376,13 +499,13 @@ async function sendSession(core: Scope, transcriptService: TranscriptService | u
       const playback = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
       stream = playback;
       responseCleanup = createDeferredCleanup(
-        () => opened.operation?.dispose(),
+        () => opened?.operation?.dispose(),
         (error) => {
           requestLog(req)?.error({ session_id: grant.sessionId, file_id: grant.fileId, err: error }, 'session media cleanup failed');
           playback.destroy(error instanceof Error ? error : new Error(String(error)));
         },
       );
-      const release = (): void => { responseCleanup?.release(); };
+      const release = (): void => { responseCleanup?.release(); releaseStream(); };
       playback.on('error', (error: unknown) => {
         requestLog(req)?.warn({ session_id: grant.sessionId, file_id: grant.fileId, err: error }, 'session media stream error');
         playback.destroy();
@@ -395,10 +518,16 @@ async function sendSession(core: Scope, transcriptService: TranscriptService | u
     } catch (error) {
       stream?.destroy();
       responseCleanup?.release();
+      releaseStream();
       await responseCleanup?.wait();
       throw error;
     } finally {
-      if (stream === undefined) await reportLeaseRelease(req, grant.sessionId, grant.fileId, () => opened.operation?.dispose());
+      if (stream === undefined) {
+        releaseStream();
+        if (opened !== undefined) {
+          await reportLeaseRelease(req, grant.sessionId, grant.fileId, () => opened?.operation?.dispose());
+        }
+      }
     }
   }, req);
 }

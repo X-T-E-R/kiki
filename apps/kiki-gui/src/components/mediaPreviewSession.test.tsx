@@ -20,7 +20,7 @@ import { TranscriptDetailProvider } from './transcriptDetail';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { KikiClient } from '../lib/client';
 import type { MediaPreviewApi } from './mediaPreviewContext';
-import { useSessionMediaPlayback } from './useSessionMediaPlayback';
+import { configureRemoteMediaPlayback, useSessionMediaPlayback } from './useSessionMediaPlayback';
 const mocks = vi.hoisted(() => ({
   readSessionMediaBytes: vi.fn(),
   readHostFileBytes: vi.fn(),
@@ -759,7 +759,7 @@ describe('session Range playback', () => {
     mocks.openMediaPlayback.mockReset().mockResolvedValue(descriptor());
     mocks.closeMediaPlayback.mockReset().mockResolvedValue(undefined);
   });
-  afterEach(() => { mocks.remote = false; vi.useRealTimers(); });
+  afterEach(() => { mocks.remote = false; configureRemoteMediaPlayback(null); vi.useRealTimers(); });
 
   it.each([
     { item: video, tag: 'video', mime: 'video/mp4' },
@@ -877,6 +877,20 @@ describe('session Range playback', () => {
     expect(mocks.openMediaPlayback).not.toHaveBeenCalled();
     if (item.path !== undefined) expect(mocks.readHostFileBytes).toHaveBeenCalledWith(item.path, expect.anything());
     else expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session-a', item.fileId, expect.anything());
+  });
+
+  it('streams remote session video via Range playback grant when remote playback is enabled and falls back cleanly on 40301', async () => {
+    mocks.remote = true;
+    configureRemoteMediaPlayback(true);
+    mocks.openMediaPlayback.mockResolvedValueOnce(descriptor('remote-stream', 'video/mp4'));
+    await attachment(video);
+    expect(document.querySelector('[data-preview-workspace] video')?.getAttribute('src')).toBe('http://localhost:8080/media-preview/remote-stream');
+    expect(mocks.readSessionMediaBytes).not.toHaveBeenCalled();
+
+    mocks.openMediaPlayback.mockRejectedValueOnce({ code: 40301, message: 'media_preview_requires_local_connection' });
+    mocks.readSessionMediaBytes.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2]), mime: 'video/mp4' });
+    await attachment({ ...video, fileId: 'blobref:main:fallback-remote' });
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session-a', 'blobref:main:fallback-remote', expect.anything());
   });
 });
 

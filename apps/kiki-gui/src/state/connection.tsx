@@ -228,6 +228,16 @@ export const VIEW_CACHE_TTL_MS = 5 * 60_000;
  * suspended (kept, not evicted) so subscriptions stay bounded.
  */
 export const VIEW_CACHE_MAX_LIVE_PARKED = 4;
+const DEFAULT_MAX_SCOPE_QUERY_CLIENTS = 8;
+
+function readConnectionPositiveIntEnv(key: string, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER): number {
+  const env = (import.meta as { readonly env?: Readonly<Record<string, unknown>> }).env;
+  const raw = env?.[key];
+  if (typeof raw !== 'string' || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.min(max, parsed);
+}
 
 export interface ViewCacheOptions {
   readonly maxParked?: number;
@@ -267,12 +277,13 @@ export class LiveControllerRegistry implements ControllerRegistry {
   private ttlTimer: unknown = null;
 
   constructor(options: ViewCacheOptions = {}) {
+    const maxBytes = options.maxBytes ?? readConnectionPositiveIntEnv('VITE_KIKI_VIEW_CACHE_MAX_BYTES', VIEW_CACHE_MAX_BYTES, 1024 * 1024, 1024 * 1024 * 1024);
     this.limits = {
-      maxParked: options.maxParked ?? VIEW_CACHE_MAX_PARKED,
-      maxBytes: options.maxBytes ?? VIEW_CACHE_MAX_BYTES,
-      maxEntryBytes: options.maxEntryBytes ?? VIEW_CACHE_MAX_ENTRY_BYTES,
-      ttlMs: options.ttlMs ?? VIEW_CACHE_TTL_MS,
-      maxLiveParked: options.maxLiveParked ?? VIEW_CACHE_MAX_LIVE_PARKED,
+      maxParked: options.maxParked ?? readConnectionPositiveIntEnv('VITE_KIKI_VIEW_CACHE_MAX_PARKED', VIEW_CACHE_MAX_PARKED, 0, 64),
+      maxBytes,
+      maxEntryBytes: options.maxEntryBytes ?? Math.floor(maxBytes / 2),
+      ttlMs: options.ttlMs ?? readConnectionPositiveIntEnv('VITE_KIKI_VIEW_CACHE_TTL_MS', VIEW_CACHE_TTL_MS, 1_000, 24 * 60 * 60_000),
+      maxLiveParked: options.maxLiveParked ?? readConnectionPositiveIntEnv('VITE_KIKI_VIEW_CACHE_MAX_LIVE_PARKED', VIEW_CACHE_MAX_LIVE_PARKED, 0, 64),
     };
     this.now = options.now ?? Date.now;
     this.setTimer = options.setTimer ?? ((callback, ms) => setTimeout(callback, ms));
@@ -388,9 +399,14 @@ export class LiveControllerRegistry implements ControllerRegistry {
   private onParkedChange(entry: RetainedController): void {
     const parked = entry.parked;
     if (parked === undefined || entry.controller.suspended || isProtectedView(entry.controller)) return;
+    const bytes = entry.controller.residentBytes();
+    if (bytes > this.limits.maxEntryBytes) {
+      this.dispose(entry);
+      return;
+    }
     // The eviction clock starts when the view stops needing to stay live.
     const scope = this.parked.get(entry) ?? {};
-    entry.parked = { ...parked, at: this.now() };
+    entry.parked = { ...parked, at: this.now(), bytes };
     this.parked.delete(entry);
     this.parked.set(entry, scope);
     entry.controller.suspend();
@@ -593,11 +609,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const connectionSource = selection?.source ?? null;
   const spaceKey = connectionId === null ? activeSpace()?.homeId ?? 'main' : `remote:${connectionId}`;
   let queryClient = scopesRef.current.get(scopeId);
-  if (queryClient === undefined) {
+  if (queryClient !== undefined) {
+    scopesRef.current.delete(scopeId);
+    scopesRef.current.set(scopeId, queryClient);
+  } else {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: 1, staleTime: 0, refetchOnWindowFocus: false } },
     });
     scopesRef.current.set(scopeId, queryClient);
+    const maxScopeClients = readConnectionPositiveIntEnv('VITE_KIKI_MAX_SCOPE_QUERY_CLIENTS', DEFAULT_MAX_SCOPE_QUERY_CLIENTS, 2, 64);
+    for (const [candidateScope, candidateClient] of Array.from(scopesRef.current)) {
+      if (scopesRef.current.size <= maxScopeClients) break;
+      if (candidateScope === scopeId || candidateScope === 'local') continue;
+      scopesRef.current.delete(candidateScope);
+      candidateClient.clear();
+      candidateClient.unmount();
+    }
   }
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [connectError, setConnectError] = useState<ConnectError | null>(null);
@@ -1021,6 +1048,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [localSelection, localEndpoint, localToken, requestTimeoutMs]);
 
   useEffect(() => {
+    const controllers = controllersRef.current;
+    const scopes = scopesRef.current;
+    return () => {
+      controllers.clearParked();
+      for (const clientToClear of scopes.values()) {
+        clientToClear.clear();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const instance = localControl?.client;
     const controllers = controllersRef.current;
     return () => {
@@ -1028,7 +1066,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       if (verifiedDesktopRef.current?.client === instance) verifiedDesktopRef.current = null;
       if (desktopRecoveryRef.current?.client === instance) desktopRecoveryRef.current = null;
       controllers.evictScope(instance);
-      void instance.klient.close();
+      void (typeof instance.dispose === 'function' ? instance.dispose() : instance.klient.close());
     };
   }, [localControl?.client]);
 
@@ -1226,7 +1264,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       if (verifiedDesktopRef.current?.client === instance) verifiedDesktopRef.current = null;
       if (desktopRecoveryRef.current?.client === instance) desktopRecoveryRef.current = null;
       controllers.evictScope(instance);
-      void instance.klient.close();
+      void (typeof instance.dispose === 'function' ? instance.dispose() : instance.klient.close());
     };
   }, [endpoint, token, scopeId, requestTimeoutMs, queryClient, usesLocalControl, selectedLocalClient, staged?.client]);
 

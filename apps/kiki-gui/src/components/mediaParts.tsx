@@ -91,12 +91,161 @@ interface CachedMediaEntry {
   readonly etag?: string;
 }
 
+export interface MediaFetchConfig {
+  readonly loopbackConcurrency: number;
+  readonly remoteConcurrency: number;
+  readonly concurrencyOverride?: number;
+  readonly inlineFallbackMaxBytes: number;
+  readonly cacheMaxEntries: number;
+  readonly cacheMaxBytes: number;
+  readonly cacheMaxItemBytes: number;
+}
+
+const DEFAULT_MEDIA_FETCH_CONFIG: MediaFetchConfig = {
+  loopbackConcurrency: 4,
+  remoteConcurrency: 3,
+  inlineFallbackMaxBytes: 4 * 1024 * 1024,
+  cacheMaxEntries: 256,
+  cacheMaxBytes: 32 * 1024 * 1024,
+  cacheMaxItemBytes: 16 * 1024 * 1024,
+};
+
+let mediaFetchConfigOverrides: Partial<MediaFetchConfig> = {};
+
+function readMediaPositiveIntEnv(key: string, min = 1, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  const env = (import.meta as { readonly env?: Readonly<Record<string, unknown>> }).env;
+  const raw = env?.[key];
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return undefined;
+  return Math.min(max, parsed);
+}
+
+/** Resolved media scheduler and cache configuration (`DEFAULT` <- `VITE_KIKI_*` <- runtime override). */
+export function getMediaFetchConfig(): MediaFetchConfig {
+  const envConcurrency = readMediaPositiveIntEnv('VITE_KIKI_MEDIA_FETCH_CONCURRENCY', 1, 16);
+  return {
+    loopbackConcurrency: mediaFetchConfigOverrides.loopbackConcurrency ?? DEFAULT_MEDIA_FETCH_CONFIG.loopbackConcurrency,
+    remoteConcurrency: mediaFetchConfigOverrides.remoteConcurrency ?? DEFAULT_MEDIA_FETCH_CONFIG.remoteConcurrency,
+    concurrencyOverride: mediaFetchConfigOverrides.concurrencyOverride ?? envConcurrency,
+    inlineFallbackMaxBytes:
+      mediaFetchConfigOverrides.inlineFallbackMaxBytes ??
+      readMediaPositiveIntEnv('VITE_KIKI_MEDIA_INLINE_FALLBACK_MAX_BYTES', 0, 256 * 1024 * 1024) ??
+      DEFAULT_MEDIA_FETCH_CONFIG.inlineFallbackMaxBytes,
+    cacheMaxEntries:
+      mediaFetchConfigOverrides.cacheMaxEntries ??
+      readMediaPositiveIntEnv('VITE_KIKI_MEDIA_CACHE_MAX_ENTRIES', 1, 4096) ??
+      DEFAULT_MEDIA_FETCH_CONFIG.cacheMaxEntries,
+    cacheMaxBytes:
+      mediaFetchConfigOverrides.cacheMaxBytes ??
+      readMediaPositiveIntEnv('VITE_KIKI_MEDIA_CACHE_MAX_BYTES', 64 * 1024, 512 * 1024 * 1024) ??
+      DEFAULT_MEDIA_FETCH_CONFIG.cacheMaxBytes,
+    cacheMaxItemBytes:
+      mediaFetchConfigOverrides.cacheMaxItemBytes ??
+      readMediaPositiveIntEnv('VITE_KIKI_MEDIA_CACHE_MAX_ITEM_BYTES', 64 * 1024, 256 * 1024 * 1024) ??
+      DEFAULT_MEDIA_FETCH_CONFIG.cacheMaxItemBytes,
+  };
+}
+
+/** Override media scheduler/cache limits at runtime (pass `null` to restore defaults/env). */
+export function configureMediaFetchConfig(patch: Partial<MediaFetchConfig> | null): MediaFetchConfig {
+  mediaFetchConfigOverrides = patch === null ? {} : { ...mediaFetchConfigOverrides, ...patch };
+  return getMediaFetchConfig();
+}
+
+/** LIFO bounded-concurrency media fetch scheduler (interactive reads ahead of scrolling previews). */
+export class MediaFetchScheduler {
+  private active = 0;
+  private readonly interactiveWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
+  private readonly previewWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
+  private readonly resolveLimit: () => number;
+
+  constructor(limit: number | (() => number)) {
+    this.resolveLimit = typeof limit === 'function' ? limit : () => limit;
+  }
+
+  private limit(): number {
+    return Math.max(1, this.resolveLimit());
+  }
+
+  private pump(): void {
+    const cap = this.limit();
+    while (this.active < cap) {
+      const next = this.interactiveWaiters.pop() ?? this.previewWaiters.pop();
+      if (next === undefined) break;
+      next.enter();
+    }
+  }
+
+  schedule<T>(signal: AbortSignal, priority: 'interactive' | 'preview', task: () => Promise<T>): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(signal.reason ?? new DOMException('Media fetch cancelled', 'AbortError'));
+    }
+    const execute = async (): Promise<T> => {
+      this.active += 1;
+      try {
+        signal.throwIfAborted();
+        return await task();
+      } finally {
+        this.active -= 1;
+        this.pump();
+      }
+    };
+    if (this.active < this.limit()) {
+      return execute();
+    }
+    const queue = priority === 'interactive' ? this.interactiveWaiters : this.previewWaiters;
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const waiter = {
+        enter: () => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener('abort', waiter.cancel);
+          resolve(execute());
+        },
+        cancel: () => {
+          if (settled) return;
+          settled = true;
+          const index = queue.indexOf(waiter);
+          if (index >= 0) queue.splice(index, 1);
+          signal.removeEventListener('abort', waiter.cancel);
+          reject(signal.reason ?? new DOMException('Media fetch cancelled', 'AbortError'));
+        },
+      };
+      queue.push(waiter);
+      signal.addEventListener('abort', waiter.cancel, { once: true });
+    });
+  }
+}
+
+const fallbackMediaSchedulers = new WeakMap<object, MediaFetchScheduler>();
+
+function isLocalMediaConnection(connection: ReturnType<typeof useOptionalConnection>): boolean {
+  if (connection === null || connection === undefined) return false;
+  if (isOnKikiComputer(connection)) return true;
+  return connection.connectionSource === undefined && connection.scopeId === 'local';
+}
+
+function schedulerForFallbackClient(client: object, localConnection: boolean): MediaFetchScheduler {
+  let scheduler = fallbackMediaSchedulers.get(client);
+  if (scheduler === undefined) {
+    scheduler = new MediaFetchScheduler(() => {
+      const config = getMediaFetchConfig();
+      return config.concurrencyOverride ?? (localConnection ? config.loopbackConcurrency : config.remoteConcurrency);
+    });
+    fallbackMediaSchedulers.set(client, scheduler);
+  }
+  return scheduler;
+}
+
+function clientOwnsMediaFetchLane(client: unknown): boolean {
+  return typeof client === 'object' && client !== null && (client as { readonly ownsMediaFetchLane?: unknown }).ownsMediaFetchLane === true;
+}
+
 class SessionMediaLruCache {
   private readonly entries = new Map<string, CachedMediaEntry>();
   private totalBytes = 0;
-  private static readonly MAX_ENTRIES = 256;
-  private static readonly MAX_BYTES = 32 * 1024 * 1024;
-  private static readonly MAX_ITEM_BYTES = 16 * 1024 * 1024;
 
   get(key: string): CachedMediaEntry | undefined {
     const hit = this.entries.get(key);
@@ -107,7 +256,8 @@ class SessionMediaLruCache {
   }
 
   set(key: string, entry: CachedMediaEntry): void {
-    if (entry.bytes.byteLength === 0 || entry.bytes.byteLength > SessionMediaLruCache.MAX_ITEM_BYTES) return;
+    const config = getMediaFetchConfig();
+    if (entry.bytes.byteLength === 0 || entry.bytes.byteLength > config.cacheMaxItemBytes) return;
     const previous = this.entries.get(key);
     if (previous !== undefined) {
       this.entries.delete(key);
@@ -115,7 +265,7 @@ class SessionMediaLruCache {
     }
     this.entries.set(key, entry);
     this.totalBytes += entry.bytes.byteLength;
-    while (this.entries.size > SessionMediaLruCache.MAX_ENTRIES || this.totalBytes > SessionMediaLruCache.MAX_BYTES) {
+    while (this.entries.size > config.cacheMaxEntries || this.totalBytes > config.cacheMaxBytes) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
       this.totalBytes -= this.entries.get(oldest)!.bytes.byteLength;
@@ -268,6 +418,7 @@ export function useSessionMedia(
 ): SessionMediaLoad {
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const localConnection = isLocalMediaConnection(connection);
   const scopeId = (connection as { scopeId?: string } | undefined)?.scopeId ?? '';
   const baseUrl = (client as { baseUrl?: string } | undefined)?.baseUrl ?? '';
   const scopeKey = `${scopeId}\0${baseUrl}`;
@@ -292,6 +443,18 @@ export function useSessionMedia(
     const cacheKey = sessionMediaCacheKey(scopeKey, sessionId, item.fileId, hostPath, previewOnly, item.mime);
     let objectUrl: string | undefined;
     let thumbnailUrl: string | undefined;
+    const revokeThumbnail = () => {
+      if (thumbnailUrl !== undefined) {
+        URL.revokeObjectURL(thumbnailUrl);
+        thumbnailUrl = undefined;
+      }
+    };
+    const revokeObject = () => {
+      if (objectUrl !== undefined) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = undefined;
+      }
+    };
     const cached = attempt === 0
       ? peekMediaCache(client, providerOwner, cacheKey, {
           previewOnly,
@@ -307,7 +470,7 @@ export function useSessionMedia(
       setLoad({ status: 'ready', bytes: cached.bytes, mime: cachedMime, name: cached.name, url: objectUrl });
       if (hasSessionMedia) {
         return () => {
-          if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+          revokeObject();
         };
       }
     } else if (attempt === 0 && !previewOnly && item.kind === 'image') {
@@ -327,13 +490,19 @@ export function useSessionMedia(
       setLoad(thumbnailUrl === undefined ? { status: 'loading' } : { status: 'loading', thumbnailUrl });
     }
     const options = { ...client.readingOptions(), signal: controller.signal, mediaType: item.mime };
+    const fetchConfig = getMediaFetchConfig();
+    const allowInlineOriginalFallback =
+      previewOnly &&
+      item.kind === 'image' &&
+      localConnection &&
+      (item.size === undefined || item.size <= fetchConfig.inlineFallbackMaxBytes);
     let storedByClientPreviewCache = previewOnly && clientOwnsPreviewCache(client);
     const readSession = (): Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }> => {
       const primary = previewOnly
         ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options)
         : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
       return primary.catch((error: unknown) => {
-        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
+        if (!allowInlineOriginalFallback || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
         storedByClientPreviewCache = false;
         return client.readSessionMediaBytes(sessionId!, item.fileId!, options);
       });
@@ -343,26 +512,34 @@ export function useSessionMedia(
         ? client.readHostMediaPreviewBytes(hostPath!, options)
         : client.readHostFileBytes(hostPath!, cached?.etag === undefined ? options : { ...options, ifNoneMatch: cached.etag });
       return primary.catch((error: unknown) => {
-        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
+        if (!allowInlineOriginalFallback || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
         storedByClientPreviewCache = false;
         return client.readHostFileBytes(hostPath!, cached?.etag === undefined ? options : { ...options, ifNoneMatch: cached.etag });
       });
     };
+    const scheduleRead = (
+      task: () => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
+    ) => {
+      if (!previewOnly || clientOwnsMediaFetchLane(client)) return task();
+      return schedulerForFallbackClient(client as object, localConnection).schedule(
+        controller.signal,
+        'preview',
+        task,
+      );
+    };
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let transientRetry = 0;
     const runRead = () => {
-      const resolved = hasSessionMedia ? readSession() : readHost();
+      const resolved = scheduleRead(() => (hasSessionMedia ? readSession() : readHost()));
       resolved.then((result) => {
         if (controller.signal.aborted) return;
         if (result.notModified === true && cached !== undefined && objectUrl !== undefined) {
+          revokeThumbnail();
           return;
         }
         const { bytes, mime, name, etag } = result;
         if (bytes.byteLength === 0) {
-          if (objectUrl !== undefined) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = undefined;
-          }
+          revokeObject();
           setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
           return;
         }
@@ -374,10 +551,12 @@ export function useSessionMedia(
           ((cached.etag !== undefined && etag === cached.etag) ||
             (etag === undefined && mediaType === cached.mime && sameBytes(bytes, cached.bytes)))
         ) {
+          revokeThumbnail();
           return;
         }
-        if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+        revokeObject();
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
+        revokeThumbnail();
         setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
       }, (error: unknown) => {
         if (controller.signal.aborted) return;
@@ -390,10 +569,7 @@ export function useSessionMedia(
           }, delay);
           return;
         }
-        if (objectUrl !== undefined) {
-          URL.revokeObjectURL(objectUrl);
-          objectUrl = undefined;
-        }
+        revokeObject();
         const previewUnavailable = previewOnly && item.kind === 'video' && isMediaPreviewUnavailable(error);
         setLoad(
           thumbnailUrl === undefined
@@ -406,10 +582,10 @@ export function useSessionMedia(
     return () => {
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       controller.abort();
-      if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      revokeThumbnail();
+      revokeObject();
     };
-  }, [attempt, client, enabled, previewOnly, providerOwner, scopeKey, item.blobHash, item.fileId, hostPath, item.mime, item.kind, sessionId, setLoad]);
+  }, [attempt, client, enabled, localConnection, previewOnly, providerOwner, scopeKey, item.blobHash, item.fileId, hostPath, item.mime, item.kind, item.size, sessionId, setLoad]);
 
   return load;
 }
@@ -989,7 +1165,7 @@ function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }
   if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
   const body = imageFailed ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
     : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
-    : item.kind === 'video' ? <video key={attempt} src={item.url} controls onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
+    : item.kind === 'video' ? <video key={attempt} src={item.url} controls preload="metadata" onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
     : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} onContextMenu={imageMenu.openMenu} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} referrerPolicy="no-referrer" decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
   return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }

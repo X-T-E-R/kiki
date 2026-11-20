@@ -684,10 +684,71 @@ export type AgentModelSwitchEvent =
   | { readonly kind: 'queued'; readonly entry: AgentEventPayloads['prompt.model_switch_queued']['entry']; readonly queueIndex: number }
   | { readonly kind: 'status'; readonly operationId: string; readonly receipt: ModelSwitchReceipt };
 
+/** Configurable concurrency and cache budgets for `KikiClient` media and upload lanes. */
+export interface MediaTransportLimits {
+  readonly mediaFetchConcurrency?: number;
+  readonly uploadConcurrency?: number;
+  readonly previewCacheMaxEntries?: number;
+  readonly previewCacheMaxBytes?: number;
+  readonly uiMediaCacheMaxEntries?: number;
+  readonly uiMediaCacheMaxBytes?: number;
+  readonly uiMediaCacheMaxItemBytes?: number;
+}
+
+const DEFAULT_LOOPBACK_MEDIA_FETCH_CONCURRENCY = 4;
+const DEFAULT_REMOTE_MEDIA_FETCH_CONCURRENCY = 3;
+const DEFAULT_UPLOAD_CONCURRENCY = 2;
+const DEFAULT_PREVIEW_CACHE_MAX_ENTRIES = 256;
+const DEFAULT_PREVIEW_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const DEFAULT_UI_MEDIA_CACHE_MAX_ENTRIES = 256;
+const DEFAULT_UI_MEDIA_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_UI_MEDIA_CACHE_MAX_ITEM_BYTES = 16 * 1024 * 1024;
+
+let mediaTransportOverrides: MediaTransportLimits = {};
+
+/** Override `KikiClient` media/upload concurrency and cache limits at runtime (pass `null` to reset). */
+export function configureMediaTransportLimits(patch: MediaTransportLimits | null): void {
+  mediaTransportOverrides = patch === null ? {} : { ...mediaTransportOverrides, ...patch };
+}
+
+function readClientPositiveIntEnv(key: string, min = 1, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  const env = (import.meta as { readonly env?: Readonly<Record<string, unknown>> }).env;
+  const raw = env?.[key];
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return undefined;
+  return Math.min(max, parsed);
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '[::1]') return true;
+  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)$/u.test(host);
+}
+
+function isRemoteBaseUrl(baseUrl: string, hasCustomTransport: boolean): boolean {
+  if (hasCustomTransport) return true;
+  const trimmed = baseUrl.trim();
+  if (trimmed === '') {
+    const host = typeof globalThis.location === 'object' && globalThis.location !== null
+      ? globalThis.location.hostname
+      : '';
+    return host !== '' && !isLoopbackHostname(host);
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return !isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export class KikiClient {
   private connection: { baseUrl: string; token: string | undefined; signal: AbortController };
   get baseUrl(): string { return this.connection.baseUrl; }
   private get token(): string | undefined { return this.connection.token; }
+  readonly ownsMediaFetchLane = true;
+  readonly isRemoteTransport: boolean;
   private readonly rebindTransport: ReturnType<typeof createRebindableKlient>['rebind'];
   private readonly suspendTransport: ReturnType<typeof createRebindableKlient>['suspend'];
   readonly klient: ReturnType<typeof createKlient>;
@@ -697,30 +758,22 @@ export class KikiClient {
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
   private previewCacheBytes = 0;
 
-  /**
-   * A session with a page of returned images scrolls past the old 8-entry cap
-   * in one screenful and then re-fetches every thumbnail on the way back. The
-   * previews are small (a 768px jpeg is tens of KB), so a generous entry count
-   * costs little and the byte budget remains the real ceiling.
-   */
-  private static readonly PREVIEW_CACHE_MAX_ENTRIES = 256;
-  private static readonly PREVIEW_CACHE_MAX_BYTES = 64 * 1024 * 1024;
-  private static readonly UI_MEDIA_CACHE_MAX_ENTRIES = 256;
-  private static readonly UI_MEDIA_CACHE_MAX_BYTES = 32 * 1024 * 1024;
-  private static readonly UI_MEDIA_CACHE_MAX_ITEM_BYTES = 16 * 1024 * 1024;
-  private static readonly BACKGROUND_PREVIEW_CONCURRENCY = 4;
   private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> }>();
   private readonly mediaFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> }>();
   private readonly uiMediaCache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string; readonly name?: string; readonly etag?: string }>();
   private uiMediaCacheBytes = 0;
-  private activeBackgroundPreviews = 0;
+  private activeMediaFetches = 0;
+  private readonly interactiveMediaWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
   private readonly backgroundPreviewWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
+  private activeUploads = 0;
+  private readonly uploadWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
   private readonly nativeAgentCache = new Set<string>();
   private readonly onSessionMutation: KikiClientOptions['onSessionMutation'];
 
   constructor(options: KikiClientOptions) {
     this.onSessionMutation = options.onSessionMutation;
     this.transport = options.transport;
+    this.isRemoteTransport = isRemoteBaseUrl(options.baseUrl, options.transport !== undefined);
     this.connection = { baseUrl: options.baseUrl, token: options.token || undefined, signal: new AbortController() };
     const transport = createRebindableKlient({
       endpoint: this.baseUrl,
@@ -764,6 +817,29 @@ export class KikiClient {
     this.connection.signal.abort();
   }
 
+  private clearInFlightAndCaches(): void {
+    for (const flight of this.previewFlights.values()) flight.controller.abort();
+    this.previewFlights.clear();
+    for (const flight of this.mediaFlights.values()) flight.controller.abort();
+    this.mediaFlights.clear();
+    for (const waiter of this.interactiveMediaWaiters.splice(0)) waiter.cancel();
+    for (const waiter of this.backgroundPreviewWaiters.splice(0)) waiter.cancel();
+    for (const waiter of this.uploadWaiters.splice(0)) waiter.cancel();
+    this.previewBytes.clear();
+    this.previewCacheBytes = 0;
+    this.uiMediaCache.clear();
+    this.uiMediaCacheBytes = 0;
+    this.nativeAgentCache.clear();
+  }
+
+  /** Release cached media buffers, abort pending lanes, and close the underlying transport. */
+  dispose(): Promise<void> {
+    this.connection.signal.abort();
+    this.clearInFlightAndCaches();
+    this.serverLeaseId = undefined;
+    return this.klient.close();
+  }
+
   /** Native discovery and /meta must verify the same home and authentication mode first. */
   rebindDesktop(config: { url: string; token: string }): void {
     if (this.transport !== undefined) throw new Error('A remote transport cannot be rebound as a local desktop');
@@ -773,17 +849,7 @@ export class KikiClient {
     this.rebindTransport({ endpoint: baseUrl, token });
     this.connection = { baseUrl, token, signal: new AbortController() };
     previous.signal.abort();
-    for (const flight of this.previewFlights.values()) flight.controller.abort();
-    this.previewFlights.clear();
-    for (const flight of this.mediaFlights.values()) flight.controller.abort();
-    this.mediaFlights.clear();
-    const waiters = this.backgroundPreviewWaiters.splice(0);
-    for (const waiter of waiters) waiter.cancel();
-    this.previewBytes.clear();
-    this.previewCacheBytes = 0;
-    this.uiMediaCache.clear();
-    this.uiMediaCacheBytes = 0;
-    this.nativeAgentCache.clear();
+    this.clearInFlightAndCaches();
     this.serverLeaseId = undefined;
   }
 
@@ -1636,38 +1702,157 @@ export class KikiClient {
     await this.memoryRequest('DELETE', `/fs:media-preview/${encodeURIComponent(previewId)}`, { timeoutMs: 10_000 });
   }
 
-  private runInBackgroundPreviewLane<T>(
-    signal: AbortSignal,
+  private mediaFetchConcurrency(): number {
+    return (
+      mediaTransportOverrides.mediaFetchConcurrency ??
+      readClientPositiveIntEnv('VITE_KIKI_MEDIA_FETCH_CONCURRENCY', 1, 16) ??
+      (this.isRemoteTransport ? DEFAULT_REMOTE_MEDIA_FETCH_CONCURRENCY : DEFAULT_LOOPBACK_MEDIA_FETCH_CONCURRENCY)
+    );
+  }
+
+  private uploadConcurrency(): number {
+    return (
+      mediaTransportOverrides.uploadConcurrency ??
+      readClientPositiveIntEnv('VITE_KIKI_UPLOAD_CONCURRENCY', 1, 8) ??
+      DEFAULT_UPLOAD_CONCURRENCY
+    );
+  }
+
+  private previewCacheMaxEntries(): number {
+    return (
+      mediaTransportOverrides.previewCacheMaxEntries ??
+      readClientPositiveIntEnv('VITE_KIKI_MEDIA_PREVIEW_CACHE_MAX_ENTRIES', 1, 4096) ??
+      DEFAULT_PREVIEW_CACHE_MAX_ENTRIES
+    );
+  }
+
+  private previewCacheMaxBytes(): number {
+    return (
+      mediaTransportOverrides.previewCacheMaxBytes ??
+      readClientPositiveIntEnv('VITE_KIKI_MEDIA_PREVIEW_CACHE_MAX_BYTES', 64 * 1024, 512 * 1024 * 1024) ??
+      DEFAULT_PREVIEW_CACHE_MAX_BYTES
+    );
+  }
+
+  private uiMediaCacheMaxEntries(): number {
+    return (
+      mediaTransportOverrides.uiMediaCacheMaxEntries ??
+      readClientPositiveIntEnv('VITE_KIKI_UI_MEDIA_CACHE_MAX_ENTRIES', 1, 4096) ??
+      DEFAULT_UI_MEDIA_CACHE_MAX_ENTRIES
+    );
+  }
+
+  private uiMediaCacheMaxBytes(): number {
+    return (
+      mediaTransportOverrides.uiMediaCacheMaxBytes ??
+      readClientPositiveIntEnv('VITE_KIKI_UI_MEDIA_CACHE_MAX_BYTES', 64 * 1024, 512 * 1024 * 1024) ??
+      DEFAULT_UI_MEDIA_CACHE_MAX_BYTES
+    );
+  }
+
+  private uiMediaCacheMaxItemBytes(): number {
+    return (
+      mediaTransportOverrides.uiMediaCacheMaxItemBytes ??
+      readClientPositiveIntEnv('VITE_KIKI_UI_MEDIA_CACHE_MAX_ITEM_BYTES', 64 * 1024, 256 * 1024 * 1024) ??
+      DEFAULT_UI_MEDIA_CACHE_MAX_ITEM_BYTES
+    );
+  }
+
+  private pumpMediaFetchWaiters(): void {
+    const limit = this.mediaFetchConcurrency();
+    while (this.activeMediaFetches < limit) {
+      const next = this.interactiveMediaWaiters.pop() ?? this.backgroundPreviewWaiters.pop();
+      if (next === undefined) break;
+      next.enter();
+    }
+  }
+
+  private runInMediaFetchLane<T>(
+    signal: AbortSignal | undefined,
+    priority: 'interactive' | 'preview',
     read: () => Promise<T>,
   ): Promise<T> {
-    if (signal.aborted) return Promise.reject(signal.reason);
+    if (signal?.aborted === true) {
+      return Promise.reject(signal.reason ?? new DOMException('Media fetch cancelled', 'AbortError'));
+    }
     const execute = async (): Promise<T> => {
-      this.activeBackgroundPreviews += 1;
+      this.activeMediaFetches += 1;
       try {
-        signal.throwIfAborted();
+        signal?.throwIfAborted();
         return await read();
       } finally {
-        this.activeBackgroundPreviews -= 1;
-        this.backgroundPreviewWaiters.shift()?.enter();
+        this.activeMediaFetches -= 1;
+        this.pumpMediaFetchWaiters();
       }
     };
-    if (this.activeBackgroundPreviews < KikiClient.BACKGROUND_PREVIEW_CONCURRENCY) {
+    if (this.activeMediaFetches < this.mediaFetchConcurrency()) {
+      return execute();
+    }
+    const queue = priority === 'interactive' ? this.interactiveMediaWaiters : this.backgroundPreviewWaiters;
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const waiter = {
+        enter: () => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener('abort', waiter.cancel);
+          resolve(execute());
+        },
+        cancel: () => {
+          if (settled) return;
+          settled = true;
+          const index = queue.indexOf(waiter);
+          if (index >= 0) queue.splice(index, 1);
+          signal?.removeEventListener('abort', waiter.cancel);
+          reject(signal?.reason ?? new DOMException('Media fetch cancelled', 'AbortError'));
+        },
+      };
+      queue.push(waiter);
+      signal?.addEventListener('abort', waiter.cancel, { once: true });
+    });
+  }
+
+  private runInUploadLane<T>(
+    signal: AbortSignal,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(signal.reason ?? new DOMException('Upload cancelled', 'AbortError'));
+    }
+    const execute = async (): Promise<T> => {
+      this.activeUploads += 1;
+      try {
+        signal.throwIfAborted();
+        return await work();
+      } finally {
+        this.activeUploads -= 1;
+        while (this.activeUploads < this.uploadConcurrency() && this.uploadWaiters.length > 0) {
+          this.uploadWaiters.shift()?.enter();
+        }
+      }
+    };
+    if (this.activeUploads < this.uploadConcurrency()) {
       return execute();
     }
     return new Promise<T>((resolve, reject) => {
+      let settled = false;
       const waiter = {
         enter: () => {
+          if (settled) return;
+          settled = true;
           signal.removeEventListener('abort', waiter.cancel);
           resolve(execute());
         },
         cancel: () => {
-          const index = this.backgroundPreviewWaiters.indexOf(waiter);
-          if (index >= 0) this.backgroundPreviewWaiters.splice(index, 1);
+          if (settled) return;
+          settled = true;
+          const index = this.uploadWaiters.indexOf(waiter);
+          if (index >= 0) this.uploadWaiters.splice(index, 1);
           signal.removeEventListener('abort', waiter.cancel);
-          reject(signal.reason ?? new DOMException('Media preview cancelled', 'AbortError'));
+          reject(signal.reason ?? new DOMException('Upload cancelled', 'AbortError'));
         },
       };
-      this.backgroundPreviewWaiters.push(waiter);
+      this.uploadWaiters.push(waiter);
       signal.addEventListener('abort', waiter.cancel, { once: true });
     });
   }
@@ -1715,7 +1900,10 @@ export class KikiClient {
   }
 
   storeUiMediaCache(key: string, entry: { readonly bytes: Uint8Array; readonly mime: string; readonly name?: string; readonly etag?: string }): void {
-    if (entry.bytes.byteLength === 0 || entry.bytes.byteLength > KikiClient.UI_MEDIA_CACHE_MAX_ITEM_BYTES) return;
+    const maxItemBytes = this.uiMediaCacheMaxItemBytes();
+    const maxBytes = this.uiMediaCacheMaxBytes();
+    const maxEntries = this.uiMediaCacheMaxEntries();
+    if (entry.bytes.byteLength === 0 || entry.bytes.byteLength > maxItemBytes) return;
     const previous = this.uiMediaCache.get(key);
     if (previous !== undefined) {
       this.uiMediaCache.delete(key);
@@ -1723,7 +1911,7 @@ export class KikiClient {
     }
     this.uiMediaCache.set(key, entry);
     this.uiMediaCacheBytes += entry.bytes.byteLength;
-    while (this.uiMediaCache.size > KikiClient.UI_MEDIA_CACHE_MAX_ENTRIES || this.uiMediaCacheBytes > KikiClient.UI_MEDIA_CACHE_MAX_BYTES) {
+    while (this.uiMediaCache.size > maxEntries || this.uiMediaCacheBytes > maxBytes) {
       const oldest = this.uiMediaCache.keys().next().value;
       if (oldest === undefined) break;
       this.uiMediaCacheBytes -= this.uiMediaCache.get(oldest)!.bytes.byteLength;
@@ -1764,7 +1952,7 @@ export class KikiClient {
     return this.sharedMediaFlight(
       this.previewFlights,
       key,
-      (flightSignal) => this.runInBackgroundPreviewLane(flightSignal, () => this.readAndCachePreview(key, (etag) => read(etag, flightSignal))),
+      (flightSignal) => this.runInMediaFetchLane(flightSignal, 'preview', () => this.readAndCachePreview(key, (etag) => read(etag, flightSignal))),
       signal,
     );
   }
@@ -1785,10 +1973,12 @@ export class KikiClient {
       this.previewBytes.delete(key);
       this.previewCacheBytes -= cached.bytes.byteLength;
     }
-    if (result.etag !== undefined && result.bytes.byteLength <= 32 * 1024 * 1024) {
+    const maxBytes = this.previewCacheMaxBytes();
+    const maxEntries = this.previewCacheMaxEntries();
+    if (result.etag !== undefined && result.bytes.byteLength <= Math.min(32 * 1024 * 1024, maxBytes)) {
       this.previewBytes.set(key, { ...result, etag: result.etag });
       this.previewCacheBytes += result.bytes.byteLength;
-      while (this.previewBytes.size > KikiClient.PREVIEW_CACHE_MAX_ENTRIES || this.previewCacheBytes > KikiClient.PREVIEW_CACHE_MAX_BYTES) {
+      while (this.previewBytes.size > maxEntries || this.previewCacheBytes > maxBytes) {
         const oldest = this.previewBytes.keys().next().value!;
         this.previewCacheBytes -= this.previewBytes.get(oldest)!.bytes.byteLength;
         this.previewBytes.delete(oldest);
@@ -2518,15 +2708,17 @@ export class KikiClient {
     return this.run(this.rest.sessions.activateSkill(sessionId, skillName, body));
   }
 
-  /** Upload prompt bytes through the shared global file facade. */
+  /** Upload prompt bytes through the shared global file facade with bounded concurrency. */
   async uploadFile(file: File, sessionId?: string): Promise<FileMeta> {
-    const data = new Uint8Array(await file.arrayBuffer());
-    return this.run(this.klient.global.files.save({
-      data,
-      filename: file.name === '' ? 'attachment' : file.name,
-      mimeType: file.type === '' ? undefined : file.type,
-      sessionId,
-    }, { timeoutMs: 0 }));
+    return this.runInUploadLane(this.connection.signal.signal, async () => {
+      const data = new Uint8Array(await file.arrayBuffer());
+      return this.run(this.klient.global.files.save({
+        data,
+        filename: file.name === '' ? 'attachment' : file.name,
+        mimeType: file.type === '' ? undefined : file.type,
+        sessionId,
+      }, { timeoutMs: 0 }));
+    });
   }
 
   /** Session-scoped fuzzy file search. */

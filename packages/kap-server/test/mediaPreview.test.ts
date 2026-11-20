@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { sniffImageDimensions } from '@kiki/agent-core-v2/agent/media/file-type';
-import { createMediaPreview, MEDIA_PREVIEW_BYTES, MEDIA_PREVIEW_EDGE } from '../src/services/mediaPreview';
+import { createMediaPreview, MEDIA_PREVIEW_BYTES, MEDIA_PREVIEW_EDGE, MediaPreviewCache } from '../src/services/mediaPreview';
 
 function bitmap(width: number, height: number): Uint8Array {
   const stride = Math.ceil(width * 3 / 4) * 4;
@@ -98,6 +98,61 @@ describe('source-generated media preview', () => {
     expect(sourceReads).toBe(1);
     expect(second.mime).toBe(first.mime);
     expect(second.bytes).toEqual(first.bytes);
+  });
+
+  it('bounds concurrent decodes under a 100-request uncached burst and aborts queued waiters before reading', async () => {
+    const cache = new MediaPreviewCache({ maxConcurrency: 3, maxEntries: 128, maxBytes: 16 * 1024 * 1024 });
+    const sample = bitmap(64, 48);
+    let inFlight = 0;
+    let peakInFlight = 0;
+    let readStarts = 0;
+    const makeSlowSource = (idx: number) => ({
+      name: `burst-${idx}.bmp`,
+      mediaType: 'image/bmp',
+      size: sample.byteLength,
+      stream: async function* () {
+        readStarts += 1;
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          yield sample;
+        } finally {
+          inFlight -= 1;
+        }
+      },
+    });
+    const results = await Promise.all(
+      Array.from({ length: 100 }, (_, idx) =>
+        createMediaPreview(makeSlowSource(idx), undefined, new AbortController().signal, `burst-key-${idx}`, {
+          persistToDisk: false,
+          cache,
+        }),
+      ),
+    );
+    expect(results).toHaveLength(100);
+    expect(peakInFlight).toBeLessThanOrEqual(3);
+    expect(peakInFlight).toBeGreaterThanOrEqual(1);
+    expect(readStarts).toBe(100);
+
+    const gateCache = new MediaPreviewCache({ maxConcurrency: 1 });
+    let releaseFirst!: () => void;
+    const firstBlock = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const first = gateCache.runBounded(new AbortController().signal, async () => {
+      await firstBlock;
+      return 'first';
+    });
+    const abortedController = new AbortController();
+    let queuedWorkRan = false;
+    const queued = gateCache.runBounded(abortedController.signal, async () => {
+      queuedWorkRan = true;
+      return 'queued';
+    });
+    abortedController.abort(new Error('cancelled while queued'));
+    await expect(queued).rejects.toThrow('cancelled while queued');
+    releaseFirst();
+    await expect(first).resolves.toBe('first');
+    expect(queuedWorkRan).toBe(false);
   });
 });
 
