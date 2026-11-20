@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import Fastify from 'fastify';
 import type { Scope } from '@kiki/agent-core-v2';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAuthHook } from '../src/middleware/auth';
 import { registerHostMediaPreviewRoutes } from '../src/routes/hostMediaPreview';
@@ -50,7 +50,7 @@ function makeSolidOnePixelPng(r: number, g: number, b: number): Buffer {
   ]);
 }
 
-async function fixture(options?: { readonly allowExternalHostPaths?: boolean; readonly withAuth?: boolean }) {
+async function fixture(options?: { readonly allowExternalHostPaths?: boolean; readonly withAuth?: boolean; readonly onStat?: (path: string) => Promise<void> }) {
   const root = await mkdtemp(join(tmpdir(), 'media-preview-'));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const video = join(root, 'clip.mp4');
@@ -60,6 +60,7 @@ async function fixture(options?: { readonly allowExternalHostPaths?: boolean; re
   const hostFs = {
     realpath: (path: string) => realpath(path),
     stat: async (path: string) => {
+      if (options?.onStat !== undefined) await options.onStat(path);
       const info = await stat(path);
       return { isFile: info.isFile(), isDirectory: info.isDirectory(), size: info.size, mtimeMs: info.mtimeMs, ino: path.endsWith('.png') ? 0 : info.ino };
     },
@@ -158,5 +159,49 @@ describe('host media preview', () => {
     expect(bluePreview.statusCode).toBe(200);
     expect(redPreview.headers.etag).toBe(bluePreview.headers.etag);
     expect(Buffer.compare(redPreview.rawPayload, bluePreview.rawPayload)).not.toBe(0);
+  });
+
+  it('rejects new requests for an expired grant while an earlier stream is still active and deletes it on close', async () => {
+    let now = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    cleanups.push(() => { nowSpy.mockRestore(); });
+
+    let blockNextStat = false;
+    let statEntered: (() => void) | undefined;
+    let releaseStat: (() => void) | undefined;
+    const firstStreamEntered = new Promise<void>((resolve) => { statEntered = resolve; });
+    const firstStreamGate = new Promise<void>((resolve) => { releaseStat = resolve; });
+
+    const { app, video, bytes } = await fixture({
+      onStat: async () => {
+        if (!blockNextStat) return;
+        blockNextStat = false;
+        statEntered?.();
+        await firstStreamGate;
+      },
+    });
+
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:media-preview', headers: OWNER_HEADERS, payload: { path: video } });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const { preview_id: previewId } = opened.json().data as { preview_id: string };
+
+    blockNextStat = true;
+    const firstStream = app.inject({ url: `/media-preview/${previewId}` });
+    await firstStreamEntered;
+
+    now += 30 * 60 * 1000 + 1;
+    const overlappingExpired = await app.inject({ url: `/media-preview/${previewId}` });
+    expect(overlappingExpired.statusCode).toBe(404);
+    expect(overlappingExpired.json()).toMatchObject({ msg: 'media_preview_not_found' });
+
+    releaseStat?.();
+    const firstResult = await firstStream;
+    expect(firstResult.statusCode).toBe(200);
+    expect([...firstResult.rawPayload]).toEqual([...bytes]);
+
+    now = 1_700_000_000_000 + 1;
+    const afterClose = await app.inject({ url: `/media-preview/${previewId}` });
+    expect(afterClose.statusCode).toBe(404);
+    expect(afterClose.json()).toMatchObject({ msg: 'media_preview_not_found' });
   });
 });

@@ -2429,16 +2429,21 @@ describe('KikiClient background preview lane and high-priority media bypass', ()
 
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
     try {
-      const a = new Uint8Array(24 * 1024 * 1024);
-      const b = new Uint8Array(24 * 1024 * 1024);
-      const c = new Uint8Array(24 * 1024 * 1024);
+      const a = new Uint8Array(12 * 1024 * 1024);
+      const b = new Uint8Array(12 * 1024 * 1024);
+      const c = new Uint8Array(12 * 1024 * 1024);
+      const oversized = new Uint8Array(17 * 1024 * 1024);
       client.storeUiMediaCache('k-a', { bytes: a, mime: 'image/png' });
       client.storeUiMediaCache('k-b', { bytes: b, mime: 'image/png' });
-      expect(client.peekUiMediaCache('k-a')?.bytes).toBe(a);
+      expect(Object.is(client.peekUiMediaCache('k-a')?.bytes, a)).toBe(true);
       client.storeUiMediaCache('k-c', { bytes: c, mime: 'image/png' });
       expect(client.peekUiMediaCache('k-b')).toBeUndefined();
-      expect(client.peekUiMediaCache('k-a')?.bytes).toBe(a);
-      expect(client.peekUiMediaCache('k-c')?.bytes).toBe(c);
+      expect(Object.is(client.peekUiMediaCache('k-a')?.bytes, a)).toBe(true);
+      expect(Object.is(client.peekUiMediaCache('k-c')?.bytes, c)).toBe(true);
+      client.storeUiMediaCache('k-oversized', { bytes: oversized, mime: 'image/png' });
+      expect(client.peekUiMediaCache('k-oversized')).toBeUndefined();
+      expect(Object.is(client.peekUiMediaCache('k-a')?.bytes, a)).toBe(true);
+      expect(Object.is(client.peekUiMediaCache('k-c')?.bytes, c)).toBe(true);
 
       client.noteNativeAgent('s1', 'branch-1');
       await client.sendAgentMessage('s1', 'branch-1', 'ok', [{ type: 'text', text: 'ok' }], 'idemp-1');

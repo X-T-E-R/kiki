@@ -454,7 +454,8 @@ export function registerHostMediaPreviewRoutes(
         throw new AdmissionError(404, 'media_preview_not_found');
       }
       const grant = grants.get(id);
-      if (grant === undefined) {
+      const now = Date.now();
+      if (grant === undefined || grant.expiresAt <= now) {
         if (!remoteMediaPlaybackEnabled()) requireLocalClient(req);
         throw new AdmissionError(404, 'media_preview_not_found');
       }
@@ -465,9 +466,14 @@ export function registerHostMediaPreviewRoutes(
       } else {
         requireLocalClient(req);
       }
-      grant.lastAccessedAt = Date.now();
-      if (grant.kind === 'host') return await sendHost(hostFs, grant, req, reply);
-      return await sendSession(core, transcriptService, grant, req, reply);
+      grant.lastAccessedAt = now;
+      const onStreamReleased = (): void => {
+        if (grant.activeStreams === 0 && grant.expiresAt <= Date.now() && grants.get(id) === grant) {
+          grants.delete(id);
+        }
+      };
+      if (grant.kind === 'host') return await sendHost(hostFs, grant, req, reply, onStreamReleased);
+      return await sendSession(core, transcriptService, grant, req, reply, onStreamReleased);
     } catch (error) {
       return sendError(error, reply);
     }
@@ -478,13 +484,14 @@ export function registerHostMediaPreviewRoutes(
   });
 }
 
-async function sendHost(hostFs: { stat(path: string): Promise<{ isFile: boolean; size: number }> }, grant: HostGrant, req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
+async function sendHost(hostFs: { stat(path: string): Promise<{ isFile: boolean; size: number }> }, grant: HostGrant, req: FastifyRequest, reply: FastifyReply, onStreamReleased: () => void): Promise<unknown> {
   grant.activeStreams += 1;
   let releasedStream = false;
   const releaseStream = (): void => {
     if (releasedStream) return;
     releasedStream = true;
     grant.activeStreams = Math.max(0, grant.activeStreams - 1);
+    onStreamReleased();
   };
   let stream: ReturnType<typeof createReadStream> | undefined;
   try {
@@ -510,7 +517,7 @@ async function sendHost(hostFs: { stat(path: string): Promise<{ isFile: boolean;
   }
 }
 
-async function sendSession(core: Scope, transcriptService: TranscriptService | undefined, grant: SessionGrant, req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
+async function sendSession(core: Scope, transcriptService: TranscriptService | undefined, grant: SessionGrant, req: FastifyRequest, reply: FastifyReply, onStreamReleased: () => void): Promise<unknown> {
   return withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
     grant.activeStreams += 1;
     let releasedStream = false;
@@ -518,20 +525,27 @@ async function sendSession(core: Scope, transcriptService: TranscriptService | u
       if (releasedStream) return;
       releasedStream = true;
       grant.activeStreams = Math.max(0, grant.activeStreams - 1);
+      onStreamReleased();
     };
     let opened: Awaited<ReturnType<typeof openSessionMedia>> | undefined;
     let stream: Readable | undefined;
     let responseCleanup: DeferredCleanup | undefined;
     try {
       opened = await openSessionMedia(core, grant.sessionId, grant.fileId, transcriptService, signal);
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        releaseStream();
+        return;
+      }
       if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
       const file = opened.file;
       reply.type(grant.mime);
       const etag = `"${grant.sessionId}-${grant.fileId}-${file.size}"`;
       const cacheControl = grant.persistable && opened.persistable !== false ? 'private, max-age=1800, immutable' : 'private, no-store';
       const range = applyRange(reply, pickHeader(req.headers, 'range'), file.size, cacheControl, pickHeader(req.headers, 'if-range'), etag);
-      if (range === 'unsatisfiable') return await reply.send('');
+      if (range === 'unsatisfiable') {
+        releaseStream();
+        return await reply.send('');
+      }
       const playback = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
       stream = playback;
       responseCleanup = createDeferredCleanup(

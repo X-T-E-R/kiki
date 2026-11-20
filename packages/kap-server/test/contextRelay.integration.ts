@@ -113,19 +113,17 @@ describe('relay-v1 REST and cold wire contract', () => {
     return result.data.id;
   }
 
-  it('preflights unbound new-session BTW and branch using the default profile', async () => {
-    for (const action of ['btw', 'branch']) {
-      const created = await request<{ id: string }>('/api/sessions', 'POST', { metadata: { cwd: home } });
-      expect(created.code, created.msg).toBe(0);
-      const auth = vi.spyOn(server!.core.accessor.get(IAuthSummaryService), 'ensureReady');
-      try {
-        const branch = await request<{ agent_id: string }>(`/api/sessions/${created.data.id}:${action}`, 'POST', {});
-        expect(branch.code, branch.msg).toBe(0);
-        expect(branch.data.agent_id).toBeTruthy();
-        expect(auth).toHaveBeenCalled();
-        expect(auth.mock.calls.every(args => args[0] !== '')).toBe(true);
-      } finally { auth.mockRestore(); }
-    }
+  it.each(['btw', 'branch'] as const)('preflights unbound new-session %s using the default profile', async (action) => {
+    const created = await request<{ id: string }>('/api/sessions', 'POST', { metadata: { cwd: home } });
+    expect(created.code, created.msg).toBe(0);
+    const auth = vi.spyOn(server!.core.accessor.get(IAuthSummaryService), 'ensureReady');
+    try {
+      const branch = await request<{ agent_id: string }>(`/api/sessions/${created.data.id}:${action}`, 'POST', {});
+      expect(branch.code, branch.msg).toBe(0);
+      expect(branch.data.agent_id).toBeTruthy();
+      expect(auth).toHaveBeenCalled();
+      expect(auth.mock.calls.every(args => args[0] !== '')).toBe(true);
+    } finally { auth.mockRestore(); }
     expect(modelCalls).toBe(0);
   });
 
