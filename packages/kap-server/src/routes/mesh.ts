@@ -12,9 +12,10 @@ import {
 import { HumanControllingError } from '@kiki/agent-core-v2';
 
 import { errEnvelope, okEnvelope } from '../envelope';
-import type { MeshService } from '../services/mesh/meshService';
+import { MeshCapabilityDeniedError, type MeshService } from '../services/mesh/meshService';
 
 const HUMAN_CONTROLLING_CODE = 40942;
+const MESH_CAPABILITY_DENIED_CODE = 40302;
 
 /** Registers REST endpoints for session mesh leases, COW workspace copies, loopback port tunnels, and human takeover locks. */
 export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): void {
@@ -32,6 +33,20 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
           code: HUMAN_CONTROLLING_CODE,
           msg: error.code,
           data: error.toConflictPayload(),
+          request_id: requestId,
+        });
+      }
+      if (error instanceof MeshCapabilityDeniedError) {
+        reply.code(403);
+        return reply.send({
+          code: MESH_CAPABILITY_DENIED_CODE,
+          msg: error.code,
+          data: {
+            error: error.code,
+            targetId: error.targetId,
+            trustTier: error.trustTier,
+            requiredCapability: error.requiredCapability,
+          },
           request_id: requestId,
         });
       }

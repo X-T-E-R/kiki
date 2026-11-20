@@ -18,6 +18,7 @@ import {
   ILogService,
   IMcpOAuthService,
   IMemoryScopes,
+  IMeshLeaseStore,
   ISessionApprovalService,
   ISessionIndex,
   ISessionIndexMirror,
@@ -127,7 +128,7 @@ import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { registerMeshRoutes } from './routes/mesh';
 import { registerSyncRoutes } from './routes/sync';
-import { MeshService } from './services/mesh/meshService';
+import { createPeerTcpDialer, MeshService, type MeshPeerDescriptor } from './services/mesh/meshService';
 import { SyncService } from './services/sync/syncService';
 import { createPluginPanelStreamServer, PLUGIN_PANEL_STREAM_PATH } from './routes/pluginPanelStreams';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
@@ -1338,9 +1339,51 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     memoryScopes: core.accessor.get(IMemoryScopes),
   });
   await preparing(syncService.ensureDeviceKeypair().catch(() => undefined));
+  const resolveMeshPeer = (targetId: string): MeshPeerDescriptor | undefined => {
+    const outbound = remoteConnections
+      .list()
+      .find(
+        (record) =>
+          record.id === targetId ||
+          record.target.hostId === targetId ||
+          record.target.homeId === targetId ||
+          record.label === targetId,
+      );
+    if (outbound !== undefined) {
+      return {
+        id: outbound.id,
+        label: outbound.label,
+        endpoint: outbound.endpoint,
+        trustTier: outbound.trustTier,
+        meshCapabilities: outbound.meshCapabilities,
+      };
+    }
+    const inbound = admission
+      .status()
+      .grants.find(
+        (grant) =>
+          grant.status === 'approved' &&
+          (grant.id === targetId ||
+            grant.source.hostId === targetId ||
+            grant.source.homeId === targetId ||
+            grant.label === targetId),
+      );
+    if (inbound !== undefined) {
+      return {
+        id: inbound.id,
+        label: inbound.label,
+        trustTier: inbound.trustTier,
+        meshCapabilities: inbound.meshCapabilities,
+      };
+    }
+    return undefined;
+  };
   const meshService = new MeshService({
     homeDir,
     storage: core.accessor.get(IFileSystemStorageService),
+    leaseStore: core.accessor.get(IMeshLeaseStore),
+    resolvePeer: resolveMeshPeer,
+    dialRemote: createPeerTcpDialer(resolveMeshPeer),
     resolveSessionContext: (sessionId) => {
       const live = getLiveSessionById(core.accessor, sessionId);
       if (live === undefined) return undefined;

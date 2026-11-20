@@ -9,12 +9,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   bootstrap,
+  ensureMainAgent,
+  IAgentContextInjectorService,
+  IAgentContextMemoryService,
   IConfigRegistry,
   IConfigService,
   IFileSystemStorageService,
   IMemoryScopes,
+  IMeshLeaseStore,
+  ISessionManager,
   loadNativeAgeX25519Cipher,
   logSeed,
+  MESH_CONTEXT_INJECTION_VARIANT,
   resolveLoggingConfig,
   sealCredentialEntry,
 } from '@kiki/agent-core-v2';
@@ -25,8 +31,11 @@ import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections'
 import { registerSyncRoutes } from '../src/routes/sync';
 import { ConnectionAdmission } from '../src/services/connections/admission';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
-import { MeshService } from '../src/services/mesh/meshService';
+import { createPeerTcpDialer, MeshService, type MeshPeerDescriptor } from '../src/services/mesh/meshService';
 import { SyncService } from '../src/services/sync/syncService';
+import { startServer } from '../src/start';
+import { authedFetch } from './helpers/auth';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const tempDirs: string[] = [];
 
@@ -133,9 +142,50 @@ describe('kap-server mesh, sync, and trusted personal pairing routes', () => {
     });
     const deviceKey = await syncService.ensureDeviceKeypair();
 
+    const forwardedCalls: Array<{ peerId: string; action: string }> = [];
+    const resolvePeer = (targetId: string): MeshPeerDescriptor | undefined => {
+      const outbound = manager
+        .list()
+        .find((record) => record.id === targetId || record.target.hostId === targetId || record.label === targetId);
+      if (outbound !== undefined) {
+        return {
+          id: outbound.id,
+          label: outbound.label,
+          endpoint: outbound.endpoint,
+          trustTier: outbound.trustTier,
+          meshCapabilities: outbound.meshCapabilities,
+        };
+      }
+      const inbound = admission
+        .status()
+        .grants.find(
+          (grant) =>
+            grant.status === 'approved' &&
+            (grant.id === targetId || grant.source.hostId === targetId || grant.label === targetId),
+        );
+      if (inbound !== undefined) {
+        return {
+          id: inbound.id,
+          label: inbound.label,
+          endpoint: `http://127.0.0.1:${echoAddr.port}`,
+          trustTier: inbound.trustTier,
+          meshCapabilities: inbound.meshCapabilities,
+        };
+      }
+      return undefined;
+    };
+
+    const sharedLeaseStore = core.accessor.get(IMeshLeaseStore);
     const meshService = new MeshService({
       homeDir,
       storage: core.accessor.get(IFileSystemStorageService),
+      leaseStore: sharedLeaseStore,
+      resolvePeer,
+      dialRemote: createPeerTcpDialer(resolvePeer),
+      executeRemoteAction: async (peer, input) => {
+        forwardedCalls.push({ peerId: peer.id, action: input.action });
+        return { executedOn: peer.id };
+      },
     });
 
     registerMeshRoutes(fastify, meshService);
@@ -180,6 +230,51 @@ describe('kap-server mesh, sync, and trusted personal pairing routes', () => {
       expect(restrictedPairRes.statusCode).toBe(200);
       expect(restrictedPairRes.json().data.trustTier).toBe('restricted_peer');
       expect(restrictedPairRes.json().data.meshCapabilities).toEqual(['read', 'send']);
+
+      const restrictedApproval = await admission.approvePeer(
+        { homeId: randomUUID(), hostId: 'external-guest', protocol: CONNECTION_PROTOCOL },
+        'external-guest',
+        true,
+        undefined,
+        'restricted_peer',
+      );
+      const trustedApproval = await admission.approvePeer(
+        { homeId: randomUUID(), hostId: 'personal-workstation', protocol: CONNECTION_PROTOCOL },
+        'personal-workstation',
+        true,
+        undefined,
+        'trusted_personal',
+      );
+
+      const deniedRestricted = await fastify.inject({
+        method: 'POST',
+        url: '/api/mesh/targets/external-guest/dispatch',
+        payload: {
+          operation: 'remote_command',
+          action: 'uname -a',
+          permissionMode: 'yolo',
+        },
+      });
+      expect(deniedRestricted.statusCode).toBe(403);
+      expect(deniedRestricted.json().msg).toBe('mesh_capability_denied');
+      expect(deniedRestricted.json().data.requiredCapability).toBe('execute');
+      expect(deniedRestricted.json().data.trustTier).toBe('restricted_peer');
+
+      const allowedTrusted = await fastify.inject({
+        method: 'POST',
+        url: '/api/mesh/targets/personal-workstation/dispatch',
+        payload: {
+          operation: 'remote_command',
+          action: 'uname -a',
+          permissionMode: 'yolo',
+        },
+      });
+      expect(allowedTrusted.statusCode).toBe(200);
+      expect(allowedTrusted.json().data.approval.via).toBe('yolo_auto_approve');
+      expect(allowedTrusted.json().data.peerId).toBe(trustedApproval.grantId);
+      expect(allowedTrusted.json().data.forwardedResult).toEqual({ executedOn: trustedApproval.grantId });
+      expect(forwardedCalls).toEqual([{ peerId: trustedApproval.grantId, action: 'uname -a' }]);
+      expect(restrictedApproval.grantId).toBeTruthy();
 
       const pinRes = await fastify.inject({
         method: 'POST',
@@ -360,4 +455,90 @@ describe('kap-server mesh, sync, and trusted personal pairing routes', () => {
       await new Promise<void>((resolve) => echoServer.close(() => resolve()));
     }
   }, 30_000);
+
+  it('wires startServer MeshService to shared IMeshLeaseStore so HTTP lease pin injects <mesh-context> into live session agents', async () => {
+    const sandbox = makeTempDir('kiki-kap-start-mesh-');
+    const homeDir = join(sandbox, 'home');
+    const workDir = join(sandbox, 'work');
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(
+      join(homeDir, 'config.toml'),
+      [
+        'default_model = "stub"',
+        '[search]',
+        'enabled = false',
+        '[cron]',
+        'manualTick = true',
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "YOUR_API_KEY"',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir,
+      logLevel: 'silent',
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+
+    try {
+      const createRes = await authedFetch(server, base, '/api/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: workDir }, agent_config: { profile: 'agent', model: 'stub' } }),
+      });
+      expect(createRes.status).toBe(200);
+      const created = (await createRes.json()) as { code: number; data: { id: string } };
+      expect(created.code).toBe(0);
+      const sessionId = created.data.id;
+
+      const session = server.core.accessor.get(ISessionManager).get(sessionId)!;
+      const main = await ensureMainAgent(session);
+      const injector = main.accessor.get(IAgentContextInjectorService);
+      const contextMemory = main.accessor.get(IAgentContextMemoryService);
+
+      await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
+      expect(JSON.stringify(contextMemory.get())).not.toContain('<mesh-context');
+
+      const pinRes = await authedFetch(server, base, `/api/mesh/sessions/${encodeURIComponent(sessionId)}/leases/pin`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'node',
+          node: {
+            nodeId: 'peer-studio',
+            label: 'Studio Node',
+            trustTier: 'trusted_personal',
+            capabilities: ['execute', 'read', 'send'],
+            state: 'online',
+            platform: 'darwin',
+            createdBySession: true,
+          },
+        }),
+      });
+      expect(pinRes.status).toBe(200);
+
+      await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
+      const injectedMessages = contextMemory.get();
+      const injectedJson = JSON.stringify(injectedMessages);
+      expect(injectedJson).toContain(`<mesh-context session=\\"${sessionId}\\"`);
+      expect(injectedJson).toContain('Studio Node');
+      const countAfterPin = injectedMessages.length;
+
+      await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
+      expect(contextMemory.get().length).toBe(countAfterPin);
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
 });

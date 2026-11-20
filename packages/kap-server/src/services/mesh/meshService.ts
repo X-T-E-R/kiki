@@ -1,11 +1,15 @@
+import { createConnection } from 'node:net';
 import { join } from 'node:path';
 import {
+  DEFAULT_RESTRICTED_PEER_CAPABILITIES,
+  DEFAULT_TRUSTED_PERSONAL_CAPABILITIES,
   type HumanTakeoverHolder,
   type HumanTakeoverLease,
   type LeasedPeerNode,
   type LeasedPortTunnel,
   type LeasedSeat,
   type LeasedWorkspaceCopy,
+  type MeshCapability,
   type MeshContextProjection,
   type MeshLeasePinInput,
   type MeshSessionLease,
@@ -13,6 +17,7 @@ import {
   type MeshWorkspaceCopyApplyInput,
   type MeshWorkspaceCopyCreateInput,
   type MeshPortTunnelOpenInput,
+  type PeerTrustTier,
 } from '@kiki/protocol';
 import {
   CasStagingStore,
@@ -24,9 +29,11 @@ import {
   MeshStateCoalescer,
   WorkspaceCopyManager,
   type IFileSystemStorageService,
+  type IMeshLeaseStore,
   type ISessionApprovalService,
   type LoopbackTunnelHandle,
   type MeshApprovalOutcome,
+  type MeshOperationKind,
   type MeshPermissionMode,
   type MeshStateTransition,
   type RemoteTunnelDialer,
@@ -41,11 +48,27 @@ export interface MeshSessionExecutionContext {
   readonly approvalService?: Pick<ISessionApprovalService, 'request'>;
 }
 
+export interface MeshPeerDescriptor {
+  readonly id: string;
+  readonly label?: string;
+  readonly endpoint?: string;
+  readonly trustTier?: PeerTrustTier;
+  readonly meshCapabilities?: readonly MeshCapability[];
+}
+
 export interface MeshServiceOptions {
   readonly homeDir: string;
   readonly storage?: IFileSystemStorageService;
+  readonly leaseStore?: IMeshLeaseStore;
   readonly dialRemote?: RemoteTunnelDialer;
-  readonly resolveSessionContext?: (sessionId: string) => Promise<MeshSessionExecutionContext | undefined> | MeshSessionExecutionContext | undefined;
+  readonly resolvePeer?: (targetId: string) => MeshPeerDescriptor | undefined;
+  readonly executeRemoteAction?: (
+    peer: MeshPeerDescriptor,
+    input: MeshTargetDispatchInput,
+  ) => Promise<unknown>;
+  readonly resolveSessionContext?: (
+    sessionId: string,
+  ) => Promise<MeshSessionExecutionContext | undefined> | MeshSessionExecutionContext | undefined;
   readonly onStateBatch?: (transitions: readonly MeshStateTransition[]) => void;
   readonly coalesceWindowMs?: number;
   readonly platform?: NodeJS.Platform;
@@ -57,25 +80,61 @@ export interface MeshDispatchResult {
   readonly operation: MeshTargetDispatchInput['operation'];
   readonly accepted: true;
   readonly approval: MeshApprovalOutcome;
+  readonly peerId?: string;
+  readonly trustTier?: PeerTrustTier;
+  readonly forwardedResult?: unknown;
 }
 
-/** Coordinates session-leased mesh resources, COW workspace copies, loopback tunnels, human takeover locks, and yolo-aware approvals. */
+/** Error raised with HTTP 403 when a peer lacks the mesh capability required for an operation. */
+export class MeshCapabilityDeniedError extends Error {
+  readonly status = 403 as const;
+  readonly code = 'mesh_capability_denied' as const;
+
+  constructor(
+    readonly targetId: string,
+    readonly trustTier: PeerTrustTier,
+    readonly requiredCapability: MeshCapability,
+  ) {
+    super(
+      `Peer '${targetId}' (trustTier='${trustTier}') lacks required mesh capability '${requiredCapability}'`,
+    );
+    this.name = 'MeshCapabilityDeniedError';
+  }
+}
+
+/** Builds a real TCP dialer that resolves peer endpoints to their TCP host before dialing `remotePort`. */
+export function createPeerTcpDialer(
+  resolvePeer?: (targetId: string) => MeshPeerDescriptor | undefined,
+): RemoteTunnelDialer {
+  return ({ nodeId, remoteHost, remotePort }) => {
+    const host = resolveTcpHost(nodeId, remoteHost, resolvePeer);
+    return createConnection({ host, port: remotePort });
+  };
+}
+
+/** Coordinates session-leased mesh resources, COW workspace copies, loopback tunnels, human takeover locks, peer trust enforcement, and yolo-aware approvals. */
 export class MeshService {
-  readonly leases: MeshLeaseStore;
+  readonly leases: IMeshLeaseStore;
   readonly workspaceCopies: WorkspaceCopyManager;
   readonly tunnels: LoopbackPortTunnelManager;
   readonly takeover: HumanTakeoverManager;
   readonly casStaging: CasStagingStore;
   readonly coalescer: MeshStateCoalescer;
   private readonly resolveSessionContext?: MeshServiceOptions['resolveSessionContext'];
+  private readonly resolvePeer?: MeshServiceOptions['resolvePeer'];
+  private readonly executeRemoteAction?: MeshServiceOptions['executeRemoteAction'];
 
   constructor(options: MeshServiceOptions) {
-    this.leases = new MeshLeaseStore(options.storage, options.now);
+    this.leases = options.leaseStore ?? new MeshLeaseStore(options.storage, options.now);
     this.workspaceCopies = new WorkspaceCopyManager(
       join(options.homeDir, 'mesh', 'workspace-copies'),
       options.platform,
     );
-    this.tunnels = new LoopbackPortTunnelManager(options.dialRemote);
+    this.resolvePeer = options.resolvePeer;
+    this.executeRemoteAction = options.executeRemoteAction;
+    this.tunnels = new LoopbackPortTunnelManager(
+      options.dialRemote ?? createPeerTcpDialer(options.resolvePeer),
+    );
     this.takeover = new HumanTakeoverManager(options.now);
     this.casStaging = new CasStagingStore(
       join(options.homeDir, 'mesh', 'cas-staging'),
@@ -162,6 +221,9 @@ export class MeshService {
     copyId: string,
     input: MeshWorkspaceCopyApplyInput,
   ): Promise<WorkspaceCopyApplyResult> {
+    if (input.targetId !== undefined) {
+      this.assertPeerCapability(input.targetId, 'cow_apply');
+    }
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
     return this.workspaceCopies.apply(copyId, {
       permissionMode: ctx.permissionMode,
@@ -183,6 +245,7 @@ export class MeshService {
   }
 
   async openTunnel(input: MeshPortTunnelOpenInput): Promise<LoopbackTunnelHandle> {
+    this.assertPeerCapability(input.nodeId, 'port_tunnel');
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
     const approval = await evaluateMeshApproval({
       operation: 'port_tunnel',
@@ -237,6 +300,7 @@ export class MeshService {
     input: MeshTargetDispatchInput,
   ): Promise<MeshDispatchResult> {
     this.takeover.assertWritable(targetId, { overrideHumanLease: input.overrideHumanLease });
+    const peer = this.assertPeerCapability(targetId, input.operation);
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
     const approval = await evaluateMeshApproval({
       operation: input.operation,
@@ -247,19 +311,46 @@ export class MeshService {
       approvalService: ctx.approvalService,
     });
     if (approval.decision !== 'approved') {
-      throw new Error(approval.feedback ?? `Action '${input.operation}' on '${targetId}' rejected (${approval.decision})`);
+      throw new Error(
+        approval.feedback ?? `Action '${input.operation}' on '${targetId}' rejected (${approval.decision})`,
+      );
     }
+    const forwardedResult =
+      peer !== undefined && this.executeRemoteAction !== undefined
+        ? await this.executeRemoteAction(peer, input)
+        : undefined;
     return {
       targetId,
       operation: input.operation,
       accepted: true,
       approval,
+      ...(peer === undefined ? {} : { peerId: peer.id, trustTier: peer.trustTier ?? 'trusted_personal' }),
+      ...(forwardedResult === undefined ? {} : { forwardedResult }),
     };
   }
 
   async close(): Promise<void> {
     this.coalescer.dispose();
     await this.tunnels.closeAll();
+  }
+
+  private assertPeerCapability(
+    targetId: string,
+    operation: MeshOperationKind,
+  ): MeshPeerDescriptor | undefined {
+    const peer = this.resolvePeer?.(targetId);
+    if (peer === undefined) return undefined;
+    const trustTier: PeerTrustTier = peer.trustTier ?? 'trusted_personal';
+    const capabilities =
+      peer.meshCapabilities ??
+      (trustTier === 'restricted_peer'
+        ? DEFAULT_RESTRICTED_PEER_CAPABILITIES
+        : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES);
+    const required = requiredCapabilityForOperation(operation);
+    if (!capabilities.includes(required)) {
+      throw new MeshCapabilityDeniedError(targetId, trustTier, required);
+    }
+    return peer;
   }
 
   private async resolveApprovalContext(
@@ -275,6 +366,45 @@ export class MeshService {
       approvalService: resolved?.approvalService,
     };
   }
+}
+
+function requiredCapabilityForOperation(operation: MeshOperationKind): MeshCapability {
+  switch (operation) {
+    case 'remote_command':
+    case 'out_of_workspace':
+      return 'execute';
+    case 'cow_apply':
+      return 'cow_workspace';
+    case 'file_sync':
+      return 'file_sync';
+    case 'port_tunnel':
+      return 'port_tunnel';
+    case 'interactive_login':
+      return 'send';
+  }
+}
+
+function resolveTcpHost(
+  nodeId: string,
+  remoteHost: string,
+  resolvePeer?: (targetId: string) => MeshPeerDescriptor | undefined,
+): string {
+  if (nodeId === 'local') return remoteHost;
+  const peer = resolvePeer?.(nodeId);
+  if (peer === undefined) {
+    if (remoteHost !== '' && remoteHost !== '127.0.0.1') return remoteHost;
+    return remoteHost || '127.0.0.1';
+  }
+  if (remoteHost !== '' && remoteHost !== '127.0.0.1') return remoteHost;
+  if (peer.endpoint !== undefined) {
+    try {
+      const parsed = new URL(peer.endpoint);
+      if (parsed.hostname.length > 0) return parsed.hostname;
+    } catch {
+      throw new Error(`Peer '${nodeId}' has an invalid endpoint '${peer.endpoint}'`);
+    }
+  }
+  throw new Error(`Peer '${nodeId}' has no reachable TCP endpoint`);
 }
 
 export type { LeasedPeerNode, LeasedSeat, MeshSessionLease };

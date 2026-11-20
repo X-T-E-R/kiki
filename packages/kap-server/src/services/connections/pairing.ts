@@ -7,7 +7,7 @@ import { isLegacyTlsError, peerFetch } from './peerTls';
 import { hostname, networkInterfaces } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
+import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, meshCapabilitySchema, normalizePairingCode, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError } from './admission';
 import { PairingBridgeRetirementError, validateEndpoint, type RemoteConnectionManager } from './manager';
@@ -15,6 +15,8 @@ import { PairingBridgeRetirementError, validateEndpoint, type RemoteConnectionMa
 const claimedSchema = z.object({
   target: connectionIdentitySchema, targetLabel: z.string().max(128), grantId: z.string().uuid(), revision: z.number().int().positive(),
   peerToken: z.string().min(32).max(128), revokedBridgeIds: z.array(z.string().uuid()).max(1000).optional(), bridge: z.array(z.object({ grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict()).optional(),
+  trustTier: peerTrustTierSchema.optional(),
+  meshCapabilities: z.array(meshCapabilitySchema).optional(),
 }).strict();
 export interface PairingHooks {
   workspaces(): Promise<readonly string[]>;
@@ -284,7 +286,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   const claimed = claimedSchema.parse(envelope.data);
   const bridges = claimed.bridge ?? [];
   const id = randomUUID();
-  const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint, pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes: bridges.length > 0 ? ['gui', 'bridge'] : ['gui'], backgroundSummary: input.backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0 };
+  const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint, pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes: bridges.length > 0 ? ['gui', 'bridge'] : ['gui'], backgroundSummary: input.backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0, ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }), ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }) };
   let saved: RemoteConnection | undefined;
   try {
     saved = await manager.storePeer(record, { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision }, input.label);

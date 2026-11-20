@@ -71,7 +71,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
           ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.sourceLabel, sourceWorkspaces: input.sourceWorkspaces ?? [], approvedOperations: claimed.bridgeOperations, requestedOperations: input.bridgeOperations })
           : [];
         const revokedBridgeIds = req.headers['x-kiki-pairing-rotation'] === '1' ? hooks.current?.revokedBridges?.(input.source) : undefined;
-        const result = { target: claimed.target, targetLabel: machineLabel(), grantId: claimed.grantId, revision: claimed.revision, peerToken: claimed.peerToken, revokedBridgeIds, bridge: bridge.length > 0 ? bridge : undefined };
+        const result = { target: claimed.target, targetLabel: machineLabel(), grantId: claimed.grantId, revision: claimed.revision, peerToken: claimed.peerToken, revokedBridgeIds, bridge: bridge.length > 0 ? bridge : undefined, trustTier: claimed.trustTier, meshCapabilities: claimed.meshCapabilities };
         return result;
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
