@@ -805,7 +805,7 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
       const scanned = scanIntraMonorepoMocks(tmpRepo, { allowlist: new Set() });
       assert.equal(scanned.violations.length, 2);
       assert.deepEqual(
-        scanned.violations.map((entry) => entry.file).sort(),
+        scanned.violations.map((entry) => entry.file).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
         [
           'packages/agent-core-v2/test/bad.integration.ts',
           'packages/kap-server/test/bad.test.ts',

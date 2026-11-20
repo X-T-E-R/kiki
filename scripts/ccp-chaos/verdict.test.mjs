@@ -18,6 +18,9 @@ import {
   writeCheckpointlessColdChildWire,
 } from './fixtures/empirical-manifest.mjs';
 import { MeshNodeStateMachine } from './twin/chained-workload.mjs';
+import { extractSenderThreadSendResultPreview } from './scenarios/s11-mesh-256-1024.mjs';
+import { resolveTerminatingTimeoutStatus } from './scenarios/s13-chaos-faults.mjs';
+import { isKnownInternalKikiHelper } from './telemetry/process-tree.mjs';
 import {
   computeScopedHmac,
   domainDigest,
@@ -461,6 +464,52 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       allTargetsConsumedOnce: true,
     });
     assert.equal(cronPass.passed, true);
+
+    const tmpWireDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-s11-diag-'));
+    try {
+      const wirePath = path.join(tmpWireDir, 'wire.jsonl');
+      fs.writeFileSync(
+        wirePath,
+        [
+          JSON.stringify({
+            type: 'context.append_message',
+            message: {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_ts_1',
+                  name: 'ThreadSend',
+                  input: { content: 'MESH_PEER_E1_test_0 digest=abc', idempotency_key: 'ik_1' },
+                },
+              ],
+            },
+          }),
+          JSON.stringify({
+            type: 'context.append_message',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'toolu_ts_1',
+                  is_error: true,
+                  content: 'undeliverable: target mailbox busy',
+                },
+              ],
+            },
+          }),
+        ].join('\n'),
+        'utf8',
+      );
+      const preview = extractSenderThreadSendResultPreview(wirePath, {
+        nonce: 'MESH_PEER_E1_test_0',
+        idempotencyKey: 'ik_1',
+      });
+      assert.equal(preview, '[is_error=true] undeliverable: target mailbox busy');
+    } finally {
+      fs.rmSync(tmpWireDir, { recursive: true, force: true });
+    }
   });
 
   it('§10.4 blind 4-trial HMAC-SHA256 mutation control passes authentic controls and rejects tampered returns', () => {
@@ -548,6 +597,37 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(badPremature.passed, false);
     assert.equal(badPremature.exitCode, EXIT_PRODUCT_FAIL);
+
+    // Regression: REST /tasks maps core timed_out -> status:"failed", while canonical wire task.terminated carries info.status:"timed_out"
+    const fromWire = resolveTerminatingTimeoutStatus({
+      taskRow: { id: 'bash-abc12345', kind: 'bash', status: 'failed' },
+      wireRecords: [{ type: 'task.terminated', info: { taskId: 'bash-abc12345', kind: 'process', status: 'timed_out' } }],
+      dead: true,
+    });
+    assert.equal(fromWire.observedStatus, 'timed_out');
+    assert.equal(fromWire.premature, false);
+
+    const fromApiReason = resolveTerminatingTimeoutStatus({
+      taskRow: { id: 'bash-abc12346', kind: 'bash', status: 'failed', terminal_reason: 'timed_out' },
+      wireRecords: [],
+      dead: true,
+    });
+    assert.equal(fromApiReason.observedStatus, 'timed_out');
+
+    // Non-timeout failure must NEVER be masked as timed_out even when the process is dead
+    const nonTimeoutFailure = resolveTerminatingTimeoutStatus({
+      taskRow: { id: 'bash-abc12347', kind: 'bash', status: 'failed' },
+      wireRecords: [{ type: 'task.terminated', info: { taskId: 'bash-abc12347', kind: 'process', status: 'failed', stopReason: 'exit 1' } }],
+      dead: true,
+    });
+    assert.equal(nonTimeoutFailure.observedStatus, 'failed');
+
+    const unconfirmedFailure = resolveTerminatingTimeoutStatus({
+      taskRow: { id: 'bash-abc12348', kind: 'bash', status: 'failed' },
+      wireRecords: [],
+      dead: true,
+    });
+    assert.equal(unconfirmedFailure.observedStatus, 'failed');
   });
 
   it('6-stage child chain verifier catches corrupted spill tail or altered constant', () => {
@@ -658,6 +738,17 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(failHighCpu.passed, false);
     assert.equal(failHighCpu.exitCode, EXIT_PRODUCT_FAIL);
+
+    // Regression: dev-mode SqliteSearchHost indexer child is an internal Kiki helper, while arbitrary workloads are NOT
+    assert.equal(
+      isKnownInternalKikiHelper(
+        '/tmp/kiki-tools/node-v24.22.1-linux-x64/bin/node --max-old-space-size=815 --experimental-transform-types --import tsx --import file:///tmp/kiki-work/packages/kap-server/src/search/sqlite/register-dev-hooks.mjs /tmp/kiki-work/packages/kap-server/src/search/sqlite/indexerDev.ts /tmp/kiki-chaos-nvme/home/search-index-v2/index.sqlite',
+      ),
+      true,
+    );
+    assert.equal(isKnownInternalKikiHelper('/usr/bin/kiki __search-indexer /home/.kiki/search-index-v2/index.sqlite'), true);
+    assert.equal(isKnownInternalKikiHelper('node /tmp/kiki-s13-faults/terminating_timeout_gc.cjs'), false);
+    assert.equal(isKnownInternalKikiHelper('node /tmp/untrusted/indexerDev.ts'), false);
   });
 
   it('closes all 6 fail-open counterexamples in verdict.mjs', () => {

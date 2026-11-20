@@ -35,7 +35,7 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 25_00
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: ac.signal,
     });
     const text = await res.text();
@@ -54,7 +54,7 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 25_00
 }
 
 async function mapBatched(items, concurrency, fn) {
-  const out = new Array(items.length);
+  const out = Array.from({ length: items.length });
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (cursor < items.length) {
@@ -110,8 +110,87 @@ async function waitForWirePredicate(wirePath, predicate, timeoutMs = 30_000) {
   return predicate(readWireRecords(wirePath));
 }
 
+function isTurnDeliveryRecord(r) {
+  return r?.type === 'turn.prompt' || r?.type === 'turn.steer';
+}
+
 function sessionWirePath(homeDir, workspaceId, sessionId) {
   return path.join(homeDir, 'sessions', workspaceId, sessionId, 'agents', 'main', 'wire.jsonl');
+}
+
+function stringifyToolResultContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : JSON.stringify(part)))
+      .join('\n');
+  }
+  if (content === null || content === undefined) return '';
+  return JSON.stringify(content);
+}
+
+export function extractSenderThreadSendResultPreview(senderWirePath, { nonce = '', idempotencyKey = '' } = {}) {
+  const records = readWireRecords(senderWirePath);
+  if (records.length === 0) return 'sender wire.jsonl missing or empty';
+  const callMeta = new Map();
+  for (const r of records) {
+    if (r.type === 'tool.call' || r.type === 'tool.call.started') {
+      const cid = r.toolCallId ?? r.id ?? r.callId;
+      const name = r.name ?? r.toolName;
+      if (cid && name === 'ThreadSend') {
+        callMeta.set(cid, JSON.stringify(r.input ?? r.arguments ?? ''));
+      }
+    }
+    if (r.type === 'context.append_message' && Array.isArray(r.message?.content)) {
+      for (const part of r.message.content) {
+        if (part?.type === 'tool_use' && part?.id && part?.name === 'ThreadSend') {
+          callMeta.set(part.id, JSON.stringify(part.input ?? ''));
+        }
+      }
+    }
+  }
+  const matchesTargetCall = (cid) => {
+    const inputStr = callMeta.get(cid);
+    if (!inputStr) return false;
+    if (nonce && inputStr.includes(nonce)) return true;
+    if (idempotencyKey && inputStr.includes(idempotencyKey)) return true;
+    return false;
+  };
+
+  let exactMatch = null;
+  let fallbackThreadSend = null;
+  for (const r of records) {
+    if (r.type === 'tool.result' || r.type === 'tool.call.completed') {
+      const cid = r.toolCallId ?? r.callId;
+      const name = r.name ?? r.toolName;
+      if (name === 'ThreadSend' || (cid && callMeta.has(cid))) {
+        const isErr = r.isError === true || r.is_error === true || r.ok === false || Boolean(r.error);
+        const body = stringifyToolResultContent(r.output ?? r.result ?? r.content ?? r.error ?? '');
+        const preview = `${isErr ? '[is_error=true] ' : ''}${body}`.trim().slice(0, 500);
+        fallbackThreadSend = preview;
+        if (cid && matchesTargetCall(cid)) exactMatch = preview;
+      }
+    }
+    if (r.type === 'context.append_message' && Array.isArray(r.message?.content)) {
+      for (const part of r.message.content) {
+        if (part?.type === 'tool_result' && part?.tool_use_id && callMeta.has(part.tool_use_id)) {
+          const isErr = part.is_error === true;
+          const body = stringifyToolResultContent(part.content);
+          const preview = `${isErr ? '[is_error=true] ' : ''}${body}`.trim().slice(0, 500);
+          fallbackThreadSend = preview;
+          if (matchesTargetCall(part.tool_use_id)) exactMatch = preview;
+        }
+      }
+    }
+  }
+  if (exactMatch !== null) return exactMatch;
+  if (fallbackThreadSend !== null) return fallbackThreadSend;
+
+  const lastTurnEnded = [...records].reverse().find((r) => r.type === 'turn.ended');
+  if (lastTurnEnded) {
+    return `no ThreadSend tool_result found; last turn.ended=${JSON.stringify({ reason: lastTurnEnded.reason, error: lastTurnEnded.error }).slice(0, 400)}`;
+  }
+  return `no ThreadSend tool_result found (sender wire records=${records.length})`;
 }
 
 function normalizeWireOrigin(rawOrigin) {
@@ -352,7 +431,7 @@ async function runMeshTier({
       const targetWire = sessionWirePath(corpus.homeDir, pe.target.workspaceId, pe.target.sessionId);
       const matchedPrompt = await waitForWirePredicate(
         targetWire,
-        (recs) => recs.find((r) => r.type === 'turn.prompt' && JSON.stringify(r.input ?? '').includes(nonce)),
+        (recs) => recs.find((r) => isTurnDeliveryRecord(r) && JSON.stringify(r.input ?? '').includes(nonce)),
         25_000,
       );
       await waitForSessionIdle(server.endpoint, server.token, pe.target.sessionId, 25_000);
@@ -362,6 +441,12 @@ async function runMeshTier({
         payloadDigest: pe.payloadDigest,
         origin: persistedOrigin,
       });
+      const senderToolResultPreview = matchedPrompt
+        ? undefined
+        : extractSenderThreadSendResultPreview(
+            sessionWirePath(corpus.homeDir, pe.sender.workspaceId, pe.sender.sessionId),
+            { nonce, idempotencyKey: pe.idempotencyKey },
+          );
       return {
         epoch: pe.epoch,
         from: pe.sender.sessionId,
@@ -372,6 +457,7 @@ async function runMeshTier({
         payloadDigest: pe.payloadDigest,
         persistedWireOrigin: persistedOrigin,
         unauthorizedWakeCount: 0,
+        ...(senderToolResultPreview !== undefined ? { senderToolResultPreview } : {}),
       };
     });
 
@@ -401,6 +487,12 @@ async function runMeshTier({
       ],
       finalText: `Room message dispatched (${nonce}).`,
     };
+    const bystanderWire = re.unmentionedBystander
+      ? sessionWirePath(corpus.homeDir, re.unmentionedBystander.workspaceId, re.unmentionedBystander.sessionId)
+      : null;
+    const bystanderTurnsBefore = bystanderWire
+      ? readWireRecords(bystanderWire).filter((r) => isTurnDeliveryRecord(r)).length
+      : 0;
     const sendRes = await apiJson(
       server.endpoint,
       server.token,
@@ -416,18 +508,17 @@ async function runMeshTier({
     const targetWire = sessionWirePath(corpus.homeDir, re.mentionedTarget.workspaceId, re.mentionedTarget.sessionId);
     const matchedPrompt = await waitForWirePredicate(
       targetWire,
-      (recs) => recs.find((r) => r.type === 'turn.prompt' && JSON.stringify(r.input ?? '').includes(nonce)),
+      (recs) => recs.find((r) => isTurnDeliveryRecord(r) && JSON.stringify(r.input ?? '').includes(nonce)),
       25_000,
     );
     await waitForSessionIdle(server.endpoint, server.token, re.mentionedTarget.sessionId, 25_000);
 
-    // Verify unmentioned bystander stayed at 0 turns!
+    // Verify unmentioned bystander received 0 new turns (turn.prompt or turn.steer) from this room message!
     let unauthorizedWakeCount = 0;
-    if (re.unmentionedBystander) {
+    if (bystanderWire) {
       await sleep(250);
-      const bystanderWire = sessionWirePath(corpus.homeDir, re.unmentionedBystander.workspaceId, re.unmentionedBystander.sessionId);
-      const bystanderTurns = readWireRecords(bystanderWire).filter((r) => r.type === 'turn.prompt');
-      unauthorizedWakeCount = bystanderTurns.length;
+      const bystanderTurnsAfter = readWireRecords(bystanderWire).filter((r) => isTurnDeliveryRecord(r));
+      unauthorizedWakeCount = Math.max(0, bystanderTurnsAfter.length - bystanderTurnsBefore);
     }
 
     const persistedOrigin = normalizeWireOrigin(matchedPrompt?.origin ?? null);
@@ -436,6 +527,12 @@ async function runMeshTier({
       payloadDigest: re.payloadDigest,
       origin: persistedOrigin,
     });
+    const senderToolResultPreview = matchedPrompt
+      ? undefined
+      : extractSenderThreadSendResultPreview(
+          sessionWirePath(corpus.homeDir, re.sender.workspaceId, re.sender.sessionId),
+          { nonce, idempotencyKey: re.idempotencyKey },
+        );
     return {
       epoch: re.epoch,
       from: re.sender.sessionId,
@@ -446,6 +543,7 @@ async function runMeshTier({
       payloadDigest: re.payloadDigest,
       persistedWireOrigin: persistedOrigin,
       unauthorizedWakeCount,
+      ...(senderToolResultPreview !== undefined ? { senderToolResultPreview } : {}),
     };
   });
   observedEdges.push(...roomObserved);
@@ -765,14 +863,14 @@ export async function runScenarioS11Mesh256({
 
     const deliveredPrompt = await waitForWirePredicate(
       targetWire,
-      (recs) => recs.find((r) => r.type === 'turn.prompt' && JSON.stringify(r.input ?? '').includes(outboxPayloadText)),
+      (recs) => recs.find((r) => isTurnDeliveryRecord(r) && JSON.stringify(r.input ?? '').includes(outboxPayloadText)),
       55_000,
     );
     drainMsFromReplacementStart = roundMs(performance.now() - bootT0);
 
     const senderRecords = readWireRecords(senderWire);
     const cronTurn = senderRecords.find(
-      (r) => r.type === 'turn.prompt' && (r.origin?.kind === 'cron_job' || r.origin?.kind === 'cron'),
+      (r) => isTurnDeliveryRecord(r) && (r.origin?.kind === 'cron_job' || r.origin?.kind === 'cron'),
     );
     cronOriginJobId = cronTurn?.origin?.jobId ?? cronTurn?.origin?.taskId ?? null;
 
@@ -780,7 +878,7 @@ export async function runScenarioS11Mesh256({
     const expectedPayloadDigest = domainDigest('cron-outbox/v2.3', [outboxIdempotencyKey, outboxPayloadText]);
     const matchingDeliveries = targetRecords.filter(
       (r) =>
-        r.type === 'turn.prompt' &&
+        isTurnDeliveryRecord(r) &&
         r.origin?.kind === 'peer_thread' &&
         JSON.stringify(r.input ?? '').includes(outboxPayloadText),
     );

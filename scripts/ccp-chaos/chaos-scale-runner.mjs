@@ -485,7 +485,7 @@ if (isServerWorker) {
     {
       cwd: REPO_ROOT,
       stdio: 'inherit',
-      env: { ...process.env, KIKI_CHAOS_TSX_READY: '1' },
+      env: { ...process.env, UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || '16', KIKI_CHAOS_TSX_READY: '1' },
     },
   );
   process.exit(child.status ?? 1);
@@ -504,6 +504,7 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
       homeDir,
       osHomeDir,
       extra: {
+        UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || '16',
         KIKI_CHAOS_TSX_READY: '1',
         KIKI_CRON_NO_JITTER: '1',
         KIKI_CRON_NO_STALE: '1',
@@ -619,12 +620,14 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
     sigkill: async () => {
       const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
       const descendants = listDescendantPids(child.pid);
-      for (const pid of descendants) {
+      for (const pid of [...descendants].reverse()) {
         try {
           process.kill(pid, 'SIGKILL');
         } catch {}
       }
-      process.kill(child.pid, 'SIGKILL');
+      try {
+        process.kill(child.pid, 'SIGKILL');
+      } catch {}
       return exited;
     },
   };

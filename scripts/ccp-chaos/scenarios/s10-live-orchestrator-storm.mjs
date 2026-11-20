@@ -51,7 +51,7 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 30_00
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: ac.signal,
     });
     const rawText = await res.text();

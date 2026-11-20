@@ -587,7 +587,7 @@ async function startGuiStaticServer() {
   };
 }
 
-function buildObjectUrlAndTimerInitScript({ enableFastTimers = false } = {}) {
+function buildObjectUrlAndTimerInitScript({ enableFastTimers: _enableFastTimers = false } = {}) {
   return (fastTimers) => {
     try {
       localStorage.setItem('kiki.locale', 'en');

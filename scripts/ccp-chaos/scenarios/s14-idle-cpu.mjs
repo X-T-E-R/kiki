@@ -76,6 +76,7 @@ export async function runScenarioS14IdleCpu({
       elapsedSinceT0Sec: Number(((Date.now() - t0Ts) / 1000).toFixed(2)),
       serverCorePct: sample.serverCorePct,
       processCount: sample.processCount,
+      serverProcessCpuDetails: sample.serverProcessCpuDetails,
       rendererPlusGpuCorePct: browserEnabled ? sample.rendererPlusGpuCorePct : undefined,
       rendererProcessCount: browserEnabled ? sample.rendererProcessCount : 0,
       survivingDescendants: sample.survivingDescendants,

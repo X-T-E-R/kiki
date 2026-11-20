@@ -117,18 +117,24 @@ export function listChromiumRendererAndGpuPids(browserRootPid) {
     .map((p) => p.pid);
 }
 
+export function isKnownInternalKikiHelper(cmdline) {
+  const cmd = String(cmdline ?? '').toLowerCase();
+  if (cmd.includes('__search-indexer') || cmd.includes('sqlite-indexer') || cmd.includes('esbuild')) {
+    return true;
+  }
+  // Source/dev mode SQLite search indexer child spawned by SqliteSearchHost (packages/kap-server/src/search/sqlite/host.ts)
+  if (/packages[/\\]kap-server[/\\]src[/\\]search[/\\]sqlite[/\\]indexerdev\.ts\b/u.test(cmd)) {
+    return true;
+  }
+  return false;
+}
+
 export function listSurvivingWorkloadDescendants(serverRootPid) {
   if (!Number.isInteger(serverRootPid) || serverRootPid <= 0) return [];
   const descendants = listDescendantProcesses(serverRootPid);
-  // Exclude known internal Kiki helper processes (e.g. sqlite search indexer) while counting
-  // any lingering shell/bash/node/python/workload children spawned by tools.
-  return descendants.filter((p) => {
-    const cmd = p.cmdline.toLowerCase();
-    if (cmd.includes('__search-indexer') || cmd.includes('sqlite-indexer') || cmd.includes('esbuild')) {
-      return false;
-    }
-    return true;
-  });
+  // Exclude known internal Kiki helper processes (e.g. sqlite search indexer in SEA/dist/dev modes)
+  // while counting any lingering shell/bash/node/python/workload children spawned by tools.
+  return descendants.filter((p) => !isKnownInternalKikiHelper(p.cmdline));
 }
 
 export function samplePidCpuTicks(pids) {
@@ -213,17 +219,35 @@ export async function sampleDisjointIdleWindow({
   await new Promise((resolve) => setTimeout(resolve, windowMs));
   const elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
 
+  const serverDescendantsAfter = Number.isInteger(serverPid) && serverPid > 0
+    ? listDescendantProcesses(serverPid)
+    : [];
+  const serverCmdlineByPid = new Map(serverDescendantsAfter.map((p) => [p.pid, p.cmdline]));
   const serverPidsAfter = Number.isInteger(serverPid) && serverPid > 0
-    ? [...new Set([serverPid, ...listDescendantPids(serverPid), ...serverPidsBefore])]
+    ? [...new Set([serverPid, ...serverDescendantsAfter.map((p) => p.pid), ...serverPidsBefore])]
     : [];
   const browserPidsAfter = Number.isInteger(browserPid) && browserPid > 0
     ? [...new Set([...listChromiumRendererAndGpuPids(browserPid), ...browserPidsBefore])]
     : [];
   const nextServer = serverPidsAfter.length > 0 ? samplePidCpuTicks(serverPidsAfter) : new Map();
   const nextBrowser = browserPidsAfter.length > 0 ? samplePidCpuTicks(browserPidsAfter) : new Map();
-  const survivingWorkload = Number.isInteger(serverPid) && serverPid > 0
-    ? listSurvivingWorkloadDescendants(serverPid)
-    : [];
+  const serverProcessCpuDetails = [];
+  for (const [pid, next] of nextServer.entries()) {
+    const prev = prevServer.get(pid);
+    if (!prev) continue;
+    if (prev.startTime && next.startTime && prev.startTime !== next.startTime) continue;
+    const deltaTicks = Math.max(0, next.ticks - prev.ticks);
+    const corePct = Number((((deltaTicks / (next.hz || 100)) / elapsedSec) * 100).toFixed(2));
+    const cmdline = pid === serverPid ? 'kap-server-root' : (serverCmdlineByPid.get(pid) ?? '');
+    serverProcessCpuDetails.push({
+      pid,
+      isRoot: pid === serverPid,
+      internalHelper: pid !== serverPid && isKnownInternalKikiHelper(cmdline),
+      corePct,
+      cmdline: cmdline.slice(0, 240),
+    });
+  }
+  const survivingWorkload = serverDescendantsAfter.filter((p) => !isKnownInternalKikiHelper(p.cmdline));
   const seenSurvivorPids = new Set(survivingWorkload.map((p) => p.pid));
   for (const pid of trackedWorkloadPids ?? []) {
     if (!Number.isInteger(pid) || pid <= 0 || seenSurvivorPids.has(pid)) continue;
@@ -240,14 +264,15 @@ export async function sampleDisjointIdleWindow({
       ? computeCorePctDelta(prevServer, nextServer, elapsedSec)
       : null,
     processCount: nextServer.size,
-    rendererPlusGpuCorePct: browserPid != null
+    serverProcessCpuDetails,
+    rendererPlusGpuCorePct: browserPid !== null && browserPid !== undefined
       ? (prevBrowser.size > 0 && nextBrowser.size > 0
           ? computeCorePctDelta(prevBrowser, nextBrowser, elapsedSec)
           : null)
       : null,
     rendererProcessCount: nextBrowser.size,
     survivingDescendants: survivingWorkload.length,
-    survivingDescendantDetails: survivingWorkload.map((p) => ({ pid: p.pid, cmdline: p.cmdline.slice(0, 160) })),
+    survivingDescendantDetails: survivingWorkload.map((p) => ({ pid: p.pid, cmdline: p.cmdline.slice(0, 512) })),
   };
 }
 

@@ -60,7 +60,7 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 25_00
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: ac.signal,
     });
     const text = await res.text();
@@ -109,6 +109,33 @@ function readWireRecords(wirePath) {
     } catch {}
   }
   return out;
+}
+
+export function resolveTerminatingTimeoutStatus({ taskRow, wireRecords, dead }) {
+  const termRec = (wireRecords ?? []).find(
+    (r) =>
+      (r?.type === 'task.terminated' || r?.type === 'background.task.terminated') &&
+      (!taskRow?.id || !r.info?.taskId || r.info.taskId === taskRow.id),
+  ) ?? null;
+  const wireTerminalStatus = termRec?.info?.status ?? termRec?.status ?? termRec?.payload?.status ?? null;
+  const wireTerminalReason = termRec?.info?.stopReason ?? termRec?.reason ?? termRec?.payload?.reason ?? null;
+  const taskApiTerminalReason = taskRow?.terminal_reason ?? taskRow?.terminalReason ?? null;
+  const apiTimedOut =
+    taskRow?.status === 'timed_out' ||
+    (taskRow?.status === 'failed' && taskApiTerminalReason === 'timed_out');
+  const wireTimedOut = wireTerminalStatus === 'timed_out' || wireTerminalReason === 'timed_out';
+  const observedStatus =
+    apiTimedOut || wireTimedOut
+      ? 'timed_out'
+      : (wireTerminalStatus ?? taskRow?.status ?? (dead ? 'unknown_dead' : 'running'));
+  const premature =
+    !dead && (wireTimedOut || apiTimedOut || taskRow?.status === 'completed' || wireTerminalStatus === 'completed');
+  return {
+    observedStatus,
+    premature,
+    wireTerminalStatus,
+    taskApiTerminalReason,
+  };
 }
 
 function writeEarlyExitSpinnerScripts(dir, cellName) {
@@ -247,16 +274,32 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 15_000);
 
       const wirePath = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
-      const wireRecords = readWireRecords(wirePath);
-      const tasksAfter = await readSessionTaskStatus(sess.sessionId);
-      const taskRow = tasksAfter.find((t) => t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'timed_out') ?? tasksAfter[0] ?? null;
-      const termRec = wireRecords.find(
-        (r) =>
-          (r.type === 'task.terminated' || r.type === 'background.task.terminated') &&
-          (r.status === 'timed_out' || r.payload?.status === 'timed_out' || r.reason === 'timed_out'),
-      );
-      const observedStatus = taskRow?.status ?? termRec?.status ?? termRec?.payload?.status ?? (dead ? 'timed_out' : 'running');
-      const premature = !dead && (Boolean(termRec) || taskRow?.status === 'timed_out' || taskRow?.status === 'completed');
+      let wireRecords = readWireRecords(wirePath);
+      let tasksAfter = await readSessionTaskStatus(sess.sessionId);
+      const settleDeadline = performance.now() + 3_000;
+      while (performance.now() < settleDeadline) {
+        const hasWireTerm = wireRecords.some(
+          (r) => r?.type === 'task.terminated' || r?.type === 'background.task.terminated',
+        );
+        const hasTaskRow = tasksAfter.some(
+          (t) => (t?.kind === 'bash' || t?.kind === 'shell' || t?.kind === 'process') && t?.status !== 'running',
+        );
+        if (hasWireTerm && hasTaskRow) break;
+        await sleep(50);
+        wireRecords = readWireRecords(wirePath);
+        tasksAfter = await readSessionTaskStatus(sess.sessionId);
+      }
+      const taskRow =
+        tasksAfter.find(
+          (t) => t?.kind === 'bash' || t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'timed_out',
+        ) ??
+        tasksAfter[0] ??
+        null;
+      const { observedStatus, premature, wireTerminalStatus, taskApiTerminalReason } = resolveTerminatingTimeoutStatus({
+        taskRow,
+        wireRecords,
+        dead,
+      });
       const triggerReceivedMs = Math.min(grandchildExitMs - 1, Math.max(rootExitMs + 1, scheduledDeadlineMs));
       cells.push({
         kind: 'terminating_timeout',
@@ -268,6 +311,8 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         cleanupAtMs: grandchildExitMs,
         terminalStatus: observedStatus,
         taskApiStatus: taskRow?.status ?? null,
+        taskApiTerminalReason,
+        wireTerminalStatus,
         survivingDescendants: isPidAlive(grandchildPid) ? 1 : 0,
       });
     }
@@ -324,7 +369,12 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       const triggerReceivedMs = Math.min(grandchildExitMs - 1, Math.max(rootExitMs + 1, roundMs(rootExitMs + 1000)));
       const cleanupMsFromStopIngress = Math.max(1, roundMs(Math.min(1800, performance.now() - stopWatchT0 - 1000)));
       const tasksAfter2 = await readSessionTaskStatus(sess.sessionId);
-      const taskRow2 = tasksAfter2.find((t) => t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed') ?? tasksAfter2[0] ?? null;
+      const taskRow2 =
+        tasksAfter2.find(
+          (t) => t?.kind === 'bash' || t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed' || t?.status === 'cancelled',
+        ) ??
+        tasksAfter2[0] ??
+        null;
       const observedStopStatus =
         taskRow2?.status === 'killed' || taskRow2?.status === 'cancelled'
           ? 'killed'
@@ -394,7 +444,12 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 10_000);
 
       const tasksAfter3 = await readSessionTaskStatus(sess.sessionId);
-      const taskRow3 = tasksAfter3.find((t) => t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed') ?? tasksAfter3[0] ?? null;
+      const taskRow3 =
+        tasksAfter3.find(
+          (t) => t?.kind === 'bash' || t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed' || t?.status === 'cancelled',
+        ) ??
+        tasksAfter3[0] ??
+        null;
       const wirePath3 = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
       const turnEnded3 = readWireRecords(wirePath3).find((r) => r.type === 'turn.ended');
       const observedCancelStatus =

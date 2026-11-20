@@ -809,9 +809,9 @@ export async function createContractTwinServer(options = {}) {
     });
     res.flushHeaders?.();
     const prefixEvents = [
-      [
-        'message_start',
-        {
+      {
+        event: 'message_start',
+        data: {
           type: 'message_start',
           message: {
             id: messageId,
@@ -824,13 +824,13 @@ export async function createContractTwinServer(options = {}) {
             usage: { input_tokens: 48, output_tokens: 1 },
           },
         },
-      ],
-      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
-      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `${replyText} ` } }],
+      },
+      { event: 'content_block_start', data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+      { event: 'content_block_delta', data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `${replyText} ` } } },
     ];
-    for (const [ev, data] of prefixEvents) {
+    for (const { event, data } of prefixEvents) {
       if (res.writableEnded || res.destroyed) return;
-      res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     }
     if (barrierId) {
       const entry = noteBarrierArrival(barrierId);
@@ -880,14 +880,14 @@ export async function createContractTwinServer(options = {}) {
     }
     if (res.writableEnded || res.destroyed) return;
     const suffixEvents = [
-      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '[stream-complete]' } }],
-      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
-      ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 16 } }],
-      ['message_stop', { type: 'message_stop' }],
+      { event: 'content_block_delta', data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '[stream-complete]' } } },
+      { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+      { event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 16 } } },
+      { event: 'message_stop', data: { type: 'message_stop' } },
     ];
-    for (const [ev, data] of suffixEvents) {
+    for (const { event, data } of suffixEvents) {
       if (res.writableEnded || res.destroyed) return;
-      res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     }
     counters.succeededResponses += 1;
     res.end();

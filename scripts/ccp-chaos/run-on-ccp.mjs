@@ -770,6 +770,7 @@ export async function runChaosOnCcp(options = {}) {
     const runScript = [
       'set -o pipefail',
       `export PATH="${nodeBinPath}:$PATH"`,
+      'export UV_THREADPOOL_SIZE=16',
       'ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true',
       `rm -rf "${remoteRunDir}" && mkdir -p "${remoteRunDir}"`,
       'rm -f /tmp/kiki-chaos-results.json /tmp/kiki-vitest-results.json /tmp/kiki-hygiene-results.json',

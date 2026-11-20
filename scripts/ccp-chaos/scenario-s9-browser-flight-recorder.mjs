@@ -38,27 +38,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function quantile(sorted, p) {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
-  return roundMs(sorted[idx]);
-}
-
-function summarize(samples) {
-  if (!samples.length) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
-  const sorted = [...samples].toSorted((a, b) => a - b);
-  const sum = sorted.reduce((acc, v) => acc + v, 0);
-  return {
-    count: sorted.length,
-    min: roundMs(sorted[0]),
-    p50: quantile(sorted, 0.5),
-    p95: quantile(sorted, 0.95),
-    p99: quantile(sorted, 0.99),
-    max: roundMs(sorted.at(-1)),
-    mean: roundMs(sum / sorted.length),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Real Spec-Compliant Ogg/Opus Binary Generator (RFC 3533 + RFC 7845)
 // ---------------------------------------------------------------------------

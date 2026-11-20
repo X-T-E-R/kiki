@@ -874,9 +874,9 @@ export function evaluateCcpRunVerdict({
           return String(v ?? '');
         };
         if (typeof chaosReport.tier !== 'string' || chaosReport.tier.trim().length === 0) {
-          harnessFailures.push(`Missing chaos report tier (expected "${expectedTier}")`);
+          harnessFailures.push(`Missing chaos report tier (expected "${String(expectedTier)}")`);
         } else if (normTier(chaosReport.tier) !== normTier(expectedTier)) {
-          harnessFailures.push(`Tier mismatch between manifest ("${expectedTier}") and chaos report ("${chaosReport.tier}")`);
+          harnessFailures.push(`Tier mismatch between manifest ("${String(expectedTier)}") and chaos report ("${chaosReport.tier}")`);
         }
       }
       if (chaosReport.overallPassed !== true) {
@@ -1072,7 +1072,7 @@ export function evaluateS10Verdict(evidence, options = {}) {
     harnessFailures.push(`S10 insufficient overlapping load buckets: ${evidence.overlapBucketsQualified ?? 0} < ${minOverlapBuckets}`);
   }
 
-  const browserRequired = tier === 'full' || evidence.browserRequired === true || evidence.flightRecorder != null;
+  const browserRequired = tier === 'full' || evidence.browserRequired === true || (evidence.flightRecorder !== null && evidence.flightRecorder !== undefined);
   if (browserRequired) {
     if (!evidence.flightRecorder || (evidence.flightRecorder.sampleCount ?? 0) === 0) {
       harnessFailures.push('S10 browser flight recorder missing or recorded 0 samples');

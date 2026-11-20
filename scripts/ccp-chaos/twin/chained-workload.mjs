@@ -205,7 +205,7 @@ export class MeshNodeStateMachine {
     this.runId = runId;
     this.epoch = epoch;
     this.nodeId = nodeId;
-    this.expectedUpstreamIds = [...expectedUpstreamIds].sort();
+    this.expectedUpstreamIds = [...expectedUpstreamIds].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     this.outboundEdges = outboundEdges;
     this.received = new Map();
     this.outboxCommitted = false;

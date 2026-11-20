@@ -110,7 +110,7 @@ export function runAstBuild({
 }) {
   const cpuStart = process.cpuUsage();
   const wallStart = performance.now();
-  const sortedFiles = [...files].map((f) => f.replaceAll('\\', '/')).sort();
+  const sortedFiles = [...files].map((f) => f.replaceAll('\\', '/')).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   const records = [];
   let bytesRead = 0;
@@ -193,7 +193,7 @@ function collectSourceFiles(dir, maxFiles = 200) {
     }
   };
   walk(dir);
-  return out.sort();
+  return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function parseCliArgs(argv) {
