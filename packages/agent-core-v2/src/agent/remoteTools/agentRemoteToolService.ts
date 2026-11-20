@@ -192,11 +192,15 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
         approvalRule: qualifiedName,
         execute: async (context) => {
           context.signal.throwIfAborted();
+          const remoteBridge = this.remoteBridge;
+          if (remoteBridge === undefined) {
+            throw new Error(`Remote tool bridge is unavailable for ${qualifiedName}`);
+          }
           const argsRecord =
             typeof args === 'object' && args !== null && !Array.isArray(args)
               ? (args as Record<string, unknown>)
               : {};
-          const result = await this.remoteBridge.callBorrowedTool({
+          const result = await remoteBridge.callBorrowedTool({
             bridgeId: catalog.bridgeId,
             connectionId: catalog.connectionId,
             caller: this.callerIdentity(),
