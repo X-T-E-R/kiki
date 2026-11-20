@@ -249,7 +249,9 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     await waitForSignal(this.flushLog(scope, key), options?.signal);
     const onTruncate = options?.onTruncate;
     const lineFilter = options?.lineFilter;
-    const rawSubstrings = options?.rawSubstrings;
+    const rawSubstrings = options?.rawSubstrings?.map((n) =>
+      Buffer.isBuffer(n) ? n : Buffer.from(n.buffer, n.byteOffset, n.byteLength),
+    );
     let pendingChunks: Uint8Array[] = [];
     let pendingBytes = 0;
     let lineNumber = 0;
@@ -834,7 +836,7 @@ function takeEncodedBatch(pending: readonly PendingAppendEntry[]): {
   return { batch, encoded };
 }
 
-function containsRawSubstring(buf: Buffer, start: number, end: number, needles: readonly Uint8Array[]): boolean {
+function containsRawSubstring(buf: Buffer, start: number, end: number, needles: readonly Buffer[]): boolean {
   const view = start === 0 && end === buf.byteLength ? buf : buf.subarray(start, end);
   for (let i = 0; i < needles.length; i++) {
     if (view.includes(needles[i]!)) return true;
