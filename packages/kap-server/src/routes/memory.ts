@@ -215,7 +215,7 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       scope: await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id),
       action: req.params.id === 'new' ? 'create' : req.body.action, id: req.params.id === 'new' ? undefined : req.params.id,
       type: req.body.type, title: req.body.title, body: req.body.body, reason: req.body.reason,
-      expectedRevision: req.body.expected_revision, pinned: req.body.pinned, basis: req.body.basis, validity: req.body.validity, covered_by: req.body.covered_by, source: { writer: 'user' },
+      expectedRevision: req.body.expected_revision, pinned: req.body.pinned, basis: req.body.basis, validity: req.body.validity, covered_by: req.body.covered_by, applicability: req.body.applicability, origin_host_id: req.body.origin_host_id, source: { writer: 'user' },
     }));
   }));
   add('delete', defineRoute({ method: 'DELETE', path: '/memory/{scope}/{id}', params: entryParams, querystring: entryQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {

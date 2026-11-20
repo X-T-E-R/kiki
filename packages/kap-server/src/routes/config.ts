@@ -662,12 +662,14 @@ function toProviderResponses(value: unknown): Record<string, ProviderResponse> {
   for (const [id, raw] of Object.entries(value)) {
     const provider = raw as ProviderConfig;
     const key = providerCredentialFields(id, provider);
+    const credentialId = nonEmpty(provider.credentialId);
     result[id] = {
       type: typeof provider.type === 'string' ? provider.type : '',
       base_url: nonEmpty(provider.baseUrl),
       default_model: nonEmpty(provider.defaultModel),
       api_key_env: key.api_key_env,
-      has_api_key: key.api_key !== undefined || key.api_key_env !== undefined || provider.oauth !== undefined,
+      ...(credentialId === undefined ? {} : { credential_id: credentialId }),
+      has_api_key: key.api_key !== undefined || key.api_key_env !== undefined || credentialId !== undefined || provider.oauth !== undefined,
     };
   }
   return result;

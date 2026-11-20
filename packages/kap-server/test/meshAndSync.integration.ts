@@ -1,43 +1,30 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
-import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  bootstrap,
   ensureMainAgent,
   IAgentContextInjectorService,
   IAgentContextMemoryService,
-  IConfigRegistry,
-  IConfigService,
-  IFileSystemStorageService,
+  IAgentPermissionModeService,
   IMemoryScopes,
-  IMeshLeaseStore,
+  IMemoryStore,
+  ISessionApprovalService,
+  ISessionInteractionService,
   ISessionManager,
-  loadNativeAgeX25519Cipher,
-  logSeed,
   MESH_CONTEXT_INJECTION_VARIANT,
-  resolveLoggingConfig,
-  sealCredentialEntry,
 } from '@kiki/agent-core-v2';
-import { CONNECTION_PROTOCOL } from '@kiki/protocol';
+import { createKlient } from '@kiki/klient/http';
 
-import { registerMeshRoutes } from '../src/routes/mesh';
-import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
-import { registerSyncRoutes } from '../src/routes/sync';
-import { ConnectionAdmission } from '../src/services/connections/admission';
-import { RemoteConnectionManager } from '../src/services/connections/manager';
-import { createPeerTcpDialer, MeshService, type MeshPeerDescriptor } from '../src/services/mesh/meshService';
-import { SyncService } from '../src/services/sync/syncService';
-import { startServer } from '../src/start';
+import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const tempDirs: string[] = [];
+const runningServers: RunningServer[] = [];
 
 function makeTempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -45,468 +32,525 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
-function runGit(cwd: string, args: readonly string[]): string {
-  return execFileSync('git', [...args], {
+function runGit(cwd: string, args: readonly string[]): void {
+  execFileSync('git', [...args], {
     cwd,
-    encoding: 'utf8',
-    windowsHide: true,
     env: {
       ...process.env,
-      GIT_AUTHOR_NAME: 'Server Test',
-      GIT_AUTHOR_EMAIL: 'server@example.test',
-      GIT_COMMITTER_NAME: 'Server Test',
-      GIT_COMMITTER_EMAIL: 'server@example.test',
+      GIT_AUTHOR_NAME: 'Test Author',
+      GIT_AUTHOR_EMAIL: 'test@example.test',
+      GIT_COMMITTER_NAME: 'Test Author',
+      GIT_COMMITTER_EMAIL: 'test@example.test',
     },
-  }).trim();
+    stdio: 'pipe',
+  });
 }
 
-afterEach(() => {
+function writeServerConfig(
+  homeDir: string,
+  extraToml = '',
+  localToml?: string,
+): void {
+  writeFileSync(
+    join(homeDir, 'config.toml'),
+    [
+      'default_model = "stub"',
+      '[search]',
+      'enabled = false',
+      '[cron]',
+      'manualTick = true',
+      '[providers.stub]',
+      'type = "openai"',
+      'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"',
+      '[models.stub]',
+      'provider = "stub"',
+      'model = "stub"',
+      'max_context_size = 1000',
+      extraToml,
+    ].join('\n'),
+    'utf8',
+  );
+  if (localToml !== undefined) {
+    writeFileSync(join(homeDir, 'config.local.toml'), localToml, 'utf8');
+  }
+}
+
+async function bootServer(
+  homeDir: string,
+  extra: Partial<Parameters<typeof startServer>[0]> = {},
+): Promise<RunningServer> {
+  const server = await startServer({
+    hostIdentity: TEST_HOST_IDENTITY,
+    host: '127.0.0.1',
+    port: 0,
+    homeDir,
+    logLevel: 'silent',
+    ...extra,
+  });
+  runningServers.push(server);
+  return server;
+}
+
+afterEach(async () => {
+  while (runningServers.length > 0) {
+    const server = runningServers.pop()!;
+    await server.close().catch(() => undefined);
+  }
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 6, retryDelay: 80 });
   }
 });
 
-describe('kap-server mesh, sync, and trusted personal pairing routes', () => {
-  it('handles mesh leases, COW workspace copies, loopback tunnels, 409 human_controlling, yolo dispatch, sync envelopes, and pairing trust tiers', async () => {
-    const sandbox = makeTempDir('kiki-kap-mesh-');
-    const homeDir = join(sandbox, 'home');
-    const repoDir = join(sandbox, 'repo');
-    const skillsDir = join(homeDir, 'skills');
-    mkdirSync(homeDir, { recursive: true });
-    mkdirSync(repoDir, { recursive: true });
-    mkdirSync(join(skillsDir, 'demo-skill'), { recursive: true });
+describe('kap-server mesh, sync, and two-server integration', () => {
+  it('enforces restricted_peer default, two-server remote execution, stale epoch 409, SSRF-safe tunneling, and full X25519 sync push without leaking secrets', async () => {
+    const sandbox = makeTempDir('kiki-mesh-two-srv-');
+    const homeA = join(sandbox, 'home-a');
+    const homeB = join(sandbox, 'home-b');
+    const workA = join(sandbox, 'repo-a');
+    const workB = join(sandbox, 'repo-b');
+    const skillsA = join(homeA, 'skills');
+    mkdirSync(homeA, { recursive: true });
+    mkdirSync(homeB, { recursive: true });
+    mkdirSync(workA, { recursive: true });
+    mkdirSync(workB, { recursive: true });
+    mkdirSync(join(skillsA, 'portable-skill'), { recursive: true });
+    mkdirSync(join(skillsA, '_private-skill'), { recursive: true });
+    mkdirSync(join(skillsA, 'draft-wip'), { recursive: true });
+    mkdirSync(join(skillsA, 'nosync-skill'), { recursive: true });
 
-    writeFileSync(
-      join(homeDir, 'config.toml'),
+    writeFileSync(join(skillsA, 'portable-skill', 'SKILL.md'), '---\nname: portable-skill\ndescription: Syncs\n---\nPortable body\n', 'utf8');
+    writeFileSync(join(skillsA, '_private-skill', 'SKILL.md'), '---\nname: _private-skill\ndescription: Private\n---\nPrivate\n', 'utf8');
+    writeFileSync(join(skillsA, 'draft-wip', 'SKILL.md'), '---\nname: draft-wip\ndescription: Draft\n---\nDraft\n', 'utf8');
+    writeFileSync(join(skillsA, 'nosync-skill', 'SKILL.md'), '---\nname: nosync-skill\nsync: false\n---\nNo sync\n', 'utf8');
+
+    runGit(workA, ['init']);
+    writeFileSync(join(workA, 'hello.txt'), 'v1\n', 'utf8');
+    runGit(workA, ['add', 'hello.txt']);
+    runGit(workA, ['commit', '-m', 'init']);
+    runGit(workA, ['remote', 'add', 'origin', 'https://user:secret-token@github.com/example-org/two-srv.git']);
+
+    writeServerConfig(
+      homeA,
       [
-        'default_model = "portable-model"',
         '',
         '[thinking]',
         'effort = "medium"',
         '',
+        '[providers.cloud]',
+        'type = "openai"',
+        'base_url = "https://api.example.test/v1"',
+        'credential_id = "shared_team"',
+        '[providers.cloud.custom_headers]',
+        'Authorization = "Bearer sk-must-not-export"',
+        'X-Client-Name = "kiki-portable"',
+        '',
         '[credentials.shared_team]',
         'kind = "api_key"',
         'sync_policy = "synced"',
-        'api_key = "sk-server-synced-key"',
-        'updated_at = "2026-11-20T09:00:00.000Z"',
-        'revision = "rev-s1"',
-        '',
+        'api_key = "sk-synced-secret-value"',
+        'updated_at = "2026-11-20T10:00:00.000Z"',
+        'revision = "rev-sync-1"',
       ].join('\n'),
-      'utf8',
-    );
-    writeFileSync(join(homeDir, 'config.local.toml'), '[thinking]\neffort = "high"\n', 'utf8');
-    writeFileSync(
-      join(skillsDir, 'demo-skill', 'SKILL.md'),
-      '---\nname: demo-skill\ndescription: Demo\n---\nBody.\n',
-      'utf8',
+      [
+        '[thinking]',
+        'effort = "high"',
+        '',
+        '[branch]',
+        'usage_preference = "proactive"',
+        '',
+        '[credentials.machine_secret]',
+        'kind = "api_key"',
+        'sync_policy = "machine"',
+        'api_key = "sk-local-machine-only-value"',
+      ].join('\n'),
     );
 
-    runGit(repoDir, ['init']);
-    writeFileSync(join(repoDir, 'hello.txt'), 'hello v1\n', 'utf8');
-    runGit(repoDir, ['add', 'hello.txt']);
-    runGit(repoDir, ['commit', '-m', 'init']);
-    runGit(repoDir, ['remote', 'add', 'origin', 'https://github.com/example-org/kap-mesh.git']);
-
-    const { app: core, memoryReady } = bootstrap(
-      {
-        homeDir,
-        osHomeDir: homeDir,
-        cwd: repoDir,
-        clientIdentity: { productName: 'kap-test', version: '0.0.1', platform: 'kap_test' },
-      },
-      logSeed(resolveLoggingConfig({ homeDir, env: {} })),
+    writeServerConfig(
+      homeB,
+      [
+        '',
+        '[thinking]',
+        'effort = "low"',
+      ].join('\n'),
+      [
+        '[thinking]',
+        'effort = "xhigh"',
+        '',
+        '[credentials.pinned_local_b]',
+        'kind = "api_key"',
+        'sync_policy = "machine"',
+        'api_key = "sk-server-b-pinned-local"',
+      ].join('\n'),
     );
-    await core.accessor.get(IConfigService).ready;
 
-    const echoServer = createServer((socket) => {
-      socket.pipe(socket);
-    });
+    const serverA = await bootServer(homeA);
+    const serverB = await bootServer(homeB);
+    const baseA = `http://127.0.0.1:${serverA.port}`;
+    const baseB = `http://127.0.0.1:${serverB.port}`;
+    const clientA = createKlient({ endpoint: baseA, token: serverA.localOwnerToken });
+    const clientB = createKlient({ endpoint: baseB, token: serverB.localOwnerToken });
+
+    const echoServer = createServer((socket) => { socket.pipe(socket); });
     await new Promise<void>((resolve) => echoServer.listen(0, '127.0.0.1', () => resolve()));
     const echoAddr = echoServer.address();
     if (echoAddr === null || typeof echoAddr === 'string') throw new Error('expected tcp address');
 
-    const fastify = Fastify();
-    const identity = { homeId: randomUUID(), hostId: 'host-primary', protocol: CONNECTION_PROTOCOL } as const;
-    const admission = new ConnectionAdmission(homeDir, identity);
-    await admission.ready();
-    const manager = new RemoteConnectionManager(homeDir, identity);
-    await manager.ready();
-
-    const syncService = new SyncService({
-      homeDir,
-      osHomeDir: homeDir,
-      configService: core.accessor.get(IConfigService),
-      configRegistry: core.accessor.get(IConfigRegistry),
-      memoryScopes: core.accessor.get(IMemoryScopes),
-    });
-    const deviceKey = await syncService.ensureDeviceKeypair();
-
-    const forwardedCalls: Array<{ peerId: string; action: string }> = [];
-    const resolvePeer = (targetId: string): MeshPeerDescriptor | undefined => {
-      const outbound = manager
-        .list()
-        .find((record) => record.id === targetId || record.target.hostId === targetId || record.label === targetId);
-      if (outbound !== undefined) {
-        return {
-          id: outbound.id,
-          label: outbound.label,
-          endpoint: outbound.endpoint,
-          trustTier: outbound.trustTier,
-          meshCapabilities: outbound.meshCapabilities,
-        };
-      }
-      const inbound = admission
-        .status()
-        .grants.find(
-          (grant) =>
-            grant.status === 'approved' &&
-            (grant.id === targetId || grant.source.hostId === targetId || grant.label === targetId),
-        );
-      if (inbound !== undefined) {
-        return {
-          id: inbound.id,
-          label: inbound.label,
-          endpoint: `http://127.0.0.1:${echoAddr.port}`,
-          trustTier: inbound.trustTier,
-          meshCapabilities: inbound.meshCapabilities,
-        };
-      }
-      return undefined;
-    };
-
-    const sharedLeaseStore = core.accessor.get(IMeshLeaseStore);
-    const meshService = new MeshService({
-      homeDir,
-      storage: core.accessor.get(IFileSystemStorageService),
-      leaseStore: sharedLeaseStore,
-      resolvePeer,
-      dialRemote: createPeerTcpDialer(resolvePeer),
-      executeRemoteAction: async (peer, input) => {
-        forwardedCalls.push({ peerId: peer.id, action: input.action });
-        return { executedOn: peer.id };
-      },
-    });
-
-    registerMeshRoutes(fastify, meshService);
-    registerSyncRoutes(fastify, syncService);
-    registerRemoteConnectionRoutes(
-      fastify,
-      admission,
-      manager,
-      'srv-1',
-      () => 'owner-token-1',
-      undefined,
-      {},
-      undefined,
-      () => undefined,
-      undefined,
-      () => syncService.peekDeviceRecipient(),
-    );
-    await fastify.ready();
-
     try {
-      const handshakeRes = await fastify.inject({
-        method: 'GET',
-        url: '/api/remote-connections/handshake',
+      const cfgA = await authedFetch(serverA, baseA, '/api/config');
+      expect(cfgA.status).toBe(200);
+      const cfgJson = (await cfgA.json()) as {
+        code: number;
+        data: {
+          branch?: { usagePreferenceSource?: string };
+          providers?: Record<string, { credential_id?: string; has_api_key?: boolean }>;
+        };
+      };
+      expect(cfgJson.code).toBe(0);
+      expect(cfgJson.data.branch?.usagePreferenceSource).toBe('local');
+      expect(cfgJson.data.providers?.['cloud']?.credential_id).toBe('shared_team');
+      expect(cfgJson.data.providers?.['cloud']?.has_api_key).toBe(true);
+
+      const portableA = await clientA.rest!.sync.exportPortableConfig();
+      const portableJson = JSON.stringify(portableA);
+      expect(portableJson).not.toContain('sk-must-not-export');
+      expect(portableJson).not.toContain('sk-synced-secret-value');
+      expect(portableJson).not.toContain('sk-local-machine-only-value');
+      expect(portableJson).toContain('kiki-portable');
+
+      const skillPlansA = await clientA.rest!.sync.planSkillsSync(workA);
+      expect(JSON.stringify(skillPlansA)).not.toContain('secret-token');
+
+      const emptyMergeReceipt = await clientB.rest!.sync.mergeCredentials({ envelopes: [] });
+      expect(emptyMergeReceipt.appliedIds).toEqual([]);
+      expect(JSON.stringify(emptyMergeReceipt)).not.toContain('sk-server-b-pinned-local');
+      expect((emptyMergeReceipt as unknown as Record<string, unknown>)['merged']).toBeUndefined();
+
+      const defaultPairCode = await clientB.rest!.connections.createPairCode({ allowBridge: false });
+      expect(defaultPairCode.trustTier).toBe('restricted_peer');
+      expect(defaultPairCode.meshCapabilities).toEqual(['read', 'send']);
+
+      const restrictedPeer = await clientA.rest!.connections.pair({
+        endpoint: baseB,
+        code: defaultPairCode.code,
+        label: 'Server B Restricted',
+        backgroundSummary: false,
+        requestBridge: false,
       });
-      expect(handshakeRes.statusCode).toBe(200);
-      expect(handshakeRes.json().data.x25519Recipient).toBe(deviceKey.recipient);
+      expect(restrictedPeer.trustTier).toBe('restricted_peer');
+      expect(restrictedPeer.meshCapabilities).toEqual(['read', 'send']);
+      expect(restrictedPeer.x25519Recipient).toMatch(/^age1[a-z0-9]+$/);
 
-      const defaultPairRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/remote-connections/inbound/pair-code',
-        payload: {},
-      });
-      expect(defaultPairRes.statusCode).toBe(200);
-      expect(defaultPairRes.json().data.trustTier).toBe('trusted_personal');
-      expect(defaultPairRes.json().data.meshCapabilities).toContain('execute');
-
-      const restrictedPairRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/remote-connections/inbound/pair-code',
-        payload: { trustTier: 'restricted_peer' },
-      });
-      expect(restrictedPairRes.statusCode).toBe(200);
-      expect(restrictedPairRes.json().data.trustTier).toBe('restricted_peer');
-      expect(restrictedPairRes.json().data.meshCapabilities).toEqual(['read', 'send']);
-
-      const restrictedApproval = await admission.approvePeer(
-        { homeId: randomUUID(), hostId: 'external-guest', protocol: CONNECTION_PROTOCOL },
-        'external-guest',
-        true,
-        undefined,
-        'restricted_peer',
-      );
-      const trustedApproval = await admission.approvePeer(
-        { homeId: randomUUID(), hostId: 'personal-workstation', protocol: CONNECTION_PROTOCOL },
-        'personal-workstation',
-        true,
-        undefined,
-        'trusted_personal',
-      );
-
-      const deniedRestricted = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/targets/external-guest/dispatch',
-        payload: {
-          operation: 'remote_command',
-          action: 'uname -a',
-          permissionMode: 'yolo',
-        },
-      });
-      expect(deniedRestricted.statusCode).toBe(403);
-      expect(deniedRestricted.json().msg).toBe('mesh_capability_denied');
-      expect(deniedRestricted.json().data.requiredCapability).toBe('execute');
-      expect(deniedRestricted.json().data.trustTier).toBe('restricted_peer');
-
-      const allowedTrusted = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/targets/personal-workstation/dispatch',
-        payload: {
-          operation: 'remote_command',
-          action: 'uname -a',
-          permissionMode: 'yolo',
-        },
-      });
-      expect(allowedTrusted.statusCode).toBe(200);
-      expect(allowedTrusted.json().data.approval.via).toBe('yolo_auto_approve');
-      expect(allowedTrusted.json().data.peerId).toBe(trustedApproval.grantId);
-      expect(allowedTrusted.json().data.forwardedResult).toEqual({ executedOn: trustedApproval.grantId });
-      expect(forwardedCalls).toEqual([{ peerId: trustedApproval.grantId, action: 'uname -a' }]);
-      expect(restrictedApproval.grantId).toBeTruthy();
-
-      const pinRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/sessions/sess-mesh/leases/pin',
-        payload: {
-          kind: 'node',
-          node: {
-            nodeId: 'peer-mac',
-            label: 'Workstation B',
-            trustTier: 'trusted_personal',
-            capabilities: ['execute', 'read', 'send'],
-            state: 'online',
-            platform: 'darwin',
-            createdBySession: true,
-          },
-        },
-      });
-      expect(pinRes.statusCode).toBe(200);
-      expect(pinRes.json().data.contextBlock).toContain('<mesh-context session="sess-mesh"');
-      expect(pinRes.json().data.byteLength).toBeLessThanOrEqual(2048);
-
-      const tunnelRes1 = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/tunnels',
-        payload: {
-          nodeId: 'peer-mac',
-          remoteHost: '127.0.0.1',
-          remotePort: echoAddr.port,
-          sessionId: 'sess-mesh',
-          permissionMode: 'yolo',
-        },
-      });
-      expect(tunnelRes1.statusCode).toBe(200);
-      expect(tunnelRes1.json().data.reused).toBe(false);
-      const tunnelId = tunnelRes1.json().data.tunnel.tunnelId as string;
-
-      const tunnelRes2 = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/tunnels',
-        payload: {
-          nodeId: 'peer-mac',
-          remoteHost: '127.0.0.1',
-          remotePort: echoAddr.port,
-          sessionId: 'sess-mesh',
-          permissionMode: 'yolo',
-        },
-      });
-      expect(tunnelRes2.statusCode).toBe(200);
-      expect(tunnelRes2.json().data.reused).toBe(true);
-      expect(tunnelRes2.json().data.tunnel.tunnelId).toBe(tunnelId);
-
-      const acquireRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/takeover/peer-mac/acquire',
-        payload: { holder: 'human', ttlMs: 60_000, reason: 'human typing' },
-      });
-      expect(acquireRes.statusCode).toBe(200);
-      expect(acquireRes.json().data.holder).toBe('human');
-
-      const blockedDispatch = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/targets/peer-mac/dispatch',
-        payload: {
-          operation: 'remote_command',
-          action: 'echo hi',
-          permissionMode: 'yolo',
-        },
-      });
-      expect(blockedDispatch.statusCode).toBe(409);
-      expect(blockedDispatch.json().msg).toBe('human_controlling');
-      expect(blockedDispatch.json().data.error).toBe('human_controlling');
-
-      const overrideDispatch = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/targets/peer-mac/dispatch',
-        payload: {
-          operation: 'remote_command',
-          action: 'echo hi',
-          permissionMode: 'yolo',
-          overrideHumanLease: true,
-        },
-      });
-      expect(overrideDispatch.statusCode).toBe(200);
-      expect(overrideDispatch.json().data.approval.via).toBe('yolo_auto_approve');
-
-      const releaseRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/takeover/peer-mac/release',
-        payload: { holder: 'human' },
-      });
-      expect(releaseRes.statusCode).toBe(200);
-      expect(releaseRes.json().data.released).toBe(true);
-
-      const copyCreate = await fastify.inject({
-        method: 'POST',
-        url: '/api/mesh/workspace-copies',
-        payload: { sourceRoot: repoDir, nodeId: 'peer-mac', sessionId: 'sess-mesh' },
-      });
-      expect(copyCreate.statusCode).toBe(200);
-      const copyId = copyCreate.json().data.copyId as string;
-      const copyPath = copyCreate.json().data.copyPath as string;
-      writeFileSync(join(copyPath, 'hello.txt'), 'hello v2\n', 'utf8');
-
-      const copyStatus = await fastify.inject({
-        method: 'GET',
-        url: `/api/mesh/workspace-copies/${copyId}/status`,
-      });
-      expect(copyStatus.statusCode).toBe(200);
-      expect(copyStatus.json().data.modified).toEqual(['hello.txt']);
-
-      const copyApply = await fastify.inject({
-        method: 'POST',
-        url: `/api/mesh/workspace-copies/${copyId}/apply`,
-        payload: { permissionMode: 'yolo', targetId: 'peer-mac' },
-      });
-      expect(copyApply.statusCode).toBe(200);
-      expect(readFileSync(join(repoDir, 'hello.txt'), 'utf8')).toBe('hello v2\n');
-
-      const peerCipher = loadNativeAgeX25519Cipher();
-      const peerKey = peerCipher.generateX25519Keypair();
-
-      const sealRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/sync/credentials/seal',
-        payload: { recipients: [deviceKey.recipient, peerKey.recipient] },
-      });
-      expect(sealRes.statusCode).toBe(200);
-      expect(sealRes.json().data.envelopes).toHaveLength(1);
-
-      const incomingEnvelope = sealCredentialEntry(
-        'shared_team',
-        {
-          kind: 'api_key',
-          syncPolicy: 'synced',
-          apiKey: 'sk-server-synced-key-v2',
-          updatedAt: '2026-11-20T12:00:00.000Z',
-          revision: 'rev-s2',
-        },
-        [deviceKey.recipient],
-        peerCipher,
-      );
-      const mergeRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/sync/credentials/merge',
-        payload: { envelopes: [incomingEnvelope] },
-      });
-      expect(mergeRes.statusCode).toBe(200);
-      expect(mergeRes.json().data.applied).toEqual(['shared_team']);
-
-      const projRes = await fastify.inject({
-        method: 'POST',
-        url: '/api/sync/project-identity/resolve',
-        payload: { cwd: repoDir, bind: true },
-      });
-      expect(projRes.statusCode).toBe(200);
-      expect(projRes.json().data.source).toBe('git');
-      expect(projRes.json().data.projectId).toMatch(/^prj_kap-mesh_[0-9a-f]{12}$/);
-
-      const portableRes = await fastify.inject({
-        method: 'GET',
-        url: '/api/sync/config/portable',
-      });
-      expect(portableRes.statusCode).toBe(200);
-      expect(portableRes.json().data.thinking.effort).toBe('medium');
-      expect(portableRes.json().data.credentials).toBeUndefined();
-
-      const skillsPlanRes = await fastify.inject({
-        method: 'GET',
-        url: `/api/sync/skills/plan?work_dir=${encodeURIComponent(repoDir)}`,
-      });
-      expect(skillsPlanRes.statusCode).toBe(200);
-      expect(skillsPlanRes.json().data.length).toBeGreaterThanOrEqual(1);
-    } finally {
-      await meshService.close();
-      await fastify.close();
-      await memoryReady.catch(() => undefined);
-      await core.dispose();
-      await new Promise<void>((resolve) => echoServer.close(() => resolve()));
-    }
-  }, 30_000);
-
-  it('wires startServer MeshService to shared IMeshLeaseStore so HTTP lease pin injects <mesh-context> into live session agents', async () => {
-    const sandbox = makeTempDir('kiki-kap-start-mesh-');
-    const homeDir = join(sandbox, 'home');
-    const workDir = join(sandbox, 'work');
-    mkdirSync(homeDir, { recursive: true });
-    mkdirSync(workDir, { recursive: true });
-    writeFileSync(
-      join(homeDir, 'config.toml'),
-      [
-        'default_model = "stub"',
-        '[search]',
-        'enabled = false',
-        '[cron]',
-        'manualTick = true',
-        '[providers.stub]',
-        'type = "openai"',
-        'base_url = "http://127.0.0.1:9999"',
-        'api_key = "YOUR_API_KEY"',
-        '[models.stub]',
-        'provider = "stub"',
-        'model = "stub"',
-        'max_context_size = 1000',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '127.0.0.1',
-      port: 0,
-      homeDir,
-      logLevel: 'silent',
-    });
-    const base = `http://127.0.0.1:${server.port}`;
-
-    try {
-      const createRes = await authedFetch(server, base, '/api/sessions', {
+      const deniedExecRes = await authedFetch(serverA, baseA, `/api/mesh/targets/${encodeURIComponent(restrictedPeer.id)}/dispatch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ metadata: { cwd: workDir }, agent_config: { profile: 'agent', model: 'stub' } }),
+        body: JSON.stringify({ operation: 'remote_command', action: 'uname -a', permissionMode: 'yolo' }),
       });
-      expect(createRes.status).toBe(200);
-      const created = (await createRes.json()) as { code: number; data: { id: string } };
-      expect(created.code).toBe(0);
-      const sessionId = created.data.id;
+      expect(deniedExecRes.status).toBe(403);
+      expect(((await deniedExecRes.json()) as { msg: string }).msg).toBe('mesh_capability_denied');
 
-      const session = server.core.accessor.get(ISessionManager).get(sessionId)!;
-      const main = await ensureMainAgent(session);
+      const restrictedLease = serverA.remoteConnections.lease(restrictedPeer.id);
+      try {
+        const directPromptAttempt = await serverA.remoteConnections.forward(
+          restrictedPeer.id,
+          { operation: 'prompt', params: { sessionId: 'any-session' }, body: { content: 'hi' } },
+          restrictedLease.signal,
+        );
+        expect(directPromptAttempt.status).toBe(403);
+        const directSyncAttempt = await serverA.remoteConnections.forward(
+          restrictedPeer.id,
+          { operation: 'syncBundleImport', body: { format: 'kiki.sync-bundle.v1', exportedAt: new Date().toISOString() } },
+          restrictedLease.signal,
+        );
+        expect(directSyncAttempt.status).toBe(403);
+      } finally {
+        restrictedLease.release();
+      }
+
+      const inboundBeforeUpgrade = await clientB.rest!.connections.inbound();
+      const activeGrant = inboundBeforeUpgrade.grants.find((g) => g.status === 'approved');
+      expect(activeGrant).toBeDefined();
+      const upgradedGrant = await clientB.rest!.connections.setGrantTrust(activeGrant!.id, {
+        trustTier: 'trusted_personal',
+      });
+      expect(upgradedGrant.trustTier).toBe('trusted_personal');
+      expect(upgradedGrant.meshCapabilities).toContain('execute');
+
+      const trustedPairCode = await clientB.rest!.connections.createPairCode({
+        allowBridge: false,
+        trustTier: 'trusted_personal',
+      });
+      const trustedPeer = await clientA.rest!.connections.pair({
+        endpoint: baseB,
+        code: trustedPairCode.code,
+        label: 'Server B Trusted',
+        backgroundSummary: false,
+        requestBridge: false,
+      });
+      expect(trustedPeer.trustTier).toBe('trusted_personal');
+      expect(trustedPeer.meshCapabilities).toContain('execute');
+
+      const createSessRes = await authedFetch(serverA, baseA, '/api/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: workA }, agent_config: { profile: 'agent', model: 'stub' } }),
+      });
+      const sessionIdA = ((await createSessRes.json()) as { data: { id: string } }).data.id;
+      const liveSessionA = serverA.core.accessor.get(ISessionManager).get(sessionIdA)!;
+      const mainAgentA = await ensureMainAgent(liveSessionA);
+      mainAgentA.accessor.get(IAgentPermissionModeService).setMode('yolo');
+
+      const remoteExec = await clientA.rest!.mesh.dispatchTargetAction(trustedPeer.id, {
+        operation: 'remote_command',
+        action: 'echo hello-from-peer',
+        sessionId: sessionIdA,
+      });
+      expect(remoteExec['accepted']).toBe(true);
+      expect((remoteExec['approval'] as { via: string }).via).toBe('yolo_auto_approve');
+      expect(remoteExec['forwardedResult']).toMatchObject({
+        executed: true,
+        hostId: serverB.admission.identity.hostId,
+        operation: 'remote_command',
+        action: 'echo hello-from-peer',
+      });
+
+      const resolvedQuestion = await clientA.rest!.mesh.resolveQuestion(trustedPeer.id, {
+        questionId: 'q-1',
+        answer: 'Use strict mode',
+        sessionId: sessionIdA,
+      });
+      expect(resolvedQuestion['accepted']).toBe(true);
+      expect((resolvedQuestion['forwardedResult'] as { operation: string }).operation).toBe('remote_question');
+
+      const humanLeaseB = await clientB.rest!.mesh.acquireTakeover('local', {
+        holder: 'human',
+        ttlMs: 60_000,
+        reason: 'Operator typing',
+      });
+      expect(humanLeaseB.epoch).toBe(1);
+
+      const orchOverwriteRes = await authedFetch(serverB, baseB, '/api/mesh/takeover/local/acquire', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ holder: 'orchestrator', ttlMs: 30_000 }),
+      });
+      expect(orchOverwriteRes.status).toBe(409);
+      expect(((await orchOverwriteRes.json()) as { msg: string }).msg).toBe('human_controlling');
+
+      const remoteBlockedRes = await authedFetch(serverA, baseA, `/api/mesh/targets/${encodeURIComponent(trustedPeer.id)}/dispatch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'remote_command', action: 'blocked', sessionId: sessionIdA }),
+      });
+      expect(remoteBlockedRes.status).toBe(409);
+      expect(((await remoteBlockedRes.json()) as { msg: string }).msg).toBe('human_controlling');
+
+      await clientB.rest!.mesh.releaseTakeover('local', { holder: 'human', expectedEpoch: humanLeaseB.epoch });
+
+      const staleEpochRes = await authedFetch(serverA, baseA, `/api/mesh/targets/${encodeURIComponent(trustedPeer.id)}/dispatch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'remote_command',
+          action: 'stale-write',
+          sessionId: sessionIdA,
+          expectedEpoch: 999,
+        }),
+      });
+      expect(staleEpochRes.status).toBe(409);
+      expect(((await staleEpochRes.json()) as { msg: string }).msg).toBe('stale_epoch');
+
+      const ssrfTunnelRes = await authedFetch(serverA, baseA, '/api/mesh/tunnels', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          nodeId: trustedPeer.id,
+          remoteHost: '169.254.169.254',
+          remotePort: echoAddr.port,
+          sessionId: sessionIdA,
+        }),
+      });
+      expect(ssrfTunnelRes.status).toBe(403);
+
+      const tunnelOpened = await clientA.rest!.mesh.openTunnel({
+        nodeId: trustedPeer.id,
+        remoteHost: '127.0.0.1',
+        remotePort: echoAddr.port,
+        sessionId: sessionIdA,
+      });
+      expect(tunnelOpened.tunnel.healthy).toBe(true);
+
+      const echoed = await new Promise<string>((resolveEcho, rejectEcho) => {
+        const sock = createConnection({ host: '127.0.0.1', port: tunnelOpened.tunnel.localPort }, () => {
+          sock.write('two-server-tunnel-ok');
+        });
+        sock.once('data', (chunk) => {
+          sock.end();
+          resolveEcho(chunk.toString('utf8'));
+        });
+        sock.once('error', rejectEcho);
+      });
+      expect(echoed).toBe('two-server-tunnel-ok');
+
+      const resolvedIdentityA = await clientA.rest!.sync.resolveProjectIdentity({ cwd: workA, bind: true });
+      const memStoreA = serverA.core.accessor.get(IMemoryStore);
+      await memStoreA.put({
+        action: 'create',
+        scope: { kind: 'workspace', workspaceId: resolvedIdentityA.projectId },
+        type: 'project',
+        title: 'Portable Project Rule',
+        body: 'Shared across Server A and Server B.',
+        reason: 'Sync test',
+        source: { writer: 'user' },
+        applicability: 'portable',
+      });
+      await memStoreA.put({
+        action: 'create',
+        scope: { kind: 'workspace', workspaceId: resolvedIdentityA.projectId },
+        type: 'reference',
+        title: 'Machine Local GPU Note',
+        body: 'Must stay on Server A only.',
+        reason: 'Host local',
+        source: { writer: 'user' },
+        applicability: 'machine-local',
+      });
+
+      const pushReceipt = await clientA.rest!.sync.pushToPeer(trustedPeer.id, {
+        projectIds: [resolvedIdentityA.projectId],
+        workDir: workA,
+      });
+      expect(pushReceipt.credentials.appliedIds).toContain('shared_team');
+      expect(pushReceipt.memoriesApplied).toBe(1);
+      expect(pushReceipt.skillsApplied).toBeGreaterThanOrEqual(1);
+      expect(JSON.stringify(pushReceipt)).not.toContain('sk-synced-secret-value');
+
+      const serverBConfigFile = readFileSync(join(homeB, 'config.toml'), 'utf8');
+      const serverBLocalFile = readFileSync(join(homeB, 'config.local.toml'), 'utf8');
+      expect(serverBConfigFile).toContain('shared_team');
+      expect(serverBConfigFile).not.toContain('pinned_local_b');
+      expect(serverBLocalFile).toContain('effort = "xhigh"');
+      expect(serverBLocalFile).toContain('pinned_local_b');
+
+      const memStoreB = serverB.core.accessor.get(IMemoryStore);
+      const syncedMemoriesB = await memStoreB.list({ kind: 'workspace', workspaceId: resolvedIdentityA.projectId });
+      expect(syncedMemoriesB.map((m) => m.title)).toEqual(['Portable Project Rule']);
+
+      expect(readFileSync(join(homeB, 'skills', 'portable-skill', 'SKILL.md'), 'utf8')).toContain('Portable body');
+      expect(() => readFileSync(join(homeB, 'skills', '_private-skill', 'SKILL.md'), 'utf8')).toThrow();
+      expect(() => readFileSync(join(homeB, 'skills', 'draft-wip', 'SKILL.md'), 'utf8')).toThrow();
+      expect(() => readFileSync(join(homeB, 'skills', 'nosync-skill', 'SKILL.md'), 'utf8')).toThrow();
+
+      const cowCopy = await clientA.rest!.mesh.createWorkspaceCopy({
+        sourceRoot: workA,
+        nodeId: 'local',
+        sessionId: sessionIdA,
+      });
+      const copyId = cowCopy['copyId'] as string;
+      const copyPath = cowCopy['copyPath'] as string;
+      writeFileSync(join(copyPath, 'hello.txt'), 'from-copy\n', 'utf8');
+      writeFileSync(join(workA, 'hello.txt'), 'concurrent-owner-edit\n', 'utf8');
+
+      const conflictApplyRes = await authedFetch(serverA, baseA, `/api/mesh/workspace-copies/${encodeURIComponent(copyId)}/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessionIdA, targetId: 'local' }),
+      });
+      expect(conflictApplyRes.status).toBe(409);
+      expect(((await conflictApplyRes.json()) as { msg: string }).msg).toBe('source_modified');
+    } finally {
+      await new Promise<void>((resolve) => echoServer.close(() => resolve()));
+    }
+  }, 90_000);
+
+  it('requires real human approval for interactive_login even in yolo, blocks caller permissionMode escalation, injects and clears <mesh-context>, and enforces auth under disableAuth', async () => {
+    const sandbox = makeTempDir('kiki-mesh-yolo-gate-');
+    const homeDir = join(sandbox, 'home');
+    const workDir = join(sandbox, 'work');
+    const disableAuthHome = join(sandbox, 'home-noauth');
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(disableAuthHome, { recursive: true });
+    writeServerConfig(homeDir);
+    writeServerConfig(disableAuthHome);
+
+    const server = await bootServer(homeDir);
+    const base = `http://127.0.0.1:${server.port}`;
+
+    const createRes = await authedFetch(server, base, '/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: workDir }, agent_config: { profile: 'agent', model: 'stub' } }),
+    });
+    const sessionId = ((await createRes.json()) as { data: { id: string } }).data.id;
+    const session = server.core.accessor.get(ISessionManager).get(sessionId)!;
+    const main = await ensureMainAgent(session);
+    const permMode = main.accessor.get(IAgentPermissionModeService);
+    const interaction = session.accessor.get(ISessionInteractionService);
+    const approvalService = session.accessor.get(ISessionApprovalService);
+    const consumerId = 'mesh-test-consumer';
+    interaction.acquireConsumer(consumerId);
+
+    try {
+      permMode.setMode('yolo');
+
+      const loginPromise = authedFetch(server, base, '/api/mesh/targets/local/dispatch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'interactive_login',
+          action: 'Authenticate remote OAuth seat',
+          sessionId,
+        }),
+      });
+
+      let pendingId: string | undefined;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const pending = interaction.listPending('approval');
+        if (pending.length > 0) {
+          pendingId = pending[0]!.id;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(pendingId).toBeDefined();
+      approvalService.decide(pendingId!, { decision: 'approved' });
+
+      const loginRes = await loginPromise;
+      expect(loginRes.status).toBe(200);
+      const loginJson = (await loginRes.json()) as { data: { approval: { via: string; decision: string } } };
+      expect(loginJson.data.approval.via).toBe('session_approval_service');
+      expect(loginJson.data.approval.decision).toBe('approved');
+
+      permMode.setMode('manual');
+      const escalationPromise = authedFetch(server, base, '/api/mesh/targets/local/dispatch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'remote_command',
+          action: 'attempt-escalation',
+          sessionId,
+          permissionMode: 'yolo',
+        }),
+      });
+
+      let escalationId: string | undefined;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const pending = interaction.listPending('approval');
+        if (pending.length > 0) {
+          escalationId = pending[0]!.id;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(escalationId).toBeDefined();
+      approvalService.decide(escalationId!, { decision: 'rejected', feedback: 'Manual mode enforced' });
+
+      const escalationRes = await escalationPromise;
+      expect(escalationRes.status).toBe(403);
+
       const injector = main.accessor.get(IAgentContextInjectorService);
       const contextMemory = main.accessor.get(IAgentContextMemoryService);
-
       await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
       expect(JSON.stringify(contextMemory.get())).not.toContain('<mesh-context');
 
@@ -529,16 +573,53 @@ describe('kap-server mesh, sync, and trusted personal pairing routes', () => {
       expect(pinRes.status).toBe(200);
 
       await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
-      const injectedMessages = contextMemory.get();
-      const injectedJson = JSON.stringify(injectedMessages);
-      expect(injectedJson).toContain(`<mesh-context session=\\"${sessionId}\\"`);
-      expect(injectedJson).toContain('Studio Node');
-      const countAfterPin = injectedMessages.length;
+      const afterPin = contextMemory.get();
+      expect(JSON.stringify(afterPin)).toContain(`<mesh-context session=\\"${sessionId}\\"`);
+      const countAfterPin = afterPin.length;
 
+      await authedFetch(server, base, `/api/mesh/sessions/${encodeURIComponent(sessionId)}/leases/renew`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ttlMs: 120_000 }),
+      });
       await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
       expect(contextMemory.get().length).toBe(countAfterPin);
+
+      await authedFetch(server, base, `/api/mesh/sessions/${encodeURIComponent(sessionId)}/leases/unpin`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'node', id: 'peer-studio' }),
+      });
+      await injector.reconcileAtSafeBoundary(MESH_CONTEXT_INJECTION_VARIANT);
+      expect(JSON.stringify(contextMemory.get())).toContain(`state=\\"cleared\\"`);
+
+      const noAuthServer = await bootServer(disableAuthHome, { disableAuth: true });
+      const noAuthBase = `http://127.0.0.1:${noAuthServer.port}`;
+      const unauthSync = await fetch(`${noAuthBase}/api/sync/device-key`);
+      expect(unauthSync.status).toBe(401);
+      const unauthMesh = await fetch(`${noAuthBase}/api/mesh/tunnels`);
+      expect(unauthMesh.status).toBe(401);
+
+      const compatCode = await server.admission.createPairCode({ allowBridge: false });
+      const legacyClaimRes = await fetch(`${base}/api/remote-connections/pair/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code: compatCode.code,
+          source: { homeId: '11111111-1111-4111-8111-111111111111', hostId: 'legacy-client', protocol: 1 },
+          sourceLabel: 'Legacy Client',
+          requestBridge: false,
+        }),
+      });
+      expect(legacyClaimRes.status).toBe(200);
+      const legacyClaimData = ((await legacyClaimRes.json()) as { data: Record<string, unknown> }).data;
+      expect(legacyClaimData['trustTier']).toBeUndefined();
+      expect(legacyClaimData['meshCapabilities']).toBeUndefined();
+      expect(legacyClaimData['x25519Recipient']).toBeUndefined();
+
+      expect(server.core.accessor.get(IMemoryScopes)).toBeDefined();
     } finally {
-      await server.close();
+      interaction.releaseConsumer(consumerId);
     }
   }, 60_000);
 });

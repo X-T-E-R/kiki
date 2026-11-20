@@ -94,7 +94,8 @@ export function registerKlientHttp(
     try {
       const { procedure, params } = parseKlientCallRequest(req.body);
       target = { scope: procedure.scope, service: procedure.service, method: procedure.method };
-      if ((peerAudience(req) !== undefined && !isPeerProcedureAllowed(procedure)) || (webPrincipal(req) !== undefined && !isWebProcedureAllowed(procedure))) throw new RPCError(40301, 'local_owner_required');
+      const peer = peerAudience(req);
+      if ((peer !== undefined && !isPeerProcedureAllowed(procedure, peer.meshCapabilities)) || (webPrincipal(req) !== undefined && !isWebProcedureAllowed(procedure))) throw new RPCError(40301, 'local_owner_required');
       const data = await dispatcher.call(
         scopeRefFromProcedure(procedure),
         procedure.service,
@@ -161,7 +162,7 @@ export function registerKlientHttp(
       try {
         const { procedure, params } = parseKlientCallRequest(item.raw);
         target = { scope: procedure.scope, service: procedure.service, method: procedure.method };
-        if ((isPeer && !isPeerProcedureAllowed(procedure)) || (isWeb && !isWebProcedureAllowed(procedure))) {
+        if ((isPeer && !isPeerProcedureAllowed(procedure, peerAudience(req)?.meshCapabilities)) || (isWeb && !isWebProcedureAllowed(procedure))) {
           throw new RPCError(40301, 'local_owner_required');
         }
         const data = await dispatcher.call(

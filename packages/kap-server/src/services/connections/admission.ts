@@ -221,7 +221,7 @@ export class ConnectionAdmission {
       const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
       const expiresAt = Date.now() + (input.expiresInMs ?? 600_000);
       const bridgeOperations = [...new Set(input.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)];
-      const trustTier: PeerTrustTier = input.trustTier ?? 'trusted_personal';
+      const trustTier: PeerTrustTier = input.trustTier ?? 'restricted_peer';
       const defaultCaps = trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES;
       const meshCapabilities = [...new Set(input.meshCapabilities ?? defaultCaps)];
       for (const entry of this.state.pairingCodes) if (!entry.consumed) entry.consumed = true;
@@ -250,7 +250,7 @@ export class ConnectionAdmission {
       const peerToken = generateServerToken();
       const allowBridge = match.allowBridge && requestBridge;
       const approved = [...(match.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)];
-      const trustTier: PeerTrustTier = match.trustTier ?? 'trusted_personal';
+      const trustTier: PeerTrustTier = match.trustTier ?? 'restricted_peer';
       const meshCapabilities: MeshCapability[] = [...(match.meshCapabilities ?? (trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES))];
       const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken), allowBridge: match.allowBridge, bridgeOperations: approved, trustTier, meshCapabilities };
       await this.revokePrevious(source);
@@ -259,7 +259,7 @@ export class ConnectionAdmission {
       return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: effectiveOperations, trustTier, meshCapabilities };
     });
   }
-  approvePeer(source: ConnectionIdentity, label: string, allowBridge = true, bridgeOperations?: readonly BridgeOperation[], trustTier: PeerTrustTier = 'trusted_personal', meshCapabilities?: readonly MeshCapability[]): Promise<PeerApproval> {
+  approvePeer(source: ConnectionIdentity, label: string, allowBridge = true, bridgeOperations?: readonly BridgeOperation[], trustTier: PeerTrustTier = 'restricted_peer', meshCapabilities?: readonly MeshCapability[]): Promise<PeerApproval> {
     return this.change(async () => {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
@@ -280,6 +280,27 @@ export class ConnectionAdmission {
     return this.change(async () => {
       const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
       if (entry !== undefined) entry.bridgeOperations = next;
+    });
+  }
+  getGrantTrust(id: string): { readonly trustTier: PeerTrustTier; readonly meshCapabilities: readonly MeshCapability[] } | undefined {
+    const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
+    if (entry === undefined) return undefined;
+    const trustTier: PeerTrustTier = entry.trustTier ?? 'restricted_peer';
+    const meshCapabilities = entry.meshCapabilities ?? (trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES);
+    return { trustTier, meshCapabilities };
+  }
+  setTrust(id: string, trustTier: PeerTrustTier, meshCapabilities?: readonly MeshCapability[]): Promise<ConnectionGrant> {
+    const validatedTier = peerTrustTierSchema.parse(trustTier);
+    const defaultCaps = validatedTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES;
+    const resolvedCaps = meshCapabilitySchema.array().parse([...new Set(meshCapabilities ?? defaultCaps)]);
+    return this.change(async () => {
+      const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
+      if (entry === undefined) throw new AdmissionError(404, 'grant_not_found');
+      entry.trustTier = validatedTier;
+      entry.meshCapabilities = resolvedCaps;
+      entry.revision += 1;
+      const { digest: _, ...pub } = entry;
+      return { ...pub, activeLeases: this.leases.get(entry.id)?.size ?? 0 };
     });
   }
   attach(id: string, close: () => void): () => void {

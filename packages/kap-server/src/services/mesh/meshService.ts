@@ -11,12 +11,14 @@ import {
   type LeasedWorkspaceCopy,
   type MeshCapability,
   type MeshContextProjection,
+  type MeshInboundExecuteInput,
   type MeshLeasePinInput,
+  type MeshPortTunnelOpenInput,
+  type MeshResolveQuestionInput,
   type MeshSessionLease,
   type MeshTargetDispatchInput,
   type MeshWorkspaceCopyApplyInput,
   type MeshWorkspaceCopyCreateInput,
-  type MeshPortTunnelOpenInput,
   type PeerTrustTier,
 } from '@kiki/protocol';
 import {
@@ -28,6 +30,8 @@ import {
   MeshLeaseStore,
   MeshStateCoalescer,
   WorkspaceCopyManager,
+  type GitWipDeltaApplyResult,
+  type GitWipDeltaExportResult,
   type IFileSystemStorageService,
   type IMeshLeaseStore,
   type ISessionApprovalService,
@@ -52,12 +56,24 @@ export interface MeshPeerDescriptor {
   readonly id: string;
   readonly label?: string;
   readonly endpoint?: string;
+  readonly online?: boolean;
   readonly trustTier?: PeerTrustTier;
   readonly meshCapabilities?: readonly MeshCapability[];
 }
 
+export interface MeshInboundExecutionReceipt {
+  readonly executed: true;
+  readonly hostId: string;
+  readonly targetId: string;
+  readonly operation: MeshInboundExecuteInput['operation'];
+  readonly action: string;
+  readonly epoch: number;
+  readonly output?: unknown;
+}
+
 export interface MeshServiceOptions {
   readonly homeDir: string;
+  readonly hostId?: string;
   readonly storage?: IFileSystemStorageService;
   readonly leaseStore?: IMeshLeaseStore;
   readonly dialRemote?: RemoteTunnelDialer;
@@ -66,6 +82,7 @@ export interface MeshServiceOptions {
     peer: MeshPeerDescriptor,
     input: MeshTargetDispatchInput,
   ) => Promise<unknown>;
+  readonly onInboundExecute?: (input: MeshInboundExecuteInput) => Promise<unknown>;
   readonly resolveSessionContext?: (
     sessionId: string,
   ) => Promise<MeshSessionExecutionContext | undefined> | MeshSessionExecutionContext | undefined;
@@ -82,8 +99,18 @@ export interface MeshDispatchResult {
   readonly approval: MeshApprovalOutcome;
   readonly peerId?: string;
   readonly trustTier?: PeerTrustTier;
+  readonly epoch: number;
   readonly forwardedResult?: unknown;
 }
+
+const MODE_RANK: Record<MeshPermissionMode, number> = {
+  manual: 0,
+  review: 1,
+  auto: 2,
+  yolo: 3,
+};
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 /** Error raised with HTTP 403 when a peer lacks the mesh capability required for an operation. */
 export class MeshCapabilityDeniedError extends Error {
@@ -102,12 +129,36 @@ export class MeshCapabilityDeniedError extends Error {
   }
 }
 
-/** Builds a real TCP dialer that resolves peer endpoints to their TCP host before dialing `remotePort`. */
+/** Error raised with HTTP 403 when an operation is rejected or cancelled by approval policy or human reviewer. */
+export class MeshApprovalRejectedError extends Error {
+  readonly status = 403 as const;
+  readonly code = 'approval_rejected' as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'MeshApprovalRejectedError';
+  }
+}
+
+/** Error raised when a target peer cannot be resolved, is offline, or has no remote executor wired. */
+export class MeshPeerUnavailableError extends Error {
+  constructor(
+    readonly status: 404 | 503,
+    readonly code: 'peer_not_found' | 'peer_offline' | 'remote_executor_unavailable',
+    readonly targetId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MeshPeerUnavailableError';
+  }
+}
+
+/** Builds an SSRF-safe TCP dialer bound strictly to loopback (for `local`) or the resolved authorized peer endpoint hostname. */
 export function createPeerTcpDialer(
   resolvePeer?: (targetId: string) => MeshPeerDescriptor | undefined,
 ): RemoteTunnelDialer {
   return ({ nodeId, remoteHost, remotePort }) => {
-    const host = resolveTcpHost(nodeId, remoteHost, resolvePeer);
+    const host = resolveAuthorizedTcpHost(nodeId, remoteHost, resolvePeer);
     return createConnection({ host, port: remotePort });
   };
 }
@@ -120,11 +171,16 @@ export class MeshService {
   readonly takeover: HumanTakeoverManager;
   readonly casStaging: CasStagingStore;
   readonly coalescer: MeshStateCoalescer;
+  private readonly hostId: string;
   private readonly resolveSessionContext?: MeshServiceOptions['resolveSessionContext'];
   private readonly resolvePeer?: MeshServiceOptions['resolvePeer'];
   private readonly executeRemoteAction?: MeshServiceOptions['executeRemoteAction'];
+  private readonly onInboundExecute?: MeshServiceOptions['onInboundExecute'];
+  private readonly now: () => number;
 
   constructor(options: MeshServiceOptions) {
+    this.hostId = options.hostId ?? 'local';
+    this.now = options.now ?? (() => Date.now());
     this.leases = options.leaseStore ?? new MeshLeaseStore(options.storage, options.now);
     this.workspaceCopies = new WorkspaceCopyManager(
       join(options.homeDir, 'mesh', 'workspace-copies'),
@@ -132,6 +188,7 @@ export class MeshService {
     );
     this.resolvePeer = options.resolvePeer;
     this.executeRemoteAction = options.executeRemoteAction;
+    this.onInboundExecute = options.onInboundExecute;
     this.tunnels = new LoopbackPortTunnelManager(
       options.dialRemote ?? createPeerTcpDialer(options.resolvePeer),
     );
@@ -156,15 +213,47 @@ export class MeshService {
     switch (input.kind) {
       case 'node':
         await this.leases.pinNode(sessionId, input.node);
+        this.recordTransition({
+          sessionId,
+          resourceKind: 'node',
+          resourceId: input.node.nodeId,
+          previousState: 'unpinned',
+          nextState: input.node.state,
+          at: this.now(),
+        });
         break;
       case 'seat':
         await this.leases.pinSeat(sessionId, input.seat);
+        this.recordTransition({
+          sessionId,
+          resourceKind: 'seat',
+          resourceId: input.seat.seatId,
+          previousState: 'unpinned',
+          nextState: input.seat.state,
+          at: this.now(),
+        });
         break;
       case 'workspace_copy':
         await this.leases.pinWorkspaceCopy(sessionId, input.copy);
+        this.recordTransition({
+          sessionId,
+          resourceKind: 'workspace_copy',
+          resourceId: input.copy.copyId,
+          previousState: 'unpinned',
+          nextState: input.copy.dirty ? 'dirty' : 'clean',
+          at: this.now(),
+        });
         break;
       case 'port_tunnel':
         await this.leases.pinPortTunnel(sessionId, input.tunnel);
+        this.recordTransition({
+          sessionId,
+          resourceKind: 'port_tunnel',
+          resourceId: input.tunnel.tunnelId,
+          previousState: 'unpinned',
+          nextState: input.tunnel.healthy ? 'healthy' : 'unhealthy',
+          at: this.now(),
+        });
         break;
     }
     return this.leases.projectContext(sessionId);
@@ -174,8 +263,28 @@ export class MeshService {
     sessionId: string,
     kind: 'node' | 'seat' | 'workspace_copy' | 'port_tunnel',
     id: string,
+    expectedEpoch?: number,
   ): Promise<MeshContextProjection> {
-    await this.leases.unpin(sessionId, kind, id);
+    await this.leases.unpin(sessionId, kind, id, expectedEpoch);
+    this.recordTransition({
+      sessionId,
+      resourceKind: kind,
+      resourceId: id,
+      previousState: 'pinned',
+      nextState: 'unpinned',
+      at: this.now(),
+    });
+    return this.leases.projectContext(sessionId);
+  }
+
+  async renewSessionLease(
+    sessionId: string,
+    ttlMs?: number,
+    expectedEpoch?: number,
+  ): Promise<MeshContextProjection> {
+    if (this.leases.renewLease !== undefined) {
+      await this.leases.renewLease(sessionId, ttlMs, expectedEpoch);
+    }
     return this.leases.projectContext(sessionId);
   }
 
@@ -217,11 +326,24 @@ export class MeshService {
     return this.workspaceCopies.snapshot(copyId, label);
   }
 
+  exportWorkspaceCopyDelta(
+    copyId: string,
+  ): Promise<GitWipDeltaExportResult & { readonly bundleBase64: string; readonly stagedSha256?: string }> {
+    return this.workspaceCopies.exportWipDelta(copyId, this.casStaging);
+  }
+
+  applyWorkspaceCopyDelta(
+    copyId: string,
+    input: { readonly wipId: string; readonly bundleBase64: string },
+  ): Promise<GitWipDeltaApplyResult> {
+    return this.workspaceCopies.applyWipDelta(copyId, input, this.casStaging);
+  }
+
   async applyWorkspaceCopy(
     copyId: string,
     input: MeshWorkspaceCopyApplyInput,
   ): Promise<WorkspaceCopyApplyResult> {
-    if (input.targetId !== undefined) {
+    if (input.targetId !== undefined && input.targetId !== 'local') {
       this.assertPeerCapability(input.targetId, 'cow_apply');
     }
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
@@ -232,7 +354,9 @@ export class MeshService {
       takeoverManager: this.takeover,
       targetId: input.targetId,
       overrideHumanLease: input.overrideHumanLease,
+      expectedEpoch: input.expectedEpoch,
       deleteRemoved: input.deleteRemoved,
+      forceOverwriteSource: input.forceOverwriteSource,
     });
   }
 
@@ -245,7 +369,10 @@ export class MeshService {
   }
 
   async openTunnel(input: MeshPortTunnelOpenInput): Promise<LoopbackTunnelHandle> {
-    this.assertPeerCapability(input.nodeId, 'port_tunnel');
+    if (input.nodeId !== 'local') {
+      this.assertPeerCapability(input.nodeId, 'port_tunnel');
+    }
+    resolveAuthorizedTcpHost(input.nodeId, input.remoteHost, this.resolvePeer);
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
     const approval = await evaluateMeshApproval({
       operation: 'port_tunnel',
@@ -256,7 +383,9 @@ export class MeshService {
       approvalService: ctx.approvalService,
     });
     if (approval.decision !== 'approved') {
-      throw new Error(approval.feedback ?? `Port tunnel opening rejected (${approval.decision})`);
+      throw new MeshApprovalRejectedError(
+        approval.feedback ?? `Port tunnel opening rejected (${approval.decision})`,
+      );
     }
     const handle = await this.tunnels.ensureTunnel({
       nodeId: input.nodeId,
@@ -283,24 +412,57 @@ export class MeshService {
     holder: HumanTakeoverHolder,
     ttlMs?: number,
     reason?: string,
+    options?: { readonly expectedEpoch?: number; readonly overrideHumanLease?: boolean },
   ): HumanTakeoverLease {
-    return this.takeover.acquire(targetId, holder, ttlMs, reason);
+    return this.takeover.acquire(targetId, holder, ttlMs, reason, options);
   }
 
-  releaseTakeover(targetId: string, holder?: HumanTakeoverHolder): boolean {
-    return this.takeover.release(targetId, holder);
+  renewTakeover(
+    targetId: string,
+    holder: HumanTakeoverHolder,
+    ttlMs?: number,
+    expectedEpoch?: number,
+  ): HumanTakeoverLease | undefined {
+    return this.takeover.renew(targetId, holder, ttlMs, expectedEpoch);
+  }
+
+  releaseTakeover(
+    targetId: string,
+    holder?: HumanTakeoverHolder,
+    expectedEpoch?: number,
+  ): boolean {
+    return this.takeover.release(targetId, holder, expectedEpoch);
   }
 
   inspectTakeover(targetId: string): HumanTakeoverLease | undefined {
     return this.takeover.inspect(targetId);
   }
 
+  async resolveQuestion(
+    targetId: string,
+    input: MeshResolveQuestionInput,
+  ): Promise<MeshDispatchResult> {
+    return this.dispatchTargetAction(targetId, {
+      operation: 'remote_question',
+      action: input.answer,
+      sessionId: input.sessionId,
+      expectedEpoch: input.expectedEpoch,
+      payload: input.questionId === undefined ? undefined : { questionId: input.questionId },
+    });
+  }
+
   async dispatchTargetAction(
     targetId: string,
     input: MeshTargetDispatchInput,
   ): Promise<MeshDispatchResult> {
-    this.takeover.assertWritable(targetId, { overrideHumanLease: input.overrideHumanLease });
-    const peer = this.assertPeerCapability(targetId, input.operation);
+    const checkWritable = (): void => {
+      this.takeover.assertWritable(targetId, {
+        overrideHumanLease: input.overrideHumanLease,
+        expectedEpoch: input.expectedEpoch,
+      });
+    };
+    checkWritable();
+    const peer = targetId === 'local' ? undefined : this.assertPeerCapability(targetId, input.operation);
     const ctx = await this.resolveApprovalContext(input.sessionId, input.permissionMode);
     const approval = await evaluateMeshApproval({
       operation: input.operation,
@@ -311,21 +473,75 @@ export class MeshService {
       approvalService: ctx.approvalService,
     });
     if (approval.decision !== 'approved') {
-      throw new Error(
+      throw new MeshApprovalRejectedError(
         approval.feedback ?? `Action '${input.operation}' on '${targetId}' rejected (${approval.decision})`,
       );
     }
-    const forwardedResult =
-      peer !== undefined && this.executeRemoteAction !== undefined
-        ? await this.executeRemoteAction(peer, input)
-        : undefined;
+    checkWritable();
+    let forwardedResult: unknown;
+    if (targetId !== 'local') {
+      if (peer === undefined) {
+        throw new MeshPeerUnavailableError(404, 'peer_not_found', targetId, `Peer '${targetId}' not found`);
+      }
+      if (peer.online === false) {
+        throw new MeshPeerUnavailableError(503, 'peer_offline', targetId, `Peer '${targetId}' is offline`);
+      }
+      if (this.executeRemoteAction === undefined) {
+        throw new MeshPeerUnavailableError(
+          503,
+          'remote_executor_unavailable',
+          targetId,
+          `No remote executor wired for peer '${targetId}'`,
+        );
+      }
+      forwardedResult = await this.executeRemoteAction(peer, input);
+    } else {
+      forwardedResult = await this.executeInboundAction({
+        operation: input.operation,
+        action: input.action,
+        targetId: 'local',
+        sessionId: input.sessionId,
+        overrideHumanLease: input.overrideHumanLease,
+        expectedEpoch: input.expectedEpoch,
+        payload: input.payload,
+      });
+    }
     return {
       targetId,
       operation: input.operation,
       accepted: true,
       approval,
-      ...(peer === undefined ? {} : { peerId: peer.id, trustTier: peer.trustTier ?? 'trusted_personal' }),
+      epoch: this.takeover.currentEpoch(targetId),
+      ...(peer === undefined ? {} : { peerId: peer.id, trustTier: peer.trustTier ?? 'restricted_peer' }),
       ...(forwardedResult === undefined ? {} : { forwardedResult }),
+    };
+  }
+
+  async executeInboundAction(input: MeshInboundExecuteInput): Promise<MeshInboundExecutionReceipt> {
+    this.takeover.assertWritable(input.targetId, {
+      overrideHumanLease: input.overrideHumanLease,
+      expectedEpoch: input.expectedEpoch,
+    });
+    const output = this.onInboundExecute === undefined ? undefined : await this.onInboundExecute(input);
+    if (input.sessionId !== undefined) {
+      this.recordTransition({
+        sessionId: input.sessionId,
+        resourceKind: 'seat',
+        resourceId: input.targetId,
+        previousState: 'running',
+        nextState: 'completed',
+        at: this.now(),
+        detail: `${input.operation}:${input.action.slice(0, 64)}`,
+      });
+    }
+    return {
+      executed: true,
+      hostId: this.hostId,
+      targetId: input.targetId,
+      operation: input.operation,
+      action: input.action,
+      epoch: this.takeover.currentEpoch(input.targetId),
+      ...(output === undefined ? {} : { output }),
     };
   }
 
@@ -337,10 +553,12 @@ export class MeshService {
   private assertPeerCapability(
     targetId: string,
     operation: MeshOperationKind,
-  ): MeshPeerDescriptor | undefined {
+  ): MeshPeerDescriptor {
     const peer = this.resolvePeer?.(targetId);
-    if (peer === undefined) return undefined;
-    const trustTier: PeerTrustTier = peer.trustTier ?? 'trusted_personal';
+    if (peer === undefined) {
+      throw new MeshPeerUnavailableError(404, 'peer_not_found', targetId, `Peer '${targetId}' not found`);
+    }
+    const trustTier: PeerTrustTier = peer.trustTier ?? 'restricted_peer';
     const capabilities =
       peer.meshCapabilities ??
       (trustTier === 'restricted_peer'
@@ -357,13 +575,24 @@ export class MeshService {
     sessionId: string | undefined,
     explicitMode: MeshPermissionMode | undefined,
   ): Promise<MeshSessionExecutionContext> {
-    const resolved =
-      sessionId === undefined || this.resolveSessionContext === undefined
-        ? undefined
-        : await this.resolveSessionContext(sessionId);
+    if (sessionId !== undefined && this.resolveSessionContext !== undefined) {
+      const resolved = await this.resolveSessionContext(sessionId);
+      if (resolved !== undefined) {
+        const effectiveMode =
+          explicitMode === undefined
+            ? resolved.permissionMode
+            : MODE_RANK[explicitMode] < MODE_RANK[resolved.permissionMode]
+              ? explicitMode
+              : resolved.permissionMode;
+        return {
+          permissionMode: effectiveMode,
+          approvalService: resolved.approvalService,
+        };
+      }
+      return { permissionMode: 'manual' };
+    }
     return {
-      permissionMode: explicitMode ?? resolved?.permissionMode ?? 'auto',
-      approvalService: resolved?.approvalService,
+      permissionMode: explicitMode ?? 'auto',
     };
   }
 }
@@ -380,31 +609,41 @@ function requiredCapabilityForOperation(operation: MeshOperationKind): MeshCapab
     case 'port_tunnel':
       return 'port_tunnel';
     case 'interactive_login':
+    case 'remote_question':
       return 'send';
   }
 }
 
-function resolveTcpHost(
+function resolveAuthorizedTcpHost(
   nodeId: string,
   remoteHost: string,
   resolvePeer?: (targetId: string) => MeshPeerDescriptor | undefined,
 ): string {
-  if (nodeId === 'local') return remoteHost;
-  const peer = resolvePeer?.(nodeId);
-  if (peer === undefined) {
-    if (remoteHost !== '' && remoteHost !== '127.0.0.1') return remoteHost;
-    return remoteHost || '127.0.0.1';
-  }
-  if (remoteHost !== '' && remoteHost !== '127.0.0.1') return remoteHost;
-  if (peer.endpoint !== undefined) {
-    try {
-      const parsed = new URL(peer.endpoint);
-      if (parsed.hostname.length > 0) return parsed.hostname;
-    } catch {
-      throw new Error(`Peer '${nodeId}' has an invalid endpoint '${peer.endpoint}'`);
+  const requested = remoteHost.trim().toLowerCase();
+  if (nodeId === 'local') {
+    if (requested === '' || LOOPBACK_HOSTS.has(requested)) {
+      return requested === '' ? '127.0.0.1' : remoteHost.trim();
     }
+    throw new Error(`Tunnel host '${remoteHost}' is not allowed for local loopback node`);
   }
-  throw new Error(`Peer '${nodeId}' has no reachable TCP endpoint`);
+  const peer = resolvePeer?.(nodeId);
+  if (peer === undefined || peer.endpoint === undefined) {
+    throw new Error(`Peer '${nodeId}' has no authorized reachable TCP endpoint`);
+  }
+  let peerHost: string;
+  try {
+    const parsed = new URL(peer.endpoint);
+    if (parsed.hostname.length === 0) throw new Error('empty host');
+    peerHost = parsed.hostname;
+  } catch {
+    throw new Error(`Peer '${nodeId}' has an invalid endpoint '${peer.endpoint}'`);
+  }
+  if (requested === '' || LOOPBACK_HOSTS.has(requested) || requested === peerHost.toLowerCase()) {
+    return peerHost;
+  }
+  throw new Error(
+    `Tunnel host '${remoteHost}' does not match authorized peer '${nodeId}' host '${peerHost}'`,
+  );
 }
 
 export type { LeasedPeerNode, LeasedSeat, MeshSessionLease };

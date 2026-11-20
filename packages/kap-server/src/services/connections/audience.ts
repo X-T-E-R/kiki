@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { matchConnectionOperation } from '@kiki/protocol';
+import { matchConnectionOperation, type MeshCapability } from '@kiki/protocol';
 import type { KlientFrame, KlientProcedure } from '@kiki/klient/host';
 import { catalogChangedSchema, searchIndexStateSchema } from '@kiki/klient/contract/global/events';
 import { modelSwitchQueuedEventSchema, modelSwitchStatusEventSchema } from '@kiki/klient/contract/agent/modelSwitch';
@@ -9,7 +9,7 @@ import { matchesLocalOwner } from '../auth/localOwner';
 import type { CredentialValidator } from '../auth/credentials';
 import { AdmissionError, ConnectionAdmission } from './admission';
 
-export interface PeerAudience { grantId: string; revision: number }
+export interface PeerAudience { grantId: string; revision: number; meshCapabilities?: readonly MeshCapability[] }
 const peers = new WeakMap<object, PeerAudience>();
 export function peerAudience(request: object): PeerAudience | undefined { return peers.get(request); }
 export function peerGrant(headers: IncomingMessage['headers']): string | undefined {
@@ -97,7 +97,33 @@ const PEER_SCOPED_EMITTER_RULES: readonly (PeerSubscriptionScopeRule & { service
   { service: 'sessionExecutionControl', event: 'onDidChange', scope: 'session', workspaceId: 'absent', sessionId: 'nonempty', agentId: 'absent' },
 ];
 const WEB_RUNTIME_SWITCH_PATH = '/api/runtime-switch';
-const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown)(?:\/|$)/;
+const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)/;
+const PEER_EXECUTE_OPERATIONS = new Set([
+  'prompt',
+  'promptResume',
+  'promptReplace',
+  'promptSteer',
+  'steer',
+  'skillActivate',
+  'approval',
+  'messageEdit',
+  'messageRegenerate',
+  'agentPromote',
+  'taskCancel',
+  'meshInboundExecute',
+]);
+const PEER_SYNC_OPERATIONS = new Set([
+  'syncBundleExport',
+  'syncBundleImport',
+  'syncCredentialsMerge',
+]);
+const PEER_EXECUTE_PROCEDURE_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['agentPromptService', new Set(['submit', 'submitAndWait', 'submitSteer', 'switchModel', 'resumeRecoveredQueue'])],
+  ['agentSkillService', new Set(['activate', 'promptWithSkills'])],
+  ['agentPermissionModeService', new Set(['setMode', 'setModeAndBroadcast'])],
+  ['sessionApprovalService', new Set(['decide'])],
+  ['agentRuntimeBindingService', new Set(['switch'])],
+]);
 const WEB_DENIED_EXACT_PATH = '/mcp';
 const WEB_ACCESS_PATH_PREFIX = '/api/web-access';
 const WEB_ACCESS_ALLOWED_PATHS = ['/api/web-access/session', '/api/web-access/logout', '/api/web-access/exchange'] as const;
@@ -156,8 +182,19 @@ function isPeerScopedEmitterAllowed(frame: KlientFrame): boolean {
  * `modelCatalogMutation`); the record services behind them carry the stored
  * `apiKey` and are never granted.
  */
-export function isPeerProcedureAllowed(procedure: Pick<KlientProcedure, 'service' | 'method'>): boolean {
-  return peerProcedureMethods.get(procedure.service)?.has(procedure.method) === true;
+export function isPeerProcedureAllowed(
+  procedure: Pick<KlientProcedure, 'service' | 'method'>,
+  meshCapabilities?: readonly MeshCapability[],
+): boolean {
+  if (peerProcedureMethods.get(procedure.service)?.has(procedure.method) !== true) return false;
+  if (
+    meshCapabilities !== undefined &&
+    !meshCapabilities.includes('execute') &&
+    PEER_EXECUTE_PROCEDURE_METHODS.get(procedure.service)?.has(procedure.method) === true
+  ) {
+    return false;
+  }
+  return true;
 }
 /**
  * Whether a peer may send this WebSocket frame. Subscribing only binds a
@@ -285,7 +322,16 @@ export class ConnectionAudience {
     const path = request.url.split('?', 1)[0]!;
     const operation = matchConnectionOperation(request.method, path);
     if (operation === undefined || (operation.params['spaceId'] !== undefined && operation.params['spaceId'] !== this.currentSpaceId())) throw new AdmissionError(403, 'local_owner_required');
-    const audience = { grantId: peer.id, revision: peer.revision };
+    const trust = this.admission.getGrantTrust?.(peer.id);
+    if (trust !== undefined) {
+      if (PEER_EXECUTE_OPERATIONS.has(operation.operation) && !trust.meshCapabilities.includes('execute')) {
+        throw new AdmissionError(403, 'mesh_capability_denied');
+      }
+      if (PEER_SYNC_OPERATIONS.has(operation.operation) && !trust.meshCapabilities.includes('file_sync')) {
+        throw new AdmissionError(403, 'mesh_capability_denied');
+      }
+    }
+    const audience: PeerAudience = { grantId: peer.id, revision: peer.revision, ...(trust === undefined ? {} : { meshCapabilities: trust.meshCapabilities }) };
     peers.set(request, audience); peers.set(request.raw, audience);
     const detach = this.admission.attach(peer.id, () => { request.raw.destroy(); reply.raw.destroy(); });
     reply.raw.once('close', detach);

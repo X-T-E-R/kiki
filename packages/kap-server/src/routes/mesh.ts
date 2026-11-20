@@ -2,22 +2,41 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   humanTakeoverAcquireInputSchema,
+  meshInboundExecuteInputSchema,
   meshLeasePinInputSchema,
+  meshLeaseRenewInputSchema,
   meshLeaseUnpinInputSchema,
   meshPortTunnelOpenInputSchema,
+  meshResolveQuestionInputSchema,
   meshTargetDispatchInputSchema,
   meshWorkspaceCopyApplyInputSchema,
   meshWorkspaceCopyCreateInputSchema,
 } from '@kiki/protocol';
-import { HumanControllingError } from '@kiki/agent-core-v2';
+import {
+  HumanControllingError,
+  StaleEpochError,
+  WorkspaceSourceModifiedError,
+} from '@kiki/agent-core-v2';
 
 import { errEnvelope, okEnvelope } from '../envelope';
-import { MeshCapabilityDeniedError, type MeshService } from '../services/mesh/meshService';
+import {
+  MeshApprovalRejectedError,
+  MeshCapabilityDeniedError,
+  MeshPeerUnavailableError,
+  type MeshService,
+} from '../services/mesh/meshService';
 
 const HUMAN_CONTROLLING_CODE = 40942;
+const STALE_EPOCH_CODE = 40943;
+const SOURCE_MODIFIED_CODE = 40944;
 const MESH_CAPABILITY_DENIED_CODE = 40302;
 
-/** Registers REST endpoints for session mesh leases, COW workspace copies, loopback port tunnels, and human takeover locks. */
+const gitWipDeltaApplySchema = z.object({
+  wipId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._-]+$/),
+  bundleBase64: z.string().min(1),
+}).strict();
+
+/** Registers REST endpoints for session mesh leases, COW workspace copies, loopback port tunnels, human takeover locks, and peer execution. */
 export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): void {
   const handle = async <T>(
     requestId: string,
@@ -36,6 +55,28 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
           request_id: requestId,
         });
       }
+      if (error instanceof StaleEpochError) {
+        reply.code(409);
+        return reply.send({
+          code: STALE_EPOCH_CODE,
+          msg: error.code,
+          data: error.toConflictPayload(),
+          request_id: requestId,
+        });
+      }
+      if (error instanceof WorkspaceSourceModifiedError) {
+        reply.code(409);
+        return reply.send({
+          code: SOURCE_MODIFIED_CODE,
+          msg: error.code,
+          data: {
+            error: error.code,
+            copyId: error.copyId,
+            conflictingFiles: error.conflictingFiles,
+          },
+          request_id: requestId,
+        });
+      }
       if (error instanceof MeshCapabilityDeniedError) {
         reply.code(403);
         return reply.send({
@@ -50,6 +91,14 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
           request_id: requestId,
         });
       }
+      if (error instanceof MeshApprovalRejectedError) {
+        reply.code(403);
+        return reply.send(errEnvelope(40301, error.message, requestId));
+      }
+      if (error instanceof MeshPeerUnavailableError) {
+        reply.code(error.status);
+        return reply.send(errEnvelope(error.status === 404 ? 40402 : 50301, error.code, requestId));
+      }
       if (error instanceof z.ZodError) {
         reply.code(400);
         return reply.send(errEnvelope(40001, error.message, requestId));
@@ -58,7 +107,7 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
         reply.code(404);
         return reply.send(errEnvelope(40401, error.message, requestId));
       }
-      if (error instanceof Error && error.message.includes('rejected')) {
+      if (error instanceof Error && (error.message.includes('rejected') || error.message.includes('not allowed') || error.message.includes('does not match'))) {
         reply.code(403);
         return reply.send(errEnvelope(40301, error.message, requestId));
       }
@@ -88,6 +137,18 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
         (req.params as { sessionId: string }).sessionId,
         body.kind,
         body.id,
+        body.expectedEpoch,
+      );
+    }),
+  );
+
+  app.post('/api/mesh/sessions/:sessionId/leases/renew', { bodyLimit: 8_192 }, async (req, reply) =>
+    handle(req.id, reply, () => {
+      const body = meshLeaseRenewInputSchema.parse(req.body ?? {});
+      return mesh.renewSessionLease(
+        (req.params as { sessionId: string }).sessionId,
+        body.ttlMs,
+        body.expectedEpoch,
       );
     }),
   );
@@ -119,6 +180,19 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
     handle(req.id, reply, () => {
       const body = z.object({ label: z.string().max(128).optional() }).strict().parse(req.body ?? {});
       return mesh.workspaceCopySnapshot((req.params as { copyId: string }).copyId, body.label);
+    }),
+  );
+
+  app.post('/api/mesh/workspace-copies/:copyId/delta/export', async (req, reply) =>
+    handle(req.id, reply, () =>
+      mesh.exportWorkspaceCopyDelta((req.params as { copyId: string }).copyId),
+    ),
+  );
+
+  app.post('/api/mesh/workspace-copies/:copyId/delta/apply', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) =>
+    handle(req.id, reply, () => {
+      const input = gitWipDeltaApplySchema.parse(req.body);
+      return mesh.applyWorkspaceCopyDelta((req.params as { copyId: string }).copyId, input);
     }),
   );
 
@@ -156,6 +230,7 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
   app.get('/api/mesh/takeover/:targetId', async (req, reply) =>
     handle(req.id, reply, async () => ({
       lease: mesh.inspectTakeover((req.params as { targetId: string }).targetId) ?? null,
+      epoch: mesh.takeover.currentEpoch((req.params as { targetId: string }).targetId),
     })),
   );
 
@@ -167,15 +242,45 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
         input.holder,
         input.ttlMs,
         input.reason,
+        {
+          expectedEpoch: input.expectedEpoch,
+          overrideHumanLease: input.overrideHumanLease,
+        },
       );
+    }),
+  );
+
+  app.post('/api/mesh/takeover/:targetId/renew', { bodyLimit: 8_192 }, async (req, reply) =>
+    handle(req.id, reply, async () => {
+      const input = z.object({
+        holder: z.enum(['human', 'orchestrator']),
+        ttlMs: z.number().int().min(1000).max(86_400_000).default(300_000),
+        expectedEpoch: z.number().int().nonnegative().optional(),
+      }).strict().parse(req.body);
+      const renewed = mesh.renewTakeover(
+        (req.params as { targetId: string }).targetId,
+        input.holder,
+        input.ttlMs,
+        input.expectedEpoch,
+      );
+      if (renewed === undefined) throw new Error('Takeover lease not found');
+      return renewed;
     }),
   );
 
   app.post('/api/mesh/takeover/:targetId/release', { bodyLimit: 8_192 }, async (req, reply) =>
     handle(req.id, reply, async () => {
-      const input = z.object({ holder: z.enum(['human', 'orchestrator']).optional() }).strict().parse(req.body ?? {});
+      const input = z.object({
+        holder: z.enum(['human', 'orchestrator']).optional(),
+        expectedEpoch: z.number().int().nonnegative().optional(),
+      }).strict().parse(req.body ?? {});
       return {
-        released: mesh.releaseTakeover((req.params as { targetId: string }).targetId, input.holder),
+        released: mesh.releaseTakeover(
+          (req.params as { targetId: string }).targetId,
+          input.holder,
+          input.expectedEpoch,
+        ),
+        epoch: mesh.takeover.currentEpoch((req.params as { targetId: string }).targetId),
       };
     }),
   );
@@ -186,6 +291,21 @@ export function registerMeshRoutes(app: FastifyInstance, mesh: MeshService): voi
         (req.params as { targetId: string }).targetId,
         meshTargetDispatchInputSchema.parse(req.body),
       ),
+    ),
+  );
+
+  app.post('/api/mesh/targets/:targetId/resolve-question', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      mesh.resolveQuestion(
+        (req.params as { targetId: string }).targetId,
+        meshResolveQuestionInputSchema.parse(req.body),
+      ),
+    ),
+  );
+
+  app.post('/api/mesh/inbound/execute', { bodyLimit: 65_536 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      mesh.executeInboundAction(meshInboundExecuteInputSchema.parse(req.body)),
     ),
   );
 }

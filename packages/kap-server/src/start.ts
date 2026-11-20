@@ -7,6 +7,7 @@ import {
   ConfigWarning,
   CapabilityChanged,
   Event2,
+  HumanControllingError,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentPermissionModeService,
@@ -18,6 +19,7 @@ import {
   ILogService,
   IMcpOAuthService,
   IMemoryScopes,
+  IMemoryStore,
   IMeshLeaseStore,
   ISessionApprovalService,
   ISessionIndex,
@@ -25,6 +27,7 @@ import {
   ISessionActivityView,
   ISessionInteractionService,
   MAIN_AGENT_ID,
+  StaleEpochError,
   getLiveSessionById,
   ICapabilityService,
   IPluginService,
@@ -128,7 +131,13 @@ import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { registerMeshRoutes } from './routes/mesh';
 import { registerSyncRoutes } from './routes/sync';
-import { createPeerTcpDialer, MeshService, type MeshPeerDescriptor } from './services/mesh/meshService';
+import {
+  createPeerTcpDialer,
+  MeshCapabilityDeniedError,
+  MeshPeerUnavailableError,
+  MeshService,
+  type MeshPeerDescriptor,
+} from './services/mesh/meshService';
 import { SyncService } from './services/sync/syncService';
 import { createPluginPanelStreamServer, PLUGIN_PANEL_STREAM_PATH } from './routes/pluginPanelStreams';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
@@ -784,9 +793,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     }
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && !peerRequests.has(request.raw) && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
-    if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+    if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|mesh|sync)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
     if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|shutdown|sessions\/[^/]+\/terminals)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|session-access|storage)(?:\/|$)/.test(path);
+    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|session-access|storage|mesh|sync)(?:\/|$)/.test(path);
     if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined || peerRequests.has(request.raw)) return authHook(request, reply);
   });
   if (opts.disableAuth === true) {
@@ -1331,29 +1340,86 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   const peerTls = exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true ? await preparing(loadPeerTlsIdentity(homeDir)) : undefined;
   const bootstrapInfo = core.accessor.get(IBootstrapService);
+  const resolveOutboundConnection = (peerId: string) =>
+    remoteConnections
+      .list()
+      .find(
+        (record) =>
+          record.id === peerId ||
+          record.target.hostId === peerId ||
+          record.target.homeId === peerId ||
+          record.label === peerId,
+      );
+  const forwardPeerJson = async <T>(
+    peerId: string,
+    operation: 'meshInboundExecute' | 'syncDeviceKey' | 'syncBundleExport' | 'syncBundleImport',
+    body?: unknown,
+  ): Promise<{ readonly status: number; readonly envelope: { readonly code?: number; readonly msg?: string; readonly data?: T } }> => {
+    const record = resolveOutboundConnection(peerId);
+    if (record === undefined) {
+      throw new MeshPeerUnavailableError(404, 'peer_not_found', peerId, `Peer '${peerId}' not found`);
+    }
+    const lease = remoteConnections.lease(record.id);
+    try {
+      const response = await remoteConnections.forward(record.id, { operation, body }, lease.signal);
+      const parsed = (await response.json().catch(() => ({}))) as {
+        readonly code?: number;
+        readonly msg?: string;
+        readonly data?: T;
+      };
+      return { status: response.status, envelope: parsed };
+    } finally {
+      lease.release();
+    }
+  };
   const syncService = new SyncService({
     homeDir,
     osHomeDir: bootstrapInfo.osHomeDir,
     configService: core.accessor.get(IConfigService),
     configRegistry: core.accessor.get(IConfigRegistry),
     memoryScopes: core.accessor.get(IMemoryScopes),
+    memoryStore: core.accessor.get(IMemoryStore),
+    peerTransport: {
+      resolvePeerRecipient: async (peerId) => {
+        const stored = resolveOutboundConnection(peerId)?.x25519Recipient;
+        if (stored !== undefined) return stored;
+        const { status, envelope } = await forwardPeerJson<{ readonly recipient?: string }>(peerId, 'syncDeviceKey');
+        if (status >= 200 && status < 300 && envelope.code === 0) return envelope.data?.recipient;
+        return undefined;
+      },
+      pushBundle: async (peerId, bundle) => {
+        const { status, envelope } = await forwardPeerJson<import('@kiki/protocol').SyncBundleImportReceipt>(
+          peerId,
+          'syncBundleImport',
+          bundle,
+        );
+        if (status >= 400 || envelope.code !== 0 || envelope.data === undefined) {
+          throw new Error(envelope.msg ?? `Peer sync push failed (HTTP ${status})`);
+        }
+        return envelope.data;
+      },
+      pullBundle: async (peerId, input) => {
+        const { status, envelope } = await forwardPeerJson<import('@kiki/protocol').SyncBundle>(
+          peerId,
+          'syncBundleExport',
+          input,
+        );
+        if (status >= 400 || envelope.code !== 0 || envelope.data === undefined) {
+          throw new Error(envelope.msg ?? `Peer sync pull failed (HTTP ${status})`);
+        }
+        return envelope.data;
+      },
+    },
   });
   await preparing(syncService.ensureDeviceKeypair().catch(() => undefined));
   const resolveMeshPeer = (targetId: string): MeshPeerDescriptor | undefined => {
-    const outbound = remoteConnections
-      .list()
-      .find(
-        (record) =>
-          record.id === targetId ||
-          record.target.hostId === targetId ||
-          record.target.homeId === targetId ||
-          record.label === targetId,
-      );
+    const outbound = resolveOutboundConnection(targetId);
     if (outbound !== undefined) {
       return {
         id: outbound.id,
         label: outbound.label,
         endpoint: outbound.endpoint,
+        online: outbound.enabled && outbound.state === 'online',
         trustTier: outbound.trustTier,
         meshCapabilities: outbound.meshCapabilities,
       };
@@ -1372,6 +1438,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       return {
         id: inbound.id,
         label: inbound.label,
+        online: true,
         trustTier: inbound.trustTier,
         meshCapabilities: inbound.meshCapabilities,
       };
@@ -1380,10 +1447,52 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   };
   const meshService = new MeshService({
     homeDir,
+    hostId: connectionIdentity.hostId,
     storage: core.accessor.get(IFileSystemStorageService),
     leaseStore: core.accessor.get(IMeshLeaseStore),
     resolvePeer: resolveMeshPeer,
     dialRemote: createPeerTcpDialer(resolveMeshPeer),
+    executeRemoteAction: async (peer, input) => {
+      const { status, envelope } = await forwardPeerJson<Record<string, unknown>>(
+        peer.id,
+        'meshInboundExecute',
+        {
+          operation: input.operation,
+          action: input.action,
+          targetId: 'local',
+          sessionId: input.sessionId,
+          overrideHumanLease: input.overrideHumanLease,
+          expectedEpoch: input.expectedEpoch,
+          payload: input.payload,
+        },
+      );
+      if (status === 409 && envelope.msg === 'human_controlling' && envelope.data !== undefined) {
+        const data = envelope.data as { targetId?: string; expiresAt?: number; epoch?: number };
+        throw new HumanControllingError({
+          targetId: data.targetId ?? peer.id,
+          expiresAt: data.expiresAt ?? Date.now() + 60_000,
+          epoch: data.epoch ?? 0,
+        });
+      }
+      if (status === 409 && envelope.msg === 'stale_epoch' && envelope.data !== undefined) {
+        const data = envelope.data as { targetId?: string; expectedEpoch?: number; currentEpoch?: number };
+        throw new StaleEpochError(
+          data.targetId ?? peer.id,
+          data.expectedEpoch ?? input.expectedEpoch ?? 0,
+          data.currentEpoch ?? 0,
+        );
+      }
+      if (status === 403 && envelope.msg === 'mesh_capability_denied') {
+        throw new MeshCapabilityDeniedError(peer.id, peer.trustTier ?? 'restricted_peer', 'execute');
+      }
+      if (status >= 400 || envelope.code !== 0) {
+        throw new Error(envelope.msg ?? `Remote mesh execution failed (HTTP ${status})`);
+      }
+      return envelope.data;
+    },
+    onStateBatch: (transitions) => {
+      logger.debug({ count: transitions.length }, 'mesh state transition batch');
+    },
     resolveSessionContext: (sessionId) => {
       const live = getLiveSessionById(core.accessor, sessionId);
       if (live === undefined) return undefined;
@@ -1409,6 +1518,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     revokedBridges: (source) => pairedBridge.revokedPairingBridges(source),
     retireBridges: (id, ids) => pairedBridge.retireConfirmedBridges(id, ids),
     enableThreads: () => pairedBridge.enableThreads(),
+    x25519Recipient: () => syncService.peekDeviceRecipient(),
     endpoints: async () => {
       const urls = [...await (peerListeners?.ensure() ?? Promise.resolve([]))];
       const status = web.status();

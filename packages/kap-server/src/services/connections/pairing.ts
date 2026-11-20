@@ -17,6 +17,7 @@ const claimedSchema = z.object({
   peerToken: z.string().min(32).max(128), revokedBridgeIds: z.array(z.string().uuid()).max(1000).optional(), bridge: z.array(z.object({ grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict()).optional(),
   trustTier: peerTrustTierSchema.optional(),
   meshCapabilities: z.array(meshCapabilitySchema).optional(),
+  x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
 }).strict();
 export interface PairingHooks {
   workspaces(): Promise<readonly string[]>;
@@ -27,6 +28,7 @@ export interface PairingHooks {
   retireBridges?(connectionId: string, ids: readonly string[]): Promise<void>;
   enableThreads(): Promise<void>;
   endpoints(): Promise<readonly string[]>;
+  x25519Recipient?(): string | undefined;
 }
 export class PairingRateLimit {
   private readonly hits = new Map<string, number[]>();
@@ -268,7 +270,21 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
   const requestBridge = input.requestBridge ?? true;
   const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
-  const init: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1' }, body: JSON.stringify({ code, source: manager.identity, sourceLabel: machineLabel(), requestBridge, bridgeOperations: input.bridgeOperations, sourceWorkspaces }), signal: AbortSignal.timeout(15000) };
+  const localRecipient = hooks?.x25519Recipient?.();
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1', 'x-kiki-mesh-metadata': '1' },
+    body: JSON.stringify({
+      code,
+      source: manager.identity,
+      sourceLabel: machineLabel(),
+      requestBridge,
+      bridgeOperations: input.bridgeOperations,
+      sourceWorkspaces,
+      ...(localRecipient === undefined ? {} : { x25519Recipient: localRecipient }),
+    }),
+    signal: AbortSignal.timeout(15000),
+  };
   const original = endpoint;
   const direct = isDirectConnectionHost(new URL(endpoint).hostname);
   let response: Response;
@@ -286,7 +302,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   const claimed = claimedSchema.parse(envelope.data);
   const bridges = claimed.bridge ?? [];
   const id = randomUUID();
-  const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint, pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes: bridges.length > 0 ? ['gui', 'bridge'] : ['gui'], backgroundSummary: input.backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0, ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }), ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }) };
+  const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint, pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes: bridges.length > 0 ? ['gui', 'bridge'] : ['gui'], backgroundSummary: input.backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0, ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }), ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }), ...(claimed.x25519Recipient === undefined ? {} : { x25519Recipient: claimed.x25519Recipient }) };
   let saved: RemoteConnection | undefined;
   try {
     saved = await manager.storePeer(record, { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision }, input.label);

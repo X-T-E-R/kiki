@@ -1,30 +1,51 @@
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
+  syncBundleSchema,
   type EncryptedCredentialEnvelope,
   type ProjectIdentity,
   type SkillRootSyncPlan,
+  type SyncBundle,
+  type SyncBundleExportInput,
+  type SyncBundleImportReceipt,
+  type SyncCredentialMergeReceipt,
+  type SyncMemoryRecord,
+  type SyncPeerTransferInput,
+  type SyncSkillFileEntry,
 } from '@kiki/protocol';
 import {
   ConfigTarget,
   CREDENTIALS_POOL_SECTION,
   extractPortableConfigLayer,
+  filterMemoriesForSync,
+  isSkillSyncExcluded,
+  isSyncConflictArtifact,
+  isValidProjectId,
   loadNativeAgeX25519Cipher,
   mergeCredentialEnvelopes,
   planSkillSync,
   projectRoots,
   resolveProjectIdentity,
+  sanitizeCredentialMergeReceipt,
   sealSyncedCredentialPool,
   userRoots,
   type AgeX25519Cipher,
   type AgeX25519Keypair,
-  type CredentialEnvelopeMergeResult,
   type CredentialsPoolSection,
   type IConfigRegistry,
   type IConfigService,
   type IMemoryScopes,
+  type IMemoryStore,
 } from '@kiki/agent-core-v2';
 
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
+
+export interface SyncPeerTransport {
+  resolvePeerRecipient(peerId: string): Promise<string | undefined>;
+  pushBundle(peerId: string, bundle: SyncBundle): Promise<SyncBundleImportReceipt>;
+  pullBundle(peerId: string, input: SyncBundleExportInput): Promise<SyncBundle>;
+}
 
 export interface SyncServiceOptions {
   readonly homeDir: string;
@@ -32,15 +53,22 @@ export interface SyncServiceOptions {
   readonly configService?: Pick<IConfigService, 'ready' | 'get' | 'inspect' | 'replace'>;
   readonly configRegistry?: Pick<IConfigRegistry, 'getSection' | 'listSections'>;
   readonly memoryScopes?: Pick<IMemoryScopes, 'bindWorkspace' | 'listProjectBindings'>;
+  readonly memoryStore?: Pick<IMemoryStore, 'list' | 'put' | 'get'>;
+  readonly peerTransport?: SyncPeerTransport;
   readonly cipher?: AgeX25519Cipher;
 }
 
-/** Coordinates device X25519 keys, per-entry credential envelopes, portable project identities, portable config export, and git-aware skill sync plans. */
+const EXCLUDED_SKILL_DIRS = new Set(['.git', 'node_modules']);
+const MAX_BUNDLE_SKILL_FILES = 512;
+const MAX_BUNDLE_SKILL_FILE_BYTES = 256 * 1024;
+
+/** Coordinates device X25519 keys, per-entry credential envelopes, portable project identities, portable config/memory/skill bundles, and peer push/pull sync. */
 export class SyncService {
   private readonly keyPath: string;
   private readonly cipher: AgeX25519Cipher;
   private cachedKeypair: AgeX25519Keypair | undefined;
   private keyLoadFlight: Promise<AgeX25519Keypair> | undefined;
+  private mergeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: SyncServiceOptions) {
     this.keyPath = join(options.homeDir, 'credentials', 'device-x25519.key');
@@ -89,24 +117,50 @@ export class SyncService {
     readonly envelopes: readonly EncryptedCredentialEnvelope[];
     readonly skipped: readonly { readonly credentialId: string; readonly reason: string }[];
   }> {
-    const pool = await this.readCredentialPool();
-    return sealSyncedCredentialPool(pool, input.recipients, {
+    const { userPool } = await this.readCredentialLayers();
+    return sealSyncedCredentialPool(userPool, input.recipients, {
       credentialIds: input.credentialIds,
       cipher: this.cipher,
     });
   }
 
-  async mergeIncomingCredentials(
+  mergeIncomingCredentials(
     envelopes: readonly EncryptedCredentialEnvelope[],
-  ): Promise<CredentialEnvelopeMergeResult> {
-    const keypair = await this.ensureDeviceKeypair();
-    const localPool = await this.readCredentialPool();
-    const result = mergeCredentialEnvelopes(localPool, envelopes, keypair.identity, this.cipher);
-    if (result.applied.length > 0 && this.options.configService !== undefined) {
-      await this.options.configService.ready;
-      await this.options.configService.replace(CREDENTIALS_POOL_SECTION, result.merged, ConfigTarget.User);
-    }
-    return result;
+  ): Promise<SyncCredentialMergeReceipt> {
+    const run = this.mergeChain.then(async () => {
+      const keypair = await this.ensureDeviceKeypair();
+      const { userPool, localMachineIds } = await this.readCredentialLayers();
+      const result = mergeCredentialEnvelopes(
+        userPool,
+        envelopes,
+        keypair.identity,
+        this.cipher,
+        localMachineIds,
+      );
+      if (result.applied.length > 0 && this.options.configService !== undefined) {
+        await this.options.configService.ready;
+        await this.options.configService.replace(CREDENTIALS_POOL_SECTION, result.merged, ConfigTarget.User);
+      }
+      const revision = createHash('sha256')
+        .update(
+          JSON.stringify(
+            Object.entries(result.merged)
+              .map(([id, entry]): readonly [string, string, string] => [id, entry.revision ?? '', entry.updatedAt ?? ''])
+              .toSorted((left, right) => left[0].localeCompare(right[0])),
+          ),
+        )
+        .digest('hex')
+        .slice(0, 16);
+      const receipt = sanitizeCredentialMergeReceipt(result, `cred:${revision}`);
+      return {
+        appliedIds: [...receipt.appliedIds],
+        skippedIds: receipt.skippedIds.map((entry) => ({ credentialId: entry.credentialId, reason: entry.reason })),
+        conflictIds: [...receipt.conflictIds],
+        revision: receipt.revision,
+      };
+    });
+    this.mergeChain = run.catch(() => undefined);
+    return run;
   }
 
   async resolveProjectIdentity(cwd: string, bind = true): Promise<ProjectIdentity> {
@@ -140,9 +194,363 @@ export class SyncService {
     return planSkillSync(roots);
   }
 
-  private async readCredentialPool(): Promise<CredentialsPoolSection> {
-    if (this.options.configService === undefined) return {};
-    await this.options.configService.ready;
-    return this.options.configService.get<CredentialsPoolSection>(CREDENTIALS_POOL_SECTION) ?? {};
+  async exportSyncBundle(input: SyncBundleExportInput): Promise<SyncBundle> {
+    const portableConfig = input.includeConfig ? await this.exportPortableConfig() : undefined;
+    let credentialEnvelopes: EncryptedCredentialEnvelope[] | undefined;
+    if (input.includeCredentials && input.recipients !== undefined && input.recipients.length > 0) {
+      const sealed = await this.sealSyncedCredentials({
+        recipients: input.recipients,
+        credentialIds: input.credentialIds,
+      });
+      credentialEnvelopes = [...sealed.envelopes];
+    }
+    const memories = input.includeMemories
+      ? await this.exportPortableMemories(input.projectIds)
+      : undefined;
+    const skillPlans = input.includeSkills ? [...(await this.planSkillsSync(input.workDir))] : undefined;
+    const skills = input.includeSkills
+      ? await this.exportPortableSkills(input.workDir, input.targetPlatform)
+      : undefined;
+
+    return syncBundleSchema.parse({
+      format: 'kiki.sync-bundle.v1',
+      exportedAt: new Date().toISOString(),
+      ...(portableConfig === undefined ? {} : { portableConfig }),
+      ...(credentialEnvelopes === undefined ? {} : { credentialEnvelopes }),
+      ...(memories === undefined ? {} : { memories }),
+      ...(skills === undefined ? {} : { skills }),
+      ...(skillPlans === undefined ? {} : { skillPlans }),
+    });
   }
+
+  async importSyncBundle(rawBundle: SyncBundle): Promise<SyncBundleImportReceipt> {
+    const bundle = syncBundleSchema.parse(rawBundle);
+    const configDomainsApplied: string[] = [];
+    if (bundle.portableConfig !== undefined && this.options.configService !== undefined) {
+      await this.options.configService.ready;
+      const sanitized = extractPortableConfigLayer(bundle.portableConfig, this.options.configRegistry);
+      for (const [domain, value] of Object.entries(sanitized)) {
+        if (domain === CREDENTIALS_POOL_SECTION) continue;
+        await this.options.configService.replace(domain, value, ConfigTarget.User);
+        configDomainsApplied.push(domain);
+      }
+    }
+
+    const credentials = await this.mergeIncomingCredentials(bundle.credentialEnvelopes ?? []);
+
+    let memoriesApplied = 0;
+    let memoriesSkipped = 0;
+    if (bundle.memories !== undefined && this.options.memoryStore !== undefined) {
+      for (const item of bundle.memories) {
+        if (!isValidProjectId(item.projectId)) {
+          memoriesSkipped += 1;
+          continue;
+        }
+        const scope = { kind: 'workspace' as const, workspaceId: item.projectId };
+        const existing = await this.options.memoryStore.get(scope, item.id);
+        if (existing !== undefined) {
+          if (existing.updated >= item.updated || existing.body === item.body) {
+            memoriesSkipped += 1;
+            continue;
+          }
+          await this.options.memoryStore.put({
+            action: 'update',
+            scope,
+            id: existing.id,
+            expectedRevision: existing.revision,
+            type: item.type,
+            title: item.title,
+            body: item.body,
+            pinned: item.pinned,
+            applicability: 'portable',
+            origin_host_id: item.origin_host_id,
+            reason: 'Cross-machine portable memory sync',
+            source: { writer: 'import' },
+          });
+          memoriesApplied += 1;
+          continue;
+        }
+        try {
+          await this.options.memoryStore.put({
+            action: 'create',
+            scope,
+            type: item.type,
+            title: item.title,
+            body: item.body,
+            pinned: item.pinned,
+            applicability: 'portable',
+            origin_host_id: item.origin_host_id,
+            reason: 'Cross-machine portable memory sync',
+            source: { writer: 'import' },
+          });
+          memoriesApplied += 1;
+        } catch {
+          memoriesSkipped += 1;
+        }
+      }
+    }
+
+    let skillsApplied = 0;
+    let skillsSkipped = 0;
+    if (bundle.skills !== undefined && bundle.skills.length > 0) {
+      const targetRoot = resolve(join(this.options.homeDir, 'skills'));
+      await mkdir(targetRoot, { recursive: true });
+      for (const file of bundle.skills) {
+        if (
+          isSkillSyncExcluded({ name: file.skillName, targetPlatform: process.platform }) ||
+          !isSafeRelativeSkillPath(file.relativePath)
+        ) {
+          skillsSkipped += 1;
+          continue;
+        }
+        const dest = resolve(targetRoot, file.skillName, file.relativePath);
+        const rel = relative(targetRoot, dest);
+        if (rel.startsWith('..') || isAbsolute(rel)) {
+          skillsSkipped += 1;
+          continue;
+        }
+        const bytes = Buffer.from(file.contentBase64, 'base64');
+        if (file.relativePath === 'SKILL.md') {
+          const fm = parseSkillFrontmatter(bytes.toString('utf8'));
+          if (isSkillSyncExcluded({ name: file.skillName, frontmatter: fm, targetPlatform: process.platform })) {
+            skillsSkipped += 1;
+            continue;
+          }
+        }
+        await mkdir(dirname(dest), { recursive: true });
+        await writeFile(dest, bytes);
+        skillsApplied += 1;
+      }
+    }
+
+    return {
+      configDomainsApplied: configDomainsApplied.toSorted(),
+      credentials,
+      memoriesApplied,
+      memoriesSkipped,
+      skillsApplied,
+      skillsSkipped,
+    };
+  }
+
+  async pushToPeer(peerId: string, input: SyncPeerTransferInput): Promise<SyncBundleImportReceipt> {
+    if (this.options.peerTransport === undefined) {
+      throw new Error('Peer sync transport is not configured');
+    }
+    const peerRecipient = await this.options.peerTransport.resolvePeerRecipient(peerId);
+    const recipients = peerRecipient === undefined ? [] : [peerRecipient];
+    const bundle = await this.exportSyncBundle({
+      recipients,
+      credentialIds: input.credentialIds,
+      projectIds: input.projectIds,
+      workDir: input.workDir,
+      includeConfig: input.includeConfig,
+      includeCredentials: input.includeCredentials && recipients.length > 0,
+      includeMemories: input.includeMemories,
+      includeSkills: input.includeSkills,
+    });
+    return this.options.peerTransport.pushBundle(peerId, bundle);
+  }
+
+  async pullFromPeer(peerId: string, input: SyncPeerTransferInput): Promise<SyncBundleImportReceipt> {
+    if (this.options.peerTransport === undefined) {
+      throw new Error('Peer sync transport is not configured');
+    }
+    const localKey = await this.ensureDeviceKeypair();
+    const bundle = await this.options.peerTransport.pullBundle(peerId, {
+      recipients: [localKey.recipient],
+      credentialIds: input.credentialIds,
+      projectIds: input.projectIds,
+      workDir: input.workDir,
+      includeConfig: input.includeConfig,
+      includeCredentials: input.includeCredentials,
+      includeMemories: input.includeMemories,
+      includeSkills: input.includeSkills,
+      targetPlatform: process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux',
+    });
+    return this.importSyncBundle(bundle);
+  }
+
+  private async exportPortableMemories(
+    explicitProjectIds?: readonly string[],
+  ): Promise<SyncMemoryRecord[]> {
+    if (this.options.memoryStore === undefined) return [];
+    const projectIds = new Set<string>();
+    if (explicitProjectIds !== undefined) {
+      for (const id of explicitProjectIds) {
+        if (isValidProjectId(id)) projectIds.add(id);
+      }
+    } else if (this.options.memoryScopes?.listProjectBindings !== undefined) {
+      for (const binding of await this.options.memoryScopes.listProjectBindings()) {
+        if (isValidProjectId(binding.projectId)) projectIds.add(binding.projectId);
+      }
+    }
+    const records: SyncMemoryRecord[] = [];
+    for (const projectId of [...projectIds].toSorted()) {
+      const listed = await this.options.memoryStore.list({ kind: 'workspace', workspaceId: projectId });
+      for (const entry of filterMemoriesForSync(listed)) {
+        if (entry.status !== 'active') continue;
+        records.push({
+          id: entry.id,
+          projectId,
+          type: entry.type,
+          title: entry.title,
+          body: entry.body,
+          pinned: entry.pinned,
+          updated: entry.updated,
+          revision: entry.revision,
+          applicability: 'portable',
+          ...(entry.origin_host_id === undefined ? {} : { origin_host_id: entry.origin_host_id }),
+        });
+      }
+    }
+    return records;
+  }
+
+  private async exportPortableSkills(
+    workDir?: string,
+    targetPlatform?: 'win32' | 'darwin' | 'linux',
+  ): Promise<SyncSkillFileEntry[]> {
+    const kikiHomeSkills = resolve(join(this.options.homeDir, 'skills'));
+    const candidateRoots = [
+      { path: kikiHomeSkills, source: 'user' as const },
+      ...(workDir === undefined ? [] : await projectRoots(workDir)),
+    ];
+    const plans = await planSkillSync(candidateRoots);
+    const fileTreeRoots = plans.filter((plan) => plan.transport === 'file_tree');
+    const files: SyncSkillFileEntry[] = [];
+    const seen = new Set<string>();
+    for (const root of fileTreeRoots) {
+      let entries;
+      try {
+        entries = await readdir(root.path, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (files.length >= MAX_BUNDLE_SKILL_FILES) return files;
+        if (!entry.isDirectory()) continue;
+        if (EXCLUDED_SKILL_DIRS.has(entry.name)) continue;
+        const skillDir = join(root.path, entry.name);
+        const skillMdPath = join(skillDir, 'SKILL.md');
+        let skillMdText: string;
+        try {
+          skillMdText = await readFile(skillMdPath, 'utf8');
+        } catch {
+          continue;
+        }
+        const fm = parseSkillFrontmatter(skillMdText);
+        if (isSkillSyncExcluded({ name: entry.name, frontmatter: fm, targetPlatform })) {
+          continue;
+        }
+        await collectSkillFiles(skillDir, entry.name, files, seen);
+      }
+    }
+    return files;
+  }
+
+  private async readCredentialLayers(): Promise<{
+    readonly userPool: CredentialsPoolSection;
+    readonly localMachineIds: ReadonlySet<string>;
+  }> {
+    if (this.options.configService === undefined) {
+      return { userPool: {}, localMachineIds: new Set() };
+    }
+    await this.options.configService.ready;
+    const inspected = this.options.configService.inspect(CREDENTIALS_POOL_SECTION);
+    const userPool = isRecord(inspected.userValue)
+      ? (inspected.userValue as CredentialsPoolSection)
+      : {};
+    const localPool = isRecord(inspected.localValue)
+      ? (inspected.localValue as CredentialsPoolSection)
+      : {};
+    return {
+      userPool,
+      localMachineIds: new Set(Object.keys(localPool)),
+    };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSafeRelativeSkillPath(relPath: string): boolean {
+  const normalized = relPath.replaceAll('\\', '/');
+  if (normalized === '' || normalized.startsWith('/') || isAbsolute(relPath)) return false;
+  return !normalized
+    .split('/')
+    .some((seg) => seg === '' || seg === '.' || seg === '..' || EXCLUDED_SKILL_DIRS.has(seg) || isSyncConflictArtifact(seg));
+}
+
+function parseSkillFrontmatter(content: string): Record<string, unknown> | undefined {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+  if (match === null) return undefined;
+  const result: Record<string, unknown> = {};
+  const lines = match[1]!.split(/\r?\n/);
+  let currentListKey: string | undefined;
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (currentListKey !== undefined && /^\s+-\s+/.test(rawLine)) {
+      const value = trimmed.replace(/^-\s+/, '').replace(/^['"]|['"]$/g, '').trim();
+      const existing = result[currentListKey];
+      if (Array.isArray(existing)) existing.push(value);
+      continue;
+    }
+    currentListKey = undefined;
+    const colon = trimmed.indexOf(':');
+    if (colon <= 0) continue;
+    const key = trimmed.slice(0, colon).trim();
+    const rawVal = trimmed.slice(colon + 1).trim();
+    if (rawVal === '') {
+      result[key] = [];
+      currentListKey = key;
+    } else if (rawVal === 'true') {
+      result[key] = true;
+    } else if (rawVal === 'false') {
+      result[key] = false;
+    } else if (rawVal.startsWith('[') && rawVal.endsWith(']')) {
+      result[key] = rawVal
+        .slice(1, -1)
+        .split(',')
+        .map((item) => item.trim().replace(/^['"]|['"]$/g, ''))
+        .filter((item) => item.length > 0);
+    } else {
+      result[key] = rawVal.replace(/^['"]|['"]$/g, '');
+    }
+  }
+  return result;
+}
+
+async function collectSkillFiles(
+  skillDir: string,
+  skillName: string,
+  out: SyncSkillFileEntry[],
+  seen: Set<string>,
+): Promise<void> {
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (EXCLUDED_SKILL_DIRS.has(entry.name) || isSyncConflictArtifact(entry.name)) continue;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile()) {
+        if (out.length >= MAX_BUNDLE_SKILL_FILES) return;
+        const rel = relative(skillDir, fullPath).replaceAll('\\', '/');
+        const key = `${skillName}\0${rel}`;
+        if (seen.has(key)) continue;
+        const bytes = await readFile(fullPath);
+        if (bytes.byteLength > MAX_BUNDLE_SKILL_FILE_BYTES) continue;
+        seen.add(key);
+        out.push({
+          skillName,
+          relativePath: rel,
+          contentBase64: bytes.toString('base64'),
+        });
+      }
+    }
+  };
+  await walk(skillDir);
 }

@@ -1,15 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  syncBundleExportInputSchema,
+  syncBundleSchema,
   syncCredentialMergeInputSchema,
   syncCredentialSealInputSchema,
+  syncPeerTransferInputSchema,
   syncProjectIdentityResolveInputSchema,
 } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import type { SyncService } from '../services/sync/syncService';
 
-/** Registers REST endpoints for device X25519 keys, per-entry credential envelopes, project identity resolution, portable config export, and skill sync plans. */
+/** Registers REST endpoints for device X25519 keys, per-entry credential envelopes, project identity resolution, portable config/memory/skill bundles, and peer push/pull sync. */
 export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): void {
   const handle = async <T>(
     requestId: string,
@@ -22,6 +25,10 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
       if (error instanceof z.ZodError) {
         reply.code(400);
         return reply.send(errEnvelope(40001, error.message, requestId));
+      }
+      if (error instanceof Error && error.message.includes('not found')) {
+        reply.code(404);
+        return reply.send(errEnvelope(40401, error.message, requestId));
       }
       throw error;
     }
@@ -63,5 +70,35 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
         : undefined;
       return sync.planSkillsSync(workDir);
     }),
+  );
+
+  app.post('/api/sync/bundle/export', { bodyLimit: 65_536 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.exportSyncBundle(syncBundleExportInputSchema.parse(req.body ?? {})),
+    ),
+  );
+
+  app.post('/api/sync/bundle/import', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.importSyncBundle(syncBundleSchema.parse(req.body)),
+    ),
+  );
+
+  app.post('/api/sync/peers/:peerId/push', { bodyLimit: 65_536 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.pushToPeer(
+        (req.params as { peerId: string }).peerId,
+        syncPeerTransferInputSchema.parse(req.body ?? {}),
+      ),
+    ),
+  );
+
+  app.post('/api/sync/peers/:peerId/pull', { bodyLimit: 65_536 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.pullFromPeer(
+        (req.params as { peerId: string }).peerId,
+        syncPeerTransferInputSchema.parse(req.body ?? {}),
+      ),
+    ),
   );
 }
