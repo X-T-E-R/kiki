@@ -4345,7 +4345,12 @@ function virtualQuestionBlock(id = 'question-q1'): Block {
 }
 
 function virtualItemStart(item: Element): number {
-  return Number.parseFloat((item as HTMLElement).style.top || '0');
+  const style = (item as HTMLElement).style;
+  if (style.transform) {
+    const match = /translate(?:3d\(\s*[^,]+,\s*|Y\()(-?[\d.]+)px/.exec(style.transform);
+    if (match?.[1] !== undefined) return Number.parseFloat(match[1]);
+  }
+  return Number.parseFloat(style.top || '0');
 }
 
 function currentVirtualAnchor(container: HTMLDivElement): { blockId: string; offset: number } {

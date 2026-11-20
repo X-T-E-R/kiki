@@ -94,6 +94,12 @@ interface ConversationShellContextValue {
 }
 
 const ConversationShellContext = createContext<ConversationShellContextValue | null>(null);
+const ConversationSeatHeightContext = createContext<number>(0);
+
+/** Measured pixel height of the bottom-docked composer seat (0 in hero / outside shell). */
+export function useConversationSeatHeight(): number {
+  return useContext(ConversationSeatHeightContext);
+}
 
 /** Slot set with no targets — workspace chrome simply stays unportaled. */
 export const EMPTY_SLOTS: ConversationShellSlots = {
@@ -319,8 +325,37 @@ export function ConversationShell() {
   prevSessionIdRef.current = routeSessionId;
   const centerCovered = previewPresentation.maximized && preview !== null;
 
+  const middleRef = useRef<HTMLDivElement>(null);
+  const seatElementRef = useRef<HTMLDivElement>(null);
+  const [seatHeight, setSeatHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const middle = middleRef.current;
+    const seatEl = seatElementRef.current;
+    if (phase === 'hero' || seatEl === null) {
+      middle?.style.removeProperty('--kiki-seat-height');
+      setSeatHeight(0);
+      return;
+    }
+    const sync = () => {
+      const next = Math.ceil(seatEl.getBoundingClientRect().height);
+      if (next > 0) {
+        middle?.style.setProperty('--kiki-seat-height', `${next}px`);
+      } else {
+        middle?.style.removeProperty('--kiki-seat-height');
+      }
+      setSeatHeight((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(seatEl);
+    return () => { observer.disconnect(); };
+  }, [phase]);
+
   return (
     <ConversationShellContext.Provider value={contextValue}>
+      <ConversationSeatHeightContext.Provider value={seatHeight}>
       <div
         className="conversation-shell"
         data-phase={phase}
@@ -371,13 +406,13 @@ export function ConversationShell() {
             }}
           >
             <div ref={headerRef} className="conversation-header-slot" />
-            <div className="conversation-middle">
+            <div ref={middleRef} className="conversation-middle">
               {/* <main>: the route's primary content landmark (the burst
                   proof's mutation observer also binds here). */}
               <main className="conversation-body">
                 <Outlet />
               </main>
-              <div className="conversation-seat" data-composer-seat="">
+              <div ref={seatElementRef} className="conversation-seat" data-composer-seat="">
                 {phase === 'hero' ? <HeroGlow className="hero-glow" /> : null}
                 <div ref={dockRef} className="conversation-dock-slot" />
                 <SeatFileDropContext.Provider value={seatFileDrop}>
@@ -399,6 +434,7 @@ export function ConversationShell() {
           <div ref={railRef} className="conversation-rail-slot" />
         </div>
       </div>
+      </ConversationSeatHeightContext.Provider>
     </ConversationShellContext.Provider>
   );
 }

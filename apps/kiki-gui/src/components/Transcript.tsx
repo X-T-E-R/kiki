@@ -151,6 +151,7 @@ import { AnnotationPopover, type AnnotationPopoverOpen } from './AnnotationPopov
 import { QuoteChip } from './ContextChips';
 import { ModelSwitchNotice } from './model-switch/ModelSwitchNotice';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
+import { useConversationSeatHeight } from './ConversationShell';
 import { FloorNavRail } from './FloorNavRail';
 import {
   TRANSCRIPT_END_THRESHOLD,
@@ -4317,10 +4318,10 @@ function MeasuredTranscriptRow({ index, rowKey, start, virtualizer, onDetach, ar
   const measure = useCallback((element: HTMLDivElement | null) => {
     if (element === null && rowRef.current !== null) onDetach(rowRef.current);
     if (element !== null) {
-      // Seed top position synchronously on first mount so directDomUpdates never
-      // paints a brand-new row at top: 0 before its post-commit layout pass.
-      if (element.style.top === '') {
-        element.style.top = `${startRef.current - virtualizer.options.scrollMargin}px`;
+      // Seed transform position synchronously on first mount so directDomUpdates
+      // never paints a brand-new row at y=0 before its post-commit layout pass.
+      if (element.style.transform === '') {
+        element.style.transform = `translate3d(0, ${startRef.current - virtualizer.options.scrollMargin}px, 0)`;
       }
       if (!entering) {
         element.querySelectorAll<HTMLElement>('.anim-enter').forEach((entrance) => { entrance.style.animation = 'none'; });
@@ -4344,7 +4345,7 @@ function MeasuredTranscriptRow({ index, rowKey, start, virtualizer, onDetach, ar
           event.target.style.animation = 'none';
         }
       }}
-      className="absolute left-0 w-full hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
+      className="absolute top-0 left-0 w-full hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
     >
       {children}
     </div>
@@ -4640,7 +4641,8 @@ function JumpToBottom({
       data-jump-has-new={hasNew || undefined}
       aria-label={hasNew ? t('transcript.jumpToLatestNew') : undefined}
       onClick={onJump}
-      className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
+      style={{ transform: 'translate(-50%, calc(-1 * max(16px, var(--kiki-seat-height, 148px) - 20px)))' }}
+      className="absolute bottom-0 left-1/2 z-10 flex min-h-8 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
       {/* Breathing means "working" everywhere else in the app (motion.css),
@@ -6203,6 +6205,16 @@ export const Transcript = memo(function Transcript({
     }
     priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
   }, [state.transcriptResetVersion, virtualNodes.length]);
+  const seatHeight = useConversationSeatHeight();
+  const hasTailContent =
+    (view === 'message' && presence !== undefined)
+    || (showTurnStatus && view !== 'message')
+    || (!state.busy && state.turnTail !== undefined)
+    || state.refreshing === true;
+  const seatPaddingEnd = 60 + Math.max(0, seatHeight - 36);
+  const seatPaddingEndRef = useRef(seatPaddingEnd);
+  seatPaddingEndRef.current = seatPaddingEnd;
+  const tailSlotRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
@@ -6213,14 +6225,14 @@ export const Transcript = memo(function Transcript({
     overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
     paddingStart: 24,
-    paddingEnd: 60,
+    paddingEnd: seatPaddingEnd,
     // The base gap; rowSpacing tightens or widens it per lane transition.
     gap: 16,
     initialRect: { width: 760, height: 600 },
     useAnimationFrameWithResizeObserver: false,
     useFlushSync: false,
     directDomUpdates: true,
-    directDomUpdatesMode: 'position',
+    directDomUpdatesMode: 'transform',
     scrollToFn: (offset, options, instance) => {
       const el = instance.scrollElement;
       if (el !== null && options?.behavior !== 'smooth') {
@@ -6259,6 +6271,10 @@ export const Transcript = memo(function Transcript({
       const nextTotalSize = instance.getTotalSize();
       const prevTotalSize = lastTotalSizeRef.current;
       lastTotalSizeRef.current = nextTotalSize;
+      if (tailSlotRef.current !== null) {
+        const tailY = Math.max(0, nextTotalSize - seatPaddingEndRef.current + 12);
+        tailSlotRef.current.style.transform = `translate3d(0, ${tailY}px, 0)`;
+      }
       // Sync user-initiated scroll changes BEFORE checking `isFollowingBottom()`,
       // since virtualizer's scroll listener fires before component-level scroll effects.
       if (el !== null && el.isConnected && el.clientHeight > 0) {
@@ -7620,14 +7636,14 @@ export const Transcript = memo(function Transcript({
         data-transcript-scroll
         role="log"
         tabIndex={-1}
-        className="absolute inset-0 overflow-y-auto overflow-x-hidden [overflow-anchor:none] outline-none"
+        className="absolute inset-0 overflow-y-auto overflow-x-hidden [contain:layout_style] [overflow-anchor:none] outline-none"
         onClickCapture={handleDisclosureClick}
         onClick={handleAnnotationClick}
         onKeyDown={handleAnnotationKeyDown}
         onScroll={handleAnnotationScroll}
       >
         {showEmptyWordmark ? (
-          <div className="flex h-full min-h-full flex-1 flex-col items-center justify-center gap-3 opacity-70">
+          <div className="flex h-full min-h-full flex-1 flex-col items-center justify-center gap-3 pb-[max(0px,calc(var(--kiki-seat-height,148px)-36px))] opacity-70">
             <Wordmark size="lg" />
             {sessionRemainderPending ? null : state.historyCoverageKind === 'unknown' ? (
               <span role="img" data-history-unverified title={t('transcript.historyPartial')} aria-label={t('transcript.historyPartial')} className="inline-flex text-ink-faint">
@@ -7672,7 +7688,6 @@ export const Transcript = memo(function Transcript({
           {virtualItems.map((virtualItem) => {
             const node = virtualNodes[virtualItem.index];
             const first = virtualItem.index === 0;
-            const last = virtualItem.index === virtualNodes.length - 1;
             const spacing = first ? '' : rowSpacing(virtualNodes[virtualItem.index - 1], node, view);
             // The turn's own tail: the last row that still belongs to this
             // turn. The turn's structure can be cut by the window (its step
@@ -7769,46 +7784,6 @@ export const Transcript = memo(function Transcript({
                   {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
                     <TurnStepsContinuation turnId={turnTailId} visible={visible} foldOpen={!closedFoldTurns.has(turnTailId)} />
                   ) : null}
-                  {last && view === 'message' && presence !== undefined ? (
-                    <div className={AGENT_LANE}>
-                      <PresenceLine
-                        text={t(presence.kind === 'typing' ? 'message.typing' : 'message.working', {
-                          name: messageContext.persona?.name ?? t('agentMessage.agent'),
-                        })}
-                        detail={presence.kind === 'working'
-                          ? presence.reads > 0
-                            ? t('message.readSoFar', { count: presence.reads })
-                            : presence.commands > 0
-                              ? t('message.ranSoFar', { count: presence.commands })
-                              : presence.steps > 0 ? t('message.steps', { count: presence.steps }) : undefined
-                          : undefined}
-                      />
-                    </div>
-                  ) : last && showTurnStatus && view !== 'message' ? (
-                    <div className={AGENT_LANE}>
-                      <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
-                    </div>
-                  ) : null}
-                  {last && !state.busy && state.turnTail !== undefined ? (
-                    <div className={AGENT_LANE}>
-                      <TurnTailLine
-                        tail={state.turnTail}
-                        gap={replyGap}
-                        onResume={resumeStopped}
-                        resumeDisabled={rowActions?.disabled === true}
-                        onRetry={tailRetry}
-                        retryDisabled={promptOutcomeActions.disabled === true}
-                        onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
-                        onRetryFailed={!readOnly && onRetryFailedTurn !== undefined ? () => { onRetryFailedTurn(failedTurnUserBlock); } : undefined}
-                        failedHasWork={failedTurnHasWork}
-                      />
-                    </div>
-                  ) : null}
-                  {last && state.refreshing === true ? (
-                    <div className={AGENT_LANE}>
-                      <RefreshingStatusLine />
-                    </div>
-                  ) : null}
                   {/* The session's own remainder moved to the composer's footer,
                       which is where a reader looking at the input sees it and
                       where it does not perturb this cell's measurement: it used
@@ -7818,6 +7793,57 @@ export const Transcript = memo(function Transcript({
               </MeasuredTranscriptRow>
             );
           })}
+          {hasTailContent ? (
+            <div
+              ref={tailSlotRef}
+              data-transcript-tail-slot
+              className="pointer-events-none absolute top-0 left-0 w-full"
+              style={{ transform: `translate3d(0, ${Math.max(0, virtualizer.getTotalSize() - seatPaddingEnd + 12)}px, 0)` }}
+            >
+              <div className="pointer-events-auto mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6">
+                {view === 'message' && presence !== undefined ? (
+                  <div className={AGENT_LANE}>
+                    <PresenceLine
+                      text={t(presence.kind === 'typing' ? 'message.typing' : 'message.working', {
+                        name: messageContext.persona?.name ?? t('agentMessage.agent'),
+                      })}
+                      detail={presence.kind === 'working'
+                        ? presence.reads > 0
+                          ? t('message.readSoFar', { count: presence.reads })
+                          : presence.commands > 0
+                            ? t('message.ranSoFar', { count: presence.commands })
+                            : presence.steps > 0 ? t('message.steps', { count: presence.steps }) : undefined
+                        : undefined}
+                    />
+                  </div>
+                ) : showTurnStatus && view !== 'message' ? (
+                  <div className={AGENT_LANE}>
+                    <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
+                  </div>
+                ) : null}
+                {!state.busy && state.turnTail !== undefined ? (
+                  <div className={AGENT_LANE}>
+                    <TurnTailLine
+                      tail={state.turnTail}
+                      gap={replyGap}
+                      onResume={resumeStopped}
+                      resumeDisabled={rowActions?.disabled === true}
+                      onRetry={tailRetry}
+                      retryDisabled={promptOutcomeActions.disabled === true}
+                      onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
+                      onRetryFailed={!readOnly && onRetryFailedTurn !== undefined ? () => { onRetryFailedTurn(failedTurnUserBlock); } : undefined}
+                      failedHasWork={failedTurnHasWork}
+                    />
+                  </div>
+                ) : null}
+                {state.refreshing === true ? (
+                  <div className={AGENT_LANE}>
+                    <RefreshingStatusLine />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
         </PhoneMergedPendingLeadContext.Provider>
         </CompactionRecoveryContext.Provider>

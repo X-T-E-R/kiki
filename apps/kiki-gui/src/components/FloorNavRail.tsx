@@ -207,7 +207,7 @@ function FloorNavRailBody({
       onMouseLeave={() => { setHovering(false); }}
       onFocus={() => { setHovering(true); }}
       onBlur={() => { setHovering(false); }}
-      className={`group/floor absolute top-1/2 right-0.5 z-10 flex pointer-coarse:hidden -translate-y-1/2 flex-col items-end gap-[6px] rounded-l-md py-2 pr-1 pl-3 transition-opacity duration-200 motion-reduce:transition-none ${
+      className={`group/floor absolute top-[clamp(88px,32dvh,280px)] right-0.5 z-10 flex max-h-[38dvh] overflow-hidden pointer-coarse:hidden flex-col items-end gap-[6px] rounded-l-md py-2 pr-1 pl-3 transition-opacity duration-200 motion-reduce:transition-none ${
         hovering ? 'opacity-100' : visible ? 'opacity-60' : 'pointer-events-none opacity-0'
       }`}
     >

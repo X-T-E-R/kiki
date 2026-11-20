@@ -143,16 +143,19 @@ export const InspectorNow = memo(function InspectorNow({
       : running ? t('inspector.nowWorking') : t('inspector.nowIdle');
   const failed = knownSubStatus === 'failed';
   const result = knownSubStatus === 'completed' ? subagent?.result : undefined;
-  // The excerpt: a failure (one plain sentence, never a payload), a result,
-  // the brief of a subagent that has not spoken yet, or the last thing a
-  // running agent said. One of them, never a stack of three.
-  const excerpt = failed
-    ? (plainFailure(subagent?.error) ?? t('inspector.failedNoDetail'))
-    : result !== undefined && result !== ''
-      ? result
-      : running && said !== undefined
-        ? said
-        : subagent?.brief;
+  // The excerpt belongs to subagent inspection (failure, result, live line, or
+  // brief). Main's live reply is already streaming beside the rail in the center
+  // transcript, so omitting a variable-height excerpt on main prevents the rail
+  // from bouncing on every turn transition.
+  const excerpt = subagent === undefined
+    ? undefined
+    : failed
+      ? (plainFailure(subagent.error) ?? t('inspector.failedNoDetail'))
+      : result !== undefined && result !== ''
+        ? result
+        : running && said !== undefined
+          ? said
+          : subagent.brief;
   const quiet = state === 'idle' && knownSubStatus === undefined;
   const hasMark = life !== 'idle';
   return (

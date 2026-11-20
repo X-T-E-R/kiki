@@ -489,7 +489,73 @@ export default {
     },
   },
   onPrompt: (text, _sessionId) => {
-    const reply = `${ANSWER_TEXT} (echo: ${String(text ?? '').slice(0, 48)})`;
+    const promptText = String(text ?? '');
+    if (promptText.includes('[cls-storm]')) {
+      const frames = [
+        turnStart(21),
+        workChanged(true),
+        { frame: { type: 'turn.step.started', payload: { turnId: 21, step: 1 } } },
+        {
+          delay: 40,
+          frame: {
+            type: 'tool.started',
+            payload: {
+              turnId: 21,
+              toolCallId: 'call_storm_grep',
+              name: 'Grep',
+              input: { pattern: 'conversation-seat', path: 'apps/kiki-gui/src' },
+            },
+          },
+        },
+      ];
+      for (let i = 1; i <= 10; i += 1) {
+        const id = `storm_sub_${String(i).padStart(2, '0')}`;
+        frames.push(
+          {
+            delay: 55,
+            frame: {
+              type: 'subagent.spawned',
+              payload: {
+                subagentId: id,
+                subagentName: `worker_${String(i).padStart(2, '0')}`,
+                parentToolCallId: `call_storm_sub_${i}`,
+                description: `Live layout-shift stress worker #${i}`,
+                runInBackground: true,
+                model: 'fixture/kiki-pro',
+                thinkingEffort: 'high',
+              },
+            },
+          },
+          { delay: 20, frame: { type: 'subagent.started', payload: { subagentId: id } } },
+        );
+      }
+      for (let i = 1; i <= 4; i += 1) {
+        const id = `storm_sub_${String(i).padStart(2, '0')}`;
+        frames.push({
+          delay: 45,
+          frame: {
+            type: 'subagent.completed',
+            payload: { subagentId: id, resultSummary: `Worker #${i} verified zero CLS.` },
+          },
+        });
+      }
+      frames.push(
+        {
+          delay: 40,
+          frame: {
+            type: 'tool.ended',
+            payload: { turnId: 21, toolCallId: 'call_storm_grep', name: 'Grep', ok: true, output: '3 matches' },
+          },
+        },
+        ...streamSteps('assistant.delta', 21, '并发 10 个子代理与多行输入、附件上传及排队条切换期间，布局零抖动。', { per: 14, delay: 25 }),
+        { delay: 80 },
+        commitAssistant('并发 10 个子代理与多行输入、附件上传及排队条切换期间，布局零抖动。'),
+        workChanged(false),
+        turnEnd(21, 'completed'),
+      );
+      return frames;
+    }
+    const reply = `${ANSWER_TEXT} (echo: ${promptText.slice(0, 48)})`;
     return [
       turnStart(20),
       workChanged(true),

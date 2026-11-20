@@ -226,7 +226,7 @@ export const InspectorOverview = memo(function InspectorOverview({
               ) : null}
             </div>
           ) : null}
-          <p className="flex min-w-0 gap-1.5 text-[11.5px] text-ink-faint tabular-nums">
+          <p className="flex min-w-0 gap-1.5 overflow-hidden whitespace-nowrap text-[11.5px] text-ink-faint tabular-nums">
             {pct !== undefined ? <span>{t('inspector.ofWindow', { pct })}</span> : null}
             {compactPoint !== undefined ? (
               <>
@@ -241,7 +241,7 @@ export const InspectorOverview = memo(function InspectorOverview({
       ) : null}
 
       {figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial ? (
-        <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5">
+        <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-nowrap items-baseline gap-x-4 overflow-hidden">
           {figureCells}
           {shown.counting === true ? (
             <span role="status" data-metrics-counting title={t('usage.strip.counting')} aria-label={t('usage.strip.counting')} className="inline-flex text-ink-faint">

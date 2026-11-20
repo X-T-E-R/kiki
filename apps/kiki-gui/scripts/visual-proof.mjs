@@ -8677,6 +8677,91 @@ async function scenarioGuiPresetStates() {
   await shot('preset-13-composer-mesh-ssh-capsule');
   await page.keyboard.press('Escape');
   await page.locator('[data-composer-ssh-list]').waitFor({ state: 'detached', timeout: 5_000 });
+
+  // ── Preset 14 (CLS Storm Guard): 10-subagent live storm + RightRail status updates + multi-line typing + PNG attach + queued prompt ─
+  await page.goto(job().link('/s/session_preset_mesh_ssh'), { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-transcript-scroll]').waitFor({ timeout: 15_000 });
+  if ((await page.locator('[data-session-rail]').count()) === 0) {
+    await page.locator('[data-rail-toggle]').click();
+    await page.locator('[data-session-rail]').waitFor({ timeout: 10_000 });
+  }
+  await page.waitForTimeout(350);
+  await page.evaluate(() => {
+    window.__clsStorm = { cls: 0, rawLayoutShift: 0, entries: [] };
+    const obs = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const value = typeof entry.value === 'number' ? entry.value : 0;
+        if (value <= 0) continue;
+        window.__clsStorm.rawLayoutShift += value;
+        if (!entry.hadRecentInput) window.__clsStorm.cls += value;
+        if (window.__clsStorm.entries.length < 30) {
+          const sources = (entry.sources ?? []).slice(0, 5).map((s) => {
+            const el = s.node;
+            if (!el) return 'null';
+            const cls = typeof el.className === 'string' ? el.className.slice(0, 60) : '';
+            return `${el.tagName}[${cls}]`;
+          });
+          window.__clsStorm.entries.push({
+            v: Number(value.toFixed(5)),
+            hadInput: entry.hadRecentInput,
+            sources,
+          });
+        }
+      }
+    });
+    obs.observe({ type: 'layout-shift', buffered: false });
+    window.__clsStormObs = obs;
+  });
+
+  // Trigger the 10-subagent live storm via real prompt submission.
+  await sendPrompt('[cls-storm] run 10 concurrent subagents');
+  await page.waitForTimeout(180);
+
+  // While subagents are spawning and completing in the RightRail, exercise Composer multi-line growth + PNG attach + queued prompt.
+  const stormInput = page.locator('[data-composer-input]');
+  await stormInput.click();
+  await page.keyboard.type('First storm line', { delay: 10 });
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('Enter');
+  await page.keyboard.up('Shift');
+  await page.keyboard.type('Second storm line', { delay: 10 });
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('Enter');
+  await page.keyboard.up('Shift');
+  await page.keyboard.type('Third storm line', { delay: 10 });
+  await page.waitForTimeout(120);
+
+  const stormFileInput = page.locator('[data-composer-toolbar] input[type="file"]');
+  await stormFileInput.setInputFiles([
+    { name: 'storm-1.png', mimeType: 'image/png', buffer: pngBuffer },
+    { name: 'storm-2.png', mimeType: 'image/png', buffer: pngBuffer },
+  ]);
+  await page.waitForTimeout(160);
+
+  // Queue a follow-up prompt while the storm turn is active so QueueStrip toggles.
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(900);
+  // Wait for all 10 storm subagents + turn completion to settle.
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-session-rail] [data-agent-tree] [data-rail-item]').length >= 6,
+    null,
+    { timeout: 10_000 },
+  );
+  await page.waitForTimeout(600);
+
+  const stormResult = await page.evaluate(() => {
+    window.__clsStormObs?.disconnect();
+    return {
+      cls: Number(window.__clsStorm.cls.toFixed(5)),
+      rawLayoutShift: Number(window.__clsStorm.rawLayoutShift.toFixed(5)),
+      entryCount: window.__clsStorm.entries.length,
+      entries: window.__clsStorm.entries,
+    };
+  });
+  console.log(`[check] preset-14 clsStorm=${JSON.stringify(stormResult)}`);
+  if (stormResult.cls > 0.01 || stormResult.rawLayoutShift > 0.01) {
+    throw new Error(`preset-14 layout-shift breach: cls=${stormResult.cls}, rawLayoutShift=${stormResult.rawLayoutShift}, entries=${JSON.stringify(stormResult.entries)}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

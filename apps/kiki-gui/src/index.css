@@ -1332,6 +1332,7 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
 }
 
 .conversation-middle {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -1740,9 +1741,13 @@ input[data-add-search]:focus-visible {
  * last block always rests above the fade. */
 .conversation-shell[data-phase='active'] .conversation-seat,
 .conversation-shell[data-phase='settling'] .conversation-seat {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
   z-index: 7;
-  margin-top: -36px;
   padding-top: 36px;
+  transform: translateY(-100%);
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--color-paper) 0%, transparent) 0px,

@@ -175,7 +175,7 @@ const FAILED_TONE = 'bg-ink-faint';
 
 /** Past this many agents the roster offers a search field. */
 const SEARCH_AT = 6;
-const ROW_HEIGHT = 46;
+const ROW_HEIGHT = 50;
 const GROUP_HEIGHT = 32;
 /** Indent per tree level; guides sit on the parent's mark column. */
 const INDENT = 12;
@@ -211,7 +211,7 @@ export function RosterSummary({
   const shown = ROSTER_BUCKETS.filter((bucket) => counts[bucket] > 0);
   if (shown.length === 0) return null;
   return (
-    <div role="group" aria-label={t('inspector.filterAria')} data-roster-summary className="flex flex-wrap items-center gap-1">
+    <div role="group" aria-label={t('inspector.filterAria')} data-roster-summary className="flex h-7 flex-nowrap items-center gap-1 overflow-x-auto [scrollbar-width:none] pointer-coarse:h-9">
       {shown.map((bucket) => {
         const pressed = filter === bucket;
         return (
@@ -354,7 +354,7 @@ const RosterAgent = memo(function RosterAgent({
               {state}
             </span>
           </span>
-          <span className="flex min-w-0 items-baseline gap-1.5 text-[12.5px] leading-[18px]">
+          <span className="flex h-[18px] min-w-0 items-baseline gap-1.5 text-[12.5px] leading-[18px]">
             {trail !== undefined ? <span className="max-w-[45%] shrink-0 truncate text-ink-faint" title={trail}>{trail} ›</span> : null}
             {!row.expanded && row.childCount > 0 ? (
               <span className={`shrink-0 ${row.waitingBelow > 0 ? 'font-medium text-attention' : 'text-ink-faint'}`}>
@@ -518,6 +518,14 @@ export const AgentRoster = memo(function AgentRoster({
     row.kind === 'group'
       ? <RosterGroup row={row} onToggle={row.bucket === 'unknown' ? toggleUnknown : toggleDone} />
       : <RosterAgent row={row} now={now} onSelect={onSelect} onToggle={toggle} />;
+  const staticOffsets: number[] = [];
+  let staticTotalHeight = 0;
+  if (!windowed) {
+    for (const row of model.rows) {
+      staticOffsets.push(staticTotalHeight);
+      staticTotalHeight += row.kind === 'group' ? GROUP_HEIGHT : ROW_HEIGHT;
+    }
+  }
   return (
     <div data-agent-roster className="space-y-1.5">
       <div className="flex min-w-0 items-start gap-2">
@@ -526,21 +534,6 @@ export const AgentRoster = memo(function AgentRoster({
         </div>
         {actions}
       </div>
-      {model.displayTotal >= SEARCH_AT ? (
-        <label className="relative block">
-          <span className="sr-only">{t('inspector.searchAgentsAria')}</span>
-          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" />
-          <input
-            type="search"
-            data-roster-search
-            value={query}
-            onChange={(event) => { setQuery(event.target.value); }}
-            onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
-            placeholder={t('inspector.searchAgents')}
-            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
-          />
-        </label>
-      ) : null}
       {model.rows.length === 0 ? (
         <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
           {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
@@ -552,7 +545,7 @@ export const AgentRoster = memo(function AgentRoster({
           data-subagent-scroll
           aria-label={t('inspector.agentsAria')}
           role="list"
-          className={`-mx-2 ${windowed ? 'max-h-[min(52dvh,480px)] overflow-y-auto overscroll-contain pr-1' : ''}`}
+          className="-mx-2 max-h-[min(36dvh,288px)] overflow-y-auto overscroll-contain pr-1"
         >
           {windowed ? (
             <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
@@ -570,13 +563,38 @@ export const AgentRoster = memo(function AgentRoster({
                 </div>
               ))}
             </div>
-          ) : model.rows.map((row) => (
-            <div key={row.kind === 'group' ? `__${row.bucket}` : row.node.agentId} role="listitem" data-rail-item>
-              {renderRow(row)}
+          ) : (
+            <div className="relative" style={{ height: staticTotalHeight }}>
+              {model.rows.map((row, index) => (
+                <div
+                  key={row.kind === 'group' ? `__${row.bucket}` : row.node.agentId}
+                  role="listitem"
+                  data-rail-item
+                  className="absolute top-0 left-0 w-full"
+                  style={{ transform: `translateY(${staticOffsets[index] ?? 0}px)` }}
+                >
+                  {renderRow(row)}
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
+      {model.displayTotal >= SEARCH_AT ? (
+        <label className="relative block">
+          <span className="sr-only">{t('inspector.searchAgentsAria')}</span>
+          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" />
+          <input
+            type="search"
+            data-roster-search
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); }}
+            onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
+            placeholder={t('inspector.searchAgents')}
+            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
+          />
+        </label>
+      ) : null}
       {model.settledTruncated ? (
         <p data-roster-window-hint className="px-2 pt-0.5 text-[11px] text-ink-faint">
           {locale === 'zh'

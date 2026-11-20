@@ -731,7 +731,7 @@ export function Rail({
   // conversation's settings. One hairline above the group, then one folded
   // row each, side by side — never a fold inside another fold.
   const tailSection = (
-    <div data-inspector-tail className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
+    <div data-inspector-tail className={`${SECTION} mt-auto space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
       <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
       {!isRoutedChildPage ? <EnvironmentBlock sessionId={state.sessionId} /> : null}
       <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
@@ -795,7 +795,7 @@ export function Rail({
       aria-labelledby="rail-overview-title"
       className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
     >
-      <div data-rail-overview-well>
+      <div data-rail-overview-well className={mode === 'default' ? 'min-h-[124px]' : undefined}>
         {panelSlot.mounted ? (
           <AgentPanelContainer
             key={`overview:${mode === 'cockpit' && !isRoutedChildPage ? state.sessionId : agentPanelKey}`}
@@ -869,7 +869,7 @@ export function Rail({
           if (event.relatedTarget !== null && !event.currentTarget.contains(event.relatedTarget as Node)) focusInRail.current = false;
         }}
       >
-      <div ref={railScrollRef} data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
+      <div ref={railScrollRef} data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 [contain:layout_style]">
       {/* Strict h-12 sticky bar aligning across all 3 panes. */}
       <div data-rail-pinned className="sticky top-0 z-20 -mx-4 flex h-12 items-center justify-between gap-2 border-b border-hairline bg-panel px-4">
       {(() => {
@@ -930,7 +930,7 @@ export function Rail({
 
       {/* One page per agent: NeedsYouList, ProfileHead, InspectorNow, then
           ordered sections all scroll smoothly beneath the h-12 sticky bar. */}
-      <div key={focusedAgentId} className="rail-page pt-3">
+      <div key={focusedAgentId} className="rail-page flex min-h-[calc(100%-3rem)] flex-col pt-3">
       {needsYouSection !== null ? <div className="pb-3">{needsYouSection}</div> : null}
       <div data-rail-now-block className="space-y-3 pb-3">
       <ProfileHead
