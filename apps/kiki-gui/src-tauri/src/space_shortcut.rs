@@ -93,7 +93,8 @@ pub fn create(home_id: &str, name: &str, home: &Path) -> Result<SpaceShortcut, S
     {
         let desktop = dirs::desktop_dir().filter(|path| path.is_dir())
             .ok_or_else(|| ShortcutFailure::new("desktop_unavailable", "Cannot locate the Windows desktop directory"))?;
-        let exe = std::env::current_exe().map_err(|error| ShortcutFailure::new("executable_unavailable", error.to_string()))?;
+        let exe = crate::release_redirect::resolve_launch_executable()
+            .map_err(|error| ShortcutFailure::new("executable_unavailable", error.to_string()))?;
         let path = desktop.join(shortcut_name(name, home_id));
         if path.exists() { return Err(ShortcutFailure::new("shortcut_exists", "A shortcut for this space already exists")); }
         write_shortcut(&path, &exe, &home_arguments(home)?, name)?;

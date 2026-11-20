@@ -21,6 +21,7 @@ mod desktop_update_state;
 use desktop_update_state::DesktopUpdateState;
 mod space_badge;
 mod space_shortcut;
+mod release_redirect;
 mod remote_space;
 mod work_mode;
 mod resource_defaults;
@@ -2150,8 +2151,10 @@ fn desktop_window_mode(mode: State<'_, WindowModeDescriptor>) -> WindowModeDescr
 fn open_mode_window(preset_id: String, home_id: Option<String>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
     if !work_mode::valid_preset(&preset_id) { return Err("Select a valid work mode".to_string()); }
     let space = match home_id { Some(id) => manager.find_space(&id)?, None => manager.active_space()? };
-    let exe = env::current_exe().map_err(|error| error.to_string())?;
-    std::process::Command::new(exe).arg("--home").arg(&space.path).arg("--preset").arg(preset_id).spawn()
+    let exe = release_redirect::resolve_launch_executable().map_err(|error| error.to_string())?;
+    let mut command = std::process::Command::new(&exe);
+    release_redirect::prepare_child_command(&mut command, &exe);
+    command.arg("--home").arg(&space.path).arg("--preset").arg(preset_id).spawn()
         .map_err(|error| format!("Cannot open work mode window: {error}"))?;
     Ok(())
 }
@@ -2412,8 +2415,10 @@ async fn open_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, hom
         if home_id.is_some() { return Err("Select a local home or a remote connection, not both".to_string()); }
         if mode != WindowMode::Windows { return Err("Remote windows require windows mode".to_string()); }
         let source = manager.active_space()?;
-        let exe = env::current_exe().map_err(|error| error.to_string())?;
-        remote_space::command(&exe, Path::new(&source.path), &id)?.spawn()
+        let exe = release_redirect::resolve_launch_executable().map_err(|error| error.to_string())?;
+        let mut command = remote_space::command(&exe, Path::new(&source.path), &id)?;
+        release_redirect::prepare_child_command(&mut command, &exe);
+        command.spawn()
             .map_err(|error| format!("Cannot open remote space window: {error}"))?;
         return Ok(());
     }
@@ -2427,8 +2432,10 @@ async fn open_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, hom
         reload_space_window(&app)?;
         return Ok(());
     }
-    let exe = env::current_exe().map_err(|error| error.to_string())?;
-    std::process::Command::new(exe).arg("--home").arg(&space.path).spawn()
+    let exe = release_redirect::resolve_launch_executable().map_err(|error| error.to_string())?;
+    let mut command = std::process::Command::new(&exe);
+    release_redirect::prepare_child_command(&mut command, &exe);
+    command.arg("--home").arg(&space.path).spawn()
         .map_err(|error| format!("Cannot open space window: {error}"))?;
     Ok(())
 }
@@ -4265,6 +4272,7 @@ fn request_confirmed_exit(
 }
 
 pub fn run() {
+    release_redirect::maybe_redirect_to_current_release();
     let launch_args = env::args().collect::<Vec<_>>();
     let start_in_background = is_background_launch_args(&launch_args);
     let startup_home = kiki_home_dir().unwrap_or_else(|error| panic!("Cannot resolve Kiki home: {error}"));
