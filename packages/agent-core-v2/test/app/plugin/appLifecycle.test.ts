@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -349,5 +350,109 @@ it('preserves an unchanged plugin host with active harness leases across global 
     expect(hosts.running(accountPluginId)).toBe(false);
   } finally {
     vi.useRealTimers();
+  }
+});
+
+it('updates and rolls back an active resident app plugin without EBUSY even when an external process holds cwd on managed/<id>', async () => {
+  const source = join(root, 'resident-ebusy');
+  await mkdir(source);
+  const manifest = (version: string) => JSON.stringify({
+    name: 'fixture-resident-ebusy',
+    version,
+    'x-kiki': {
+      engines: { kiki: '^0.4.0' },
+      entry: './entry.mjs',
+      activation: 'app',
+      permissions: { uiPanel: true },
+      panels: [{ schemaVersion: 1, id: 'status', label: 'Status', slot: 'sidebar', path: './panel.html' }],
+    },
+  });
+  const entry = (version: string) => [
+    'import { spawn } from "node:child_process";',
+    'let grandchild;',
+    'export function register() {}',
+    'export function activate() {',
+    '  grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore", windowsHide: true });',
+    '}',
+    'export function deactivate() { grandchild?.kill(); }',
+    `export async function handlePanelRequest() { return { version: ${JSON.stringify(version)}, pid: process.pid, cwd: process.cwd(), pluginRoot: process.env.KIKI_PLUGIN_ROOT, grandchildPid: grandchild?.pid }; }`,
+    '',
+  ].join('\n');
+  await writeFile(join(source, 'kimi.plugin.json'), manifest('1.0.0'));
+  await writeFile(join(source, 'panel.html'), '<!doctype html><title>v1</title>');
+  await writeFile(join(source, 'obsolete-v1.txt'), 'v1-only');
+  await writeFile(join(source, 'entry.mjs'), entry('1.0.0'));
+
+  const plugins = host.app.accessor.get(IPluginService);
+  const hosts = host.app.accessor.get(IPluginHostService);
+  await hosts.ready;
+
+  const planV1 = await plugins.previewPlugin({ source });
+  await plugins.installPlugin({ source, fingerprint: planV1.fingerprint, consent: true, defaultEnabled: true });
+  await vi.waitFor(() => expect(hosts.running('fixture-resident-ebusy')).toBe(true));
+
+  const v1 = await hosts.requestPanel('fixture-resident-ebusy', 'status', 'info', {}) as {
+    version: string;
+    pid: number;
+    cwd: string;
+    pluginRoot: string;
+    grandchildPid?: number;
+  };
+  expect(v1.version).toBe('1.0.0');
+  const managedRoot = join(root, 'home', 'plugins', 'managed', 'fixture-resident-ebusy');
+  expect(resolve(v1.pluginRoot)).toBe(resolve(managedRoot));
+  if (process.platform === 'win32') {
+    expect(resolve(v1.cwd).toLowerCase()).not.toBe(resolve(managedRoot).toLowerCase());
+  }
+
+  let externalCwdHolder: ChildProcess | undefined;
+  try {
+    externalCwdHolder = spawn(process.execPath, ['-e', 'process.stdout.write("ready\\n"); setInterval(() => {}, 60000);'], {
+      cwd: managedRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    await new Promise<void>((resolveReady, rejectReady) => {
+      externalCwdHolder!.once('error', rejectReady);
+      externalCwdHolder!.stdout!.once('data', () => resolveReady());
+    });
+
+    await rm(join(source, 'obsolete-v1.txt'));
+    await writeFile(join(source, 'kimi.plugin.json'), manifest('2.0.0'));
+    await writeFile(join(source, 'entry.mjs'), entry('2.0.0'));
+    await writeFile(join(source, 'added-v2.txt'), 'v2-only');
+
+    const planV2 = await plugins.previewPlugin({ source });
+    const updated = await plugins.installPlugin({ source, fingerprint: planV2.fingerprint, consent: true });
+    expect(updated.version).toBe('2.0.0');
+    await vi.waitFor(() => expect(hosts.running('fixture-resident-ebusy')).toBe(true));
+
+    const v2 = await hosts.requestPanel('fixture-resident-ebusy', 'status', 'info', {}) as {
+      version: string;
+      pid: number;
+    };
+    expect(v2.version).toBe('2.0.0');
+    expect(v2.pid).not.toBe(v1.pid);
+    await expect(readFile(join(managedRoot, 'added-v2.txt'), 'utf8')).resolves.toBe('v2-only');
+    await expect(readFile(join(managedRoot, 'obsolete-v1.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const rolledBack = await plugins.rollbackPlugin({ id: 'fixture-resident-ebusy' });
+    expect(rolledBack.version).toBe('1.0.0');
+    await vi.waitFor(() => expect(hosts.running('fixture-resident-ebusy')).toBe(true));
+
+    const afterRollback = await hosts.requestPanel('fixture-resident-ebusy', 'status', 'info', {}) as {
+      version: string;
+      pid: number;
+    };
+    expect(afterRollback.version).toBe('1.0.0');
+    expect(afterRollback.pid).not.toBe(v2.pid);
+    await expect(readFile(join(managedRoot, 'obsolete-v1.txt'), 'utf8')).resolves.toBe('v1-only');
+    await expect(readFile(join(managedRoot, 'added-v2.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    if (externalCwdHolder !== undefined && externalCwdHolder.exitCode === null) {
+      const exited = new Promise<void>((resolveExit) => externalCwdHolder!.once('exit', () => resolveExit()));
+      externalCwdHolder.kill('SIGKILL');
+      await exited;
+    }
   }
 });

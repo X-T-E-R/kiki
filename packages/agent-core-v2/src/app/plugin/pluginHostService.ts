@@ -305,15 +305,21 @@ export class PluginHostService extends Service implements IPluginHostService {
     this._register(this.plugins.onWillChange((event) => {
       if (event.affected === undefined) this.globalGate = event.finished;
       else for (const id of event.affected) this.gates.set(id, event.finished);
+      const gatedIds = new Set(event.affected ?? []);
+      const retiredResidents = new Set<string>();
       let reloaded = false;
       const reloadedSubscription = this.plugins.onDidReload(() => { reloaded = true; });
       void event.finished.then(() => {
         reloadedSubscription.dispose();
+        if (this.globalGate === event.finished) this.globalGate = undefined;
+        for (const id of gatedIds) {
+          if (this.gates.get(id) === event.finished) this.gates.delete(id);
+        }
         if (reloaded || this.closing) return;
         const affected = this.affectedPlugins(event.affected);
         void Promise.all([
           this.reconcileExtensionPorts(affected),
-          this.reconcileResidents(affected),
+          this.reconcileResidents(affected, false, retiredResidents),
         ]).catch((error: unknown) => {
           this.logger?.current?.warn('plugin resident restore failed', {
             error: error instanceof Error ? error.message : String(error),
@@ -323,7 +329,13 @@ export class PluginHostService extends Service implements IPluginHostService {
       event.waitUntil((async () => {
         await Promise.allSettled(this.residentLifecycle);
         const affected = this.affectedPlugins(event.affected);
-        if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
+        if (affected !== undefined) {
+          for (const id of affected) {
+            const key = id.toLowerCase();
+            gatedIds.add(key);
+            this.gates.set(key, event.finished);
+          }
+        }
         this.withdrawExtensionPorts(affected);
         const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys(), ...this.extensionGenerations.keys()])];
         for (const id of ids) {
@@ -348,6 +360,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         await Promise.all(ids.map(async (id) => {
           if (preserved.has(id)) return;
           const host = this.hosts.get(id);
+          if (host !== undefined && host.running && this.activated.has(host)) retiredResidents.add(id);
           this.hosts.delete(id);
           this.hostSignatures.delete(id);
           await host?.stopAndWait();
@@ -374,7 +387,7 @@ export class PluginHostService extends Service implements IPluginHostService {
           });
         }
         try {
-          await this.reconcileResidents(affected);
+          await this.reconcileResidents(affected, false, undefined, true);
         } catch (error) {
           this.logger?.current?.warn('plugin resident activation failed after reload', {
             error: error instanceof Error ? error.message : String(error),
@@ -899,19 +912,19 @@ export class PluginHostService extends Service implements IPluginHostService {
     }));
   }
 
-  private reconcileResidents(affected?: readonly string[], reconfigure = false): Promise<void> {
-    const work = this.applyResidents(affected, reconfigure);
+  private reconcileResidents(affected?: readonly string[], reconfigure = false, restoreIds?: ReadonlySet<string>, allowDuringChange = false): Promise<void> {
+    const work = this.applyResidents(affected, reconfigure, restoreIds, allowDuringChange);
     this.residentWork.add(work);
     void work.then(() => this.residentWork.delete(work), () => this.residentWork.delete(work));
     return work;
   }
 
-  private async applyResidents(affected?: readonly string[], reconfigure = false): Promise<void> {
+  private async applyResidents(affected?: readonly string[], reconfigure = false, restoreIds?: ReadonlySet<string>, allowDuringChange = false): Promise<void> {
     await this.configService?.ready;
     if (this.closing) return;
     const installed = await this.plugins.listPlugins();
     if (this.closing || this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) return;
-    const matched = installed.filter((plugin) => plugin.enabled && (plugin.globalEnabled || this.hosts.has(plugin.id)) &&
+    const matched = installed.filter((plugin) => plugin.enabled && (plugin.globalEnabled || this.hosts.has(plugin.id) || restoreIds?.has(plugin.id) === true) &&
       plugin.state === 'ok' && (affected === undefined || affected.includes(plugin.id)));
     const prepared = (await Promise.all(matched.map(async (plugin) => {
       if (this.closing) return undefined;
@@ -930,15 +943,15 @@ export class PluginHostService extends Service implements IPluginHostService {
       }
     }))).filter((item): item is { info: PluginInfo; settings: Record<string, string | number | boolean> } => item !== undefined);
     if (this.closing || prepared.length === 0) return;
-    const lifecycle = this.activatePrepared(prepared, reconfigure);
+    const lifecycle = this.activatePrepared(prepared, reconfigure, allowDuringChange);
     this.residentLifecycle.add(lifecycle);
     try { await lifecycle; }
     finally { this.residentLifecycle.delete(lifecycle); }
   }
 
-  private async activatePrepared(prepared: readonly { readonly info: PluginInfo; readonly settings: Record<string, string | number | boolean> }[], reconfigure: boolean): Promise<void> {
+  private async activatePrepared(prepared: readonly { readonly info: PluginInfo; readonly settings: Record<string, string | number | boolean> }[], reconfigure: boolean, allowDuringChange: boolean): Promise<void> {
     const results = await Promise.allSettled(prepared.map((item) => this.chainResident(item.info.id, async () => {
-      if (this.closing) return;
+      if (this.closing || (!allowDuringChange && (this.globalGate !== undefined || this.gates.has(item.info.id.toLowerCase())))) return;
       const host = this.getHost(item.info);
       if (!reconfigure && this.activated.has(host) && host.running) return;
       if (this.closing || this.hosts.get(item.info.id) !== host) return;

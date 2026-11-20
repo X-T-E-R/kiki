@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +34,32 @@ const IDLE_MS = 90_000;
 const HANDSHAKE_MS = 15_000;
 const INTERRUPT_EXIT_GRACE_MS = 200;
 const SHUTDOWN_EXIT_GRACE_MS = 2_000;
+const TASKKILL_GRACE_MS = 2_000;
+
+function killWindowsProcessTree(pid: number): Promise<void> {
+  if (process.platform !== 'win32' || pid <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const killer = spawn('taskkill', ['/T', '/F', '/PID', String(pid)], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    const timer = setTimeout(() => {
+      killer.kill();
+      killer.unref();
+      done();
+    }, TASKKILL_GRACE_MS);
+    timer.unref();
+    killer.once('error', done);
+    killer.once('close', done);
+  });
+}
 const HANDSHAKE_BACKOFF_BASE_MS = 15_000;
 const HANDSHAKE_BACKOFF_MAX_MS = 120_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
@@ -608,6 +636,10 @@ export class PluginHost {
   }
 
   async terminateSlotRealm(): Promise<void> {
+    const pid = this.child?.pid;
+    if (process.platform === 'win32' && pid !== undefined && pid > 0 && this.child?.exitCode === null) {
+      await killWindowsProcessTree(pid);
+    }
     this.child?.kill('SIGKILL');
     this.terminate(new Error(`Plugin ${this.id} slot realm was withdrawn; side effects were not replayed`));
     await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS);
@@ -622,6 +654,10 @@ export class PluginHost {
   private async shutdownChild(): Promise<void> {
     if (this.child !== undefined && (this.lifecycle?.resident || this.harnessAccountSources.length > 0)) {
       try { await this.lifecycleRequest('shutdown', {}); await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS); } catch {}
+    }
+    const pid = this.child?.pid;
+    if (process.platform === 'win32' && pid !== undefined && pid > 0 && this.child?.exitCode === null) {
+      await killWindowsProcessTree(pid);
     }
     this.stop();
     await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS);
@@ -701,8 +737,11 @@ export class PluginHost {
       const args = native && process.versions['electron'] === undefined
         ? ['__plugin_run_node', runner, this.entry]
         : [runner, this.entry];
+      const hostCwd = process.platform === 'win32'
+        ? (this.kikiHome !== undefined && existsSync(this.kikiHome) ? this.kikiHome : tmpdir())
+        : path.dirname(this.entry);
       const child = spawn(process.execPath, args, {
-        cwd: path.dirname(this.entry),
+        cwd: hostCwd,
         env: {
           ...mergeChildEnv(process.env, kikiChildDefaults(this.kikiHome)),
           ELECTRON_RUN_AS_NODE: process.versions['electron'] === undefined ? undefined : '1',

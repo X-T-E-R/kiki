@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -54,6 +54,7 @@ export interface PluginManagerOptions {
 interface ManagedPluginCopy {
   readonly root: string;
   readonly previousRoot?: string;
+  readonly inPlace?: boolean;
 }
 
 interface StagedRemotePreview {
@@ -345,10 +346,10 @@ export class PluginManager {
         rollbackRoot = path.join(this.kimiHomeDir, 'plugins', 'rollback', id);
         await mkdir(path.dirname(rollbackRoot), { recursive: true });
         previousRollback = managedCopy.previousRoot + '-older';
-        try { await rename(rollbackRoot, previousRollback); }
+        try { await renameWithRetry(rollbackRoot, previousRollback); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; previousRollback = undefined; }
-        await rename(managedCopy.previousRoot, rollbackRoot);
-        managedCopy = { root: managedCopy.root, previousRoot: rollbackRoot };
+        await renameWithRetry(managedCopy.previousRoot, rollbackRoot);
+        managedCopy = { root: managedCopy.root, previousRoot: rollbackRoot, inPlace: managedCopy.inPlace };
         const previous: PluginRollback = {
           version: existing.manifest?.version, source: existing.source, originalSource: existing.originalSource,
           github: existing.github, zipSha256: existing.zipSha256,
@@ -366,7 +367,7 @@ export class PluginManager {
       if (managedCopy !== undefined) {
         try {
           await rollbackManagedPluginCopy(managedCopy);
-          if (previousRollback !== undefined && rollbackRoot !== undefined) await rename(previousRollback, rollbackRoot);
+          if (previousRollback !== undefined && rollbackRoot !== undefined) await renameWithRetry(previousRollback, rollbackRoot);
         } catch (rollbackError) {
           throw new Error2(
             ErrorCodes.PLUGIN_LOAD_FAILED,
@@ -962,7 +963,13 @@ async function normalizeInstallRoot(rootPath: string, signal?: AbortSignal): Pro
   return resolved;
 }
 
-const WINDOWS_RENAME_DELAYS_MS = [30, 60, 120, 240, 250, 250, 250, 250];
+const WINDOWS_RENAME_DELAYS_MS = [25, 50, 100, 200, 250];
+
+function isWindowsLockError(error: unknown): boolean {
+  if (process.platform !== 'win32') return false;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
 
 async function renameWithRetry(source: string, target: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
@@ -971,9 +978,54 @@ async function renameWithRetry(source: string, target: string): Promise<void> {
       return;
     } catch (error) {
       const wait = WINDOWS_RENAME_DELAYS_MS[attempt];
-      const code = (error as NodeJS.ErrnoException).code;
-      if (process.platform !== 'win32' || wait === undefined || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
+      if (wait === undefined || !isWindowsLockError(error)) throw error;
       await delay(wait);
+    }
+  }
+}
+
+async function clearDirectoryContents(directory: string): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    const child = path.join(directory, entry.name);
+    try {
+      await rm(child, { recursive: true, force: true });
+    } catch (error) {
+      if (!entry.isDirectory() || !isWindowsLockError(error)) throw error;
+      await clearDirectoryContents(child);
+    }
+  }
+}
+
+async function syncDirectoryInPlace(sourceDir: string, targetDir: string): Promise<void> {
+  await mkdir(targetDir, { recursive: true });
+  const [sourceEntries, targetEntries] = await Promise.all([
+    readdir(sourceDir, { withFileTypes: true }),
+    readdir(targetDir, { withFileTypes: true }),
+  ]);
+  const sourceByName = new Map(sourceEntries.map((entry) => [entry.name, entry]));
+  for (const targetEntry of targetEntries) {
+    const matching = sourceByName.get(targetEntry.name);
+    const targetPath = path.join(targetDir, targetEntry.name);
+    if (matching === undefined || matching.isDirectory() !== targetEntry.isDirectory()) {
+      try {
+        await rm(targetPath, { recursive: true, force: true });
+      } catch (error) {
+        if (!targetEntry.isDirectory() || matching !== undefined || !isWindowsLockError(error)) throw error;
+        await clearDirectoryContents(targetPath);
+      }
+    }
+  }
+  for (const sourceEntry of sourceEntries) {
+    const sourcePath = path.join(sourceDir, sourceEntry.name);
+    const targetPath = path.join(targetDir, sourceEntry.name);
+    if (sourceEntry.isDirectory()) {
+      await syncDirectoryInPlace(sourcePath, targetPath);
+    } else {
+      await copyFile(sourcePath, targetPath);
     }
   }
 }
@@ -991,6 +1043,7 @@ async function copyPluginToManagedRoot(
   const stagingRoot = await mkdtemp(path.join(managedDir, id + '-'));
   const previousRoot = stagingRoot + '-previous';
   let movedPreviousRoot = false;
+  let copiedPreviousRoot = false;
   let published = false;
   try {
     if (moveOwnedSource) {
@@ -1009,7 +1062,23 @@ async function copyPluginToManagedRoot(
       await renameWithRetry(managedRoot, previousRoot);
       movedPreviousRoot = true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      } else if (isWindowsLockError(error)) {
+        await cp(managedRoot, previousRoot, { recursive: true });
+        copiedPreviousRoot = true;
+      } else {
+        throw error;
+      }
+    }
+    if (copiedPreviousRoot) {
+      await syncDirectoryInPlace(stagingRoot, managedRoot);
+      published = true;
+      await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+      return {
+        root: await realpath(managedRoot),
+        previousRoot,
+        inPlace: true,
+      };
     }
     await renameWithRetry(stagingRoot, managedRoot);
     published = true;
@@ -1018,6 +1087,12 @@ async function copyPluginToManagedRoot(
       previousRoot: movedPreviousRoot ? previousRoot : undefined,
     };
   } catch (error) {
+    if (copiedPreviousRoot) {
+      await syncDirectoryInPlace(previousRoot, managedRoot);
+      await rm(previousRoot, { recursive: true, force: true }).catch(() => undefined);
+      await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
     await rm(published ? managedRoot : stagingRoot, { recursive: true, force: true });
     if (movedPreviousRoot) await renameWithRetry(previousRoot, managedRoot);
     throw error;
@@ -1026,7 +1101,31 @@ async function copyPluginToManagedRoot(
 
 async function swapPluginCopies(current: string, rollback: string): Promise<void> {
   const staging = `${current}.swap-${randomUUID()}`;
-  await renameWithRetry(current, staging);
+  let inPlace = false;
+  try {
+    await renameWithRetry(current, staging);
+  } catch (error) {
+    if (!isWindowsLockError(error)) throw error;
+    await cp(current, staging, { recursive: true });
+    inPlace = true;
+  }
+  if (inPlace) {
+    try {
+      await syncDirectoryInPlace(rollback, current);
+      try {
+        await syncDirectoryInPlace(staging, rollback);
+      } catch (error) {
+        await syncDirectoryInPlace(staging, current);
+        throw error;
+      }
+    } catch (error) {
+      await syncDirectoryInPlace(staging, current);
+      throw error;
+    } finally {
+      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return;
+  }
   try {
     await renameWithRetry(rollback, current);
     try { await renameWithRetry(staging, rollback); }
@@ -1038,9 +1137,20 @@ async function swapPluginCopies(current: string, rollback: string): Promise<void
 }
 
 async function rollbackManagedPluginCopy(copy: ManagedPluginCopy): Promise<void> {
-  await rm(copy.root, { recursive: true, force: true });
-  if (copy.previousRoot !== undefined) {
-    await renameWithRetry(copy.previousRoot, copy.root);
+  if (copy.inPlace === true && copy.previousRoot !== undefined) {
+    await syncDirectoryInPlace(copy.previousRoot, copy.root);
+    await rm(copy.previousRoot, { recursive: true, force: true }).catch(() => undefined);
+    return;
+  }
+  try {
+    await rm(copy.root, { recursive: true, force: true });
+    if (copy.previousRoot !== undefined) {
+      await renameWithRetry(copy.previousRoot, copy.root);
+    }
+  } catch (error) {
+    if (!isWindowsLockError(error) || copy.previousRoot === undefined) throw error;
+    await syncDirectoryInPlace(copy.previousRoot, copy.root);
+    await rm(copy.previousRoot, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
