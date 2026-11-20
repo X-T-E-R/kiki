@@ -7,20 +7,35 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
-const MANIFEST_PATH = path.join(import.meta.dirname, 'corpus-manifest.json');
+const DEFAULT_MANIFEST_PATH = path.join(import.meta.dirname, 'corpus-manifest.json');
 const NODE_TARGET_VERSION = '24.22.1';
 const PNPM_TARGET_VERSION = '10.33.0';
 
-const ACCOUNT_SOURCES = {
-  acc_00000000000000000000000000000000: {
-    runnerSourceId: 'src_0000000000000000000000000000000000000000000000000000000000000000',
-    driveFolderId: 'DRIVE_FOLDER_ID_EXAMPLE_000000000',
-  },
-  acc_11111111111111111111111111111111: {
-    runnerSourceId: 'src_1111111111111111111111111111111111111111111111111111111111111111',
-    driveFolderId: 'DRIVE_FOLDER_ID_EXAMPLE_111111111',
-  },
-};
+export function resolveManifestPath(env = process.env) {
+  const override = typeof env?.KIKI_CHAOS_MANIFEST_PATH === 'string' ? env.KIKI_CHAOS_MANIFEST_PATH.trim() : '';
+  return override.length > 0 ? override : DEFAULT_MANIFEST_PATH;
+}
+
+export function resolveAccountSources(manifest = null, env = process.env) {
+  const fromManifest =
+    manifest && typeof manifest.account_sources === 'object' && manifest.account_sources !== null && !Array.isArray(manifest.account_sources)
+      ? manifest.account_sources
+      : {};
+  const rawEnv = typeof env?.KIKI_CHAOS_ACCOUNT_SOURCES_JSON === 'string' ? env.KIKI_CHAOS_ACCOUNT_SOURCES_JSON.trim() : '';
+  if (!rawEnv) {
+    return { ...fromManifest };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rawEnv);
+  } catch (error) {
+    throw new Error(`Invalid KIKI_CHAOS_ACCOUNT_SOURCES_JSON: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('KIKI_CHAOS_ACCOUNT_SOURCES_JSON must be a JSON object mapping account IDs to source configs');
+  }
+  return { ...fromManifest, ...parsed };
+}
 
 function log(msg) {
   process.stderr.write(`[ccp-orchestrator] ${msg}\n`);
@@ -285,12 +300,19 @@ function buildCleanRepoTarball(scratchDir, { baselineHeadCode = false } = {}) {
   };
 }
 
-function readExistingManifest() {
-  if (!fs.existsSync(MANIFEST_PATH)) return null;
+function readRawManifest(manifestPath) {
+  if (!fs.existsSync(manifestPath)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
-    if (parsed?.binding?.drive_file_id && parsed?.account_id && parsed?.runner_source_id) return parsed;
-  } catch {}
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readExistingManifest(manifestPath) {
+  const parsed = readRawManifest(manifestPath);
+  if (parsed?.binding?.drive_file_id && parsed?.account_id && parsed?.runner_source_id) return parsed;
   return null;
 }
 
@@ -364,7 +386,10 @@ export async function runChaosOnCcp(options = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-ccp-orch-'));
 
-  const existingManifest = regenCorpus ? null : readExistingManifest();
+  const manifestPath = resolveManifestPath();
+  const rawManifest = readRawManifest(manifestPath);
+  const accountSources = resolveAccountSources(rawManifest);
+  const existingManifest = regenCorpus ? null : readExistingManifest(manifestPath);
   let runtimeId = null;
   let sshSessionId = null;
   let releasedSnapshot = null;
@@ -400,7 +425,7 @@ export async function runChaosOnCcp(options = {}) {
 
     const preferredAccounts = existingManifest
       ? [existingManifest.account_id]
-      : Object.keys(ACCOUNT_SOURCES);
+      : Object.keys(accountSources);
 
     let rtInfo = null;
     if (options.reuseRuntimeId) {
@@ -543,7 +568,7 @@ export async function runChaosOnCcp(options = {}) {
       driveTransferMetrics.archiveBytes = archiveBytes;
       usedExistingCorpus = true;
 
-      const sourceCfg = ACCOUNT_SOURCES[accountId];
+      const sourceCfg = accountSources[accountId];
       if (sourceCfg && archiveSha && archiveBytes) {
         log(`Persisting kiki-chaos-corpus-v1.tar.zst (${(archiveBytes / (1024 * 1024)).toFixed(2)} MiB) to Google Drive via ccp assets save (DIRECT_HTTPS Keep Forever)...`);
         const saveT0 = performance.now();
@@ -588,8 +613,9 @@ export async function runChaosOnCcp(options = {}) {
               size_bytes: outEntry.size_bytes ?? archiveBytes,
             },
           };
-          fs.writeFileSync(MANIFEST_PATH, `${JSON.stringify(newManifest, null, 2)}\n`, 'utf8');
-          log(`Saved corpus-manifest.json (drive_file_id=${outEntry.drive_file_id}, saveMs=${driveTransferMetrics.saveMs}ms)`);
+          fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+          fs.writeFileSync(manifestPath, `${JSON.stringify(newManifest, null, 2)}\n`, 'utf8');
+          log(`Saved corpus manifest to ${manifestPath} (drive_file_id=${outEntry.drive_file_id}, saveMs=${driveTransferMetrics.saveMs}ms)`);
 
           log('Verifying DIRECT_HTTPS fast pull via ccp assets restore on the same runtime...');
           const bindingsFile = path.join(scratchDir, 'verify-bindings.json');
