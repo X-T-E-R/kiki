@@ -130,7 +130,12 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
       const origin = root.querySelector<HTMLElement>(':scope > [data-searchable-select]') ?? root;
       const rootRect = origin.getBoundingClientRect();
       const cardRect = card.getBoundingClientRect();
-      root.style.setProperty('--cp-bottom', `${Math.max(0, rootRect.bottom - cardRect.top) + PANEL_GAP_PX}px`);
+      const viewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight;
+      const panelBottomEdge =
+        viewportHeight > 0
+          ? Math.min(cardRect.top - PANEL_GAP_PX, viewportHeight - 8)
+          : cardRect.top - PANEL_GAP_PX;
+      root.style.setProperty('--cp-bottom', `${Math.max(0, rootRect.bottom - panelBottomEdge)}px`);
       root.style.setProperty('--cp-left', `${cardRect.left - rootRect.left}px`);
       root.style.setProperty('--cp-right', `${rootRect.right - cardRect.right}px`);
       root.style.setProperty('--cp-max-w', `${cardRect.width}px`);
@@ -147,9 +152,13 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
           break;
         }
       }
-      const viewportLimit = typeof window === 'undefined' ? 600 : Math.max(160, window.innerHeight - 120);
-      const hardCap = typeof window === 'undefined' ? 600 : Math.max(80, Math.floor(cardRect.top - PANEL_GAP_PX - 8));
-      const roomAbove = Math.min(viewportLimit, hardCap, Math.max(Math.min(160, hardCap), Math.floor(cardRect.top - clipTop - PANEL_GAP_PX - 8)));
+      const viewportLimit = viewportHeight > 0 ? Math.max(160, viewportHeight - 120) : 600;
+      const hardCap = viewportHeight > 0 ? Math.max(80, Math.floor(panelBottomEdge - 8)) : 600;
+      const roomAbove = Math.min(
+        viewportLimit,
+        hardCap,
+        Math.max(Math.min(160, hardCap), Math.floor(panelBottomEdge - clipTop - 8)),
+      );
       root.style.setProperty('--cp-max-h', `${roomAbove}px`);
     };
     measure();
