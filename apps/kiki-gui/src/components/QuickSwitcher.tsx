@@ -5,7 +5,7 @@
  * settings matches, and global-search hits (`POST /search`).
  */
 
-import { useDeferredValue, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react';
 import { Autocomplete } from '@base-ui/react/autocomplete';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
@@ -210,6 +210,11 @@ export function QuickSwitcher({
   const [includeToolOutput, setIncludeToolOutput] = useState(false);
   const pickerScale = getPickerScaleConfig();
   const listRef = useRef<HTMLDivElement>(null);
+  const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
+  const handleListRef = useCallback((node: HTMLDivElement | null) => {
+    listRef.current = node;
+    setListElement(node);
+  }, []);
 
   const untitled = t('sidebar.untitled');
   const useFastLocalIndex = sessions.length > pickerScale.fastFilterThreshold;
@@ -226,7 +231,7 @@ export function QuickSwitcher({
   // `sessions` array and bypass `useSessionSearch`'s per-render full mapping.
   const indexedSessions = useMemo<readonly IndexedSessionRow[]>(() => {
     if (!useFastLocalIndex) return [];
-    const rows = new Array<IndexedSessionRow>(sessions.length);
+    const rows: IndexedSessionRow[] = [];
     for (let i = 0; i < sessions.length; i += 1) {
       const session = sessions[i]!;
       rows[i] = {
@@ -408,10 +413,12 @@ export function QuickSwitcher({
   const isVirtualized = indexedItems.length > pickerScale.selectVirtualizeThreshold;
   const virtualizer = useVirtualizer({
     count: isVirtualized ? indexedItems.length : 0,
-    getScrollElement: () => listRef.current,
+    getScrollElement: () => listElement ?? listRef.current,
     estimateSize: (index) => (indexedItems[index]?.headerText !== null ? SWITCHER_EST_ROW_HEIGHT + 24 : SWITCHER_EST_ROW_HEIGHT),
     getItemKey: (index) => indexedItems[index]?.key ?? index,
     overscan: pickerScale.virtualOverscan,
+    scrollPaddingStart: 8,
+    scrollPaddingEnd: 8,
     initialRect: { width: 528, height: SWITCHER_LIST_MAX_HEIGHT },
     observeElementRect: (instance, cb) => {
       const el = instance.scrollElement;
@@ -432,7 +439,6 @@ export function QuickSwitcher({
       const height = Math.round(el.getBoundingClientRect().height);
       return height > 0 ? height : SWITCHER_EST_ROW_HEIGHT;
     },
-    useFlushSync: false,
   });
 
   const renderEntry = (entry: IndexedSwitcherItem) => {
@@ -516,6 +522,7 @@ export function QuickSwitcher({
       <Autocomplete.Root
         inline
         open
+        virtualized={isVirtualized}
         filter={null}
         autoHighlight="always"
         keepHighlight
@@ -523,6 +530,11 @@ export function QuickSwitcher({
         items={indexedItems}
         value={input}
         itemToStringValue={(entry) => entry.key}
+        onItemHighlighted={(_item, { index }) => {
+          if (isVirtualized && index >= 0) {
+            virtualizer.scrollToIndex(index, { align: 'auto' });
+          }
+        }}
         onValueChange={(nextValue, eventDetails) => {
           if (eventDetails.reason === 'input-change' || eventDetails.reason === 'input-clear') {
             setInput(nextValue);
@@ -561,7 +573,7 @@ export function QuickSwitcher({
         </div>
 
         <Autocomplete.List
-          ref={listRef}
+          ref={handleListRef}
           id="quick-switcher-list"
           className="max-h-[340px] overflow-y-auto p-2"
         >

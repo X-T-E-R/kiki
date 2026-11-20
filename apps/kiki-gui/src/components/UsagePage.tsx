@@ -364,8 +364,23 @@ function SessionsTab({
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
-    observer.observe(scroller);
-    if (list.parentElement !== null && list.parentElement !== scroller) observer.observe(list.parentElement);
+    const observeAncestorsAndPreceding = () => {
+      observer.disconnect();
+      observer.observe(scroller);
+      let node: Element | null = list;
+      while (node !== null && node !== scroller) {
+        const parent: Element | null = node.parentElement;
+        if (parent === null) break;
+        if (parent !== scroller) observer.observe(parent);
+        let child: Element | null = parent.firstElementChild;
+        while (child !== null && child !== node) {
+          observer.observe(child);
+          child = child.nextElementSibling;
+        }
+        node = parent;
+      }
+    };
+    observeAncestorsAndPreceding();
     return () => { observer.disconnect(); };
   }, [windowed, scrollElementRef, visible.length]);
 

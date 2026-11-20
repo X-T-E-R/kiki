@@ -21,7 +21,10 @@ const { scope, client, navigate, route, draftPage } = vi.hoisted(() => ({
     klient: { rest: { workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
   },
 }));
-vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, scopeId: scope.id, sshLabel: scope.label }) }));
+vi.mock('../../state/connection', () => ({
+  useConnection: () => ({ client, scopeId: scope.id, sshLabel: scope.label }),
+  useOptionalConnection: () => ({ client, scopeId: scope.id, sshLabel: scope.label }),
+}));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
 vi.mock('react-router-dom', async (importOriginal) => ({

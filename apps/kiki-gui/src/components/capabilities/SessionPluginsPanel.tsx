@@ -66,7 +66,13 @@ import { PLUGIN_QUERY_KEYS, useInvalidatePlugins, usePluginMarketplace } from '.
 
 type UsageRead = UseQueryResult<PluginUsageResponse, Error>;
 
-export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string }) {
+export function SessionPluginsPanel({
+  sessionId,
+  showStoreActions = true,
+}: {
+  readonly sessionId: string;
+  readonly showStoreActions?: boolean;
+}) {
   const { t, locale } = useI18n();
   const location = useLocation();
   const { client } = useConnection();
@@ -198,7 +204,12 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
       {/* The control block owns the fold and heading; this component owns the
           plugin rows and their read/write states. */}
       <div data-rail-plugins="" className="space-y-1.5 px-2 pt-0.5">
-        <ScopeLine scope={scope} onBrowse={() => { setBrowse(true); }} onAddFromSource={() => { setAdding(true); }} />
+        <ScopeLine
+          scope={scope}
+          showStoreActions={showStoreActions}
+          onBrowse={() => { setBrowse(true); }}
+          onAddFromSource={() => { setAdding(true); }}
+        />
         {/* One line, and the boundary it implies lives on the management
             link: in a narrow rail a paragraph of scope prose costs more
             than it tells the reader. */}
@@ -257,10 +268,12 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
 /** The scope line: the server's own name for this workspace, plus entry points. */
 function ScopeLine({
   scope,
+  showStoreActions,
   onBrowse,
   onAddFromSource,
 }: {
   readonly scope: UsageScope | undefined;
+  readonly showStoreActions: boolean;
   readonly onBrowse: () => void;
   readonly onAddFromSource: () => void;
 }) {
@@ -274,14 +287,16 @@ function ScopeLine({
       <p className="min-w-0 flex-1 text-[12.5px] leading-5 text-ink-soft" data-rail-plugins-scope title={scope.root}>
         {scopeTitle(scope, t)}
       </p>
-      <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-        <button type="button" onClick={onBrowse} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-browse="">
-          {t('rail.plugins.browse')}
-        </button>
-        <button type="button" onClick={onAddFromSource} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-add-source="">
-          {t('rail.plugins.addSource')}
-        </button>
-      </div>
+      {showStoreActions ? (
+        <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+          <button type="button" onClick={onBrowse} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-browse="">
+            {t('rail.plugins.browse')}
+          </button>
+          <button type="button" onClick={onAddFromSource} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-add-source="">
+            {t('rail.plugins.addSource')}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -108,7 +108,19 @@ import {
   type AgentCandidateGroup,
 } from '../lib/agentMentionCandidates';
 import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
-import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import {
+  anyOverlayOpen,
+  COMPOSER_FLOATING_GROUP,
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  notifyFloatingGroupOpen,
+  owningModalId,
+  registerOverlay,
+  resolveFloatingOwners,
+  subscribeFloatingGroup,
+} from '../lib/uiBusy';
+import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { useSeatFileDrop } from './seatFileDrop';
 import { isCoarsePointer, useCoarsePointer } from '../lib/layoutHooks';
 import { pastedMediaType } from '../lib/pastedFiles';
@@ -141,13 +153,11 @@ import { POPOVER_SURFACE_CLASS, type SearchableSelectOption } from './Searchable
 import { SessionRemainder } from './SessionRemainder';
 import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
-import { RecipeBindingStatus } from './agent-panel/RecipeBindingStatus';
 import { Popover } from '@base-ui/react/popover';
 import {
   AddMenu,
   type AddMenuExtensionItem,
   type AddMenuView,
-  COMPOSER_PANEL_START,
   ComposerCardContext,
   ComposerPanelOrigin,
   PermissionSelect,
@@ -1193,11 +1203,6 @@ export function Composer({
     : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition, {
         unresolvedPending: modelUnresolvedPending,
       });
-  const recipeBindingSourceRevision = JSON.stringify([
-    selectedProfileName,
-    validatingModel,
-    frozenMenuQuery.data?.prompt?.binding_revision,
-  ]);
   const invalidModelDomain = modelDomainState === 'blocked'
     || (modelDomainState === 'unknown' && !(modelUnresolvedPending && !frozenMenuQuery.isError));
   const queryClient = useQueryClient();
@@ -2226,72 +2231,93 @@ export function Composer({
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
 
-  /** Explicit attachments and preclassified clipboard media: images stay image parts; other attachments upload. */
+  // Preserve exact single-pass order for mixed image + file selections/pastes.
   const addFiles = (files: readonly SelectedAttachmentFile[]) => {
     if (disabledRef.current || !ownsAttachmentResult()) return;
-    const images: SelectedAttachmentFile[] = [];
-    const uploads: SelectedAttachmentFile[] = [];
+    let rejectedImages = false;
+    let batchKind: 'image' | 'upload' | null = null;
+    let batch: SelectedAttachmentFile[] = [];
+    const flushBatch = () => {
+      if (batch.length === 0 || batchKind === null) return;
+      if (batchKind === 'image') addImageFiles(batch);
+      else addUploadFiles(batch);
+      batch = [];
+      batchKind = null;
+    };
     for (const file of files) {
-      if (ACCEPTED_IMAGE_MIMES.includes(file.type)) images.push(file);
-      else uploads.push(file);
+      const isImage = ACCEPTED_IMAGE_MIMES.includes(file.type);
+      if (isImage && engine?.images === false) {
+        rejectedImages = true;
+        continue;
+      }
+      const kind = isImage ? 'image' : 'upload';
+      if (batchKind !== null && batchKind !== kind) flushBatch();
+      batchKind = kind;
+      batch.push(file);
     }
-    // The engine said at handshake it takes no images; say so instead of
-    // letting the send fail after the upload.
-    if (images.length > 0 && engine?.images === false) {
-      setAttachmentError(t('composer.engineNoImages', { engine: engine.label }));
-      images.length = 0;
+    flushBatch();
+    if (rejectedImages) {
+      setAttachmentError(t('composer.engineNoImages', { engine: engine!.label }));
     }
-    if (images.length > 0) addImageFiles(images);
-    if (uploads.length > 0) addUploadFiles(uploads);
   };
-  pasteContentRef.current = async (read) => {
+  // Serialize rapid consecutive pastes so paste #1 always reserves its
+  // attachment slot before paste #2 commits, preserving true paste order even
+  // when async clipboard reads resolve out of order.
+  const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  pasteContentRef.current = (read) => {
     const node = textareaRef.current;
-    if (node === null || node.disabled) return;
-    setAttachmentError(null);
+    if (node === null || node.disabled) return Promise.resolve();
     const draft = pasteDraftRef.current;
-    const selection = { start: node?.selectionStart ?? lastCursorRef.current, end: node?.selectionEnd ?? lastCursorRef.current };
-    try {
-      const native = await host.readClipboardFiles?.();
-      const browser = native === null || native === undefined ? await read() : null;
-      const latest = pasteDraftRef.current;
-      if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
-      const paths = [...(native?.paths ?? [])];
-      const media = [...(native?.media ?? [])];
-      let missingPaths = false;
-      for (const file of browser?.files ?? []) {
-        const type = pastedMediaType(file);
-        if (type !== null) {
-          media.push({ name: file.name, size: file.size, type, read: () => Promise.resolve(file.type === type ? file : new File([file], file.name, { type })) });
-        } else {
-          const path = (file as File & { path?: unknown }).path;
-          if (typeof path === 'string' && /^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(path)) paths.push(path);
-          else missingPaths = true;
+    const selection = { start: node.selectionStart ?? lastCursorRef.current, end: node.selectionEnd ?? lastCursorRef.current };
+    const run = async () => {
+      if (disabledRef.current || textareaRef.current !== node || node.disabled) return;
+      setAttachmentError(null);
+      try {
+        const native = await host.readClipboardFiles?.();
+        const browser = native === null || native === undefined ? await read() : null;
+        const latest = pasteDraftRef.current;
+        if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
+        const paths = [...(native?.paths ?? [])];
+        const media = [...(native?.media ?? [])];
+        let missingPaths = false;
+        for (const file of browser?.files ?? []) {
+          const type = pastedMediaType(file);
+          if (type !== null) {
+            media.push({ name: file.name, size: file.size, type, read: () => Promise.resolve(file.type === type ? file : new File([file], file.name, { type })) });
+          } else {
+            const path = (file as File & { path?: unknown }).path;
+            if (typeof path === 'string' && /^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(path)) paths.push(path);
+            else missingPaths = true;
+          }
         }
-      }
-      if (media.length > 0) addFiles(media);
-      const plain = browser?.text ?? '';
-      if (latest.text !== draft.text) {
-        if (plain !== '' || paths.length > 0 || media.length === 0) {
-          setAttachmentError(t('composer.pasteDraftChanged'));
+        if (media.length > 0) addFiles(media);
+        const plain = browser?.text ?? '';
+        if (latest.text !== draft.text) {
+          if (plain !== '' || paths.length > 0 || media.length === 0) {
+            setAttachmentError(t('composer.pasteDraftChanged'));
+          }
+          return;
         }
-        return;
+        let next = { text: draft.text, cursor: selection.start };
+        if (plain !== '') {
+          next = { text: draft.text.slice(0, selection.start) + plain + draft.text.slice(selection.end), cursor: selection.start + plain.length };
+        }
+        if (paths.length > 0) {
+          next = insertDroppedPaths(next.text, plain === '' ? selection : { start: next.cursor, end: next.cursor }, paths);
+        }
+        if (next.text !== draft.text) {
+          pushUndoSnapshot({ text: draft.text, cursor: selection.start });
+          historyIndexRef.current = null;
+          applyTextChange(next.text, next.cursor);
+        }
+        if (missingPaths) setAttachmentError(t('composer.pastePathUnavailable'));
+      } catch (error) {
+        if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
       }
-      let next = { text: draft.text, cursor: selection.start };
-      if (plain !== '') {
-        next = { text: draft.text.slice(0, selection.start) + plain + draft.text.slice(selection.end), cursor: selection.start + plain.length };
-      }
-      if (paths.length > 0) {
-        next = insertDroppedPaths(next.text, plain === '' ? selection : { start: next.cursor, end: next.cursor }, paths);
-      }
-      if (next.text !== draft.text) {
-        pushUndoSnapshot({ text: draft.text, cursor: selection.start });
-        historyIndexRef.current = null;
-        applyTextChange(next.text, next.cursor);
-      }
-      if (missingPaths) setAttachmentError(t('composer.pastePathUnavailable'));
-    } catch (error) {
-      if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
-    }
+    };
+    const chained = pasteQueueRef.current.then(run, run);
+    pasteQueueRef.current = chained;
+    return chained;
   };
 
   /**
@@ -2739,10 +2765,31 @@ export function Composer({
   // configured default. The menu stays closed while idle (every timing starts
   // immediately, so the choice would be noise) and in queue-edit mode (the
   // button is the edit's confirm).
+  // Auto-scroll the context shelf to reveal newly added attachment tiles.
+  const contextShelfRef = useRef<HTMLDivElement | null>(null);
+  const prevAttachmentCountRef = useRef(payloadAttachments.length);
+  useEffect(() => {
+    const prevCount = prevAttachmentCountRef.current;
+    prevAttachmentCountRef.current = payloadAttachments.length;
+    if (payloadAttachments.length > prevCount) {
+      const shelf = contextShelfRef.current;
+      if (shelf !== null && shelf.scrollWidth > shelf.clientWidth) {
+        shelf.scrollLeft = shelf.scrollWidth;
+      }
+    }
+  }, [payloadAttachments.length]);
+
   const sendTimingRootRef = useRef<HTMLDivElement | null>(null);
+  const sendTimingPanelRef = useRef<HTMLDivElement | null>(null);
   const sendButtonRef = useRef<HTMLButtonElement | null>(null);
   const sendTimingMenuId = useId();
   const [sendTimingOpen, setSendTimingOpen] = useState(false);
+  useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'composer-send-timing', () => {
+    setSendTimingOpen(false);
+  }), []);
+  useEffect(() => {
+    if (sendTimingOpen) notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, 'composer-send-timing', sendTimingRootRef.current);
+  }, [sendTimingOpen]);
   const sendTimingOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendTimingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Where keyboard-opened focus lands once the menu renders. */
@@ -2797,7 +2844,10 @@ export function Composer({
     if (!sendTimingOpen) return;
     // Focus inside the root means a keyboard user owns the menu; the pointer
     // leaving must not strand that focus by closing under it.
-    if (sendTimingRootRef.current?.contains(document.activeElement) === true) return;
+    if (
+      sendTimingRootRef.current?.contains(document.activeElement) === true
+      || sendTimingPanelRef.current?.contains(document.activeElement) === true
+    ) return;
     sendTimingCloseTimerRef.current = setTimeout(() => {
       sendTimingCloseTimerRef.current = null;
       setSendTimingOpen(false);
@@ -2806,7 +2856,10 @@ export function Composer({
   const onSendTimingBlur = (event: FocusEvent<HTMLDivElement>) => {
     if (!sendTimingOpen) return;
     const next = event.relatedTarget;
-    if (next instanceof Node && sendTimingRootRef.current?.contains(next) === true) return;
+    if (
+      next instanceof Node
+      && (sendTimingRootRef.current?.contains(next) === true || sendTimingPanelRef.current?.contains(next) === true)
+    ) return;
     setSendTimingOpen(false);
   };
   // The menu-button key contract: ↑/↓ on the resting send button opens the
@@ -2819,19 +2872,28 @@ export function Composer({
     sendTimingFocusRef.current = event.key === 'ArrowUp' ? 'last' : 'first';
     setSendTimingOpen(true);
   };
-  const sendTimingKeys = usePopover(sendTimingOpen, closeSendTiming, sendTimingRootRef, 'composer-send-timing');
+  const sendTimingKeys = usePopover(sendTimingOpen, closeSendTiming, sendTimingRootRef, 'composer-send-timing', sendTimingPanelRef);
   useEffect(() => {
     if (sendTimingAvailable || !sendTimingOpen) return;
     clearSendTimingTimers();
     setSendTimingOpen(false);
   }, [sendTimingAvailable, sendTimingOpen]);
-  useEffect(() => {
-    if (!sendTimingOpen || sendTimingFocusRef.current === null) return;
-    const rows = [...(sendTimingRootRef.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
+  const focusSendTimingPanel = useCallback((panel: HTMLElement | null) => {
+    if (panel === null || sendTimingFocusRef.current === null) return;
+    const rows = [...panel.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)')];
+    if (rows.length === 0) return;
     const target = sendTimingFocusRef.current === 'last' ? rows.at(-1) : rows[0];
     sendTimingFocusRef.current = null;
     target?.focus();
-  }, [sendTimingOpen]);
+  }, []);
+  const attachSendTimingPanelRef = useCallback((node: HTMLDivElement | null) => {
+    sendTimingPanelRef.current = node;
+    if (node !== null) focusSendTimingPanel(node);
+  }, [focusSendTimingPanel]);
+  useEffect(() => {
+    if (!sendTimingOpen || sendTimingFocusRef.current === null) return;
+    focusSendTimingPanel(sendTimingPanelRef.current);
+  }, [sendTimingOpen, focusSendTimingPanel]);
   useEffect(() => clearSendTimingTimers, []);
 
   /** Recompute the trigger-driven menu after any text/caret change. */
@@ -3270,12 +3332,6 @@ export function Composer({
       ),
     });
   }
-  if (sessionId !== undefined) {
-    statusSegments.push({
-      key: 'recipe-binding',
-      node: <RecipeBindingStatus sessionId={sessionId} agentId={agentId} sourceRevision={recipeBindingSourceRevision} />,
-    });
-  }
   if (bindingSetting !== undefined) {
     statusSegments.push({
       key: 'binding-setting',
@@ -3706,7 +3762,7 @@ export function Composer({
                 );
                 continue;
               }
-              shelfItems.unshift(
+              shelfItems.push(
                 <ImageTile
                   key={chipKey}
                   variant="shelf"
@@ -3733,19 +3789,11 @@ export function Composer({
               >
                 {hasShelfTrack ? (
                   <div
+                    ref={contextShelfRef}
                     data-attachment-chips
                     data-context-shelf
                     className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 pt-2 pb-1 no-scrollbar"
                   >
-                    {shelfItems}
-                    {quoteItems.map((item) => (
-                      <QuoteChip
-                        key={item.id}
-                        variant="shelf"
-                        quote={item.quote}
-                        onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)}
-                      />
-                    ))}
                     {annotations !== undefined && annotations.length > 0 ? (
                       <ComposerNotes
                         variant="shelf"
@@ -3755,6 +3803,14 @@ export function Composer({
                         onLocate={onLocateAnnotation}
                       />
                     ) : null}
+                    {quoteItems.map((item) => (
+                      <QuoteChip
+                        key={item.id}
+                        variant="shelf"
+                        quote={item.quote}
+                        onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)}
+                      />
+                    ))}
                     {draftSkills.map((match) => (
                       <SkillChip
                         key={`skill-${match.skillName}`}
@@ -3764,6 +3820,7 @@ export function Composer({
                         onRemove={() => { removeDraftSkill(match.skillName); }}
                       />
                     ))}
+                    {shelfItems}
                   </div>
                 ) : null}
                 {attachmentError !== null ? (
@@ -4041,8 +4098,6 @@ export function Composer({
                       ? 'ml-auto shrink-0 pl-1 @max-[30rem]/toolbar:hidden'
                       : segment.key === 'output-layer'
                         ? 'shrink-0 pl-0.5 @max-[34rem]/toolbar:hidden'
-                      : segment.key === 'recipe-binding'
-                        ? 'min-w-0 shrink @max-[36rem]/toolbar:hidden'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
                       : segment.key === 'profile' || segment.key === 'agent'
@@ -4268,26 +4323,61 @@ export function Composer({
                   </button>
                 ) : null}
                 {sendTimingOpen && sendTimingDefault !== undefined ? (
-                  <div
-                    role="menu"
-                    id={sendTimingMenuId}
-                    aria-label={t('composer.sendTimingAria')}
-                    data-send-timing-menu
-                    className={`composer-floating-panel anim-enter absolute right-0 bottom-full z-40 mb-1.5 max-h-[min(var(--cp-max-h,22rem),calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
+                  <Popover.Root
+                    open
+                    modal={false}
+                    onOpenChange={(nextOpen, eventDetails) => {
+                      if (nextOpen) return;
+                      if (eventDetails.reason === 'escape-key') {
+                        closeSendTiming(true);
+                        return;
+                      }
+                      eventDetails.cancel();
+                    }}
                   >
-                    <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
-                    <SendTimingRows
-                      defaultTiming={sendTimingDefault}
-                      canSendNow={onSendNow !== undefined && !sendNowDegrades}
-                      busySendsNow={busySendsNow}
-                      onPick={(choice) => {
-                        closeSendTiming();
-                        if (choice === 'default') send();
-                        else if (choice === 'now') send(true);
-                        else send(false, choice);
-                      }}
-                    />
-                  </div>
+                    <Popover.Portal>
+                      <Popover.Positioner
+                        anchor={sendTimingRootRef}
+                        side="top"
+                        align="end"
+                        sideOffset={6}
+                        collisionPadding={8}
+                        positionMethod="fixed"
+                        style={{ zIndex: floatingSurfaceZIndex(sendTimingRootRef.current) }}
+                      >
+                        <Popover.Popup
+                          ref={attachSendTimingPanelRef}
+                          role="menu"
+                          id={sendTimingMenuId}
+                          aria-label={t('composer.sendTimingAria')}
+                          data-send-timing-menu
+                          initialFocus={false}
+                          finalFocus={false}
+                          onMouseEnter={openSendTimingOnHover}
+                          onMouseLeave={closeSendTimingOnLeave}
+                          {...{
+                            [FLOATING_OWNER_ATTRIBUTE]: 'composer-send-timing',
+                            [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(sendTimingRootRef.current),
+                            [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(sendTimingRootRef.current),
+                          }}
+                          className={`composer-floating-panel anim-enter max-h-[min(var(--available-height,22rem),22rem,calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+                        >
+                          <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
+                          <SendTimingRows
+                            defaultTiming={sendTimingDefault}
+                            canSendNow={onSendNow !== undefined && !sendNowDegrades}
+                            busySendsNow={busySendsNow}
+                            onPick={(choice) => {
+                              closeSendTiming();
+                              if (choice === 'default') send();
+                              else if (choice === 'now') send(true);
+                              else send(false, choice);
+                            }}
+                          />
+                        </Popover.Popup>
+                      </Popover.Positioner>
+                    </Popover.Portal>
+                  </Popover.Root>
                 ) : null}
               </div>
               )}
@@ -4342,16 +4432,6 @@ export function Composer({
                 </button>
               ) : null}
             </>
-          ) : text.trim() === '' && !busy && !coarsePointer ? (
-            <p
-              data-composer-hints
-              className="hidden sm:block min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"
-            >
-              {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
-              {t(skillCatalogReady && onActivateSkill !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
-              {fsSearch !== undefined ? t('composer.footerFiles') : ''}
-              {inputHistory.length > 0 ? t('composer.footerHistory') : ''}
-            </p>
           ) : null}
         </div>
       </div>
@@ -4372,10 +4452,40 @@ function CompactModelSheet({
   readonly executionNode: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'compact-model-sheet', () => {
+    setOpen(false);
+  }), []);
+  useEffect(() => {
+    if (!open) return;
+    notifyFloatingGroupOpen(COMPOSER_FLOATING_GROUP, 'compact-model-sheet', triggerRef.current);
+    return registerOverlay('compact-model-sheet');
+  }, [open]);
+  const triggerEl = triggerRef.current;
   return (
     <div className="hidden min-w-0 shrink @max-[30rem]/toolbar:flex">
-      <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Root
+        open={open}
+        modal={false}
+        onOpenChange={(nextOpen, eventDetails) => {
+          if (!nextOpen && (eventDetails.reason === 'outside-press' || eventDetails.reason === 'escape-key')) {
+            if (typeof document !== 'undefined') {
+              const target = eventDetails.event?.target;
+              if (target instanceof Element && target.closest(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}~="compact-model-sheet"]`) !== null) {
+                eventDetails.cancel();
+                return;
+              }
+              if (document.querySelector(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}~="compact-model-sheet"]`) !== null) {
+                eventDetails.cancel();
+                return;
+              }
+            }
+          }
+          setOpen(nextOpen);
+        }}
+      >
         <Popover.Trigger
+          ref={triggerRef}
           type="button"
           data-compact-model-sheet-trigger=""
           aria-label={ariaLabel}
@@ -4386,9 +4496,22 @@ function CompactModelSheet({
           <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
         </Popover.Trigger>
         <Popover.Portal>
-          <Popover.Positioner side="top" align="start" sideOffset={8} className="z-50 outline-none">
+          <Popover.Positioner
+            side="top"
+            align="start"
+            sideOffset={8}
+            collisionPadding={8}
+            positionMethod="fixed"
+            style={{ zIndex: floatingSurfaceZIndex(triggerEl) }}
+            className="outline-none"
+          >
             <Popover.Popup
               data-compact-model-sheet=""
+              {...{
+                [FLOATING_OWNER_ATTRIBUTE]: 'compact-model-sheet',
+                [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerEl),
+                [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerEl),
+              }}
               className={`anim-enter flex w-[min(22rem,calc(100vw-24px))] flex-col gap-2 rounded-[14px] p-2.5 outline-none ${POPOVER_SURFACE_CLASS}`}
             >
               {profileNode}
@@ -5069,7 +5192,7 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
         density="compact"
         placement="above"
         hideChevron
-        panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-80 ${POPOVER_SURFACE_CLASS}`}
+        panelClassName="composer-floating-panel w-80"
         panelFooter={panelFooter}
         buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${model === undefined ? '' : STATUS_SEGMENT_SET}`}
       />
@@ -5195,7 +5318,7 @@ function ModelChip({
       // filter and effort row keep their height and the list scrolls, so a
       // tall catalog on the centred /new hero never slides its first line
       // under the page header.
-      panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
+      panelClassName="composer-floating-panel max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-96 [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink"
       buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
         modelSource === 'override' ? STATUS_SEGMENT_SET : ''
       } disabled:cursor-not-allowed disabled:opacity-60`}

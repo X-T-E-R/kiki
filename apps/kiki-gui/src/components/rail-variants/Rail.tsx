@@ -74,14 +74,11 @@ import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from
 import { FOCUS_RING, ModeSwitch, useMediaQuery, useRailMode } from './shell';
 import type { RailProps } from './types';
 import { readExternalClientMark } from '../../lib/externalClients';
-import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, EnvironmentBlock, NeedsYouList, ProfileHead } from './DefaultSections';
 import { RailTodos } from './DefaultRail';
 import { SessionCronSection } from './SessionCronSection';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
-import { resolvePluginLocalizedText, selectInspectorTabSlots } from '@kiki/session-core';
-import { requestSessionPluginPanelOpen, useSessionPluginPanelSnapshot } from '../../lib/pluginPanelPreview';
-import { usePluginGuiSlots } from '../plugins/PluginComposerSlots';
 
 /**
  * One section of the scrolling page: a hairline above it, no card. The page
@@ -178,59 +175,84 @@ const TasksSection = memo(function TasksSection({
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  // Running work first, then newest-created — same order as the tasks page.
+  const [settledOpen, setSettledOpen] = useState(false);
+  // Running work stays expanded; settled tasks fold into one quiet summary row.
   const sorted = useMemo(() => sortTasks(tasks), [tasks]);
+  const runningTasks = useMemo(() => sorted.filter((task) => task.status === 'running'), [sorted]);
+  const settledTasks = useMemo(() => sorted.filter((task) => task.status !== 'running'), [sorted]);
   if (sorted.length === 0) {
     return <p className="text-[13px] text-ink-faint">{t('rail.noTasks')}</p>;
   }
+  const renderTaskRow = (task: Task) => (
+    <li key={task.id} data-rail-item className="rail-task-row -mx-2 flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink/[0.04]">
+      {/* Name + the latest output line. The whole row opens the detail. */}
+      <button
+        type="button"
+        data-task-open={task.id}
+        title={task.command ?? t('rail.viewDetails')}
+        onClick={() => { onOpenTask(task); }}
+        className="flex min-w-0 flex-1 cursor-pointer items-start rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+      >
+        <span className={RAIL_MARK}>
+          <LifeMark markId={`task:${task.id}`} life={task.status === 'running' ? 'working' : task.status === 'failed' ? 'failed' : 'idle'} tone={task.status === 'running' ? 'bg-success' : task.status === 'failed' ? 'bg-ink-faint' : undefined} still />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-baseline gap-2 leading-5">
+            <span className="min-w-0 truncate text-[13px] text-ink">{task.description}</span>
+            {task.status !== 'running' ? (
+              <span className={`ml-auto shrink-0 text-[12px] ${taskStatusTone(task.status)}`}>{t(`rail.taskStatus.${task.status}`)}</span>
+            ) : null}
+          </span>
+          {lastLine(task.output_preview ?? task.command) !== undefined ? (
+            <span className="block truncate font-mono text-[11.5px] leading-[18px] text-ink-faint">
+              {lastLine(task.output_preview ?? task.command)}
+            </span>
+          ) : null}
+        </span>
+      </button>
+      {task.status === 'running' ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCancel(task.id, ownerAgentId);
+          }}
+          title={t('rail.stopTitle')}
+          aria-label={`${t('rail.stop')} · ${task.description}`}
+          className="rail-task-stop flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] text-ink-soft transition-[color,background-color,opacity] hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <Icon name="stop" size={12} />
+          {t('rail.stop')}
+        </button>
+      ) : null}
+    </li>
+  );
   return (
     <div data-tasks-scroll className="max-h-80 overflow-y-auto pr-1">
-      <ul className="space-y-0.5">
-        {sorted.map((task) => (
-          <li key={task.id} data-rail-item className="rail-task-row -mx-2 flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink/[0.04]">
-            {/* Name + the latest output line. The whole row opens the detail. */}
-            <button
-              type="button"
-              data-task-open={task.id}
-              title={task.command ?? t('rail.viewDetails')}
-              onClick={() => { onOpenTask(task); }}
-              className="flex min-w-0 flex-1 cursor-pointer items-start rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
-            >
-              <span className={RAIL_MARK}>
-                <LifeMark markId={`task:${task.id}`} life={task.status === 'running' ? 'working' : task.status === 'failed' ? 'failed' : 'idle'} tone={task.status === 'running' ? 'bg-success' : task.status === 'failed' ? 'bg-ink-faint' : undefined} still />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex min-w-0 items-baseline gap-2 leading-5">
-                  <span className="min-w-0 truncate text-[13px] text-ink">{task.description}</span>
-                  {task.status !== 'running' ? (
-                    <span className={`ml-auto shrink-0 text-[12px] ${taskStatusTone(task.status)}`}>{t(`rail.taskStatus.${task.status}`)}</span>
-                  ) : null}
-                </span>
-                {lastLine(task.output_preview ?? task.command) !== undefined ? (
-                  <span className="block truncate font-mono text-[11.5px] leading-[18px] text-ink-faint">
-                    {lastLine(task.output_preview ?? task.command)}
-                  </span>
-                ) : null}
-              </span>
-            </button>
-            {task.status === 'running' ? (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCancel(task.id, ownerAgentId);
-                }}
-                title={t('rail.stopTitle')}
-                aria-label={`${t('rail.stop')} · ${task.description}`}
-                className="rail-task-stop flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] text-ink-soft transition-[color,background-color,opacity] hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-              >
-                <Icon name="stop" size={12} />
-                {t('rail.stop')}
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+      {runningTasks.length > 0 ? (
+        <ul className="space-y-0.5">
+          {runningTasks.map(renderTaskRow)}
+        </ul>
+      ) : null}
+      {settledTasks.length > 0 ? (
+        <div className={runningTasks.length > 0 ? 'mt-1.5' : ''}>
+          <button
+            type="button"
+            data-tasks-settled-toggle
+            aria-expanded={settledOpen}
+            onClick={() => { setSettledOpen((open) => !open); }}
+            className="-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          >
+            <InspectorChevron open={settledOpen} />
+            <span className="min-w-0 flex-1 truncate">{t('rail.tasks.settledSummary', { count: settledTasks.length })}</span>
+          </button>
+          {settledOpen ? (
+            <ul data-tasks-settled-list className="mt-0.5 space-y-0.5">
+              {settledTasks.map(renderTaskRow)}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {sessionId !== undefined ? (
         <div className="pt-1">
           <button
@@ -290,20 +312,11 @@ export function Rail({
   onClose,
   className,
 }: RailProps) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [mode, chooseMode] = useRailMode();
   const preview = useMediaPreview();
-  const pluginPanelSnapshot = useSessionPluginPanelSnapshot();
   const session = state.session;
-  const { slots: pluginGuiSlots } = usePluginGuiSlots({
-    sessionId: state.sessionId,
-    workspaceId: session?.workspace_id,
-  });
-  const pluginInspectorTabs = useMemo(
-    () => selectInspectorTabSlots(pluginGuiSlots),
-    [pluginGuiSlots],
-  );
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
   const [terminatingAll, setTerminatingAll] = useState(false);
@@ -593,12 +606,23 @@ export function Rail({
     </>
   );
 
-  // Running work behind the conversation, each row with its own stop. Open
-  // and near the top: a long build or a stuck job is checked as often as the
-  // checklist.
+  const runningBackgroundCount = useMemo(
+    () => backgroundTasks.filter((task) => task.status === 'running').length,
+    [backgroundTasks],
+  );
+  const settledBackgroundCount = backgroundTasks.length - runningBackgroundCount;
+  // Running work behind the conversation stays open at the top with its live
+  // count; when only settled history remains, collapse to one summary line.
   const tasksSection = showTasks ? (
     <div className={SECTION} data-rail-section="tasks">
-      <RailSection title={t('rail.tasks')} collapsible={false} count={backgroundTasks.length}>
+      <RailSection
+        key={runningBackgroundCount > 0 ? 'tasks-running' : 'tasks-settled'}
+        title={t('rail.tasks')}
+        collapsible={runningBackgroundCount === 0}
+        defaultOpen={runningBackgroundCount > 0}
+        count={runningBackgroundCount > 0 ? runningBackgroundCount : undefined}
+        summary={runningBackgroundCount === 0 ? t('rail.tasks.settledSummary', { count: settledBackgroundCount }) : undefined}
+      >
         <TasksSection
           tasks={backgroundTasks}
           sessionId={session?.id}
@@ -709,41 +733,7 @@ export function Rail({
   const tailSection = (
     <div data-inspector-tail className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
       <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
-      {pluginInspectorTabs.map((panel) => {
-        const panelKey = `${panel.pluginId}:${panel.panelId}`;
-        const title = resolvePluginLocalizedText(panel.title, locale);
-        const isActive =
-          preview?.activePluginPanelKey === panelKey ||
-          (pluginPanelSnapshot.activePluginPanelKey === panelKey &&
-            (pluginPanelSnapshot.sessionId === undefined || pluginPanelSnapshot.sessionId === state.sessionId));
-        return (
-          <div key={panelKey} data-plugin-inspector-tab={panelKey} className="flex min-h-7 items-center">
-            <button
-              type="button"
-              aria-pressed={isActive}
-              data-plugin-inspector-open={panelKey}
-              data-plugin-panel-active={isActive ? 'true' : undefined}
-              onClick={() => {
-                if (preview?.openPluginPanel !== undefined) {
-                  preview.openPluginPanel(panel.pluginId, panel.panelId, title);
-                  return;
-                }
-                requestSessionPluginPanelOpen(
-                  { pluginId: panel.pluginId, panelId: panel.panelId, title },
-                  state.sessionId,
-                );
-              }}
-              className={`group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-                isActive ? 'bg-ink/[0.06] text-ink' : 'hover:bg-ink/[0.04]'
-              }`}
-            >
-              <span className={isActive ? 'shrink-0 text-[12px] font-medium text-ink' : INSPECTOR_HEAD}>{title}</span>
-              <span className="ml-auto" />
-              <InspectorChevron open={false} />
-            </button>
-          </div>
-        );
-      })}
+      {!isRoutedChildPage ? <EnvironmentBlock sessionId={state.sessionId} /> : null}
       <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
       {memory !== undefined ? (
         <RailSection title={memory.title} count={memory.count} defaultOpen={false} data-inspector-memory="">

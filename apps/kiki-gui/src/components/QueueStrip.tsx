@@ -53,7 +53,7 @@ import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { AgentRefResolutionProvider, AgentRefText } from './AgentRefChip';
-import { ContentContinuation, ContinuationRow } from './ContentContinuation';
+import { ContentContinuation } from './ContentContinuation';
 import { QuoteChip } from './ContextChips';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
 import { SearchableSelect } from './SearchableSelect';
@@ -903,15 +903,27 @@ export function QueueStrip({
         {rowNodes}
       </ol>
       {hasPromptContinuation && promptContinuation !== undefined ? (
-        <ContinuationRow
-          kind="prompt"
-          state={promptContinuation.status?.status ?? 'idle'}
-          progress={t('queue.recordsLoaded', { shown: promptContinuation.coverage.returned, total: promptContinuation.coverage.total })}
-          error={t('queue.recordsFailed')}
-          label={t('queue.records')}
-          onRequest={promptContinuation.onRequest}
-          className="px-1.5 py-1"
-        />
+        <div className="flex items-center justify-end px-1.5 py-0.5" data-continuation-row="prompt">
+          <button
+            type="button"
+            data-content-continuation-action=""
+            disabled={promptContinuation.status?.status === 'loading'}
+            onClick={() => { void promptContinuation.onRequest(); }}
+            title={
+              promptContinuation.status?.status === 'error'
+                ? t('queue.recordsFailed')
+                : promptContinuation.coverage.total > 0
+                  ? t('queue.recordsLoaded', { shown: promptContinuation.coverage.returned, total: promptContinuation.coverage.total })
+                  : t('queue.moreRecords')
+            }
+            aria-label={promptContinuation.status?.status === 'error' ? t('queue.recordsFailed') : t('queue.records')}
+            className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-50 ${
+              promptContinuation.status?.status === 'error' ? 'text-danger' : 'text-ink-faint hover:text-ink'
+            }`}
+          >
+            <Icon name="refresh" size={12} className={promptContinuation.status?.status === 'loading' ? 'spinner' : undefined} />
+          </button>
+        </div>
       ) : null}
     </section>
     </AgentRefResolutionProvider>

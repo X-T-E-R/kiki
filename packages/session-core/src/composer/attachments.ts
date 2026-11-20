@@ -368,8 +368,6 @@ export function buildPromptContent(
   presentation?: import('@kiki/transcript').TextPresentation,
 ): MessageContent[] | null {
   const mentions = attachments.filter((item): item is FileMention => item.kind === 'file');
-  const images = attachments.filter((item): item is ImageAttachment => item.kind === 'image');
-  const uploads = attachments.filter((item): item is UploadAttachment => item.kind === 'upload');
   const typedText = text.trim();
   const mentionText = mentions.map(mentionToken).join(' ');
   const parts: string[] = [];
@@ -388,36 +386,40 @@ export function buildPromptContent(
     const mappedPresentation = mappedSpans.length > 0 ? { spans: mappedSpans } : undefined;
     content.push({ type: 'text', text: contentText, presentation: mappedPresentation });
   }
-  for (const image of images) {
-    const part: ImageContent = {
-      type: 'image',
-      source: { kind: 'base64', media_type: image.mediaType, data: image.data },
-    };
-    content.push(part);
-  }
-  for (const upload of uploads) {
-    if (upload.fileId === undefined) continue;
-    const normalizedMime = upload.mediaType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
-    if (normalizedMime.startsWith('audio/')) {
-      const part: AudioContent = {
-        type: 'audio',
-        source: { kind: 'file', file_id: upload.fileId },
-        name: upload.name === '' ? undefined : upload.name,
+  for (const attachment of attachments) {
+    if (attachment.kind === 'image') {
+      const part: ImageContent = {
+        type: 'image',
+        source: { kind: 'base64', media_type: attachment.mediaType, data: attachment.data },
       };
       content.push(part);
       continue;
     }
-    const part: FileContent = {
-      type: 'file',
-      file_id: upload.fileId,
-      name: upload.name,
-      media_type: upload.mediaType,
-      size: upload.size,
-    };
-    content.push(part);
-  }
-  for (const attachment of attachments) {
-    if (attachment.kind === 'retained') content.push(attachment.content);
+    if (attachment.kind === 'upload') {
+      if (attachment.fileId === undefined) continue;
+      const normalizedMime = attachment.mediaType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+      if (normalizedMime.startsWith('audio/')) {
+        const part: AudioContent = {
+          type: 'audio',
+          source: { kind: 'file', file_id: attachment.fileId },
+          name: attachment.name === '' ? undefined : attachment.name,
+        };
+        content.push(part);
+        continue;
+      }
+      const part: FileContent = {
+        type: 'file',
+        file_id: attachment.fileId,
+        name: attachment.name,
+        media_type: attachment.mediaType,
+        size: attachment.size,
+      };
+      content.push(part);
+      continue;
+    }
+    if (attachment.kind === 'retained') {
+      content.push(attachment.content);
+    }
   }
   return content.length > 0 ? content : null;
 }

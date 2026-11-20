@@ -32,7 +32,7 @@ import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate, type I18nKey } from '@kiki/session-core/i18n';
 import { OptionalCapabilityRows, type OptionalCapabilityId } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
-import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, profileEffortDisplay } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, EnvironmentBlock, NeedsYouList, ProfileHead, profileEffortDisplay } from './DefaultSections';
 
 const {
   readCapabilities,
@@ -206,6 +206,7 @@ async function render() {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <CapabilitiesBlock sessionId="sess-1" agentId="main" />
+            <EnvironmentBlock sessionId="sess-1" />
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -217,9 +218,16 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
-/** The one capabilities fold, opened. */
+/** The read-only capabilities fold, opened. */
 async function openFold(): Promise<HTMLElement> {
   const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+  await act(async () => { head.click(); });
+  return head;
+}
+
+/** The separate mutable environment & extensions fold, opened. */
+async function openEnvFold(): Promise<HTMLElement> {
+  const head = container.querySelector<HTMLElement>('[data-rail-environment] [aria-expanded]')!;
   await act(async () => { head.click(); });
   return head;
 }
@@ -237,26 +245,26 @@ async function tab(id: string) {
 }
 
 describe('CapabilitiesBlock', () => {
-  it('keeps observation and control as one default-closed fold', async () => {
+  it('keeps read-only observation and mutable environment controls as two default-closed lazy folds', async () => {
     readCapabilities.mockResolvedValue(full);
     getUsage.mockResolvedValue(pluginAnswer());
     getSessionCaps.mockResolvedValue(buildSessionCapabilities());
     await render();
     await settle();
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    // Collapsed capabilities must not fire eager capability reads on mount.
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(head.textContent).toContain('能力');
-    expect(head.textContent).toContain('工具 4 · 技能 3 · 子智能体 1');
     expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
     expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
 
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(getSessionCaps).toHaveBeenCalledTimes(1);
+    expect(getUsage).not.toHaveBeenCalled();
+    expect(getSessionCaps).not.toHaveBeenCalled();
     expect(head.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
     expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
@@ -264,12 +272,20 @@ describe('CapabilitiesBlock', () => {
     await tab('skills');
     expect(container.textContent).toContain('api-diff');
     expect(container.textContent).toContain('release-notes');
+    expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
+
+    await openEnvFold();
+    await settle();
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(getSessionCaps).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
     expect(container.querySelector('[data-optional-capability="browser"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-plugins-browse]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugins-add-source]')).toBeNull();
 
     await act(async () => { head.click(); });
+    expect(head.textContent).toContain('工具 4 · 技能 3 · 子智能体 1');
     expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
 
     await openFold();
     await settle();
@@ -277,25 +293,27 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
   });
 
-  it('keeps stopped snapshot tools, skills, and targets in the nonzero folded summary while controls stay lazy', async () => {
+  it('keeps stopped snapshot tools, skills, and targets in the fold while staying lazy until opened', async () => {
     readCapabilities.mockResolvedValue(stoppedSnapshot);
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(head.textContent).toContain('工具 1 · 技能 1 · 子智能体 1');
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
 
     await openFold();
     await settle();
-    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(getUsage).not.toHaveBeenCalled();
     expect(container.querySelector('[data-capability-tab-button="tools"]')?.textContent).toContain('1');
     expect(container.querySelector('[data-capability-tab-button="skills"]')?.textContent).toContain('1');
     expect(container.querySelector('[data-capability-tab-button="subagents"]')?.textContent).toContain('1');
+    await act(async () => { head.click(); });
+    expect(head.textContent).toContain('工具 1 · 技能 1 · 子智能体 1');
   });
 
-  it('lists plugins of every state inside the opened fold, disabled ones out of the switch', async () => {
+  it('lists plugins of every state inside the opened environment fold, disabled ones out of the switch', async () => {
     readCapabilities.mockResolvedValue(full);
     getUsage.mockResolvedValue(pluginAnswer({
       plugins: [
@@ -307,7 +325,7 @@ describe('CapabilitiesBlock', () => {
     await render();
     await settle();
     expect(getUsage).not.toHaveBeenCalled();
-    await openFold();
+    await openEnvFold();
     await settle();
     expect(getUsage).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-rail-control-group="plugins"] h4')?.textContent).toBe('插件');
@@ -326,9 +344,8 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    // The eager catalog read populates the closed fold; built-ins alone are 3 enabled (Grep is off).
     const head = fold();
-    expect(head.textContent).toContain('工具 3');
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(container.querySelector('[data-rail-capabilities-preview]')).toBeNull();
     await openFold();
     await settle();
@@ -342,16 +359,19 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await openFold();
     await settle();
+    expect(readCapabilities).toHaveBeenCalledTimes(1);
     const status = container.querySelector('[data-rail-capabilities-unavailable]')!;
     expect(status.getAttribute('role')).toBe('status');
     expect(status.className).toContain('text-ink-faint');
     expect(status.className).not.toMatch(/danger|amber|attention/);
     expect(status.textContent).toContain('暂时读不到能力信息。');
-    // The plugin read is a different answer and is not dragged into the failure.
+    // The plugin read lives in EnvironmentBlock and is not dragged into the failure.
+    await openEnvFold();
+    await settle();
     expect(getUsage).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
     const retry = container.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!;
@@ -364,12 +384,13 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
   });
 
-  it('tells a failed plugin read inside the fold only', async () => {
+  it('tells a failed plugin read inside the environment fold only', async () => {
     readCapabilities.mockResolvedValue(full);
     getUsage.mockRejectedValue(new Error('network down'));
     await render();
     await settle();
     await openFold();
+    await openEnvFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(getUsage).toHaveBeenCalledTimes(1);
@@ -385,10 +406,10 @@ describe('CapabilitiesBlock', () => {
     await render();
     await settle();
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
-    expect(head.textContent).toContain('工具 4');
     await openFold();
+    await openEnvFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(getUsage).toHaveBeenCalledTimes(1);
@@ -401,15 +422,16 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelector('[data-rail-plugin]')).toBeNull();
   });
 
-  it('keeps controls without an observation tab strip when the capability scope is unsupported', async () => {
+  it('keeps environment controls without an observation tab strip when the capability scope is unsupported', async () => {
     readCapabilities.mockRejectedValue(unsupported());
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(container.querySelector('[data-rail-capabilities]')).not.toBeNull();
     await openFold();
+    await openEnvFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(getUsage).toHaveBeenCalledTimes(1);
@@ -424,10 +446,11 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockRejectedValue(unsupported());
     await render();
     await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(container.querySelector('[data-rail-capabilities]')).not.toBeNull();
     await openFold();
+    await openEnvFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(getUsage).toHaveBeenCalledTimes(1);
@@ -446,10 +469,8 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    // The eager catalog read reports answered kinds before the fold opens.
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(head.textContent).toContain('工具 4');
+    expect(readCapabilities).not.toHaveBeenCalled();
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
@@ -491,8 +512,7 @@ describe('CapabilitiesBlock', () => {
     await render();
     await settle();
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(head.textContent).toContain('技能 3');
+    expect(readCapabilities).not.toHaveBeenCalled();
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
@@ -517,12 +537,10 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    // The observation half stays with three tabs: tools and skills get the quiet
-    // line and subagents shows the answered empty list. Plugins stay below.
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(head.textContent).toContain('子智能体 0');
+    expect(readCapabilities).not.toHaveBeenCalled();
     await openFold();
+    await openEnvFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
@@ -551,11 +569,8 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    // available:false is a dispatch flag, not a scope verdict: every tab keeps
-    // its content and the eager read populates the closed-fold counts.
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(head.textContent).toContain('工具 4 · 技能 3 · 子智能体 1');
+    expect(readCapabilities).not.toHaveBeenCalled();
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
@@ -574,7 +589,7 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).not.toHaveBeenCalled();
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
@@ -588,27 +603,31 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
   });
 
-  it('keeps the unresolved eager read active while controls remain lazy until opened', async () => {
+  it('starts capability and environment reads lazily only when their folds open', async () => {
     readCapabilities.mockReturnValue(new Promise(() => {}));
     getUsage.mockReturnValue(new Promise(() => {}));
     await render();
     await settle();
     const head = fold();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(head.getAttribute('aria-expanded')).toBe('false');
 
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(getUsage).not.toHaveBeenCalled();
     const signal = readCapabilities.mock.calls[0]?.[1];
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(signal?.aborted).toBe(false);
 
+    await openEnvFold();
+    await settle();
+    expect(getUsage).toHaveBeenCalledTimes(1);
+
     await act(async () => { head.click(); });
     await settle();
-    expect(signal?.aborted).toBe(false);
+    expect(signal?.aborted).toBe(true);
   });
 });
 

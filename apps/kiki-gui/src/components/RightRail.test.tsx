@@ -1624,17 +1624,9 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
       );
     });
 
-    const tabBtn = container.querySelector<HTMLButtonElement>('[data-plugin-inspector-open="kiki-phone:phone-preview"]')!;
-    expect(tabBtn).not.toBeNull();
-    expect(tabBtn.getAttribute('data-plugin-panel-active')).toBe('true');
+    expect(container.querySelector('[data-plugin-inspector-open="kiki-phone:phone-preview"]')).toBeNull();
     expect(container.querySelector('iframe')).toBeNull();
-
-    await act(async () => {
-      tabBtn.click();
-    });
-    expect(openPluginPanel).toHaveBeenCalledTimes(1);
-    expect(openPluginPanel).toHaveBeenCalledWith('kiki-phone', 'phone-preview', 'Phone');
-    expect(container.querySelector('iframe')).toBeNull();
+    expect(openPluginPanel).not.toHaveBeenCalled();
   });
 
   it('scopes a routed Branch page Right Rail to the branch itself in both default and cockpit modes and shows subagents spawned by the branch', async () => {
