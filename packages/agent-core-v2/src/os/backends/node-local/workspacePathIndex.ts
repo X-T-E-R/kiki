@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from 'node:fs';
+import { createDeletedRootSpinDetector } from '#/_base/utils/fsWatchGuard';
 import { isAbsolute, relative, resolve, basename } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import picomatch from 'picomatch';
@@ -46,8 +47,10 @@ export class WorkspacePathIndex {
   private readonly pendingTrigramPatches = new Map<string, WorkspacePathEntry | undefined>();
   private readonly pathUpdates = new Map<string, Promise<void>>();
   private readonly globCache = new Map<string, readonly string[]>();
+  private readonly globInflight = new Map<string, Promise<readonly string[] | undefined>>();
   private readonly fuzzyCache = new Map<string, readonly WorkspacePathEntry[]>();
   private readonly controller = new AbortController();
+  private refreshController: AbortController | undefined;
   private started = false;
   private disposed = false;
   private watching = false;
@@ -67,7 +70,16 @@ export class WorkspacePathIndex {
     if (this.started || this.disposed) return;
     this.started = true;
     try {
+      const isDeletedSpin = createDeletedRootSpinDetector(this.root);
       this.watcher = watch(this.root, { recursive: true }, (_kind, filename) => {
+        if (isDeletedSpin()) {
+          this.watching = false;
+          this.clearPublishedState();
+          this.trigram?.invalidate();
+          this.watcher?.close();
+          this.watcher = undefined;
+          return;
+        }
         if (filename !== null && filename.split(/[\\/]/u).some(part => ['.git', '.hg', '.svn', '.jj', '.bzr', '.sl'].includes(part.toLowerCase()))) return;
         if (filename === null) this.invalidate();
         else void this.mutation(resolve(this.root, filename));
@@ -105,6 +117,8 @@ export class WorkspacePathIndex {
   invalidate(): void {
     if (!this.started || this.disposed) return;
     this.revision++;
+    this.refreshController?.abort();
+    this.refreshController = undefined;
     this.clearPublishedState();
     this.trigram?.invalidate();
     this.globCache.clear();
@@ -237,9 +251,13 @@ export class WorkspacePathIndex {
     }
     if (this.disposed || !this.watching) return;
     const revision = this.revision;
+    const refreshController = new AbortController();
+    this.refreshController = refreshController;
+    const onDispose = (): void => { refreshController.abort(); };
+    this.controller.signal.addEventListener('abort', onDispose, { once: true });
     this.pending = this.cpu.request<WorkspacePathInventory>(
       { type: 'workspace.paths', root: this.root, limit: 250_000 },
-      { signal: this.controller.signal, timeoutMs: 120_000, priority: 'low' },
+      { signal: refreshController.signal, timeoutMs: 120_000, priority: 'low' },
     )
       .then(async inventory => {
         if (inventory.overflow) {
@@ -257,9 +275,12 @@ export class WorkspacePathIndex {
         const prepared = new Map<string, PreparedEntry>();
         const byPath = new Map<string, WorkspacePathEntry>();
         const directoryCounts = new Map<string, number>();
-        for (let offset = 0; offset < inventory.entries.length; offset += 512) {
+        const totalEntries = inventory.entries.length;
+        for (let offset = 0; offset < totalEntries; offset += 256) {
           if (this.disposed || revision !== this.revision) return;
-          for (const entry of inventory.entries.slice(offset, offset + 512)) {
+          const end = Math.min(offset + 256, totalEntries);
+          for (let i = offset; i < end; i += 1) {
+            const entry = inventory.entries[i]!;
             const key = pathIdentity(entry.path);
             if (!byPath.has(key)) {
               let slash = key.indexOf('/');
@@ -293,6 +314,8 @@ export class WorkspacePathIndex {
         this.error = undefined;
       }, error => { this.error = error; })
       .finally(() => {
+        this.controller.signal.removeEventListener('abort', onDispose);
+        if (this.refreshController === refreshController) this.refreshController = undefined;
         this.pending = undefined;
         if (!this.disposed && revision !== this.revision && this.timer === undefined) void this.refresh();
       });
@@ -321,48 +344,61 @@ export class WorkspacePathIndex {
     const key = `${prefix}\0${pattern}`;
     const cached = this.globCache.get(key);
     if (cached !== undefined) return cached;
-    const normalized = pattern.replace(/^\//u, '');
-    const insensitive = process.platform === 'win32';
-    const matcher = picomatch(normalized, { dot: true, nocase: insensitive, basename: !normalized.includes('/') && normalized !== '*' });
-    const depth = !normalized.includes('**') && (normalized === '*' || normalized.includes('/')) ? normalized.split('/').length : Infinity;
-    const start = prefix === '' ? '' : `${prefix}/`;
-    const lowerStart = insensitive ? start.toLowerCase() : start;
     const snapshot = this.current;
-    const entries = snapshot.entries;
-    const matchedEntries: WorkspacePathEntry[] = [];
-    let yieldedAt = performance.now();
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index]!;
-      if (entry.kind === 'file') {
-        const matchesPrefix = insensitive ? entry.path.toLowerCase().startsWith(lowerStart) : entry.path.startsWith(start);
-        if (matchesPrefix) {
-          const local = entry.path.slice(start.length);
-          if (local.split('/').length <= depth && matcher(local)) {
-            matchedEntries.push(entry);
+    const inflightKey = `${snapshot.revision}\0${key}`;
+    const existing = this.globInflight.get(inflightKey);
+    if (existing !== undefined) return existing;
+    const work = (async (): Promise<readonly string[] | undefined> => {
+      const normalized = pattern.replace(/^\//u, '');
+      const insensitive = process.platform === 'win32';
+      const matcher = picomatch(normalized, { dot: true, nocase: insensitive, basename: !normalized.includes('/') && normalized !== '*' });
+      const depth = !normalized.includes('**') && (normalized === '*' || normalized.includes('/')) ? normalized.split('/').length : Infinity;
+      const start = prefix === '' ? '' : `${prefix}/`;
+      const lowerStart = insensitive ? start.toLowerCase() : start;
+      const entries = snapshot.entries;
+      const matchedEntries: WorkspacePathEntry[] = [];
+      let yieldedAt = performance.now();
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index]!;
+        if (entry.kind === 'file') {
+          const matchesPrefix = insensitive ? entry.path.toLowerCase().startsWith(lowerStart) : entry.path.startsWith(start);
+          if (matchesPrefix) {
+            const local = entry.path.slice(start.length);
+            if (local.split('/').length <= depth && matcher(local)) {
+              matchedEntries.push(entry);
+            }
           }
         }
+        if ((index & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
+          await yieldToEventLoop();
+          if (this.disposed) return undefined;
+          yieldedAt = performance.now();
+        }
       }
-      if ((index & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
-        await yieldToEventLoop();
-        if (this.disposed) return undefined;
-        yieldedAt = performance.now();
+      matchedEntries.sort((left, right) => right.mtimeMs - left.mtimeMs || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+      const rootSep = process.platform === 'win32' ? '\\' : '/';
+      const rootPrefix = this.root.endsWith(rootSep) ? this.root : `${this.root}${rootSep}`;
+      const matches: string[] = [];
+      yieldedAt = performance.now();
+      for (let index = 0; index < matchedEntries.length; index++) {
+        const rel = matchedEntries[index]!.path;
+        matches.push(process.platform === 'win32' ? `${rootPrefix}${rel.replaceAll('/', '\\')}` : `${rootPrefix}${rel}`);
+        if ((index & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
+          await yieldToEventLoop();
+          if (this.disposed) return undefined;
+          yieldedAt = performance.now();
+        }
       }
-    }
-    matchedEntries.sort((left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path));
-    const matches: string[] = [];
-    for (let index = 0; index < matchedEntries.length; index++) {
-      matches.push(resolve(this.root, matchedEntries[index]!.path));
-      if ((index & 1023) === 1023 && performance.now() - yieldedAt >= 2.5) {
-        await yieldToEventLoop();
-        if (this.disposed) return undefined;
-        yieldedAt = performance.now();
+      if (this.current === snapshot) {
+        if (this.globCache.size >= 32) this.globCache.delete(this.globCache.keys().next().value!);
+        this.globCache.set(key, matches);
       }
-    }
-    if (this.current === snapshot) {
-      if (this.globCache.size >= 32) this.globCache.delete(this.globCache.keys().next().value!);
-      this.globCache.set(key, matches);
-    }
-    return matches;
+      return matches;
+    })().finally(() => {
+      if (this.globInflight.get(inflightKey) === work) this.globInflight.delete(inflightKey);
+    });
+    this.globInflight.set(inflightKey, work);
+    return work;
   }
 
   fuzzy(query: string, pathMode: boolean): readonly WorkspacePathEntry[] | undefined {

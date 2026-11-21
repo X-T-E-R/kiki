@@ -297,6 +297,7 @@ export function writeCheckpointlessColdChildWire({
       reason: 'completed',
       time: baseTime + (stepCount + 1) * 250,
     });
+    fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
   }

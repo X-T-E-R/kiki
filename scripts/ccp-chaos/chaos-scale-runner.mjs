@@ -515,6 +515,7 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
   });
 
   const stderrLines = [];
+  child.stdout?.resume();
   child.stderr?.on('data', (chunk) => {
     const text = chunk.toString('utf8').trim();
     if (text && stderrLines.length < 40) stderrLines.push(text.slice(0, 400));
@@ -2277,6 +2278,13 @@ export async function runChaosScaleSuite(options = {}) {
     }
 
     if (runP01) {
+      if (runS10) {
+        if (s10ReopenCandidate?.sessionId) {
+          await mainServer.closeSession(s10ReopenCandidate.sessionId).catch(() => undefined);
+        }
+        await mainServer.gc().catch(() => undefined);
+        await sleep(500);
+      }
       const p01Res = await runP01ColdChildFanoutProbe({
         server: mainServer,
         corpus,

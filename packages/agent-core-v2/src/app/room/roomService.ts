@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import { Disposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { abortable } from '#/_base/utils/abort';
@@ -14,17 +15,23 @@ import { Error2, ErrorCodes, isError2, toErrorPayload } from '#/errors';
 import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
 import { IPersonaStore } from '#/app/persona/personaStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
-import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
-import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
+import { ContextAppendObservableMessage } from '#/agent/contextMemory/contextEvents';
+import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
+import { newMessageId } from '#/agent/contextMemory/messageId';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { AGENT_WIRE_RECORD_KEY, createWireMetadataRecord } from '#/wire/record';
+import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import type { CreateSessionOptions } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
@@ -194,6 +201,12 @@ export class RoomService extends Disposable implements IRoomService {
   private readonly logStateFlights = new Map<string, Promise<RoomLogState>>();
   private readonly pointerCache = new Map<string, Map<string, number>>();
   private readonly pointerCachePerRoom = resolveRoomPointerCacheLimit();
+  private readonly pendingIndexUpdaters: Array<{
+    readonly updater: (current: RoomIndex) => RoomIndex;
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+  }> = [];
+  private indexFlushPromise: Promise<void> | undefined;
 
   constructor(
     @IConfigService private readonly config: IConfigService,
@@ -203,6 +216,7 @@ export class RoomService extends Disposable implements IRoomService {
     @ISessionManager private readonly sessions: ISessionManager,
     @ISessionIndex private readonly sessionIndex: ISessionIndex,
     @IThreadCommunicationService private readonly threadCommunication: IThreadCommunicationService,
+    @ref(IFileSystemStorageService) private readonly storage?: LiveRef<IFileSystemStorageService>,
   ) {
     super();
     this._register(this.changeEmitter);
@@ -284,7 +298,7 @@ export class RoomService extends Disposable implements IRoomService {
     validateRoomId(id);
     const name = requiredText(input.name, 'Room name');
     const members = validateMemberInputs(input.members);
-    await this.validateMembers(members);
+    const summaries = await this.validateMembers(members);
     const host = input.host ?? roomMemberId(members[0]!);
     if (!members.some((member) => roomMemberId(member) === host)) invalid('Room host must be a member.');
     const mode = input.mode ?? 'mention';
@@ -293,8 +307,10 @@ export class RoomService extends Disposable implements IRoomService {
     const workspace = requiredText(input.workspace, 'Room workspace');
     return this.withRoomLock(id, async () => {
       if (await this.get(id) !== undefined) invalid(`Room '${id}' already exists.`);
-      const cards = await this.loadPersonaCards(members);
-      const prompt = renderRoomPrompt({ name, members, host, cards });
+      const hasPersonas = members.some((member) => member.kind !== 'thread');
+      const prompt = hasPersonas
+        ? renderRoomPrompt({ name, members, host, cards: await this.loadPersonaCards(members, summaries) })
+        : '';
       const created = await this.materializeMembers(id, members, workspace, prompt);
       const room: RoomDocument = {
         version: 1, id, name, members: created, host, mode, budget, workspace,
@@ -303,11 +319,13 @@ export class RoomService extends Disposable implements IRoomService {
         cursors: Object.fromEntries(created.map((member) => [member.sessionId, undefined])),
         pendingWakes: [],
       };
-      await this.documents.set(roomScope(id), 'room.json', room);
-      await this.documents.set(roomScope(id), ROOM_LOG_STATE_KEY, emptyRoomLogState());
+      await Promise.all([
+        this.documents.set(roomScope(id), 'room.json', room),
+        this.documents.set(roomScope(id), ROOM_LOG_STATE_KEY, emptyRoomLogState()),
+      ]);
       await this.updateIndex((current) => ({ version: 1, rooms: [...current.rooms, { id, name, createdAt: room.createdAt }] }));
-      await this.appendGreetings(room, room.members);
-      await this.announceJoined(room, room.members);
+      await this.appendGreetings(room, room.members, summaries);
+      await this.announceJoined(room, room.members, summaries);
       this.runtime(id).generation = room.generation;
       this.fire({ roomId: id, room });
       return room;
@@ -394,7 +412,7 @@ export class RoomService extends Disposable implements IRoomService {
     const budget = input.budget === undefined ? current.budget : normalizeBudget({ ...current.budget, ...input.budget });
     const requested = input.members === undefined ? current.members : validateMemberInputs(input.members, 0);
     const addedInputs = requested.filter((member) => !current.members.some((existing) => existing.kind === (member.kind ?? 'persona') && roomMemberId(existing) === roomMemberId(member)));
-    await this.validateMembers(addedInputs);
+    const addedSummaries = await this.validateMembers(addedInputs);
     const host = input.host ?? current.host;
     if (requested.length > 0 && !requested.some((member) => roomMemberId(member) === host)) invalid('Room host must be a member.');
     const added = addedInputs.length === 0
@@ -404,7 +422,7 @@ export class RoomService extends Disposable implements IRoomService {
         addedInputs,
         workspace,
         addedInputs.some((member) => member.kind !== 'thread')
-          ? renderRoomPrompt({ name, members: requested, host, cards: await this.loadPersonaCards(requested) })
+          ? renderRoomPrompt({ name, members: requested, host, cards: await this.loadPersonaCards(requested, addedSummaries) })
           : '',
       );
     const members = requested.map((member): RoomMember => {
@@ -431,7 +449,7 @@ export class RoomService extends Disposable implements IRoomService {
     }
     await this.documents.set(roomScope(roomId), 'room.json', next);
     await this.updateIndex((index) => ({ version: 1, rooms: index.rooms.map((entry) => entry.id === roomId ? { ...entry, name } : entry) }));
-    await this.appendGreetings(next, added);
+    await this.appendGreetings(next, added, addedSummaries);
     const removed = current.members.filter((member) => !members.some((candidate) => candidate.sessionId === member.sessionId));
     if (!rosterChanged) {
       const runtime = this.runtime(roomId);
@@ -441,9 +459,9 @@ export class RoomService extends Disposable implements IRoomService {
     }
     for (const member of removed) {
       await this.leaveMember(current, member);
-      if (member.kind === 'thread') await this.appendSystem(roomId, 'member_left', `${member.sessionId} left the room.`, { memberId: member.sessionId, kind: 'thread' });
+      if (member.kind === 'thread') await this.appendSystem(roomId, 'member_left', `${member.sessionId} left the room.`, { memberId: member.sessionId, kind: 'thread' }, next);
     }
-    await this.announceJoined(next, added);
+    await this.announceJoined(next, added, addedSummaries);
     if (workspace !== current.workspace) await this.appendSystem(roomId, 'workspace_changed', 'Room classification workspace changed; member permissions are unchanged.', { workspace });
     if (name !== current.name) await this.appendSystem(roomId, 'room_renamed', `Room renamed to ${name}.`, { name });
     if (host !== current.host) await this.appendSystem(roomId, 'host_changed', `Room host changed to ${host}.`, { host });
@@ -452,7 +470,9 @@ export class RoomService extends Disposable implements IRoomService {
     return next;
   }
 
-  private async validateMembers(members: readonly RoomMemberInput[]): Promise<void> {
+  private async validateMembers(members: readonly RoomMemberInput[]): Promise<ReadonlyMap<string, SessionSummary>> {
+    const summaries = new Map<string, SessionSummary>();
+    const checkedWorkspaces = new Map<string, boolean>();
     for (const member of members) {
       if (member.kind !== 'thread') {
         if ((await this.personas.getState(member.personaId)).archived) invalid('Restore the archived persona before adding it to a room.');
@@ -461,10 +481,17 @@ export class RoomService extends Disposable implements IRoomService {
       const summary = await this.sessionIndex.get(member.sessionId);
       if (summary === undefined || summary.archived) invalid('Only existing unarchived threads can join a room.');
       if (isChildSession(summary.custom)) invalid('Subagents cannot join rooms; communicate through their parent thread.');
-      if (!(await this.threadCommunication.isWorkspaceEnabled(summary.workspaceId))) {
+      let enabled = checkedWorkspaces.get(summary.workspaceId);
+      if (enabled === undefined) {
+        enabled = await this.threadCommunication.isWorkspaceEnabled(summary.workspaceId);
+        checkedWorkspaces.set(summary.workspaceId, enabled);
+      }
+      if (!enabled) {
         throw new Error2(ErrorCodes.THREAD_DISABLED, 'Thread communication is disabled for this thread.');
       }
+      summaries.set(member.sessionId, summary);
     }
+    return summaries;
   }
 
   private async materializeMembers(roomId: string, inputs: readonly RoomMemberInput[], workspace: string, prompt: string): Promise<RoomMember[]> {
@@ -490,20 +517,87 @@ export class RoomService extends Disposable implements IRoomService {
     await this.remindThread(member.sessionId, `Left room "${room.name}" (${room.id}). Its discussion log remains in the room; room messages no longer reach this thread.`, 'room_left');
   }
 
-  private async announceJoined(room: RoomDocument, members: readonly RoomMember[]): Promise<void> {
-    for (const member of members) {
-      if (member.kind !== 'thread') continue;
-      await this.appendSystem(room.id, 'member_joined', `${member.sessionId} joined the room.`, { memberId: member.sessionId, kind: 'thread' });
-      await this.remindThread(member.sessionId, `Joined room "${room.name}" (${room.id}). A user message with no mention goes to the room host. A message that mentions you wakes you. Speak in the room with ThreadSend({room: "${room.id}", content, mentions?}). Your workspace and permissions stay as they are.`, 'room_joined');
-    }
+  private async announceJoined(
+    room: RoomDocument,
+    members: readonly RoomMember[],
+    summaries?: ReadonlyMap<string, SessionSummary>,
+  ): Promise<void> {
+    const threadMembers = members.filter((member) => member.kind === 'thread');
+    if (threadMembers.length === 0) return;
+    const now = new Date().toISOString();
+    const systemEntries: RoomSystemLog[] = threadMembers.map((member) => ({
+      id: messageId(),
+      at: now,
+      kind: 'system',
+      from: 'system',
+      event: 'member_joined',
+      text: `${member.sessionId} joined the room.`,
+      data: { memberId: member.sessionId, kind: 'thread' },
+    }));
+    await this.appendIndexedEntries(room.id, systemEntries);
+    for (const entry of systemEntries) this.fire({ roomId: room.id, room, entry });
+    await Promise.all(threadMembers.map((member) =>
+      this.remindThread(
+        member.sessionId,
+        `Joined room "${room.name}" (${room.id}). A user message with no mention goes to the room host. A message that mentions you wakes you. Speak in the room with ThreadSend({room: "${room.id}", content, mentions?}). Your workspace and permissions stay as they are.`,
+        'room_joined',
+        summaries?.get(member.sessionId)?.workspaceId,
+      ),
+    ));
   }
 
-  private async remindThread(sessionId: string, text: string, variant: string): Promise<void> {
+  private async remindThread(
+    sessionId: string,
+    text: string,
+    variant: string,
+    workspaceId?: string,
+  ): Promise<void> {
     try {
-      const session = await this.sessions.resume(sessionId);
-      if (session === undefined) return;
-      const main = await ensureMainAgent(session);
-      main.accessor.get(IAgentSystemReminderService).appendSystemReminder(text, { kind: 'injection', variant });
+      const session = this.sessions.get(sessionId);
+      const lifecycle = session?.accessor.get(IAgentLifecycleService);
+      const main = typeof lifecycle?.get === 'function' ? lifecycle.get(MAIN_AGENT_ID) : undefined;
+      if (main !== undefined) {
+        main.accessor.get(IAgentSystemReminderService).appendSystemReminder(text, { kind: 'injection', variant });
+        return;
+      }
+      const resolvedWorkspaceId =
+        workspaceId ??
+        session?.accessor.get(ISessionContext)?.workspaceId ??
+        (await this.sessionIndex.get(sessionId))?.workspaceId;
+      if (resolvedWorkspaceId === undefined) return;
+      const agentScope = agentScopeOf(
+        sessionScopeOf(workspacePersistenceScope('sessions', resolvedWorkspaceId), sessionId),
+        MAIN_AGENT_ID,
+      );
+      const origin = { kind: 'injection' as const, variant };
+      const messageIdValue = newMessageId();
+      const delivery = {
+        deliveryId: newDeliveryId(),
+        messageId: messageIdValue,
+        deliveredAt: new Date().toISOString(),
+        origin: deliveryOriginOf(origin),
+      };
+      const message: ContextMessage = {
+        id: messageIdValue,
+        role: 'user',
+        content: [{ type: 'text', text: wrapSystemReminder(text) }],
+        toolCalls: [],
+        origin,
+        source: 'injection',
+      };
+      const storage = this.storage?.current;
+      if (storage !== undefined) {
+        const size = await storage.size(agentScope, AGENT_WIRE_RECORD_KEY);
+        if (size === undefined || size === 0) {
+          this.appendLogs.append(agentScope, AGENT_WIRE_RECORD_KEY, createWireMetadataRecord());
+        }
+      }
+      this.appendLogs.append(
+        agentScope,
+        AGENT_WIRE_RECORD_KEY,
+        new ContextAppendObservableMessage({ message, delivery }).serialize(),
+      );
+      await this.appendLogs.flush(agentScope, AGENT_WIRE_RECORD_KEY);
     } catch (error) {
       onUnexpectedError(error);
     }
@@ -1062,9 +1156,13 @@ export class RoomService extends Disposable implements IRoomService {
     return session;
   }
 
-  private async appendGreetings(room: RoomDocument, members: readonly RoomMember[]): Promise<void> {
-    if (members.length === 0) return;
-    const cards = await this.loadPersonaCards(members);
+  private async appendGreetings(
+    room: RoomDocument,
+    members: readonly RoomMember[],
+    summaries?: ReadonlyMap<string, SessionSummary>,
+  ): Promise<void> {
+    if (!members.some((member) => member.kind !== 'thread')) return;
+    const cards = await this.loadPersonaCards(members, summaries);
     for (const member of members) {
       if (member.kind === 'thread') continue;
       const snapshot = await this.personas.get(member.personaId);
@@ -1087,11 +1185,14 @@ export class RoomService extends Disposable implements IRoomService {
     }
   }
 
-  private async loadPersonaCards(members: readonly (RoomMember | RoomMemberInput)[]): Promise<ReadonlyMap<string, PersonaCard>> {
+  private async loadPersonaCards(
+    members: readonly (RoomMember | RoomMemberInput)[],
+    summaries?: ReadonlyMap<string, SessionSummary>,
+  ): Promise<ReadonlyMap<string, PersonaCard>> {
     const cards = new Map<string, PersonaCard>();
     for (const member of members) {
       if (member.kind === 'thread') {
-        const summary = await this.sessionIndex.get(member.sessionId);
+        const summary = summaries?.get(member.sessionId) ?? await this.sessionIndex.get(member.sessionId);
         cards.set(member.sessionId, { name: summary?.title ?? member.sessionId });
         continue;
       }
@@ -1310,12 +1411,81 @@ export class RoomService extends Disposable implements IRoomService {
     await this.appendIndexedEntry(roomId, entry);
   }
 
-  private async appendSystem(roomId: string, event: string, text: string, data: Readonly<Record<string, unknown>> | undefined): Promise<RoomSystemLog> {
+  private async appendSystem(
+    roomId: string,
+    event: string,
+    text: string,
+    data: Readonly<Record<string, unknown>> | undefined,
+    knownRoom?: RoomDocument,
+  ): Promise<RoomSystemLog> {
     const entry: RoomSystemLog = { id: messageId(), at: new Date().toISOString(), kind: 'system', from: 'system', event, text, data };
     await this.appendIndexedEntry(roomId, entry);
-    const room = await this.requireRoom(roomId);
+    const room = knownRoom ?? await this.requireRoom(roomId);
     this.fire({ roomId, room, entry });
     return entry;
+  }
+
+  private async appendIndexedEntries(roomId: string, entries: readonly RoomLogEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    if (entries.length === 1) {
+      await this.appendIndexedEntry(roomId, entries[0]!);
+      return;
+    }
+    const state = await this.ensureLogStateLocked(roomId);
+    let nextSeq = state.nextSeq;
+    let userMessages = state.userMessages;
+    let botMessages = state.botMessages;
+    let activitySeq = state.activitySeq ?? nextSeq - 1;
+    let updatedAt = state.updatedAt;
+    let failed = state.failed;
+    const previous = updatedAt === undefined ? await this.readIndexedRecord(roomId, nextSeq - 1) : undefined;
+    const bySegment = new Map<string, RoomLogRecord[]>();
+    const pointerWrites: Array<{ readonly key: string; readonly id: string; readonly seq: number }> = [];
+    for (const entry of entries) {
+      const seq = nextSeq++;
+      const activity = roomEntryIsActivity(entry);
+      activitySeq += Number(activity);
+      if (activity) {
+        updatedAt = entry.at;
+        failed = entry.kind === 'system' && entry.event === 'wake_failed';
+      } else {
+        updatedAt = updatedAt ?? (state.activitySeq === undefined ? previous?.entry.at : undefined);
+        failed = failed ?? (previous?.entry.kind === 'system' && previous.entry.event === 'wake_failed');
+      }
+      if (entry.kind === 'message') {
+        if (entry.from === 'user') userMessages++;
+        else botMessages++;
+      }
+      const segmentKey = roomLogSegmentKey(seq);
+      const list = bySegment.get(segmentKey) ?? [];
+      list.push({ seq, entry, activitySeq });
+      bySegment.set(segmentKey, list);
+      pointerWrites.push({ key: roomLogPointerKey(entry.id), id: entry.id, seq });
+      if (entry.kind === 'message' && entry.idempotencyKey !== undefined) {
+        pointerWrites.push({ key: roomLogPointerKey(entry.idempotencyKey), id: entry.idempotencyKey, seq });
+      }
+    }
+    for (const [segmentKey, records] of bySegment) {
+      const firstSeq = records[0]!.seq;
+      await this.documents.update<RoomLogSegment>(roomScope(roomId), segmentKey, (current) => ({
+        entries: [...(current?.entries ?? []).filter((record) => record.seq < firstSeq), ...records],
+      }));
+    }
+    await Promise.all(pointerWrites.map(async (item) => {
+      await this.documents.set(roomScope(roomId), item.key, { seq: item.seq });
+      this.rememberPointer(roomId, item.id, item.seq);
+    }));
+    await this.documents.set(roomScope(roomId), ROOM_LOG_STATE_KEY, {
+      version: 1,
+      nextSeq,
+      userMessages,
+      botMessages,
+      activitySeq,
+      updatedAt,
+      failed,
+    } satisfies RoomLogState);
+    for (const entry of entries) this.appendLogs.append(roomScope(roomId), ROOM_LOG_KEY, entry);
+    await this.appendLogs.flush(roomScope(roomId), ROOM_LOG_KEY);
   }
 
   private async appendIndexedEntry(roomId: string, entry: RoomLogEntry): Promise<void> {
@@ -1347,8 +1517,36 @@ export class RoomService extends Disposable implements IRoomService {
     await this.appendLogs.flush(roomScope(roomId), ROOM_LOG_KEY);
   }
 
-  private async updateIndex(updater: (current: RoomIndex) => RoomIndex): Promise<void> {
-    await this.documents.update<RoomIndex>(ROOM_INDEX_SCOPE, ROOM_INDEX_KEY, (current) => updater(current ?? { version: 1, rooms: [] }));
+  private updateIndex(updater: (current: RoomIndex) => RoomIndex): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.pendingIndexUpdaters.push({ updater, resolve, reject });
+      if (this.indexFlushPromise === undefined) {
+        this.indexFlushPromise = this.drainIndexUpdates();
+      }
+    });
+  }
+
+  private async drainIndexUpdates(): Promise<void> {
+    try {
+      while (this.pendingIndexUpdaters.length > 0) {
+        const batch = this.pendingIndexUpdaters.splice(0);
+        try {
+          await this.documents.update<RoomIndex>(ROOM_INDEX_SCOPE, ROOM_INDEX_KEY, (current) => {
+            let next = current ?? { version: 1, rooms: [] };
+            for (const item of batch) next = item.updater(next);
+            return next;
+          });
+          for (const item of batch) item.resolve();
+        } catch (error) {
+          for (const item of batch) item.reject(error);
+        }
+      }
+    } finally {
+      this.indexFlushPromise = undefined;
+      if (this.pendingIndexUpdaters.length > 0) {
+        this.indexFlushPromise = this.drainIndexUpdates();
+      }
+    }
   }
 
   private async cancelRoomDeliveries(roomId: string, generation: number): Promise<void> {

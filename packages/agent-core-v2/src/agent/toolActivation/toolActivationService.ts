@@ -29,7 +29,18 @@ import { IAgentToolActivationService } from './toolActivation';
 import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
 
 const SEND_MESSAGE_TOOL_NAME = 'SendMessage';
-const METER_STATUS_KEYS: ReadonlySet<string> = new Set(['usage', 'contextTokens']);
+const METER_STATUS_KEYS: ReadonlySet<string> = new Set([
+  'usage',
+  'contextTokens',
+  'maxContextTokens',
+  'contextStrategy',
+  'contextStrategySource',
+  'autoCompactTokens',
+  'autoCompactSource',
+  'effectiveMaxContextTokens',
+  'reservedContextTokens',
+  'thinkingEffort',
+]);
 
 function isMeterOnlyStatus(event: AgentStatusUpdated | undefined): boolean {
   if (event === undefined) return false;

@@ -25,6 +25,7 @@ const SKIPPABLE = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
 
 class PathRules {
   private readonly rules = new Map<string, readonly (Ignore | undefined)[]>();
+  private readonly dirChainCache = new Map<string, readonly { readonly matcher: Ignore; readonly parent: string }[]>();
   private readonly parents: string[] = [];
   private readonly exclude?: Ignore;
   constructor(private readonly root: string, private readonly signal?: AbortSignal) {
@@ -60,21 +61,17 @@ class PathRules {
       throw error;
     }
   }
-  ignored(path: string, directory: boolean): boolean {
-    this.signal?.throwIfAborted();
+  private activeRulesForDir(dir: string): readonly { readonly matcher: Ignore; readonly parent: string }[] {
+    const cached = this.dirChainCache.get(dir);
+    if (cached !== undefined) return cached;
     const parents = [...this.parents];
-    const local = relative(this.root, dirname(path));
-    if (local !== '') {
+    const local = relative(this.root, dir);
+    if (local !== '' && !local.startsWith('..') && !isAbsolute(local)) {
       let current = this.root;
       for (const part of local.split(/[\\/]/u)) { current = join(current, part); parents.push(current); }
     }
-    let excluded = false;
-    const apply = (matcher: Ignore, parent: string): void => {
-      const result = matcher.test(relative(parent, path).replaceAll('\\', '/') + (directory ? '/' : ''));
-      if (result.ignored) excluded = true;
-      if (result.unignored) excluded = false;
-    };
-    if (this.exclude !== undefined) apply(this.exclude, this.parents[0]!);
+    const active: { readonly matcher: Ignore; readonly parent: string }[] = [];
+    if (this.exclude !== undefined) active.push({ matcher: this.exclude, parent: this.parents[0]! });
     for (let kind = 0; kind < IGNORE_FILES.length; kind++) {
       for (const parent of parents) {
         this.signal?.throwIfAborted();
@@ -84,8 +81,21 @@ class PathRules {
           this.rules.set(parent, matchers);
         }
         const matcher = matchers[kind];
-        if (matcher !== undefined) apply(matcher, parent);
+        if (matcher !== undefined) active.push({ matcher, parent });
       }
+    }
+    this.dirChainCache.set(dir, active);
+    return active;
+  }
+  ignored(path: string, directory: boolean): boolean {
+    this.signal?.throwIfAborted();
+    const active = this.activeRulesForDir(dirname(path));
+    if (active.length === 0) return false;
+    let excluded = false;
+    for (const { matcher, parent } of active) {
+      const result = matcher.test(relative(parent, path).replaceAll('\\', '/') + (directory ? '/' : ''));
+      if (result.ignored) excluded = true;
+      if (result.unignored) excluded = false;
     }
     return excluded;
   }
@@ -123,6 +133,22 @@ export function workspacePathFilter(root: string, paths: readonly string[], sign
     if (!rules.ignored(path, false)) filtered.push(path);
   }
   return filtered;
+}
+
+export function workspacePathFilterPacked(root: string, pathsText: string, signal?: AbortSignal): string | null {
+  signal?.throwIfAborted();
+  if (pathsText.length === 0) return null;
+  const rules = new PathRules(root, signal);
+  const paths = pathsText.split('\n');
+  let removed = false;
+  const filtered: string[] = [];
+  for (let i = 0; i < paths.length; i += 1) {
+    if ((i & 511) === 0) signal?.throwIfAborted();
+    const path = paths[i]!;
+    if (!rules.ignored(path, false)) filtered.push(path);
+    else removed = true;
+  }
+  return removed ? filtered.join('\n') : null;
 }
 
 export function workspacePathInventory(root: string, limit: number, signal?: AbortSignal): WorkspacePathInventory {

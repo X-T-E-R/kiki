@@ -29,7 +29,7 @@ export function trySniffPngSize(bytes: Uint8Array): { readonly width: number; re
   return { width, height };
 }
 
-export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: number; height: number } | undefined {
+export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: number; height: number; opaque: boolean } | undefined {
   if (bytes.length < 33) return undefined;
   for (let i = 0; i < 8; i += 1) {
     if (bytes[i] !== PNG_SIG[i]) return undefined;
@@ -95,15 +95,15 @@ export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: numb
     return undefined;
   }
   if (raw.length !== expectedRawLen) return undefined;
-  const rgba = Buffer.from(new Uint8Array(width * height * 4).buffer);
-  const prevRow = new Uint8Array(stride);
-  const curRow = new Uint8Array(stride);
+  const rgba = Buffer.allocUnsafeSlow(width * height * 4);
+  let prevRow = new Uint8Array(stride);
+  let curRow = new Uint8Array(stride);
   for (let y = 0; y < height; y += 1) {
     const rowOff = y * (stride + 1);
     const filterType = raw[rowOff]!;
     const srcStart = rowOff + 1;
     if (filterType === 0) {
-      for (let i = 0; i < stride; i += 1) curRow[i] = raw[srcStart + i]!;
+      curRow.set(raw.subarray(srcStart, srcStart + stride));
     } else if (filterType === 1) {
       for (let i = 0; i < bpp; i += 1) curRow[i] = raw[srcStart + i]!;
       for (let i = bpp; i < stride; i += 1) curRow[i] = (raw[srcStart + i]! + curRow[i - bpp]!) & 0xff;
@@ -135,9 +135,11 @@ export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: numb
         d += 4;
       }
     }
-    prevRow.set(curRow);
+    const swap = prevRow;
+    prevRow = curRow;
+    curRow = swap;
   }
-  return { data: rgba, width, height };
+  return { data: rgba, width, height, opaque: colorType === 2 };
 }
 
 export async function decodeToJimp(bytes: Uint8Array, normalizedMime: string): Promise<JimpImage> {

@@ -228,7 +228,7 @@ function buildChildWorkspaceFanoutEndpoints(sessionId, childAgentId) {
 }
 
 async function executeColdChildFanout({ server, WebSocket, sessionId, childAgentId, wirePath }) {
-  const targetPathSuffix = path.join('agents', childAgentId, 'wire.jsonl');
+  const targetPathSuffix = path.join(sessionId, 'agents', childAgentId, 'wire.jsonl');
   let preOpenedWs = null;
   if (WebSocket) {
     try {

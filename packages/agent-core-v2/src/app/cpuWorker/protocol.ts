@@ -7,6 +7,7 @@ export interface CpuRequest {
 }
 
 export type CpuResponse =
+  | { readonly type: 'ready' }
   | { readonly id: number; readonly result: unknown }
   | { readonly id: number; readonly cancelled: true }
   | { readonly id: number; readonly error: { readonly name: string; readonly message: string; readonly code?: string; readonly payload?: ErrorPayload } };

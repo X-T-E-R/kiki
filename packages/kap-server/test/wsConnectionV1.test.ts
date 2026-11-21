@@ -11,6 +11,7 @@ import {
   ISessionInteractionService,
   ISessionManager,
 } from '@kiki/agent-core-v2';
+import { AgentTranscript, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IConnectionRegistry } from '../src/transport/ws/connectionRegistry';
@@ -1891,5 +1892,104 @@ describe('WsConnectionV1 cursor replay ordering', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('coalesces contiguous transcript.ops preserving first cursor.seq, task append safety, and lossless @kiki/transcript replay', () => {
+    const mkOpsFrame = (seq: number, ops: readonly TranscriptOperation[]) => ({
+      type: 'transcript.ops' as const,
+      seq: 100 + seq,
+      epoch: 'sess-e1',
+      volatile: true as const,
+      session_id: 's1',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      payload: {
+        type: 'transcript.ops' as const,
+        session_id: 's1',
+        agent_id: 'main',
+        ops,
+        cursor: { epoch: 'ep-1', seq },
+        through_seq: seq,
+      },
+    });
+    const frames = [
+      mkOpsFrame(10, [
+        { op: 'turn.upsert', turn: { turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' } } },
+        { op: 'step.upsert', turnId: 't0', step: { stepId: 't0.s1', turnId: 't0', ordinal: 1, state: 'running' } },
+        { op: 'task.upsert', task: { taskId: 'task-1', kind: 'subagent', state: 'running', detached: false, outputTail: 'hi' } },
+        { op: 'task.upsert', task: { taskId: 'task-2', kind: 'subagent', state: 'running', detached: false } },
+        {
+          op: 'frame.upsert',
+          turnId: 't0',
+          stepId: 't0.s1',
+          frame: {
+            kind: 'tool',
+            frameId: 'f-call-1',
+            toolCallId: 'call-1',
+            name: 'AgentRun',
+            state: 'running',
+            input: { prompt: 'A'.repeat(2048) },
+          },
+        },
+        { op: 'meta.merge', meta: { agent: { model: 'm1' } } },
+      ]),
+      mkOpsFrame(11, [
+        { op: 'append', target: { type: 'task', taskId: 'task-1' }, offset: 2, text: '!' },
+        { op: 'task.upsert', task: { taskId: 'task-2', kind: 'subagent', state: 'completed', detached: false, resultSummary: 'done' } },
+        {
+          op: 'frame.upsert',
+          turnId: 't0',
+          stepId: 't0.s1',
+          frame: {
+            kind: 'tool',
+            frameId: 'f-call-1',
+            toolCallId: 'call-1',
+            name: 'AgentRun',
+            state: 'completed',
+            input: { prompt: 'A'.repeat(2048) },
+            output: '{"ok":true}',
+          },
+        },
+        { op: 'meta.merge', meta: { agent: { contextTokens: 4200 } } },
+      ]),
+      mkOpsFrame(12, [
+        { op: 'task.upsert', task: { taskId: 'task-1', kind: 'subagent', state: 'completed', detached: false, outputTail: 'hi!' } },
+        { op: 'meta.merge', meta: { activity: { busy: false } } },
+      ]),
+    ];
+
+    const coalesced = coalesceFrames(frames) as Array<{
+      payload: { cursor: { epoch: string; seq: number }; through_seq: number; ops: TranscriptOperation[] };
+    }>;
+    expect(coalesced).toHaveLength(1);
+    const merged = coalesced[0]!;
+    expect(merged.payload.cursor).toEqual({ epoch: 'ep-1', seq: 10 });
+    expect(merged.payload.through_seq).toBe(12);
+    expect(Buffer.byteLength(JSON.stringify(merged))).toBeLessThan(
+      frames.reduce((sum, f) => sum + Buffer.byteLength(JSON.stringify(f)), 0),
+    );
+
+    const directStore = new AgentTranscript('main');
+    const coalescedStore = new AgentTranscript('main');
+    let watermark = 9;
+    let sequenceGaps = 0;
+    for (const f of frames) {
+      const res = directStore.apply(f.payload.ops);
+      expect(res.gap).toBeUndefined();
+    }
+    for (const f of coalesced) {
+      if (f.payload.cursor.seq !== watermark + 1) sequenceGaps += 1;
+      const res = coalescedStore.apply(f.payload.ops);
+      expect(res.gap).toBeUndefined();
+      watermark = f.payload.through_seq;
+    }
+    expect(sequenceGaps).toBe(0);
+    expect(watermark).toBe(12);
+    expect(coalescedStore.snapshot()).toEqual(directStore.snapshot());
+    expect(coalescedStore.getTask('task-1')?.outputTail).toBe('hi!');
+    expect(coalescedStore.getTask('task-2')?.state).toBe('completed');
+    expect(coalescedStore.snapshot().meta).toEqual({
+      agent: { model: 'm1', contextTokens: 4200 },
+      activity: { busy: false },
+    });
   });
 });

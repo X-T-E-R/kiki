@@ -86,6 +86,7 @@ import {
   type ServerLogLevel,
 } from './services/pinoLoggerService';
 import { randomUUID } from 'node:crypto';
+import { constants as osConstants, setPriority } from 'node:os';
 import { join } from 'node:path';
 import type { Socket } from 'node:net';
 import type { IncomingMessage } from 'node:http';
@@ -433,6 +434,12 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 58627;
 
 export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
+  if (process.platform === 'win32') {
+    try {
+      setPriority(0, osConstants.priority.PRIORITY_ABOVE_NORMAL);
+    } catch {
+    }
+  }
   const env = opts.env ?? process.env;
   if (!(opts.runtimeManaged ?? (env['KIKI_DESKTOP_BUNDLED'] === '1' || env['KIKI_RUNTIME_MANAGED'] === '1'))) return startServerRuntime(opts);
   const homeDir = resolveKikiHome(opts.homeDir);
@@ -506,7 +513,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const connectionIdentity = { homeId: serverHomeId, hostId: createKimiDeviceId(homeDir), protocol: CONNECTION_PROTOCOL } as const;
   const admission = new ConnectionAdmission(homeDir, connectionIdentity, opts.disableAuth === true ? 'dangerous_auth_bypass' : undefined);
   const serverVersion = opts.serverVersion ?? getServerVersion();
-  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info', async: true });
   const sshRemote = opts.sshRemoteConnector ?? new SshRemoteConnector({ serverVersion });
   const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger);
   await Promise.all([admission.ready(), remoteConnections.ready()]);

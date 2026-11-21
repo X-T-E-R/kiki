@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { constants as osConstants, setPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { connect, type Socket } from 'node:net';
 import { resolve } from 'node:path';
@@ -135,6 +136,12 @@ class WindowsProcessTree implements IHostProcess {
 
   async initialize(): Promise<void> {
     this.rootPid = await this.withDeadline(this.ready.promise, 'launch');
+    if (this.rootPid > 0) {
+      try {
+        setPriority(this.rootPid, osConstants.priority.PRIORITY_NORMAL);
+      } catch {
+      }
+    }
   }
 
   wait(): Promise<number> { return this.exited.promise; }
@@ -381,6 +388,12 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
   const encoded = [command, commandLine, resolve(options.cwd?.toString() ?? process.cwd())]
     .map((value) => Buffer.from(value).toString('base64'));
   const child = spawn(helper, [name], { ...options, stdio: 'ignore', shell: false });
+  if (child.pid !== undefined) {
+    try {
+      setPriority(child.pid, osConstants.priority.PRIORITY_NORMAL);
+    } catch {
+    }
+  }
   let processTree: WindowsProcessTree | undefined;
   const sockets: Socket[] = [];
   const spawnError = deferred<never>();

@@ -203,6 +203,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     try {
       const handle = resources.add(watch.watch(watchPath, {
         recursive: false,
+        signal: true,
         ignored: (changed: string) => {
           const changedKey = pathKey(changed, pathClass);
           if (changedKey === watchKey) return false;

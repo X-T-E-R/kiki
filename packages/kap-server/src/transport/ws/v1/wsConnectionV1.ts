@@ -1033,32 +1033,56 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.overLimitBackpressureRounds = 0;
 
     const serializedByFrame = new Map<unknown, string>();
+    const byteLengthsByFrame = new Map<unknown, number>();
     for (let i = 0; i < this.outbound.length; i++) {
       const text = this.outboundSerialized[i];
-      if (text !== undefined) serializedByFrame.set(this.outbound[i], text);
+      if (text !== undefined) {
+        serializedByFrame.set(this.outbound[i], text);
+        byteLengthsByFrame.set(this.outbound[i], Buffer.byteLength(text));
+      }
     }
-    this.outbound = coalesceFrames(this.outbound);
+    this.outbound = coalesceFrames(this.outbound, byteLengthsByFrame);
     this.outboundSerialized = this.outbound.map((frame) => serializedByFrame.get(frame) ?? JSON.stringify(frame));
-    this.outboundBytes = this.outboundSerialized.reduce((total, text) => total + (text === undefined ? 0 : Buffer.byteLength(text)), 0);
-    while (this.outbound.length > 0) {
-      if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
-      if (!force && this.socket.bufferedAmount > this.highWaterMarkBytes) {
-        this.deferForBackpressure();
-        return;
+    const frameBytes = this.outboundSerialized.map((text) => (text === undefined ? 0 : Buffer.byteLength(text)));
+    this.outboundBytes = frameBytes.reduce((total, bytes) => total + bytes, 0);
+    let sent = 0;
+    try {
+      for (let i = 0; i < this.outbound.length; i += 1) {
+        if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
+        if (!force && this.socket.bufferedAmount > this.highWaterMarkBytes) {
+          this.deferForBackpressure();
+          return;
+        }
+        const frame = this.outbound[i];
+        const text = this.outboundSerialized[i];
+        const bytes = frameBytes[i] ?? 0;
+        sent = i + 1;
+        if (text === undefined) continue;
+        this.outboundBytes -= bytes;
+        const type = typeof frame === 'object' && frame !== null && 'type' in frame ? frame.type : undefined;
+        if ((type === 'transcript.reset' || type === 'transcript.ops') &&
+            bytes > Math.min(64 * 1024, this.maxOutboundBufferBytes)) {
+          this.outbound.splice(0, sent);
+          this.outboundSerialized.splice(0, sent);
+          sent = 0;
+          void this.sendFragments(text);
+          return;
+        }
+        try {
+          this.socket.send(text);
+        } catch {
+        }
       }
-      const frame = this.outbound.shift();
-      const text = this.outboundSerialized.shift();
-      if (text === undefined) continue;
-      this.outboundBytes -= Buffer.byteLength(text);
-      const type = typeof frame === 'object' && frame !== null && 'type' in frame ? frame.type : undefined;
-      if ((type === 'transcript.reset' || type === 'transcript.ops') &&
-          Buffer.byteLength(text) > Math.min(64 * 1024, this.maxOutboundBufferBytes)) {
-        void this.sendFragments(text);
-        return;
-      }
-      try {
-        this.socket.send(text);
-      } catch {
+    } finally {
+      if (sent > 0) {
+        if (sent >= this.outbound.length) {
+          this.outbound = [];
+          this.outboundSerialized = [];
+          this.outboundBytes = 0;
+        } else {
+          this.outbound.splice(0, sent);
+          this.outboundSerialized.splice(0, sent);
+        }
       }
     }
   }
@@ -1273,32 +1297,162 @@ function isCoalescableTranscriptOps(frame: unknown): frame is CoalescableTranscr
   return typeof c['epoch'] === 'string' && typeof c['seq'] === 'number';
 }
 
+function mergeMetaMergeOp(prev: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
+  const prevMeta = (typeof prev['meta'] === 'object' && prev['meta'] !== null ? prev['meta'] : {}) as Record<string, unknown>;
+  const nextMeta = (typeof next['meta'] === 'object' && next['meta'] !== null ? next['meta'] : {}) as Record<string, unknown>;
+  const mergedMeta: Record<string, unknown> = { ...prevMeta };
+  for (const [key, value] of Object.entries(nextMeta)) {
+    if (value === undefined) continue;
+    if (key === 'modes' && typeof value === 'object' && value !== null && typeof prevMeta['modes'] === 'object' && prevMeta['modes'] !== null) {
+      const pm = prevMeta['modes'] as Record<string, unknown>;
+      const nm = value as Record<string, unknown>;
+      mergedMeta['modes'] = { ...pm, ...nm, plan: nm['plan'] === null ? null : (nm['plan'] ?? pm['plan']) };
+    } else if (key === 'agent' && typeof value === 'object' && value !== null && typeof prevMeta['agent'] === 'object' && prevMeta['agent'] !== null) {
+      mergedMeta['agent'] = { ...(prevMeta['agent'] as Record<string, unknown>), ...(value as Record<string, unknown>) };
+    } else {
+      mergedMeta[key] = value;
+    }
+  }
+  return { ...next, meta: mergedMeta };
+}
+
+function frameUpsertKey(record: {
+  turnId?: unknown;
+  stepId?: unknown;
+  frame?: { frameId?: unknown; kind?: unknown; contentRefs?: unknown };
+}): string | undefined {
+  if (typeof record.turnId !== 'string' || typeof record.stepId !== 'string' || typeof record.frame?.frameId !== 'string') {
+    return undefined;
+  }
+  return `${record.turnId}\0${record.stepId}\0${record.frame.frameId}`;
+}
+
 function compactTranscriptOps(ops: readonly unknown[]): unknown[] {
   if (ops.length <= 1) return [...ops];
+  const appendedTaskIds = new Set<string>();
+  const blockedFrameKeys = new Set<string>();
+  for (const op of ops) {
+    if (typeof op !== 'object' || op === null) continue;
+    const record = op as {
+      op?: unknown;
+      turnId?: unknown;
+      stepId?: unknown;
+      frameId?: unknown;
+      frame?: { frameId?: unknown; kind?: unknown; contentRefs?: unknown };
+      target?: { type?: unknown; taskId?: unknown; turnId?: unknown; stepId?: unknown; frameId?: unknown };
+    };
+    if (record.op === 'append') {
+      if (record.target?.type === 'task' && typeof record.target.taskId === 'string') {
+        appendedTaskIds.add(record.target.taskId);
+      } else if (
+        typeof record.target?.turnId === 'string' &&
+        typeof record.target?.stepId === 'string' &&
+        typeof record.target?.frameId === 'string'
+      ) {
+        blockedFrameKeys.add(`${record.target.turnId}\0${record.target.stepId}\0${record.target.frameId}`);
+      }
+    } else if (
+      record.op === 'frame.remove' &&
+      typeof record.turnId === 'string' &&
+      typeof record.stepId === 'string' &&
+      typeof record.frameId === 'string'
+    ) {
+      blockedFrameKeys.add(`${record.turnId}\0${record.stepId}\0${record.frameId}`);
+    } else if (record.op === 'frame.upsert' && record.frame?.contentRefs !== undefined) {
+      const key = frameUpsertKey(record);
+      if (key !== undefined) blockedFrameKeys.add(key);
+    }
+  }
   const lastTaskUpsertIndex = new Map<string, number>();
+  const lastFrameUpsertIndex = new Map<string, { index: number; kind: unknown; place: unknown }>();
   let lastToolCountIndex = -1;
+  let lastMetaMergeIndex = -1;
+  let mergedMetaOp: Record<string, unknown> | undefined;
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     if (typeof op !== 'object' || op === null) continue;
-    const record = op as { op?: unknown; task?: { taskId?: unknown } };
+    const record = op as {
+      op?: unknown;
+      turnId?: unknown;
+      stepId?: unknown;
+      place?: unknown;
+      task?: { taskId?: unknown };
+      frame?: { frameId?: unknown; kind?: unknown; contentRefs?: unknown };
+    };
     if (record.op === 'reset') {
       lastTaskUpsertIndex.clear();
+      lastFrameUpsertIndex.clear();
       lastToolCountIndex = -1;
-    } else if (record.op === 'task.upsert' && typeof record.task?.taskId === 'string') {
+      lastMetaMergeIndex = -1;
+      mergedMetaOp = undefined;
+    } else if (
+      record.op === 'task.upsert' &&
+      typeof record.task?.taskId === 'string' &&
+      !appendedTaskIds.has(record.task.taskId)
+    ) {
       lastTaskUpsertIndex.set(record.task.taskId, i);
+    } else if (record.op === 'frame.upsert') {
+      const key = frameUpsertKey(record);
+      if (key !== undefined && !blockedFrameKeys.has(key)) {
+        const prev = lastFrameUpsertIndex.get(key);
+        if (prev !== undefined && prev.kind !== record.frame?.kind) {
+          blockedFrameKeys.add(key);
+          lastFrameUpsertIndex.delete(key);
+        } else {
+          lastFrameUpsertIndex.set(key, {
+            index: i,
+            kind: record.frame?.kind,
+            place: prev?.place ?? record.place,
+          });
+        }
+      }
     } else if (record.op === 'tool.count.set') {
       lastToolCountIndex = i;
+    } else if (record.op === 'meta.merge') {
+      mergedMetaOp = mergedMetaOp === undefined
+        ? (op as Record<string, unknown>)
+        : mergeMetaMergeOp(mergedMetaOp, op as Record<string, unknown>);
+      lastMetaMergeIndex = i;
     }
   }
   const compacted: unknown[] = [];
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     if (typeof op === 'object' && op !== null) {
-      const record = op as { op?: unknown; task?: { taskId?: unknown } };
-      if (record.op === 'task.upsert' && typeof record.task?.taskId === 'string' && lastTaskUpsertIndex.get(record.task.taskId) !== i) {
+      const record = op as {
+        op?: unknown;
+        turnId?: unknown;
+        stepId?: unknown;
+        place?: unknown;
+        task?: { taskId?: unknown };
+        frame?: { frameId?: unknown; kind?: unknown; contentRefs?: unknown };
+      };
+      if (
+        record.op === 'task.upsert' &&
+        typeof record.task?.taskId === 'string' &&
+        !appendedTaskIds.has(record.task.taskId) &&
+        lastTaskUpsertIndex.get(record.task.taskId) !== undefined &&
+        lastTaskUpsertIndex.get(record.task.taskId) !== i
+      ) {
         continue;
       }
+      if (record.op === 'frame.upsert') {
+        const key = frameUpsertKey(record);
+        const latest = key !== undefined && !blockedFrameKeys.has(key) ? lastFrameUpsertIndex.get(key) : undefined;
+        if (latest !== undefined) {
+          if (latest.index !== i) continue;
+          if (latest.place !== undefined && record.place === undefined) {
+            compacted.push({ ...(op as Record<string, unknown>), place: latest.place });
+            continue;
+          }
+        }
+      }
       if (record.op === 'tool.count.set' && lastToolCountIndex !== -1 && lastToolCountIndex !== i) {
+        continue;
+      }
+      if (record.op === 'meta.merge' && lastMetaMergeIndex !== -1) {
+        if (lastMetaMergeIndex !== i) continue;
+        compacted.push(mergedMetaOp ?? op);
         continue;
       }
     }
@@ -1311,10 +1465,101 @@ function compactTranscriptOps(ops: readonly unknown[]): unknown[] {
  * Merge adjacent compatible volatile text deltas or contiguous `transcript.ops`
  * batches into a single envelope while preserving frame order and bounds.
  */
-export function coalesceFrames(frames: readonly unknown[]): unknown[] {
+export function coalesceFrames(
+  frames: readonly unknown[],
+  byteLengths?: ReadonlyMap<unknown, number>,
+): unknown[] {
+  if (frames.length <= 1) return [...frames];
+  const measureFrameBytes = (frame: unknown): number => {
+    const cached = byteLengths?.get(frame);
+    return cached !== undefined ? cached : Buffer.byteLength(JSON.stringify(frame));
+  };
   const out: unknown[] = [];
-  let lastTranscriptOpsBytes = 0;
+  let pending: {
+    base: CoalescableTranscriptOps;
+    lastSeq: number;
+    throughSeq: number;
+    ops: unknown[];
+    approxBytes: number;
+    hasCompactableDup: boolean;
+  } | undefined;
+
+  const flushPending = (): void => {
+    if (pending === undefined) return;
+    const ops = pending.ops.length > 1 ? compactTranscriptOps(pending.ops) : pending.ops;
+    if (
+      pending.throughSeq === pending.base.payload.through_seq &&
+      pending.lastSeq === pending.base.seq &&
+      ops.length === pending.base.payload.ops.length
+    ) {
+      out.push(pending.base);
+    } else {
+      out.push({
+        ...pending.base,
+        seq: pending.lastSeq,
+        payload: {
+          ...pending.base.payload,
+          ops,
+          cursor: pending.base.payload.cursor,
+          through_seq: pending.throughSeq,
+        },
+      });
+    }
+    pending = undefined;
+  };
+
   for (const frame of frames) {
+    if (
+      pending !== undefined &&
+      isCoalescableTranscriptOps(frame) &&
+      (pending.base.session_id ?? pending.base.payload.session_id) === (frame.session_id ?? frame.payload.session_id) &&
+      pending.base.payload.agent_id === frame.payload.agent_id &&
+      pending.base.payload.cursor.epoch === frame.payload.cursor.epoch &&
+      frame.payload.cursor.seq === pending.throughSeq + 1 &&
+      !frame.payload.ops.some(isUrgentTranscriptOp)
+    ) {
+      const nextBytes = measureFrameBytes(frame);
+      if (pending.approxBytes + nextBytes > MAX_COALESCED_TRANSCRIPT_OPS_BYTES && pending.hasCompactableDup) {
+        pending.ops = compactTranscriptOps(pending.ops);
+        pending.approxBytes = Buffer.byteLength(JSON.stringify({
+          ...pending.base,
+          seq: pending.lastSeq,
+          payload: { ...pending.base.payload, ops: pending.ops, cursor: pending.base.payload.cursor, through_seq: pending.throughSeq },
+        }));
+        pending.hasCompactableDup = false;
+      }
+      if (pending.approxBytes + nextBytes <= MAX_COALESCED_TRANSCRIPT_OPS_BYTES) {
+        for (const op of frame.payload.ops) {
+          pending.ops.push(op);
+          if (!pending.hasCompactableDup && typeof op === 'object' && op !== null) {
+            const kind = (op as { op?: unknown }).op;
+            if (kind === 'frame.upsert' || kind === 'task.upsert' || kind === 'meta.merge' || kind === 'tool.count.set') {
+              pending.hasCompactableDup = true;
+            }
+          }
+        }
+        pending.lastSeq = frame.seq;
+        pending.throughSeq = frame.payload.through_seq;
+        pending.approxBytes += nextBytes;
+        continue;
+      }
+      flushPending();
+    } else if (pending !== undefined) {
+      flushPending();
+    }
+
+    if (isCoalescableTranscriptOps(frame) && !frame.payload.ops.some(isUrgentTranscriptOp)) {
+      pending = {
+        base: frame,
+        lastSeq: frame.seq,
+        throughSeq: frame.payload.through_seq,
+        ops: [...frame.payload.ops],
+        approxBytes: measureFrameBytes(frame),
+        hasCompactableDup: false,
+      };
+      continue;
+    }
+
     const last = out.at(-1);
     if (
       last !== undefined &&
@@ -1329,44 +1574,10 @@ export function coalesceFrames(frames: readonly unknown[]): unknown[] {
         ...last,
         payload: { ...last.payload, delta: last.payload.delta + frame.payload.delta },
       };
-      lastTranscriptOpsBytes = 0;
-    } else if (
-      last !== undefined &&
-      isCoalescableTranscriptOps(last) &&
-      isCoalescableTranscriptOps(frame) &&
-      (last.session_id ?? last.payload.session_id) === (frame.session_id ?? frame.payload.session_id) &&
-      last.payload.agent_id === frame.payload.agent_id &&
-      last.payload.cursor.epoch === frame.payload.cursor.epoch &&
-      frame.payload.cursor.seq === last.payload.through_seq + 1 &&
-      !last.payload.ops.some(isUrgentTranscriptOp) &&
-      !frame.payload.ops.some(isUrgentTranscriptOp)
-    ) {
-      const prevBytes = lastTranscriptOpsBytes > 0 ? lastTranscriptOpsBytes : Buffer.byteLength(JSON.stringify(last));
-      const nextBytes = Buffer.byteLength(JSON.stringify(frame));
-      if (prevBytes + nextBytes <= MAX_COALESCED_TRANSCRIPT_OPS_BYTES) {
-        const mergedOps = compactTranscriptOps([...last.payload.ops, ...frame.payload.ops]);
-        const merged: CoalescableTranscriptOps = {
-          ...last,
-          seq: frame.seq,
-          payload: {
-            ...last.payload,
-            ops: mergedOps,
-            cursor: frame.payload.cursor,
-            through_seq: frame.payload.through_seq,
-          },
-        };
-        out[out.length - 1] = merged;
-        lastTranscriptOpsBytes = mergedOps.length < last.payload.ops.length + frame.payload.ops.length
-          ? Buffer.byteLength(JSON.stringify(merged))
-          : prevBytes + nextBytes;
-      } else {
-        out.push(frame);
-        lastTranscriptOpsBytes = nextBytes;
-      }
     } else {
       out.push(frame);
-      lastTranscriptOpsBytes = 0;
     }
   }
+  flushPending();
   return out;
 }

@@ -2312,19 +2312,21 @@ async function hasColdSegmentsManifest(wirePath: string): Promise<boolean> {
 const COLD_MARKER_CHUNK_BYTES = 32 * 1024 * 1024;
 const COLD_MARKER_SEARCH_SLICE_BYTES = 4 * 1024 * 1024;
 const COLD_MARKER_SCRATCH_MAX_OVERLAP = 1024;
-const COLD_MARKER_SCRATCH_IDLE_MS = 30_000;
+const COLD_MARKER_SCRATCH_IDLE_MS = 5 * 60_000;
+const COLD_MARKER_HEAD_START_MS = 30;
 let coldMarkerScratchBuf: Buffer | undefined;
 let coldMarkerScratchInUse = false;
 let coldMarkerScratchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function acquireColdMarkerScratch(neededBytes: number): { readonly buf: Buffer; readonly pooled: boolean } {
-  if (!coldMarkerScratchInUse && neededBytes <= COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP) {
+  const poolSize = COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP;
+  if (!coldMarkerScratchInUse && neededBytes <= poolSize) {
     if (coldMarkerScratchTimer !== undefined) {
       clearTimeout(coldMarkerScratchTimer);
       coldMarkerScratchTimer = undefined;
     }
     if (coldMarkerScratchBuf === undefined || coldMarkerScratchBuf.length < neededBytes) {
-      coldMarkerScratchBuf = Buffer.allocUnsafe(neededBytes);
+      coldMarkerScratchBuf = Buffer.alloc(poolSize, 0);
     }
     coldMarkerScratchInUse = true;
     return { buf: coldMarkerScratchBuf, pooled: true };
@@ -2420,6 +2422,25 @@ export async function scanColdWireMarkers(
   let created!: ColdMarkerScanFlight;
   const scanPromise = (async (): Promise<{ readonly size: number; readonly results: ReadonlyMap<string, boolean> } | undefined> => {
     if (controller.signal.aborted) return undefined;
+    if (info.size > minSizeBytes) {
+      await new Promise<void>((resolveDelay) => {
+        if (controller.signal.aborted) {
+          resolveDelay();
+          return;
+        }
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          resolveDelay();
+        };
+        const timer = setTimeout(() => {
+          controller.signal.removeEventListener('abort', onAbort);
+          resolveDelay();
+        }, COLD_MARKER_HEAD_START_MS);
+        timer.unref?.();
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      if (controller.signal.aborted) return undefined;
+    }
     const maxNeedleLen = needles.reduce((acc, n) => Math.max(acc, n.buf.length), 1);
     const overlap = Math.max(0, maxNeedleLen - 1);
     const chunkSize = Math.min(COLD_MARKER_CHUNK_BYTES, Math.max(1, info.size));

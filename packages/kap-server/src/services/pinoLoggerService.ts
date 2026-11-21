@@ -6,6 +6,7 @@ export type ServerLogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'tr
 
 export interface CreateLoggerOptions {
   level: ServerLogLevel;
+  async?: boolean;
 }
 
 export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
@@ -15,5 +16,10 @@ export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
     timestamp: pino.stdTimeFunctions.isoTime,
     redact: { paths: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]', 'req.body.code', 'body.code', 'cookie', 'authorization', 'accessCode', 'sessionSecret'], censor: '[redacted]' },
   };
+  if (opts.async === true) {
+    const dest = pino.destination({ fd: 2, sync: false });
+    dest.on('error', () => {});
+    return pino(base, dest);
+  }
   return pino(base, process.stderr);
 }

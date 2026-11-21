@@ -117,6 +117,7 @@ function nextSidecarSequence(): number {
 
 function pidAlive(pid: unknown): boolean {
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+  if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
     return true;
@@ -782,6 +783,84 @@ export async function isFileLockActive(path: string): Promise<boolean> {
   }
 }
 
+interface LocalLockQueue {
+  held: boolean;
+  readonly waiters: Array<() => void>;
+}
+
+const LOCAL_LOCK_QUEUES = new Map<string, LocalLockQueue>();
+
+function localLockKey(lockPath: string): string {
+  const normalized = resolve(lockPath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+async function acquireLocalLockSlot(
+  key: string,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<(() => void) | undefined> {
+  signal?.throwIfAborted();
+  let queue = LOCAL_LOCK_QUEUES.get(key);
+  if (queue === undefined) {
+    queue = { held: true, waiters: [] };
+    LOCAL_LOCK_QUEUES.set(key, queue);
+  } else if (!queue.held) {
+    queue.held = true;
+  } else {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return undefined;
+    const granted = await new Promise<boolean>((resolveGrant, rejectGrant) => {
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onWake = (): void => {
+        cleanup();
+        resolveGrant(true);
+      };
+      const onAbort = (): void => {
+        cleanup();
+        const idx = queue!.waiters.indexOf(onWake);
+        if (idx !== -1) queue!.waiters.splice(idx, 1);
+        rejectGrant(signal!.reason);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        const idx = queue!.waiters.indexOf(onWake);
+        if (idx !== -1) queue!.waiters.splice(idx, 1);
+        resolveGrant(false);
+      }, remaining);
+      timer.unref?.();
+      queue!.waiters.push(onWake);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    if (!granted) return undefined;
+    if (signal?.aborted) {
+      releaseLocalLockSlot(key, queue);
+      signal.throwIfAborted();
+    }
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseLocalLockSlot(key, queue!);
+  };
+}
+
+function releaseLocalLockSlot(key: string, queue: LocalLockQueue): void {
+  const next = queue.waiters.shift();
+  if (next !== undefined) {
+    next();
+    return;
+  }
+  queue.held = false;
+  if (LOCAL_LOCK_QUEUES.get(key) === queue) {
+    LOCAL_LOCK_QUEUES.delete(key);
+  }
+}
+
 /** Acquires a renewable local-filesystem lock with atomic create and process-live watch arbitration
  *  for stale takeover. Reclaims dead or corrupted locks and releases only this instance's token.
  *  Retries an acquisition attempt when the filesystem reports a transient access denial
@@ -795,16 +874,36 @@ export async function acquireFileLock(
   const lock = new FileLock(lockPath, options, modes);
   const waitForMs = Math.max(0, options.waitForMs ?? 0);
   const deadline = Date.now() + waitForMs;
+  const useLocalQueue = waitForMs > 0;
+  let releaseLocalSlot: (() => void) | undefined;
   let delayMs = LOCK_WAIT_BASE_MS;
   try {
+    if (useLocalQueue) {
+      releaseLocalSlot = await acquireLocalLockSlot(localLockKey(lockPath), deadline, options.signal);
+    }
     for (;;) {
       options.signal?.throwIfAborted();
-      if (await lock.acquire()) {
-        if (options.signal?.aborted) {
-          await lock.release();
-          options.signal.throwIfAborted();
+      if (releaseLocalSlot !== undefined || !useLocalQueue) {
+        if (await lock.acquire()) {
+          if (options.signal?.aborted) {
+            await lock.release();
+            releaseLocalSlot?.();
+            releaseLocalSlot = undefined;
+            options.signal.throwIfAborted();
+          }
+          if (releaseLocalSlot === undefined) return lock;
+          const releaseSlot = releaseLocalSlot;
+          releaseLocalSlot = undefined;
+          return {
+            async release(): Promise<void> {
+              try {
+                await lock.release();
+              } finally {
+                releaseSlot();
+              }
+            },
+          };
         }
-        return lock;
       }
       if (Date.now() >= deadline) {
         const inspected = await lock.inspectOwner();
@@ -844,6 +943,8 @@ export async function acquireFileLock(
       delayMs = Math.min(LOCK_WAIT_MAX_MS, delayMs * 2);
     }
   } catch (error) {
+    releaseLocalSlot?.();
+    releaseLocalSlot = undefined;
     options.signal?.throwIfAborted();
     if (error instanceof StorageError) throw error;
     throw toStorageIoError(error, { path: lockPath, op: 'lock' });

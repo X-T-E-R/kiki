@@ -29,6 +29,8 @@ interface StoredProjectBindings {
   readonly bindings: Record<string, ProjectBindingRecord>;
 }
 
+const deviceIdCache = new Map<string, string>();
+
 /** Resolves the deterministic durable host identifier used for `applicability: "machine-local"` memory isolation. */
 export function resolveMemoryHostId(
   getEnv: (name: string) => string | undefined = (name) => process.env[name],
@@ -36,8 +38,14 @@ export function resolveMemoryHostId(
 ): string {
   const explicit = getEnv('KIKI_HOST_ID')?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
-  if (homeDir !== undefined && homeDir.trim().length > 0) {
-    return createKimiDeviceId(homeDir);
+  const trimmedHome = homeDir?.trim();
+  if (trimmedHome !== undefined && trimmedHome.length > 0) {
+    let cached = deviceIdCache.get(trimmedHome);
+    if (cached === undefined) {
+      cached = createKimiDeviceId(trimmedHome);
+      deviceIdCache.set(trimmedHome, cached);
+    }
+    return cached;
   }
   const localHost = hostname().trim().toLowerCase();
   return localHost.length > 0 ? localHost : 'local-host';

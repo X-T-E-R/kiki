@@ -42,6 +42,7 @@ export interface PersistedAgentRuntimeFacts {
   readonly turnCount?: number;
   readonly panelAccounting?: PanelAccountingState;
   readonly complete: boolean;
+  readonly fromCheckpoint?: boolean;
   readonly controls?: PersistedAgentRuntimeControls;
   readonly status?: {
     readonly permissionMode: PermissionMode;
@@ -165,7 +166,7 @@ export async function readPersistedAgentRuntimeFacts(
       let pending = '';
       let bytesRead = 0;
       let yieldedAt = performance.now();
-      for await (const bytes of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 }, { chunkBytes: 1024 * 1024 })) {
+      for await (const bytes of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
         signal?.throwIfAborted();
         bytesRead += bytes.byteLength;
         pending += decoder.decode(bytes, { stream: true });
@@ -200,6 +201,7 @@ export async function readPersistedAgentRuntimeFacts(
       turnCount: (states.get(turnKey.name) as ReturnType<typeof turnKey.initial>).nextTurnId,
       panelAccounting: states.get(panelAccountingKey.name) as PanelAccountingState,
       complete: true,
+      fromCheckpoint: usable && start === size,
       controls: controlsComplete && planState !== undefined && permissionMode !== undefined ? {
         permissionMode,
         permissionConfigured,

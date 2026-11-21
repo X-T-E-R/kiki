@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -59,6 +60,7 @@ async function materializeSessionMedia(media: ISessionMediaStore, file: GetResul
     size: file.meta.size,
     name: file.meta.name,
     mimeType: file.meta.media_type,
+    data: preloaded,
     stream: () => (preloaded !== undefined ? Readable.from(preloaded) : file.stream()),
   });
   const retained = await media.open(file.meta.id);
@@ -68,9 +70,20 @@ async function materializeSessionMedia(media: ISessionMediaStore, file: GetResul
   return retained;
 }
 
-async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult, preloaded?: Buffer): Promise<void> {
-  if (media === undefined || await media.open(file.meta.id) !== undefined) return;
-  await materializeSessionMedia(media, file, preloaded);
+async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult, preloaded?: Buffer, knownAbsent = false): Promise<void> {
+  if (media === undefined) return;
+  if (!knownAbsent && await media.open(file.meta.id) !== undefined) return;
+  const materialized = await media.materialize({
+    fileId: file.meta.id,
+    size: file.meta.size,
+    name: file.meta.name,
+    mimeType: file.meta.media_type,
+    data: preloaded,
+    stream: () => (preloaded !== undefined ? Readable.from(preloaded) : file.stream()),
+  });
+  if (materialized === undefined) {
+    throw new Error2('storage.io_failed', 'Failed to save the message attachment. Retry the request.');
+  }
 }
 
 /**
@@ -467,17 +480,39 @@ export async function resolvePromptMediaFiles(
       let finalFile = file;
       if (compressed.changed) {
         const compressedBuffer = Buffer.from(compressed.data);
-        const [originalPath, saved] = await Promise.all([
+        const compressedName = compressedUploadName(file.meta.name, compressed.mimeType);
+        const [originalPath, finalSaved] = await Promise.all([
           resolveOriginalsDir().then((dir) => persistOriginalImage(data, mediaType, { dir })),
-          store.save(
-            Readable.from(compressedBuffer),
-            compressedUploadName(file.meta.name, compressed.mimeType),
-            { mimeType: compressed.mimeType },
-          ),
+          (async () => {
+            if (options.sessionMedia !== undefined) {
+              const savedMeta: FileMeta = {
+                id: `f_${randomUUID()}`,
+                name: compressedName,
+                media_type: compressed.mimeType,
+                size: compressedBuffer.byteLength,
+                created_at: new Date().toISOString(),
+              };
+              const savedFile: GetResult = {
+                meta: savedMeta,
+                stream: () => Readable.from(compressedBuffer),
+              };
+              await retainSessionMedia(options.sessionMedia, savedFile, compressedBuffer, true);
+              return savedFile;
+            }
+            const saved = await store.save(
+              Readable.from(compressedBuffer),
+              compressedName,
+              { mimeType: compressed.mimeType },
+            );
+            ownedFileIds.add(saved.id);
+            const savedFile: GetResult = {
+              meta: saved,
+              stream: () => Readable.from(compressedBuffer),
+            };
+            return savedFile;
+          })(),
         ]);
-        ownedFileIds.add(saved.id);
-        finalFile = await store.get(saved.id);
-        await retainSessionMedia(options.sessionMedia, finalFile, compressedBuffer);
+        finalFile = finalSaved;
         const text = buildImageCompressionCaption({
           original: {
             width: compressed.originalWidth,

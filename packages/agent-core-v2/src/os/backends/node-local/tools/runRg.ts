@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os';
 import type { Readable } from 'node:stream';
 
 import { unwrapErrorCause } from '#/_base/errors/errors';
@@ -9,6 +10,64 @@ import { rgUnavailableMessage } from './rgLocator';
 export const DEFAULT_TIMEOUT_MS = 20_000;
 export const SIGTERM_GRACE_MS = 5_000;
 export const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+const MAX_CONCURRENT_RG_PROCESSES = Math.max(2, Math.min(4, Math.floor(availableParallelism() / 4)));
+const RG_THREADS_PER_PROCESS = String(Math.max(2, Math.min(4, Math.floor(availableParallelism() / 4))));
+
+let activeRgProcesses = 0;
+let rgSpawnChain: Promise<void> = Promise.resolve();
+const rgWaitQueue: Array<() => void> = [];
+
+function releaseRgSlotCount(): void {
+  const next = rgWaitQueue.shift();
+  if (next !== undefined) {
+    next();
+  } else {
+    activeRgProcesses = Math.max(0, activeRgProcesses - 1);
+  }
+}
+
+async function acquireRgSlot(signal: AbortSignal): Promise<(() => void) | undefined> {
+  if (signal.aborted) return undefined;
+  if (activeRgProcesses >= MAX_CONCURRENT_RG_PROCESSES) {
+    const acquired = await new Promise<boolean>((resolve) => {
+      const onWake = (): void => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(true);
+      };
+      const onAbort = (): void => {
+        const idx = rgWaitQueue.indexOf(onWake);
+        if (idx !== -1) rgWaitQueue.splice(idx, 1);
+        resolve(false);
+      };
+      rgWaitQueue.push(onWake);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    if (!acquired) return undefined;
+    if (signal.aborted) {
+      releaseRgSlotCount();
+      return undefined;
+    }
+  } else {
+    activeRgProcesses += 1;
+  }
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    releaseRgSlotCount();
+  };
+  const prev = rgSpawnChain;
+  let releasePace!: () => void;
+  rgSpawnChain = new Promise<void>((resolve) => { releasePace = resolve; });
+  await prev;
+  if (signal.aborted) {
+    releasePace();
+    release();
+    return undefined;
+  }
+  setImmediate(releasePace);
+  return release;
+}
 
 export interface RunRgResult {
   readonly kind: 'result';
@@ -39,11 +98,24 @@ export async function runRgOnce(
     return { kind: 'aborted' };
   }
 
-  const [command, ...args] = rgArgs;
+  const [command, ...rawArgs] = rgArgs;
   if (command === undefined) {
     throw new BugIndicatingError('runRgOnce: rgArgs must not be empty');
   }
-  const proc: IHostProcess = await processService.spawn(command, args, { cwd: options?.cwd });
+  const hasThreadFlag = rawArgs.some((arg) => arg === '-j' || arg === '--threads' || arg.startsWith('--threads='));
+  const contended = activeRgProcesses > 1 || rgWaitQueue.length > 0;
+  const args = !hasThreadFlag && contended ? ['-j', RG_THREADS_PER_PROCESS, ...rawArgs] : rawArgs;
+  const releaseSlot = await acquireRgSlot(signal);
+  if (releaseSlot === undefined) {
+    return { kind: 'aborted' };
+  }
+  let proc: IHostProcess;
+  try {
+    proc = await processService.spawn(command, args, { cwd: options?.cwd });
+  } catch (error) {
+    releaseSlot();
+    throw error;
+  }
 
   try {
     proc.stdin.end();
@@ -120,6 +192,7 @@ export async function runRgOnce(
     clearTimeout(timeoutHandle);
     signal.removeEventListener('abort', onAbort);
     await disposeProcess(proc);
+    releaseSlot();
   }
 
   if (aborted) {

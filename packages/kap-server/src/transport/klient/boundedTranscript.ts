@@ -367,11 +367,13 @@ export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transc
       case 'append': {
         if (op.target.type === 'task') {
           const task = transcript.getTask(op.target.taskId);
-          if (task !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'task.upsert', task: boundedEntity(task, { kind: 'task', id: task.taskId }) };
+          if (task !== undefined && (op.offset > 1024 || op.text.length > 8192 || (op.text.length > 1365 && jsonBytes(op.text) > 8192))) return { op: 'task.upsert', task: boundedEntity(task, { kind: 'task', id: task.taskId }) };
         } else {
           const target = op.target;
           const context = canonicalFrame(transcript, target.turnId, target.stepId, target.frameId);
-          const oversized = op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192;
+          const proseFrame = context !== undefined && (context.frame.kind === 'text' || context.frame.kind === 'thinking');
+          const offsetLimit = proseFrame ? 16 * 1024 : 1024;
+          const oversized = op.offset > offsetLimit || op.text.length > 8192 || (op.text.length > 1365 && jsonBytes(op.text) > 8192);
           if (context !== undefined && (context.omitted || oversized)) return {
             op: 'frame.upsert',
             turnId: target.turnId,

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { constants as osConstants, setPriority } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 
 import { BufferedReadable, mergeChildEnv } from '@kiki/kaos/exec-env';
@@ -179,10 +180,29 @@ export class HostProcessService implements IHostProcessService {
   declare readonly _serviceBrand: undefined;
   private readonly ownedTrees = new Set<Awaited<ReturnType<typeof spawnWindowsProcessTree>>>();
   private readonly pendingTrees = new Set<ReturnType<typeof spawnWindowsProcessTree>>();
+  private spawnChain: Promise<void> = Promise.resolve();
+  private pendingSpawns = 0;
   private closing = false;
   private disposePromise: Promise<void> | undefined;
 
   constructor(private readonly childDefaults: Readonly<Record<string, string>> = {}) {}
+
+  private async paceSpawn(): Promise<void> {
+    if (this.pendingSpawns === 0) {
+      this.pendingSpawns += 1;
+      queueMicrotask(() => { this.pendingSpawns = Math.max(0, this.pendingSpawns - 1); });
+      return;
+    }
+    this.pendingSpawns += 1;
+    const prev = this.spawnChain;
+    let release!: () => void;
+    this.spawnChain = new Promise<void>((resolve) => { release = resolve; });
+    await prev;
+    setImmediate(() => {
+      this.pendingSpawns = Math.max(0, this.pendingSpawns - 1);
+      release();
+    });
+  }
 
   dispose(): Promise<void> {
     this.closing = true;
@@ -214,6 +234,8 @@ export class HostProcessService implements IHostProcessService {
     const initialOptions = buildSpawnOptions(options, this.childDefaults);
     const launch = isWindows ? prepareWindowsSpawn(command, args, initialOptions) : { command, args, options: initialOptions };
     const spawnOptions = launch.options;
+    await this.paceSpawn();
+    if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service is shutting down.', { details: { command, phase: 'owner' } });
     if (isWindows && options.ownedProcessTree === true) {
       const pending = spawnWindowsProcessTree(launch.command, launch.args, spawnOptions, options.mergeStderr ?? false, ownerLifetime);
       if (!ownerLifetime) return pending;
@@ -227,6 +249,12 @@ export class HostProcessService implements IHostProcessService {
       } finally { this.pendingTrees.delete(pending); }
     }
     const child = spawn(launch.command, launch.args as string[], spawnOptions);
+    if (child.pid !== undefined) {
+      try {
+        setPriority(child.pid, osConstants.priority.PRIORITY_NORMAL);
+      } catch {
+      }
+    }
     const processHandle = new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
     const observedExit = processHandle.wait().catch(() => undefined);
     try {

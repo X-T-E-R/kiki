@@ -44,7 +44,12 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     sessionDisabledTools?: readonly string[];
     explicitProfileGrants?: { profile: ProfileData; value: readonly string[] | undefined };
     cleanPaths?: Map<string, boolean>;
+    optionalAdmissions?: Map<string, boolean>;
+    sendMessageOverride?: boolean;
   } | undefined;
+  private cachedBootstrap: { readonly value: IBootstrapService | undefined } | undefined;
+  private cachedOptionalPolicy: { readonly value: IOptionalCapabilityPolicy | undefined } | undefined;
+  private cachedShippedProfileManager: { readonly value: IShippedAgentProfileManager | undefined } | undefined;
 
   constructor(
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -206,22 +211,37 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     let sendMessageAllowListOverride = false;
     if (policy !== undefined && session !== undefined && capability !== undefined) {
       this.note(policy, session.sessionId, session.workspaceId, data);
-      const request = { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId };
-      const admission = capability === 'send_message'
-        ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
-        : policy.admit(capability, request);
-      if (!admission.admitted) {
+      const admitKey = `${capability}\0${session.sessionId}\0${session.workspaceId}\0${this.scope.agentId}`;
+      let admitted: boolean;
+      if (this.snapshot !== undefined && this.snapshot.optionalAdmissions?.has(admitKey)) {
+        admitted = this.snapshot.optionalAdmissions.get(admitKey)!;
+      } else {
+        const request = { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId };
+        const admission = capability === 'send_message'
+          ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
+          : policy.admit(capability, request);
+        admitted = admission.admitted;
+        if (this.snapshot !== undefined) {
+          (this.snapshot.optionalAdmissions ??= new Map()).set(admitKey, admitted);
+        }
+      }
+      if (!admitted) {
         if (name === 'SendMessage') this.note(policy, session.sessionId, session.workspaceId, data, false);
         return false;
       }
       if (name === 'SendMessage') {
-        const choice = policy.choice(session.sessionId, 'send_message');
-        sendMessageAllowListOverride = choice === 'on' ||
-          (choice === 'inherit' && (policy.globalState('send_message').defaultOn || isLegacyShippedMessageBinding(
-            data,
-            this.delivery.current?.effectiveMode() ?? 'reply',
-            (path) => this.cleanDefaultPath(path),
-          )));
+        if (this.snapshot !== undefined && this.snapshot.sendMessageOverride !== undefined) {
+          sendMessageAllowListOverride = this.snapshot.sendMessageOverride;
+        } else {
+          const choice = policy.choice(session.sessionId, 'send_message');
+          sendMessageAllowListOverride = choice === 'on' ||
+            (choice === 'inherit' && (policy.globalState('send_message').defaultOn || isLegacyShippedMessageBinding(
+              data,
+              this.delivery.current?.effectiveMode() ?? 'reply',
+              (path) => this.cleanDefaultPath(path),
+            )));
+          if (this.snapshot !== undefined) this.snapshot.sendMessageOverride = sendMessageAllowListOverride;
+        }
       }
       if (name === 'MemoryWrite') {
         const approval = this.snapshot === undefined
@@ -270,11 +290,14 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   private lookupMobilePlatform(): MobilePlatform | undefined {
-    try {
-      return this.instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService))?.mobilePlatform;
-    } catch {
-      return undefined;
+    if (this.cachedBootstrap === undefined) {
+      try {
+        this.cachedBootstrap = { value: this.instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService)) ?? undefined };
+      } catch {
+        this.cachedBootstrap = { value: undefined };
+      }
     }
+    return this.cachedBootstrap.value?.mobilePlatform;
   }
 
   private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
@@ -283,11 +306,14 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   private lookupOptionalPolicy(): IOptionalCapabilityPolicy | undefined {
-    try {
-      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
-    } catch {
-      return undefined;
+    if (this.cachedOptionalPolicy === undefined) {
+      try {
+        this.cachedOptionalPolicy = { value: this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined };
+      } catch {
+        this.cachedOptionalPolicy = { value: undefined };
+      }
     }
+    return this.cachedOptionalPolicy.value;
   }
 
   private cleanDefaultPath(path: string): boolean {
@@ -295,12 +321,14 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       const cached = this.snapshot.cleanPaths?.get(path);
       if (cached !== undefined) return cached;
     }
-    let clean = false;
-    try {
-      clean = this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
-    } catch {
-      clean = false;
+    if (this.cachedShippedProfileManager === undefined) {
+      try {
+        this.cachedShippedProfileManager = { value: this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager)) ?? undefined };
+      } catch {
+        this.cachedShippedProfileManager = { value: undefined };
+      }
     }
+    const clean = this.cachedShippedProfileManager.value?.isCleanActivePath(path) === true;
     if (this.snapshot !== undefined) {
       (this.snapshot.cleanPaths ??= new Map()).set(path, clean);
     }

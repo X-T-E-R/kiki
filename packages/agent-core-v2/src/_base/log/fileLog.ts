@@ -7,6 +7,7 @@ import type { ILogWriter, LogEntry } from './log';
 
 export const PENDING_MAX = 1000;
 const STDERR_NOTICE_INTERVAL_MS = 30_000;
+const DRAIN_COALESCE_MS = 50;
 
 class AsyncSerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
@@ -42,6 +43,7 @@ export class RotatingFileWriter {
   private lastStderrNotice = 0;
   private currentBytes = -1;
   private directorySynced = false;
+  private drainTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly options: RotatingFileWriterOptions) {}
 
@@ -56,6 +58,10 @@ export class RotatingFileWriter {
   }
 
   async flush(): Promise<boolean> {
+    if (this.drainTimer !== undefined) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = undefined;
+    }
     return this.queue.run(() => this.drain());
   }
 
@@ -81,11 +87,13 @@ export class RotatingFileWriter {
   }
 
   private scheduleDrain(): void {
-    if (this.closed) return;
-    queueMicrotask(() => {
+    if (this.closed || this.drainTimer !== undefined) return;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = undefined;
       if (this.closed || this.pending.length === 0) return;
       this.queue.run(() => this.drain()).catch(() => {});
-    });
+    }, DRAIN_COALESCE_MS);
+    this.drainTimer.unref?.();
   }
 
   private async drain(): Promise<boolean> {

@@ -519,7 +519,7 @@ export class UsageAggregationService {
     const signal = options.factSignal ?? this.modelController.signal;
     const ordered = prioritizeMainAgentIds(agentIds);
     for (let index = 0; index < ordered.length; index += 1) {
-      if (index > 0 && index % 32 === 0) await yieldToEventLoop(undefined, { signal });
+      if (index > 0 && index % 4 === 0) await yieldToEventLoop(undefined, { signal });
       const id = ordered[index]!;
       signal.throwIfAborted();
       if (this.now() >= (options.deadlineAt ?? Infinity)) break;

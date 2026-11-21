@@ -6,6 +6,7 @@ export interface SessionMediaMaterializeInput {
   readonly name: string;
   readonly mimeType: string;
   readonly stream: () => NodeJS.ReadableStream;
+  readonly data?: Uint8Array;
   readonly signal?: AbortSignal;
 }
 

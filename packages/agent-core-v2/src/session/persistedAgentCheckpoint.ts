@@ -154,9 +154,10 @@ export async function readPersistedAgentCheckpoint(
   signal?.throwIfAborted();
   if (ckptStat.distinguishable && ckptStat.token === 'none') return undefined;
   const hasLargeState = names.has(contextMemoryKey.name);
-  const fetchNames = hasLargeState ? names : new Set([...LIGHTWEIGHT_STATE_NAMES, ...names]);
+  const fetchNames = new Set([...LIGHTWEIGHT_STATE_NAMES, ...names]);
   const extraNames = [...names].filter((name) => !LIGHTWEIGHT_STATE_NAMES.has(name)).sort().join(',');
   const baseKey = `${scope}:${size}:${mtimeMs}:ckpt:${ckptStat.token}`;
+  const metaCacheKey = `${baseKey}:meta:`;
   const cacheKey = hasLargeState
     ? `${baseKey}:full:${[...names].sort().join(',')}`
     : `${baseKey}:meta:${extraNames}`;
@@ -214,12 +215,21 @@ export async function readPersistedAgentCheckpoint(
         prefixSha256: (end) => end < JOURNAL_HEAD_HASH_BYTES ? digest(0, end) : Promise.resolve(undefined),
       });
       const decoded = verified === undefined ? undefined : { offset: verified.offset, states: extracted.states };
-      if (!hasLargeState && ckptStat.distinguishable) {
+      if (ckptStat.distinguishable) {
         const afterStat = await readPersistedCheckpointStatToken(storage, scope);
         if (afterStat.distinguishable && afterStat.token === ckptStat.token) {
-          cache.delete(cacheKey);
-          cache.set(cacheKey, decoded ?? null);
-          if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+          if (!hasLargeState) {
+            cache.delete(cacheKey);
+            cache.set(cacheKey, decoded ?? null);
+            if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+          } else {
+            const lightDecoded = decoded === undefined
+              ? null
+              : projectRequestedStates(decoded, LIGHTWEIGHT_STATE_NAMES) ?? null;
+            cache.delete(metaCacheKey);
+            cache.set(metaCacheKey, lightDecoded);
+            if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+          }
         }
       }
       return decoded;

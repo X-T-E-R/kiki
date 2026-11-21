@@ -3,6 +3,7 @@ import { createReadStream, mkdirSync, statSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { FSWatcher } from 'chokidar';
+import { guardChokidarDeletedWatchSpin } from '#/_base/utils/fsWatchGuard';
 import * as portablePath from 'pathe';
 
 import { DisposableStore, combinedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
@@ -154,6 +155,7 @@ async function removeOrphanedTempFiles(filePath: string): Promise<void> {
 }
 
 function isPidAlive(pid: number): boolean {
+  if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
     return true;
@@ -163,10 +165,19 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+function isSimpleRelativeSegment(segment: string): boolean {
+  if (segment.length === 0) return false;
+  if (segment.charCodeAt(0) === 47 || segment.charCodeAt(0) === 92) return false;
+  if (segment.includes('\\') || segment.includes('..') || segment.includes('//')) return false;
+  if (segment.endsWith('/')) return false;
+  return true;
+}
+
 export class FileStorageService implements IFileSystemStorageService {
   declare readonly _serviceBrand: undefined;
 
   private readonly syncedDirs = new Set<string>();
+  private readonly normalizedBaseDir: string;
 
   constructor(
     private readonly baseDir: string,
@@ -174,7 +185,9 @@ export class FileStorageService implements IFileSystemStorageService {
     private readonly fileMode?: number,
     private readonly recoverMissingDocuments = true,
     private readonly openAppend?: (path: string) => Promise<FileHandle>,
-  ) {}
+  ) {
+    this.normalizedBaseDir = join(baseDir);
+  }
 
   async read(scope: string, key: string, options: StorageReadOptions = {}): Promise<Uint8Array | undefined> {
     const filePath = this.pathFor(scope, key);
@@ -234,17 +247,34 @@ export class FileStorageService implements IFileSystemStorageService {
     options: StorageWriteOptions = {},
   ): Promise<void> {
     const filePath = this.pathFor(scope, key);
+    const dir = dirname(filePath);
     try {
-      await mkdir(dirname(filePath), { recursive: true, mode: this.dirMode });
-      await atomicWrite(
-        filePath,
-        data,
-        undefined,
-        this.fileMode,
-        options.signal,
-        options.preserveDestinationOnError === true,
-      );
-      await this.syncDirOnce(dirname(filePath));
+      if (!this.syncedDirs.has(dir)) {
+        await mkdir(dir, { recursive: true, mode: this.dirMode });
+      }
+      try {
+        await atomicWrite(
+          filePath,
+          data,
+          undefined,
+          this.fileMode,
+          options.signal,
+          options.preserveDestinationOnError === true,
+        );
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        this.syncedDirs.delete(dir);
+        await mkdir(dir, { recursive: true, mode: this.dirMode });
+        await atomicWrite(
+          filePath,
+          data,
+          undefined,
+          this.fileMode,
+          options.signal,
+          options.preserveDestinationOnError === true,
+        );
+      }
+      await this.syncDirOnce(dir);
     } catch (error) {
       options.signal?.throwIfAborted();
       throw toStorageIoError(error, { path: filePath, op: 'write' });
@@ -258,8 +288,11 @@ export class FileStorageService implements IFileSystemStorageService {
     options: StorageWriteOptions = {},
   ): Promise<void> {
     const filePath = this.pathFor(scope, key);
+    const dir = dirname(filePath);
     try {
-      await mkdir(dirname(filePath), { recursive: true, mode: this.dirMode });
+      if (!this.syncedDirs.has(dir)) {
+        await mkdir(dir, { recursive: true, mode: this.dirMode });
+      }
       await atomicWriteStream(
         filePath,
         source,
@@ -267,7 +300,7 @@ export class FileStorageService implements IFileSystemStorageService {
         options.signal,
         options.preserveDestinationOnError === true,
       );
-      await this.syncDirOnce(dirname(filePath));
+      await this.syncDirOnce(dir);
     } catch (error) {
       options.signal?.throwIfAborted();
       throw toStorageIoError(error, { path: filePath, op: 'write' });
@@ -284,11 +317,21 @@ export class FileStorageService implements IFileSystemStorageService {
     const dir = dirname(filePath);
     let committed = false;
     try {
-      await mkdir(dir, { recursive: true, mode: this.dirMode });
+      if (!this.syncedDirs.has(dir)) {
+        await mkdir(dir, { recursive: true, mode: this.dirMode });
+      }
 
-      const fh = await openAppendAfterTransientDenial(() => this.openAppend === undefined
-        ? open(filePath, 'a', this.fileMode)
-        : this.openAppend(filePath));
+      const openTarget = (): Promise<FileHandle> =>
+        this.openAppend === undefined ? open(filePath, 'a', this.fileMode) : this.openAppend(filePath);
+      let fh: FileHandle;
+      try {
+        fh = await openAppendAfterTransientDenial(openTarget);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        this.syncedDirs.delete(dir);
+        await mkdir(dir, { recursive: true, mode: this.dirMode });
+        fh = await openAppendAfterTransientDenial(openTarget);
+      }
       try {
         if (data.byteLength > 0) {
           committed = true;
@@ -444,6 +487,7 @@ export class FileStorageService implements IFileSystemStorageService {
             return normalized !== normalizedDir && normalized !== normalizedTarget;
           },
         });
+        guardChokidarDeletedWatchSpin(current);
         watcher = current;
         current.on('all', (_event, changedPath) => {
           if (watcher === current && normalize(changedPath) === normalizedTarget) schedule();
@@ -498,6 +542,10 @@ export class FileStorageService implements IFileSystemStorageService {
   async close(): Promise<void> {}
 
   pathFor(scope: string, key: string): string {
+    if (isSimpleRelativeSegment(key) && (scope === '' || isSimpleRelativeSegment(scope))) {
+      const base = this.normalizedBaseDir.endsWith('/') ? this.normalizedBaseDir.slice(0, -1) : this.normalizedBaseDir;
+      return scope === '' ? `${base}/${key}` : `${base}/${scope}/${key}`;
+    }
     return join(this.baseDir, scope, key);
   }
 

@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
@@ -89,6 +90,51 @@ function withoutBackgroundDescription(description: string): string {
 
 function withoutAutoBackgroundOnTimeout(description: string): string {
   return description.replace('may move to background on timeout', 'are killed on timeout');
+}
+
+const MAX_CONCURRENT_LOCAL_FOREGROUND_BASH = Math.max(4, Math.min(6, Math.floor(availableParallelism() / 3)));
+let activeLocalForegroundBash = 0;
+const localForegroundBashWaitQueue: Array<() => void> = [];
+
+function releaseLocalForegroundBashCount(): void {
+  const next = localForegroundBashWaitQueue.shift();
+  if (next !== undefined) {
+    next();
+  } else {
+    activeLocalForegroundBash = Math.max(0, activeLocalForegroundBash - 1);
+  }
+}
+
+async function acquireLocalForegroundBashSlot(signal: AbortSignal): Promise<(() => void) | undefined> {
+  if (signal.aborted) return undefined;
+  if (activeLocalForegroundBash >= MAX_CONCURRENT_LOCAL_FOREGROUND_BASH) {
+    const acquired = await new Promise<boolean>((resolve) => {
+      const onWake = (): void => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(true);
+      };
+      const onAbort = (): void => {
+        const idx = localForegroundBashWaitQueue.indexOf(onWake);
+        if (idx !== -1) localForegroundBashWaitQueue.splice(idx, 1);
+        resolve(false);
+      };
+      localForegroundBashWaitQueue.push(onWake);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    if (!acquired) return undefined;
+    if (signal.aborted) {
+      releaseLocalForegroundBashCount();
+      return undefined;
+    }
+  } else {
+    activeLocalForegroundBash += 1;
+  }
+  let released = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    releaseLocalForegroundBashCount();
+  };
 }
 
 export class BashTool implements IBashTool {
@@ -236,6 +282,16 @@ export class BashTool implements IBashTool {
     await prepareToolRuntime(this.runtime, args.host);
     const lease = args.host === undefined
       ? this.runtime.acquire(['process']) : acquireToolRuntime(this.runtime, args.host, ['process']);
+    const isLocalForeground = !startsInBackground && lease.runtime.identity.runtimeId === 'local';
+    let releaseBashSlot: () => void = () => {};
+    if (isLocalForeground) {
+      const acquired = await acquireLocalForegroundBashSlot(signal);
+      if (acquired === undefined) {
+        lease.dispose();
+        return { isError: true, output: 'Aborted before command started' };
+      }
+      releaseBashSlot = acquired;
+    }
     let proc: IHostProcess;
     let command: string;
     try {
@@ -246,6 +302,7 @@ export class BashTool implements IBashTool {
       lease.runtime.pathIndex?.invalidate();
       proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
     } catch (error) {
+      releaseBashSlot();
       lease.dispose();
       return {
         isError: true,
@@ -276,7 +333,7 @@ export class BashTool implements IBashTool {
     let taskId: string;
     try {
       taskId = this.tasks.registerTask(
-        new ProcessTask(proc, command, description, onProcessOutput, () => { lease.runtime.pathIndex?.invalidate(); lease.dispose(); }),
+        new ProcessTask(proc, command, description, onProcessOutput, () => { releaseBashSlot(); lease.runtime.pathIndex?.invalidate(); lease.dispose(); }),
         {
           detached: startsInBackground,
           lifetime: startsInBackground ? (args.lifetime ?? 'finite') : undefined,
@@ -289,6 +346,7 @@ export class BashTool implements IBashTool {
       foregroundTaskId = startsInBackground ? undefined : taskId;
     } catch (error) {
       collectForegroundOutput = false;
+      releaseBashSlot();
       await killSpawnedProcess(proc);
       lease.dispose();
       return {
@@ -333,6 +391,7 @@ export class BashTool implements IBashTool {
       return await this.foregroundCompletionResult(taskId, proc, builder, foregroundTimeoutMs);
     } finally {
       collectForegroundOutput = false;
+      releaseBashSlot();
     }
   }
 

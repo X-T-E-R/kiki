@@ -819,12 +819,90 @@ function pngChunkBuffer(type: string, data: Buffer): Buffer {
   return out;
 }
 
-function encodeFastPng(rgba: Uint8Array, width: number, height: number): Buffer {
-  let opaque = true;
-  for (let i = 3; i < rgba.length; i += 4) {
-    if (rgba[i] !== 255) {
-      opaque = false;
-      break;
+function encodeFilteredPngBuffer(filtered: Buffer, width: number, height: number, opaque: boolean): Buffer {
+  const compressed = deflateSync(filtered, { level: 1 });
+  const ihdr = Buffer.allocUnsafe(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = opaque ? 2 : 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunkBuffer('IHDR', ihdr),
+    pngChunkBuffer('IDAT', compressed),
+    pngChunkBuffer('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function encodeFastResizedOpaquePng(src: Uint8Array, srcW: number, srcH: number, targetW: number, targetH: number): Buffer {
+  const x0Table = new Int32Array(targetW);
+  const x1Table = new Int32Array(targetW);
+  const wxFixedTable = new Int32Array(targetW);
+  const scaleX = srcW > 1 && targetW > 1 ? (srcW - 1) / (targetW - 1) : 0;
+  const scaleY = srcH > 1 && targetH > 1 ? (srcH - 1) / (targetH - 1) : 0;
+  for (let x = 0; x < targetW; x += 1) {
+    const sx = x * scaleX;
+    const x0 = Math.floor(sx);
+    x0Table[x] = x0 * 4;
+    x1Table[x] = Math.min(x0 + 1, srcW - 1) * 4;
+    wxFixedTable[x] = Math.round((sx - x0) * 256);
+  }
+  const srcStride = srcW * 4;
+  const dstStride = targetW * 3;
+  const filtered = Buffer.allocUnsafe(targetH * (dstStride + 1));
+  for (let y = 0; y < targetH; y += 1) {
+    const sy = y * scaleY;
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(y0 + 1, srcH - 1);
+    const wy = Math.round((sy - y0) * 256);
+    const invWy = 256 - wy;
+    const row0 = y0 * srcStride;
+    const row1 = y1 * srcStride;
+    let dstPos = y * (dstStride + 1);
+    filtered[dstPos++] = 1;
+    let prevR = 0;
+    let prevG = 0;
+    let prevB = 0;
+    for (let x = 0; x < targetW; x += 1) {
+      const x0 = x0Table[x]!;
+      const x1 = x1Table[x]!;
+      const wx = wxFixedTable[x]!;
+      const invWx = 256 - wx;
+      const w00 = invWx * invWy;
+      const w10 = wx * invWy;
+      const w01 = invWx * wy;
+      const w11 = wx * wy;
+      const i00 = row0 + x0;
+      const i10 = row0 + x1;
+      const i01 = row1 + x0;
+      const i11 = row1 + x1;
+      const r = (src[i00]! * w00 + src[i10]! * w10 + src[i01]! * w01 + src[i11]! * w11 + 32768) >> 16;
+      const g = (src[i00 + 1]! * w00 + src[i10 + 1]! * w10 + src[i01 + 1]! * w01 + src[i11 + 1]! * w11 + 32768) >> 16;
+      const b = (src[i00 + 2]! * w00 + src[i10 + 2]! * w10 + src[i01 + 2]! * w01 + src[i11 + 2]! * w11 + 32768) >> 16;
+      filtered[dstPos] = (r - prevR) & 0xff;
+      filtered[dstPos + 1] = (g - prevG) & 0xff;
+      filtered[dstPos + 2] = (b - prevB) & 0xff;
+      prevR = r;
+      prevG = g;
+      prevB = b;
+      dstPos += 3;
+    }
+  }
+  return encodeFilteredPngBuffer(filtered, targetW, targetH, true);
+}
+
+function encodeFastPng(rgba: Uint8Array, width: number, height: number, knownOpaque = false): Buffer {
+  let opaque = knownOpaque;
+  if (!opaque) {
+    opaque = true;
+    for (let i = 3; i < rgba.length; i += 4) {
+      if (rgba[i] !== 255) {
+        opaque = false;
+        break;
+      }
     }
   }
   const bpp = opaque ? 3 : 4;
@@ -867,7 +945,7 @@ function encodeFastPng(rgba: Uint8Array, width: number, height: number): Buffer 
       }
     }
   }
-  const compressed = deflateSync(filtered, { level: 3 });
+  const compressed = deflateSync(filtered, { level: 1 });
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -888,6 +966,7 @@ interface RawBitmap {
   data: Buffer;
   width: number;
   height: number;
+  opaque?: boolean;
 }
 
 function fastResizeBilinearBitmap(bitmap: RawBitmap, targetW: number, targetH: number): void {
@@ -897,7 +976,7 @@ function fastResizeBilinearBitmap(bitmap: RawBitmap, targetW: number, targetH: n
   const dst = Buffer.allocUnsafe(targetW * targetH * 4);
   const x0Table = new Int32Array(targetW);
   const x1Table = new Int32Array(targetW);
-  const wxTable = new Float32Array(targetW);
+  const wxFixedTable = new Int32Array(targetW);
   const scaleX = srcW > 1 && targetW > 1 ? (srcW - 1) / (targetW - 1) : 0;
   const scaleY = srcH > 1 && targetH > 1 ? (srcH - 1) / (targetH - 1) : 0;
   for (let x = 0; x < targetW; x += 1) {
@@ -905,48 +984,90 @@ function fastResizeBilinearBitmap(bitmap: RawBitmap, targetW: number, targetH: n
     const x0 = Math.floor(sx);
     x0Table[x] = x0 * 4;
     x1Table[x] = Math.min(x0 + 1, srcW - 1) * 4;
-    wxTable[x] = sx - x0;
+    wxFixedTable[x] = Math.round((sx - x0) * 256);
   }
+  let opaque = bitmap.opaque === true;
+  if (!opaque) {
+    opaque = true;
+    for (let i = 3; i < src.length; i += 4) {
+      if (src[i] !== 255) {
+        opaque = false;
+        break;
+      }
+    }
+  }
+  bitmap.opaque = opaque;
   const srcStride = srcW * 4;
   let dstIdx = 0;
-  for (let y = 0; y < targetH; y += 1) {
-    const sy = y * scaleY;
-    const y0 = Math.floor(sy);
-    const y1 = Math.min(y0 + 1, srcH - 1);
-    const wy = sy - y0;
-    const invWy = 1 - wy;
-    const row0 = y0 * srcStride;
-    const row1 = y1 * srcStride;
-    for (let x = 0; x < targetW; x += 1) {
-      const x0 = x0Table[x]!;
-      const x1 = x1Table[x]!;
-      const wx = wxTable[x]!;
-      const invWx = 1 - wx;
-      const w00 = invWx * invWy;
-      const w10 = wx * invWy;
-      const w01 = invWx * wy;
-      const w11 = wx * wy;
-      const i00 = row0 + x0;
-      const i10 = row0 + x1;
-      const i01 = row1 + x0;
-      const i11 = row1 + x1;
-      const a00 = src[i00 + 3]! * w00;
-      const a10 = src[i10 + 3]! * w10;
-      const a01 = src[i01 + 3]! * w01;
-      const a11 = src[i11 + 3]! * w11;
-      const aSum = a00 + a10 + a01 + a11;
-      if (aSum <= 0) {
-        dst[dstIdx] = 0;
-        dst[dstIdx + 1] = 0;
-        dst[dstIdx + 2] = 0;
-        dst[dstIdx + 3] = 0;
-      } else {
-        dst[dstIdx] = Math.round((src[i00]! * a00 + src[i10]! * a10 + src[i01]! * a01 + src[i11]! * a11) / aSum);
-        dst[dstIdx + 1] = Math.round((src[i00 + 1]! * a00 + src[i10 + 1]! * a10 + src[i01 + 1]! * a01 + src[i11 + 1]! * a11) / aSum);
-        dst[dstIdx + 2] = Math.round((src[i00 + 2]! * a00 + src[i10 + 2]! * a10 + src[i01 + 2]! * a01 + src[i11 + 2]! * a11) / aSum);
-        dst[dstIdx + 3] = Math.round(aSum);
+  if (opaque) {
+    for (let y = 0; y < targetH; y += 1) {
+      const sy = y * scaleY;
+      const y0 = Math.floor(sy);
+      const y1 = Math.min(y0 + 1, srcH - 1);
+      const wy = Math.round((sy - y0) * 256);
+      const invWy = 256 - wy;
+      const row0 = y0 * srcStride;
+      const row1 = y1 * srcStride;
+      for (let x = 0; x < targetW; x += 1) {
+        const x0 = x0Table[x]!;
+        const x1 = x1Table[x]!;
+        const wx = wxFixedTable[x]!;
+        const invWx = 256 - wx;
+        const w00 = invWx * invWy;
+        const w10 = wx * invWy;
+        const w01 = invWx * wy;
+        const w11 = wx * wy;
+        const i00 = row0 + x0;
+        const i10 = row0 + x1;
+        const i01 = row1 + x0;
+        const i11 = row1 + x1;
+        dst[dstIdx] = (src[i00]! * w00 + src[i10]! * w10 + src[i01]! * w01 + src[i11]! * w11 + 32768) >> 16;
+        dst[dstIdx + 1] = (src[i00 + 1]! * w00 + src[i10 + 1]! * w10 + src[i01 + 1]! * w01 + src[i11 + 1]! * w11 + 32768) >> 16;
+        dst[dstIdx + 2] = (src[i00 + 2]! * w00 + src[i10 + 2]! * w10 + src[i01 + 2]! * w01 + src[i11 + 2]! * w11 + 32768) >> 16;
+        dst[dstIdx + 3] = 255;
+        dstIdx += 4;
       }
-      dstIdx += 4;
+    }
+  } else {
+    for (let y = 0; y < targetH; y += 1) {
+      const sy = y * scaleY;
+      const y0 = Math.floor(sy);
+      const y1 = Math.min(y0 + 1, srcH - 1);
+      const wy = sy - y0;
+      const invWy = 1 - wy;
+      const row0 = y0 * srcStride;
+      const row1 = y1 * srcStride;
+      for (let x = 0; x < targetW; x += 1) {
+        const x0 = x0Table[x]!;
+        const x1 = x1Table[x]!;
+        const wx = wxFixedTable[x]! / 256;
+        const invWx = 1 - wx;
+        const w00 = invWx * invWy;
+        const w10 = wx * invWy;
+        const w01 = invWx * wy;
+        const w11 = wx * wy;
+        const i00 = row0 + x0;
+        const i10 = row0 + x1;
+        const i01 = row1 + x0;
+        const i11 = row1 + x1;
+        const a00 = src[i00 + 3]! * w00;
+        const a10 = src[i10 + 3]! * w10;
+        const a01 = src[i01 + 3]! * w01;
+        const a11 = src[i11 + 3]! * w11;
+        const aSum = a00 + a10 + a01 + a11;
+        if (aSum <= 0) {
+          dst[dstIdx] = 0;
+          dst[dstIdx + 1] = 0;
+          dst[dstIdx + 2] = 0;
+          dst[dstIdx + 3] = 0;
+        } else {
+          dst[dstIdx] = Math.round((src[i00]! * a00 + src[i10]! * a10 + src[i01]! * a01 + src[i11]! * a11) / aSum);
+          dst[dstIdx + 1] = Math.round((src[i00 + 1]! * a00 + src[i10 + 1]! * a10 + src[i01 + 1]! * a01 + src[i11 + 1]! * a11) / aSum);
+          dst[dstIdx + 2] = Math.round((src[i00 + 2]! * a00 + src[i10 + 2]! * a10 + src[i01 + 2]! * a01 + src[i11 + 2]! * a11) / aSum);
+          dst[dstIdx + 3] = Math.round(aSum);
+        }
+        dstIdx += 4;
+      }
     }
   }
   bitmap.data = dst;
@@ -1138,9 +1259,28 @@ export async function executeImageCompress(
           const originalHeight = fast.height;
           predecimateBitmapForEdge(fast, input.maxEdge, signal);
           signal?.throwIfAborted();
+          const longest = Math.max(fast.width, fast.height);
+          if (fast.opaque && longest > input.maxEdge) {
+            const factor = input.maxEdge / longest;
+            const targetW = Math.max(1, Math.round(fast.width * factor));
+            const targetH = Math.max(1, Math.round(fast.height * factor));
+            const png = encodeFastResizedOpaquePng(fast.data, fast.width, fast.height, targetW, targetH);
+            if (png.length <= input.byteBudget) {
+              const outBuffer = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
+              return {
+                kind: 'encoded',
+                data: outBuffer,
+                mimeType: 'image/png',
+                width: targetW,
+                height: targetH,
+                originalWidth,
+                originalHeight,
+              };
+            }
+          }
           fitBitmapWithinEdge(fast, input.maxEdge);
           signal?.throwIfAborted();
-          const png = encodeFastPng(fast.data, fast.width, fast.height);
+          const png = encodeFastPng(fast.data, fast.width, fast.height, fast.opaque);
           if (png.length <= input.byteBudget) {
             const outBuffer = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
             return {

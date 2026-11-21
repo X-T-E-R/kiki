@@ -77,3 +77,4 @@ async function execute(request: CpuRequest): Promise<void> {
 }
 
 port.on('message', (request: CpuRequest) => { void execute(request); });
+port.postMessage({ type: 'ready' } satisfies CpuResponse);

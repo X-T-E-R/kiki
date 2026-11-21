@@ -5,25 +5,47 @@ import { win32 } from 'node:path';
 import { HostProcessError, HostProcessErrorCode } from '#/os/interface/hostProcess';
 
 const CMD_META_CHARACTERS = /([()\][%!^"`<>&|;, *?])/g;
+const RESOLVED_EXECUTABLE_TTL_MS = 10_000;
+const RESOLVED_EXECUTABLE_CACHE_LIMIT = 256;
+const resolvedExecutableCache = new Map<string, { readonly path: string; readonly expiresAt: number }>();
 
 function environmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  const key = Object.keys(env).toSorted().find((key) => key.toLowerCase() === name.toLowerCase());
-  const value = key === undefined ? undefined : env[key];
+  const target = name.toLowerCase();
+  let matchedKey: string | undefined;
+  for (const key in env) {
+    if (key.toLowerCase() !== target) continue;
+    if (matchedKey === undefined || key < matchedKey) matchedKey = key;
+  }
+  const value = matchedKey === undefined ? undefined : env[matchedKey];
   return value === '' ? undefined : value;
 }
 
 function resolveExecutable(command: string, cwd: string, env: NodeJS.ProcessEnv): string {
-  const extensions = (environmentValue(env, 'PATHEXT') ?? '.COM;.EXE;.BAT;.CMD').split(';').map((extension) => extension.trim()).filter(Boolean);
+  const pathEnv = environmentValue(env, 'PATH') ?? '';
+  const pathExtEnv = environmentValue(env, 'PATHEXT') ?? '.COM;.EXE;.BAT;.CMD';
   const explicit = /[\\/:]/.test(command);
+  const cacheKey = `${command}\0${explicit ? cwd : ''}\0${pathEnv}\0${pathExtEnv}`;
+  const now = Date.now();
+  const cached = resolvedExecutableCache.get(cacheKey);
+  if (cached !== undefined && cached.expiresAt > now) {
+    return cached.path;
+  }
+  const extensions = pathExtEnv.split(';').map((extension) => extension.trim()).filter(Boolean);
   const extended = extensions.map((extension) => command + extension);
   const names = explicit || win32.extname(command) ? [command, ...extended] : extended;
-  const directories = explicit ? [''] : (environmentValue(env, 'PATH') ?? '').split(';').filter(Boolean);
+  const directories = explicit ? [''] : pathEnv.split(';').filter(Boolean);
   for (const directory of directories) {
     const root = directory.replace(/^"(.*)"$/, '$1');
     for (const name of names) {
       const candidate = win32.resolve(cwd, root, name);
       try {
-        if (statSync(candidate).isFile()) return candidate;
+        if (statSync(candidate).isFile()) {
+          if (resolvedExecutableCache.size >= RESOLVED_EXECUTABLE_CACHE_LIMIT) {
+            resolvedExecutableCache.clear();
+          }
+          resolvedExecutableCache.set(cacheKey, { path: candidate, expiresAt: now + RESOLVED_EXECUTABLE_TTL_MS });
+          return candidate;
+        }
       } catch { }
     }
   }
