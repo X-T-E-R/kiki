@@ -18,6 +18,7 @@ export interface MobileSessionStreamResult {
     readonly model?: string;
     readonly planMode?: boolean;
     readonly timing?: DeferredAppendTiming;
+    readonly personaGreetingReply?: boolean;
   }) => Promise<boolean>;
   readonly abort: () => Promise<void>;
   readonly resolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => Promise<void>;
@@ -77,6 +78,7 @@ export function useMobileSessionStream(
       readonly model?: string;
       readonly planMode?: boolean;
       readonly timing?: DeferredAppendTiming;
+      readonly personaGreetingReply?: boolean;
     }): Promise<boolean> => {
       const trimmed = input.text.trim();
       if (trimmed === '') return false;
@@ -86,6 +88,7 @@ export function useMobileSessionStream(
           ...(input.model !== undefined && input.model !== '' ? { model: input.model } : {}),
           ...(input.planMode === true ? { planMode: true } : {}),
           ...(input.timing !== undefined ? { appendTiming: input.timing } : {}),
+          ...(input.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
         });
         return true;
       } catch (error) {

@@ -37,7 +37,7 @@ import { adoptWindowId, configureWorkModes, writeWindowModeId } from './workMode
 
 // Matches the repo's other fs-driven GUI tests: vitest gives `import.meta.url`
 // a file URL here, while `new URL(..., import.meta.url)` does not.
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
 
 function clearInjectedSpace(): void {
   delete (window as unknown as Record<string, unknown>)[ACTIVE_SPACE_BOOT_GLOBAL];
@@ -406,6 +406,19 @@ const RAW_STORAGE_ALLOWLIST = new Set<string>([
   // Reads the pre-space `kiki.output-layer.sessions.v1` once per boot to carry
   // a subspace's own earlier records forward; it never writes that plain key.
   'apps/kiki-gui/src/components/output-layer/outputLayerStore.ts',
+  // Global: `kiki.sidebar.personaOrder`.
+  'apps/kiki-gui/src/components/persona/SidebarPersonaSection.tsx',
+  // Global: `kiki.panels.<group>` panel widths.
+  'apps/kiki-gui/src/lib/panelLayoutStorage.ts',
+  // Reads `kiki.space.*` skin backgrounds left by older builds; owns the
+  // global skin background key.
+  'apps/kiki-gui/src/lib/skins/background.ts',
+  // Global: `kiki.conversationSeen.v2` (values keyed by space-qualified refs).
+  'packages/session-core/src/settings/sessionReadState.ts',
+  // Global: `kiki.conversationTriage.v1` (values keyed by space-qualified refs).
+  'packages/session-core/src/settings/sessionTriage.ts',
+  // Excluded: `kiki.mobile.assistant.v1`, keyed by space inside the value.
+  'apps/kiki-gui/src/mobile/mobileAssistantStore.ts',
 ]);
 
 const KEY_LITERAL = /kiki\.[A-Za-z0-9_.-]*/g;
@@ -517,7 +530,7 @@ function scannedSources(): readonly ScannedSource[] {
 
 /** True when the module reads or writes `localStorage`, code rather than prose. */
 function usesRawLocalStorage(file: ScannedSource): boolean {
-  const withoutAvailabilityChecks = file.code.replace(/\btypeof\s+localStorage\b(?!\s*(?:[.[]|\?\.|!(?!=)))/g, '');
+  const withoutAvailabilityChecks = file.code.replaceAll(/\btypeof\s+localStorage\b(?!\s*(?:[.[]|\?\.|!(?!=)))/g, '');
   return /\blocalStorage\b/.test(withoutAvailabilityChecks);
 }
 

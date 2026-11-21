@@ -28,8 +28,8 @@ describe('normalizeDeepLinkRoute', () => {
 
   it('lands desktop session and root links inside the mobile shell', () => {
     expect(normalizeDeepLinkRoute('/s/abc', true)).toBe(mobileChatPath('local', 'abc'));
-    expect(normalizeDeepLinkRoute('/', true)).toBe('/m/today');
-    expect(normalizeDeepLinkRoute('', true)).toBe('/m/today');
+    expect(normalizeDeepLinkRoute('/', true)).toBe('/m/assistant');
+    expect(normalizeDeepLinkRoute('', true)).toBe('/m/assistant');
     expect(normalizeDeepLinkRoute('/m/c/remote%3Ax/s1', true)).toBe('/m/c/remote%3Ax/s1');
   });
 

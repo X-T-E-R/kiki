@@ -57,7 +57,7 @@ function SwipeChatRow({
               setOffsetX(0);
               onMarkRead();
             }}
-            className="flex h-9 items-center rounded-full bg-selected px-3 text-[12px] font-medium text-selected-ink"
+            className="flex h-11 items-center rounded-full bg-selected px-3.5 text-[12px] font-medium text-selected-ink"
           >
             {t('mobile.chats.markRead')}
           </button>
@@ -68,7 +68,7 @@ function SwipeChatRow({
             setOffsetX(0);
             onArchive();
           }}
-          className="flex h-9 items-center rounded-full bg-ink/[0.08] px-3 text-[12px] font-medium text-ink"
+          className="flex h-11 items-center rounded-full bg-ink/[0.08] px-3.5 text-[12px] font-medium text-ink"
         >
           {t('mobile.chats.archive')}
         </button>
@@ -182,7 +182,7 @@ export function ChatsTab({
 
   return (
     <div data-mobile-screen="chats" className="flex min-h-0 flex-1 flex-col">
-      <header className="mx-auto flex h-12 w-full max-w-[632px] shrink-0 items-center justify-between gap-2 px-4">
+      <header className="mx-auto flex h-12 w-full max-w-[600px] shrink-0 items-center justify-between gap-2 px-4">
         <SpacePill label={spaceLabel} statusTone={spaceStatusTone} onClick={onOpenSpaceSheet} />
         <button
           type="button"
@@ -193,7 +193,7 @@ export function ChatsTab({
               return !prev;
             });
           }}
-          className={`flex h-9 w-9 items-center justify-center rounded-full border transition-colors ${
+          className={`flex h-11 w-11 items-center justify-center rounded-full border transition-colors ${
             searchOpen
               ? 'border-ink bg-ink text-paper'
               : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong hover:text-ink'
@@ -203,7 +203,8 @@ export function ChatsTab({
         </button>
       </header>
 
-      <div className="shrink-0 space-y-2.5 border-b border-hairline/60 px-4 pb-3 pt-1">
+      <div className="shrink-0 border-b border-hairline/60">
+        <div className="mx-auto w-full max-w-[600px] space-y-2.5 px-4 pb-3 pt-1">
         {searchOpen ? (
           <input
             type="search"
@@ -211,7 +212,7 @@ export function ChatsTab({
             autoFocus
             onChange={(event) => { setQuery(event.target.value); }}
             placeholder={t('mobile.chats.searchPlaceholder')}
-            className="h-10 w-full rounded-full border border-hairline bg-panel px-4 text-[16px] text-ink placeholder:text-ink-faint focus:border-selected-ink focus:outline-none"
+            className="h-11 w-full rounded-full border border-hairline bg-panel px-4 text-[16px] text-ink placeholder:text-ink-faint focus:border-selected-ink focus:outline-none"
           />
         ) : null}
 
@@ -224,7 +225,7 @@ export function ChatsTab({
                 type="button"
                 data-mobile-chats-filter={entry.id}
                 onClick={() => { setFilter(entry.id); }}
-                className={`h-8 rounded-full px-3.5 text-[13px] font-medium transition-colors ${
+                className={`h-11 rounded-full px-4 text-[13.5px] font-medium transition-colors ${
                   active
                     ? 'bg-ink text-paper'
                     : 'border border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
@@ -234,6 +235,7 @@ export function ChatsTab({
               </button>
             );
           })}
+        </div>
         </div>
       </div>
 

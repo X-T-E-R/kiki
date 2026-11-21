@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import type { PersonaSummary, Session } from '@kiki/protocol';
+import type { Session } from '@kiki/protocol';
 import {
   buildUnifiedInbox,
   hasSemanticAttentionCursor,
@@ -17,13 +17,14 @@ import {
   markConversationSeen,
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
-import { randomUuid } from '@kiki/session-core/util';
 
-import { Toasts } from '../components/Toasts';
+import { ToastAnchor, Toasts } from '../components/Toasts';
 import { useI18n } from '../i18n';
 import { androidBridge, subscribeAndroidHostEvents } from '../lib/androidBridge';
 import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
 import { useLayoutPreferences, useVisualViewportHeightVar } from '../lib/layoutHooks';
+import { requestScopeNavigation } from '../lib/navScope';
+import { remoteSpaceKey, remoteSpaceScope } from '../lib/remoteConnections';
 import { clearErrorToasts, pushToast } from '../lib/toasts';
 import {
   ALL_SPACE_SCOPE,
@@ -35,11 +36,13 @@ import { useConnection } from '../state/connection';
 
 import { MobileChatScreen } from './chat/MobileChatScreen';
 import { MobileVoiceOverlay } from './chat/MobileVoiceOverlay';
+import type { AssistantComputer } from './components/AssistantSetupView';
 import { QuickCaptureSheet } from './components/QuickCaptureSheet';
 import { useMobileClientResolver } from './mobileClientPool';
 import {
   desktopWorkbenchPath,
   isMobileChatPath,
+  MOBILE_ASSISTANT_PATH,
   MOBILE_CHATS_PATH,
   MOBILE_ONBOARDING_PATH,
   MOBILE_SPACES_PATH,
@@ -50,9 +53,10 @@ import {
 } from './mobileShellRoute';
 import { MobileSpaceSheet } from './MobileSpaceSheet';
 import { MobileTabBar, type MobileRootTab } from './MobileTabBar';
+import { AssistantTab } from './tabs/AssistantTab';
 import { ChatsTab } from './tabs/ChatsTab';
 import { SpacesTab } from './tabs/SpacesTab';
-import { TodayTab } from './tabs/TodayTab';
+import { useSoftKeyboardOpen } from './useSoftKeyboardOpen';
 
 function ChatRouteBridge({
   resolveClient,
@@ -64,7 +68,7 @@ function ChatRouteBridge({
   readonly resolveClient: ReturnType<typeof useMobileClientResolver>;
   readonly resolveSpaceName: (spaceKey: string) => string;
   readonly onBack: () => void;
-  readonly onOpenWorkbench: (sessionId: string) => void;
+  readonly onOpenWorkbench: (spaceKey: string, sessionId: string) => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
 }) {
   const params = useParams<{ readonly spaceKey: string; readonly sessionId: string }>();
@@ -83,7 +87,7 @@ function ChatRouteBridge({
       sessionId={sessionId}
       client={targetClient}
       onBack={onBack}
-      onOpenWorkbench={() => { onOpenWorkbench(sessionId); }}
+      onOpenWorkbench={() => { onOpenWorkbench(spaceKey, sessionId); }}
       onOpenVoiceForChat={onOpenVoiceForChat}
     />
   );
@@ -99,6 +103,8 @@ export function MobileAppShell() {
   const layoutPrefs = useLayoutPreferences();
   const seenMap = useConversationSeen();
   const resolveClient = useMobileClientResolver();
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const keyboardOpen = useSoftKeyboardOpen(shellRef);
 
   const [spaceSheetOpen, setSpaceSheetOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
@@ -115,7 +121,8 @@ export function MobileAppShell() {
 
   // Lightweight session head query (first page only — zero full-archive/pinned loops).
   const sessionsQuery = useQuery({
-    queryKey: ['mobile-sessions', client.baseUrl],
+    // The shell's own connection is always the local space; remote spaces come from useMultiSpaceSessions.
+    queryKey: ['mobile-sessions', 'local', client.baseUrl],
     staleTime: 8_000,
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
@@ -126,22 +133,9 @@ export function MobileAppShell() {
   });
 
   const workspacesQuery = useQuery({
-    queryKey: ['mobile-workspaces', client.baseUrl],
+    queryKey: ['mobile-workspaces', 'local', client.baseUrl],
     staleTime: 60_000,
     queryFn: async () => (await client.listWorkspaceCatalog()).items ?? [],
-  });
-
-  const personasQuery = useQuery({
-    queryKey: ['mobile-personas', client.baseUrl],
-    staleTime: 60_000,
-    queryFn: async () => {
-      try {
-        const personas = await client.listPersonas();
-        return personas.filter((persona) => !persona.archived && persona.hidden !== true);
-      } catch {
-        return [] as PersonaSummary[];
-      }
-    },
   });
 
   const activeSessions = sessionsQuery.data ?? [];
@@ -257,7 +251,7 @@ export function MobileAppShell() {
         model: session.agent_config?.model,
       });
     }
-    return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    return items.toSorted((a, b) => Date.parse(b.at) - Date.parse(a.at));
   }, [scopedEntries, seenMap, t]);
 
   const needsYouItems = useMemo(
@@ -318,41 +312,34 @@ export function MobileAppShell() {
     [navigate],
   );
 
-  const openPersona = useCallback(
-    async (persona: PersonaSummary) => {
-      const existing =
-        allChatItems.find((item) => item.sessionId === persona.homeSessionId) ??
-        allChatItems.find((item) => item.personaId === persona.id);
-      if (existing !== undefined) {
-        openItem(existing);
-        return;
-      }
-      if (persona.homeSessionId !== undefined) {
-        void navigate(mobileChatPath(targetCaptureSpaceKey, persona.homeSessionId));
-        return;
-      }
-      try {
-        const targetClient = resolveClient(targetCaptureSpaceKey);
-        const created = await targetClient.createSession({
-          creation_id: randomUuid(),
-          persona: persona.id,
-          persona_home: true,
-        });
-        void navigate(mobileChatPath(targetCaptureSpaceKey, created.id));
-      } catch (error) {
-        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
-      }
-    },
-    [allChatItems, navigate, openItem, resolveClient, targetCaptureSpaceKey],
-  );
-
+  // Carries the thread being read into the workbench; a remote space is activated first.
   const openDesktopWorkbench = useCallback(
-    (sessionId?: string) => {
+    (spaceKey?: string, sessionId?: string) => {
       writeDesktopOverride(true);
-      void navigate(desktopWorkbenchPath(sessionId));
+      const route = desktopWorkbenchPath(sessionId);
+      if (spaceKey !== undefined && spaceKey.startsWith('remote:')) {
+        void requestScopeNavigation({
+          ...remoteSpaceScope(spaceKey.slice('remote:'.length)),
+          route,
+          inPlace: true,
+        }).catch(() => { void navigate(route); });
+        return;
+      }
+      void navigate(route);
     },
     [navigate],
   );
+
+  const assistantComputers = useMemo<readonly AssistantComputer[]>(() => {
+    const computers: AssistantComputer[] = [{ spaceKey: multiSpace.localSpaceKey, name: multiSpace.localSpaceName }];
+    for (const record of multiSpace.remoteConnections) {
+      if (!record.enabled) continue;
+      const key = remoteSpaceKey(record.id);
+      const online = multiSpace.healthBySpace.get(key)?.state === 'online' || record.state === 'online';
+      if (online) computers.push({ spaceKey: key, name: record.label });
+    }
+    return computers;
+  }, [multiSpace.healthBySpace, multiSpace.localSpaceKey, multiSpace.localSpaceName, multiSpace.remoteConnections]);
 
   const archiveItem = useCallback(
     async (item: UnifiedInboxItem) => {
@@ -375,39 +362,42 @@ export function MobileAppShell() {
     ? 'chats'
     : location.pathname.startsWith(MOBILE_SPACES_PATH)
       ? 'spaces'
-      : 'today';
+      : 'assistant';
 
 
   return (
-    <div data-mobile-shell className="kiki-mobile-shell">
+    <div
+      ref={shellRef}
+      data-mobile-shell
+      data-keyboard-open={keyboardOpen ? '' : undefined}
+      className="kiki-mobile-shell"
+    >
+      <ToastAnchor className="kiki-mobile-toast-anchor" />
       <Routes>
         <Route
-          path="/m/today"
+          path="/m/assistant"
           element={
-            <TodayTab
-              spaceLabel={currentSpaceLabel}
-              spaceStatusTone={currentSpaceTone}
-              onlineSpacesCount={onlineSpacesCount}
-              needsYouItems={needsYouItems}
-              runningItems={scopedInbox.working}
-              recentItems={allChatItems}
-              personas={personasQuery.data ?? []}
+            <AssistantTab
+              scopeSpaceKey={activeScopeKey}
+              computers={assistantComputers}
               resolveClient={resolveClient}
-              onOpenSpaceSheet={() => { setSpaceSheetOpen(true); }}
-              onPairNew={() => { void navigate(MOBILE_SPACES_PATH); }}
+              resolveSpaceName={resolveSpaceName}
+              needsYouItems={globalInbox.active.filter((item) => item.needsYou)}
               onOpenItem={openItem}
-              onQuickPrompt={() => {
-                setQuickInitialText('');
-                setQuickOpen(true);
-              }}
-              onOpenPersona={(persona) => { void openPersona(persona); }}
               onRefresh={() => {
                 void queryClient.invalidateQueries({ queryKey: ['mobile-sessions'] });
                 void multiSpace.refetchRemotes();
               }}
+              onPairComputer={() => { void navigate(MOBILE_SPACES_PATH); }}
+              onOpenWorkbench={openDesktopWorkbench}
+              onOpenVoiceForChat={(onResult) => {
+                voiceCallbackRef.current = onResult;
+                setVoiceOpen(true);
+              }}
             />
           }
         />
+        <Route path={MOBILE_TODAY_PATH} element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
         <Route
           path="/m/chats"
           element={
@@ -435,7 +425,7 @@ export function MobileAppShell() {
               activeScope={activeScope}
               onSelectScope={(scope) => {
                 writeLayoutPreferences({ spaceScope: scope });
-                void navigate(MOBILE_TODAY_PATH);
+                void navigate(MOBILE_ASSISTANT_PATH);
               }}
               onRefreshRemotes={multiSpace.refetchRemotes}
               onOpenWorkbench={() => { openDesktopWorkbench(); }}
@@ -452,7 +442,7 @@ export function MobileAppShell() {
                 if (window.history.length > 1) void navigate(-1);
                 else void navigate(MOBILE_CHATS_PATH);
               }}
-              onOpenWorkbench={(sessionId) => { openDesktopWorkbench(sessionId); }}
+              onOpenWorkbench={openDesktopWorkbench}
               onOpenVoiceForChat={(onResult) => {
                 voiceCallbackRef.current = onResult;
                 setVoiceOpen(true);
@@ -472,14 +462,14 @@ export function MobileAppShell() {
               activeScope={activeScope}
               onSelectScope={(scope) => {
                 writeLayoutPreferences({ spaceScope: scope });
-                void navigate(MOBILE_TODAY_PATH);
+                void navigate(MOBILE_ASSISTANT_PATH);
               }}
               onRefreshRemotes={multiSpace.refetchRemotes}
               onOpenWorkbench={() => { openDesktopWorkbench(); }}
             />
           }
         />
-        <Route path="*" element={<Navigate to={MOBILE_TODAY_PATH} replace />} />
+        <Route path="*" element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
       </Routes>
 
       <MobileTabBar

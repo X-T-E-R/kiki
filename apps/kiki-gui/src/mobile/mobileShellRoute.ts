@@ -1,4 +1,6 @@
 export const MOBILE_ROOT_PATH = '/m';
+export const MOBILE_ASSISTANT_PATH = '/m/assistant';
+/** Earlier root tab; still redirects to the assistant for old links and hosts. */
 export const MOBILE_TODAY_PATH = '/m/today';
 export const MOBILE_CHATS_PATH = '/m/chats';
 export const MOBILE_SPACES_PATH = '/m/spaces';
@@ -90,7 +92,7 @@ export function shouldUseMobileShell(
  */
 export function normalizeDeepLinkRoute(rawRoute: string, mobileShell: boolean): string {
   const trimmed = rawRoute.trim();
-  if (trimmed === '') return mobileShell ? MOBILE_TODAY_PATH : '/';
+  if (trimmed === '') return mobileShell ? MOBILE_ASSISTANT_PATH : '/';
   const legacySession = /^\/sessions\/([^/?#]+)(.*)$/.exec(trimmed);
   if (legacySession !== null) {
     const id = decodeURIComponent(legacySession[1]!);
@@ -102,7 +104,7 @@ export function normalizeDeepLinkRoute(rawRoute: string, mobileShell: boolean): 
     if (desktopSession !== null) {
       return mobileChatPath('local', decodeURIComponent(desktopSession[1]!));
     }
-    if (trimmed === '/' || trimmed === '/new') return MOBILE_TODAY_PATH;
+    if (trimmed === '/' || trimmed === '/new') return MOBILE_ASSISTANT_PATH;
   }
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }

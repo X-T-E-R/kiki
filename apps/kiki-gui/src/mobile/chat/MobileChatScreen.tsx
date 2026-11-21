@@ -1,6 +1,10 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
+
+import { personaGreeting } from '@kiki/session-core/session';
 
 import { Icon } from '../../components/icons';
+import { ToastAnchor } from '../../components/Toasts';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { LiftTheHoodSheet, type HoodTab } from './LiftTheHoodSheet';
@@ -13,7 +17,16 @@ interface MobileChatScreenProps {
   readonly spaceName: string;
   readonly sessionId: string;
   readonly client: KikiClient;
-  readonly onBack: () => void;
+  /**
+   * `push`: a pushed thread with a back arrow and edge swipe.
+   * `root`: the Assistant tab's resident chat, which sits above the tab bar.
+   */
+  readonly variant?: 'push' | 'root';
+  /** Replaces the back arrow and title (root variant: the assistant switcher). */
+  readonly leading?: ReactNode;
+  /** A strip rendered under the header (root variant: cross-space decisions). */
+  readonly belowHeader?: ReactNode;
+  readonly onBack?: () => void;
   readonly onOpenWorkbench: () => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
 }
@@ -23,6 +36,9 @@ export function MobileChatScreen({
   spaceName,
   sessionId,
   client,
+  variant = 'push',
+  leading,
+  belowHeader,
   onBack,
   onOpenWorkbench,
   onOpenVoiceForChat,
@@ -31,27 +47,58 @@ export function MobileChatScreen({
   const stream = useMobileSessionStream(client, spaceKey, sessionId);
   const [hoodOpen, setHoodOpen] = useState(false);
   const [hoodTab, setHoodTab] = useState<HoodTab>('info');
+  const [hoodChangeId, setHoodChangeId] = useState<string | undefined>(undefined);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [planMode, setPlanMode] = useState(false);
+  const isRoot = variant === 'root';
 
   // Smooth touch left-edge swipe-back gesture (zero document reload).
   const [swipeX, setSwipeX] = useState(0);
   const edgeSwipeRef = useRef<{ readonly startX: number; readonly startY: number; active: boolean } | null>(null);
 
-  const openHood = (tab: HoodTab) => {
+  const openHood = (tab: HoodTab, changeId?: string) => {
     setHoodTab(tab);
+    setHoodChangeId(changeId);
     setHoodOpen(true);
   };
 
-  const title = stream.state.session?.title?.trim() || t('mobile.chats.title');
+  const session = stream.state.session;
+  const persona = session?.agent_config?.persona;
+  const messageMode = session?.delivery === 'message';
+  const hasUserTurn = useMemo(() => stream.state.blocks.some((block) => block.kind === 'user'), [stream.state.blocks]);
+
+  // The persona's local greeting opens an empty home chat at zero token cost.
+  const personaQuery = useQuery({
+    queryKey: ['mobile-persona', spaceKey, client.baseUrl, persona?.id],
+    enabled: persona?.id !== undefined && stream.state.loaded && !hasUserTurn,
+    staleTime: 5 * 60_000,
+    queryFn: async () => (await client.getPersona(persona!.id)).definition,
+  });
+  const greeting = useMemo(() => {
+    const definition = personaQuery.data;
+    if (definition === undefined || hasUserTurn) return undefined;
+    return personaGreeting({ id: definition.id, name: definition.name, greeting: definition.greeting });
+  }, [hasUserTurn, personaQuery.data]);
+
+  const title = session?.title?.trim() || persona?.name || t('mobile.chats.title');
   const runningTasksCount = stream.state.tasks.filter((task) => task.status === 'running').length;
   const subStatus = stream.state.busy ? `${spaceName} · ${t('mobile.chat.thinking')}` : spaceName;
 
+  const send = (text: string, timing?: Parameters<typeof stream.sendPrompt>[0]['timing']) =>
+    stream.sendPrompt({
+      text,
+      model: selectedModel,
+      planMode,
+      timing,
+      ...(greeting !== undefined ? { personaGreetingReply: true } : {}),
+    });
+
   return (
     <div
-      data-mobile-screen="chat"
+      data-mobile-screen={isRoot ? 'assistant-chat' : 'chat'}
       style={swipeX > 0 ? { transform: `translate3d(${swipeX}px, 0, 0)` } : undefined}
       onTouchStart={(event) => {
+        if (isRoot) return;
         const touch = event.touches[0];
         if (touch === undefined || touch.clientX > 28) return;
         edgeSwipeRef.current = { startX: touch.clientX, startY: touch.clientY, active: false };
@@ -73,39 +120,43 @@ export function MobileChatScreen({
         if (edgeSwipeRef.current?.active && swipeX > 96) {
           setSwipeX(0);
           edgeSwipeRef.current = null;
-          onBack();
+          onBack?.();
           return;
         }
         setSwipeX(0);
         edgeSwipeRef.current = null;
       }}
-      className="kiki-mobile-push-screen flex min-h-0 flex-1 flex-col bg-paper"
+      className={`flex min-h-0 flex-1 flex-col bg-paper ${isRoot ? '' : 'kiki-mobile-push-screen'}`}
     >
-      <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-hairline/65 px-2">
-        <button
-          type="button"
-          data-mobile-chat-back
-          aria-label={t('mobile.chat.back')}
-          onClick={onBack}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink transition-colors hover:bg-ink/[0.05]"
-        >
-          <Icon name="arrowLeft" size={16} />
-        </button>
+      <header className="flex h-14 shrink-0 items-center gap-1.5 border-b border-hairline/65 px-2">
+        {leading ?? (
+          <>
+            <button
+              type="button"
+              data-mobile-chat-back
+              aria-label={t('mobile.chat.back')}
+              onClick={onBack}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink transition-colors hover:bg-ink/[0.05]"
+            >
+              <Icon name="arrowLeft" size={16} />
+            </button>
 
-        <button
-          type="button"
-          onClick={() => { openHood('info'); }}
-          className="flex min-w-0 flex-1 flex-col items-start text-left"
-        >
-          <span className="w-full truncate text-[15px] font-semibold leading-tight text-ink">{title}</span>
-          <span className="mt-0.5 flex w-full items-center gap-1.5 text-[11.5px] leading-none text-ink-faint">
-            <span
-              className={`h-[6px] w-[6px] shrink-0 rounded-full ${stream.state.busy ? 'bg-accent' : 'bg-success'}`}
-              aria-hidden="true"
-            />
-            <span className="min-w-0 truncate">{subStatus}</span>
-          </span>
-        </button>
+            <button
+              type="button"
+              onClick={() => { openHood('info'); }}
+              className="flex min-h-11 min-w-0 flex-1 flex-col items-start justify-center text-left"
+            >
+              <span className="w-full truncate text-[15px] font-semibold leading-tight text-ink">{title}</span>
+              <span className="mt-0.5 flex w-full items-center gap-1.5 text-[11.5px] leading-none text-ink-faint">
+                <span
+                  className={`h-[6px] w-[6px] shrink-0 rounded-full ${stream.state.busy ? 'bg-accent' : 'bg-success'}`}
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 truncate">{subStatus}</span>
+              </span>
+            </button>
+          </>
+        )}
 
         <button
           type="button"
@@ -118,68 +169,74 @@ export function MobileChatScreen({
         </button>
       </header>
 
+      {belowHeader}
+
       <MobileTranscript
         blocks={stream.state.blocks}
         loaded={stream.state.loaded}
+        busy={stream.state.busy}
         hasMoreHistory={stream.state.hasMoreHistory}
         loadingOlder={stream.loadingOlder}
+        messageMode={messageMode}
+        personaName={persona?.name}
+        greeting={greeting}
         onLoadOlder={() => { void stream.loadOlder(); }}
         onOpenHood={openHood}
-        onResolveApproval={(approvalId, decision) => { void stream.resolveApproval(approvalId, decision); }}
+        onResolveApproval={(approvalId, decision, reason) => { void stream.resolveApproval(approvalId, decision, reason); }}
         onOpenWorkbench={onOpenWorkbench}
       />
 
-      {runningTasksCount > 0 ? (
-        <div className="shrink-0 px-3 pb-1">
-          <button
-            type="button"
-            data-mobile-live-pill
-            onClick={() => { openHood('tools'); }}
-            className="mx-auto flex h-10 w-full max-w-[640px] items-center justify-between gap-2 rounded-2xl border border-hairline/90 bg-panel px-3.5 text-[13px] text-ink shadow-xs"
-          >
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-              <span className="truncate font-medium">
-                {t('mobile.chat.liveRunPill', { count: runningTasksCount })}
+      <div className="relative shrink-0">
+        <ToastAnchor className="kiki-mobile-toast-anchor-inline" />
+        {runningTasksCount > 0 ? (
+          <div className="px-3 pb-1">
+            <button
+              type="button"
+              data-mobile-live-pill
+              onClick={() => { openHood('tools'); }}
+              className="mx-auto flex h-11 w-full max-w-[640px] items-center justify-between gap-2 rounded-2xl border border-hairline/90 bg-panel px-3.5 text-[13px] text-ink shadow-xs"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+                <span className="truncate font-medium">
+                  {t('mobile.chat.liveRunPill', { count: runningTasksCount })}
+                </span>
               </span>
-            </span>
-            <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-          </button>
-        </div>
-      ) : null}
+              <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+            </button>
+          </div>
+        ) : null}
 
-      <MobileComposer
-        draftKey={`${spaceKey}::${sessionId}`}
-        spaceName={spaceName}
-        busy={stream.state.busy}
-        planMode={planMode}
-        onPlanModeChange={setPlanMode}
-        onOpenModelPicker={() => { openHood('info'); }}
-        onOpenVoice={() => {
-          onOpenVoiceForChat((spoken) => {
-            void stream.sendPrompt({ text: spoken, model: selectedModel, planMode });
-          });
-        }}
-        onSend={(text, timing) =>
-          stream.sendPrompt({
-            text,
-            model: selectedModel,
-            planMode,
-            timing,
-          })
-        }
-        onAbort={stream.abort}
-      />
+        <MobileComposer
+          draftKey={`${spaceKey}::${sessionId}`}
+          spaceName={persona?.name ?? spaceName}
+          busy={stream.state.busy}
+          planMode={planMode}
+          onPlanModeChange={setPlanMode}
+          onOpenModelPicker={() => { openHood('info'); }}
+          onOpenVoice={() => {
+            onOpenVoiceForChat((spoken) => {
+              void send(spoken);
+            });
+          }}
+          onSend={(text, timing) => send(text, timing)}
+          onAbort={stream.abort}
+        />
+      </div>
+
+      {isRoot ? <div className="kiki-mobile-tabbar-spacer" aria-hidden="true" /> : null}
 
       <LiftTheHoodSheet
         open={hoodOpen}
         initialTab={hoodTab}
+        initialChangeId={hoodChangeId}
         onClose={() => { setHoodOpen(false); }}
         client={client}
+        spaceKey={spaceKey}
         spaceName={spaceName}
         sessionTitle={title}
         currentModel={stream.state.model}
-        personaName={stream.state.session?.agent_config?.persona?.name}
+        personaName={persona?.name}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
         blocks={stream.state.blocks}

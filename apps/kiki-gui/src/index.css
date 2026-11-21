@@ -245,8 +245,8 @@ body {
   --focus-ring-width: 2px;
   --kiki-safe-top-inset: max(var(--kiki-safe-top, 0px), env(safe-area-inset-top, 0px));
   --kiki-safe-bottom-inset: max(var(--kiki-safe-bottom, 0px), env(safe-area-inset-bottom, 0px));
-  --kiki-safe-left-inset: env(safe-area-inset-left, 0px);
-  --kiki-safe-right-inset: env(safe-area-inset-right, 0px);
+  --kiki-safe-left-inset: max(var(--kiki-safe-left, 0px), env(safe-area-inset-left, 0px));
+  --kiki-safe-right-inset: max(var(--kiki-safe-right, 0px), env(safe-area-inset-right, 0px));
   --kiki-pane-duration: 180ms;
   --kiki-pane-ease: cubic-bezier(0.2, 0, 0, 1);
 }
@@ -2221,7 +2221,7 @@ input[data-add-search]:focus-visible {
   max-height: calc(var(--kiki-visual-height, 100dvh) - var(--kiki-safe-top-inset) - 3rem);
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  padding: 6px max(8px, env(safe-area-inset-right, 0px)) calc(6px + var(--kiki-safe-bottom-inset)) max(8px, env(safe-area-inset-left, 0px));
+  padding: 6px max(8px, var(--kiki-safe-right-inset)) calc(6px + var(--kiki-safe-bottom-inset)) max(8px, var(--kiki-safe-left-inset));
   border-radius: 12px 12px 0 0;
   background-color: var(--color-panel);
   box-shadow: var(--kiki-sheet-shadow), 0 -12px 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
@@ -2307,7 +2307,7 @@ input[data-add-search]:focus-visible {
 }
 
 .kiki-mobile-tabbar-dock {
-  position: fixed;
+  position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
@@ -2317,6 +2317,49 @@ input[data-add-search]:focus-visible {
   display: flex;
   justify-content: center;
   transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease;
+}
+/* While a soft keyboard is up, the dock steps aside so the composer sits on
+ * the keyboard; the spacer that kept a root-tab composer clear of it folds. */
+.kiki-mobile-shell[data-keyboard-open] .kiki-mobile-tabbar-dock {
+  transform: translateY(120%);
+  opacity: 0;
+  pointer-events: none;
+}
+.kiki-mobile-tabbar-spacer {
+  flex-shrink: 0;
+  height: 68px;
+}
+.kiki-mobile-shell[data-keyboard-open] .kiki-mobile-tabbar-spacer {
+  height: 0;
+}
+/* Toast anchors: above the floating tab bar on root tabs, above the composer
+ * inside a chat (the chat's own anchor mounts later and wins). */
+.kiki-mobile-toast-anchor {
+  position: absolute;
+  right: max(12px, var(--kiki-safe-right-inset));
+  bottom: calc(80px + var(--kiki-safe-bottom-inset));
+  left: max(12px, var(--kiki-safe-left-inset));
+  z-index: 40;
+  height: 0;
+  pointer-events: none;
+}
+.kiki-mobile-toast-anchor-inline {
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  left: 12px;
+  z-index: 40;
+  height: 0;
+  pointer-events: none;
+}
+/* Toast buttons stay compact visually but get a thumb-sized hit area on the phone view. */
+[data-mobile-shell] [data-toast] button {
+  position: relative;
+}
+[data-mobile-shell] [data-toast] button::after {
+  content: '';
+  position: absolute;
+  inset: max(-12px, min(0px, calc((100% - 44px) / 2)));
 }
 
 .kiki-mobile-sheet-grabber {
