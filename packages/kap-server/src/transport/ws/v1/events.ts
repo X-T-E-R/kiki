@@ -12,7 +12,6 @@ import {
   type PluginWsTopicEvent,
   type RemoteConnectionsChangedEvent,
   type RoomChangedEvent,
-  type RemoteConnectionsChangedEvent,
 } from '@kiki/protocol';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
