@@ -934,6 +934,15 @@ public class KikiShellPlugin extends Plugin {
         }
         view.evaluateJavascript(buildDocumentNavNonceScript(targetOrigin, expectedNavNonce), null);
         new Thread(() -> {
+            // Install the socket redirect before the handshake round-trip so a page that already holds
+            // credentials never opens a direct wss:// socket that WebView cannot pin.
+            final String wsTunnelScript = prepareWsTunnelScript(targetOrigin, targetServerId);
+            if (wsTunnelScript != null) {
+                view.post(() -> {
+                    if (expectedDocEpoch != documentNavEpoch || !expectedNavNonce.equals(currentDocumentNavNonce)) return;
+                    view.evaluateJavascript(wsTunnelScript, null);
+                });
+            }
             HandshakeResult hs = fetchHandshake(targetOrigin, targetServerId);
             if (
                 expectedEpoch != pendingAuthEpoch ||
@@ -956,8 +965,10 @@ public class KikiShellPlugin extends Plugin {
                     ) {
                         return;
                     }
-                    boolean deliveredBefore = finalize && expectedNavNonce.equals(deliveredDocumentNavNonce);
-                    if ("unreachable".equals(failureReason) && (deliveredBefore || isWithinResumeGraceNow())) {
+                    // Keep the page only when this document already holds credentials; an unprovisioned
+                    // document resumed inside the grace window would otherwise stay blank.
+                    boolean provisioned = expectedNavNonce.equals(deliveredDocumentNavNonce);
+                    if ("unreachable".equals(failureReason) && provisioned && (finalize || isWithinResumeGraceNow())) {
                         clearPendingAuthIfCurrent(expectedEpoch);
                         return;
                     }
@@ -970,7 +981,6 @@ public class KikiShellPlugin extends Plugin {
                 return;
             }
             String token = readPeerToken(targetServerId, targetOrigin);
-            final String wsTunnelScript = token == null || token.isEmpty() ? null : prepareWsTunnelScript(targetOrigin, targetServerId);
             if (token == null || token.isEmpty()) {
                 if (finalize) {
                     view.post(() -> {
@@ -1691,7 +1701,7 @@ public class KikiShellPlugin extends Plugin {
             "var W=function(u,p){var s=String(u);try{var m=window.__kikiWsTunnel;var r=new URL(s,window.location.href);if(m&&r.protocol===\"wss:\"&&(\"wss://\"+r.host)===m.from){s=m.to+r.pathname+r.search;}}catch(e){}return arguments.length>1?new N(s,p):new N(s);};" +
             "W.prototype=N.prototype;W.CONNECTING=0;W.OPEN=1;W.CLOSING=2;W.CLOSED=3;" +
             "try{Object.defineProperty(window,\"WebSocket\",{configurable:true,writable:true,value:W});}catch(e){window.WebSocket=W;}" +
-            "window.__kikiWsTunnelInstalled=true;return true;}catch(e){return false;}})();"
+            "window.__kikiWsTunnelInstalled=true;try{window.dispatchEvent(new Event(\"kiki:ws-tunnel-ready\"));}catch(e){}return true;}catch(e){return false;}})();"
         );
     }
 

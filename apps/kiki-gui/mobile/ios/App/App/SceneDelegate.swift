@@ -747,8 +747,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     mutualInvitedVerified: mutualInvited,
                     inboundEnabled: inboundEnabled
                 ) {
-                    let deliveredBefore = finalize && self.deliveredDocumentNavNonce == expectedNavNonce
-                    if failureReason == "unreachable", deliveredBefore || Self.isWithinResumeGrace(now: Date(), resumedAt: self.lastForegroundAt) {
+                    // Keep the page only when this document already holds credentials; an unprovisioned
+                    // document resumed inside the grace window would otherwise stay blank.
+                    let provisioned = self.deliveredDocumentNavNonce == expectedNavNonce
+                    if failureReason == "unreachable", provisioned, finalize || Self.isWithinResumeGrace(now: Date(), resumedAt: self.lastForegroundAt) {
                         self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                         return
                     }
