@@ -46,19 +46,28 @@ export function useTimelineView(
   sessionId: string,
   session: Pick<Session, 'delivery'> | undefined,
 ): [TimelineView, (view: TimelineView) => void] {
-  const [view, setView] = useState<TimelineView>(() => readTimelineView(sessionId, session));
   const delivery = session?.delivery;
+  const scopeKey = `${sessionId}\0${delivery ?? ''}`;
+  const [state, setState] = useState<{ readonly key: string; readonly view: TimelineView }>(() => ({
+    key: scopeKey,
+    view: readTimelineView(sessionId, session),
+  }));
+  const currentView = state.key === scopeKey
+    ? state.view
+    : readTimelineView(sessionId, delivery === undefined ? undefined : { delivery });
+  if (state.key !== scopeKey) {
+    setState({ key: scopeKey, view: currentView });
+  }
   useEffect(() => {
-    setView(readTimelineView(sessionId, delivery === undefined ? undefined : { delivery }));
     const onChange = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId: string; view: TimelineView }>).detail;
-      if (detail.sessionId === sessionId) setView(detail.view);
+      if (detail.sessionId === sessionId) setState({ key: scopeKey, view: detail.view });
     };
     window.addEventListener(CHANGE_EVENT, onChange);
     return () => { window.removeEventListener(CHANGE_EVENT, onChange); };
-  }, [sessionId, delivery]);
+  }, [sessionId, scopeKey]);
   const choose = useCallback((next: TimelineView) => { writeTimelineView(sessionId, next); }, [sessionId]);
-  return [view, choose];
+  return [currentView, choose];
 }
 
 /** `Ctrl/Cmd+Shift+.` flips the view (design §4.5). */

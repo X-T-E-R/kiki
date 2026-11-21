@@ -3583,9 +3583,11 @@ const MessageViewRow = memo(function MessageViewRow({
               {member.text}
             </p>
           ) : member.kind === 'subagent' ? (
-            <SubagentEventLine name={member.name} status={member.status} onOpen={onOpenAgent === undefined ? undefined : () => { onOpenAgent(member.subagentId); }} />
+            <SubagentEventLine block={member} onOpen={onOpenAgent === undefined ? undefined : () => { onOpenAgent(member.subagentId); }} />
           ) : member.kind === 'subagent-event' ? (
             <SubagentEventRow block={member} onOpenAgent={onOpenAgent} />
+          ) : member.kind === 'notice' ? (
+            <Notice block={member} />
           ) : null)
         }
       />
@@ -3605,17 +3607,58 @@ const MessageViewRow = memo(function MessageViewRow({
   );
 });
 
-function SubagentEventLine({ name, status, onOpen }: { name: string; status: SubagentBlock['status']; onOpen?: () => void }) {
+function SubagentEventLine({ block, onOpen }: { block: SubagentBlock; onOpen?: () => void }) {
+  const { t } = useI18n();
+  const busy = block.status === 'running' || block.status === 'suspended';
+  const failed = block.status === 'failed';
+  const detail = failed && block.error !== undefined && block.error.trim() !== ''
+    ? plainFailure(block.error) ?? block.error
+    : block.description !== undefined && block.description.trim() !== ''
+      ? block.description.trim()
+      : block.summary !== undefined && block.summary.trim() !== ''
+        ? block.summary.trim()
+        : undefined;
+  const statusLabel = block.status === 'running'
+    ? t('inspector.running')
+    : block.status === 'suspended'
+      ? t('subagent.status.suspended')
+      : block.status === 'failed'
+        ? t('subagent.status.failed')
+        : block.status === 'cancelled'
+          ? t('subagent.status.cancelled')
+          : block.status === 'completed'
+            ? t('subagent.status.completed')
+            : undefined;
+  const at = block.endedAt ?? block.startedAt;
+  const dotClass = block.status === 'running'
+    ? 'bg-success status-dot-busy'
+    : block.status === 'completed'
+      ? 'border border-ink-faint/75 bg-transparent'
+      : `${subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`;
   return (
     <button
       type="button"
+      data-message-subagent-row={block.subagentId}
       onClick={onOpen}
       disabled={onOpen === undefined}
-      className="flex min-h-6 items-center gap-2 rounded-sm text-left text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
+      title={detail ?? block.name}
+      className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md px-1 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
     >
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${subagentStatusTone(status)}`} />
-      <Icon name="agent" size={12} className="text-ink-faint" />
-      <span className="truncate">{name}</span>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+      <Icon name="agent" size={12} className="shrink-0 text-ink-faint" />
+      <span className="shrink-0 font-medium text-ink">{block.name}</span>
+      {detail !== undefined ? (
+        <span className={`min-w-0 flex-1 truncate ${failed ? 'text-danger' : 'text-ink-faint'}`}>{detail}</span>
+      ) : (
+        <span className="flex-1" />
+      )}
+      {statusLabel !== undefined ? (
+        <span className={`shrink-0 text-[11.5px] ${failed ? 'font-medium text-danger' : 'text-ink-faint'}`}>{statusLabel}</span>
+      ) : null}
+      {at !== undefined ? (
+        <RelativeTime at={at} className="shrink-0 text-[11.5px] text-ink-faint tabular-nums" />
+      ) : null}
+      {onOpen !== undefined ? <Icon name="arrowUpRight" size={12} className="shrink-0 text-ink-faint" /> : null}
     </button>
   );
 }

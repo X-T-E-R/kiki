@@ -185,6 +185,17 @@ describe('one persona\'s scheduled tasks', () => {
     await act(async () => { container.querySelector<HTMLElement>('[data-persona-cron-more]')!.click(); });
     expect(listCronTasks).toHaveBeenCalledWith(expect.objectContaining({ offset: 1 }));
   });
+
+  it('converges truncated conversation scope into a compact info icon rather than a permanent disclaimer line', async () => {
+    withPersonaSessions([session('daily', '日常对话')], true);
+    withCron([task({ id: 't_daily' })]);
+    withRooms([]);
+    const container = await render();
+    const icon = container.querySelector<HTMLElement>('[data-persona-cron-truncated]');
+    expect(icon).not.toBeNull();
+    expect(icon?.getAttribute('title')).toContain('只读取了最近的对话');
+    expect(container.textContent).not.toContain('只读取了最近的对话');
+  });
 });
 
 describe('one persona\'s rooms', () => {

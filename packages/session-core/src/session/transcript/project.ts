@@ -552,15 +552,6 @@ function recordString(record: Record<string, unknown>, ...keys: readonly string[
   return undefined;
 }
 
-function recordNumber(record: Record<string, unknown>, ...keys: readonly string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
-  }
-  return undefined;
-}
-
 function turnNumberOf(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -845,7 +836,8 @@ function noticeFrameErrorDetails(detail: unknown): string | undefined {
       return undefined;
     }
   }
-  return String(detail);
+  if (typeof detail === 'number' || typeof detail === 'boolean' || typeof detail === 'bigint') return String(detail);
+  return undefined;
 }
 
 function markerToBlock(item: {
@@ -1307,8 +1299,8 @@ interface PreviousPositionIndex {
 function buildPreviousPositionIndex(previous: readonly Block[], existingSlots: ReadonlyMap<string, number>): PreviousPositionIndex | undefined {
   if (previous.length === 0) return undefined;
   const indexById = new Map<string, number>();
-  const prevExisting = new Array<number>(previous.length);
-  const nextExisting = new Array<number>(previous.length);
+  const prevExisting = Array.from({ length: previous.length }, () => -1);
+  const nextExisting = Array.from({ length: previous.length }, () => -1);
   let lastSeen = -1;
   for (let index = 0; index < previous.length; index += 1) {
     prevExisting[index] = lastSeen;
@@ -2801,10 +2793,6 @@ function stampPromptIdentity(
   return next;
 }
 
-function stampRunningPromptIdentity(blocks: readonly Block[], prompt: TranscriptPrompt): Block[] {
-  return stampPromptIdentity(blocks, prompt, 'running');
-}
-
 function keepPreviousUser(
   next: readonly Block[],
   previousUser: UserBlock | undefined,
@@ -3052,19 +3040,6 @@ function promptOutcomeContext(
     }
   }
   return { windowStartMs, turns, historyIds };
-}
-
-/** A newer prompt for the same message already settled it (retry, regenerate, repeat failure). */
-function supersededByLaterPrompt(prompt: TranscriptPrompt, prompts: readonly TranscriptPrompt[]): boolean {
-  if (prompt.userMessageId === undefined) return false;
-  const settledAt = timestampMs(prompt.finishedAt ?? prompt.createdAt) ?? 0;
-  return prompts.some(
-    (other) =>
-      other !== prompt &&
-      other.userMessageId === prompt.userMessageId &&
-      !(other.status === 'aborted' && other.abortedBeforeStart === true) &&
-      (timestampMs(other.finishedAt ?? other.createdAt) ?? 0) > settledAt,
-  );
 }
 
 function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, user?: UserBlock): PromptOutcome {
@@ -3749,6 +3724,10 @@ export function agentTranscriptToBlocks(
     readonly item: Extract<AgentTranscriptProjectionSource['items'][number], { kind: 'taskref' }>;
     readonly task: NonNullable<typeof response.tasks>[number];
   }[] = [];
+  const pendingNoticeTaskRefs: {
+    readonly item: Extract<AgentTranscriptProjectionSource['items'][number], { kind: 'taskref' }>;
+    readonly task: NonNullable<typeof response.tasks>[number];
+  }[] = [];
   for (const item of response.items) {
     if (item.kind === 'marker') {
       const compactionFate = compactionFates.get(item.markerId);
@@ -3809,19 +3788,7 @@ export function agentTranscriptToBlocks(
         pendingShellTaskRefs.push({ item, task });
         continue;
       }
-      const taskFailed =
-        task.state === 'failed' || task.state === 'lost' || task.state === 'timed_out';
-      const taskError = task.error ?? task.stateReason;
-      const taskText =
-        taskFailed && taskError !== undefined
-          ? `${task.description ?? task.taskId} — ${taskError}`
-          : (task.description ?? task.taskId);
-      blocks.push({
-        kind: 'notice',
-        id: `agent-taskref-${item.refId}`,
-        text: taskText,
-        tone: taskFailed ? 'danger' : 'neutral',
-      });
+      pendingNoticeTaskRefs.push({ item, task });
       continue;
     }
     if (item.kind !== 'turn') continue;
@@ -4195,6 +4162,37 @@ export function agentTranscriptToBlocks(
       startedAt: timestampMs(item.at ?? task.startedAt),
     });
   }
+  const firstTaskWindowAt = timestampMs(firstTurn?.startedAt);
+  const firstTaskWindowOrdinal = firstTurn === undefined ? 0 : ordinalOf(firstTurn);
+  for (const { item, task } of pendingNoticeTaskRefs) {
+    const ownerTurnId = normalizeTurnId(task.ownerTurnId);
+    const ownerOrdinal = turnNumberOf(ownerTurnId);
+    const taskAt = item.at ?? task.startedAt;
+    const taskMs = timestampMs(taskAt);
+    if (firstTurn !== undefined && firstTaskWindowOrdinal > 0) {
+      if (ownerOrdinal !== undefined && ownerOrdinal < firstTaskWindowOrdinal) continue;
+      if (ownerOrdinal === undefined && firstTaskWindowAt !== undefined && taskMs !== undefined && taskMs < firstTaskWindowAt) {
+        continue;
+      }
+    }
+    const taskFailed =
+      task.state === 'failed' || task.state === 'lost' || task.state === 'timed_out';
+    const rawTaskError = task.error ?? task.stateReason;
+    const taskError = rawTaskError === undefined ? undefined : rawTaskError.replace(/^(?:Error:\s*){2,}/i, 'Error: ').trim();
+    const taskText =
+      taskFailed && taskError !== undefined && taskError !== ''
+        ? `${task.description ?? task.taskId} — ${taskError}`
+        : (task.description ?? task.taskId);
+    deferredTaskBlocks.push({
+      kind: 'notice',
+      id: `agent-taskref-${item.refId}`,
+      text: taskText,
+      tone: taskFailed ? 'danger' : 'neutral',
+      createdAt: taskAt,
+      turnId: ownerTurnId,
+      taskRef: { taskId: task.taskId, kind: task.kind, state: task.state },
+    });
+  }
   const steeredPromptsById = new Map<string, TranscriptPrompt>();
   const completedSteerBatches = new Map<string, TranscriptPrompt[]>();
   for (const prompt of prompts) {
@@ -4255,7 +4253,7 @@ export function agentTranscriptToBlocks(
         ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
       return sourceTimes.get(block);
     };
-    const baseSourceTimes = new Array<number | undefined>(baseDeliveries.length);
+    const baseSourceTimes = Array.from<number | undefined>({ length: baseDeliveries.length });
     const sourceTimestamps = new Set<number>();
     const turnStartIndex = new Map<string, number>();
     const turnEndIndex = new Map<string, number>();
@@ -4376,8 +4374,17 @@ export function agentTranscriptToBlocks(
     }
     const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
     const taskInsertionList = new BucketedInsertionList(mergedPromptBlocks, frameTimes);
+    const turnRanges = buildTurnRangeMap(mergedPromptBlocks);
     const timedTasks: Block[] = [];
     for (const block of deferredTaskBlocks) {
+      const ownerTurnId = normalizeTurnId(blockTurnId(block));
+      const ownerRange = ownerTurnId === undefined ? undefined : turnRanges.get(ownerTurnId);
+      if (ownerRange !== undefined) {
+        const withinSlot = findWithinTurnSlot(mergedPromptBlocks, ownerRange, block);
+        const targetSlot = withinSlot ?? (ownerRange.last + 1);
+        taskInsertionList.insertBefore(Math.min(targetSlot, ownerRange.last + 1), block);
+        continue;
+      }
       if (
         blockTimelineMs(block) === undefined &&
         taskInsertionList.insertPreviousPosition(previousIndex, block, true)

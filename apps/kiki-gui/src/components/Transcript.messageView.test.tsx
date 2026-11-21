@@ -672,4 +672,89 @@ describe('message view (Bot mode)', () => {
     outputLayerStore.setActivePreset(sessionId, null);
     outputLayerStore.setConfiguration(null);
   });
+
+  it('keeps OutcomeLine action untruncated alongside long danger text and cleans duplicate Error: prefixes', async () => {
+    const longNotice: Block = {
+      kind: 'notice',
+      id: 'notice-long-err',
+      turnId: 't1',
+      tone: 'danger',
+      text: 'Provider pipeline failed — Error: Error: Media script exited 1 with a very long diagnostic payload that would overflow a single line',
+    };
+    const { container } = await render(timeline([user('u1', '试试', 't1'), longNotice], 'message'));
+    const outcome = container.querySelector<HTMLElement>('[data-message-outcome="danger"]');
+    expect(outcome).not.toBeNull();
+    const textEl = outcome?.querySelector<HTMLElement>('[data-message-outcome-text]');
+    const actionEl = outcome?.querySelector<HTMLElement>('[data-message-outcome-action]');
+    expect(textEl?.className).toContain('truncate');
+    expect(textEl?.textContent).not.toContain('Error: Error:');
+    expect(actionEl?.className).toContain('shrink-0');
+    expect(actionEl?.className).toContain('whitespace-nowrap');
+    expect(actionEl?.textContent).toBe(' · 查看过程');
+  });
+
+  it('renders no leading orphan dot on ActivitySummary and deduplicates 3 spawned subagents into 3 rows instead of 9', async () => {
+    const names = ['devin_cue_mobile', 'devin_ammo_nav', 'devin_chronicle_manor'];
+    const blocks: Block[] = [user('u1', '并行审计三个模块', 't1')];
+    for (const [idx, name] of names.entries()) {
+      const callId = `call-run-${idx}`;
+      const agentId = `agent-${idx}`;
+      const taskId = `task-${idx}`;
+      blocks.push(
+        tool(`run-${idx}`, 'AgentRun', 't1', {
+          toolCallId: callId,
+          args: { name, description: `Devin Opus audit ${name}` },
+          durationMs: 4000,
+          durationSource: 'frame',
+          agentRefs: [{ agentId, role: 'child' }],
+        }),
+        {
+          kind: 'subagent',
+          id: `subagent-${agentId}-${taskId}`,
+          subagentId: agentId,
+          taskId,
+          parentAgentId: 'main',
+          parentToolCallId: callId,
+          parentTurnId: 't1',
+          name,
+          description: `Devin Opus audit ${name}`,
+          model: undefined,
+          thinkingEffort: undefined,
+          status: 'running',
+          summary: undefined,
+          error: undefined,
+          startedAt: '2026-10-01T09:00:00.000Z',
+          endedAt: undefined,
+          toolCallCount: 0,
+          transcript: [],
+        },
+        {
+          kind: 'subagent-event',
+          id: `subagent-event-${agentId}-spawned-${taskId}`,
+          subagentId: agentId,
+          parentAgentId: 'main',
+          name,
+          event: 'spawned',
+          status: 'running',
+          at: '2026-10-01T09:00:00.000Z',
+          turnId: 't1',
+        },
+      );
+    }
+    const { container } = await render(timeline(blocks, 'message', { busy: true, abortableTurnId: 1 }));
+    const toggle = container.querySelector<HTMLButtonElement>('[data-activity-summary-toggle]')!;
+    expect(toggle).not.toBeNull();
+    // No leading orphan middle dot, and no redundant "另 3 步" for the absorbed AgentRun calls.
+    expect(toggle.textContent?.trim().startsWith('·')).toBe(false);
+    expect(toggle.textContent).toContain('3 个子智能体');
+    expect(toggle.textContent).not.toContain('另 3 步');
+
+    await act(async () => { toggle.click(); });
+    const memberRows = container.querySelectorAll('[data-activity-summary-members] [data-block-id]');
+    expect(memberRows).toHaveLength(3);
+    expect(container.querySelectorAll('[data-message-subagent-row]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-subagent-event]')).toHaveLength(0);
+    expect(container.textContent).toContain('devin_cue_mobile');
+    expect(container.textContent).toContain('Devin Opus audit devin_cue_mobile');
+  });
 });

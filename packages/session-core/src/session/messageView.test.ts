@@ -473,6 +473,142 @@ describe('message view', () => {
     expect(blocks).toEqual(before);
   });
 
+  it('folds background taskref notices and historical compaction failures into activity instead of stacking danger lines', () => {
+    const mediaTool = tool({ id: 'tool-media-1', toolCallId: 'call-media-1', name: 'generate_image', args: {}, output: 'queued', turnId: 't1' });
+    const failedMediaTask: Block = {
+      kind: 'notice',
+      id: 'agent-taskref-ref-media-1',
+      turnId: 't1',
+      tone: 'danger',
+      text: 'Media generation media-1 — Error: Media script exited 1',
+      taskRef: { taskId: 'media-1', kind: 'media', state: 'failed' },
+    };
+    const oldCompactionFail: Block = {
+      kind: 'notice',
+      id: 'agent-marker-c1',
+      turnId: 't1',
+      tone: 'danger',
+      text: 'compaction',
+      compactionPhase: 'failed',
+      i18n: { key: 'transcript.marker.compactionFailed' },
+    };
+    const laterCompactionOk: Block = {
+      kind: 'notice',
+      id: 'agent-marker-c2',
+      turnId: 't2',
+      tone: 'neutral',
+      text: 'compaction',
+      compactionPhase: 'completed',
+      i18n: { key: 'transcript.marker.compactionSummarize' },
+    };
+    const strayLegacyTaskRef: Block = {
+      kind: 'notice',
+      id: 'agent-taskref-ref-media-old',
+      tone: 'danger',
+      text: 'Media generation media-old — Configure apiKey for Google Media',
+    };
+    const t2Reply = reply('a2', '已经整理好了。', 't2');
+    const view = projectMessageView(
+      [mediaTool, failedMediaTask, oldCompactionFail, laterCompactionOk, t2Reply, strayLegacyTaskRef],
+      { completedTurnIds: ['t1', 't2'] },
+    );
+    expect(view.some((node) => node.kind === 'notice')).toBe(false);
+    const t1Summary = view.find((node) => node.kind === 'activity-summary' && node.turnId === 't1');
+    expect(t1Summary?.kind === 'activity-summary' && t1Summary.failed).toBe(2);
+    expect(view.some((node) => node.kind === 'message' && node.text === '已经整理好了。')).toBe(true);
+  });
+
+  it('deduplicates spawned subagents and AgentSend echoes while preserving descriptions, duration, and failed dispatches', () => {
+    const runTool = tool({
+      id: 'tool-run-1',
+      toolCallId: 'call-run-1',
+      name: 'AgentRun',
+      args: { description: 'Devin Opus audit Cue & 1...', name: 'devin_cue_mobile' },
+      output: JSON.stringify({ agent_id: 'agent-1' }),
+      durationMs: 4200,
+      durationSource: 'frame',
+      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+      turnId: 't1',
+    });
+    const childCard: Block = {
+      kind: 'subagent',
+      id: 'subagent-agent-1-task-1',
+      subagentId: 'agent-1',
+      taskId: 'task-1',
+      parentAgentId: 'main',
+      parentToolCallId: 'call-run-1',
+      parentTurnId: 't1',
+      name: 'devin_cue_mobile',
+      description: undefined,
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'running',
+      summary: undefined,
+      error: undefined,
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: undefined,
+      toolCallCount: 0,
+      transcript: [],
+    };
+    const spawnedEvent: Block = {
+      kind: 'subagent-event',
+      id: 'subagent-event-agent-1-spawned-task-1',
+      subagentId: 'agent-1',
+      parentAgentId: 'main',
+      name: 'devin_cue_mobile',
+      event: 'spawned',
+      status: 'running',
+      at: '2026-01-01T00:00:00Z',
+      turnId: 't1',
+    };
+    const sendTool = tool({
+      id: 'tool-send-1',
+      toolCallId: 'call-send-1',
+      name: 'AgentSend',
+      args: { target: 'agent-1', message: 'Check mobile layout' },
+      output: JSON.stringify({ status: 'delivered' }),
+      turnId: 't1',
+    });
+    const sentEvent: Block = {
+      kind: 'subagent-event',
+      id: 'subagent-event-agent-1-send-call-send-1',
+      subagentId: 'agent-1',
+      parentAgentId: 'main',
+      name: 'devin_cue_mobile',
+      event: 'sent',
+      status: 'running',
+      at: '2026-01-01T00:00:05Z',
+      turnId: 't1',
+      message: 'Check mobile layout',
+      anchorToolCallId: 'call-send-1',
+    };
+    const failedRun = tool({
+      id: 'tool-run-fail',
+      toolCallId: 'call-run-fail',
+      name: 'AgentRun',
+      status: 'error',
+      isError: true,
+      output: 'Quota exceeded',
+      durationMs: 50,
+      turnId: 't1',
+    });
+
+    const view = projectMessageView([runTool, childCard, spawnedEvent, sendTool, sentEvent, failedRun]);
+    expect(view).toHaveLength(1);
+    const summary = view[0]!;
+    expect(summary.kind).toBe('activity-summary');
+    if (summary.kind !== 'activity-summary') throw new Error('Expected activity-summary');
+    expect(summary.members.map((member) => member.id)).toEqual([
+      'subagent-agent-1-task-1',
+      'subagent-event-agent-1-send-call-send-1',
+      'tool-run-fail',
+    ]);
+    expect(summary.members[0]?.kind === 'subagent' && summary.members[0].description).toBe('Devin Opus audit Cue & 1...');
+    expect(summary.counts.subagents).toBe(1);
+    expect(summary.counts.tools).toBe(1);
+    expect(summary.durationMs).toBe(4250);
+  });
+
   it('creates only local greeting speech, with no turn or tool execution identity', () => {
     expect(personaGreeting({ id: 'author', name: 'Author' })).toBeUndefined();
     const greeting = personaGreeting({ id: 'author', name: 'Author', greeting: 'Welcome' })!;

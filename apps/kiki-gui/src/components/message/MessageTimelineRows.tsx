@@ -11,6 +11,7 @@ import { memo, useState, type ReactNode } from 'react';
 import type { ActivitySummary, Block, NoticeBlock } from '@kiki/session-core/session';
 
 import { useI18n } from '../../i18n';
+import { plainFailure } from '../agent-panel/failureText';
 import { LifeMark } from '../LifeMark';
 import { DisclosureChevron, Icon, Spinner } from '../icons';
 import { MESSAGE_FACE } from './MessageRow';
@@ -37,11 +38,12 @@ export function activityParts(
     t('transcript.fold.sentTo', { name: item.name, count: item.count }),
   );
   if (compact) {
-    return steps > 0
-      ? [t('message.steps', { count: steps }), ...sentParts]
-      : summary.counts.thinking > 0
-        ? [t('message.thoughts', { count: summary.counts.thinking }), ...sentParts]
-        : sentParts;
+    const parts: string[] = [];
+    if (steps > 0) parts.push(t('message.steps', { count: steps }));
+    if (summary.counts.subagents > 0) parts.push(t('message.subagents', { count: summary.counts.subagents }));
+    parts.push(...sentParts);
+    if (parts.length === 0 && summary.counts.thinking > 0) parts.push(t('message.thoughts', { count: summary.counts.thinking }));
+    return parts.filter((part) => part.trim() !== '');
   }
   const { reads, commands, subagents, memories, thinking } = summary.counts;
   const parts = [
@@ -81,6 +83,8 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
   if (full.length === 0 && !summary.running) return null;
   const duration = summary.durationMs !== undefined && summary.durationMs >= 1000 ? time.formatDuration(summary.durationMs) : undefined;
   const failed = summary.failed > 0 ? t('transcript.fold.failed', { count: summary.failed }) : undefined;
+  const fullText = full.filter((part) => part.trim() !== '').join(' · ');
+  const compactText = compact.filter((part) => part.trim() !== '').join(' · ');
   return (
     <div data-activity-summary={summary.id} data-activity-summary-open={open || undefined} className="min-w-0">
       <div className="flex items-center gap-2">
@@ -92,12 +96,23 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
           onClick={() => { setOpen((value) => !value); }}
           className="group/sum -ml-1.5 flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
         >
-          <span aria-hidden className="shrink-0">·</span>
           <span className="min-w-0 truncate">
-            <span className="max-sm:hidden">{full.join(' · ')}</span>
-            <span className="sm:hidden">{compact.join(' · ')}</span>
-            {failed !== undefined ? <span className="text-danger"> · {failed}</span> : null}
-            {duration !== undefined ? <span className="tabular-nums"> · {duration}</span> : null}
+            {fullText !== '' ? <span className="max-sm:hidden">{fullText}</span> : null}
+            {compactText !== '' ? <span className="sm:hidden">{compactText}</span> : null}
+            {failed !== undefined ? (
+              <span className="text-danger">
+                {fullText !== '' ? <span className="max-sm:hidden"> · </span> : null}
+                {compactText !== '' ? <span className="sm:hidden"> · </span> : null}
+                {failed}
+              </span>
+            ) : null}
+            {duration !== undefined ? (
+              <span className="tabular-nums">
+                {fullText !== '' || failed !== undefined ? <span className="max-sm:hidden"> · </span> : null}
+                {compactText !== '' || failed !== undefined ? <span className="sm:hidden"> · </span> : null}
+                {duration}
+              </span>
+            ) : null}
           </span>
           <span className="flex-1" />
           {summary.running ? <Spinner label={t('inspector.running')} size={12} /> : null}
@@ -108,9 +123,12 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
         <div data-activity-summary-members className="mt-1 ml-8 min-w-0 max-sm:ml-7">
           {openReader}
           <div className="flex min-w-0 flex-col gap-0.5 border-l border-hairline pl-[17px] max-sm:pl-3">
-            {summary.members.map((member) => (
-              <div key={member.id} data-block-id={member.id} className="min-w-0 overflow-hidden">{renderMember(member)}</div>
-            ))}
+            {summary.members.map((member) => {
+              const rendered = renderMember(member);
+              return rendered === null || rendered === undefined ? null : (
+                <div key={member.id} data-block-id={member.id} className="min-w-0 overflow-hidden">{rendered}</div>
+              );
+            })}
           </div>
           {onOpenProcess !== undefined ? (
             <button
@@ -181,25 +199,42 @@ export function HandoffRow({
   );
 }
 
+function cleanOutcomeText(raw: string, danger: boolean): string {
+  const deduped = raw
+    .replaceAll(/(\s[—–-]\s*)(?:Error:\s*){2,}/gi, '$1Error: ')
+    .replace(/^(?:Error:\s*){2,}/i, 'Error: ')
+    .replaceAll(/\s+/g, ' ')
+    .trim();
+  if (!danger) return deduped;
+  return plainFailure(deduped) ?? deduped;
+}
+
 /** A turn's outcome in the message view: no reply (neutral) or a failure (danger). */
 export function OutcomeLine({ notice, onOpenProcess }: { readonly notice: NoticeBlock; readonly onOpenProcess?: () => void }) {
   const { t } = useI18n();
-  const text = notice.i18n !== undefined ? t(notice.i18n.key, notice.i18n.params) : notice.text;
+  const rawText = notice.i18n !== undefined ? t(notice.i18n.key, notice.i18n.params) : notice.text;
   const danger = notice.tone === 'danger';
+  const text = cleanOutcomeText(rawText, danger);
   const noReply = notice.reasonCodes?.includes('message.no_reply') === true;
   return (
-    <div data-message-outcome={noReply ? 'no-reply' : notice.tone} className="flex items-center gap-2">
+    <div data-message-outcome={noReply ? 'no-reply' : notice.tone} className="flex min-w-0 items-center gap-2">
       <span className={MESSAGE_FACE} />
       <button
         type="button"
         onClick={onOpenProcess}
         disabled={onOpenProcess === undefined}
-        className={`-ml-1.5 min-h-7 min-w-0 truncate rounded-md px-1.5 text-left text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default ${
+        title={rawText}
+        className={`-ml-1.5 flex max-w-full min-h-7 min-w-0 items-center rounded-md px-1.5 text-left text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default ${
           danger ? 'font-medium text-danger hover:bg-danger/[0.06]' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
         }`}
       >
-        {text}
-        {danger ? <span className="font-normal"> · {t('room.openProcess')}</span> : null}
+        <span data-message-outcome-text className="min-w-0 truncate">{text}</span>
+        {danger ? (
+          <span data-message-outcome-action className="shrink-0 whitespace-nowrap font-normal">
+            {' · '}
+            {t('room.openProcess')}
+          </span>
+        ) : null}
       </button>
     </div>
   );

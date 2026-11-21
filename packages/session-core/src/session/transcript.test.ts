@@ -5453,9 +5453,83 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
           id: 'agent-taskref-ref-bg-1',
           tone: 'danger',
           text: 'background probe — worker quota exhausted',
+          taskRef: { taskId: 'task-bg-1', kind: 'other', state },
         }),
       ]);
     }
+  });
+
+  it('anchors media taskref notices to their owner turn, deduplicates Error: Error: prefixes, and omits pre-window taskrefs', () => {
+    const turn = (ordinal: number, startedAt: string, endedAt: string): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: `t${ordinal}`,
+      ordinal,
+      state: 'completed',
+      origin: { kind: 'user', payload: { promptId: `p${ordinal}`, userMessageId: `um${ordinal}` } },
+      prompt: `Turn ${ordinal}`,
+      startedAt,
+      endedAt,
+      steps: [{
+        kind: 'step',
+        stepId: `t${ordinal}.1`,
+        turnId: `t${ordinal}`,
+        ordinal: 1,
+        state: 'completed',
+        startedAt,
+        endedAt,
+        frames: [{ kind: 'text', frameId: `f-${ordinal}`, role: 'assistant', text: `Reply ${ordinal}` }],
+      }],
+    });
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          turn(2, '2026-10-01T10:00:00.000Z', '2026-10-01T10:00:10.000Z'),
+          turn(3, '2026-10-01T10:05:00.000Z', '2026-10-01T10:05:10.000Z'),
+          { kind: 'taskref', refId: 'ref-old', taskId: 'media-old', at: '2026-10-01T09:50:00.000Z' },
+          { kind: 'taskref', refId: 'ref-t2', taskId: 'media-t2', at: '2026-10-01T10:00:05.000Z' },
+        ],
+        tasks: [
+          {
+            taskId: 'media-old',
+            kind: 'other',
+            state: 'failed',
+            detached: true,
+            ownerTurnId: 1,
+            description: 'Media generation media-old',
+            outputTail: '',
+            error: 'Configure apiKey for Google Media',
+            startedAt: '2026-10-01T09:50:00.000Z',
+            endedAt: '2026-10-01T09:50:02.000Z',
+          },
+          {
+            taskId: 'media-t2',
+            kind: 'other',
+            state: 'failed',
+            detached: true,
+            ownerTurnId: 2,
+            description: 'Media generation media-t2',
+            outputTail: '',
+            error: 'Error: Error: Media script exited 1',
+            startedAt: '2026-10-01T10:00:05.000Z',
+            endedAt: '2026-10-01T10:00:08.000Z',
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks.some((block) => block.id === 'agent-taskref-ref-old')).toBe(false);
+    const t2TaskIndex = projected.blocks.findIndex((block) => block.id === 'agent-taskref-ref-t2');
+    const t3UserIndex = projected.blocks.findIndex((block) => block.kind === 'user' && block.turnId === 't3');
+    expect(t2TaskIndex).toBeGreaterThanOrEqual(0);
+    expect(t2TaskIndex).toBeLessThan(t3UserIndex);
+    expect(projected.blocks[t2TaskIndex]).toMatchObject({
+      kind: 'notice',
+      turnId: 't2',
+      tone: 'danger',
+      text: 'Media generation media-t2 — Error: Media script exited 1',
+      taskRef: { taskId: 'media-t2', kind: 'other', state: 'failed' },
+    });
   });
 
   function annotatedRunningPrompt() {

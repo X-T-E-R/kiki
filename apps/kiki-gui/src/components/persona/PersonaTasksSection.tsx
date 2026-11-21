@@ -164,7 +164,19 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
       {/* 定时任务 */}
       <section data-persona-cron>
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 pb-2">
-          <h4 className="text-[13px] font-medium text-ink">{t('cron.panel.title')}</h4>
+          <div className="flex items-center gap-1.5">
+            <h4 className="text-[13px] font-medium text-ink">{t('cron.panel.title')}</h4>
+            {conversationsQuery.data?.truncated === true ? (
+              <span
+                data-persona-cron-truncated
+                title={t('persona.tasks.scopeTruncated')}
+                aria-label={t('persona.tasks.scopeTruncated')}
+                className="inline-flex text-ink-faint"
+              >
+                <Icon name="info" size={12} />
+              </span>
+            ) : null}
+          </div>
           <div className="flex items-center gap-3">
             <SavedTick show={cronSaved && !pauseResume.isPending} />
             <button
@@ -269,9 +281,6 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
           >
             {t('cron.panel.loadMore')}
           </button>
-        ) : null}
-        {conversationsQuery.data?.truncated === true ? (
-          <p className="pt-1 text-[12px] text-ink-faint">{t('persona.tasks.scopeTruncated')}</p>
         ) : null}
       </section>
 

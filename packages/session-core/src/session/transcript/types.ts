@@ -563,6 +563,15 @@ export interface NoticeBlock {
    * whose messages sit in history pages that are not loaded yet.
    */
   readonly earlierPromptOutcomes?: readonly EarlierPromptOutcome[];
+  /**
+   * Background task reference metadata (`media`, `other`, etc.) when this
+   * notice was projected from a `taskref` item.
+   */
+  readonly taskRef?: {
+    readonly taskId: string;
+    readonly kind?: string;
+    readonly state?: string;
+  };
 }
 
 /**
