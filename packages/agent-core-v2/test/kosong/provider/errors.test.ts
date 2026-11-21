@@ -1386,6 +1386,42 @@ describe('provider boundary x-should-retry and structured quota error propagatio
       retryAfterMs: 44_083_000,
       traceId: 'trace-google-429',
     });
+
+    const googleShortInfoLongHeader = Object.assign(
+      new GoogleApiError({
+        message: JSON.stringify({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            message: 'limit reached',
+            details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '5s' }],
+          },
+        }),
+        status: 429,
+      }),
+      { headers: new Headers({ 'retry-after': '44083' }) },
+    );
+    const shortInfoConverted = convertGoogleGenAIError(googleShortInfoLongHeader);
+    expect(shortInfoConverted).toBeInstanceOf(APIProviderRateLimitError);
+    expect((shortInfoConverted as APIProviderRateLimitError).retryAfterMs).toBe(44_083_000);
+
+    const googleLongInfoShortHeader = Object.assign(
+      new GoogleApiError({
+        message: JSON.stringify({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            message: 'limit reached',
+            details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '90s' }],
+          },
+        }),
+        status: 429,
+      }),
+      { headers: new Headers({ 'retry-after': '5' }) },
+    );
+    const longInfoConverted = convertGoogleGenAIError(googleLongInfoShortHeader);
+    expect(longInfoConverted).toBeInstanceOf(APIProviderRateLimitError);
+    expect((longInfoConverted as APIProviderRateLimitError).retryAfterMs).toBe(90_000);
   });
 
   it('propagates embedded x-should-retry: false and structured usage_limit_reached on OpenAI Responses stream events', async () => {

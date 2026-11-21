@@ -370,12 +370,15 @@ export function noteConfirmedRequestExecution(error: unknown): void {
 }
 
 export function isSafetyProviderErrorCode(code: string): boolean {
+  const normalized = code.trim().toLowerCase();
   return (
-    code === 'antigravity_safety' ||
-    code === 'antigravity_soft_safety' ||
-    code.startsWith('antigravity_safety_') ||
-    code.startsWith('antigravity_soft_safety_') ||
-    code === 'antigravity_session_safety_circuit'
+    normalized === 'antigravity_safety' ||
+    normalized === 'antigravity_soft_safety' ||
+    normalized.startsWith('antigravity_safety_') ||
+    normalized.startsWith('antigravity_soft_safety_') ||
+    normalized === 'antigravity_session_safety_circuit' ||
+    normalized === 'content_filter' ||
+    normalized === 'content_policy_violation'
   );
 }
 
@@ -496,6 +499,10 @@ export function isRetryableBufferedRequestError(error: unknown): boolean {
   return isRetryableProviderFailure(error, 'buffered');
 }
 
+const NON_OVERRIDABLE_CLIENT_STATUS_CODES: ReadonlySet<number> = new Set([
+  400, 401, 402, 403, 404, 405, 406, 407, 410, 411, 412, 413, 414, 415, 416, 417, 421, 422, 426, 431, 451,
+]);
+
 function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interruption' | 'buffered'): boolean {
   if (isAbortError(error) || (mode === 'generation' && requestDeliveryProvenance(error) === 'executed')) return false;
   const visited = new Set<object>();
@@ -510,14 +517,17 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
     if (details['upstream_retryable'] === true) explicitUpstreamRetry = true;
     if (mode === 'generation' && details['request_output'] === 'observed') return false;
     const code = details['upstreamErrorCode'];
+    const type = details['upstreamErrorType'];
     const subCode = readUpstreamSafetySubCode(details);
     if (typeof code === 'string' && (mode === 'buffered' ? isSafetyProviderErrorCode(code) : NON_RETRYABLE_PROVIDER_CODES.has(code) || isSafetyProviderErrorCode(code))) return false;
+    if (typeof type === 'string' && isSafetyProviderErrorCode(type)) return false;
     if (typeof subCode === 'string' && isSafetyProviderErrorCode(subCode)) return false;
     if (mode === 'buffered' && current instanceof Error && /soft safety filter block|blocked by gemini's filters|safety filter blocks/i.test(current.message)) return false;
     if (mode === 'buffered') {
       if (current instanceof ChatProviderError &&
         (current.code === PROVIDER_FILTERED_ERROR_CODE || current.code === PROVIDER_AUTH_ERROR_CODE || current instanceof APIProviderQuotaExhaustedError || current instanceof APIContextOverflowError || current instanceof APIRequestTooLargeError || isImageFormatError(current))) return false;
       const status = current instanceof APIStatusError ? current.statusCode : details['upstreamStatus'] ?? details['statusCode'];
+      if (typeof status === 'number' && NON_OVERRIDABLE_CLIENT_STATUS_CODES.has(status)) return false;
       if (typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429) {
         bufferedClientStatusDenied = true;
       }
@@ -543,6 +553,7 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
     if (
       explicitUpstreamRetry &&
       mode !== 'interruption' &&
+      !NON_OVERRIDABLE_CLIENT_STATUS_CODES.has(error.statusCode) &&
       !(error instanceof APIContextOverflowError) &&
       !(error instanceof APIRequestTooLargeError) &&
       !isImageFormatError(error)
@@ -767,7 +778,8 @@ function readHeaderCaseInsensitive(headers: unknown, name: string): string | und
   return undefined;
 }
 
-function explicitUpstreamShouldRetryHeader(headers: unknown): boolean | undefined {
+/** Parses the standard `x-should-retry` header boolean directive (`true` or `false`) case-insensitively. */
+export function readExplicitUpstreamShouldRetry(headers: unknown): boolean | undefined {
   const raw = readHeaderCaseInsensitive(headers, 'x-should-retry');
   if (raw === undefined) return undefined;
   const normalized = raw.trim().toLowerCase();
@@ -784,12 +796,15 @@ function explicitUpstreamRetryDenied(body: unknown): boolean {
 
 /** Records an explicit upstream retry directive from JSON `retryable: false` or HTTP `x-should-retry` without writing `retry: false`. */
 export function noteExplicitUpstreamRetryDenial<T>(error: T, body: unknown, headers?: unknown): T {
-  const shouldRetryHeader = explicitUpstreamShouldRetryHeader(headers);
-  if (explicitUpstreamRetryDenied(body) || shouldRetryHeader === false) {
+  const shouldRetryHeader = readExplicitUpstreamShouldRetry(headers);
+  if (shouldRetryHeader === false) {
+    return attachErrorDetails(error, { upstream_retryable: false, upstream_should_retry: false });
+  }
+  if (explicitUpstreamRetryDenied(body)) {
     return attachErrorDetails(error, { upstream_retryable: false });
   }
   if (shouldRetryHeader === true) {
-    return attachErrorDetails(error, { upstream_retryable: true });
+    return attachErrorDetails(error, { upstream_retryable: true, upstream_should_retry: true });
   }
   return error;
 }
@@ -1168,35 +1183,30 @@ export function normalizeAPIStatusError(
   );
 }
 
+const STRICT_NON_NEGATIVE_DECIMAL_RE = /^\d+(?:\.\d+)?$/;
+const STRICT_NON_NEGATIVE_INTEGER_RE = /^\d+$/;
+
 export function parseRetryAfterMs(headers: unknown): number | null {
-  if (
-    headers === null ||
-    typeof headers !== 'object' ||
-    typeof (headers as { get?: unknown }).get !== 'function'
-  ) {
-    return null;
+  const rawMs = readHeaderCaseInsensitive(headers, 'retry-after-ms');
+  if (rawMs !== undefined) {
+    const trimmedMs = rawMs.trim();
+    if (STRICT_NON_NEGATIVE_DECIMAL_RE.test(trimmedMs)) {
+      const ms = Number(trimmedMs);
+      if (Number.isFinite(ms) && ms > 0) return Math.max(1, Math.round(ms));
+    }
   }
-  const headerMap = headers as { get(name: string): string | null };
-  const rawMs = headerMap.get('retry-after-ms');
-  if (rawMs !== null && rawMs !== undefined) {
-    const ms = Number.parseFloat(rawMs);
-    if (Number.isFinite(ms) && ms >= 0) return Math.round(ms);
-  }
-  const raw = headerMap.get('retry-after');
-  if (raw === null || raw === undefined) return null;
-  const seconds = Number.parseInt(raw, 10);
+  const raw = readHeaderCaseInsensitive(headers, 'retry-after');
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (!STRICT_NON_NEGATIVE_INTEGER_RE.test(trimmed)) return null;
+  const seconds = Number(trimmed);
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   return seconds * 1000;
 }
 
 export function parseTraceId(headers: unknown): string | null {
-  const raw =
-    headers !== null &&
-    typeof headers === 'object' &&
-    typeof (headers as { get?: unknown }).get === 'function'
-      ? (headers as { get(name: string): string | null }).get('x-trace-id')
-      : null;
-  if (raw === null || raw === undefined || raw.length === 0) return null;
+  const raw = readHeaderCaseInsensitive(headers, 'x-trace-id');
+  if (raw === undefined || raw.length === 0) return null;
   return raw;
 }
 

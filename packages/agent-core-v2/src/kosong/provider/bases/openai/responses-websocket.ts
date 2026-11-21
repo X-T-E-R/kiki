@@ -7,7 +7,14 @@ import type {
   ResponsesTransportDiagnostics,
 } from '#/kosong/contract/responsesTransport';
 
-import { createAbortError, noteExplicitUpstreamRetryDenial } from '#/kosong/contract/errors';
+import { MAX_RETRY_AFTER_MS } from '#/_base/utils/retry';
+import {
+  createAbortError,
+  isStructuredQuotaExhaustedCode,
+  noteExplicitUpstreamRetryDenial,
+  parseRetryAfterMs,
+  readExplicitUpstreamShouldRetry,
+} from '#/kosong/contract/errors';
 
 type RawObject = Record<string, unknown>;
 type SDKStreamRecord = {
@@ -20,12 +27,19 @@ type SDKStreamRecord = {
 
 type GatewayError = {
   code: string | undefined;
+  errorType: string | undefined;
   message: string;
   param: string | null | undefined;
   status: number | undefined;
   execution: string | undefined;
   retryable: boolean | undefined;
   retirementNotExecuted: boolean;
+};
+
+type HandshakeFailureResponse = {
+  status: number | undefined;
+  headers: unknown;
+  body: unknown;
 };
 
 type CodexTurnMetadataStableIdentity = Readonly<
@@ -479,6 +493,9 @@ function readGatewayError(error: unknown): GatewayError {
   const event = wrapper?.['type'] === 'error' ? wrapper : asObject(wrapper?.['error']);
   const nested = asObject(event?.['error']);
   const code = readString(nested?.['code']) ?? readString(event?.['code']);
+  const errorType =
+    readString(nested?.['type']) ??
+    (event?.['type'] !== 'error' ? readString(event?.['type']) : undefined);
   const message =
     readString(nested?.['message']) ??
     readString(event?.['message']) ??
@@ -493,7 +510,28 @@ function readGatewayError(error: unknown): GatewayError {
     ? readString(event['execution']) : undefined;
   const retirementNotExecuted = execution === 'not_executed' && nested?.['code'] === 'connection_retiring';
   const retryable = (nested ?? event)?.['retryable'];
-  return { code, message, param, status, execution, retirementNotExecuted, retryable: typeof retryable === 'boolean' ? retryable : undefined };
+  return { code, errorType, message, param, status, execution, retirementNotExecuted, retryable: typeof retryable === 'boolean' ? retryable : undefined };
+}
+
+function readSdkErrorHeaders(error: unknown): unknown {
+  const object = asObject(error);
+  if (object === undefined) return undefined;
+  if (object['headers'] !== undefined) return object['headers'];
+  const response = asObject(object['response']);
+  if (response?.['headers'] !== undefined) return response['headers'];
+  const nested = asObject(object['error']);
+  if (nested?.['headers'] !== undefined) return nested['headers'];
+  return undefined;
+}
+
+function tryParseJsonBody(text: string): unknown {
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function completedResponse(event: RawObject): { responseId: string; output: readonly unknown[] } | undefined {
@@ -726,33 +764,42 @@ export interface ResponsesWebSocketCreateOptions {
 
 export class ResponsesWebSocketError extends Error {
   readonly code: string;
+  readonly errorType: string | undefined;
   readonly safeHttpFallback: boolean;
   readonly status: number | undefined;
   readonly param: string | null | undefined;
   readonly execution: string | undefined;
   readonly retryable: boolean | undefined;
+  readonly headers: unknown;
+  readonly body: unknown;
 
   constructor(
     message: string,
     code = 'responses_websocket_error',
     options?: {
       readonly cause?: unknown;
+      readonly errorType?: string;
       readonly safeHttpFallback?: boolean;
       readonly status?: number;
       readonly param?: string | null;
       readonly execution?: string;
       readonly retryable?: boolean;
+      readonly headers?: unknown;
+      readonly body?: unknown;
     },
   ) {
     super(message, { cause: options?.cause });
     this.name = 'ResponsesWebSocketError';
     this.code = code;
+    this.errorType = options?.errorType;
     this.safeHttpFallback = options?.safeHttpFallback === true && options.retryable !== false;
     this.status = options?.status;
     this.param = options?.param;
     this.execution = options?.execution;
     this.retryable = options?.retryable;
-    noteExplicitUpstreamRetryDenial(this, this);
+    this.headers = options?.headers;
+    this.body = options?.body;
+    noteExplicitUpstreamRetryDenial(this, options?.body ?? this, options?.headers);
   }
 }
 
@@ -1195,15 +1242,71 @@ export class ResponsesWebSocketTransport {
     this._capabilitiesAdvertised = false;
     this._closedDiagnostics = undefined;
     let upgradeHeaders: unknown;
+    let handshakeFailure: HandshakeFailureResponse | undefined;
     const platformSocket = socket.socket.platformSocket as unknown as {
-      on?: (event: string, listener: (response: unknown) => void) => void;
-      off?: (event: string, listener: (response: unknown) => void) => void;
+      on?: (event: string, listener: (...args: unknown[]) => void) => void;
+      off?: (event: string, listener: (...args: unknown[]) => void) => void;
+      emit?: (event: string, ...args: unknown[]) => boolean;
     };
     const onUpgrade = (response: unknown): void => {
       const responseObject = asObject(response);
       upgradeHeaders = responseObject?.['headers'];
     };
+    const onUnexpectedResponse = (request: unknown, response: unknown): void => {
+      const requestObject = asObject(request) as { destroy?: () => void } | undefined;
+      const responseObject = asObject(response) as {
+        statusCode?: unknown;
+        headers?: unknown;
+        on?: (event: string, listener: (chunk: unknown) => void) => void;
+        once?: (event: string, listener: () => void) => void;
+        destroy?: () => void;
+      } | undefined;
+      const status = readNumber(responseObject?.statusCode);
+      const responseHeaders = responseObject?.headers;
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener('abort', finish);
+        const bodyText = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : '';
+        handshakeFailure = {
+          status,
+          headers: responseHeaders,
+          body: bodyText.length > 0 ? tryParseJsonBody(bodyText) : undefined,
+        };
+        requestObject?.destroy?.();
+        responseObject?.destroy?.();
+        platformSocket.emit?.('error', new Error(`Unexpected server response: ${status ?? 'unknown'}`));
+      };
+      if (status !== 429 || typeof responseObject?.on !== 'function' || typeof responseObject.once !== 'function') {
+        finish();
+        return;
+      }
+      timer = setTimeout(finish, 250);
+      timer.unref?.();
+      signal?.addEventListener('abort', finish, { once: true });
+      responseObject.on('data', (chunk: unknown) => {
+        if (bytes >= 16_384) return;
+        const buf = typeof chunk === 'string'
+          ? Buffer.from(chunk, 'utf8')
+          : chunk instanceof Uint8Array
+            ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+            : undefined;
+        if (buf === undefined) return;
+        const remaining = 16_384 - bytes;
+        chunks.push(buf.length > remaining ? buf.subarray(0, remaining) : buf);
+        bytes += Math.min(buf.length, remaining);
+      });
+      responseObject.once('end', finish);
+      responseObject.once('close', finish);
+      responseObject.once('error', finish);
+    };
     platformSocket.on?.('upgrade', onUpgrade);
+    platformSocket.on?.('unexpected-response', onUnexpectedResponse);
     const stream = socket.stream();
     const abortHandler = (): void => {
       this._closeCurrent(socket);
@@ -1228,7 +1331,11 @@ export class ResponsesWebSocketTransport {
           );
         }
         if (record.type === 'error') {
-          throw this._errorFromSDK(record.error, 'handshake');
+          throw this._errorFromSDK(
+            record.error,
+            'handshake',
+            handshakeFailure ?? { status: undefined, headers: handshakeHeaders(socket), body: undefined },
+          );
         }
         if (record.type === 'close') {
           throw new ResponsesWebSocketError(
@@ -1258,6 +1365,7 @@ export class ResponsesWebSocketTransport {
       throw error;
     } finally {
       platformSocket.off?.('upgrade', onUpgrade);
+      platformSocket.off?.('unexpected-response', onUnexpectedResponse);
       signal?.removeEventListener('abort', abortHandler);
       if (this._socket !== socket || this._capabilities === undefined) {
         await stream.return?.();
@@ -1265,28 +1373,63 @@ export class ResponsesWebSocketTransport {
     }
   }
 
-  private _errorFromSDK(error: unknown, phase: 'handshake' | 'before_response' | 'response'): ResponsesWebSocketError {
+  private _errorFromSDK(
+    error: unknown,
+    phase: 'handshake' | 'before_response' | 'response',
+    handshakeFailure?: HandshakeFailureResponse,
+  ): ResponsesWebSocketError {
     const details = readGatewayError(error);
-    const code = details.code ?? 'responses_websocket_error';
+    const bodyObject = asObject(handshakeFailure?.body);
+    const bodyNested = asObject(bodyObject?.['error']) ?? bodyObject;
+    const code =
+      details.code ??
+      readString(bodyNested?.['code']) ??
+      readString(bodyObject?.['code']) ??
+      'responses_websocket_error';
+    const errorType =
+      details.errorType ??
+      readString(bodyNested?.['type']) ??
+      (bodyObject?.['type'] !== 'error' ? readString(bodyObject?.['type']) : undefined);
+    const status = details.status ?? handshakeFailure?.status;
+    const headers = handshakeFailure?.headers ?? readSdkErrorHeaders(error);
+    const shouldRetryHeader = readExplicitUpstreamShouldRetry(headers);
+    const bodyRetryable =
+      typeof bodyNested?.['retryable'] === 'boolean'
+        ? bodyNested['retryable']
+        : typeof bodyObject?.['retryable'] === 'boolean'
+          ? bodyObject['retryable']
+          : undefined;
+    const retryable = shouldRetryHeader === false ? false : (details.retryable ?? bodyRetryable);
+    const retryAfterMs = parseRetryAfterMs(headers);
+    const block429Fallback =
+      status === 429 &&
+      (retryable === false ||
+        isStructuredQuotaExhaustedCode(code) ||
+        isStructuredQuotaExhaustedCode(errorType) ||
+        (retryAfterMs !== null && retryAfterMs > MAX_RETRY_AFTER_MS));
     const safeFallbackCode = code === 'unsupported_upstream_format' ||
       code === 'unsupported_prompt_policy' ||
       code === 'origin_capability_mismatch' ||
       code === 'origin_handshake_failed' ||
       code === 'websocket_capacity_exceeded';
-    const safeHttpFallback = phase === 'handshake'
-      ? details.status === undefined || details.status === 408 || details.status === 429 || details.status >= 500 ||
-        (details.status < 400 && safeFallbackCode)
+    const baseSafeHttpFallback = phase === 'handshake'
+      ? status === undefined || status === 408 || status === 429 || status >= 500 ||
+        (status < 400 && safeFallbackCode)
       : phase === 'before_response' && details.execution === 'not_executed' &&
-        (safeFallbackCode || details.status === 429 || details.status === 502 || details.status === 503 || details.status === 504 ||
+        (safeFallbackCode || status === 429 || status === 502 || status === 503 || status === 504 ||
           (code === 'connection_retiring' && details.retirementNotExecuted));
+    const safeHttpFallback = !block429Fallback && retryable !== false && baseSafeHttpFallback;
     const suffix = details.param === undefined || details.param === null || details.param.trim().length === 0 ? '' : ` (param: ${details.param})`;
     return new ResponsesWebSocketError(`${code}: ${details.message}${suffix}`, code, {
       cause: error,
+      errorType,
       safeHttpFallback,
-      status: details.status,
+      status,
       param: details.param,
       execution: phase === 'handshake' ? 'not_executed' : details.execution,
-      retryable: details.retryable,
+      retryable,
+      headers,
+      body: handshakeFailure?.body,
     });
   }
 

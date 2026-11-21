@@ -154,33 +154,6 @@ function readTransportCauseHeaders(cause: unknown): unknown {
   return undefined;
 }
 
-function readPlainHeadersRetryAfterMs(headers: unknown): number | null {
-  const object = asRawObject(headers);
-  if (object === null) return null;
-  let msRaw: string | undefined;
-  let secRaw: string | undefined;
-  for (const [key, value] of Object.entries(object)) {
-    const text = typeof value === 'string'
-      ? value
-      : Array.isArray(value) && value.length === 1 && typeof value[0] === 'string'
-        ? value[0]
-        : undefined;
-    if (text === undefined) continue;
-    const lower = key.toLowerCase();
-    if (lower === 'retry-after-ms') msRaw = text;
-    else if (lower === 'retry-after') secRaw = text;
-  }
-  if (msRaw !== undefined) {
-    const parsedMs = Number.parseFloat(msRaw);
-    if (Number.isFinite(parsedMs) && parsedMs > 0) return Math.round(parsedMs);
-  }
-  if (secRaw !== undefined) {
-    const parsedSec = Number.parseInt(secRaw, 10);
-    if (Number.isFinite(parsedSec) && parsedSec > 0) return parsedSec * 1_000;
-  }
-  return null;
-}
-
 function transportStatusError(error: unknown): ChatProviderError | undefined {
   if ((error instanceof ResponsesWebSocketError || error instanceof OpenAIAPIError) &&
     error.code === 'websocket_connection_limit_reached') {
@@ -192,20 +165,22 @@ function transportStatusError(error: unknown): ChatProviderError | undefined {
   }
   if (!(error instanceof ResponsesWebSocketError)) return undefined;
   if (error.status === undefined || error.status < 400 || error.status > 599) return undefined;
-  const headers = readTransportCauseHeaders(error.cause);
-  const retryAfterMs = parseRetryAfterMs(headers) ?? readPlainHeadersRetryAfterMs(headers);
+  const headers = error.headers ?? readTransportCauseHeaders(error.cause);
+  const retryAfterMs = parseRetryAfterMs(headers);
   const traceId = parseTraceId(headers);
+  const normalized = normalizeAPIStatusError(error.status, error.message, null, retryAfterMs, traceId, error.body);
   const failure = isContextOverflowErrorCode(error.code)
     ? new APIContextOverflowError(error.status, error.message, null, retryAfterMs, traceId)
-    : isStructuredQuotaExhaustedCode(error.code)
-      ? new APIProviderQuotaExhaustedError(error.message, null, retryAfterMs, traceId)
-      : normalizeAPIStatusError(error.status, error.message, null, retryAfterMs, traceId);
+    : !(normalized instanceof APIProviderQuotaExhaustedError) &&
+        (isStructuredQuotaExhaustedCode(error.code) || isStructuredQuotaExhaustedCode(error.errorType))
+      ? new APIProviderQuotaExhaustedError(normalized.message, null, retryAfterMs, traceId)
+      : normalized;
   return withTransportExecution(
     noteExplicitUpstreamRetryDenial(
       attachErrorDetails(markProviderEventError(failure, error.code), {
         errorSource: 'provider_event', nativeCode: error.code,
       }),
-      error,
+      error.body ?? error,
       headers,
     ),
     error.execution,
@@ -464,17 +439,8 @@ function readEmbeddedBodyRetryAfterMs(body: unknown): number | null {
   const object = asRawObject(body);
   const headers = object === null ? undefined : readObjectField(object, 'headers');
   if (headers === undefined) return null;
-  const msRaw = readStringField(headers, 'retry-after-ms') ?? readStringField(headers, 'Retry-After-Ms');
-  if (msRaw !== undefined) {
-    const parsedMs = Number(msRaw);
-    if (Number.isFinite(parsedMs) && parsedMs > 0) return parsedMs;
-  }
-  const secRaw = readStringField(headers, 'retry-after') ?? readStringField(headers, 'Retry-After');
-  if (secRaw !== undefined) {
-    const parsedSec = Number(secRaw);
-    if (Number.isFinite(parsedSec) && parsedSec > 0) return parsedSec * 1_000;
-  }
-  return null;
+  const parsed = parseRetryAfterMs(headers);
+  return parsed !== null && parsed > 0 ? parsed : null;
 }
 
 function parseNestedGatewayStreamError(message: string):

@@ -892,11 +892,18 @@ function googleEnvelopeStatusType(envelope: unknown): string | undefined {
   return status ?? undefined;
 }
 
+function combineRetryAfterMs(infoDelayMs: number | null, headerDelayMs: number | null): number | null {
+  const positiveInfo = infoDelayMs !== null && infoDelayMs > 0 ? infoDelayMs : null;
+  const positiveHeader = headerDelayMs !== null && headerDelayMs > 0 ? headerDelayMs : null;
+  if (positiveInfo !== null && positiveHeader !== null) return Math.max(positiveInfo, positiveHeader);
+  return positiveInfo ?? positiveHeader ?? infoDelayMs ?? headerDelayMs;
+}
+
 function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'): ChatProviderError {
   const headers = (error as { headers?: unknown }).headers;
   const details = googleRpcDetails(error.message);
   const envelope = googleErrorEnvelope(error.message);
-  const retryAfterMs = parseRetryInfoDelayMs(details) ?? parseRetryAfterMs(headers);
+  const retryAfterMs = combineRetryAfterMs(parseRetryInfoDelayMs(details), parseRetryAfterMs(headers));
   const traceId = parseTraceId(headers);
   const converted = normalizeAPIStatusError(error.status, error.message, undefined, retryAfterMs, traceId, envelope);
   const upstreamErrorType = googleEnvelopeStatusType(envelope);

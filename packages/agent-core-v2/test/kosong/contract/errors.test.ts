@@ -521,15 +521,20 @@ it.each([new APIStatusError(503, 'unavailable'), new APIStatusError(429, 'slow d
 });
 
 describe('429 fail-fast primitives: retry-after-ms, x-should-retry, and structured quota codes', () => {
-  it('parses retry-after-ms ahead of retry-after while preserving existing header boundaries', () => {
+  it('parses retry-after-ms ahead of retry-after strictly without masking valid retry-after', () => {
     expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '1500.6', 'retry-after': '30' }))).toBe(1_501);
-    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '0', 'retry-after': '12' }))).toBe(0);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '0.4', 'retry-after': '30' }))).toBe(1);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '0', 'retry-after': '12' }))).toBe(12_000);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '0' }))).toBeNull();
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '0oops', 'retry-after': '44083' }))).toBe(44_083_000);
     expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': 'not-a-number', 'retry-after': '12' }))).toBe(12_000);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after': '44083oops' }))).toBeNull();
     expect(parseRetryAfterMs(new Headers({ 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }))).toBeNull();
+    expect(parseRetryAfterMs({ 'Retry-After': '44083' })).toBe(44_083_000);
     expect(parseRetryAfterMs({})).toBeNull();
   });
 
-  it('honors x-should-retry false and true across Headers and plain header records', () => {
+  it('honors x-should-retry false and scopes x-should-retry true away from safety and client 4xx errors', () => {
     const deniedHeaders = noteExplicitUpstreamRetryDenial(
       new APIProviderRateLimitError('429 slow down', null, 5_000),
       undefined,
@@ -537,7 +542,7 @@ describe('429 fail-fast primitives: retry-after-ms, x-should-retry, and structur
     );
     expect(isRetryableGenerateError(deniedHeaders)).toBe(false);
     expect(hasExplicitRetryVeto(deniedHeaders)).toBe(true);
-    expect(readAttachedErrorDetails(deniedHeaders)).toMatchObject({ upstream_retryable: false });
+    expect(readAttachedErrorDetails(deniedHeaders)).toMatchObject({ upstream_retryable: false, upstream_should_retry: false });
 
     const deniedRecord = noteExplicitUpstreamRetryDenial(
       new APIStatusError(503, 'maintenance'),
@@ -546,13 +551,45 @@ describe('429 fail-fast primitives: retry-after-ms, x-should-retry, and structur
     );
     expect(isRetryableGenerateError(deniedRecord)).toBe(false);
 
-    const allowed = noteExplicitUpstreamRetryDenial(
-      new APIStatusError(422, 'retryable upstream proxy error'),
+    const allowedTransient = noteExplicitUpstreamRetryDenial(
+      new APIStatusError(425, 'too early'),
       undefined,
       new Headers({ 'x-should-retry': 'true' }),
     );
-    expect(isRetryableGenerateError(allowed)).toBe(true);
-    expect(isRetryableRequestInterruption(allowed)).toBe(false);
+    expect(isRetryableGenerateError(allowedTransient)).toBe(true);
+    expect(isRetryableRequestInterruption(allowedTransient)).toBe(false);
+
+    for (const statusCode of [400, 401, 403, 404, 413, 422]) {
+      const clientWithTrue = noteExplicitUpstreamRetryDenial(
+        new APIStatusError(statusCode, `client error ${statusCode}`),
+        undefined,
+        new Headers({ 'x-should-retry': 'true' }),
+      );
+      expect(isRetryableGenerateError(clientWithTrue)).toBe(false);
+      expect(isRetryableBufferedRequestError(clientWithTrue)).toBe(false);
+    }
+
+    for (const safetyCode of ['content_filter', 'content_policy_violation']) {
+      const safetyWithTrue = noteExplicitUpstreamRetryDenial(
+        normalizeAPIStatusError(400, '400 blocked', null, null, null, {
+          error: { code: safetyCode, message: 'Policy refusal' },
+        }),
+        undefined,
+        new Headers({ 'x-should-retry': 'true' }),
+      );
+      expect(isRetryableGenerateError(safetyWithTrue)).toBe(false);
+      expect(isRetryableBufferedRequestError(safetyWithTrue)).toBe(false);
+
+      const safetyTypeWithTrue = noteExplicitUpstreamRetryDenial(
+        normalizeAPIStatusError(425, '425 blocked', null, null, null, {
+          error: { type: safetyCode, message: 'Policy refusal' },
+        }),
+        undefined,
+        new Headers({ 'x-should-retry': 'true' }),
+      );
+      expect(isRetryableGenerateError(safetyTypeWithTrue)).toBe(false);
+      expect(isRetryableBufferedRequestError(safetyTypeWithTrue)).toBe(false);
+    }
 
     const quotaWithTrue = noteExplicitUpstreamRetryDenial(
       new APIProviderQuotaExhaustedError('quota gone'),
@@ -583,7 +620,7 @@ describe('429 fail-fast primitives: retry-after-ms, x-should-retry, and structur
     expect(isRetryableGenerateError(imageFormatWithTrue)).toBe(false);
 
     const executedWithTrue = noteExplicitUpstreamRetryDenial(
-      new APIStatusError(422, 'after output'),
+      new APIStatusError(425, 'after output'),
       undefined,
       new Headers({ 'x-should-retry': 'true' }),
     );

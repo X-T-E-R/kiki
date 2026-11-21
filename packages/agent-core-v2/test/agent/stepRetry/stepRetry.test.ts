@@ -1918,4 +1918,102 @@ describe('stepRetry binding lookup', () => {
     });
     expect(toErrorDisplayMessage(caught)).toContain('12h 14m 43s (44083s)');
   });
+
+  it('surfaces readable Retry-After duration in SubagentTask stopReason and parent subagent.failed receipt after 1 attempt', async () => {
+    vi.useRealTimers();
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        requests += 1;
+        response.writeHead(429, {
+          'content-type': 'application/json',
+          'retry-after': '44083',
+          'x-trace-id': 'trace-subagent-429',
+        });
+        response.end(JSON.stringify({
+          type: 'error',
+          error: { type: 'rate_limit_error', message: 'weekly usage quota exhausted' },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected TCP address');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const provider = new AnthropicChatProvider({ model: 'claude-sonnet-4-5', apiKey: 'YOUR_API_KEY', baseUrl });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider() { return provider; }
+    }
+    const ctx = createRetryTestAgent(appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    ctx.configure({
+      provider: { type: 'anthropic', model: 'claude-sonnet-4-5', baseUrl, apiKey: 'YOUR_API_KEY' },
+    });
+    const rpcEvents = (name: string) =>
+      ctx.allEvents.filter(event => event.type === '[rpc]' && event.event === name);
+    try {
+      const controller = new AbortController();
+      const run = await ctx.get(IAgentExecutionService).run(
+        { kind: 'prompt', prompt: 'Inspect failing subagent.' },
+        { signal: controller.signal },
+      );
+      const tasks = ctx.get(IAgentTaskService);
+      const taskId = tasks.registerTask(
+        new SubagentTask(
+          {
+            agentId: 'subagent-429-child',
+            profileName: 'example-worker',
+            completion: run.completion.then(result => ({ result: result.summary })),
+          },
+          'Long 429 subagent receipt',
+          controller,
+        ),
+        { deferVisibility: true },
+      );
+      const failure: unknown = await run.completion.catch((error: unknown) => error);
+      expect(requests).toBe(1);
+      expect(failure).toBeInstanceOf(APIProviderRateLimitError);
+      expect(rpcEvents('turn.step.retrying')).toEqual([]);
+      const taskReceipt = await tasks.wait(taskId);
+      expect(taskReceipt).toMatchObject({
+        status: 'failed',
+        stopReason: expect.stringContaining('12h 14m 43s (44083s)'),
+      });
+
+      const requester: IAgentScopeHandle = {
+        kind: 'agent',
+        id: 'main',
+        accessor: { get: id => ctx.get(id) },
+        dispose: () => {},
+      };
+      await ctx.get(ISessionMetadata).registerAgent('subagent-429-child', { type: 'sub', model: 'claude-sonnet-4-5' });
+      await expect(
+        mirrorAgentRun(
+          requester,
+          { agentId: 'subagent-429-child', completion: Promise.reject(failure) },
+          {
+            profileName: 'example-worker',
+            signal: new AbortController().signal,
+            resolveTaskId: () => Promise.resolve(taskId),
+          },
+        ),
+      ).rejects.toBe(failure);
+      expect(rpcEvents('subagent.failed')).toContainEqual(
+        expect.objectContaining({
+          args: expect.objectContaining({ error: expect.stringContaining('12h 14m 43s (44083s)') }),
+        }),
+      );
+      expect((await ctx.get(ISessionMetadata).read()).agents?.['subagent-429-child']?.error).toContain('12h 14m 43s (44083s)');
+    } finally {
+      await ctx.dispose();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
 });

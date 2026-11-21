@@ -1005,6 +1005,96 @@ describe('production Responses adapter → generate → canonical history → of
     }
   });
 
+  it.each([
+    {
+      label: 'excessive Retry-After',
+      headers: 'Retry-After: 44083\r\n',
+      body: '',
+      expectedRetryAfterMs: 44_083_000,
+      expectedQuota: false,
+      expectedRetryable: true,
+    },
+    {
+      label: 'X-Should-Retry: false',
+      headers: 'X-Should-Retry: false\r\n',
+      body: '',
+      expectedRetryAfterMs: null,
+      expectedQuota: false,
+      expectedRetryable: false,
+    },
+    {
+      label: 'structured insufficient_quota body',
+      headers: 'Content-Type: application/json\r\n',
+      body: JSON.stringify({ error: { code: 'insufficient_quota', message: 'You exceeded your current quota' } }),
+      expectedRetryAfterMs: null,
+      expectedQuota: true,
+      expectedRetryable: false,
+    },
+  ])('does not fall back to HTTP POST after an HTTP Upgrade 429 with $label', async ({
+    headers,
+    body,
+    expectedRetryAfterMs,
+    expectedQuota,
+    expectedRetryable,
+  }) => {
+    let upgrades = 0;
+    let httpRequests = 0;
+    const server = createServer((request, response) => {
+      httpRequests++;
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_http', status: 'completed', output: responseOutput('HTTP fallback') } })}\n\n`);
+    });
+    server.on('upgrade', (_request, socket) => {
+      upgrades++;
+      socket.end(
+        `HTTP/1.1 429 Too Many Requests\r\n${headers}Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      );
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(APIStatusError);
+      expect(failure).toHaveProperty('statusCode', 429);
+      expect((failure as APIStatusError).retryAfterMs).toBe(expectedRetryAfterMs);
+      if (expectedQuota) expect(failure).toBeInstanceOf(APIProviderQuotaExhaustedError);
+      expect(isRetryableGenerateError(failure)).toBe(expectedRetryable);
+      expect(upgrades).toBe(1);
+      expect(httpRequests).toBe(0);
+    } finally {
+      transport.dispose();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it('does not fall back to HTTP POST on an in-band before_response 429 structured quota error', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      socket.send(JSON.stringify({
+        type: 'error',
+        status: 429,
+        execution: 'not_executed',
+        error: { type: 'insufficient_quota', code: 'insufficient_quota', message: 'Quota exhausted' },
+      }));
+    });
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const failure = await generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(APIProviderQuotaExhaustedError);
+      expect(isRetryableGenerateError(failure)).toBe(false);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally {
+      transport.dispose();
+      await gateway.close();
+    }
+  });
+
   it.each(['unsupported_upstream_format', 'origin_handshake_failed'])('does not replay after partial output even if %s claims not_executed', async code => {
     const gateway = await createGateway((_body, socket) => {
       sendCreated(socket, 'resp_partial');

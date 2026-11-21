@@ -1523,6 +1523,68 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('honors configured [retry].max_retry_after_ms for 429 compaction delays and fails fast on 503 x-should-retry=false', async () => {
+    vi.useFakeTimers();
+    const firstAttemptFailed = deferred<void>();
+    let attempts = 0;
+    const generate: GenerateFn = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        firstAttemptFailed.resolve();
+        throw new APIStatusError(429, 'rate limited', null, 90_000);
+      }
+      return textResult('Recovered after configured 90s retry-after.');
+    };
+    const ctx = testAgent({
+      generate,
+      initialConfig: { providers: {}, retry: { maxRetryAfterMs: 120_000 } },
+    });
+    try {
+      ctx.configure({
+        provider: CATALOGUED_PROVIDER,
+        modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      });
+      ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+      ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+      const compacted = ctx.once('full_compaction.complete');
+
+      await beginSummarize(ctx, {});
+      await firstAttemptFailed.promise;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await compacted;
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      await ctx.dispose();
+    }
+
+    let deniedAttempts = 0;
+    const deniedGenerate: GenerateFn = async () => {
+      deniedAttempts += 1;
+      throw attachErrorDetails(new APIStatusError(503, 'maintenance'), {
+        upstream_retryable: false,
+        upstream_should_retry: false,
+      });
+    };
+    const deniedCtx = testAgent({ generate: deniedGenerate });
+    try {
+      deniedCtx.configure({
+        provider: CATALOGUED_PROVIDER,
+        modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      });
+      deniedCtx.appendExchange(1, 'old user one', 'old assistant one', 20);
+      deniedCtx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+      await beginSummarize(deniedCtx, {});
+      await expect(deniedCtx.get(IAgentFullCompactionService).compacting!.promise).rejects.toThrow('1 attempt');
+      expect(deniedAttempts).toBe(1);
+    } finally {
+      await deniedCtx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('cancels retry backoff with the failed compaction request trace', async () => {
     vi.useFakeTimers();
     const records: TelemetryRecord[] = [];
