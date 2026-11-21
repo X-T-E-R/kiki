@@ -1,14 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  AgentTranscriptSnapshot,
-  AgentDescriptor,
-} from '@kiki/transcript';
+import type { AgentTranscriptSnapshot } from '@kiki/transcript';
+import { IAtomicDocumentStore, IFileSystemStorageService, ISessionIndex, ISessionManager, type Scope, type SessionMeta } from '@kiki/agent-core-v2';
 import {
   decodeHistoryDirectoryCursor,
   type IHistoryDirectory,
 } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import { historyDirectorySeed, type HistoryNavigationAdapter } from '../src/services/history/historyDirectory';
-import type { TranscriptService } from '../src/services/transcript/transcriptService';
 
 const turn = (ordinal: number, prompt: string, startedAt: string) => ({
   kind: 'turn' as const,
@@ -37,27 +34,22 @@ const snapshot: AgentTranscriptSnapshot = {
   hasMoreOlder: false,
 };
 
-function fixture(roster: readonly AgentDescriptor[] = []): {
-  transcript: TranscriptService;
-  bounded: ReturnType<typeof vi.fn>;
-  coldRoster: ReturnType<typeof vi.fn>;
-} {
+function fixture() {
   const bounded = vi.fn(async () => ({ snapshot, bytesRead: 432, recordsRead: 12, complete: true }));
-  const coldRoster = vi.fn(async () => roster);
   const transcript = {
     forSessionLive: vi.fn(() => undefined),
     whenReady: vi.fn(async () => undefined),
     readColdSnapshotBounded: bounded,
-    readColdRoster: coldRoster,
-  } as unknown as TranscriptService;
-  return { transcript, bounded, coldRoster };
+  };
+  return { transcript, bounded };
 }
 
 function directory(
-  transcript: TranscriptService,
+  transcript: ReturnType<typeof fixture>['transcript'],
   navigation?: HistoryNavigationAdapter,
+  core?: Scope,
 ): IHistoryDirectory {
-  return historyDirectorySeed(() => transcript, navigation === undefined ? undefined : () => navigation)[0]![1] as IHistoryDirectory;
+  return historyDirectorySeed(() => core!, () => transcript, navigation === undefined ? undefined : () => navigation)[0]![1] as IHistoryDirectory;
 }
 
 describe('history directory', () => {
@@ -89,13 +81,43 @@ describe('history directory', () => {
   });
 
   it('lists a cold roster as best effort and includes the canonical main agent', async () => {
-    const { transcript, coldRoster } = fixture([{ agentId: 'worker', type: 'sub', createdAt: '2026-01-02T00:00:00.000Z' }]);
-    const result = await directory(transcript).list({
+    const { transcript, bounded } = fixture();
+    const resume = vi.fn();
+    const storedEnd = Date.parse('2026-01-02T00:00:00.000Z');
+    const metadata: SessionMeta = {
+      id: 'session', createdAt: 0, updatedAt: storedEnd, archived: false,
+      agents: {
+        worker: { type: 'sub', status: 'completed', completedAt: storedEnd },
+        idle: { labels: { branch: 'true' }, branchTurn: { startedAt: 1, endedAt: storedEnd, outcome: 'completed' } },
+        failed: { labels: { branch: 'true' }, branchTurn: { startedAt: 1, endedAt: storedEnd, outcome: 'failed' } },
+        interrupted: { labels: { branch: 'true' }, branchTurn: { startedAt: 1, endedAt: storedEnd, outcome: 'cancelled' } },
+        merged: { labels: { branch: 'true', branchSealed: 'true' }, completedAt: storedEnd },
+      },
+    };
+    const get = vi.fn(async () => metadata);
+    const services = new Map<unknown, unknown>([
+      [ISessionManager, { get: () => undefined, resume }],
+      [ISessionIndex, { get: async () => ({ workspaceId: 'ws' }) }],
+      [IFileSystemStorageService, {}],
+      [IAtomicDocumentStore, { get }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as Scope;
+    const result = await directory(transcript, undefined, core).list({
       workspaceId: 'ws', sessionId: 'session', kind: 'agents', order: 'oldest', limit: 10,
     });
-    expect(coldRoster).toHaveBeenCalledWith('session');
+    expect(get).toHaveBeenCalledExactlyOnceWith('sessions/ws/session', 'state.json');
+    expect(resume).not.toHaveBeenCalled();
+    expect(transcript.forSessionLive).not.toHaveBeenCalled();
+    expect(bounded).not.toHaveBeenCalled();
     expect(result.status).toBe('partial');
-    expect(result.agents?.map((agent) => agent.agentId)).toEqual(['main', 'worker']);
+    expect(result.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: 'main', kind: 'main', status: 'idle' }),
+      expect.objectContaining({ agentId: 'worker', kind: 'subagent', status: 'completed' }),
+      expect.objectContaining({ agentId: 'idle', kind: 'branch', sealed: false, status: 'idle', lastTurnReason: 'completed' }),
+      expect.objectContaining({ agentId: 'failed', kind: 'branch', sealed: false, status: 'failed', lastTurnReason: 'failed', updatedAt: '2026-01-02T00:00:00.000Z' }),
+      expect.objectContaining({ agentId: 'interrupted', kind: 'branch', sealed: false, status: 'interrupted', lastTurnReason: 'cancelled' }),
+      expect.objectContaining({ agentId: 'merged', kind: 'branch', sealed: true, status: 'merged' }),
+    ]));
     expect(result.coverage.gaps).toContain('roster_best_effort');
   });
 

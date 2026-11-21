@@ -10,17 +10,27 @@ import {
   type HistoryDirectoryTarget,
   type HistoryDirectoryTurn,
 } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
-import type { ScopeSeed } from '@kiki/agent-core-v2';
+import {
+  IAgentActivityView,
+  IAgentExecutionService,
+  IAgentLifecycleService,
+  IAgentLoopService,
+  ISessionMetadata,
+  type Scope,
+  type ScopeSeed,
+  type SessionMeta,
+} from '@kiki/agent-core-v2';
+import { descriptorFromMeta } from '@kiki/transcript-live';
 import type {
   AgentDescriptor,
   AgentTranscriptSnapshot,
 } from '@kiki/transcript';
 
 import { detachSlicedString } from '../../lib/detachString';
+import { readSessionObserver } from '../../lib/sessionObserver';
 import type {
   BoundedTranscriptSnapshot,
   TranscriptColdReadLimits,
-  TranscriptService,
 } from '../transcript/transcriptService';
 
 const FALLBACK_MAX_BYTES = 2 << 20;
@@ -41,6 +51,8 @@ interface DirectoryRead {
 
 interface RosterRead {
   readonly roster: readonly AgentDescriptor[];
+  readonly metadata?: SessionMeta;
+  readonly lifecycle?: IAgentLifecycleService;
   readonly source: 'live' | 'transcript';
   readonly complete: boolean;
   readonly gaps: readonly string[];
@@ -48,7 +60,6 @@ interface RosterRead {
 
 interface LiveTranscriptStore {
   getAgent(agentId: string): { snapshot(): AgentTranscriptSnapshot } | undefined;
-  agents(): readonly AgentDescriptor[];
 }
 
 interface TranscriptDirectorySource {
@@ -60,26 +71,28 @@ interface TranscriptDirectorySource {
     limits: TranscriptColdReadLimits,
     signal?: AbortSignal,
   ): Promise<BoundedTranscriptSnapshot>;
-  readColdRoster(sessionId: string): Promise<readonly AgentDescriptor[] | undefined>;
   isTranscriptLiveCoverageVerified?(sessionId: string, agentId: string): boolean;
 }
 
 export function historyDirectorySeed(
-  getTranscript: () => TranscriptService,
+  getCore: () => Scope,
+  getTranscript: () => TranscriptDirectorySource,
   getNavigation?: () => HistoryNavigationAdapter | undefined,
 ): ScopeSeed {
   const directory: IHistoryDirectory = {
     _serviceBrand: undefined,
     list: async (request) => {
-      const navigation = getNavigation?.();
-      if (navigation !== undefined && request.kind === 'turns') return navigation.list(request);
-      return listFromTranscript(getTranscript() as unknown as TranscriptDirectorySource, request);
+      if (request.kind === 'turns') {
+        const navigation = getNavigation?.();
+        if (navigation !== undefined) return navigation.list(request);
+      }
+      return listDirectory(getCore(), getTranscript, request);
     },
     resolveAgentId: async (sessionId, selector) => {
       const trimmed = selector.trim();
       if (trimmed.length === 0) return undefined;
       if (trimmed === 'main') return 'main';
-      const read = await readRoster(getTranscript() as unknown as TranscriptDirectorySource, sessionId);
+      const read = await readRoster(getCore(), sessionId);
       if (read === undefined) return undefined;
       const direct = read.roster.find((item) => item.agentId === trimmed);
       if (direct !== undefined) return direct.agentId;
@@ -91,8 +104,9 @@ export function historyDirectorySeed(
   return [[IHistoryDirectory, directory]];
 }
 
-async function listFromTranscript(
-  transcript: TranscriptDirectorySource,
+async function listDirectory(
+  core: Scope,
+  getTranscript: () => TranscriptDirectorySource,
   request: HistoryDirectoryRequest,
 ): Promise<HistoryDirectoryPage> {
   const target: HistoryDirectoryTarget = {
@@ -116,10 +130,10 @@ async function listFromTranscript(
     throw new Error('HistoryList cursor conflicts with the requested directory.');
   }
   if (request.kind === 'agents') {
-    return listAgents(transcript, request, target, selection, cursor);
+    return listAgents(core, request, target, selection, cursor);
   }
   if (request.agentId === undefined) throw new Error('HistoryList turns requires an agent.');
-  return listTurns(transcript, request, target, selection, cursor);
+  return listTurns(getTranscript(), request, target, selection, cursor);
 }
 
 async function listTurns(
@@ -162,13 +176,15 @@ async function listTurns(
 }
 
 async function listAgents(
-  transcript: TranscriptDirectorySource,
+  core: Scope,
   request: HistoryDirectoryRequest,
   target: HistoryDirectoryTarget,
   selection: HistoryDirectoryCursorRequest,
   cursor: ReturnType<typeof decodeHistoryDirectoryCursor> | undefined,
 ): Promise<HistoryDirectoryPage> {
-  const read = await readRoster(transcript, request.sessionId);
+  request.signal?.throwIfAborted();
+  const read = await readRoster(core, request.sessionId);
+  request.signal?.throwIfAborted();
   if (read === undefined) {
     return {
       status: 'unavailable',
@@ -200,7 +216,7 @@ async function listAgents(
     target: { workspaceId: target.workspaceId, sessionId: target.sessionId },
     source: read.source,
     coverage,
-    agents: page,
+    agents: page.map(agent => ({ ...agent, ...readAgentStatus(agent, read) })),
     nextCursor,
   };
 }
@@ -258,30 +274,45 @@ async function readTranscript(
   };
 }
 
-async function readRoster(
-  transcript: TranscriptDirectorySource,
-  sessionId: string,
-): Promise<RosterRead | undefined> {
-  const live = transcript.forSessionLive(sessionId);
-  if (live !== undefined) {
-    try {
-      await transcript.whenReady(sessionId);
-      return { roster: live.agents(), source: 'live', complete: true, gaps: [] };
-    } catch {
-    }
+async function readRoster(core: Scope, sessionId: string): Promise<RosterRead | undefined> {
+  const observed = await readSessionObserver(core, sessionId);
+  if (observed === undefined) return undefined;
+  const live = observed.live;
+  const metadata = live === undefined ? observed.metadata : await live.accessor.get(ISessionMetadata).read();
+  const lifecycle = live?.accessor.get(IAgentLifecycleService);
+  const roster = new Map(Object.entries(metadata?.agents ?? {}).map(([agentId, registration]) => [agentId, descriptorFromMeta(agentId, registration)]));
+  for (const agent of lifecycle?.list() ?? []) {
+    if (!roster.has(agent.id)) roster.set(agent.id, descriptorFromMeta(agent.id, undefined));
   }
-  try {
-    const roster = await transcript.readColdRoster(sessionId);
-    if (roster === undefined) return undefined;
-    return {
-      roster,
-      source: 'transcript',
-      complete: false,
-      gaps: ['roster_best_effort', 'navigation_unavailable'],
-    };
-  } catch {
-    return undefined;
-  }
+  return {
+    roster: [...roster.values()], metadata, lifecycle,
+    source: live !== undefined ? 'live' : 'transcript',
+    complete: live !== undefined,
+    gaps: live !== undefined ? [] : ['roster_best_effort', 'navigation_unavailable'],
+  };
+}
+
+function readAgentStatus(agent: HistoryDirectoryAgent, read: RosterRead): Pick<HistoryDirectoryAgent, 'status' | 'lastTurnReason' | 'updatedAt'> {
+  const meta = read.metadata?.agents?.[agent.agentId];
+  const live = read.lifecycle?.get(agent.agentId);
+  const view = live?.accessor.get(IAgentActivityView);
+  const activity = view?.state();
+  const lastTurn = activity?.lastTurn;
+  const execution = live?.accessor.get(IAgentExecutionService).status();
+  const loop = live?.accessor.get(IAgentLoopService).status();
+  const storedReason = meta?.branchTurn?.outcome ?? meta?.status ?? (agent.kind === 'main' ? read.metadata?.lastTurnReason : undefined);
+  const storedEnd = meta?.branchTurn?.endedAt ?? meta?.completedAt;
+  const lastTurnReason = lastTurn !== undefined && (storedEnd === undefined || lastTurn.at >= storedEnd) ? lastTurn.reason : storedReason;
+  const status = agent.sealed === true && agent.kind === 'branch' ? 'merged'
+    : loop?.persistenceFailure !== undefined || execution?.state === 'broken' ? 'failed'
+    : execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling' || loop?.state === 'running' || activity?.turn !== undefined ? 'running'
+    : lastTurnReason === 'failed' || lastTurnReason === 'blocked' ? 'failed'
+    : lastTurnReason === 'cancelled' ? 'interrupted'
+    : agent.kind === 'subagent' && lastTurnReason === 'completed' ? 'completed' : 'idle';
+  const changedAt = Math.max(meta?.completedAt ?? -1, storedEnd ?? -1, lastTurn?.at ?? -1,
+    view?.telemetry().lastActivityAt ?? -1, activity?.turn?.since ?? -1, execution?.startedAt ?? -1, meta?.createdAt ?? -1,
+    agent.kind === 'main' ? read.metadata?.updatedAt ?? -1 : -1);
+  return { status, lastTurnReason, updatedAt: changedAt < 0 ? undefined : new Date(changedAt).toISOString() };
 }
 
 function turnsFromSnapshot(snapshot: AgentTranscriptSnapshot): HistoryDirectoryTurn[] {
@@ -317,7 +348,7 @@ function agentsFromRoster(roster: readonly AgentDescriptor[]): HistoryDirectoryA
       kind: descriptor.agentId === 'main' ? 'main' : descriptor.isBranch ? 'branch' : 'subagent',
       branchTitle: descriptor.isBranch ? descriptor.label : undefined,
       branchSeed: descriptor.branchSeed,
-      sealed: descriptor.branchSealed,
+      sealed: descriptor.isBranch ? descriptor.branchSealed === true : undefined,
       firstTime: descriptor.createdAt,
       lastTime: descriptor.disposedAt ?? descriptor.createdAt,
       indexed: false,
