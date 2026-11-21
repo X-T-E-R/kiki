@@ -313,7 +313,7 @@ export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: 
       serverHomeId: meta.server_home_id, connectionRef };
     let stopped = false;
     const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
-    const confirm = async () => {
+    const acknowledgeViewed = async () => {
       if (await isConversationWindowFocused(host) && !stopped && storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
         markSessionSeen(sessionId, lastSeq);
         const scopeKey = JSON.stringify(scope);
@@ -323,7 +323,7 @@ export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: 
         await host.acknowledgeNotifications?.(sessionId, scope);
       }
     };
-    const confirmFromEvent = () => { void confirm().catch((error: unknown) => { console.warn('Cannot acknowledge viewed conversation notifications', error); }); };
+    const confirmFromEvent = () => { void acknowledgeViewed().catch((error: unknown) => { console.warn('Cannot acknowledge viewed conversation notifications', error); }); };
     confirmFromEvent();
     window.addEventListener('focus', confirmFromEvent);
     document.addEventListener('visibilitychange', confirmFromEvent);

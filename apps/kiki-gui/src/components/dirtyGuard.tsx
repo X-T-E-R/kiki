@@ -138,13 +138,13 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
             try {
               const res = action();
               if (res instanceof Promise) {
-                return res.then((val) => { resolve(val); }, (err: unknown) => { reject(err); throw err; });
+                return res.then((val) => { resolve(val); }, (error: unknown) => { reject(error); throw error; });
               }
               resolve();
               return res;
-            } catch (err) {
-              reject(err);
-              throw err;
+            } catch (error) {
+              reject(error);
+              throw error;
             }
           },
           onCancel: () => {
@@ -154,8 +154,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
         };
         setPending(true);
       });
-    }
-    else return action();
+    }return action();
   }, [cancel]);
   const navigate = useCallback<GuardedNavigate>((target, options, onCancel) => {
     if (router) {
@@ -190,7 +189,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
       } catch (error) { finish(); throw error; }
     }, onCancel);
   }, [router, dirtyIds.length, rawNavigate, request]);
-  const confirm = useCallback(() => {
+  const confirmDirtyNavigation = useCallback(() => {
     pendingCancelRef.current = undefined;
     const currentBlocker = getBlocker();
     if (currentBlocker?.state === 'blocked') {
@@ -228,11 +227,11 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
   }, [cancel, getBlocker, rawNavigate]);
   useEffect(() => {
     if (blocker?.state === 'blocked' && dirtyIdsRef.current.length === 0 &&
-        preparationRef.current?.needsPreparation(blocker.location)) void Promise.resolve(confirm()).catch(() => {});
-  }, [blocker, confirm]);
+        preparationRef.current?.needsPreparation(blocker.location)) void Promise.resolve(confirmDirtyNavigation()).catch(() => {});
+  }, [blocker, confirmDirtyNavigation]);
   const value = useMemo<DirtyGuardValue>(() => ({ dirty: dirtyIds.length > 0, reportDirty, navigate, confirmDiscard, runAction }),
     [dirtyIds.length, reportDirty, navigate, confirmDiscard, runAction]);
-  return inherited ?? { value, navigate, pending: pending || (blocker?.state === 'blocked' && dirtyIds.length > 0), confirm, cancel };
+  return inherited ?? { value, navigate, pending: pending || (blocker?.state === 'blocked' && dirtyIds.length > 0), confirm: confirmDirtyNavigation, cancel };
 }
 
 /** Use the app-wide guarded navigator, with router navigation as a safe fallback. */

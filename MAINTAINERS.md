@@ -55,5 +55,8 @@ scratch hygiene), `node scripts/check-docs-governance.mjs` (`docs/en/` and
 `docs/zh/` structural parity and link resolution), and
 `node scripts/check-code-health.mjs` (one-way monolith line ratchet, repo-wide
 relative internal `vi.mock` ratchet, GUI hygiene/anti-defensive-copy/emoji gate,
-and `AGENTS.md` catalog path integrity). None of these checks assesses prose
-accuracy — verify behavior from source and tests.
+and `AGENTS.md` catalog path integrity). CI, `pnpm lint`, and pre-commit also
+run the code-health gate. `node scripts/check-code-health.mjs --ratchet` records
+lower observed caps without restoring headroom to files below the default
+ceiling. The gate compares allowances with the Git base; for a standalone
+fixture, pass `--base-baseline <file>`. Verify prose accuracy from source and tests.

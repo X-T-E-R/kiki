@@ -1070,7 +1070,7 @@ export function ModelGenerationMigrationCard() {
     }
   };
 
-  const confirm = async () => {
+  const confirmMigration = async () => {
     if (preview === null || confirmation === null || inFlight.current) return;
     const selected = confirmation;
     inFlight.current = true;
@@ -1171,7 +1171,7 @@ export function ModelGenerationMigrationCard() {
         body={t(confirmation?.type === 'restore' ? 'st.modelMigration.restoreConfirmBody' : 'st.modelMigration.applyConfirmBody')}
         consequences={confirmation?.type === 'restore' ? [confirmation.backupKey] : preview?.changes.map(({ model_id: model, fields }) => t('st.modelMigration.changeRow', { model, fields: fields.join(', ') }))}
         confirmLabel={t(confirmation?.type === 'restore' ? 'st.modelMigration.restoreConfirmAction' : 'st.modelMigration.applyConfirmAction')}
-        onConfirm={() => void confirm()}
+        onConfirm={() => void confirmMigration()}
         onCancel={() => { setConfirmation(null); }}
       />
     </SectionCard>
@@ -2111,7 +2111,7 @@ function ModelCatalogRowEditor({
             if (event.key === 'ArrowRight') { event.preventDefault(); focusTab(tabs[(index + 1) % tabs.length]!.id); }
             if (event.key === 'ArrowLeft') { event.preventDefault(); focusTab(tabs[(index - 1 + tabs.length) % tabs.length]!.id); }
             if (event.key === 'Home') { event.preventDefault(); focusTab(tabs[0]!.id); }
-            if (event.key === 'End') { event.preventDefault(); focusTab(tabs[tabs.length - 1]!.id); }
+            if (event.key === 'End') { event.preventDefault(); focusTab(tabs.at(-1)!.id); }
           }}>
           {tabs.map((tab) => {
             const selected = activeEditorTab === tab.id;

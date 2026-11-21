@@ -19,7 +19,7 @@ Follow the 7-tier overlay ladder in `src/components/overlays/README.md` (max 1 o
 | Mobile bottom sheets | `ActionSheet`, `SpaceSwitchSheet`, `WorkSetupSheet`, `CompactModelSheet` (`<480px`) | `src/components/overlays/ActionSheet.tsx`, `src/components/SpaceSwitchSheet.tsx`, `src/components/Composer.tsx` |
 | Toasts & banners | `Toasts`, `pushUndoToast` / `pushToast` (reversible actions undo, no confirm), `AppConnectionBanner`, `RestartBanner` | `src/components/Toasts.tsx`, `src/lib/toasts.ts`, `src/components/AppConnectionBanner.tsx` |
 | Touch back-stack & viewport | `useLayerHistory`, `useVisualViewportHeightVar`, `usePhoneMode`, `useCoarsePointer`, `usePaneResize` | `src/lib/layerHistory.ts`, `src/lib/layoutHooks.ts` |
-| Transcript virtualization | `TranscriptVirtualizer` (`@tanstack/react-virtual` + `use-stick-to-bottom`), `Icon`, `formatThinkingEffort` | `src/components/transcriptVirtualizer.ts`, `src/components/icons.tsx`, `src/lib/thinkingEffort.ts` |
+| Transcript virtualization | `Transcript` owns `useVirtualizer` and `useStickToBottom` | `src/components/Transcript.tsx` |
 | Copy & i18n domains | Domain tables under `@kiki/session-core` (`en` / `zh` parity) | `packages/session-core/src/i18n/domains/en/`, `packages/session-core/src/i18n/domains/zh/` |
 
 ## Styling, Layout & Mobile Invariants
@@ -28,7 +28,7 @@ Follow the 7-tier overlay ladder in `src/components/overlays/README.md` (max 1 o
 - **Safe Flex Truncation**: Pair dynamic text and trailing actions as `flex items-center gap-2 min-w-0` -> dynamic summary `<span className="min-w-0 flex-1 truncate">` + CTA `<span className="shrink-0">` so trailing actions (e.g. `查看`) never clip into `· 查...`.
 - **Zero Artificial Blank Space**: Never set fixed `min-h-[...]` on collapsible, filtered, or variable-length lists/cards; let content hug height.
 - **Mobile & Safe Area**: Always consume `--kiki-safe-top-inset`, `--kiki-safe-bottom-inset`, and `env(safe-area-inset-left/right)` directly — never gate safe-area insets behind `max-width: 767px` (breaks landscape phones and iPads). Account for iOS `visualViewport.offsetTop` via `useVisualViewportHeightVar` (`--kiki-visual-height`, `--kiki-ime-offset`).
-- **Non-Secure Context LAN Safety (`crypto.randomUUID`)**: Over LAN `http://192.168.x.x`, `crypto.randomUUID` is `undefined` and crashes message sending; never add bare `crypto.randomUUID(` in client code — use a `crypto.getRandomValues()`-backed `randomUuid()` helper (enforced by `scripts/check-code-health.mjs`).
+- **Non-Secure Context LAN Safety (`crypto.randomUUID`)**: Over LAN `http://192.168.x.x`, `crypto.randomUUID` is `undefined` and crashes message sending; never add bare `crypto.randomUUID(` in client code — use a `crypto.getRandomValues()`-backed helper. The mobile launcher uses a `typeof`-guarded call with a fallback in `./mobile/src/target.ts:303` (enforced by `scripts/check-code-health.mjs`).
 
 ## 4-Zone Shell, `h-12` Datum & Subtraction-First `<Composer />` Standard
 

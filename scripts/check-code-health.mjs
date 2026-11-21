@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /* eslint-disable no-console -- Command-line deterministic code-health gate. */
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,7 +20,6 @@ const WALK_SKIP_DIRS = new Set([
   '.tmp',
   '.vitepress-cache',
   '.worktrees',
-  'build',
   'coverage',
   'dist',
   'node_modules',
@@ -29,12 +29,14 @@ const WALK_SKIP_DIRS = new Set([
 ]);
 
 const PROD_EXCLUDE_SEGMENTS = new Set(['__tests__', '__fixtures__', 'test', 'tests', 'fixtures']);
-const TEST_FILE_RE = /\.(?:test|spec)\.(?:ts|tsx)$/u;
-const PROD_EXT_RE = /\.(?:ts|tsx)$/u;
-const NATIVE_DIALOG_RE = /\bwindow\.(alert|confirm|prompt)\s*\(/gu;
-const BARE_RANDOM_UUID_RE = /(?:^|[^\w$.?])(?:(?:globalThis|window)\.)?crypto\.randomUUID\s*\(/gu;
+const TEST_FILE_RE = /\.(?:test|spec|integration|e2e)\.[cm]?tsx?$/u;
+const PROD_EXT_RE = /\.[cm]?tsx?$/u;
+const NATIVE_DIALOG_RE = /(?<![\w$.])(?<!\.\s*)(?:(?:window|globalThis)\s*\.\s*)?(alert|confirm|prompt)\s*\(/gu;
+const UUID_CALL_RE = /(?<![\w$.?])((?:(?:globalThis|window)\s*\.\s*)?crypto)\s*\.\s*randomUUID\s*\(/gu;
+// Recognize a feature test only when it directly controls the guarded return.
+const GUARDED_UUID_RE = /\bif\s*\(\s*typeof\s+((?:(?:globalThis|window)\s*\.\s*)?crypto)\s*(?:\?\.|\.)\s*randomUUID\s*===\s*(['"])function\2\s*\)\s*(?:\{\s*)?return[^\S\r\n]+$/u;
 const DECORATIVE_EMOJI_RE = /(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)/gu;
-const CATALOG_PATH_PREFIX_RE = /^(?:src|apps|packages|scripts|docs|config|\.agents|\.github)\//u;
+const CATALOG_PATH_RE = /^(?:src|apps|packages|scripts|docs|config|\.agents|\.github|\.{1,2})[/\\]/u;
 
 export const BANNED_DEFENSIVE_PHRASES = [
   { text: '数据可能已过期', caseInsensitive: false },
@@ -46,6 +48,11 @@ export const BANNED_DEFENSIVE_PHRASES = [
   { text: 'may be outdated', caseInsensitive: true },
 ];
 
+const DEFENSIVE_COPY_PATTERNS = BANNED_DEFENSIVE_PHRASES.map(({ text, caseInsensitive }) => ({
+  text,
+  pattern: new RegExp(caseInsensitive ? text.replaceAll(' ', '\\s+') : Array.from(text).join('\\s*'), caseInsensitive ? 'giu' : 'gu'),
+}));
+
 function toPosix(filePath) {
   return filePath.split(sep).join('/');
 }
@@ -54,12 +61,14 @@ function relPosix(root, absPath) {
   return toPosix(relative(root, absPath));
 }
 
-function walkFiles(dir, predicate, out = []) {
+function walkFiles(dir, predicate, out = [], inSource = false) {
   if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!WALK_SKIP_DIRS.has(entry.name)) walkFiles(abs, predicate, out);
+      if (!WALK_SKIP_DIRS.has(entry.name) && (entry.name !== 'build' || inSource)) {
+        walkFiles(abs, predicate, out, inSource || entry.name === 'src');
+      }
     } else if (entry.isFile() && predicate(abs, entry.name)) {
       out.push(abs);
     }
@@ -88,55 +97,13 @@ function countLines(text) {
 }
 
 function stripCommentsPreservingLines(code) {
-  if (!code.includes('//') && !code.includes('/*')) return code;
-  const out = [];
-  let i = 0;
-  const n = code.length;
-  while (i < n) {
-    const ch = code.codePointAt(i);
-    const next = i + 1 < n ? code.codePointAt(i + 1) : 0;
-    if (ch === 47 && next === 47) {
-      i += 2;
-      while (i < n && code.codePointAt(i) !== 10) i += 1;
-      continue;
-    }
-    if (ch === 47 && next === 42) {
-      i += 2;
-      while (i < n && !(code.codePointAt(i) === 42 && code.codePointAt(i + 1) === 47)) {
-        if (code.codePointAt(i) === 10) out.push('\n');
-        i += 1;
-      }
-      if (i < n) i += 2;
-      continue;
-    }
-    if (ch === 34 || ch === 39 || ch === 96) {
-      const quote = ch;
-      out.push(code[i]);
-      i += 1;
-      while (i < n && code.codePointAt(i) !== quote) {
-        if (code.codePointAt(i) === 92 && i + 1 < n) {
-          out.push(code[i], code[i + 1]);
-          i += 2;
-          continue;
-        }
-        out.push(code[i]);
-        i += 1;
-      }
-      if (i < n) {
-        out.push(code[i]);
-        i += 1;
-      }
-      continue;
-    }
-    out.push(code[i]);
-    i += 1;
-  }
-  return out.join('');
+  return code.replaceAll(/"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//gu,
+    (token) => token.startsWith('/') ? token.replaceAll(/[^\r\n]/gu, ' ') : token);
 }
 
 function isProductionSource(rel) {
   if (!PROD_EXT_RE.test(rel)) return false;
-  if (rel.endsWith('.d.ts') || TEST_FILE_RE.test(rel)) return false;
+  if (/\.d\.[cm]?ts$/u.test(rel) || TEST_FILE_RE.test(rel)) return false;
   const parts = rel.split('/');
   for (let i = 0; i < parts.length - 1; i += 1) {
     if (PROD_EXCLUDE_SEGMENTS.has(parts[i])) return false;
@@ -177,7 +144,11 @@ function loadBaseline(baselinePath) {
       bareRandomUuidFiles: {},
     };
   }
-  const parsed = JSON.parse(readFileSync(baselinePath, 'utf8'));
+  return parseBaseline(readFileSync(baselinePath, 'utf8'));
+}
+
+function parseBaseline(text) {
+  const parsed = JSON.parse(text);
   return {
     schema: parsed.schema ?? 1,
     maxNewFileLines:
@@ -191,9 +162,54 @@ function loadBaseline(baselinePath) {
   };
 }
 
-function isBuildOutputPlaceholder(repoRoot, cleanPath) {
+function gitOutput(root, args) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+function baseBaselines(root, baselinePath, explicitPath) {
+  if (explicitPath) return [parseBaseline(readFileSync(resolve(explicitPath), 'utf8'))];
+  if (!existsSync(join(root, '.git'))) return [];
+  const rel = relPosix(root, baselinePath);
+  const prBase = process.env.GITHUB_BASE_REF?.trim();
+  const refs = [process.env.KIKI_DIFF_BASE?.trim(), prBase && `origin/${prBase}`, prBase, 'origin/kiki'];
+  const readAt = (ref) => gitOutput(root, ['show', `${ref}:${rel}`]);
+  for (const ref of refs.filter(Boolean)) {
+    const mergeBase = gitOutput(root, ['merge-base', '--', 'HEAD', ref]);
+    if (!mergeBase) continue;
+    const base = readAt(mergeBase);
+    // Introducing the baseline on a branch with no baseline on its target is a bootstrap.
+    if (base === undefined) return [];
+    return [...new Set([base, readAt('HEAD')])].filter(Boolean).map(parseBaseline);
+  }
+  return [...new Set([readAt('HEAD^'), readAt('HEAD')])].filter(Boolean).map(parseBaseline);
+}
+
+function checkBaselineMonotonicity(baseline, bases, file, violations) {
+  const report = (section, key, prev, next) => addViolation(
+    violations, 'baseline-monotonicity', file, 1,
+    `${section}${key ? ` for ${key}` : ''} increased from ${prev} to ${next}`,
+    'Restore the prior allowance or tighten it with --ratchet',
+  );
+  const strictestCeiling = Math.min(baseline.maxNewFileLines, ...bases.map((base) => base.maxNewFileLines));
+  if (baseline.maxNewFileLines > strictestCeiling) {
+    report('maxNewFileLines', '', strictestCeiling, baseline.maxNewFileLines);
+  }
+  for (const section of ['monolithMaxLines', 'internalTestMocks', 'emojiAllowedFiles', 'bareRandomUuidFiles']) {
+    const keys = new Set([...Object.keys(baseline[section]), ...bases.flatMap((base) => Object.keys(base[section]))]);
+    for (const key of keys) {
+      const next = baseline[section][key] ?? (section === 'monolithMaxLines' ? baseline.maxNewFileLines : 0);
+      const prev = Math.min(...bases.map((base) => base[section][key] ?? (
+        section === 'monolithMaxLines' ? Math.min(base.maxNewFileLines, baseline.maxNewFileLines) : 0
+      )));
+      if (next > prev) report(section, key, prev, next);
+    }
+  }
+}
+
+function isBuildOutputPlaceholder(dir, cleanPath) {
   if (!/(?:^|\/)dist(?:\/|$)/u.test(cleanPath)) return false;
-  return existsSync(dirname(resolve(repoRoot, cleanPath)));
+  return existsSync(dirname(resolve(dir, cleanPath)));
 }
 
 function isExplicitNonExistenceContext(line, tokenIndex, tokenLength) {
@@ -234,6 +250,9 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
   const maxNewFileLines = options.maxNewFileLines ?? baseline.maxNewFileLines ?? DEFAULT_MAX_NEW_FILE_LINES;
 
   const violations = [];
+  const bases = baseBaselines(repoRoot, baselinePath, options.baseBaselinePath);
+  const baselineRel = relPosix(repoRoot, baselinePath);
+  checkBaselineMonotonicity(baseline, bases, baselineRel, violations);
   const observedMonoliths = {};
   const observedInternalMocks = {};
   const observedEmojiFiles = {};
@@ -268,7 +287,7 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
         testFilesScanned += 1;
         const raw = readFileSync(abs, 'utf8');
         let relativeMocks = [];
-        if (raw.includes('vi.mock') || raw.includes('vi.doMock') || raw.includes('mock.module')) {
+        if (raw.includes('mock') || raw.includes('doMock')) {
           const stripped = stripCommentsPreservingLines(raw);
           const allMocks = findIntraMonorepoMocks(stripped, (offset) => lineNumberAtOffset(stripped, offset));
           relativeMocks = allMocks.filter(
@@ -300,15 +319,16 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
       prodFilesScanned += 1;
 
       const isGuiProd = rel.startsWith('apps/kiki-gui/src/');
+      const isMobileProd = rel.startsWith('apps/kiki-gui/mobile/src/');
       const isSessionCoreProd = rel.startsWith('packages/session-core/src/');
       const isSessionI18n = rel.startsWith('packages/session-core/src/i18n/');
-      const needsTextScan = isGuiProd || isSessionCoreProd;
+      const needsTextScan = isGuiProd || isMobileProd || isSessionCoreProd;
       const raw = needsTextScan ? readFileSync(abs, 'utf8') : null;
       const lines = raw !== null ? countLines(raw) : countLinesBuffer(readFileSync(abs));
-      if (lines > maxNewFileLines) {
+      const frozenMax = baseline.monolithMaxLines[rel];
+      if (frozenMax !== undefined || lines > maxNewFileLines) {
         observedMonoliths[rel] = lines;
       }
-      const frozenMax = baseline.monolithMaxLines[rel];
       if (typeof frozenMax === 'number') {
         if (lines > frozenMax) {
           addViolation(
@@ -331,87 +351,61 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
         );
       }
 
-      if (!needsTextScan) continue;
+      if (!needsTextScan || (!isGuiProd && !isMobileProd && !isSessionI18n && !raw.includes('randomUUID'))) continue;
 
       const stripped = stripCommentsPreservingLines(raw);
-      const strippedLines = stripped.split(/\r?\n/u);
-
-      if (isGuiProd || (isSessionCoreProd && rel.endsWith('.ts'))) {
-        const uuidHits = [];
-        for (let i = 0; i < strippedLines.length; i += 1) {
-          BARE_RANDOM_UUID_RE.lastIndex = 0;
-          while (BARE_RANDOM_UUID_RE.exec(strippedLines[i]) !== null) {
-            uuidHits.push(i + 1);
-          }
-        }
-        if (uuidHits.length > 0) {
-          observedBareRandomUuid[rel] = uuidHits.length;
-        }
+      if (isGuiProd || isMobileProd || (isSessionCoreProd && rel.endsWith('.ts'))) {
+        const uuidHits = [...stripped.matchAll(UUID_CALL_RE)].filter((match) => {
+          const guard = GUARDED_UUID_RE.exec(stripped.slice(0, match.index));
+          return !guard || guard[1].replaceAll(/\s/gu, '') !== match[1].replaceAll(/\s/gu, '');
+        });
+        if (uuidHits.length > 0) observedBareRandomUuid[rel] = uuidHits.length;
         const allowedUuid = baseline.bareRandomUuidFiles[rel] ?? 0;
         if (uuidHits.length > allowedUuid) {
           addViolation(
             violations,
             'client-bare-random-uuid',
             rel,
-            uuidHits[0],
+            lineNumberAtOffset(stripped, uuidHits[allowedUuid].index),
             `Bare crypto.randomUUID() call (${uuidHits.length} > allowed ${allowedUuid}) crashes in Non-Secure Contexts (e.g. LAN http://192.168.x.x)`,
             'Use a crypto.getRandomValues()-backed randomUuid() helper (or optional-chained fallback) instead of bare crypto.randomUUID()',
           );
         }
       }
 
-      if (!isGuiProd && !isSessionI18n) continue;
-
-      if (isGuiProd) {
-        for (let i = 0; i < strippedLines.length; i += 1) {
-          const line = strippedLines[i];
-          NATIVE_DIALOG_RE.lastIndex = 0;
-          const match = NATIVE_DIALOG_RE.exec(line);
-          if (match) {
-            addViolation(
-              violations,
-              'gui-native-dialog',
-              rel,
-              i + 1,
-              `Forbidden native browser dialog "window.${match[1]}(" in GUI source`,
-              'Use ConfirmDialog, Dialog, or pushUndoToast from apps/kiki-gui/src/components/ instead of blocking browser dialogs',
-            );
-          }
+      if (!isGuiProd && !isMobileProd && !isSessionI18n) continue;
+      if (isGuiProd || isMobileProd) {
+        for (const match of stripped.matchAll(NATIVE_DIALOG_RE)) {
+          addViolation(
+            violations,
+            'gui-native-dialog',
+            rel,
+            lineNumberAtOffset(stripped, match.index),
+            `Forbidden native browser dialog "${match[1]}(" in GUI source`,
+            'Use ConfirmDialog, Dialog, or pushUndoToast from apps/kiki-gui/src/components/ instead of blocking browser dialogs',
+          );
         }
       }
 
-      for (let i = 0; i < strippedLines.length; i += 1) {
-        const line = strippedLines[i];
-        const lower = line.toLowerCase();
-        for (const phrase of BANNED_DEFENSIVE_PHRASES) {
-          const hit = phrase.caseInsensitive
-            ? lower.includes(phrase.text.toLowerCase())
-            : line.includes(phrase.text);
-          if (hit) {
-            addViolation(
-              violations,
-              'gui-banned-defensive-copy',
-              rel,
-              i + 1,
-              `Banned defensive boundary disclaimer "${phrase.text}" found in UI copy`,
-              'Fix the underlying freshness/completeness contract or remove the hedging disclaimer from visible UI text',
-            );
-          }
+      // Whitespace between words (or Han characters) can come from JSX layout or a template literal.
+      const copy = stripped.replaceAll(/\{\s*['"]\s+['"]\s*\}|\{\s*\}/gu, (token) => token.replaceAll(/[^\r\n]/gu, ' '));
+      for (const { text, pattern } of DEFENSIVE_COPY_PATTERNS) {
+        for (const match of copy.matchAll(pattern)) {
+          addViolation(
+            violations,
+            'gui-banned-defensive-copy',
+            rel,
+            lineNumberAtOffset(copy, match.index),
+            `Banned defensive boundary disclaimer "${text}" found in UI copy`,
+            'Fix the underlying freshness/completeness contract or remove the hedging disclaimer from visible UI text',
+          );
         }
       }
 
-      if (
-        (rel.startsWith('apps/kiki-gui/src/components/') || rel.startsWith('apps/kiki-gui/src/mobile/')) &&
-        rel.endsWith('.tsx')
-      ) {
-        const emojiHits = [];
-        for (let i = 0; i < strippedLines.length; i += 1) {
-          DECORATIVE_EMOJI_RE.lastIndex = 0;
-          let m;
-          while ((m = DECORATIVE_EMOJI_RE.exec(strippedLines[i])) !== null) {
-            emojiHits.push({ line: i + 1, glyph: m[0] });
-          }
-        }
+      if (isGuiProd || isMobileProd) {
+        const emojiHits = [...stripped.matchAll(DECORATIVE_EMOJI_RE)].map((match) => ({
+          line: lineNumberAtOffset(stripped, match.index), glyph: match[0],
+        }));
         if (emojiHits.length > 0) {
           observedEmojiFiles[rel] = emojiHits.length;
         }
@@ -444,18 +438,26 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
       if (!text || text.includes('<!-- historical -->')) continue;
       for (const match of text.matchAll(/`([^`\r\n]+)`/gu)) {
         const rawToken = match[1].trim();
-        if (!CATALOG_PATH_PREFIX_RE.test(rawToken)) continue;
+        if (!CATALOG_PATH_RE.test(rawToken)) continue;
         if (/[*<>{}[\]\s,|]/u.test(rawToken) || rawToken.includes('...') || rawToken.includes('…')) {
           continue;
         }
-        const clean = rawToken.split('#', 1)[0].split('?', 1)[0].replace(/[),.;:]+$/u, '');
-        if (!clean || !CATALOG_PATH_PREFIX_RE.test(clean)) continue;
-        if (isExplicitNonExistenceContext(text, match.index ?? 0, match[0].length)) continue;
-        if (isBuildOutputPlaceholder(repoRoot, clean)) continue;
-
-        const fromDir = resolve(dirAbs, clean);
-        const fromRoot = resolve(repoRoot, clean);
-        if (!existsSync(fromDir) && !existsSync(fromRoot)) {
+        if (rawToken.includes('\\')) {
+          addViolation(violations, 'catalog-link-integrity', rel, line,
+            `Catalog path \`${rawToken}\` uses Windows path separators`, 'Use POSIX / separators');
+          continue;
+        }
+        const clean = rawToken.split(/[?#]/u, 1)[0].replace(/[),.;:]+$/u, '').replace(/:\d+(?::\d+)?$/u, '');
+        if (isExplicitNonExistenceContext(text, match.index, match[0].length)) continue;
+        const localSrc = clean.startsWith('src/');
+        const pathRoot = localSrc || clean.startsWith('./') || clean.startsWith('../') ? dirAbs : repoRoot;
+        const target = resolve(pathRoot, clean);
+        const targetRel = relPosix(pathRoot, target);
+        const escapesRoot = relPosix(repoRoot, target).startsWith('../');
+        if (escapesRoot || (localSrc && !targetRel.startsWith('src/') && targetRel !== 'src') ||
+            (!existsSync(target) &&
+              !(clean.startsWith('docs/') && existsSync(resolve(dirAbs, clean))) &&
+              !isBuildOutputPlaceholder(pathRoot, clean))) {
           addViolation(
             violations,
             'catalog-link-integrity',
@@ -479,7 +481,7 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
 
   for (const [rel, frozen] of Object.entries(baseline.monolithMaxLines)) {
     const current = observedMonoliths[rel] ?? 0;
-    if (current === 0 || current < frozen) {
+    if (current < frozen && (Object.hasOwn(observedMonoliths, rel) || frozen > maxNewFileLines)) {
       ratchetSavings.monolithShrinks.push({ file: rel, from: frozen, to: current });
     }
   }
@@ -529,6 +531,7 @@ export function checkCodeHealth(root = DEFAULT_ROOT, options = {}) {
       bareRandomUuidFiles: sortRecord(observedBareRandomUuid),
     },
     baseline,
+    bases,
     ratchetSavings,
   };
 }
@@ -572,11 +575,16 @@ export function applyRatchet(root = DEFAULT_ROOT, options = {}) {
   const report = checkCodeHealth(repoRoot, {
     baselinePath,
     maxNewFileLines: options.maxNewFileLines,
+    baseBaselinePath: options.baseBaselinePath,
   });
 
   const monolith = mergeRatchetSection(
     report.baseline.monolithMaxLines,
-    report.observed.monolithMaxLines,
+    {
+      ...Object.fromEntries(Object.entries(report.baseline.monolithMaxLines)
+        .filter(([, cap]) => cap < report.baseline.maxNewFileLines)),
+      ...report.observed.monolithMaxLines,
+    },
     allowIncrease,
   );
   const mocks = mergeRatchetSection(
@@ -611,12 +619,15 @@ export function applyRatchet(root = DEFAULT_ROOT, options = {}) {
     bareRandomUuidFiles: bareRandomUuid.next,
   };
 
-  if (blockedIncreases.length === 0 || options.writePartial === true) {
+  const baselineViolations = [];
+  checkBaselineMonotonicity(nextBaseline, report.bases, relPosix(repoRoot, baselinePath), baselineViolations);
+  if (baselineViolations.length === 0 && (blockedIncreases.length === 0 || options.writePartial === true)) {
     writeFileSync(baselinePath, `${JSON.stringify(nextBaseline, null, 2)}\n`, 'utf8');
   }
 
   return {
-    ok: blockedIncreases.length === 0,
+    ok: blockedIncreases.length === 0 && baselineViolations.length === 0,
+    baselineViolations,
     baselinePath,
     nextBaseline,
     blockedIncreases,
@@ -631,6 +642,7 @@ function parseCliArgs(argv) {
     hasAllowIncreaseFlag: false,
     root: DEFAULT_ROOT,
     baselinePath: undefined,
+    baseBaselinePath: undefined,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -650,6 +662,8 @@ function parseCliArgs(argv) {
       parsed.root = resolve(argv[++i]);
     } else if (arg === '--baseline' && argv[i + 1]) {
       parsed.baselinePath = resolve(argv[++i]);
+    } else if (arg === '--base-baseline' && argv[i + 1]) {
+      parsed.baseBaselinePath = resolve(argv[++i]);
     }
   }
   return parsed;
@@ -670,10 +684,12 @@ if (invokedPath === import.meta.url) {
   if (cli.ratchet) {
     const res = applyRatchet(cli.root, {
       baselinePath: cli.baselinePath,
+      baseBaselinePath: cli.baseBaselinePath,
       allowIncreaseReason: cli.allowIncreaseReason,
     });
     if (!res.ok) {
-      console.error(
+      for (const v of res.baselineViolations) console.error(formatCodeHealthViolation(v));
+      if (res.blockedIncreases.length > 0) console.error(
         `check-code-health: --ratchet refuses to increase ${res.blockedIncreases.length} baseline entry(ies) without --allow-baseline-increase <reason>:`,
       );
       for (const item of res.blockedIncreases) {
@@ -693,7 +709,7 @@ if (invokedPath === import.meta.url) {
   }
 
   const startedAt = performance.now();
-  const report = checkCodeHealth(cli.root, { baselinePath: cli.baselinePath });
+  const report = checkCodeHealth(cli.root, cli);
   const elapsedMs = Math.round(performance.now() - startedAt);
 
   if (!report.ok) {

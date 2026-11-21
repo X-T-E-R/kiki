@@ -95,10 +95,9 @@ describe('check-code-health deterministic ratchets', () => {
     assert.equal(updated.monolithMaxLines['apps/kiki-gui/src/components/LegacyMonolith.tsx'], 620);
 
     writeFixture(root, 'apps/kiki-gui/src/components/LegacyMonolith.tsx', makeLines(550));
-    const cleared = applyRatchet(root);
-    assert.equal(cleared.ok, true);
-    const finalBaseline = JSON.parse(readFileSync(join(root, 'scripts/code-health-baseline.json'), 'utf8'));
-    assert.equal(finalBaseline.monolithMaxLines['apps/kiki-gui/src/components/LegacyMonolith.tsx'], undefined);
+    const lowered = applyRatchet(root);
+    assert.equal(lowered.ok, true);
+    assert.equal(lowered.nextBaseline.monolithMaxLines['apps/kiki-gui/src/components/LegacyMonolith.tsx'], 550);
   });
 
   it('allows explicit --allow-baseline-increase only with a non-empty reason', () => {
@@ -226,4 +225,171 @@ describe('check-code-health deterministic ratchets', () => {
     assert.match(linkViolations[0].message, /src\/components\/DoesNotExist\.tsx/);
     assert.match(linkViolations[1].message, /packages\/session-core\/src\/missing\.ts/);
   });
+});
+
+const BASELINE = 'scripts/code-health-baseline.json';
+
+function updateFixtureBaseline(root, update) {
+  const current = JSON.parse(readFileSync(join(root, BASELINE), 'utf8'));
+  update(current);
+  writeFixture(root, BASELINE, `${JSON.stringify(current, null, 2)}\n`);
+}
+
+function git(root, ...args) {
+  return execFileSync('git', ['-c', 'core.hooksPath=.git/test-hooks', '-c', 'commit.gpgsign=false', ...args], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function commitFixture(root, message) {
+  git(root, 'add', '--', BASELINE);
+  git(root, '-c', 'user.name=Code Health Test', '-c', 'user.email=fixture@example.test', 'commit', '-m', message);
+}
+
+it('checks committed baseline inflation against a real PR merge base, not HEAD or the base tip', () => {
+  const legacy = 'packages/example/src/Legacy.ts';
+  const tightened = 'packages/example/src/Tightened.ts';
+  const oldMock = 'packages/example/test/Old.test.ts';
+  const newMock = 'packages/example/test/New.integration.ts';
+  const root = createFixtureRepo({
+    maxNewFileLines: 500,
+    monolithMaxLines: { [legacy]: 620, [tightened]: 480 },
+    internalTestMocks: { [oldMock]: 1 },
+  });
+  git(root, 'init', '-b', 'release-base');
+  commitFixture(root, 'Freeze prior allowances');
+  git(root, 'switch', '-c', 'candidate');
+  updateFixtureBaseline(root, (baseline) => {
+    baseline.monolithMaxLines[legacy] = 621;
+    delete baseline.monolithMaxLines[tightened];
+    baseline.monolithMaxLines['packages/example/src/Big.cts'] = 601;
+    baseline.internalTestMocks[oldMock] = 2;
+    baseline.internalTestMocks[newMock] = 1;
+  });
+  commitFixture(root, 'Raise allowances on candidate');
+  git(root, 'switch', 'release-base');
+  updateFixtureBaseline(root, (baseline) => { baseline.monolithMaxLines[legacy] = 610; });
+  commitFixture(root, 'Independently tighten the base tip');
+  git(root, 'update-ref', 'refs/remotes/origin/release-base', 'HEAD');
+  git(root, 'switch', 'candidate');
+
+  assert.throws(() => execFileSync(process.execPath, [SCRIPT_PATH, '--root', root], {
+    stdio: 'pipe', env: { ...process.env, KIKI_DIFF_BASE: '', GITHUB_BASE_REF: 'release-base' },
+  }), (error) => {
+    const stderr = String(error.stderr);
+    assert.match(stderr, /Legacy\.ts increased from 620 to 621/u);
+    assert.match(stderr, /Tightened\.ts increased from 480 to 500/u);
+    assert.match(stderr, /Big\.cts increased from 500 to 601/u);
+    assert.match(stderr, /Old\.test\.ts increased from 1 to 2/u);
+    assert.match(stderr, /New\.integration\.ts increased from 0 to 1/u);
+    return error.status === 1;
+  });
+});
+
+it('accepts a downward edit against an explicit baseline and rejects new exceptions above a lowered ceiling', () => {
+  const legacy = 'packages/example/src/legacy.ts';
+  const root = createFixtureRepo({ maxNewFileLines: 600, monolithMaxLines: { [legacy]: 620 } });
+  const base = join(root, 'prior.json');
+  writeFixture(root, 'prior.json', readFileSync(join(root, BASELINE), 'utf8'));
+  updateFixtureBaseline(root, (baseline) => {
+    baseline.maxNewFileLines = 500;
+    baseline.monolithMaxLines[legacy] = 550;
+  });
+  assert.equal(checkCodeHealth(root, { baseBaselinePath: base }).ok, true);
+  updateFixtureBaseline(root, (baseline) => { baseline.monolithMaxLines['packages/example/src/new.ts'] = 550; });
+  assert.throws(() => execFileSync(process.execPath, [SCRIPT_PATH, '--root', root, '--base-baseline', base], {
+    stdio: 'pipe',
+  }), (error) => /new\.ts increased from 500 to 550/u.test(String(error.stderr)));
+});
+
+it('keeps a tracked cap after shrinking below the default ceiling and rejects regrowth from both sides of it', () => {
+  const legacy = 'packages/example/src/legacy.ts';
+  const root = createFixtureRepo({ maxNewFileLines: 500, monolithMaxLines: { [legacy]: 620 } });
+  for (const count of [550, 480]) {
+    writeFixture(root, legacy, makeLines(count));
+    const outcome = applyRatchet(root);
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.nextBaseline.monolithMaxLines[legacy], count);
+    writeFixture(root, legacy, makeLines(count + 1));
+    assert.equal(checkCodeHealth(root).violations[0].rule, 'monolith-ratchet');
+  }
+});
+
+it('counts .mts and .cts source even under src/build, but excludes package build output and declarations', () => {
+  const root = createFixtureRepo();
+  const rejected = ['packages/example/src/tool.mts', 'apps/example/src/build/nested/tool.cts'];
+  for (const file of [...rejected, 'apps/example/build/generated.ts', 'packages/example/src/api.d.mts', 'packages/example/src/api.d.cts']) {
+    writeFixture(root, file, makeLines(601));
+  }
+  assert.deepEqual(checkCodeHealth(root).violations.map(({ file }) => file), rejected.toSorted());
+});
+
+it('checks split and commented vi mock/doMock calls in both integration test extensions', () => {
+  const root = createFixtureRepo();
+  const [vi, mock, doMock] = ['vi', 'mock', 'doMock'];
+  const files = ['packages/example/test/work.integration.ts', 'apps/example/test/view.integration.tsx'];
+  writeFixture(root, files[0], `// ${vi}.${mock}('./ignored');\n${vi} /* split */ .\n  ${mock}\n  ('../service');`);
+  writeFixture(root, files[1], `${vi} // split\n. ${doMock} /* split */\n ('./view');\n${vi}\n. ${mock}('./view', { spy: true });`);
+  const { violations } = checkCodeHealth(root);
+  assert.deepEqual(violations.map(({ rule, file, line }) => [rule, file, line]), [
+    ['internal-test-mock-ratchet', files[1], 1],
+    ['internal-test-mock-ratchet', files[0], 2],
+  ]);
+});
+
+it('checks top-level GUI copy, emoji and native dialogs across comments and newlines', () => {
+  const root = createFixtureRepo();
+  writeFixture(root, 'apps/kiki-gui/src/App.tsx', [
+    '// window.alert("ignore");', 'window /* split */ .\nalert\n("bad");', 'confirm\n("bad");',
+    'prompt /* split */ ("bad");', "export const App = () => <div>Data{' '}may {/* split */}\nbe stale 🚀</div>;",
+  ].join('\n'));
+  writeFixture(root, 'apps/kiki-gui/src/ShellEntry.ts', 'export const copy = `结果可能\n  不完整`;');
+  assert.deepEqual(checkCodeHealth(root).violations.map(({ rule, line }) => [rule, line]), [
+    ['gui-native-dialog', 2], ['gui-native-dialog', 5], ['gui-native-dialog', 7],
+    ['gui-banned-defensive-copy', 8], ['gui-decorative-emoji', 9], ['gui-banned-defensive-copy', 1],
+  ]);
+});
+
+it('checks unguarded UUID calls in the mobile launcher and does not treat an unrelated typeof as a guard', () => {
+  const root = createFixtureRepo();
+  const launcher = 'apps/kiki-gui/mobile/src/launcher.ts';
+  writeFixture(root, launcher, [
+    'export function safe() {',
+    "  if (typeof globalThis.crypto?.randomUUID === 'function') {",
+    '    return globalThis.crypto /* split */ .\n randomUUID();',
+    '  }', '  return String(crypto.getRandomValues(new Uint8Array(16))[0]);', '}',
+  ].join('\n'));
+  assert.equal(checkCodeHealth(root).ok, true);
+  writeFixture(root, launcher, [
+    '// crypto.randomUUID();', "const supported = typeof crypto.randomUUID === 'function';",
+    'export const unguarded = () => crypto /* split */ .\n randomUUID /* split */\n ();',
+  ].join('\n'));
+  const { violations } = checkCodeHealth(root);
+  assert.deepEqual(violations.map(({ rule, file, line }) => [rule, file, line]), [
+    ['client-bare-random-uuid', launcher, 3],
+  ]);
+});
+
+it('resolves POSIX catalog locations with line/column anchors and refuses cross-root src fallbacks or backslashes', () => {
+  const root = createFixtureRepo();
+  writeFixture(root, 'src/wrong.ts', '');
+  writeFixture(root, 'apps/kiki-gui/wrong.ts', '');
+  writeFixture(root, 'apps/kiki-gui/src/AGENTS.md', [
+    '`./components/CleanView.tsx:1:2#heading`',
+    '`../AGENTS.md#gui`',
+    '`apps/kiki-gui/src/components/CleanView.tsx:1`',
+    '`./missing.ts:1`',
+    '`../missing.ts#heading`',
+  ].join('\n'));
+  writeFixture(root, 'apps/kiki-gui/AGENTS.md', [
+    '`src/wrong.ts`',
+    '`src/../wrong.ts`',
+    '`src\\components\\CleanView.tsx`',
+    '`./src\\components/CleanView.tsx:1`',
+  ].join('\n'));
+  assert.deepEqual(checkCodeHealth(root).violations.map(({ rule, line }) => [rule, line]), [
+    ['catalog-link-integrity', 1], ['catalog-link-integrity', 2],
+    ['catalog-link-integrity', 3], ['catalog-link-integrity', 4],
+    ['catalog-link-integrity', 4], ['catalog-link-integrity', 5],
+  ]);
 });

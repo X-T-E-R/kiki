@@ -304,6 +304,12 @@ jobs:
         env:
           KIKI_DIFF_BASE: ${{ github.base_ref && format('origin/{0}', github.base_ref) || '' }}
         run: node scripts/check-repo-meta.mjs
+      - name: Test code health checker
+        run: node --test scripts/check-code-health.test.mjs
+      - name: Check code health ratchets
+        env:
+          KIKI_DIFF_BASE: ${{ github.event.before }}
+        run: node scripts/check-code-health.mjs
 
   lint:
     runs-on: ${{ (github.repository_owner == 'X-T-E-R' && github.actor == 'X-T-E-R' && github.event.pull_request.head.repo.fork != true) && fromJSON('["self-hosted","ccp","cpu"]') || 'ubuntu-24.04' }}
