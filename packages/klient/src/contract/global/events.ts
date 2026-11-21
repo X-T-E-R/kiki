@@ -7,7 +7,13 @@
  */
 
 import { z } from 'zod';
-import { roomChangeEventSchema, type RoomChangeEvent, type SessionWorkChangedEvent } from '@kiki/protocol';
+import {
+  roomChangeEventSchema,
+  sessionAttentionCursorSchema,
+  type RemoteConnectionsChangedEvent,
+  type RoomChangeEvent,
+  type SessionWorkChangedEvent,
+} from '@kiki/protocol';
 
 import type { ConfigChangedEvent } from '@kiki/agent-core-v2/app/config/config';
 import type { ModelsChangedEvent } from '@kiki/agent-core-v2/kosong/model/model';
@@ -50,9 +56,13 @@ export type CatalogChangedPayload = Awaited<
   ReturnType<IOAuthService['refreshOAuthProviderModels']>
 >;
 
+/** Payload of `event.remote_connections.changed` on the global bus. */
+export type RemoteConnectionsChangedPayload = Omit<RemoteConnectionsChangedEvent, 'type'>;
+
 /** Public event name → payload type. Keys must stay in sync with `globalEvents`. */
 export interface KlientEventPayloads {
   'room.changed': RoomChangeEvent;
+  'remoteConnections.changed': RemoteConnectionsChangedPayload;
   'config.changed': ConfigChangedEvent;
   'config.sectionChanged': ConfigChangedEvent;
   'kosong.providers.changed': ProvidersChangedEvent;
@@ -93,7 +103,13 @@ const sessionWorkChangedSchema = z.object({
   main_turn_active: z.boolean().optional(),
   pending_interaction: z.enum(['none', 'approval', 'question']).optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  attention_cursor: sessionAttentionCursorSchema.optional(),
 }) satisfies z.ZodType<SessionWorkChangedPayload>;
+
+const remoteConnectionsChangedSchema = z.object({
+  reason: z.enum(['created', 'updated', 'deleted', 'paired', 'state_changed']).optional(),
+  connection_id: z.string().min(1).optional(),
+}) satisfies z.ZodType<RemoteConnectionsChangedPayload>;
 
 const sessionMetaUpdatedSchema = z.object({
   agentId: z.string(),
@@ -149,6 +165,10 @@ export const globalEvents = {
   },
   'room.changed': {
     kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
+  },
+  'remoteConnections.changed': {
+    kind: 'bus', type: 'event.remote_connections.changed',
+    schema: remoteConnectionsChangedSchema,
   },
   'search.indexStateChanged': {
     kind: 'bus', type: 'event.search.index_state_changed',

@@ -108,12 +108,16 @@ export interface SpaceSwitchSheetProps {
   readonly remoteError: boolean;
   readonly onRetryRemote: () => void;
   readonly currentConnectionId: string | null;
+  readonly spaceScope?: string;
+  readonly onSelectAllSpaces?: () => void;
+  readonly onNewSessionInLocal?: (space: SpaceListItem) => void;
+  readonly onNewSessionInRemote?: (record: RemoteConnection) => void;
   readonly multi: boolean;
   readonly openingKey: string | null;
   readonly failure: SpaceRowFailure | null;
   readonly actionBusy: boolean;
   readonly switchComputerUrl: string | null;
-  readonly onBackToLocal: () => void;
+  readonly onBackToLocal?: () => void;
   readonly onSelectLocal: (space: SpaceListItem) => void;
   readonly onSelectRemote: (record: RemoteConnection) => void;
   readonly onTurnOnRemote: (recordId: string, record: RemoteConnection) => void;
@@ -146,6 +150,10 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
     remoteError,
     onRetryRemote,
     currentConnectionId,
+    spaceScope = 'all',
+    onSelectAllSpaces,
+    onNewSessionInLocal,
+    onNewSessionInRemote,
     multi,
     openingKey,
     failure,
@@ -175,6 +183,10 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
     remoteItems.length === 0 &&
     !inRemoteScope;
   const showGroup2 = remoteError || remoteItems.length > 0;
+  const showAllSpacesRow =
+    onSelectAllSpaces !== undefined &&
+    (multi || remoteItems.length > 0 || localItems.length > 1 || spaceScope !== 'all');
+  const allSpacesActive = spaceScope === 'all';
 
   const label = (space: SpaceListItem) => (space.id === MAIN_SPACE_ID ? t('st.spaces.main') : space.name);
 
@@ -194,11 +206,38 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1.5" data-space-switch-scroll>
+        {showAllSpacesRow ? (
+          <div className="mb-1 border-b border-hairline pb-1">
+            <button
+              type="button"
+              role="menuitem"
+              data-space-scope-all
+              aria-current={allSpacesActive ? 'true' : undefined}
+              disabled={busy}
+              onClick={onSelectAllSpaces}
+              className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              <Icon name="agent" size={14} className="shrink-0 text-ink-faint" />
+              <span className={`min-w-0 flex-1 truncate ${allSpacesActive ? 'font-medium' : ''}`}>
+                {t('sidebar.space.allSpaces')}
+              </span>
+              {allSpacesActive ? (
+                <span className="inline-flex shrink-0 items-center text-ink-soft">
+                  <Icon name="check" size={12} />
+                </span>
+              ) : null}
+              {desktop && multi ? (
+                <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline pointer-coarse:hidden">⌃⌥0</kbd>
+              ) : null}
+            </button>
+          </div>
+        ) : null}
+
         <p className="px-2.5 pt-1 pb-1 text-[11.5px] font-medium text-ink-faint" data-space-group-local>
           {group1Title}
         </p>
 
-        {inRemoteScope ? (
+        {inRemoteScope && onBackToLocal !== undefined ? (
           <button
             type="button"
             role="menuitem"
@@ -234,16 +273,16 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
             const rowKey = `local:${space.id}`;
             const isOpening = openingKey === rowKey;
             const rowFailure = failure?.rowKey === rowKey ? failure : null;
-            const disabled = busy || (!desktop && !current);
+            const disabled = busy || (!desktop && !current && localRun !== 'current');
             const itemName = label(space);
             return (
-              <div key={space.id}>
+              <div key={space.id} className="group/space-row relative">
                 <button
                   type="button"
                   role="menuitem"
                   data-space-switch-item={space.id}
                   data-space-state={run}
-                  aria-current={current ? 'true' : undefined}
+                  aria-current={current && spaceScope !== 'all' ? 'true' : current && !showAllSpacesRow ? 'true' : undefined}
                   disabled={disabled}
                   onClick={() => { onSelectLocal(space); }}
                   className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:opacity-55"
@@ -252,11 +291,11 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
                   <span className={`min-w-0 flex-1 truncate ${current ? 'font-medium' : ''}`} title={itemName}>{itemName}</span>
                   {isOpening ? (
                     <span className="shrink-0 text-[11.5px] text-ink-soft" data-space-row-opening>{t('sidebar.space.openingInline')}</span>
-                  ) : current ? (
+                  ) : current && (!showAllSpacesRow || !allSpacesActive) ? (
                     <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-ink-soft">
                       <Icon name="check" size={12} />{t('st.spaces.current')}
                     </span>
-                  ) : desktop ? (
+                  ) : current ? null : desktop ? (
                     mode === 'switch' ? (
                       <span className="inline-flex shrink-0 items-center gap-1 text-[11.5px] text-ink-faint">
                         <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${run === 'hot' ? 'bg-success' : 'border border-ink-faint/70'}`} />
@@ -271,6 +310,21 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
                     <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline pointer-coarse:hidden">⌃⌥{index + 1}</kbd>
                   ) : null}
                 </button>
+                {onNewSessionInLocal !== undefined && !disabled && (desktop || current) ? (
+                  <button
+                    type="button"
+                    data-space-new-session-in={`local:${space.id}`}
+                    aria-label={t('sidebar.space.newInSpace', { name: itemName })}
+                    title={t('sidebar.space.newInSpace', { name: itemName })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onNewSessionInLocal(space);
+                    }}
+                    className="absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-panel/90 text-ink-faint opacity-0 transition-opacity hover:bg-ink/[0.08] hover:text-ink group-hover/space-row:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  >
+                    <Icon name="plus" size={12} />
+                  </button>
+                ) : null}
                 {rowFailure !== null ? (
                   <InlineRowFailure
                     failure={rowFailure}
@@ -313,16 +367,31 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
                   const canShortcut = browsableRemote(record);
                   const shortcutIndex = canShortcut ? (desktop ? localItems.length : 0) + browsableOffset++ : -1;
                   return (
-                    <div key={record.id}>
+                    <div key={record.id} className="group/space-row relative">
                       <RemoteSpaceRow
                         record={record}
-                        current={currentConnectionId === record.id}
+                        current={currentConnectionId === record.id && spaceScope !== 'all'}
                         opening={openingKey === rowKey}
                         disabled={busy}
                         shortcut={shortcutIndex + 1}
                         showShortcut={desktop && canShortcut && shortcutIndex < 9 && multi}
                         onEnter={() => { onSelectRemote(record); }}
                       />
+                      {onNewSessionInRemote !== undefined && !busy && canShortcut && record.state === 'online' ? (
+                        <button
+                          type="button"
+                          data-space-new-session-in={`remote:${record.id}`}
+                          aria-label={t('sidebar.space.newInSpace', { name: record.label })}
+                          title={t('sidebar.space.newInSpace', { name: record.label })}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onNewSessionInRemote(record);
+                          }}
+                          className="absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-panel/90 text-ink-faint opacity-0 transition-opacity hover:bg-ink/[0.08] hover:text-ink group-hover/space-row:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink"
+                        >
+                          <Icon name="plus" size={12} />
+                        </button>
+                      ) : null}
                       {rowFailure !== null ? (
                         <InlineRowFailure
                           failure={rowFailure}

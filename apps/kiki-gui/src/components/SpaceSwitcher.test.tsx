@@ -13,7 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureSpaceStorage } from '@kiki/session-core/storage';
-import { writeDesktopPrefs } from '@kiki/session-core/settings';
+import { readLayoutPreferences, resetLayoutPreferencesForTests, writeDesktopPrefs, writeLayoutPreferences } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
 import { PhoneRemoteSpaceLine } from './PageChrome';
@@ -35,7 +35,10 @@ const navigate = vi.fn();
 const connection = vi.hoisted(() => ({
   sshLabel: null as string | null,
   connectionId: null as string | null,
+  connectionSource: null as string | null,
   spaceKey: 'main' as string,
+  localSpaceKey: 'main' as string,
+  localScopeId: 'local' as string,
   wsStatus: 'open' as 'open' | 'connecting' | 'closed',
   wsBannerSuppressed: false,
   activateLocal: vi.fn(),
@@ -70,7 +73,10 @@ vi.mock('../state/connection', () => {
     localClient: connection.localClient === undefined ? defaultClient : connection.localClient,
     sshLabel: connection.sshLabel,
     connectionId: connection.connectionId,
+    connectionSource: connection.connectionSource,
     spaceKey: connection.spaceKey,
+    localSpaceKey: connection.localSpaceKey,
+    localScopeId: connection.localScopeId,
     wsStatus: connection.wsStatus,
     wsBannerSuppressed: connection.wsBannerSuppressed,
     activateLocal: connection.activateLocal,
@@ -108,6 +114,8 @@ beforeAll(() => { vi.stubGlobal('navigator', { language: 'en-US' }); env.IS_REAC
 afterAll(() => { env.IS_REACT_ACT_ENVIRONMENT = false; vi.unstubAllGlobals(); });
 beforeEach(() => {
   list.mockReset();
+  localStorage.removeItem('kiki.layout');
+  resetLayoutPreferencesForTests();
   resetLaunchWindowMode();
   // Native directory/SSH controls exercise the windows branch; the real
   // single-seat switch-mode consumer is covered with NavScopeBoundary.
@@ -116,7 +124,10 @@ beforeEach(() => {
   navigate.mockClear();
   connection.sshLabel = null;
   connection.connectionId = null;
+  connection.connectionSource = null;
   connection.spaceKey = 'main';
+  connection.localSpaceKey = 'main';
+  connection.localScopeId = 'local';
   connection.wsStatus = 'open';
   connection.wsBannerSuppressed = false;
   connection.activateLocal.mockReset();
@@ -247,7 +258,8 @@ describe('SpaceSwitcher', () => {
     expect(document.querySelector('[data-space-back-local]')?.textContent).toContain('Back to Main space');
     expect(document.querySelector('[data-space-manage]')).not.toBeNull();
     expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(3);
-    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(document.querySelector('[data-space-switch-item][aria-current="true"]')).toBeNull();
+    expect(document.querySelector('[data-space-scope-all]')?.getAttribute('aria-current')).toBe('true');
 
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-back-local]')!.click(); });
     expect(connection.activateLocal).toHaveBeenCalledTimes(1);
@@ -299,7 +311,7 @@ describe('SpaceSwitcher', () => {
     await view.rerender();
     await press(3);
     expect(remoteList).not.toHaveBeenCalled();
-    expect(localList).toHaveBeenCalledTimes(1);
+    expect(localList).toHaveBeenCalledTimes(2);
 
     const targets = host.openSpace.mock.calls.map((call) => (call as unknown[])[0]);
     const localFor = targets.map((id) => LOCAL_HOMES.items.find((home) => home.id === id)?.name ?? null);
@@ -373,7 +385,7 @@ describe('SpaceSwitcher', () => {
     expect(document.querySelector('[data-space-switcher-menu]')?.textContent).toContain('Local GPU');
     expect(document.querySelector('[data-space-switcher-menu]')?.textContent).not.toContain('Remote ACME');
     expect(remoteList).toHaveBeenCalledTimes(1);
-    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(2);
   });
 
   it('does not reuse old local directory data after the control client is replaced', async () => {
@@ -460,7 +472,7 @@ describe('SpaceSwitcher', () => {
         expect(document.querySelector('[data-space-browser-hint]')?.textContent).toContain('Other spaces open only in the desktop app on that computer.');
         expect(document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')?.disabled).toBe(true);
         expect(document.querySelector('[data-space-new-entry]')).toBeNull();
-        expect(connectionsList).toHaveBeenCalledTimes(1);
+        expect(connectionsList).toHaveBeenCalledTimes(2);
         const item = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteConnId}"]`);
         expect(item).not.toBeNull();
         expect(item?.textContent).toContain('Shared Remote Alpha');
@@ -828,5 +840,260 @@ describe('SpaceSwitcher', () => {
     expect(createPairCode).toHaveBeenCalledTimes(2);
     expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
     expect(document.querySelector('[data-inbound-qr]')).not.toBeNull();
+  });
+
+  it('defaults to All spaces when paired remotes exist, refetches immediately on open, focuses single space with 1-click × reset, and supports Ctrl+Alt+0', async () => {
+    const remoteId = '11111111-1111-4111-8111-111111111111';
+    const remoteRecord = {
+      id: remoteId,
+      label: 'MacBook Air',
+      endpoint: 'http://100.69.108.120:58627',
+      target: { homeId: '22222222-2222-4222-8222-222222222222', hostId: 'mac-air', protocol: 1 },
+      purposes: ['gui'],
+      enabled: true,
+      state: 'online',
+      addedAt: 1_700_000_000_000,
+    };
+    const listConnections = vi.fn(async () => [remoteRecord]);
+    const remoteClient = { klient: { rest: { homes: { list }, connections: { list: listConnections } } }, baseUrl: 'http://127.0.0.1:58627' };
+    connection.client = remoteClient;
+    connection.localClient = remoteClient;
+    list.mockResolvedValue({ items: [TWO.items[0]] });
+
+    const scopeNavigate = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      // Default scope is `all`, showing the compact `All spaces` capsule.
+      expect(document.querySelector('[data-space-scope-pill="all"]')?.textContent).toContain('All spaces');
+      const callsBeforeOpen = listConnections.mock.calls.length;
+
+      // Opening the popover triggers an immediate background refetch.
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click();
+      });
+      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(listConnections.mock.calls.length).toBeGreaterThan(callsBeforeOpen);
+      expect(document.querySelector('[data-space-scope-all]')).not.toBeNull();
+
+      // Clicking the remote space focuses `spaceScope` onto that remote space in-place.
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteId}"]`)!.click();
+      });
+      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(readLayoutPreferences().spaceScope).toBe(`remote:${remoteId}`);
+      expect(scopeNavigate).toHaveBeenCalledWith({
+        homeId: `remote:${remoteId}`,
+        scopeId: `remote:${remoteId}`,
+        inPlace: true,
+      });
+
+      // Focused pill shows space name + 1-click × reset back to All spaces.
+      const clearBtn = document.querySelector<HTMLButtonElement>('[data-space-scope-clear]');
+      expect(clearBtn).not.toBeNull();
+      expect(document.querySelector('[data-space-switcher-name]')?.textContent).toBe('MacBook Air');
+      await act(async () => { clearBtn!.click(); });
+      expect(readLayoutPreferences().spaceScope).toBe('all');
+
+      // Focusing again and pressing Ctrl+Alt+0 returns to All spaces cleanly.
+      await act(async () => { writeLayoutPreferences({ spaceScope: `remote:${remoteId}` }); });
+      expect(readLayoutPreferences().spaceScope).toBe(`remote:${remoteId}`);
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0', ctrlKey: true, altKey: true }));
+      });
+      expect(readLayoutPreferences().spaceScope).toBe('all');
+    } finally {
+      unregister();
+    }
+  });
+
+  it('uses the real localScopeId (e.g. direct:<url>) when returning in-place to local from a remote space on non-desktop hosts', async () => {
+    host.kind = 'browser';
+    const remoteId = '33333333-3333-4333-8333-333333333333';
+    const directScopeId = 'direct:http://127.0.0.1:19918';
+    connection.connectionId = remoteId;
+    connection.spaceKey = `remote:${remoteId}`;
+    connection.localSpaceKey = 'main';
+    connection.localScopeId = directScopeId;
+    const listConnections = vi.fn().mockResolvedValue([
+      {
+        id: remoteId,
+        label: 'MacBook Air',
+        endpoint: 'http://192.0.2.20:59001',
+        target: { homeId: remoteId, hostId: 'host-mac', protocol: 1 },
+        credentialRef: remoteId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+        rttMs: 11,
+      },
+    ]);
+    list.mockResolvedValue({
+      items: [{ id: 'main', name: 'Main space', path: 'C:/kiki', primary: true }],
+    });
+    connection.localClient = {
+      baseUrl: 'http://127.0.0.1:19918',
+      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
+    };
+    const scopeNavigate = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click();
+      });
+      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-space-switch-item="main"]')!.click();
+      });
+      expect(scopeNavigate).toHaveBeenCalledWith({
+        homeId: 'main',
+        scopeId: directScopeId,
+        route: '/new',
+        inPlace: true,
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it('discovers host space and paired remotes on Capacitor app-shell without rendering a dead Back to local space button', async () => {
+    host.kind = 'browser';
+    const remoteMacId = '44444444-4444-4444-8444-444444444444';
+    connection.connectionSource = 'app-shell';
+    connection.connectionId = null;
+    connection.sshLabel = null;
+    connection.localClient = null;
+    connection.localScopeId = 'direct:';
+    const listConnections = vi.fn().mockResolvedValue([
+      {
+        id: remoteMacId,
+        label: 'MacBook Air',
+        endpoint: 'http://192.0.2.30:59001',
+        target: { homeId: remoteMacId, hostId: 'host-mac', protocol: 1 },
+        credentialRef: remoteMacId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+        rttMs: 9,
+      },
+    ]);
+    list.mockResolvedValue({
+      items: [{ id: 'main', name: 'Main space', path: '/srv/kiki', primary: true }],
+    });
+    connection.client = {
+      baseUrl: '',
+      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
+    };
+    const scopeNavigate = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      // Top-level app-shell discovers paired remotes via host client -> All spaces pill appears.
+      expect(document.querySelector('[data-space-scope-pill="all"]')).not.toBeNull();
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click();
+      });
+      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      // Never renders a dead "← Back to local space" button at top-level app-shell.
+      expect(document.querySelector('[data-space-back-local]')).toBeNull();
+      expect(document.querySelector('[data-space-scope-all]')).not.toBeNull();
+      expect(document.querySelector('[data-space-switch-item="main"]')).not.toBeNull();
+      const remoteItem = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteMacId}"]`);
+      expect(remoteItem).not.toBeNull();
+      expect(remoteItem?.textContent).toContain('MacBook Air');
+
+      // Entering the paired remote space uses in-place scope navigation.
+      await act(async () => { remoteItem!.click(); });
+      expect(scopeNavigate).toHaveBeenCalledWith({
+        homeId: `remote:${remoteMacId}`,
+        scopeId: `remote:${remoteMacId}`,
+        inPlace: true,
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it('degrades gracefully without error banners or dead Back to local button when app-shell peer token receives 40101 local_owner_required', async () => {
+    host.kind = 'browser';
+    connection.connectionSource = 'app-shell';
+    connection.connectionId = null;
+    connection.sshLabel = null;
+    connection.localClient = null;
+    connection.localScopeId = 'direct:';
+    const ownerOnlyErr = Object.assign(new Error('local_owner_required'), { code: 40101 });
+    const listConnections = vi.fn().mockRejectedValue(ownerOnlyErr);
+    list.mockRejectedValue(ownerOnlyErr);
+    connection.client = {
+      baseUrl: '',
+      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
+    };
+    await render();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click();
+    });
+    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(document.querySelector('[data-space-back-local]')).toBeNull();
+    expect(document.querySelector('[data-space-local-error]')).toBeNull();
+    expect(document.querySelector('[data-space-remote-error]')).toBeNull();
+    expect(document.querySelector('[data-space-switch-item="main"]')).not.toBeNull();
+  });
+
+  it('retains the app-shell host control client after entering a brokered remote space and returns cleanly to direct:', async () => {
+    host.kind = 'browser';
+    const remoteMacId = '55555555-5555-4555-8555-555555555555';
+    connection.connectionSource = 'remote';
+    connection.connectionId = remoteMacId;
+    connection.spaceKey = `remote:${remoteMacId}`;
+    connection.localSpaceKey = 'main';
+    connection.localScopeId = 'direct:';
+    const listConnections = vi.fn().mockResolvedValue([
+      {
+        id: remoteMacId,
+        label: 'MacBook Air',
+        endpoint: 'http://192.0.2.30:59001',
+        target: { homeId: remoteMacId, hostId: 'host-mac', protocol: 1 },
+        credentialRef: remoteMacId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+        rttMs: 9,
+      },
+    ]);
+    list.mockResolvedValue({
+      items: [{ id: 'main', name: 'Main space', path: '/srv/kiki', primary: true }],
+    });
+    connection.localClient = {
+      baseUrl: '',
+      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
+    };
+    const scopeNavigate = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click();
+      });
+      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(document.querySelector('[data-space-back-local]')).not.toBeNull();
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-space-switch-item="main"]')!.click();
+      });
+      expect(scopeNavigate).toHaveBeenCalledWith({
+        homeId: 'main',
+        scopeId: 'direct:',
+        route: '/new',
+        inPlace: true,
+      });
+    } finally {
+      unregister();
+    }
   });
 });

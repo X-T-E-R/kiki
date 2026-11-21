@@ -677,4 +677,149 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     expect(brokerLargeBody.data.truncated).toBe(false);
     expect(Buffer.from(brokerLargeBody.data.content, 'base64').byteLength).toBe(binaryBytes.byteLength);
   }, 30_000);
+
+  it('broadcasts event.remote_connections.changed over global /api/ws on CRUD, pairing, and state transitions without redundant emissions', async () => {
+    const source = await boot();
+    const target = await boot();
+
+    const openGlobalWs = async (s: RunningServer) => {
+      const ws = new WebSocket(endpoint(s).replace('http:', 'ws:') + '/api/ws', {
+        headers: { authorization: `Bearer ${s.localOwnerToken}` },
+      });
+      sockets.push(ws);
+      const events: Array<{ reason?: string; connection_id?: string }> = [];
+      let resolveHello!: () => void;
+      const gotHello = new Promise<void>((resolve) => { resolveHello = resolve; });
+      let resolveAck!: () => void;
+      const gotAck = new Promise<void>((resolve) => { resolveAck = resolve; });
+      ws.on('message', (raw) => {
+        const parsed = JSON.parse(raw.toString()) as {
+          type?: string;
+          id?: string;
+          payload?: { reason?: string; connection_id?: string };
+        };
+        if (parsed.type === 'server_hello') {
+          resolveHello();
+          return;
+        }
+        if (parsed.type === 'ack' && parsed.id === 'h1') {
+          resolveAck();
+          return;
+        }
+        if (parsed.type === 'event.remote_connections.changed') {
+          events.push({
+            reason: parsed.payload?.reason,
+            connection_id: parsed.payload?.connection_id,
+          });
+        }
+      });
+      await once(ws, 'open');
+      await gotHello;
+      ws.send(JSON.stringify({
+        type: 'client_hello',
+        id: 'h1',
+        payload: { client_id: 'remote-conn-test', subscriptions: [] },
+      }));
+      await gotAck;
+      return events;
+    };
+
+    const sourceEvents = await openGlobalWs(source);
+    const targetEvents = await openGlobalWs(target);
+
+    const { record } = await connect(source, target);
+    await vi.waitFor(() => {
+      expect(sourceEvents.some((e) => e.reason === 'created' && e.connection_id === record.id)).toBe(true);
+    });
+    await vi.waitFor(() => {
+      expect(targetEvents.some((e) => e.reason === 'paired')).toBe(true);
+    });
+
+    const disableRes = await call(
+      source,
+      `/api/remote-connections/${encodeURIComponent(record.id)}/enabled`,
+      { enabled: false },
+      source.localOwnerToken,
+      undefined,
+      'PUT',
+    );
+    expect(disableRes.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(sourceEvents.some((e) => e.reason === 'state_changed' && e.connection_id === record.id)).toBe(true);
+    });
+
+    const countBeforeEnable = sourceEvents.length;
+    const enableRes = await call(
+      source,
+      `/api/remote-connections/${encodeURIComponent(record.id)}/enabled`,
+      { enabled: true },
+      source.localOwnerToken,
+      undefined,
+      'PUT',
+    );
+    expect(enableRes.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(sourceEvents.length).toBeGreaterThan(countBeforeEnable);
+    });
+
+    const countBeforeOffline = sourceEvents.length;
+    source.remoteConnections.failed(record.id, new Error('simulated_offline'));
+    await delay(80);
+    expect(sourceEvents.length).toBe(countBeforeOffline);
+
+    source.remoteConnections.notePeerSuccess(record.id);
+    await vi.waitFor(() => {
+      expect(sourceEvents.length).toBe(countBeforeOffline + 1);
+    });
+    expect(sourceEvents.at(-1)).toEqual({ reason: 'state_changed', connection_id: record.id });
+
+    const countAfterOnline = sourceEvents.length;
+    await source.remoteConnections.pollSummaries();
+    await delay(80);
+    expect(sourceEvents.length).toBe(countAfterOnline);
+
+    source.remoteConnections.failed(record.id, new Error('dropped'));
+    await vi.waitFor(() => {
+      expect(sourceEvents.length).toBe(countAfterOnline + 1);
+    });
+    expect(sourceEvents.at(-1)).toEqual({ reason: 'state_changed', connection_id: record.id });
+
+    const countAfterDropped = sourceEvents.length;
+    source.remoteConnections.failed(record.id, new Error('still_dropped'));
+    await delay(80);
+    expect(sourceEvents.length).toBe(countAfterDropped);
+
+    const deleteRes = await fetch(
+      `${endpoint(source)}/api/remote-connections/${encodeURIComponent(record.id)}`,
+      {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${source.localOwnerToken}` },
+      },
+    );
+    expect(deleteRes.status).toBe(200);
+    expect((await deleteRes.json() as { code: number }).code).toBe(0);
+    await vi.waitFor(() => {
+      expect(sourceEvents.some((e) => e.reason === 'deleted' && e.connection_id === record.id)).toBe(true);
+    });
+
+    const pairCodeRes = await call(target, '/api/remote-connections/inbound/pair-code', {});
+    expect(pairCodeRes.status).toBe(200);
+    const pairCodeBody = (await pairCodeRes.json()) as { code: number; data: { code: string } };
+    expect(pairCodeBody.code).toBe(0);
+
+    const countBeforePair = sourceEvents.length;
+    const targetCountBeforePair = targetEvents.length;
+    const pairRes = await call(source, '/api/remote-connections/pair', {
+      endpoint: endpoint(target),
+      code: pairCodeBody.data.code,
+      label: 'Paired Target',
+      requestBridge: false,
+    });
+    expect(pairRes.status).toBe(200);
+    const paired = ((await pairRes.json()) as { data: { id: string } }).data;
+    await vi.waitFor(() => {
+      expect(sourceEvents.slice(countBeforePair).some((e) => e.reason === 'paired' && e.connection_id === paired.id)).toBe(true);
+      expect(targetEvents.slice(targetCountBeforePair).some((e) => e.reason === 'paired')).toBe(true);
+    });
+  }, 30_000);
 });

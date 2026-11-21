@@ -92,6 +92,7 @@ import {
   type JournalLogger,
   SessionEventJournal,
   sessionJournalPath,
+  toAttentionCursor,
 } from './sessionEventJournal';
 
 export type ResyncReason =
@@ -112,6 +113,7 @@ export interface BufferedSinceResult {
 export interface SessionSnapshotState {
   seq: number;
   epoch: string;
+  attentionSeq: number;
   contextMessages: readonly ContextMessage[];
   contextMessageTimes: readonly (number | undefined)[];
   contextMessageCount: number;
@@ -1314,18 +1316,26 @@ export class SessionEventBroadcaster {
     return { events: applyFilter(fromDisk), resyncRequired: false, currentSeq, epoch };
   }
 
-  async getCursor(sessionId: string, signal?: AbortSignal, indexed = false): Promise<{ seq: number; epoch: string }> {
+  async getCursor(
+    sessionId: string,
+    signal?: AbortSignal,
+    indexed = false,
+  ): Promise<{ seq: number; epoch: string; attentionSeq: number }> {
     signal?.throwIfAborted();
     const statePromise = this.ensureState(sessionId);
     const state = signal === undefined ? await statePromise : await abortable(statePromise, signal);
     signal?.throwIfAborted();
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId, signal, indexed);
-      return cold ?? { seq: 0, epoch: '' };
+      return cold ?? { seq: 0, epoch: '', attentionSeq: 0 };
     }
     await (signal === undefined ? state.queue : abortable(state.queue, signal));
     signal?.throwIfAborted();
-    return { seq: state.journal.seq, epoch: state.journal.epoch };
+    return {
+      seq: state.journal.seq,
+      epoch: state.journal.epoch,
+      attentionSeq: state.journal.attentionSeq,
+    };
   }
 
   async publishHistoryRewritten(
@@ -1419,6 +1429,7 @@ export class SessionEventBroadcaster {
       return {
         seq: cold?.seq ?? 0,
         epoch: cold?.epoch ?? '',
+        attentionSeq: cold?.attentionSeq ?? 0,
         contextMessages: [],
         contextMessageTimes: [],
         contextMessageCount: 0,
@@ -1437,6 +1448,7 @@ export class SessionEventBroadcaster {
       const frozen = {
         seq: state.journal.seq,
         epoch: state.journal.epoch,
+        attentionSeq: state.journal.attentionSeq,
         contextMessages,
         contextMessageCount: captureMessages
           ? state.contextMessages.length
@@ -1501,7 +1513,7 @@ export class SessionEventBroadcaster {
     sessionId: string,
     signal?: AbortSignal,
     indexed = false,
-  ): Promise<{ seq: number; epoch: string } | undefined> {
+  ): Promise<{ seq: number; epoch: string; attentionSeq: number } | undefined> {
     signal?.throwIfAborted();
     if (!indexed) {
       const summary = await this.opts.core.accessor.get(ISessionIndex).get(sessionId, undefined, signal);
@@ -1777,6 +1789,19 @@ export class SessionEventBroadcaster {
       );
       return;
     }
+    if (event.type === 'event.remote_connections.changed') {
+      const payload = remoteConnectionsChangedPayload(corePayload);
+      if (payload === undefined) return;
+      void this.dispatchGlobal({
+        type: 'event.remote_connections.changed',
+        ...payload,
+        agentId: 'main',
+        sessionId: GLOBAL_SESSION_ID,
+      } as Event).catch((error: unknown) =>
+        this.logDispatchError(GLOBAL_SESSION_ID, 'event.remote_connections.changed', error),
+      );
+      return;
+    }
     if (event.type === 'event.capability.changed') {
       const payload = capabilityChangedPayload(corePayload);
       if (payload === undefined) return;
@@ -1852,7 +1877,7 @@ export class SessionEventBroadcaster {
     workView.state();
     state.lifecycleDisposables.push(
       workView.onDidChange(({ state: work, cause }) => {
-        if (cause === 'turn_ended') {
+        if (cause === 'turn_ended' || cause === 'interaction') {
           state.deferredWork = work;
           queueMicrotask(() => {
             if (this.sessions.get(state.sessionId) !== state) return;
@@ -2076,6 +2101,7 @@ export class SessionEventBroadcaster {
     }
     state.lifecycleDisposables.push(
       interactions.onDidChangePending(() => {
+        let emitted = false;
         for (const i of interactions.listPending()) {
           if (state.knownInteractions.has(i.id)) continue;
           state.knownInteractions.set(i.id, {
@@ -2085,7 +2111,12 @@ export class SessionEventBroadcaster {
           const event = interactionRequestedEvent(i, sessionId);
           if (event !== undefined) {
             this.enqueueDurable(state, event);
+            emitted = true;
           }
+        }
+        if (emitted) {
+          if (state.deferredWork !== undefined) this.flushDeferredWork(state);
+          else this.enqueueWorkChanged(state, session.accessor.get(ISessionActivityView).state());
         }
       }),
       interactions.onDidResolve(({ id, response }) => {
@@ -2096,6 +2127,7 @@ export class SessionEventBroadcaster {
         if (event !== undefined) {
           this.enqueueDurable(state, event);
         }
+        this.flushDeferredWork(state);
       }),
     );
   }
@@ -2124,6 +2156,10 @@ export class SessionEventBroadcaster {
   private enqueueWorkChanged(state: SessionState, work: SessionActivityState): void {
     state.queue = state.queue
       .then(async () => {
+        const attentionCursor = toAttentionCursor({
+          epoch: state.journal.epoch,
+          attentionSeq: state.journal.attentionSeq,
+        });
         const event = {
           type: 'event.session.work_changed',
           busy: work.busy,
@@ -2132,6 +2168,7 @@ export class SessionEventBroadcaster {
           main_turn_active: work.mainTurnActive,
           pending_interaction: work.pendingInteraction,
           last_turn_reason: work.lastTurnReason,
+          attention_cursor: attentionCursor,
           agentId: 'main',
           sessionId: state.sessionId,
         } as Event;
@@ -2147,6 +2184,7 @@ export class SessionEventBroadcaster {
             main_turn_active: work.mainTurnActive,
             pending_interaction: work.pendingInteraction,
             last_turn_reason: work.lastTurnReason,
+            attention_cursor: attentionCursor,
           },
         });
       })
@@ -2351,7 +2389,8 @@ export function isGlobalEvent(type: string): boolean {
     (type.startsWith('event.plugin.') && type !== 'event.plugin.topic') ||
     type.startsWith('event.persona.') ||
     type.startsWith('event.capability.') ||
-    type.startsWith('event.model_catalog.')
+    type.startsWith('event.model_catalog.') ||
+    type.startsWith('event.remote_connections.')
   );
 }
 
@@ -2631,6 +2670,35 @@ function modelCatalogChangedPayload(payload: unknown): ModelCatalogChangedPayloa
     return undefined;
   }
   return { changed, unchanged, failed };
+}
+
+const REMOTE_CONNECTIONS_CHANGE_REASONS = new Set([
+  'created',
+  'updated',
+  'deleted',
+  'paired',
+  'state_changed',
+]);
+
+interface RemoteConnectionsChangedPayload {
+  readonly reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed';
+  readonly connection_id?: string;
+}
+
+function remoteConnectionsChangedPayload(payload: unknown): RemoteConnectionsChangedPayload | undefined {
+  if (payload === undefined) return {};
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const { reason, connection_id } = payload as Record<string, unknown>;
+  if (reason !== undefined && (typeof reason !== 'string' || !REMOTE_CONNECTIONS_CHANGE_REASONS.has(reason))) {
+    return undefined;
+  }
+  if (connection_id !== undefined && (typeof connection_id !== 'string' || connection_id.length === 0)) {
+    return undefined;
+  }
+  return {
+    reason: reason as RemoteConnectionsChangedPayload['reason'],
+    connection_id: connection_id as string | undefined,
+  };
 }
 
 function capabilityChangedPayload(payload: unknown): CapabilityChangedPayload | undefined {

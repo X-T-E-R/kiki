@@ -24,7 +24,9 @@ import { formatTokens } from '@kiki/session-core/util';
 import { ApiError, API_CODES } from '@kiki/session-core/transport';
 
 import { errorText } from '@kiki/session-core/i18n';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { useViewedRoom } from '../../lib/useAwayNotifications';
 import { ROOMS_QUERY_KEY, roomQueryKey, roomUsageQueryKey, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
 import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
@@ -177,6 +179,8 @@ function RoomView({
     ? ROOM_POLL_MS
     : ROOM_IDLE_POLL_MS;
   const log = useRoomLog(api, room.id, pollIntervalMs);
+  const host = useHost();
+  useViewedRoom(host, room.id, log.lastSeq);
 
   const [membersOpen, setMembersOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1280);
   const [menuOpen, setMenuOpen] = useState(false);

@@ -87,6 +87,7 @@ export interface ScopeNavigationRequest {
   readonly route?: string;
   readonly token?: string;
   readonly inPlace?: boolean;
+  readonly onCancel?: () => void;
 }
 let navigationHandler: ((request: ScopeNavigationRequest) => Promise<void>) | undefined;
 export function registerScopeNavigation(handler: (request: ScopeNavigationRequest) => Promise<void>): () => void {

@@ -166,6 +166,13 @@ export const sessionForkedFromSchema = z.object({
 });
 export type SessionForkedFrom = z.infer<typeof sessionForkedFromSchema>;
 
+export const sessionAttentionCursorSchema = z.object({
+  epoch: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+});
+
+export type SessionAttentionCursor = z.infer<typeof sessionAttentionCursorSchema>;
+
 export const sessionSchema = z.object({
   executor_id: z.string().optional(),
   negotiated: executorCapabilitiesSchema.shape.negotiated,
@@ -225,6 +232,7 @@ export const sessionSchema = z.object({
   permission_rules: z.array(permissionRuleSchema),
   message_count: z.number().int().nonnegative(),
   last_seq: z.number().int().nonnegative(),
+  attention_cursor: sessionAttentionCursorSchema.optional(),
 });
 
 export type Session = z.infer<typeof sessionSchema>;

@@ -7,7 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetaResponse, RoomDocument, Session } from '@kiki/protocol';
 import { RPCError } from '@kiki/klient';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { writeDesktopPrefs, type SpaceWindowMode } from '@kiki/session-core/settings';
+import {
+  conversationSeenSnapshot,
+  encodeConversationRef,
+  resetConversationSeen,
+  writeDesktopPrefs,
+  type SpaceWindowMode,
+} from '@kiki/session-core/settings';
+import { beginExplicitConversationOpen, resetPendingConversationOpens } from './conversationOpen';
 import { resetLaunchWindowMode } from './spaces';
 import { SpaceSwitcher } from '../components/SpaceSwitcher';
 import type { HostAdapter, SshResolvedConnection } from '../host';
@@ -141,11 +148,19 @@ afterEach(async () => {
   container.remove(); configureSpaceStorage(null); vi.restoreAllMocks();
 });
 
+let commitFixtureScope: ((selection: ConnectionSelection, client: KikiClient, meta: MetaResponse) => void) | undefined;
+
 function Fixture({ children }: { children: ReactNode }) {
   const [value, setValue] = useState(() => ({ scopeId: current.scope.scopeId, connectionRef: current.scope.connectionRef,
     client: current.client, meta: metaFor(current.client) }));
   const [needsScopeReload, setNeedsScopeReload] = useState(false);
   const currentRef = useRef(current); currentRef.current = current;
+  const commitScope = (selection: ConnectionSelection, client: KikiClient, meta: MetaResponse) => {
+    current = { scope: { homeId: nativeHome, scopeId: selection.scopeId ?? 'local', serverHomeId: meta.server_home_id,
+      connectionRef: selection.source === 'ssh' ? selection.tunnelId : undefined }, selection, client };
+    setValue({ scopeId: current.scope.scopeId, connectionRef: current.scope.connectionRef, client, meta });
+  };
+  commitFixtureScope = commitScope;
   adapter = useMemo(() => createScopeConnectionAdapter({ host,
     active: () => currentRef.current,
     local: () => {
@@ -153,11 +168,7 @@ function Fixture({ children }: { children: ReactNode }) {
       return { selection, client: currentRef.current.scope.scopeId === 'local' ? currentRef.current.client : newClient(selection) };
     },
     createClient: newClient,
-    commit: (selection, client, meta) => {
-      current = { scope: { homeId: nativeHome, scopeId: selection.scopeId ?? 'local', serverHomeId: meta.server_home_id,
-        connectionRef: selection.source === 'ssh' ? selection.tunnelId : undefined }, selection, client };
-      setValue({ scopeId: current.scope.scopeId, connectionRef: current.scope.connectionRef, client, meta });
-    },
+    commit: commitScope,
     reload: () => {
       reloads += 1;
       if (withControlledReload) {
@@ -744,5 +755,84 @@ describe('real SpaceSwitcher single confirmation consumer', () => {
       expect(host.prepareSpace).not.toHaveBeenCalled(); expect(current.scope.homeId).toBe('home-a');
       expect(router.state.location.key).toBe(source.key);
     }
+  });
+});
+
+describe('in-place cross-space DirtyGuard cancellation and non-desktop direct scope return', () => {
+  afterEach(() => {
+    resetConversationSeen();
+    resetPendingConversationOpens();
+  });
+
+  it('rejects in-place requestScopeNavigation with AbortError when DirtyGuard is cancelled so optimistic read overlays roll back', async () => {
+    const router = await mount();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-dirty]')!.click(); });
+
+    const targetRef = { spaceKey: 'home-b', kind: 'session' as const, id: 'b-only' };
+    const key = encodeConversationRef(targetRef);
+    const handle = beginExplicitConversationOpen(targetRef, { seq: 5 });
+    expect(conversationSeenSnapshot()[key]?.seq).toBe(5);
+
+    let settled = false;
+    let caughtError: unknown;
+    const navPromise = requestScopeNavigation({ homeId: 'home-b', route: '/s/b-only', inPlace: true })
+      .then(() => { settled = true; })
+      .catch((error: unknown) => {
+        settled = true;
+        caughtError = error;
+        handle.cancel();
+      });
+
+    await flush();
+    // Must stay pending while DirtyGuard dialog is open (never resolves early).
+    expect(guard!.pending).toBe(true);
+    expect(settled).toBe(false);
+
+    await act(async () => { guard!.cancel(); });
+    await navPromise;
+    expect(settled).toBe(true);
+    expect(caughtError).toMatchObject({ name: 'AbortError' });
+    // Optimistic read overlay rolled back cleanly; source route untouched.
+    expect(conversationSeenSnapshot()[key]).toBeUndefined();
+    expect(router.state.location.pathname).toBe('/s/shared');
+  });
+
+  it('keeps children mounted on non-desktop direct:<url> in-place return when target scopeId matches the local direct scope', async () => {
+    const directScopeId = 'direct:http://127.0.0.1:19918';
+    const remoteScopeId = 'remote:33333333-3333-4333-8333-333333333333';
+    // Boot directly in remote scope, then return in-place to the non-desktop direct:<url> local scope.
+    current = {
+      scope: { homeId: remoteScopeId, scopeId: remoteScopeId, serverHomeId: 'server-remote' },
+      selection: { ...localSelection('home-a'), source: 'remote', connectionId: '33333333-3333-4333-8333-333333333333', scopeId: remoteScopeId },
+      client: current.client,
+    };
+    const router = await mount('/s/shared');
+    const origPrepare = adapter.prepare;
+    adapter.prepare = async (scope, signal, token) => {
+      if (scope.scopeId === directScopeId) {
+        return {
+          scope: { homeId: 'home-a', scopeId: directScopeId, serverHomeId: 'server-a' },
+          validate: async () => { signal.throwIfAborted(); },
+          commit: async () => {
+            signal.throwIfAborted();
+            commitFixtureScope?.(
+              { ...localSelection('home-a'), scopeId: directScopeId },
+              current.client,
+              { server_version: '1.0.0', server_id: 'srv-a', server_home_id: 'server-a', capabilities: {} } as MetaResponse,
+            );
+          },
+          dispose: async () => {},
+        };
+      }
+      return origPrepare(scope, signal, token);
+    };
+    await act(async () => {
+      await requestScopeNavigation({ homeId: 'home-a', scopeId: directScopeId, route: '/usage', inPlace: true });
+    });
+    await flush();
+    expect(current.scope.scopeId).toBe(directScopeId);
+    expect(router.state.location.pathname).toBe('/usage');
+    // Children stay mounted (no blank screen).
+    expect(container.querySelector('[data-buffer]')).not.toBeNull();
   });
 });

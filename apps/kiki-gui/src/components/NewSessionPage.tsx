@@ -59,8 +59,16 @@ import { LocalSessionsEntry } from './localSessions/LocalSessionsEntry';
 import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
-import { useMediaQuery } from '../lib/layoutHooks';
+import { useLayoutPreferences, useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
+import { requestScopeNavigation } from '../lib/navScope';
+import { browsableRemote, remoteSpaceScope, useRemoteConnections } from '../lib/remoteConnections';
+import { MAIN_SPACE_ID } from '../lib/spaces';
+import { pushToast } from '../lib/toasts';
+import { ALL_SPACE_SCOPE } from '../lib/useMultiSpaceSessions';
+import { ActionSheet } from './overlays/ActionSheet';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
+import { SpaceDot } from './settings/spaces/SpaceDot';
 import { isNativeExecutor } from '@kiki/session-core/composer';
 import { importHistoryPath, isFirstRunHintDone, markFirstRunHintDone } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
@@ -102,6 +110,152 @@ function useTypingEcho(draft: string): number {
     setEcho((value) => value + 1);
   }, [draft]);
   return echo;
+}
+
+/**
+ * Quiet target-space selector beside the workspace chip on `/new` when multiple
+ * writable spaces exist and the user is in `全部空间` (or targeting a remote).
+ */
+function HeroSpaceChip() {
+  const { t } = useI18n();
+  const isPhone = usePhoneMode();
+  const layoutPrefs = useLayoutPreferences();
+  const { client, localClient, connectionId, connectionSource, sshLabel, localSpaceKey, localScopeId } = useConnection();
+  const [open, setOpen] = useState(false);
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const inSshScope = typeof sshLabel === 'string' && sshLabel.length > 0;
+  const inBrokeredScope = (typeof connectionId === 'string' && connectionId !== '') || inSshScope || connectionSource === 'remote';
+  const controlClient = localClient ?? (inBrokeredScope ? null : client);
+  const hasRemoteApi = controlClient?.klient?.rest?.connections !== undefined;
+  const remotesQuery = useRemoteConnections(hasRemoteApi ? controlClient : null, { poll: open });
+  const onlineRemotes = useMemo(
+    () => (remotesQuery.data ?? []).filter((record) => browsableRemote(record) && record.state === 'online'),
+    [remotesQuery.data],
+  );
+
+  const spaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
+  if (inSshScope || onlineRemotes.length === 0) return null;
+  if (spaceScope !== ALL_SPACE_SCOPE && !inBrokeredScope) return null;
+
+  const activeLocalId = localSpaceKey ?? MAIN_SPACE_ID;
+  const activeLocalScopeId = localScopeId ?? 'local';
+  const activeRemote = connectionId !== null ? onlineRemotes.find((r) => r.id === connectionId) : undefined;
+  const activeLabel = activeRemote !== undefined ? activeRemote.label : t('st.spaces.main');
+  const activeColor = activeRemote !== undefined ? 'var(--color-success)' : 'var(--color-ink-faint)';
+
+  const selectLocal = () => {
+    setOpen(false);
+    if (connectionId === null) return;
+    setSwitchingTo(t('st.spaces.main'));
+    void requestScopeNavigation({ homeId: activeLocalId, scopeId: activeLocalScopeId, route: '/new', inPlace: true })
+      .catch((error: unknown) => {
+        if (error !== null && typeof error === 'object' && 'name' in error && (error as { name?: unknown }).name === 'AbortError') return;
+        pushToast({ tone: 'error', text: t('sidebar.space.backFailed') });
+      })
+      .finally(() => { setSwitchingTo(null); });
+  };
+
+  const selectRemote = (id: string, label: string) => {
+    setOpen(false);
+    if (connectionId === id) return;
+    setSwitchingTo(label);
+    void requestScopeNavigation({ ...remoteSpaceScope(id), route: '/new', inPlace: true })
+      .catch((error: unknown) => {
+        if (error !== null && typeof error === 'object' && 'name' in error && (error as { name?: unknown }).name === 'AbortError') return;
+        pushToast({ tone: 'error', text: t('sidebar.space.remoteFailed', { name: label }) });
+      })
+      .finally(() => { setSwitchingTo(null); });
+  };
+
+  const list = (
+    <div className="flex flex-col gap-0.5" data-hero-space-menu>
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked={connectionId === null}
+        data-hero-space-option={`local:${activeLocalId}`}
+        onClick={selectLocal}
+        className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper"
+      >
+        <SpaceDot color="var(--color-ink-faint)" />
+        <span className={`min-w-0 flex-1 truncate ${connectionId === null ? 'font-medium' : ''}`}>
+          {t('st.spaces.main')}
+        </span>
+        {connectionId === null ? <Icon name="check" size={12} className="shrink-0 text-ink-soft" /> : null}
+      </button>
+      {onlineRemotes.map((record) => {
+        const current = connectionId === record.id;
+        return (
+          <button
+            key={record.id}
+            type="button"
+            role="menuitemradio"
+            aria-checked={current}
+            data-hero-space-option={`remote:${record.id}`}
+            onClick={() => { selectRemote(record.id, record.label); }}
+            className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper"
+          >
+            <SpaceDot color="var(--color-success)" />
+            <span className={`min-w-0 flex-1 truncate ${current ? 'font-medium' : ''}`}>{record.label}</span>
+            {current ? <Icon name="check" size={12} className="shrink-0 text-ink-soft" /> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        data-hero-target-space={connectionId === null ? `local:${activeLocalId}` : `remote:${connectionId}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t('new.targetSpaceAria')}
+        disabled={switchingTo !== null}
+        onClick={() => {
+          setOpen((prev) => {
+            if (!prev && hasRemoteApi) void remotesQuery.refetch();
+            return !prev;
+          });
+        }}
+        className="hero-workspace-chip motion-press flex h-8 max-w-[220px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60 pointer-coarse:h-11"
+      >
+        <SpaceDot color={activeColor} />
+        <span className="truncate">
+          {switchingTo !== null ? t('new.targetSpaceSwitching', { name: switchingTo }) : activeLabel}
+        </span>
+        <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      {open ? (
+        isPhone ? (
+          <ActionSheet
+            ariaLabel={t('new.targetSpaceAria')}
+            overlayId="hero-space-sheet"
+            onClose={() => { setOpen(false); }}
+          >
+            {list}
+          </ActionSheet>
+        ) : (
+          <AnchoredPopover
+            open
+            onClose={() => { setOpen(false); }}
+            anchorRef={triggerRef}
+            id="hero-space-popover"
+            label={t('new.targetSpaceAria')}
+            role="menu"
+            widthClassName="w-[220px]"
+            className="!p-1"
+          >
+            {list}
+          </AnchoredPopover>
+        )
+      ) : null}
+    </>
+  );
 }
 
 /**
@@ -584,6 +738,7 @@ function NewSessionPageContent({
           {connectFirst ? null : (
             <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
               <span className="-ml-3 inline-flex"><HeroWorkspaceChip state={state} /></span>
+              <HeroSpaceChip />
               <EphemeralOption state={state} />
               <PrivateSessionOption state={state} />
               <WorktreeOption state={state} />

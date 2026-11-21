@@ -25,17 +25,63 @@ import {
   type AttentionBaseline,
   type AttentionNotification,
   type StableCompletion,
+  type UnifiedInboxModel,
 } from '@kiki/session-core/sessions';
-import { markSessionSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
+import {
+  markConversationSeen,
+  markRoomSeen,
+  markSessionSeen,
+  seedLegacySeenForSpace,
+  sessionSeenSnapshot,
+  subscribeSessionSeen,
+  type AttentionCursor,
+  type ConversationRef,
+} from '@kiki/session-core/settings';
 import { spaceStorage, spaceStorageKey } from '@kiki/session-core/storage';
 
 import type { HostAdapter, HostNotification } from '../host';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { awayNotifier, notificationRoute } from './awayNotify';
+import {
+  commitPendingConversationOpen,
+  hasPendingConversationOpen,
+} from './conversationOpen';
 import { activeSpace } from './spaceStorage';
 import type { NavScopeIdentity } from './navHistory';
 import { useThreadTitleResolver } from './threadTitles';
+
+/** Matches `/s/:id` and `/s/:id/agent/:agentId`, never `/s/:id/tasks`. */
+export function isViewingSessionPath(pathname: string, sessionId: string): boolean {
+  if (sessionId === '') return false;
+  const route = `/s/${encodeURIComponent(sessionId)}`;
+  if (pathname === route) return true;
+  if (!pathname.startsWith(`${route}/`)) return false;
+  const rest = pathname.slice(route.length + 1);
+  return rest.startsWith('agent/');
+}
+
+/** Matches `/rooms/:id` (with optional trailing slash). */
+export function isViewingRoomPath(pathname: string, roomId: string): boolean {
+  if (roomId === '') return false;
+  const route = `/rooms/${encodeURIComponent(roomId)}`;
+  return pathname === route || pathname === `${route}/`;
+}
+
+async function subscribeNativeWindowFocus(
+  host: HostAdapter,
+  onFocus: () => void,
+): Promise<(() => void) | undefined> {
+  if (host.kind !== 'tauri') return undefined;
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    return await getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) onFocus();
+    });
+  } catch {
+    return undefined;
+  }
+}
 
 /** Poll cadence while the document is hidden (the visible app polls on its own). */
 export const HIDDEN_POLL_INTERVAL_MS = 20_000;
@@ -51,6 +97,12 @@ export interface AwayNotificationsOptions {
   readonly sessions: readonly Session[];
   /** Fetches the newest sessions while hidden; the app's list query is paused then. */
   readonly listSessions: () => Promise<readonly Session[]>;
+  /**
+   * Optional unified multi-space inbox model. When provided, the taskbar / dock
+   * badge mirrors these exact counts so sidebar, activity, mobile header, and
+   * native badge stay in lockstep.
+   */
+  readonly unifiedInbox?: UnifiedInboxModel;
   /**
    * Plain click consumer for a shell that mounts no `NavScopeBoundary`. The app
    * shell leaves it out: scoped navigation needs the boundary's own consumer.
@@ -90,14 +142,20 @@ function useFormatter(sessions: readonly Session[], scope: NavScopeIdentity): (n
   }, [t, tp, resolveTitle, scope]);
 }
 
-export function useAwayNotifications({ host, sessions, listSessions, navigate }: AwayNotificationsOptions): void {
+export function useAwayNotifications({ host, sessions, listSessions, unifiedInbox, navigate }: AwayNotificationsOptions): void {
   const connection = useConnection();
   const { client, scopeId, meta, spaceKey } = connection;
+  const effectiveSpaceKey = spaceKey || activeSpace()?.homeId || 'main';
   const scope = useMemo<NavScopeIdentity>(() => ({
-    homeId: spaceKey || activeSpace()?.homeId || 'main', scopeId,
+    homeId: effectiveSpaceKey, scopeId,
     serverHomeId: meta.server_home_id, connectionRef: connection.connectionRef,
-  }), [spaceKey, scopeId, meta.server_home_id, connection.connectionRef]);
+  }), [effectiveSpaceKey, scopeId, meta.server_home_id, connection.connectionRef]);
   const scopeKey = JSON.stringify(scope);
+  // Seed legacy v1 seen marks into the v2 global store once per verified space
+  // so existing users keep their read history across the v1 -> v2 upgrade.
+  useEffect(() => {
+    seedLegacySeenForSpace(effectiveSpaceKey, sessionSeenSnapshot());
+  }, [effectiveSpaceKey]);
   const format = useFormatter(sessions, scope);
   const formatRef = useRef(format);
   formatRef.current = format;
@@ -186,10 +244,7 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
       awayNotifier.configure(undefined);
       return;
     }
-    const isViewingSession = (sessionId: string) => {
-      const route = `/s/${encodeURIComponent(sessionId)}`;
-      return routeRef.current === route || routeRef.current.startsWith(`${route}/`);
-    };
+    const isViewingSession = (sessionId: string) => isViewingSessionPath(routeRef.current, sessionId);
     awayNotifier.configure({
       isAway: async () => !(await isConversationWindowFocused(host)),
       isViewingSession,
@@ -256,13 +311,25 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
     };
   }, [host, scopeKey]);
 
-  // Taskbar / dock badge: the same count as the activity entry.
+  // Taskbar / dock badge: mirrors the unified inbox when supplied, else the
+  // local session inbox for standalone shells and unit tests.
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
-  const inbox = useMemo(() => buildInboxModel(sessions, seen), [sessions, seen]);
-  const unreadSessionIds = JSON.stringify(inbox.unread.map((item) => item.sessionId).toSorted());
+  const localInbox = useMemo(() => (unifiedInbox === undefined ? buildInboxModel(sessions, seen) : undefined), [unifiedInbox, sessions, seen]);
+  const badgeTotal = unifiedInbox !== undefined ? unifiedInbox.total : (localInbox?.total ?? 0);
+  const unreadSessionIds = useMemo(() => {
+    if (unifiedInbox !== undefined) {
+      return JSON.stringify(
+        unifiedInbox.active
+          .filter((item) => !item.needsYou && item.triageClass === 'active')
+          .map((item) => item.sessionId)
+          .toSorted(),
+      );
+    }
+    return JSON.stringify((localInbox?.unread ?? []).map((item) => item.sessionId).toSorted());
+  }, [unifiedInbox, localInbox]);
   useEffect(() => {
-    void host.setUnreadBadge?.(inbox.total, scope.homeId, scopeId, JSON.parse(unreadSessionIds) as string[]);
-  }, [host, inbox.total, unreadSessionIds, scope.homeId, scopeId]);
+    void host.setUnreadBadge?.(badgeTotal, scope.homeId, scopeId, JSON.parse(unreadSessionIds) as string[]);
+  }, [host, badgeTotal, unreadSessionIds, scope.homeId, scopeId]);
 
   // Clicks come back with the route the notification carried. The app shell
   // mounts NavScopeBoundary, which owns the scoped consumer (it verifies the
@@ -303,34 +370,194 @@ export function readCompletionCheckpoint(raw: string | null): readonly StableCom
   }
 }
 
-export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: number | undefined): void {
+function normalizeViewedCursor(cursorOrSeq: number | AttentionCursor | undefined): AttentionCursor | undefined {
+  if (cursorOrSeq === undefined) return undefined;
+  if (typeof cursorOrSeq === 'number') {
+    return Number.isFinite(cursorOrSeq) ? { seq: Math.max(0, Math.trunc(cursorOrSeq)) } : undefined;
+  }
+  if (!Number.isFinite(cursorOrSeq.seq)) return undefined;
+  return cursorOrSeq.epoch === undefined
+    ? { seq: Math.max(0, Math.trunc(cursorOrSeq.seq)) }
+    : { epoch: cursorOrSeq.epoch, seq: Math.max(0, Math.trunc(cursorOrSeq.seq)) };
+}
+
+export function useViewedSession(
+  host: HostAdapter,
+  sessionId: string,
+  cursorOrSeq: number | AttentionCursor | undefined,
+): void {
   const { scopeId, spaceKey, meta, connectionRef } = useConnection();
   const location = useLocation();
+  const effectiveSpaceKey = spaceKey || activeSpace()?.homeId || 'main';
+  const cursor = normalizeViewedCursor(cursorOrSeq);
+  const cursorEpoch = cursor?.epoch;
+  const cursorSeq = cursor?.seq;
+  const viewing = cursorSeq !== undefined && isViewingSessionPath(location.pathname, sessionId);
+
+  // Track confirmed visibility on this conversation so leaving for another
+  // conversation flushes the latest semantic cursor without firing during
+  // React StrictMode unmount/remount or main<->subagent navigation.
+  const confirmedViewRef = useRef<{
+    readonly ref: ConversationRef;
+    cursor: AttentionCursor;
+    confirmed: boolean;
+    readonly storageKey: string;
+  } | null>(null);
+
   useEffect(() => {
-    const route = `/s/${encodeURIComponent(sessionId)}`;
-    if (lastSeq === undefined || (location.pathname !== route && !location.pathname.startsWith(`${route}/`))) return;
-    const scope: NavScopeIdentity = { homeId: spaceKey || activeSpace()?.homeId || 'main', scopeId,
-      serverHomeId: meta.server_home_id, connectionRef };
-    let stopped = false;
-    const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
-    const confirm = async () => {
-      if (await isConversationWindowFocused(host) && !stopped && storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
-        markSessionSeen(sessionId, lastSeq);
-        const scopeKey = JSON.stringify(scope);
-        for (const sending of sendingNotifications) {
-          if (sending.scopeKey === scopeKey && sending.sessionIds.includes(sessionId)) sending.viewed.add(sessionId);
+    const prev = confirmedViewRef.current;
+    if (prev !== null && prev.confirmed) {
+      const stillSameConversation =
+        prev.ref.spaceKey === effectiveSpaceKey &&
+        prev.ref.id === sessionId &&
+        isViewingSessionPath(location.pathname, prev.ref.id);
+      if (!stillSameConversation) {
+        markConversationSeen(prev.ref, prev.cursor);
+        if (prev.storageKey === spaceStorageKey('kiki.sessionSeen.v1')) {
+          markSessionSeen(prev.ref.id, prev.cursor.seq);
         }
-        await host.acknowledgeNotifications?.(sessionId, scope);
+        confirmedViewRef.current = null;
+      }
+    }
+  }, [effectiveSpaceKey, sessionId, location.pathname]);
+
+  useEffect(() => {
+    if (!viewing || cursorSeq === undefined) return;
+    const activeCursor: AttentionCursor = cursorEpoch === undefined ? { seq: cursorSeq } : { epoch: cursorEpoch, seq: cursorSeq };
+    const ref: ConversationRef = { spaceKey: effectiveSpaceKey, kind: 'session', id: sessionId };
+    const scope: NavScopeIdentity = {
+      homeId: effectiveSpaceKey,
+      scopeId,
+      serverHomeId: meta.server_home_id,
+      connectionRef,
+    };
+    const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
+    if (
+      confirmedViewRef.current !== null &&
+      confirmedViewRef.current.ref.spaceKey === ref.spaceKey &&
+      confirmedViewRef.current.ref.id === ref.id
+    ) {
+      confirmedViewRef.current.cursor = activeCursor;
+    } else {
+      confirmedViewRef.current = { ref, cursor: activeCursor, confirmed: false, storageKey };
+    }
+
+    let stopped = false;
+    let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+    let unlistenNative: (() => void) | undefined;
+
+    const recordConfirmed = async () => {
+      if (stopped || storageKey !== spaceStorageKey('kiki.sessionSeen.v1')) return;
+      if (confirmedViewRef.current !== null && confirmedViewRef.current.ref.id === sessionId) {
+        confirmedViewRef.current.confirmed = true;
+        confirmedViewRef.current.cursor = activeCursor;
+      }
+      commitPendingConversationOpen(ref, activeCursor, true);
+      markConversationSeen(ref, activeCursor);
+      markSessionSeen(sessionId, activeCursor.seq);
+      const scopeKey = JSON.stringify(scope);
+      for (const sending of sendingNotifications) {
+        if (sending.scopeKey === scopeKey && sending.sessionIds.includes(sessionId)) sending.viewed.add(sessionId);
+      }
+      await host.acknowledgeNotifications?.(sessionId, scope);
+    };
+
+    const confirm = async (allowRecheck: boolean) => {
+      const explicitOpen = hasPendingConversationOpen(ref) && document.visibilityState === 'visible';
+      const focused = await isConversationWindowFocused(host);
+      if (stopped || storageKey !== spaceStorageKey('kiki.sessionSeen.v1')) return;
+      if (focused || (explicitOpen && document.visibilityState === 'visible')) {
+        await recordConfirmed();
+        return;
+      }
+      // Bounded activation recheck: WebView2/Tauri window.isFocused() can lag
+      // briefly behind a click or visibility transition.
+      if (allowRecheck && document.visibilityState === 'visible' && recheckTimer === undefined) {
+        recheckTimer = setTimeout(() => {
+          recheckTimer = undefined;
+          if (!stopped) {
+            void confirm(false).catch((error: unknown) => {
+              console.warn('Cannot acknowledge viewed conversation notifications', error);
+            });
+          }
+        }, 150);
       }
     };
-    const confirmFromEvent = () => { void confirm().catch((error: unknown) => { console.warn('Cannot acknowledge viewed conversation notifications', error); }); };
-    confirmFromEvent();
+
+    const confirmFromEvent = () => {
+      void confirm(false).catch((error: unknown) => {
+        console.warn('Cannot acknowledge viewed conversation notifications', error);
+      });
+    };
+
+    void confirm(true).catch((error: unknown) => {
+      console.warn('Cannot acknowledge viewed conversation notifications', error);
+    });
     window.addEventListener('focus', confirmFromEvent);
     document.addEventListener('visibilitychange', confirmFromEvent);
+    void subscribeNativeWindowFocus(host, confirmFromEvent).then((dispose) => {
+      if (stopped) dispose?.();
+      else unlistenNative = dispose;
+    });
     return () => {
       stopped = true;
+      if (recheckTimer !== undefined) clearTimeout(recheckTimer);
+      unlistenNative?.();
       window.removeEventListener('focus', confirmFromEvent);
       document.removeEventListener('visibilitychange', confirmFromEvent);
     };
-  }, [host, sessionId, lastSeq, location.pathname, scopeId, spaceKey, meta.server_home_id, connectionRef]);
+  }, [host, viewing, sessionId, cursorEpoch, cursorSeq, effectiveSpaceKey, scopeId, meta.server_home_id, connectionRef]);
+}
+
+/** Focus-aware viewed coordinator for `/rooms/:id` (replaces blind background-poll seen writes). */
+export function useViewedRoom(host: HostAdapter, roomId: string, lastSeq: number | undefined): void {
+  const { spaceKey } = useConnection();
+  const location = useLocation();
+  const effectiveSpaceKey = spaceKey || activeSpace()?.homeId || 'main';
+  const viewing = lastSeq !== undefined && Number.isFinite(lastSeq) && isViewingRoomPath(location.pathname, roomId);
+
+  useEffect(() => {
+    if (!viewing || lastSeq === undefined) return;
+    const seq = Math.max(0, Math.trunc(lastSeq));
+    const cursor: AttentionCursor = { seq };
+    const ref: ConversationRef = { spaceKey: effectiveSpaceKey, kind: 'room', id: roomId };
+    const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
+    let stopped = false;
+    let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+    let unlistenNative: (() => void) | undefined;
+
+    const confirm = async (allowRecheck: boolean) => {
+      const explicitOpen = hasPendingConversationOpen(ref) && document.visibilityState === 'visible';
+      const focused = await isConversationWindowFocused(host);
+      if (stopped || storageKey !== spaceStorageKey('kiki.sessionSeen.v1')) return;
+      if (focused || (explicitOpen && document.visibilityState === 'visible')) {
+        commitPendingConversationOpen(ref, cursor, true);
+        markConversationSeen(ref, cursor);
+        markRoomSeen(roomId, seq);
+        return;
+      }
+      if (allowRecheck && document.visibilityState === 'visible' && recheckTimer === undefined) {
+        recheckTimer = setTimeout(() => {
+          recheckTimer = undefined;
+          if (!stopped) void confirm(false);
+        }, 150);
+      }
+    };
+
+    const confirmFromEvent = () => { void confirm(false); };
+    void confirm(true);
+    window.addEventListener('focus', confirmFromEvent);
+    document.addEventListener('visibilitychange', confirmFromEvent);
+    void subscribeNativeWindowFocus(host, confirmFromEvent).then((dispose) => {
+      if (stopped) dispose?.();
+      else unlistenNative = dispose;
+    });
+    return () => {
+      stopped = true;
+      if (recheckTimer !== undefined) clearTimeout(recheckTimer);
+      unlistenNative?.();
+      window.removeEventListener('focus', confirmFromEvent);
+      document.removeEventListener('visibilitychange', confirmFromEvent);
+    };
+  }, [host, viewing, roomId, lastSeq, effectiveSpaceKey]);
 }

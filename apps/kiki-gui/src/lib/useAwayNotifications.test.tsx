@@ -4,7 +4,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '@kiki/protocol';
-import { markSessionsSeen, resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
+import {
+  conversationSeenSnapshot,
+  encodeConversationRef,
+  markSessionsSeen,
+  resetConversationSeen,
+  resetSessionSeen,
+  sessionSeenSnapshot,
+} from '@kiki/session-core/settings';
 import { configureSpaceStorage } from '@kiki/session-core/storage';
 import {
   buildInboxModel,
@@ -16,7 +23,8 @@ import {
 } from '@kiki/session-core/sessions';
 import type { HostAdapter } from '../host';
 import { awayNotifier } from './awayNotify';
-import { useAwayNotifications, useViewedSession } from './useAwayNotifications';
+import { beginExplicitConversationOpen, resetPendingConversationOpens } from './conversationOpen';
+import { isViewingSessionPath, useAwayNotifications, useViewedRoom, useViewedSession } from './useAwayNotifications';
 
 const connection = vi.hoisted(() => ({
   spaceKey: 'home-example', scopeId: 'local', meta: { server_home_id: 'server-example' },
@@ -63,7 +71,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.useFakeTimers();
   completions = []; focused = true; visible = true;
-  localStorage.clear(); configureSpaceStorage({ homeId: 'home-example' }); resetSessionSeen();
+  localStorage.clear(); configureSpaceStorage({ homeId: 'home-example' }); resetSessionSeen(); resetConversationSeen(); resetPendingConversationOpens();
   awayNotifier.reset(); notify.mockReset(); badge.mockClear(); acknowledge.mockReset();
   connection.client.notifications.listCompletions.mockImplementation(async () => completions);
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
@@ -410,5 +418,52 @@ describe('conversation completion and read confirmation', () => {
     expect(sessionRowState(updatedMany[1]!, sessionSeenSnapshot())).toBe('read');
     expect(buildInboxModel(updatedMany, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['s-1']);
     expect(badge).toHaveBeenLastCalledWith(1, 'home-example', 'local', ['s-1']);
+  });
+
+  it('commits unread clearing on explicit click even when first host focus probe transiently returns false, excludes /s/:id/tasks, and guards room seen by focus', async () => {
+    expect(isViewingSessionPath('/s/b', 'b')).toBe(true);
+    expect(isViewingSessionPath('/s/b/agent/sub-1', 'b')).toBe(true);
+    expect(isViewingSessionPath('/s/b/tasks', 'b')).toBe(false);
+
+    // 1. Visiting `/s/b/tasks` must NEVER mark session `b` as read.
+    await mount('/s/b/tasks');
+    expect(sessionSeenSnapshot()['b']).toBeUndefined();
+
+    // 2. Transient `isWindowVisibleAndFocused() === false` during an explicit click still commits on visible mount.
+    focused = false;
+    visible = true;
+    const ref = { spaceKey: 'home-example', kind: 'session' as const, id: 'b' };
+    beginExplicitConversationOpen(ref, { seq: 10 }, { syncLegacy: true });
+    await act(async () => { await navigate('/s/b'); });
+    await flush();
+    expect(sessionSeenSnapshot()['b']).toBe(10);
+    expect(conversationSeenSnapshot()[encodeConversationRef(ref)]?.seq).toBe(10);
+
+    // 3. Room viewed coordinator does NOT mark room seen when unfocused, and commits once focused.
+    function RoomSurface() {
+      useViewedRoom(host, 'room-1', 12);
+      return <div data-room="room-1" />;
+    }
+    const roomContainer = document.createElement('div');
+    document.body.append(roomContainer);
+    const roomRoot = createRoot(roomContainer);
+    try {
+      focused = false;
+      visible = true;
+      await act(async () => {
+        roomRoot.render(<MemoryRouter initialEntries={['/rooms/room-1']}><RoomSurface /></MemoryRouter>);
+      });
+      await flush();
+      const roomRef = { spaceKey: 'home-example', kind: 'room' as const, id: 'room-1' };
+      expect(conversationSeenSnapshot()[encodeConversationRef(roomRef)]).toBeUndefined();
+
+      focused = true;
+      await act(async () => { window.dispatchEvent(new Event('focus')); });
+      await flush();
+      expect(conversationSeenSnapshot()[encodeConversationRef(roomRef)]?.seq).toBe(12);
+    } finally {
+      await act(async () => { roomRoot.unmount(); });
+      roomContainer.remove();
+    }
   });
 });
