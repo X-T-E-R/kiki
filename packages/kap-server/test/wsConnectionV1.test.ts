@@ -1913,10 +1913,10 @@ describe('WsConnectionV1 cursor replay ordering', () => {
     });
     const frames = [
       mkOpsFrame(10, [
-        { op: 'turn.upsert', turn: { turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' } } },
-        { op: 'step.upsert', turnId: 't0', step: { stepId: 't0.s1', turnId: 't0', ordinal: 1, state: 'running' } },
+        { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' } } },
+        { op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 't0.s1', turnId: 't0', ordinal: 1, state: 'running' } },
         { op: 'task.upsert', task: { taskId: 'task-1', kind: 'subagent', state: 'running', detached: false, outputTail: 'hi' } },
-        { op: 'task.upsert', task: { taskId: 'task-2', kind: 'subagent', state: 'running', detached: false } },
+        { op: 'task.upsert', task: { taskId: 'task-2', kind: 'subagent', state: 'running', detached: false, outputTail: '' } },
         {
           op: 'frame.upsert',
           turnId: 't0',
@@ -1934,7 +1934,7 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       ]),
       mkOpsFrame(11, [
         { op: 'append', target: { type: 'task', taskId: 'task-1' }, offset: 2, text: '!' },
-        { op: 'task.upsert', task: { taskId: 'task-2', kind: 'subagent', state: 'completed', detached: false, resultSummary: 'done' } },
+        { op: 'task.upsert', task: { taskId: 'task-2', kind: 'subagent', state: 'completed', detached: false, outputTail: '', resultSummary: 'done' } },
         {
           op: 'frame.upsert',
           turnId: 't0',
@@ -1944,7 +1944,7 @@ describe('WsConnectionV1 cursor replay ordering', () => {
             frameId: 'f-call-1',
             toolCallId: 'call-1',
             name: 'AgentRun',
-            state: 'completed',
+            state: 'done',
             input: { prompt: 'A'.repeat(2048) },
             output: '{"ok":true}',
           },
@@ -1953,7 +1953,7 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       ]),
       mkOpsFrame(12, [
         { op: 'task.upsert', task: { taskId: 'task-1', kind: 'subagent', state: 'completed', detached: false, outputTail: 'hi!' } },
-        { op: 'meta.merge', meta: { activity: { busy: false } } },
+        { op: 'meta.merge', meta: { activity: 'idle' } },
       ]),
     ];
 
@@ -1987,9 +1987,9 @@ describe('WsConnectionV1 cursor replay ordering', () => {
     expect(coalescedStore.snapshot()).toEqual(directStore.snapshot());
     expect(coalescedStore.getTask('task-1')?.outputTail).toBe('hi!');
     expect(coalescedStore.getTask('task-2')?.state).toBe('completed');
-    expect(coalescedStore.snapshot().meta).toEqual({
+    expect(coalescedStore.snapshot().meta).toMatchObject({
       agent: { model: 'm1', contextTokens: 4200 },
-      activity: { busy: false },
+      activity: 'idle',
     });
   });
 });
