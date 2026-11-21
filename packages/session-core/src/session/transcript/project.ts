@@ -552,15 +552,6 @@ function recordString(record: Record<string, unknown>, ...keys: readonly string[
   return undefined;
 }
 
-function recordNumber(record: Record<string, unknown>, ...keys: readonly string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
-  }
-  return undefined;
-}
-
 function turnNumberOf(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -845,7 +836,7 @@ function noticeFrameErrorDetails(detail: unknown): string | undefined {
       return undefined;
     }
   }
-  return String(detail);
+  return typeof detail === 'number' || typeof detail === 'boolean' || typeof detail === 'bigint' ? String(detail) : undefined;
 }
 
 function markerToBlock(item: {
@@ -1307,8 +1298,8 @@ interface PreviousPositionIndex {
 function buildPreviousPositionIndex(previous: readonly Block[], existingSlots: ReadonlyMap<string, number>): PreviousPositionIndex | undefined {
   if (previous.length === 0) return undefined;
   const indexById = new Map<string, number>();
-  const prevExisting = new Array<number>(previous.length);
-  const nextExisting = new Array<number>(previous.length);
+  const prevExisting = Array.from<number>({ length: previous.length });
+  const nextExisting = Array.from<number>({ length: previous.length });
   let lastSeen = -1;
   for (let index = 0; index < previous.length; index += 1) {
     prevExisting[index] = lastSeen;
@@ -1688,7 +1679,7 @@ function subagentBlocksFromSnapshot(
     else list.push(task);
   }
   const taskByAgent = new Map(
-    [...tasksByAgent.entries()].map(([agentId, list]) => [agentId, list[list.length - 1]!] as const),
+    [...tasksByAgent.entries()].map(([agentId, list]) => [agentId, list.at(-1)!] as const),
   );
   const tasksByAgentKeySet: ReadonlySet<string> = new Set(tasksByAgent.keys());
   // The roster is GLOBAL (unpaginated) while `items` are a page window. The
@@ -1727,7 +1718,7 @@ function subagentBlocksFromSnapshot(
     entries.sort((left, right) => left.at - right.at || left.order - right.order);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!;
-      if (turnStartTimes.length > 0 && turnStartTimes[turnStartTimes.length - 1] === entry.at) {
+      if (turnStartTimes.length > 0 && turnStartTimes.at(-1) === entry.at) {
         continue;
       }
       turnStartTimes.push(entry.at);
@@ -2149,7 +2140,7 @@ function insertSubagentBlocks(
   frameTimes?: ReadonlyMap<string, number>,
 ): Block[] {
   if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
-  const sorted = [...subagents].sort(compareSubagentTimeline);
+  const sorted = [...subagents].toSorted(compareSubagentTimeline);
   const byParentTool = new Map<string, SubagentBlock[]>();
   for (const subagent of sorted) {
     const aliases = new Set(
@@ -2481,7 +2472,7 @@ function insertInteractionBlocks(
         ? [interactionPlacement(interaction, block)]
         : [];
     })
-    .sort(compareProjectedInteraction);
+    .toSorted(compareProjectedInteraction);
   if (projected.length === 0) return base;
 
   const existingIds = new Set<string>();
@@ -2801,10 +2792,6 @@ function stampPromptIdentity(
   return next;
 }
 
-function stampRunningPromptIdentity(blocks: readonly Block[], prompt: TranscriptPrompt): Block[] {
-  return stampPromptIdentity(blocks, prompt, 'running');
-}
-
 function keepPreviousUser(
   next: readonly Block[],
   previousUser: UserBlock | undefined,
@@ -3052,19 +3039,6 @@ function promptOutcomeContext(
     }
   }
   return { windowStartMs, turns, historyIds };
-}
-
-/** A newer prompt for the same message already settled it (retry, regenerate, repeat failure). */
-function supersededByLaterPrompt(prompt: TranscriptPrompt, prompts: readonly TranscriptPrompt[]): boolean {
-  if (prompt.userMessageId === undefined) return false;
-  const settledAt = timestampMs(prompt.finishedAt ?? prompt.createdAt) ?? 0;
-  return prompts.some(
-    (other) =>
-      other !== prompt &&
-      other.userMessageId === prompt.userMessageId &&
-      !(other.status === 'aborted' && other.abortedBeforeStart === true) &&
-      (timestampMs(other.finishedAt ?? other.createdAt) ?? 0) > settledAt,
-  );
 }
 
 function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, user?: UserBlock): PromptOutcome {
@@ -3566,6 +3540,14 @@ function turnRetryFromItem(
     errorName: step.retry.errorName,
     statusCode: step.retry.statusCode,
   };
+}
+
+function repeatsTurnFailure(turn: { readonly state?: string; readonly error?: string }, message: string): boolean {
+  if (turn.state !== 'failed') return false;
+  const failure = turn.error?.trim();
+  const notice = message.trim();
+  if (failure === undefined || failure === '' || notice === '') return false;
+  return failure === notice || failure.includes(notice) || notice.includes(failure);
 }
 
 export function turnOutcomeFromItem(item: {
@@ -4112,6 +4094,7 @@ export function agentTranscriptToBlocks(
             break;
           }
           case 'notice':
+            if (frame.level === 'error' && repeatsTurnFailure(item as { readonly state?: string; readonly error?: string }, frame.message)) break;
             blocks.push({
               kind: 'notice',
               id: `agent-frame-${frame.frameId}`,
@@ -4255,7 +4238,7 @@ export function agentTranscriptToBlocks(
         ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
       return sourceTimes.get(block);
     };
-    const baseSourceTimes = new Array<number | undefined>(baseDeliveries.length);
+    const baseSourceTimes = Array.from<number | undefined>({ length: baseDeliveries.length });
     const sourceTimestamps = new Set<number>();
     const turnStartIndex = new Map<string, number>();
     const turnEndIndex = new Map<string, number>();

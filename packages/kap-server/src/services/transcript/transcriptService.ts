@@ -87,7 +87,7 @@ import {
 import type { HistoryLocatorStore } from '../history/historyLocatorStore';
 import { openLogicalWire, streamLogicalWireRecords } from '../history/logicalWireRead';
 import { historyNavigationProof, matchesNavigationProof } from '../history/historyNavigationProof';
-import { CanonicalEntityPreparingError, type CanonicalToolLookup, type ResidentTurnProofResult } from '../history/historyCanonicalReader';
+import { CanonicalEntityPreparingError, type CanonicalToolLookup, type ResidentProofFailure, type ResidentTurnProofResult } from '../history/historyCanonicalReader';
 
 import {
   readWireRecordsBounded,
@@ -100,6 +100,13 @@ import {
   type TranscriptMemoryConfig,
 } from './configSection';
 import { HistoryReadLane } from './historyReadLane';
+import {
+  estimateResidentTurnBytes,
+  failureSetSignature,
+  ResidencyMaintenanceScheduler,
+  wireFingerprintForMaintenance,
+  type AgentResidencyState,
+} from './residencyMaintenance';
 
 const SESSIONS_ROOT = 'sessions';
 const AGENTS_DIR = 'agents';
@@ -193,7 +200,7 @@ const TODO_NOOP_RECORD: ContextRecord = { type: 'noop' };
 const coldRecordBytesCache = new WeakMap<object, number>();
 
 function hasClosedJsonObjectFrame(line: Buffer): boolean {
-  const end = line.length > 0 && line[line.length - 1] === 0x0d ? line.length - 1 : line.length;
+  const end = line.length > 0 && line.at(-1) === 0x0d ? line.length - 1 : line.length;
   return end >= 2 && line[end - 1] === 0x7d;
 }
 
@@ -230,7 +237,7 @@ function extractTurnIdFromBuffer(buf: Buffer, maxScan: number): string | undefin
   while (cursor < limit && head[cursor]! >= 0x30 && head[cursor]! <= 0x39) cursor += 1;
   if (cursor === digitStart) return undefined;
   const raw = head.toString('ascii', digitStart, cursor);
-  if (raw.length > 1 && raw.charCodeAt(0) === 0x30) return undefined;
+  if (raw.length > 1 && raw.codePointAt(0) === 0x30) return undefined;
   const ordinal = Number(raw);
   return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
 }
@@ -358,7 +365,7 @@ async function scanColdTodoWire(
       : lineChunks.length === 1
         ? lineChunks[0]!
         : Buffer.concat(lineChunks, lineChunksBytes);
-    const normalized = rawLine.length > 0 && rawLine[rawLine.length - 1] === 0x0d
+    const normalized = rawLine.length > 0 && rawLine.at(-1) === 0x0d
       ? rawLine.subarray(0, rawLine.length - 1)
       : rawLine;
     let parsed: unknown;
@@ -786,7 +793,7 @@ function partialColdWindowSnapshot(window: ColdWireWindow): AgentTranscriptSnaps
 }
 
 function coldWindowCovers(items: AgentTranscriptSnapshot['items'], beforeTurn: string, contiguous = false): boolean {
-  const ordered = items.flatMap((item) => item.kind === 'turn' ? [item.turnId] : []).sort(compareTurnIds);
+  const ordered = items.flatMap((item) => item.kind === 'turn' ? [item.turnId] : []).toSorted(compareTurnIds);
   if (ordered.length === 0) return false;
   if (contiguous) return compareTurnIds(beforeTurn, ordered[0]!) > 0;
   let start = ordered[0]!;
@@ -1152,8 +1159,7 @@ export class TranscriptService {
   private readonly coldWindowFlights = new Map<string, ColdWindowFlight>();
   private readonly coldTodosFlights = new Map<string, ColdTodosFlight>();
   private readonly coldTodosCache = new Map<string, { fingerprint: string; todos: readonly TranscriptTodo[]; verified: boolean }>();
-  private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
-  private readonly warnedRetainedTurns = new WeakMap<TranscriptTurn, 'not_found' | 'mismatch' | 'over_budget'>();
+  private readonly residencyMaintenance = new ResidencyMaintenanceScheduler();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
   private readonly completeColdReplays = new WeakSet<AgentTranscriptSnapshot>();
   private readonly contiguousColdSnapshots = new WeakSet<AgentTranscriptSnapshot>();
@@ -1300,8 +1306,7 @@ export class TranscriptService {
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (session?.accessor.get(IAgentLifecycleService).get(agentId) !== undefined) return;
     this.setResidentWeight(`${sessionId}\0${agentId}`, 0);
-    this.residencyMaintenance.get(`${sessionId}\0${agentId}`)?.controller.abort(new DOMException('Transcript agent closed', 'AbortError'));
-    this.residencyMaintenance.delete(`${sessionId}\0${agentId}`);
+    this.residencyMaintenance.cancel(`${sessionId}\0${agentId}`, new DOMException('Transcript agent closed', 'AbortError'));
     const wire = entry.agentWires.get(agentId);
     entry.agentWires.delete(agentId);
     entry.agentBackfills.delete(agentId);
@@ -1809,84 +1814,177 @@ export class TranscriptService {
     entry.binding.releaseDurableTurns(agentId, released, promptIds);
   }
 
+  private releaseDurableTurn(
+    entry: LiveEntry,
+    agentId: string,
+    transcript: AgentTranscript,
+    snapshot: AgentTranscriptSnapshot,
+    effective: TranscriptResidentLimits,
+    nextEstimatedBytes: number,
+  ): readonly string[] {
+    const key = `${entry.store.sessionId}\0${agentId}`;
+    const released = transcript.releaseDurableHistory(snapshot, effective);
+    if (released.length === 0) return released;
+    this.setResidentWeight(key, nextEstimatedBytes);
+    const ids = new Set(released);
+    const promptIds = snapshot.items.flatMap((item) => item.kind === 'turn' && ids.has(item.turnId) && item.promptId !== undefined ? [item.promptId] : []);
+    entry.binding.releaseDurableTurns(agentId, released, promptIds);
+    return released;
+  }
+
   private scheduleResidencyMaintenance(sessionId: string, agentId: string, entry: LiveEntry): void {
     const key = `${sessionId}\0${agentId}`;
     const transcript = entry.store.getAgent(agentId);
     const limits = this.resolveResidentLimits();
     const wire = entry.agentWires.get(agentId);
     if (transcript === undefined || limits === undefined || wire === undefined) return;
-    const pending = this.residencyMaintenance.get(key);
-    if (pending !== undefined) { pending.again = true; return; }
-    const report = transcript.residentReport();
-    const effective = this.aggregateResidentLimits(key, report.estimatedBytes, limits);
-    if (report.turns <= effective.tailTurns && report.estimatedBytes <= effective.maxBytes) return;
-    const controller = new AbortController();
-    const signal = controller.signal;
-    const current = () => !signal.aborted && this.live.get(sessionId) === entry && entry.agentWires.get(agentId) === wire;
-    const maintenance = { controller, again: false };
-    this.residencyMaintenance.set(key, maintenance);
-    void Promise.resolve().then(async () => {
-      await abortable(wire.flush(), signal);
-      if (!current()) return;
-      maintenance.again = false;
-      if (this.historyLocatorReader === undefined) {
-        if (!await this.verifyTranscriptLiveCoverage(sessionId, agentId)) return;
-        const snapshot = await this.readScreenSnapshot(sessionId, agentId, () => this.liveActiveTurnIds(sessionId, agentId, undefined), signal);
-        if (snapshot !== undefined && current()) this.releaseDurableHistory(entry, agentId, snapshot);
-        return;
-      }
+    const isCurrent = (signal?: AbortSignal) =>
+      !(signal?.aborted ?? false) && this.live.get(sessionId) === entry && entry.agentWires.get(agentId) === wire;
+    const hasUncheckedEligibleCandidate = (state: AgentResidencyState): boolean => {
+      if (!isCurrent()) return false;
+      if (this.historyLocatorReader === undefined) return true;
+      const activeLimits = this.resolveResidentLimits();
+      if (activeLimits === undefined) return false;
+      const weight = this.residentWeights.get(key) ?? 0;
+      const effective = this.aggregateResidentLimits(key, weight, activeLimits);
       const turns = completedResidentTurnIds(transcript);
-      const retained = { notFound: 0, overBudget: 0, mismatch: 0 };
-      let newlyRetained = false;
-      let source;
-      do {
-        source = await this.detailLocator().prepareResidentProof(sessionId, agentId, signal);
-        await new Promise<void>(resolve => setImmediate(resolve));
-        if (!current()) return;
-      } while (source === undefined);
+      if (turns.length === 0) return false;
+      const newestId = newestResidentTurnId(transcript);
       for (const turnId of turns) {
-        signal.throwIfAborted();
-        if (!current()) return;
-        let resident = transcript.getTurn(turnId);
+        if (effective.tailTurns > 0 && newestId === turnId) continue;
+        const resident = transcript.getTurn(turnId);
         if (resident === undefined || resident.state === 'running') continue;
-        const report = transcript.residentReport();
-        const effective = this.aggregateResidentLimits(key, report.estimatedBytes, limits);
-        if (report.turns <= effective.tailTurns && report.estimatedBytes <= effective.maxBytes) break;
-        const newest = transcript.getItems().findLast(item => item.kind === 'turn');
-        if (effective.tailTurns > 0 && newest?.kind === 'turn' && newest.turnId === resident.turnId) continue;
-        let result: ResidentTurnProofResult | undefined;
+        const known = state.knownUnreleasable.get(turnId);
+        if (known === undefined || known.turn.deref() !== resident) return true;
+      }
+      return false;
+    };
+    this.residencyMaintenance.schedule(key, {
+      shouldReArm: hasUncheckedEligibleCandidate,
+      run: async ({ signal, state, clearAgain }) => {
         try {
-          result = await source.prove(resident, signal);
-          if (!current()) return;
-          if (transcript.getTurn(resident.turnId) !== resident) continue;
-          if (result.status === 'found') {
-            this.releaseDurableHistory(entry, agentId, result.snapshot);
-            if (transcript.getTurn(resident.turnId) !== undefined) {
-              retained.mismatch += 1;
-              if (this.warnedRetainedTurns.get(resident) !== 'mismatch') {
-                this.warnedRetainedTurns.set(resident, 'mismatch');
-                newlyRetained = true;
-              }
-            }
-          } else {
-            if (result.status === 'not_found') retained.notFound += 1;
-            else if (result.status === 'mismatch') retained.mismatch += 1;
-            else retained.overBudget += 1;
-            if (this.warnedRetainedTurns.get(resident) !== result.status) {
-              this.warnedRetainedTurns.set(resident, result.status);
-              newlyRetained = true;
+          await abortable(wire.flush(), signal);
+          if (!isCurrent(signal)) return;
+          clearAgain();
+          const activeLimits = this.resolveResidentLimits();
+          if (activeLimits === undefined) return;
+          const initialReport = transcript.residentReport();
+          let remainingTurns = initialReport.turns;
+          let remainingBytes = initialReport.estimatedBytes;
+          const initialEffective = this.aggregateResidentLimits(key, remainingBytes, activeLimits);
+          if (remainingTurns <= initialEffective.tailTurns && remainingBytes <= initialEffective.maxBytes) {
+            state.knownUnreleasable.clear();
+            state.lastWarnedFailureSet = undefined;
+            return;
+          }
+          if (this.historyLocatorReader === undefined) {
+            if (!await this.verifyTranscriptLiveCoverage(sessionId, agentId)) return;
+            const snapshot = await this.readScreenSnapshot(sessionId, agentId, () => this.liveActiveTurnIds(sessionId, agentId, undefined), signal);
+            if (snapshot !== undefined && isCurrent(signal)) this.releaseDurableHistory(entry, agentId, snapshot);
+            return;
+          }
+          const locator = this.detailLocator();
+          if (state.verifiedLocator !== locator) {
+            state.knownUnreleasable.clear();
+            state.verifiedWireFingerprint = undefined;
+            state.verifiedLocator = locator;
+          }
+          const turns = completedResidentTurnIds(transcript);
+          const turnSet = new Set(turns);
+          for (const [turnId, known] of state.knownUnreleasable) {
+            const currentTurn = turnSet.has(turnId) ? transcript.getTurn(turnId) : undefined;
+            if (currentTurn === undefined || known.turn.deref() !== currentTurn) {
+              state.knownUnreleasable.delete(turnId);
             }
           }
-        } finally { resident = undefined; result = undefined; }
-      }
-      if (newlyRetained && retained.notFound + retained.overBudget + retained.mismatch > 0) this.deps.logger?.warn(
-        { sessionId, agentId, ...retained }, 'transcript: retaining turns without matching bounded durable proof');
-    }).catch((error: unknown) => {
-      if (!signal.aborted) this.deps.logger?.warn({ sessionId, agentId, error }, 'transcript: durability clearance failed; keeping resident history');
-    }).finally(() => {
-      if (this.residencyMaintenance.get(key) !== maintenance) return;
-      this.residencyMaintenance.delete(key);
-      if (maintenance.again && current()) this.scheduleResidencyMaintenance(sessionId, agentId, entry);
+          const initialNewestId = newestResidentTurnId(transcript);
+          let hasNewCandidate = false;
+          for (const turnId of turns) {
+            if (initialEffective.tailTurns > 0 && initialNewestId === turnId) continue;
+            const resident = transcript.getTurn(turnId);
+            if (resident === undefined || resident.state === 'running') continue;
+            const known = state.knownUnreleasable.get(turnId);
+            if (known === undefined || known.turn.deref() !== resident) {
+              hasNewCandidate = true;
+              break;
+            }
+          }
+          const location = await this.historyWireLocation(sessionId, agentId);
+          if (!isCurrent(signal)) return;
+          const currentWireFp = location === undefined ? undefined : await wireFingerprintForMaintenance(location.wirePath, signal);
+          if (!isCurrent(signal)) return;
+          if (!hasNewCandidate && currentWireFp !== undefined && currentWireFp === state.verifiedWireFingerprint) {
+            return;
+          }
+          const retained = { notFound: 0, overBudget: 0, mismatch: 0 };
+          const retainedByTurn = new Map<string, ResidentProofFailure>();
+          let source;
+          do {
+            source = await locator.prepareResidentProof(sessionId, agentId, signal);
+            await new Promise<void>(resolve => { setImmediate(resolve); });
+            if (!isCurrent(signal)) return;
+          } while (source === undefined);
+          for (const turnId of turns) {
+            signal.throwIfAborted();
+            if (!isCurrent(signal)) return;
+            let resident = transcript.getTurn(turnId);
+            if (resident === undefined || resident.state === 'running') continue;
+            const effective = this.aggregateResidentLimits(key, remainingBytes, activeLimits);
+            if (remainingTurns <= effective.tailTurns && remainingBytes <= effective.maxBytes) break;
+            const newestId = newestResidentTurnId(transcript);
+            if (effective.tailTurns > 0 && newestId === resident.turnId) continue;
+            let result: ResidentTurnProofResult | undefined;
+            try {
+              result = await source.prove(resident, signal);
+              if (!isCurrent(signal)) return;
+              if (transcript.getTurn(resident.turnId) !== resident) continue;
+              if (result.status === 'found') {
+                const turnBytes = estimateResidentTurnBytes(resident);
+                const nextBytes = Math.max(0, remainingBytes - turnBytes);
+                const released = this.releaseDurableTurn(entry, agentId, transcript, result.snapshot, effective, nextBytes);
+                if (transcript.getTurn(resident.turnId) === undefined) {
+                  remainingTurns = Math.max(0, remainingTurns - Math.max(1, released.length));
+                  remainingBytes = nextBytes;
+                  state.knownUnreleasable.delete(resident.turnId);
+                } else {
+                  const reconciled = transcript.residentReport();
+                  remainingTurns = reconciled.turns;
+                  remainingBytes = reconciled.estimatedBytes;
+                  const reconciledEffective = this.aggregateResidentLimits(key, remainingBytes, activeLimits);
+                  if (remainingTurns <= reconciledEffective.tailTurns && remainingBytes <= reconciledEffective.maxBytes) break;
+                  retained.mismatch += 1;
+                  retainedByTurn.set(resident.turnId, 'mismatch');
+                  state.knownUnreleasable.set(resident.turnId, { turn: new WeakRef(resident), status: 'mismatch' });
+                }
+              } else {
+                if (result.status === 'not_found') retained.notFound += 1;
+                else if (result.status === 'mismatch') retained.mismatch += 1;
+                else retained.overBudget += 1;
+                retainedByTurn.set(resident.turnId, result.status);
+                state.knownUnreleasable.set(resident.turnId, { turn: new WeakRef(resident), status: result.status });
+              }
+            } finally { resident = undefined; result = undefined; }
+          }
+          state.verifiedWireFingerprint = currentWireFp;
+          state.verifiedLocator = locator;
+          if (retained.notFound + retained.overBudget + retained.mismatch > 0) {
+            const signature = failureSetSignature(retainedByTurn);
+            if (signature !== state.lastWarnedFailureSet) {
+              state.lastWarnedFailureSet = signature;
+              this.deps.logger?.warn(
+                { sessionId, agentId, ...retained },
+                'transcript: retaining turns without matching bounded durable proof',
+              );
+            }
+          } else {
+            state.lastWarnedFailureSet = undefined;
+          }
+        } catch (error: unknown) {
+          if (!signal.aborted) {
+            this.deps.logger?.warn({ sessionId, agentId, error }, 'transcript: durability clearance failed; keeping resident history');
+          }
+        }
+      },
     });
   }
 
@@ -4360,6 +4458,7 @@ export class TranscriptService {
     this.detailHistoryLocator?.invalidateCanonical();
     this.detailHistoryLocator = undefined;
     this.historyLocatorReader = reader;
+    this.residencyMaintenance.clearFailureCaches();
   }
 
   canonicalReadReport(): ReturnType<HistoryLocatorStore['canonicalReadReport']> | undefined {
@@ -4953,9 +5052,9 @@ export class TranscriptService {
       if (signal.aborted) throw signal.reason ?? new DOMException('The cold todo read was aborted', 'AbortError');
       if (missingWire && (error as NodeJS.ErrnoException).code === 'ENOENT') {
         const metadata = agentId === MAIN_AGENT_ID
-          ? await readFile(join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE), 'utf-8').then(text => JSON.parse(text) as SessionMeta).catch((err: NodeJS.ErrnoException) => {
-              if (err.code === 'ENOENT') return undefined;
-              throw err;
+          ? await readFile(join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE), 'utf-8').then(text => JSON.parse(text) as SessionMeta).catch((error: NodeJS.ErrnoException) => {
+              if (error.code === 'ENOENT') return undefined;
+              throw error;
             })
           : undefined;
         signal.throwIfAborted();
@@ -5939,6 +6038,7 @@ export class TranscriptService {
   }
 
   dispose(): void {
+    this.residencyMaintenance.dispose();
     this.historyReads.dispose();
     this.coldTodoReads.dispose();
     this.detailHistoryLocator?.invalidateCanonical();
@@ -5980,11 +6080,7 @@ export class TranscriptService {
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
   dropSession(sessionId: string): void {
-    for (const [key, maintenance] of this.residencyMaintenance) {
-      if (!key.startsWith(`${sessionId}\0`)) continue;
-      maintenance.controller.abort(new DOMException('Transcript session closed', 'AbortError'));
-      this.residencyMaintenance.delete(key);
-    }
+    this.residencyMaintenance.cancelPrefix(`${sessionId}\0`, new DOMException('Transcript session closed', 'AbortError'));
     for (const key of this.residentWeights.keys()) {
       if (key.startsWith(`${sessionId}\0`)) this.setResidentWeight(key, 0);
     }
@@ -6348,6 +6444,15 @@ function nonNegativeLimit(value: number | undefined, fallback: number): number {
 
 function completedResidentTurnIds(transcript: AgentTranscript): string[] {
   return transcript.getItems().flatMap(item => item.kind === 'turn' && item.state !== 'running' ? [item.turnId] : []);
+}
+
+function newestResidentTurnId(transcript: AgentTranscript): string | undefined {
+  const items = transcript.getItems();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (item.kind === 'turn') return item.turnId;
+  }
+  return undefined;
 }
 
 function estimateColdSnapshotBytes(snapshot: unknown, cap: number): number {

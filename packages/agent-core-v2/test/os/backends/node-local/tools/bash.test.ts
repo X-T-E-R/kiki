@@ -1,7 +1,12 @@
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { PassThrough, Readable, type Writable } from 'node:stream';
 import { removeInjectedHeapOption } from '#/_base/node/workerHeapPolicy';
+import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -1105,20 +1110,85 @@ describe('BashTool', () => {
     expect(exec.mock.calls[0]?.[2]?.ownedProcessLifetime).toBeUndefined();
   });
 
-  it('invalidates local path and trigram snapshots before spawn and at process settlement', async () => {
+  it('notifies pathIndex at settlement for mutating Bash and skips read-only Bash', async () => {
+    const notifyExternalChange = vi.fn();
     const invalidate = vi.fn();
     const { runner, exec } = createTestRunner(vi.fn(async () => {
-      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(notifyExternalChange).not.toHaveBeenCalled();
+      expect(invalidate).not.toHaveBeenCalled();
       return processWithOutput({ stdout: 'created\n' });
     }));
     const env = createTestEnv();
     const session = createTestCtx();
     const runtime = disposables.add(new LocalRuntime(session.workspaceId, env, undefined, runner, undefined, undefined));
-    Object.assign(runtime, { pathIndex: { invalidate, dispose: async () => {} } });
+    Object.assign(runtime, { pathIndex: { notifyExternalChange, invalidate, dispose: async () => {} } });
     const tool = bashTool(runner, env, session, undefined, undefined, undefined, { runtime });
+
+    expect(await executeTool(tool, context({ command: 'ls -al' }))).toMatchObject({ isError: false });
+    expect(notifyExternalChange).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
+
     expect(await executeTool(tool, context({ command: 'touch created.txt' }))).toMatchObject({ isError: false });
-    expect(exec).toHaveBeenCalledTimes(1);
-    expect(invalidate).toHaveBeenCalledTimes(2);
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(notifyExternalChange).toHaveBeenCalledTimes(1);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it('causes zero full rebuilds across N Bash calls with a healthy watcher and one coalesced reconcile without a watcher', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bash-path-index-'));
+    const root = join(dir, 'repo');
+    await mkdir(root, { recursive: true });
+    let inventoryCalls = 0;
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        if ((operation as { readonly type: string }).type === 'workspace.paths') {
+          inventoryCalls += 1;
+          return {
+            overflow: false,
+            entries: [{ path: 'a.ts', name: 'a.ts', kind: 'file', mtimeMs: 10, ctimeMs: 10, size: 8, ino: 1 }],
+          } as T;
+        }
+        return undefined as T;
+      },
+    };
+    const env = createTestEnv();
+    const session = createTestCtx(root);
+    try {
+      const watchedIndex = new WorkspacePathIndex(root, cpu, undefined, { reconcileDebounceMs: 25 });
+      const { runner: watchedRunner } = createTestRunner(vi.fn(async () => processWithOutput({ stdout: 'ok\n' })));
+      const watchedRuntime = disposables.add(new LocalRuntime(session.workspaceId, env, undefined, watchedRunner, undefined, undefined, watchedIndex));
+      const watchedTool = bashTool(watchedRunner, env, session, undefined, undefined, undefined, { runtime: watchedRuntime });
+      await watchedIndex.refresh();
+      expect(watchedIndex.isWatching).toBe(true);
+      expect(inventoryCalls).toBe(1);
+
+      for (let i = 0; i < 5; i += 1) {
+        expect(await executeTool(watchedTool, context({ command: `touch file-${i}.txt` }))).toMatchObject({ isError: false });
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 80));
+      expect(inventoryCalls).toBe(1);
+
+      inventoryCalls = 0;
+      const unwatchedIndex = new WorkspacePathIndex(root, cpu, undefined, {
+        watch: (() => { throw new Error('unsupported'); }) as unknown as typeof import('node:fs').watch,
+        reconcileDebounceMs: 30,
+      });
+      const { runner: unwatchedRunner } = createTestRunner(vi.fn(async () => processWithOutput({ stdout: 'ok\n' })));
+      const unwatchedRuntime = disposables.add(new LocalRuntime(session.workspaceId, env, undefined, unwatchedRunner, undefined, undefined, unwatchedIndex));
+      const unwatchedTool = bashTool(unwatchedRunner, env, session, undefined, undefined, undefined, { runtime: unwatchedRuntime });
+      await unwatchedIndex.refresh();
+      expect(unwatchedIndex.isWatching).toBe(false);
+      expect(inventoryCalls).toBe(1);
+
+      for (let i = 0; i < 5; i += 1) {
+        expect(await executeTool(unwatchedTool, context({ command: `touch file-${i}.txt` }))).toMatchObject({ isError: false });
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      expect(inventoryCalls).toBe(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('returns stderr and marks non-zero exit codes as tool errors', async () => {

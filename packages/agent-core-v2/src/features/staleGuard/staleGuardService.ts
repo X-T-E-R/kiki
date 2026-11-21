@@ -123,6 +123,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
   declare readonly _serviceBrand: undefined;
 
   private readonly writeChecks = new WeakMap<ToolCall, WriteCheck>();
+  private readonly inflightReadRecords = new Map<string, Promise<void>>();
 
   constructor(
     @IAgentStateService private readonly states: IAgentStateService,
@@ -214,7 +215,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     const name = ctx.toolCall.name;
     if (name === 'Read') {
       const path = accessedFilePath(ctx.accesses, READ_OPERATIONS);
-      if (path !== undefined) await this.recordCurrentMtime(path, ctx.args);
+      if (path !== undefined) await this.recordCurrentMtime(path, ctx.args, true);
       return;
     }
     if (name !== 'Edit' && name !== 'Write') return;
@@ -222,7 +223,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     if (path === undefined) return;
     const check = this.writeChecks.get(ctx.toolCall);
     if (check === undefined || check.knowledge === 'current') {
-      await this.recordCurrentMtime(path, ctx.args);
+      await this.recordCurrentMtime(path, ctx.args, false);
       return;
     }
     const note = name === 'Edit' ? editNote(check) : undefined;
@@ -237,9 +238,27 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     return sameFileState(recorded, file.stat) ? 'current' : 'changed';
   }
 
-  private async recordCurrentMtime(path: string, args: unknown): Promise<void> {
+  private async recordCurrentMtime(path: string, args: unknown, deduplicate: boolean): Promise<void> {
     const target = targetFromArgs(args, path);
-    const file = await this.statFile(path, target.host);
+    if (!deduplicate) {
+      await this.statAndRecordMtime(path, target.host);
+      return;
+    }
+    const flightKey = `${target.host ?? ''}\0${path}`;
+    const existing = this.inflightReadRecords.get(flightKey);
+    if (existing !== undefined) {
+      await existing;
+      return;
+    }
+    const flight = this.statAndRecordMtime(path, target.host).finally(() => {
+      if (this.inflightReadRecords.get(flightKey) === flight) this.inflightReadRecords.delete(flightKey);
+    });
+    this.inflightReadRecords.set(flightKey, flight);
+    await flight;
+  }
+
+  private async statAndRecordMtime(path: string, host?: string): Promise<void> {
+    const file = await this.statFile(path, host);
     if (file?.stat.mtimeMs === undefined) return;
     const recorded = this.states.get(staleGuardKey).get(staleGuardStateMapKey(path, file.runtimeId));
     if (recorded !== undefined && sameFileState(recorded, file.stat)) return;

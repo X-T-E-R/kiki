@@ -97,7 +97,7 @@ function registerIndexWatch(): void {
 
 function canonicalIds(summaries: readonly SessionSummary[]): string[] {
   return [...summaries]
-    .sort((a, b) => (a.updatedAt !== b.updatedAt ? b.updatedAt - a.updatedAt : a.id < b.id ? 1 : -1))
+    .toSorted((a, b) => (a.updatedAt !== b.updatedAt ? b.updatedAt - a.updatedAt : a.id < b.id ? 1 : -1))
     .map((s) => s.id);
 }
 
@@ -3203,7 +3203,7 @@ describe('FileSessionIndex (read model)', () => {
     const scan = vi.spyOn(SessionIndexProjector.prototype, 'scan').mockImplementation(function (this: SessionIndexProjector, options) {
       const result = originalScan.call(this, options);
       scans += 1;
-      if (injecting) mirror.record(summary('churn', { title: `mirror-${scans}`, updatedAt: 100 + scans }));
+      if (injecting) mirror.invalidate('churn');
       return result;
     });
     try {
@@ -5320,4 +5320,96 @@ describe('FileSessionIndex (read model)', () => {
       planSpy.mockRestore();
     }
   });
+
+  it('converges re-projection and dirty catch-up without SessionIndexReconcilePendingError when known sessions mutate during slow scan and publish', async () => {
+    await seedSession('s-hot', { title: 'hot-v1', createdAt: 1, updatedAt: 10, archived: false });
+    await seedSession('s-hot-2', { title: 'hot2-v1', createdAt: 1, updatedAt: 11, archived: false });
+    await seedSession('s-cold', { title: 'cold-v1', createdAt: 1, updatedAt: 12, archived: false });
+
+    const warnings: { message: string; data?: unknown }[] = [];
+    const logService: ILogService = {
+      ...stubLog(),
+      warn: (message, data) => {
+        warnings.push({ message, data });
+      },
+    };
+    let enabled = true;
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, () => enabled, new AppendLogStore(storage), docs, logService);
+    await store.prepare();
+    store.stopReconcileLoop();
+    expect(store.status()).toMatchObject({ state: 'ready', generation: 1 });
+
+    const internals = store as unknown as {
+      projector: SessionIndexProjector;
+      reconcileWatched(): Promise<void>;
+    };
+
+    const originalScan = internals.projector.scan.bind(internals.projector);
+    let scanCalls = 0;
+    const scanSpy = vi.spyOn(internals.projector, 'scan').mockImplementation(async (options) => {
+      scanCalls += 1;
+      const result = await originalScan(options);
+      await seedSession('s-hot', { title: `hot-scan-${scanCalls}`, createdAt: 1, updatedAt: 100 + scanCalls, archived: false });
+      mirror.record(summary('s-hot', { title: `hot-scan-${scanCalls}`, createdAt: 1, updatedAt: 100 + scanCalls, archived: false }));
+      if (mirror.dirtyEpoch() === undefined) {
+        await mirror.drain();
+      }
+      return result;
+    });
+
+    try {
+      await store.reprojectNow();
+      expect(scanCalls).toBe(1);
+      expect(store.status()).toMatchObject({ state: 'ready', generation: 2 });
+      expect(warnings.filter((entry) => entry.message.includes('re-projection failed'))).toEqual([]);
+      expect((await store.get('s-hot', workspaceId))?.title).toBe('hot-scan-1');
+      expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual([
+        's-hot',
+        's-cold',
+        's-hot-2',
+      ]);
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
+
+      enabled = false;
+      mirror.record(summary('s-hot', { title: 'hot-dirty-trigger', createdAt: 1, updatedAt: 150, archived: false }));
+      enabled = true;
+      expect(mirror.dirtyEpoch()).toBeDefined();
+
+      const originalProject = internals.projector.project.bind(internals.projector);
+      let mutatedDuringProject = false;
+      const projectSpy = vi.spyOn(internals.projector, 'project').mockImplementation(async (generation, scan) => {
+        if (!mutatedDuringProject) {
+          mutatedDuringProject = true;
+          await seedSession('s-hot-2', { title: 'hot2-during-project', createdAt: 1, updatedAt: 300, archived: false });
+          mirror.record(summary('s-hot-2', { title: 'hot2-during-project', createdAt: 1, updatedAt: 300, archived: false }));
+        }
+        return originalProject(generation, scan);
+      });
+      try {
+        scanCalls = 0;
+        const status = await store.prepare();
+        expect(scanCalls).toBe(1);
+        expect(status).toMatchObject({ state: 'ready', generation: 3 });
+        expect(mirror.dirtyEpoch()).toBeUndefined();
+        expect(warnings.filter((entry) => entry.message.includes('re-projection failed'))).toEqual([]);
+        expect((await store.get('s-hot', workspaceId))?.title).toBe('hot-scan-1');
+
+        await internals.reconcileWatched();
+        expect(scanCalls).toBe(1);
+        expect((await store.get('s-hot-2', workspaceId))?.title).toBe('hot2-during-project');
+        expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual([
+          's-hot-2',
+          's-hot',
+          's-cold',
+        ]);
+        expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
+      } finally {
+        projectSpy.mockRestore();
+      }
+    } finally {
+      scanSpy.mockRestore();
+    }
+  }, 15_000);
 });

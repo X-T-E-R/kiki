@@ -8032,6 +8032,33 @@ describe('compaction summary, error details, and bounded content sources', () =>
       contentSource: { kind: 'frame', id: 'f-skill', turnId: 't-fail', stepId: 's-fail' },
     });
   });
+
+  it('leaves a failed turn one failure surface when its error notice repeats the turn error', () => {
+    const failure = 'antigravity_safety: The upstream response was blocked by a safety policy.';
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't-blocked',
+        ordinal: 1,
+        state: 'failed',
+        origin: { kind: 'user', payload: { promptId: 'p-blocked' } },
+        prompt: 'Run check',
+        startedAt: FIXED_AT,
+        endedAt: FIXED_AT_1,
+        error: failure,
+        steps: [{
+          kind: 'step',
+          stepId: 's-blocked',
+          turnId: 't-blocked',
+          ordinal: 1,
+          state: 'failed',
+          frames: [{ kind: 'notice', frameId: 'f-blocked', level: 'error', message: failure }],
+        }],
+      }],
+    }));
+    expect(projected.blocks.some((block) => block.kind === 'notice' && block.id === 'agent-frame-f-blocked')).toBe(false);
+    expect(projected.turnTail).toMatchObject({ turnId: 't-blocked', state: 'failed', error: failure });
+  });
 });
 
 describe('linear transcript projection and running-turn settled step reuse (#11)', () => {

@@ -13,16 +13,73 @@ export interface WorkspacePathSnapshot {
   readonly entries: readonly WorkspacePathEntry[];
 }
 
+export interface WorkspacePathIndexOptions {
+  readonly watch?: typeof watch;
+  readonly reconcileDebounceMs?: number;
+}
+
 type PreparedEntry = WorkspacePathEntry & { readonly charMask: number };
 
 const MUTATION_COALESCE_MS = 16;
+const DEFAULT_RECONCILE_DEBOUNCE_MS = 250;
+
+/** Returns true when a workspace root targets a UNC or SMB network share (`\\server\share`, `//server/share`, `\\?\UNC\server\share`). */
+export function isUncRoot(path: string): boolean {
+  return /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(path)
+    || /^\\\\\?\\UNC[\\/][^\\/]+[\\/][^\\/]+/i.test(path);
+}
+
+function isTrigramFile(entry: WorkspacePathEntry | undefined): entry is WorkspacePathEntry {
+  return entry !== undefined && entry.kind === 'file' && !entry.sensitive;
+}
+
+function sameFileIdentity(left: WorkspacePathEntry, right: WorkspacePathEntry): boolean {
+  return left.path === right.path
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs
+    && left.size === right.size
+    && left.ino === right.ino;
+}
+
+function diffTrigramPatches(
+  previousByPath: ReadonlyMap<string, WorkspacePathEntry>,
+  nextByPath: ReadonlyMap<string, WorkspacePathEntry>,
+  dirtyPaths?: ReadonlySet<string>,
+): Array<readonly [string, WorkspacePathEntry | undefined]> {
+  const patches = new Map<string, WorkspacePathEntry | undefined>();
+  for (const [key, next] of nextByPath) {
+    if (!isTrigramFile(next)) continue;
+    const prev = previousByPath.get(key);
+    if (!isTrigramFile(prev) || !sameFileIdentity(prev, next)) {
+      if (isTrigramFile(prev) && prev.path !== next.path) {
+        patches.set(prev.path, undefined);
+      }
+      patches.set(next.path, next);
+    }
+  }
+  for (const [key, prev] of previousByPath) {
+    if (!isTrigramFile(prev)) continue;
+    const next = nextByPath.get(key);
+    if (!isTrigramFile(next)) {
+      patches.set(prev.path, undefined);
+    }
+  }
+  if (dirtyPaths !== undefined) {
+    for (const dirtyPath of dirtyPaths) {
+      if (patches.has(dirtyPath)) continue;
+      const next = nextByPath.get(pathIdentity(dirtyPath));
+      patches.set(dirtyPath, isTrigramFile(next) && next.path === dirtyPath ? next : undefined);
+    }
+  }
+  return [...patches];
+}
 
 function pathIdentity(path: string): string { return process.platform === 'win32' ? path.toLowerCase() : path; }
 
 function characterMask(text: string, asciiOnly = false): number {
   let mask = 0;
   for (const char of text.toLowerCase()) {
-    const code = char.charCodeAt(0);
+    const code = char.codePointAt(0);
     if (code >= 97 && code <= 122) mask |= 1 << (code - 97);
     else if (code >= 48 && code <= 57) mask |= 1 << (26 + (code - 48) % 5);
     else if (!asciiOnly) mask |= 1 << 31;
@@ -50,46 +107,86 @@ export class WorkspacePathIndex {
   private readonly globInflight = new Map<string, Promise<readonly string[] | undefined>>();
   private readonly fuzzyCache = new Map<string, readonly WorkspacePathEntry[]>();
   private readonly controller = new AbortController();
+  private readonly mutationListeners = new Set<(path: string | undefined) => void>();
+  private readonly networkRoot: boolean;
+  private readonly watchFn: typeof watch;
+  private readonly reconcileDebounceMs: number;
   private refreshController: AbortController | undefined;
   private started = false;
   private disposed = false;
   private watching = false;
   private overflowed = false;
+  private rootDeleted = false;
+  private hadCommittedSnapshot = false;
+  private reconcileQueued = false;
   readonly trigram?: WorkspaceTrigramIndex;
   error?: unknown;
 
   get isOverflowed(): boolean { return this.overflowed; }
   get isStarted(): boolean { return this.started; }
+  get isWatching(): boolean { return this.watching; }
+  get isNetworkRoot(): boolean { return this.networkRoot; }
 
-  constructor(readonly root: string, private readonly cpu: ICpuWorkerService, cacheDir?: string) {
-    this.root = resolve(root);
-    if (cacheDir !== undefined) this.trigram = new WorkspaceTrigramIndex(this.root, cacheDir, cpu);
+  constructor(
+    readonly root: string,
+    private readonly cpu: ICpuWorkerService,
+    cacheDir?: string,
+    options: WorkspacePathIndexOptions = {},
+  ) {
+    this.networkRoot = isUncRoot(root) || isUncRoot(resolve(root));
+    this.root = this.networkRoot ? root : resolve(root);
+    this.watchFn = options.watch ?? watch;
+    this.reconcileDebounceMs = options.reconcileDebounceMs ?? DEFAULT_RECONCILE_DEBOUNCE_MS;
+    if (cacheDir !== undefined && !this.networkRoot) {
+      this.trigram = new WorkspaceTrigramIndex(this.root, cacheDir, cpu);
+    }
+  }
+
+  onDidMutate(listener: (path: string | undefined) => void): () => void {
+    this.mutationListeners.add(listener);
+    return () => { this.mutationListeners.delete(listener); };
+  }
+
+  private emitMutation(path: string | undefined): void {
+    for (const listener of this.mutationListeners) {
+      try { listener(path); } catch {}
+    }
   }
 
   private ensureStarted(triggerRefresh = true): void {
-    if (this.started || this.disposed) return;
+    if (this.started || this.disposed || this.networkRoot) return;
     this.started = true;
     try {
       const isDeletedSpin = createDeletedRootSpinDetector(this.root);
-      this.watcher = watch(this.root, { recursive: true }, (_kind, filename) => {
+      this.watcher = this.watchFn(this.root, { recursive: true }, (_kind, filename) => {
         if (isDeletedSpin()) {
+          this.rootDeleted = true;
           this.watching = false;
+          this.hadCommittedSnapshot = false;
           this.clearPublishedState();
-          this.trigram?.invalidate();
+          this.trigram?.reset();
+          this.emitMutation(undefined);
           this.watcher?.close();
           this.watcher = undefined;
           return;
         }
         if (filename !== null && filename.split(/[\\/]/u).some(part => ['.git', '.hg', '.svn', '.jj', '.bzr', '.sl'].includes(part.toLowerCase()))) return;
-        if (filename === null) this.invalidate();
-        else void this.mutation(resolve(this.root, filename));
+        if (filename === null) {
+          this.invalidate();
+        } else {
+          const fullPath = resolve(this.root, filename);
+          this.emitMutation(fullPath);
+          void this.mutation(fullPath);
+        }
       });
       this.watcher.on('error', error => {
         this.error = error;
         this.watching = false;
         this.clearPublishedState();
         this.trigram?.invalidate();
+        this.emitMutation(undefined);
         this.watcher?.close();
+        this.watcher = undefined;
       });
       this.watcher.unref();
       this.watching = true;
@@ -97,10 +194,28 @@ export class WorkspacePathIndex {
       this.error = error;
     }
     if (this.watching) {
-      this.repair = setInterval(() => this.invalidate(), 10 * 60_000);
+      this.repair = setInterval(() => { this.scheduleReconcile(); }, 10 * 60_000);
       this.repair.unref();
       if (triggerRefresh) void this.refresh();
     }
+  }
+
+  private armReconcileTimer(): void {
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.refresh();
+    }, this.reconcileDebounceMs);
+    this.timer.unref();
+  }
+
+  private scheduleReconcile(): void {
+    if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
+    if (this.pending !== undefined) {
+      this.reconcileQueued = true;
+      return;
+    }
+    this.armReconcileTimer();
   }
 
   private clearPublishedState(): void {
@@ -114,18 +229,24 @@ export class WorkspacePathIndex {
     }
   }
 
+  notifyExternalChange(): void {
+    if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
+    if (this.watching && !this.overflowed) return;
+    this.scheduleReconcile();
+  }
+
   invalidate(): void {
-    if (!this.started || this.disposed) return;
+    if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
     this.revision++;
+    this.reconcileQueued = false;
     this.refreshController?.abort();
     this.refreshController = undefined;
     this.clearPublishedState();
     this.trigram?.invalidate();
     this.globCache.clear();
     this.fuzzyCache.clear();
-    if (this.timer !== undefined) clearTimeout(this.timer);
-    this.timer = setTimeout(() => { this.timer = undefined; void this.refresh(); }, 250);
-    this.timer.unref();
+    this.emitMutation(undefined);
+    this.armReconcileTimer();
   }
 
   private insertPathEntry(key: string, entry: WorkspacePathEntry): void {
@@ -183,9 +304,11 @@ export class WorkspacePathIndex {
   }
 
   async mutation(path: string): Promise<void> {
-    if (!this.started || this.disposed) return;
-    const local = relative(this.root, resolve(path)).replaceAll('\\', '/');
+    if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
+    const resolved = resolve(path);
+    const local = relative(this.root, resolved).replaceAll('\\', '/');
     if (local === '..' || local.startsWith('../') || isAbsolute(local)) return;
+    this.emitMutation(resolved);
     if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local).toLowerCase())) {
       this.invalidate();
       return;
@@ -244,12 +367,12 @@ export class WorkspacePathIndex {
 
   async refresh(): Promise<void> {
     this.ensureStarted(false);
+    if (this.disposed || this.networkRoot || this.rootDeleted) return;
     if (this.pending !== undefined) {
       await this.pending;
       while (this.pending !== undefined) await this.pending;
       return;
     }
-    if (this.disposed || !this.watching) return;
     const revision = this.revision;
     const refreshController = new AbortController();
     this.refreshController = refreshController;
@@ -263,15 +386,17 @@ export class WorkspacePathIndex {
         if (inventory.overflow) {
           if (this.disposed || revision !== this.revision) return;
           this.overflowed = true;
+          this.hadCommittedSnapshot = false;
           this.clearPublishedState();
           this.prepared.clear();
           this.byPath.clear();
           this.directoryCounts.clear();
           this.globCache.clear();
           this.fuzzyCache.clear();
-          this.trigram?.invalidate();
+          this.trigram?.reset();
           return;
         }
+        const previousByPath = this.hadCommittedSnapshot ? this.byPath : undefined;
         const prepared = new Map<string, PreparedEntry>();
         const byPath = new Map<string, WorkspacePathEntry>();
         const directoryCounts = new Map<string, number>();
@@ -296,6 +421,9 @@ export class WorkspacePathIndex {
           await yieldToEventLoop();
         }
         if (this.disposed || revision !== this.revision) return;
+        const patches = previousByPath === undefined
+          ? undefined
+          : diffTrigramPatches(previousByPath, byPath, this.trigram?.dirtyPaths);
         this.overflowed = false;
         this.prepared = prepared;
         this.byPath = byPath;
@@ -309,15 +437,27 @@ export class WorkspacePathIndex {
         this.globCache.clear();
         this.fuzzyCache.clear();
         this.hasBaseSnapshot = true;
+        this.hadCommittedSnapshot = true;
         this.current = { revision: ++this.snapshotRevision, entries: inventory.entries };
-        this.trigram?.rebuild(this.current);
+        if (patches !== undefined) {
+          this.trigram?.reconcile(this.current, patches);
+        } else {
+          this.trigram?.rebuild(this.current);
+        }
         this.error = undefined;
       }, error => { this.error = error; })
       .finally(() => {
         this.controller.signal.removeEventListener('abort', onDispose);
         if (this.refreshController === refreshController) this.refreshController = undefined;
         this.pending = undefined;
-        if (!this.disposed && revision !== this.revision && this.timer === undefined) void this.refresh();
+        if (!this.disposed && !this.networkRoot && !this.rootDeleted) {
+          if (revision !== this.revision && this.timer === undefined) {
+            void this.refresh();
+          } else if (this.reconcileQueued && this.timer === undefined) {
+            this.reconcileQueued = false;
+            this.armReconcileTimer();
+          }
+        }
       });
     await this.pending;
     while (this.pending !== undefined) await this.pending;
@@ -416,7 +556,7 @@ export class WorkspacePathIndex {
     const matches = [...this.prepared.values()]
       .filter(entry => !entry.sensitive && (entry.charMask & mask) === mask)
       .map(entry => ({ entry, score: computeFuzzyScore(pathMode ? entry.path : entry.name, lower) }))
-      .filter(item => item.score > 0).sort((left, right) => right.score - left.score || left.entry.path.localeCompare(right.entry.path))
+      .filter(item => item.score > 0).toSorted((left, right) => right.score - left.score || left.entry.path.localeCompare(right.entry.path))
       .map(item => item.entry);
     if (this.fuzzyCache.size >= 32) this.fuzzyCache.delete(this.fuzzyCache.keys().next().value!);
     this.fuzzyCache.set(key, matches);
@@ -427,10 +567,14 @@ export class WorkspacePathIndex {
     this.disposed = true;
     this.controller.abort();
     this.watcher?.close();
+    this.watcher = undefined;
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.publishTimer !== undefined) clearTimeout(this.publishTimer);
     if (this.repair !== undefined) clearInterval(this.repair);
     this.clearPublishedState();
+    this.hadCommittedSnapshot = false;
+    this.reconcileQueued = false;
+    this.mutationListeners.clear();
     this.prepared.clear();
     this.byPath.clear();
     this.directoryCounts.clear();

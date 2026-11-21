@@ -70,6 +70,9 @@ import {
   TranscriptMemoryConfigSchema,
 } from '../../src/services/transcript/configSection';
 import { readWireRecordsBounded } from '../../src/services/transcript/boundedWireScan';
+import { HistoryNavigation } from '../../src/services/history/historyNavigation';
+import { HistoryNavigationWorker } from '../../src/services/history/worker/host';
+import { RESIDENCY_MAINTENANCE_MAX_CONCURRENT } from '../../src/services/transcript/residencyMaintenance';
 import { HistoryNavigationDb } from '../../src/services/history/historyNavigationDb';
 import { HistoryLocatorStore } from '../../src/services/history/historyLocatorStore';
 import { CanonicalEntityPreparingError } from '../../src/services/history/historyCanonicalReader';
@@ -1759,6 +1762,240 @@ describe('TranscriptService live integration', () => {
       expect(navigation.canonicalReadReport().replays).toBeGreaterThan(failedAgain);
     } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   }, 20_000);
+
+  it('skips known-mismatched over-tail turns with zero worker proveResident or checkResidentFailure IPC across appends and retries on source repair or entity change', async () => {
+    const home = await seedWireHome(undefined, true);
+    const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+    const agents = new FakeAgents();
+    const main = agents.add('main', { wire: stubAgentWire() });
+    const warn = vi.fn();
+    const service = new TranscriptService({
+      homeDir: home,
+      logger: { warn },
+      residentLimits: { tailTurns: 1, maxBytes: 1 << 20 },
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    const navigation = new HistoryNavigation(join(home, 'navigation.sqlite'), service);
+    service.setHistoryLocatorReader(() => navigation);
+    const workerMethods: string[] = [];
+    const realRequest = HistoryNavigationWorker.prototype.request;
+    const workerSpy = vi.spyOn(HistoryNavigationWorker.prototype, 'request').mockImplementation(function (
+      this: HistoryNavigationWorker,
+      method,
+      args,
+      signal,
+      target,
+    ) {
+      workerMethods.push(method);
+      return realRequest.call(this, method, args, signal, target);
+    });
+    const reportSpy = vi.spyOn(AgentTranscript.prototype, 'residentReport');
+    const records = (id: number, text: string) => [
+      { type: 'turn.prompt', turnId: id, promptId: `p${id}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: id * 2000 },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: id * 2000 + 1000 },
+    ];
+    const emit = (rows: Record<string, unknown>[]) => { for (const record of rows) main.bus.emit(ev(record)); };
+    const persist = (rows: Record<string, unknown>[]) => appendFixtureFile(path, rows.map(record => JSON.stringify(record)).join('\n') + '\n');
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      reportSpy.mockClear();
+      for (const id of [1, 2, 3]) {
+        await persist(records(id, `disk-${id}`));
+        emit(records(id, `live-${id}`));
+      }
+      await persist(records(4, 'tail-4'));
+      emit(records(4, 'tail-4'));
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ mismatch: 3, notFound: 0, overBudget: 0 }),
+        'transcript: retaining turns without matching bounded durable proof',
+      ), { timeout: 10_000 });
+      await vi.waitFor(() => expect(workerMethods.filter(method => method === 'proveResident')).toHaveLength(4), { timeout: 10_000 });
+      expect(store.getAgent('main')?.getTurn('t0')).toBeUndefined();
+      expect(workerMethods.filter(method => method === 'checkResidentFailure')).toHaveLength(0);
+      expect(reportSpy.mock.calls.length).toBeLessThanOrEqual(2);
+
+      const warnCallsBefore = warn.mock.calls.length;
+      workerMethods.length = 0;
+      reportSpy.mockClear();
+      const transcript = store.getAgent('main')!;
+
+      for (let index = 0; index < 5; index += 1) {
+        const update = { type: 'turn.ended', turnId: 4, reason: 'completed', time: 10_000 + index };
+        await persist([update]);
+        emit([update]);
+        await new Promise<void>(resolve => { setTimeout(resolve, 40); });
+      }
+      for (let index = 0; index < 5; index += 1) {
+        const current = transcript.getTurn('t4')!;
+        transcript.apply([{ op: 'turn.upsert', turn: { ...current } }]);
+        await new Promise<void>(resolve => { setTimeout(resolve, 40); });
+      }
+      await new Promise<void>(resolve => { setTimeout(resolve, 150); });
+      expect(workerMethods.filter(method => method === 'proveResident')).toHaveLength(0);
+      expect(workerMethods.filter(method => method === 'checkResidentFailure')).toHaveLength(0);
+      expect(warn.mock.calls.length).toBe(warnCallsBefore);
+      expect(reportSpy.mock.calls.length).toBeLessThanOrEqual(10);
+
+      const preparesBeforeIdle = workerMethods.filter(method => method === 'prepareResidentProof').length;
+      await new Promise<void>(resolve => { setTimeout(resolve, 150); });
+      expect(workerMethods.filter(method => method === 'prepareResidentProof').length).toBe(preparesBeforeIdle);
+      expect(workerMethods.filter(method => method === 'proveResident')).toHaveLength(0);
+
+      await writeFixtureFile(
+        path,
+        [
+          ...records(1, 'live-1'),
+          ...records(2, 'live-2'),
+          ...records(3, 'live-3'),
+          ...records(4, 'tail-4'),
+          { type: 'turn.ended', turnId: 4, reason: 'completed', time: 10_004 },
+        ].map(record => JSON.stringify(record)).join('\n') + '\n',
+      );
+      await persist(records(5, 'tail-5'));
+      emit(records(5, 'tail-5'));
+      await vi.waitFor(() => {
+        expect(transcript.getTurn('t1')).toBeUndefined();
+        expect(transcript.getTurn('t2')).toBeUndefined();
+        expect(transcript.getTurn('t3')).toBeUndefined();
+        expect(transcript.getTurn('t4')).toBeUndefined();
+      }, { timeout: 10_000 });
+      expect(transcript.getTurn('t5')).toBeDefined();
+
+      await persist(records(6, 'disk-6'));
+      emit(records(6, 'live-6'));
+      await persist(records(7, 'tail-7'));
+      emit(records(7, 'tail-7'));
+      await vi.waitFor(() => expect(warn.mock.calls.length).toBeGreaterThan(warnCallsBefore), { timeout: 10_000 });
+      expect(transcript.getTurn('t6')).toBeDefined();
+      transcript.apply([{ op: 'turn.upsert', turn: { ...transcript.getTurn('t6')!, prompt: 'disk-6' } }]);
+      await persist(records(8, 'tail-8'));
+      emit(records(8, 'tail-8'));
+      await vi.waitFor(() => {
+        expect(transcript.getTurn('t6')).toBeUndefined();
+        expect(transcript.getTurn('t7')).toBeUndefined();
+      }, { timeout: 10_000 });
+      expect(workerMethods.filter(method => method === 'checkResidentFailure')).toHaveLength(0);
+    } finally {
+      workerSpy.mockRestore();
+      reportSpy.mockRestore();
+      service.dispose();
+      await navigation.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('bounds concurrent residency maintenance globally across many agents and aborts queued and active passes on session close', async () => {
+    const home = await seedWireHome(undefined, true);
+    const rosters = [new FakeAgents(), new FakeAgents()];
+    const interactions = rosters.map(() => new SessionInteractionService(new TestSessionStateService()));
+    const sessions = rosters.map((agents, index) => fakeSession(interactions[index]!, agents));
+    const base = fakeCoreWithAgents(interactions[0]!, rosters[0]!);
+    const core = {
+      accessor: {
+        get: (token: unknown) =>
+          token === ISessionManager
+            ? { get: (id: string) => sessions[Number(id.slice(1)) - 1], list: () => sessions }
+            : base.accessor.get(token as never),
+      },
+    } as unknown as Scope;
+    let activeFlushes = 0;
+    let peakFlushes = 0;
+    let totalFlushes = 0;
+    let activeS2Flushes = 0;
+    let peakS2Flushes = 0;
+    let holdSessionOne = false;
+    const heldResolvers: Array<() => void> = [];
+    const makeWire = (sessionIndex: number) => ({
+      ...stubAgentWire(),
+      flush: async () => {
+        if (holdSessionOne && sessionIndex === 0) {
+          await new Promise<void>(resolve => { heldResolvers.push(resolve); });
+          return;
+        }
+        if (holdSessionOne && sessionIndex === 1) {
+          activeS2Flushes += 1;
+          peakS2Flushes = Math.max(peakS2Flushes, activeS2Flushes);
+          try {
+            await new Promise<void>(resolve => { setTimeout(resolve, 40); });
+          } finally {
+            activeS2Flushes -= 1;
+          }
+          return;
+        }
+        activeFlushes += 1;
+        totalFlushes += 1;
+        peakFlushes = Math.max(peakFlushes, activeFlushes);
+        try {
+          await new Promise<void>(resolve => { setTimeout(resolve, 40); });
+        } finally {
+          activeFlushes -= 1;
+        }
+      },
+    });
+    const service = new TranscriptService({
+      homeDir: home,
+      core,
+      residentLimits: { tailTurns: 0, maxBytes: 1 },
+    });
+    const navigation = new HistoryNavigation(join(home, 'navigation.sqlite'), service);
+    service.setHistoryLocatorReader(() => navigation);
+    const agentIds = ['main', 'child-1', 'child-2', 'child-3', 'child-4'];
+    const handles: Array<{ sessionId: string; agentId: string; wirePath: string; bus: ReturnType<FakeAgents['add']>['bus'] }> = [];
+    const records = (turnId: number, text: string) => [
+      { type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: turnId * 2000 },
+      { type: 'turn.ended', turnId, reason: 'completed', time: turnId * 2000 + 1000 },
+    ];
+    try {
+      for (let s = 0; s < 2; s += 1) {
+        const sessionId = `s${s + 1}`;
+        for (const agentId of agentIds) {
+          const wirePath = join(home, 'sessions/ws', sessionId, 'agents', agentId, 'wire.jsonl');
+          await mkdir(dirname(wirePath), { recursive: true });
+          await writeFixtureFile(wirePath, '');
+          const added = rosters[s]!.add(agentId, { wire: makeWire(s) });
+          handles.push({ sessionId, agentId, wirePath, bus: added.bus });
+        }
+        service.forSessionLive(sessionId);
+        await service.whenReady(sessionId);
+        for (const agentId of agentIds.slice(1)) await service.ensureAgentHistory(sessionId, agentId);
+      }
+      for (const handle of handles) {
+        const rows = records(1, `${handle.sessionId}:${handle.agentId}:1`);
+        await appendFixtureFile(handle.wirePath, rows.map(record => JSON.stringify(record)).join('\n') + '\n');
+        for (const record of rows) handle.bus.emit(ev(record));
+      }
+      await vi.waitFor(() => {
+        for (const handle of handles) {
+          expect(service.forSessionLive(handle.sessionId)?.getAgent(handle.agentId)?.getTurn('t1')).toBeUndefined();
+        }
+      }, { timeout: 20_000 });
+      expect(totalFlushes).toBeGreaterThanOrEqual(10);
+      expect(peakFlushes).toBeLessThanOrEqual(RESIDENCY_MAINTENANCE_MAX_CONCURRENT);
+
+      holdSessionOne = true;
+      for (const handle of handles) {
+        const rows = records(2, `${handle.sessionId}:${handle.agentId}:2`);
+        await appendFixtureFile(handle.wirePath, rows.map(record => JSON.stringify(record)).join('\n') + '\n');
+        for (const record of rows) handle.bus.emit(ev(record));
+      }
+      await vi.waitFor(() => expect(heldResolvers.length).toBeGreaterThan(0), { timeout: 10_000 });
+      service.dropSession('s1');
+      await vi.waitFor(() => {
+        for (const handle of handles.filter(item => item.sessionId === 's2')) {
+          expect(service.forSessionLive('s2')?.getAgent(handle.agentId)?.getTurn('t2')).toBeUndefined();
+        }
+      }, { timeout: 20_000 });
+      expect(peakFlushes).toBeLessThanOrEqual(RESIDENCY_MAINTENANCE_MAX_CONCURRENT);
+      expect(peakS2Flushes).toBeLessThanOrEqual(RESIDENCY_MAINTENANCE_MAX_CONCURRENT);
+      expect(service.memoryReport().liveSessions).toBe(1);
+    } finally {
+      for (const release of heldResolvers) release();
+      service.dispose();
+      await navigation.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 30_000);
 
   it.each(['abort', 'rewrite', 'resident', 'close'] as const)('keeps facts when resident proof encounters %s before publication', async (phase) => {
     const home = await seedWireHome(undefined, true);
@@ -4933,7 +5170,7 @@ describe('TranscriptService live integration', () => {
         releaseScan();
         const error = await pending.then(
           () => undefined,
-          (thrown: unknown) => thrown,
+          (error: unknown) => error,
         );
         expect((error as Error | undefined)?.name).toBe('AbortError');
         expect(sent).toEqual([]);
@@ -4994,7 +5231,7 @@ describe('TranscriptService live integration', () => {
       releaseRoster();
       const error = await pending.then(
         () => undefined,
-        (thrown: unknown) => thrown,
+        (error: unknown) => error,
       );
       expect((error as Error | undefined)?.name).toBe('AbortError');
       expect(wireReads).toBe(0);
@@ -5986,7 +6223,7 @@ it.each([
   try {
     const walked = await walkOlderPrompts(service, 'agent-7');
     expect(walked.stale).toBe(false);
-    expect([...walked.prompts.keys()].sort(compareTurnIds)).toEqual(['t0', 't1', 't2', 't3', 't4']);
+    expect([...walked.prompts.keys()].toSorted(compareTurnIds)).toEqual(['t0', 't1', 't2', 't3', 't4']);
     expect(Object.fromEntries(walked.prompts)).toEqual(Object.fromEntries(prompts.map((text, turnId) => [`t${turnId}`, text])));
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 60_000);

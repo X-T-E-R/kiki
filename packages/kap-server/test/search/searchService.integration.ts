@@ -717,7 +717,7 @@ describe('GlobalSearchService', () => {
       });
       expect(page.source).toBe('live');
       expect(page.items.length).toBe(3);
-      expect(page.items.map((h) => h.role).sort()).toEqual(['assistant', 'title', 'user']);
+      expect(page.items.map((h) => h.role).toSorted()).toEqual(['assistant', 'title', 'user']);
 
       await expect(service.search({ query: '苹', mode: 'literal' })).rejects.toMatchObject({
         reason: 'invalid_query',
@@ -1232,6 +1232,58 @@ describe('GlobalSearchService', () => {
     const privateLive = await service.search({ query: 'privacyrace', mode: 'literal', container: { sessionId: 's1' } });
     expect(privateLive).toMatchObject({ source: 'live', items: [], hasMore: false });
     pendingGets[1]!({ ...initial, private: true });
+  });
+
+  it('parks background sync on session index readiness when the index starts building mid-sync', { timeout: 30_000 }, async () => {
+    const record = summary('s1', 'building race title');
+    let building = false;
+    let failNextList = true;
+    let listCalls = 0;
+    const warnings: string[] = [];
+    const statusChanges = new Emitter<ReturnType<ISessionIndex['status']>>();
+    const currentStatus = () => (building
+      ? { source: 'read-model', state: 'building', generation: 1, degradedCount: 0 }
+      : { source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }) as ReturnType<ISessionIndex['status']>;
+    const index = {
+      _serviceBrand: undefined,
+      prepare: async () => currentStatus(),
+      onDidChangeStatus: statusChanges.event,
+      status: currentStatus,
+      listRecent: async () => {
+        listCalls += 1;
+        if (failNextList) {
+          failNextList = false;
+          building = true;
+          throw Object.assign(new Error('session index is building'), { code: 'session.index_building' });
+        }
+        return { items: [record], nextCursor: undefined };
+      },
+      get: async (id: string) => (id === record.id ? record : undefined),
+      archiveFamily: async () => [],
+      count: async () => 1,
+      remove: async () => {},
+    } as unknown as ISessionIndex;
+    const changes = new Emitter<SessionIndexMutation>();
+    const mirror = { _serviceBrand: undefined, onDidChange: changes.event } as unknown as ISessionIndexMirror;
+    const log = { ...noopLog, warn: (message: string) => { warnings.push(message); } } as unknown as ILogService;
+    await writeWire(home!, 's1', 'main', [userLine('buildingraceneedle conversation', T1)]);
+    const service = track(new GlobalSearchService(index, makeBootstrap(home!), log, makeFlags(), undefined, undefined, mirror));
+    service.syncDebounceMs = 0;
+    service.setLiveTranscriptSource(noLiveSource);
+    await expect.poll(() => listCalls).toBe(1);
+    for (let i = 0; i < 20; i += 1) {
+      changes.fire({ id: 's1', workspaceId: WS });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(listCalls).toBe(1);
+    expect(warnings.filter((message) => message.includes('background sync failed'))).toEqual([]);
+
+    building = false;
+    statusChanges.fire(currentStatus());
+    const query = { query: 'buildingraceneedle', mode: 'literal' as const, indexOnly: true };
+    await expect.poll(async () => (await service.search(query)).items.length, { timeout: 10_000 }).toBe(1);
+    expect(warnings.filter((message) => message.includes('background sync failed'))).toEqual([]);
   });
 
   it('returns identical literal results on both routes for equivalent data', async () => {

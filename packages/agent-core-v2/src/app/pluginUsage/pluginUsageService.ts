@@ -10,7 +10,7 @@ import { Error2, ErrorCodes } from '#/errors';
 import { IPluginUsageService, type PluginUsageChange, type PluginUsageSnapshot, type PluginUsageOverride } from './pluginUsage';
 import { PLUGIN_WORKSPACE_USAGE_FLAG } from './flag';
 
-const storedSchema = z.object({ revision: z.number().int().nonnegative(), overrides: z.record(z.string(), z.boolean()) });
+const storedSchema = z.object({ revision: z.number().int().nonnegative().default(0), overrides: z.record(z.string(), z.boolean()).default({}) });
 type StoredUsage = z.infer<typeof storedSchema>;
 
 export class PluginUsageService extends Service implements IPluginUsageService {

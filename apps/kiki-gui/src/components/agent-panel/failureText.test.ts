@@ -18,6 +18,8 @@ describe('plainFailure', () => {
     // Nothing readable inside: say nothing rather than print braces.
     expect(plainFailure('{"code":500}')).toBeUndefined();
     expect(plainFailure('Upstream failed: {"code":500}')).toBe('Upstream failed');
+    expect(plainFailure('{"error":{"code":"antigravity_safety","message":"The upstream response was blocked by a safety policy.","retryable":false,"type":"invalid_request_error"},"type":"error"} — antigravity_safety: The upstream response was blocked by a safety policy.'))
+      .toBe('The upstream response was blocked by a safety policy.');
   });
 
   it('drops stack frames and an Error: prefix', () => {

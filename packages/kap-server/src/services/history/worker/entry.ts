@@ -60,7 +60,12 @@ function dispatch(request: NavigationRequest, signal: AbortSignal): unknown {
     case 'readDurableTurn': return engine.readDurableTurn(...args as [string, string, string], signal);
     case 'readCanonicalTurnHeader': return engine.readCanonicalTurnHeader(...args as [string, string, string], signal);
     case 'readCanonicalTurnHeaders': return engine.readCanonicalTurnHeaders(...args as [string, string, readonly string[]], signal);
-    case 'prepareResidentProof': return engine.residentCheckpoint(...args as [string, string], signal);
+    case 'prepareResidentProof': return engine.residentCheckpoint(
+      args[0] as string,
+      args[1] as string,
+      signal,
+      args[2] as readonly string[] | undefined,
+    );
     case 'proveResident': return engine.proveResidentCheckpoint(...args as [Parameters<typeof engine.proveResidentCheckpoint>[0], string,
       Parameters<typeof engine.proveResidentCheckpoint>[2]], signal);
     case 'checkResidentFailure': return engine.checkResidentFailure(...args as Parameters<typeof engine.checkResidentFailure>);

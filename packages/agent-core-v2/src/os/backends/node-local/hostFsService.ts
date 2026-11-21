@@ -135,7 +135,7 @@ export class HostFileSystem implements IHostFileSystem {
     signal: AbortSignal | undefined,
   ): Promise<string[] | undefined> {
     try {
-      return await runCpuTask<string[]>({ type: 'file.lineRange', path, options: range } satisfies FileLineRangeOperation, { signal });
+      return await runCpuTask<string[]>({ type: 'file.lineRange', path, options: range } satisfies FileLineRangeOperation, { signal, priority: 'normal' });
     } catch (error) {
       signal?.throwIfAborted();
       if (isWorkerUnavailable(error)) return undefined;
@@ -154,7 +154,7 @@ export class HostFileSystem implements IHostFileSystem {
     if (fileSize < LINE_RANGE_WORKER_MIN_BYTES) return this.lineReader.readTailRange(path, options);
     let page: TailRangePage;
     try {
-      page = await runCpuTask<TailRangePage>({ type: 'file.tailRange', path, options: range }, { signal });
+      page = await runCpuTask<TailRangePage>({ type: 'file.tailRange', path, options: range }, { signal, priority: 'normal' });
     } catch (error) {
       signal?.throwIfAborted();
       if (isWorkerUnavailable(error)) return this.lineReader.readTailRange(path, options);

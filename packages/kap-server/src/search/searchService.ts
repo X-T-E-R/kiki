@@ -58,6 +58,10 @@ const QUERY_TEXT_BUDGET_CHARS = 16_000_000;
 const MAX_TEXT_HITS = 100_000;
 const LITERAL_CANDIDATE_CAP = 10_000;
 
+function isSessionIndexBuilding(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'session.index_building';
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -580,7 +584,16 @@ export class GlobalSearchService implements IGlobalSearchService {
     const forcedAtStart = new Set(this.forceSessionSyncs);
     const privateRevisionAtStart = this.privateRevision;
     const before = new Map(this.allSummaries);
-    const plan = await this.listSessionsForSync(dirtyAtStart, forcedAtStart);
+    let plan: Awaited<ReturnType<GlobalSearchService['listSessionsForSync']>>;
+    try {
+      plan = await this.listSessionsForSync(dirtyAtStart, forcedAtStart);
+    } catch (error) {
+      if (!isSessionIndexBuilding(error)) throw error;
+      this.lastSyncStartedAt = Date.now();
+      this.syncSkippedForReadiness = true;
+      this.waitForSessionIndexReady();
+      return;
+    }
     if (this.disposed) return;
     const previousIndexable = this.summaries;
     const { fullSync, changedIds } = plan;

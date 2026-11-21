@@ -349,6 +349,14 @@ describe('normalizeAPIStatusError: 400 body diagnostics', () => {
     expect(error.message).toContain('quotaexceeded');
     expect(error.message).toContain(' — ');
   });
+
+  it('leads with the upstream message when the SDK message is only the JSON error body', () => {
+    const body = { type: 'error', error: { type: 'invalid_request_error', code: 'antigravity_safety', message: 'The upstream response was blocked by a safety policy.', retryable: false } };
+    expect(normalizeAPIStatusError(400, JSON.stringify(body), null, null, null, body).message)
+      .toBe('antigravity_safety: The upstream response was blocked by a safety policy.');
+    expect(normalizeAPIStatusError(400, `400 ${JSON.stringify(body)}`, null, null, null, body).message)
+      .toBe('400 antigravity_safety: The upstream response was blocked by a safety policy.');
+  });
 });
 
 describe('classifyApiError', () => {

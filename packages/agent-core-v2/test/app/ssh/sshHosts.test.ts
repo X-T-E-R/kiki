@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { SSHKaos } from '@kiki/kaos/ssh';
 import { utils } from 'ssh2';
 import { homedir, tmpdir } from 'node:os';
@@ -11,8 +13,16 @@ import { createServices } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { SshHostStore } from '#/app/ssh/sshHosts';
-import { ISshHostService, SshHostService } from '#/app/ssh/sshService';
-import { appendSshHost, discoverSshAliases, parseTransientSshTarget, resolveSshConfig, workspaceSshKey } from '#/app/ssh/sshConfig';
+import { ISshConfigResolver, ISshHostService, SshHostService } from '#/app/ssh/sshService';
+import {
+  appendSshHost,
+  discoverSshAliases,
+  parseTransientSshTarget,
+  resolveSshConfig,
+  SshConfigResolver,
+  workspaceSshKey,
+  type SshExecFile,
+} from '#/app/ssh/sshConfig';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { SshCredentialStore, type SecretEntryFactory } from '#/persistence/backends/node-fs/sshCredentialStore';
@@ -23,7 +33,6 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 const directories: string[] = [];
 
 afterEach(async () => {
-  const { rm } = await import('node:fs/promises');
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
   vi.unstubAllEnvs();
 });
@@ -378,6 +387,236 @@ describe('S5 authoritative SSH settings reads', () => {
       expect(await readFile(path, 'utf8')).toBe(text);
     } finally {
       create.mockRestore();
+      await disposables.dispose();
+    }
+  });
+});
+
+describe('SSH config resolver caching and knownHostsPaths fast paths', () => {
+  const execFileAsync = promisify(execFile);
+
+  function createCountingExec(): { calls: string[][]; execSsh: SshExecFile } {
+    const calls: string[][] = [];
+    const execSsh: SshExecFile = async (file, args) => {
+      calls.push([file, ...args]);
+      const { stdout, stderr } = await execFileAsync(file, [...args], {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      });
+      return { stdout, stderr };
+    };
+    return { calls, execSsh };
+  }
+
+  it('caches repeated resolves with zero extra spawns even when unrelated Host blocks define UserKnownHostsFile', async () => {
+    const { home, config } = await fixture(process.platform === 'win32' ? homedir() : tmpdir());
+    if (process.platform === 'win32') {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+    }
+    await writeFile(config, [
+      'Host other-a',
+      '  HostName other-a.example.test',
+      '  UserKnownHostsFile C:/Users/tester/.ssh/other_a_known_hosts',
+      'Host other-b',
+      '  HostName other-b.example.test',
+      '  UserKnownHostsFile ~/.ssh/other_b_known_hosts',
+      'Host other-c',
+      '  HostName other-c.example.test',
+      '  UserKnownHostsFile ~/.ssh/known_hosts2',
+      'Host single',
+      '  HostName single.example.test',
+      '  User tester',
+      '  UserKnownHostsFile C:/Users/tester/.ssh/single_known_hosts',
+      'Host dev',
+      '  HostName 127.0.0.1',
+      '  User tester',
+      '  Port 2222',
+      '',
+    ].join('\n'));
+
+    const { calls, execSsh } = createCountingExec();
+    const resolver = new SshConfigResolver({ execSsh });
+
+    const first = await resolver.resolve('dev', config);
+    expect(first).toMatchObject({ hostname: '127.0.0.1', user: 'tester', port: 2222 });
+    expect(first.userKnownHostsFiles).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+
+    for (let index = 0; index < 10; index++) {
+      expect(await resolver.resolve('dev', config)).toEqual(first);
+    }
+    expect(calls).toHaveLength(1);
+
+    const single = await resolver.resolve('single', config);
+    expect(single.userKnownHostsFiles).toEqual(['C:/Users/tester/.ssh/single_known_hosts']);
+    expect(calls).toHaveLength(2);
+    expect(await resolver.resolve('single', config)).toEqual(single);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('invalidates on config touch, Included file modification, Include deletion, and newly created Includes', async () => {
+    const { home, config } = await fixture(process.platform === 'win32' ? homedir() : tmpdir());
+    if (process.platform === 'win32') {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+    }
+    const fragmentsDir = join(home, '.ssh', 'fragments');
+    const explicitInclude = join(fragmentsDir, 'optional');
+    const globPattern = process.platform === 'win32' ? '~/.ssh/fragments/*' : join(fragmentsDir, '*');
+    const explicitPattern = process.platform === 'win32' ? '~/.ssh/fragments/optional' : explicitInclude;
+
+    await writeFile(join(fragmentsDir, 'a_base'), 'Host dev\n  HostName first.example.test\n  User tester\n');
+    await writeFile(config, `Include "${explicitPattern}"\nInclude "${globPattern}"\nHost dev\n  HostName fallback.example.test\n  User tester\n`);
+
+    const { calls, execSsh } = createCountingExec();
+    const resolver = new SshConfigResolver({ execSsh });
+
+    expect((await resolver.resolve('dev', config)).hostname).toBe('first.example.test');
+    expect(calls).toHaveLength(1);
+    expect(await resolver.discoverAliases(config)).toEqual(['bastion', 'dev']);
+
+    const info = await stat(config);
+    const bumped = new Date(info.mtimeMs + 2000);
+    await utimes(config, bumped, bumped);
+    expect((await resolver.resolve('dev', config)).hostname).toBe('first.example.test');
+    expect(calls).toHaveLength(2);
+
+    await writeFile(join(fragmentsDir, 'a_base'), 'Host dev\n  HostName updated.example.test\n  User tester\nHost added-in-base\n  HostName added.example.test\n');
+    expect((await resolver.resolve('dev', config)).hostname).toBe('updated.example.test');
+    expect(calls).toHaveLength(3);
+    expect(await resolver.discoverAliases(config)).toEqual(['added-in-base', 'bastion', 'dev']);
+
+    await writeFile(explicitInclude, 'Host dev\n  HostName explicit-created.example.test\n  User tester\nHost explicit-host\n  HostName exp.example.test\n');
+    expect((await resolver.resolve('dev', config)).hostname).toBe('explicit-created.example.test');
+    expect(calls).toHaveLength(4);
+    expect(await resolver.discoverAliases(config)).toEqual(['added-in-base', 'bastion', 'dev', 'explicit-host']);
+
+    await rm(explicitInclude);
+    expect((await resolver.resolve('dev', config)).hostname).toBe('updated.example.test');
+    expect(calls).toHaveLength(5);
+    expect(await resolver.discoverAliases(config)).toEqual(['added-in-base', 'bastion', 'dev']);
+
+    const createdGlobFile = join(fragmentsDir, '0_override');
+    await writeFile(createdGlobFile, 'Host dev\n  HostName glob-created.example.test\n  User tester\nHost glob-host\n  HostName g.example.test\n');
+    expect((await resolver.resolve('dev', config)).hostname).toBe('glob-created.example.test');
+    expect(calls).toHaveLength(6);
+    expect(await resolver.discoverAliases(config)).toEqual(['added-in-base', 'bastion', 'dev', 'glob-host']);
+
+    await rm(createdGlobFile);
+    expect((await resolver.resolve('dev', config)).hostname).toBe('updated.example.test');
+    expect(calls).toHaveLength(7);
+    expect(await resolver.discoverAliases(config)).toEqual(['added-in-base', 'bastion', 'dev']);
+  });
+
+  it('coalesces concurrent cold and stale resolves into a single underlying ssh -G execution', async () => {
+    const { config } = await fixture();
+    const { calls, execSsh } = createCountingExec();
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolveGate) => { releaseFirst = resolveGate; });
+    let gatedOnce = false;
+    const delayedExec: SshExecFile = async (file, args) => {
+      if (!gatedOnce) {
+        gatedOnce = true;
+        await gate;
+      }
+      return execSsh(file, args);
+    };
+    const resolver = new SshConfigResolver({ execSsh: delayedExec });
+
+    const pending = Promise.all([
+      resolver.resolve('dev', config),
+      resolver.resolve('dev', config),
+      resolver.resolve('dev', config),
+      resolver.resolve('dev', config),
+    ]);
+    releaseFirst();
+    const results = await pending;
+    expect(calls).toHaveLength(1);
+    for (const entry of results) {
+      expect(entry).toMatchObject({ hostname: '127.0.0.1', user: 'tester', port: 2222 });
+    }
+
+    await writeFile(config, (await readFile(config, 'utf8')).replace('HostName 127.0.0.1', 'HostName concurrent-next.example.test'));
+    const staleResults = await Promise.all([
+      resolver.resolve('dev', config),
+      resolver.resolve('dev', config),
+      resolver.resolve('dev', config),
+    ]);
+    expect(calls).toHaveLength(2);
+    for (const entry of staleResults) {
+      expect(entry.hostname).toBe('concurrent-next.example.test');
+    }
+  });
+
+  it('bounds cache size, does not cache errors, and shares an instance-owned resolver inside SshHostService', async () => {
+    const { home, config } = await fixture();
+    await writeFile(config, [
+      'Host a',
+      '  HostName a.example.test',
+      '  User tester',
+      'Host b',
+      '  HostName b.example.test',
+      '  User tester',
+      'Host c',
+      '  HostName c.example.test',
+      '  User tester',
+      '',
+    ].join('\n'));
+
+    const { calls, execSsh } = createCountingExec();
+    const bounded = new SshConfigResolver({ execSsh, maxEntries: 2 });
+    await bounded.resolve('a', config);
+    await bounded.resolve('b', config);
+    await bounded.resolve('a', config);
+    expect(calls).toHaveLength(2);
+    await bounded.resolve('c', config);
+    expect(calls).toHaveLength(3);
+    await bounded.resolve('a', config);
+    expect(calls).toHaveLength(3);
+    await bounded.resolve('b', config);
+    expect(calls).toHaveLength(4);
+
+    let failOnce = true;
+    const flakyCalls: string[][] = [];
+    const flakyResolver = new SshConfigResolver({
+      execSsh: async (file, args) => {
+        flakyCalls.push([file, ...args]);
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('transient ssh failure');
+        }
+        return execSsh(file, args);
+      },
+    });
+    await expect(flakyResolver.resolve('a', config)).rejects.toThrow('transient ssh failure');
+    expect((await flakyResolver.resolve('a', config)).hostname).toBe('a.example.test');
+    expect(flakyCalls).toHaveLength(2);
+    expect((await flakyResolver.resolve('a', config)).hostname).toBe('a.example.test');
+    expect(flakyCalls).toHaveLength(2);
+
+    const serviceExec = createCountingExec();
+    const serviceResolver = new SshConfigResolver({ execSsh: serviceExec.execSsh });
+    const disposables = new DisposableStore();
+    try {
+      const ix = createServices(disposables, {
+        additionalServices: (registry) => {
+          registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
+          registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
+          registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
+          registry.definePartialInstance(IFlagService, { enabled: () => true });
+          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined, forget: async () => undefined });
+          registry.defineInstance(ISshConfigResolver, serviceResolver);
+          registry.define(ISshHostService, SshHostService);
+        },
+      });
+      const service = ix.get(ISshHostService);
+      await service.resolveTarget('a');
+      await service.resolveTarget('a');
+      await service.hostKeys('a');
+      expect(serviceExec.calls).toHaveLength(1);
+    } finally {
       await disposables.dispose();
     }
   });
