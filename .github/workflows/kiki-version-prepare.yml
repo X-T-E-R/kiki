@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       expected_version:
-        description: 'Expected stable CLI and desktop version'
+        description: 'Expected CLI and desktop version (stable X.Y.Z or beta X.Y.Z-beta.N)'
         required: true
         default: '0.3.0'
         type: string
@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'base_sha must be a full commit SHA.' >&2; exit 1; }
-          [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'expected_version must be a stable semantic version.' >&2; exit 1; }
+          [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]] || { echo 'expected_version must be a stable or beta semantic version.' >&2; exit 1; }
           test "$(git rev-parse HEAD)" = "$BASE_SHA"
           test -z "$(git status --porcelain)"
 
@@ -69,11 +69,18 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate release versions
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: pnpm version:release
+        run: |
+          set -euo pipefail
+          if [[ "$EXPECTED_VERSION" == *'-beta.'* ]]; then
+            node apps/kiki-gui/scripts/desktop-version.mjs set "$EXPECTED_VERSION"
+          else
+            pnpm version:release
+          fi
 
-      - name: Check stable CLI and desktop version
+      - name: Check CLI and desktop version
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -117,7 +124,7 @@ jobs:
                   raise RuntimeError(f'Unexpected non-version output: {status} {name}')
               if status not in ('A', 'M', 'D'):
                   raise RuntimeError(f'Unexpected change kind: {status} {name}')
-          if not consumed:
+          if not consumed and '-beta.' not in version:
               raise RuntimeError('Version generation did not consume any changesets')
           patch = git('diff', '--binary', '--full-index', '--no-ext-diff', '--no-renames', 'HEAD')
           for name in sorted(added):
@@ -171,12 +178,12 @@ jobs:
         with:
           ref: ${{ inputs.base_sha }}
           persist-credentials: false
-      - name: Validate exact source and stable version
+      - name: Validate exact source and version
         shell: bash
         run: |
           set -euo pipefail
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]]
           test "$(git rev-parse HEAD)" = "$BASE_SHA"
           test -z "$(git status --porcelain)"
           test "$(node apps/kiki-gui/scripts/desktop-version.mjs check)" = "$EXPECTED_VERSION"
@@ -297,7 +304,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:BASE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'Expected an exact source SHA' }
-          if ($env:EXPECTED_VERSION -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Expected a stable version' }
+          if ($env:EXPECTED_VERSION -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$') { throw 'Expected a stable or beta version' }
+          if ($env:EXPECTED_VERSION -like '*-beta.*') { $env:KIKI_UPDATE_CHANNEL = 'beta' } else { $env:KIKI_UPDATE_CHANNEL = 'stable' }
           if ((git rev-parse HEAD).Trim() -cne $env:BASE_SHA) { throw 'Checkout identity mismatch' }
           if (git status --porcelain) { throw 'Candidate checkout is not clean' }
           $output = Join-Path $env:RUNNER_TEMP 'kiki-windows-output'

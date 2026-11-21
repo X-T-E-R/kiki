@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -14,6 +14,7 @@ const FILES = {
   cli: resolve(REPO_ROOT, 'apps', 'kimi-code', 'package.json'),
   tauri: resolve(GUI_ROOT, 'src-tauri', 'tauri.conf.json'),
   cargo: resolve(GUI_ROOT, 'src-tauri', 'Cargo.toml'),
+  cargoLock: resolve(GUI_ROOT, 'src-tauri', 'Cargo.lock'),
   system: resolve(REPO_ROOT, 'system.yaml'),
 };
 
@@ -69,6 +70,14 @@ export function setDesktopVersion(version, files = FILES) {
     `version = "${version}"`,
   );
   writeFileSync(files.cargo, cargo);
+
+  if (files.cargoLock && existsSync(files.cargoLock)) {
+    const lock = readFileSync(files.cargoLock, 'utf8').replace(
+      /(name = "kiki-desktop"\r?\nversion = )"[^"]+"/,
+      `$1"${version}"`,
+    );
+    writeFileSync(files.cargoLock, lock);
+  }
 
   const system = readFileSync(files.system, 'utf8').replace(
     /^  version: \S+$/m,

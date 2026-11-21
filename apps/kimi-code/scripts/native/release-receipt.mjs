@@ -611,6 +611,14 @@ export function verifyCandidateSet({
   return byTarget;
 }
 
+export function npmDistTag({ channel, version }) {
+  version = required(version, 'version');
+  channel = required(channel, 'channel');
+  if (channel !== 'stable' && channel !== 'beta') fail(`Unsupported release channel: ${channel}.`);
+  assertReleaseCoordinates({ tag: `kiki-v${version}`, version, channel });
+  return channel === 'beta' ? 'beta' : 'latest';
+}
+
 export function npmPublicationAction({ status, stdout, stderr, expectedIntegrity, packageName }) {
   if (!Number.isSafeInteger(status) || status < 0) fail('npm query exit status is invalid.');
   expectedIntegrity = required(expectedIntegrity, 'expected npm integrity');
@@ -798,6 +806,14 @@ export function runCli(argv = process.argv.slice(2), root = REPO_ROOT) {
       expected: commonExpected(values),
     });
     exportUpdaterKey(values['github-env'], readJson(resolve(values.receipt), 'release input receipt'));
+    return;
+  }
+  if (command === 'npm-dist-tag') {
+    const tag = npmDistTag({
+      channel: values.channel,
+      version: values.version,
+    });
+    process.stdout.write(`${tag}\n`);
     return;
   }
   if (command === 'npm-publication-action') {

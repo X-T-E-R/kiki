@@ -71,6 +71,8 @@ npm install -g kiki-agent-lite  # CLI/TUI only
 kiki --version
 ```
 
+To follow the beta channel via npm instead of stable, append `@beta` (`npm install -g kiki-agent@beta` or `npm install -g kiki-agent-lite@beta`).
+
 Install one of the two, not both — each one provides the same `kiki` command. `kiki-agent` also downloads the desktop build for your platform and verifies its SHA-256, so it needs network access during install and covers Windows and Linux x64 plus macOS Intel and Apple Silicon. `kiki-agent-lite` ships the CLI only.
 
 Both npm packages use the [Windows Bash requirements above](#install-the-desktop-app). If you installed Git Bash somewhere other than the default location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
@@ -96,7 +98,7 @@ For a release build, verify the installed version before upgrading:
 kiki --version
 ```
 
-**Update**: replace a standalone `kiki` executable with the newer file from the matching Release asset, or run `npm install -g kiki-agent@latest` / `npm install -g kiki-agent-lite@latest` for an npm install. On Windows the desktop app can also check for and install signed NSIS updates from **Settings → About**; see [Kiki desktop](./desktop-app.md#update). Linux and macOS desktop bundles have no in-app updater, so download the newer bundle yourself.
+**Update**: replace a standalone `kiki` executable with the newer file from the matching Release asset, or run `npm install -g kiki-agent@latest` / `npm install -g kiki-agent-lite@latest` for stable (or `@beta` for the beta channel). On Windows the desktop app can also check for and install signed NSIS updates from **Settings → About**; see [Kiki desktop](./desktop-app.md#update). Linux and macOS desktop bundles have no in-app updater, so download the newer bundle yourself.
 
 **Uninstall**: delete a standalone `kiki` executable from your `PATH`, or run `npm uninstall -g kiki-agent` / `npm uninstall -g kiki-agent-lite`. That removes the CLI only — remove the desktop app through the system: **Installed apps** in Windows Settings, your package manager for a Linux deb, or dragging Kiki.app out of Applications on macOS. To stop working on the source, delete your checkout.
 

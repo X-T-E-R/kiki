@@ -849,7 +849,7 @@ case "$1" in
     exit "$status"
     ;;
   publish)
-    printf '%s\n' "$2" >> "$FAKE_NPM_PUBLISH_MARKER"
+    printf '%s\n' "$*" >> "$FAKE_NPM_PUBLISH_MARKER"
     ;;
   *)
     echo "unexpected npm command: $*" >&2
@@ -865,7 +865,7 @@ esac
   const fullPackage = 'apps/kimi-code/dist-npm/full';
   const liteIntegrity = 'sha512-lite-integrity';
   const fullIntegrity = 'sha512-full-integrity';
-  const execute = async ({ label, lite, full }) => {
+  const execute = async ({ label, lite, full, version = '1.2.3', channel = 'stable' }) => {
     const runnerTemp = join(scratch, `runner-temp-${label}`);
     const marker = join(scratch, `publish-${label}.marker`);
     await mkdir(runnerTemp, { recursive: true });
@@ -875,7 +875,8 @@ esac
       env: {
         ...process.env,
         NODE_AUTH_TOKEN: 'offline-npm-token',
-        KIKI_VERSION: '1.2.3',
+        KIKI_VERSION: version,
+        KIKI_CHANNEL: channel,
         RUNNER_TEMP: runnerTemp,
         FAKE_NPM_PACK_LITE: liteIntegrity,
         FAKE_NPM_PACK_FULL: fullIntegrity,
@@ -902,7 +903,34 @@ esac
     full: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
   });
   assert.equal(firstPublish.result.status, 0, firstPublish.output);
-  assert.deepEqual(firstPublish.published, [litePackage, fullPackage]);
+  assert.deepEqual(firstPublish.published, [
+    `publish ${litePackage} --access public --tag latest --registry=https://registry.npmjs.org/`,
+    `publish ${fullPackage} --access public --tag latest --registry=https://registry.npmjs.org/`,
+  ]);
+
+  const betaPublish = await execute({
+    label: 'beta-publish',
+    version: '1.2.3-beta.1',
+    channel: 'beta',
+    lite: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
+    full: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
+  });
+  assert.equal(betaPublish.result.status, 0, betaPublish.output);
+  assert.deepEqual(betaPublish.published, [
+    `publish ${litePackage} --access public --tag beta --registry=https://registry.npmjs.org/`,
+    `publish ${fullPackage} --access public --tag beta --registry=https://registry.npmjs.org/`,
+  ]);
+
+  const mismatchedChannel = await execute({
+    label: 'mismatched-channel-reject',
+    version: '1.2.3-beta.1',
+    channel: 'stable',
+    lite: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
+    full: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
+  });
+  assert.notEqual(mismatchedChannel.result.status, 0, mismatchedChannel.output);
+  assert.deepEqual(mismatchedChannel.published, []);
+  assert.match(mismatchedChannel.output, /does not match version/);
 
   const same = await execute({
     label: 'same-reuse',

@@ -71,6 +71,8 @@ npm install -g kiki-agent-lite  # 仅 CLI/TUI
 kiki --version
 ```
 
+如需通过 npm 安装 Beta 测试渠道版本，在包名后追加 `@beta`（`npm install -g kiki-agent@beta` 或 `npm install -g kiki-agent-lite@beta`）。
+
 两个包只选一个安装，它们提供的是同一个 `kiki` 命令。`kiki-agent` 会在安装时下载并校验对应平台的桌面构建，因此需要联网，覆盖 Windows 与 Linux x64 以及 macOS Intel 和 Apple Silicon；`kiki-agent-lite` 只包含 CLI。
 
 两个 npm 包都遵循[上面的 Windows Bash 要求](#安装桌面版)。Git Bash 装在非默认位置时，把 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
@@ -96,7 +98,7 @@ pnpm dev:cli -- --help
 kiki --version
 ```
 
-**更新**：独立 CLI 用新版 Release 文件替换；npm 安装则运行 `npm install -g kiki-agent@latest` 或 `npm install -g kiki-agent-lite@latest`。Windows 桌面版还可以在 **设置 → 关于** 中检查并安装已签名的 NSIS 更新，见 [Kiki 桌面版](./desktop-app.md#更新)。Linux 和 macOS 桌面版没有应用内更新器，需要自己下载新版构建。
+**更新**：独立 CLI 用新版 Release 文件替换；npm 安装稳定版运行 `npm install -g kiki-agent@latest` 或 `npm install -g kiki-agent-lite@latest`（Beta 测试渠道使用 `@beta`）。Windows 桌面版还可以在 **设置 → 关于** 中检查并安装已签名的 NSIS 更新，见 [Kiki 桌面版](./desktop-app.md#更新)。Linux 和 macOS 桌面版没有应用内更新器，需要自己下载新版构建。
 
 **卸载**：独立 CLI 从 `PATH` 中删除；npm 包运行 `npm uninstall -g kiki-agent` 或 `npm uninstall -g kiki-agent-lite`。这两条只卸载 CLI，桌面应用请通过系统卸载：Windows 在「已安装的应用」中操作，Linux deb 用系统包管理器，macOS 把「应用程序」里的 Kiki.app 拖到废纸篓。源码开发直接删除仓库检出即可。
 

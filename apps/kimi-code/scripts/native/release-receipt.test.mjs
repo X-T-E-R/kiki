@@ -11,6 +11,7 @@ import {
   NATIVE_RECEIPT_NAME,
   createNpmReceipt,
   createPrepareReceipt,
+  npmDistTag,
   receiptIdentity,
   runCli,
   selectTargetArtifactIds,
@@ -521,4 +522,21 @@ test('darwin release candidates accept apple-developer-id signing consistently w
   } finally {
     rmSync(state.root, { recursive: true, force: true });
   }
+});
+
+test('npmDistTag routes beta versions to beta dist-tag and stable versions to latest without drift', () => {
+  assert.equal(npmDistTag({ channel: 'stable', version: '0.5.1' }), 'latest');
+  assert.equal(npmDistTag({ channel: 'beta', version: '0.6.0-beta.1' }), 'beta');
+  assert.throws(
+    () => npmDistTag({ channel: 'stable', version: '0.6.0-beta.1' }),
+    /does not match version/,
+  );
+  assert.throws(
+    () => npmDistTag({ channel: 'beta', version: '0.6.0' }),
+    /does not match version/,
+  );
+  assert.throws(
+    () => npmDistTag({ channel: 'nightly', version: '0.6.0-beta.1' }),
+    /Unsupported release channel/,
+  );
 });

@@ -647,7 +647,14 @@ jobs:
             --prepare-attempt "$KIKI_PREPARE_ATTEMPT"
 
       - name: Publish validated release
-        run: gh release edit "$KIKI_TAG" --draft=false
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$KIKI_CHANNEL" = 'beta' ]; then
+            gh release edit "$KIKI_TAG" --draft=false --prerelease
+          else
+            gh release edit "$KIKI_TAG" --draft=false
+          fi
 
       - name: Publish npm CLI/TUI and desktop distributions
         shell: bash
@@ -659,6 +666,9 @@ jobs:
             echo 'NPM_TOKEN is required to publish npm packages.' >&2
             exit 1
           fi
+          npm_tag="$(node apps/kimi-code/scripts/native/release-receipt.mjs npm-dist-tag \
+            --channel "$KIKI_CHANNEL" \
+            --version "$KIKI_VERSION")"
           for kind in lite full; do
             package="apps/kimi-code/dist-npm/$kind"
             name="$(node -p "require('./$package/package.json').name")"
@@ -677,8 +687,8 @@ jobs:
               --expected-integrity "$expected" \
               --package "$name@$KIKI_VERSION")"
             if [ "$action" = 'reuse' ]; then
-              echo "Reusing exact npm package: $name@$KIKI_VERSION"
+              echo "Reusing exact npm package: $name@$KIKI_VERSION (dist-tag: $npm_tag)"
             else
-              npm publish "$package" --access public --registry=https://registry.npmjs.org/
+              npm publish "$package" --access public --tag "$npm_tag" --registry=https://registry.npmjs.org/
             fi
           done
