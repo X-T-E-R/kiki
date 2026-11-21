@@ -219,6 +219,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
     return Array.isArray(raw) ? raw : [];
   };
 
+  const createdSessionIds = [];
   const createSession = async (label) => {
     const res = await apiJson(server.endpoint, server.token, 'POST', '/api/sessions', {
       metadata: { cwd: dir },
@@ -227,6 +228,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
     if (res.status !== 200 || !res.json?.data?.id) {
       throw new Error(`S13 failed to create session ${label}: status=${res.status}`);
     }
+    createdSessionIds.push(res.json.data.id);
     return { sessionId: res.json.data.id, workspaceId: res.json.data.workspace_id };
   };
 
@@ -705,6 +707,9 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       });
     }
   } finally {
+    if (typeof server.closeSession === 'function') {
+      await Promise.all(createdSessionIds.map((sid) => server.closeSession(sid).catch(() => undefined)));
+    }
     for (const pid of cleanupPids) {
       if (isPidAlive(pid)) {
         try {

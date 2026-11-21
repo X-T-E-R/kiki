@@ -11,6 +11,7 @@ import { decodeBase64Prefix, isModelAcceptedImageMime, normalizeImageMime, resol
 import { persistOriginalImage } from '@kiki/agent-core-v2/agent/media/image-originals';
 import { fileNotFoundError, type FileMeta, type GetResult, type IFileService, type SaveOptions } from '@kiki/agent-core-v2/app/file/fileService';
 import type { ISessionMediaStore, SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import type { ICpuWorkerService } from '@kiki/agent-core-v2/app/cpuWorker/cpuWorkerService';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 import type { ITelemetryService } from '@kiki/agent-core-v2/app/telemetry/telemetry';
 import { Error2 } from '@kiki/agent-core-v2/errors';
@@ -209,6 +210,8 @@ export interface ResolvePromptMediaOptions {
    * upload while it waits in the queue or after it ran.
    */
   readonly sessionMedia?: ISessionMediaStore;
+  /** Optional App-scoped CPU worker pool for off-thread image compression. */
+  readonly cpuWorker?: ICpuWorkerService;
 }
 
 export interface PromptMediaImageStat {
@@ -250,14 +253,26 @@ export async function resolvePromptMediaFiles(
   cacheDir: string,
   options: ResolvePromptMediaOptions = {},
 ): Promise<PromptMediaPreparation> {
-  const files = options.sessionMedia === undefined ? store : sessionPromptFiles(store, options.sessionMedia);
   const resolvedFiles = new Map<string, Promise<GetResult>>();
+  const knownAbsentInSessionMedia = new Set<string>();
   const attachmentPaths = new Map<string, Promise<string>>();
   const attachmentNotes = new Set<string>();
   const getFile = (fileId: string): Promise<GetResult> => {
     let pending = resolvedFiles.get(fileId);
     if (pending === undefined) {
-      pending = files.get(fileId);
+      pending = (async () => {
+        if (options.sessionMedia !== undefined) {
+          const retained = await options.sessionMedia.open(fileId);
+          if (retained !== undefined) {
+            return {
+              meta: { id: fileId, name: retained.name, media_type: retained.mediaType, size: retained.size, created_at: new Date(0).toISOString() },
+              stream: (range) => Readable.from(retained.stream(range)),
+            };
+          }
+          knownAbsentInSessionMedia.add(fileId);
+        }
+        return store.get(fileId);
+      })();
       resolvedFiles.set(fileId, pending);
     }
     return pending;
@@ -353,6 +368,7 @@ export async function resolvePromptMediaFiles(
       }
       const compressed = await compressBase64ForModel(part.source.data, canonicalMime, {
         telemetry: telemetryFor('prompt_inline'),
+        cpuWorker: options.cpuWorker,
       });
       if (compressed.changed) {
         const dir = await resolveOriginalsDir();
@@ -459,12 +475,13 @@ export async function resolvePromptMediaFiles(
           const compressStarted = performance.now();
           const result = await compressImageForModel(data, mediaType, {
             telemetry: telemetryFor('prompt_file'),
+            cpuWorker: options.cpuWorker,
           });
           compressMs = Number((performance.now() - compressStarted).toFixed(2));
           return result;
         })(),
         part.source.kind === 'file' && options.sessionMedia !== undefined
-          ? retainSessionMedia(options.sessionMedia, file, data)
+          ? retainSessionMedia(options.sessionMedia, file, data, knownAbsentInSessionMedia.has(file.meta.id))
           : Promise.resolve(),
       ]);
       imageStats.push({
@@ -479,7 +496,7 @@ export async function resolvePromptMediaFiles(
       notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
       let finalFile = file;
       if (compressed.changed) {
-        const compressedBuffer = Buffer.from(compressed.data);
+        const compressedBuffer = Buffer.from(compressed.data.buffer, compressed.data.byteOffset, compressed.data.byteLength);
         const compressedName = compressedUploadName(file.meta.name, compressed.mimeType);
         const [originalPath, finalSaved] = await Promise.all([
           resolveOriginalsDir().then((dir) => persistOriginalImage(data, mediaType, { dir })),

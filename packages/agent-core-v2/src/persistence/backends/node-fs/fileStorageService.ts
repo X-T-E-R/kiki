@@ -166,9 +166,9 @@ function isPidAlive(pid: number): boolean {
 }
 
 function isSimpleRelativeSegment(segment: string): boolean {
-  if (segment.length === 0) return false;
+  if (segment.length === 0 || segment === '.') return false;
   if (segment.charCodeAt(0) === 47 || segment.charCodeAt(0) === 92) return false;
-  if (segment.includes('\\') || segment.includes('..') || segment.includes('//')) return false;
+  if (segment.includes('\\') || segment.includes('..') || segment.includes('//') || segment.startsWith('./') || segment.includes('/.')) return false;
   if (segment.endsWith('/')) return false;
   return true;
 }

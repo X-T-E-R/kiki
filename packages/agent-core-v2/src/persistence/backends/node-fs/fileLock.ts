@@ -61,7 +61,7 @@ export function sessionLockKey(scope: string): string {
 }
 
 const DEFAULT_LEASE_MS = 120_000;
-const DEFAULT_RENEW_INTERVAL_MS = 15_000;
+const DEFAULT_RENEW_INTERVAL_MS = 45_000;
 const TAKEOVER_SETTLE_BASE_MS = 60;
 const TAKEOVER_SETTLE_MAX_MS = 2_000;
 const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);

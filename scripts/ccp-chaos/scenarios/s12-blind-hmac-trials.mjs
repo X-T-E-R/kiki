@@ -178,6 +178,7 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
   progress(`S12 Blind HMAC-SHA256 Control (${runId}): executing 4 shuffled trials through real kap-server producer & validator Bash turns...`);
 
   const rawOutcomes = [];
+  const createdSessionIds = [];
   try {
     for (let idx = 0; idx < sealedSpecs.length; idx += 1) {
       const spec = sealedSpecs[idx];
@@ -228,6 +229,7 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
       if (!prodSid || !valSid) {
         throw new Error(`S12 failed to create real sessions for trial ${idx}`);
       }
+      createdSessionIds.push(prodSid, valSid);
 
       // Minimal runner wrapper injects HMAC_KEY strictly into child process.env (never into trial spec/meta)
       const envRunScript = path.join(trialDir, 'env-run.mjs');
@@ -322,6 +324,9 @@ export async function runScenarioS12BlindHmacTrials({ server, corpus, workRoot, 
       });
     }
   } finally {
+    if (typeof server.closeSession === 'function') {
+      await Promise.all(createdSessionIds.map((sid) => server.closeSession(sid).catch(() => undefined)));
+    }
     fs.rmSync(trialDir, { recursive: true, force: true });
   }
 

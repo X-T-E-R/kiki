@@ -943,6 +943,18 @@ export async function runScenarioS11Mesh256({
     `S11 Mesh Result: passed=${exitCode === EXIT_PASS} sessions=${totalSessions} rooms=${totalRooms} verifiedEdges=${graphVerdict.verifiedEdgeCount}/${allExpectedEdges.length} cronJob=${realJobId} cronDrainMs=${drainMsFromReplacementStart}ms`,
   );
 
+  if (typeof activeServer?.closeSession === 'function') {
+    const allSessionIds = new Set();
+    for (const r of scaleResults) {
+      for (const s of r.createdSessions ?? []) {
+        if (s?.sessionId) allSessionIds.add(s.sessionId);
+      }
+    }
+    if (crashSender?.sessionId) allSessionIds.add(crashSender.sessionId);
+    if (crashTarget?.sessionId) allSessionIds.add(crashTarget.sessionId);
+    await mapBatched([...allSessionIds], 32, (sid) => activeServer.closeSession(sid).catch(() => undefined));
+  }
+
   return {
     passed: exitCode === EXIT_PASS,
     exitCode,

@@ -19,10 +19,12 @@ export class CpuWorkerService extends Disposable implements ICpuWorkerService {
 
   constructor(@IConfigService config: IConfigService) {
     super();
-    this.pool = createCpuPool(CpuWorkersConfigSchema.parse(config.get(CPU_WORKERS_SECTION) ?? {}));
+    const parsed = CpuWorkersConfigSchema.parse(config.get(CPU_WORKERS_SECTION) ?? {});
+    const isProductionRuntime = process.env['VITEST'] === undefined;
+    this.pool = createCpuPool(isProductionRuntime ? { ...parsed, warmWorkers: 2 } : parsed);
     this._register(registerCpuPool(this.pool));
-    if (process.env['VITEST'] === undefined) {
-      this.pool.warm(1);
+    if (isProductionRuntime) {
+      this.pool.warm();
     }
   }
 

@@ -15,6 +15,7 @@ export interface CpuPoolOptions {
   readonly timeoutMs?: number;
   readonly idleTimeoutMs?: number;
   readonly cancelGraceMs?: number;
+  readonly warmWorkers?: number;
 }
 
 export interface CpuRequestOptions {
@@ -85,6 +86,7 @@ export class CpuWorkerPool {
   private readonly timeoutMs: number;
   private readonly idleTimeoutMs: number;
   private readonly cancelGraceMs: number;
+  private readonly warmWorkerFloor: number;
   private queuedBytes = 0;
   private serial = 0;
   private closing?: Promise<void>;
@@ -98,6 +100,8 @@ export class CpuWorkerPool {
     this.timeoutMs = positiveInteger(options.timeoutMs ?? 30_000, 'timeoutMs');
     this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, 'idleTimeoutMs');
     this.cancelGraceMs = positiveInteger(options.cancelGraceMs ?? HARD_TERMINATE_GRACE_MS, 'cancelGraceMs');
+    const requestedWarm = options.warmWorkers === undefined ? WARM_WORKER_FLOOR : Math.max(0, Math.floor(options.warmWorkers));
+    this.warmWorkerFloor = Math.min(this.size, requestedWarm);
   }
 
   get liveWorkerCount(): number {
@@ -108,7 +112,7 @@ export class CpuWorkerPool {
     return count;
   }
 
-  warm(count = WARM_WORKER_FLOOR): void {
+  warm(count = this.warmWorkerFloor): void {
     if (this.closing !== undefined) return;
     const target = Math.min(this.size, Math.max(0, Math.floor(count)));
     while (this.liveWorkerCount < target && this.slots.length < this.size) {
@@ -187,13 +191,26 @@ export class CpuWorkerPool {
     if (this.closing !== undefined) return;
     let activeCount = this.activeSlotCount();
     while (this.hasRunnableWaiting(activeCount)) {
+      const onlyLowWaiting = this.highWaiting.length === 0 && this.waiting.length === 0 && this.lowWaiting.length > 0;
       const hasReadyWorker = this.slots.some(
         (candidate) => candidate.worker !== undefined && candidate.ready === true && candidate.retiring === undefined,
       );
-      let slot = this.slots.find(
-        (candidate) => candidate.worker !== undefined && candidate.ready === true && candidate.active === undefined && candidate.drainingCancel === undefined && candidate.retiring === undefined,
-      );
-      if (slot === undefined && hasReadyWorker) {
+      let readyIdleCount = 0;
+      let slot: Slot | undefined;
+      for (const candidate of this.slots) {
+        if (
+          candidate.worker !== undefined &&
+          candidate.ready === true &&
+          candidate.active === undefined &&
+          candidate.drainingCancel === undefined &&
+          candidate.retiring === undefined
+        ) {
+          readyIdleCount += 1;
+          slot ??= candidate;
+        }
+      }
+      const reserveWarmForHigh = onlyLowWaiting && this.warmWorkerFloor >= 2 && this.size >= 2 && readyIdleCount <= 1 && this.liveWorkerCount < this.size;
+      if ((slot === undefined || reserveWarmForHigh) && hasReadyWorker) {
         const hasBootingWorker = this.slots.some(
           (candidate) => candidate.worker !== undefined && candidate.ready !== true && candidate.active === undefined && candidate.retiring === undefined,
         );
@@ -339,7 +356,7 @@ export class CpuWorkerPool {
       return;
     }
     const live = this.slots.filter((slot) => slot.worker !== undefined && slot.retiring === undefined);
-    if (live.length <= WARM_WORKER_FLOOR) {
+    if (live.length <= this.warmWorkerFloor) {
       for (const slot of this.slots) this.clearIdleTimer(slot);
       return;
     }
@@ -349,7 +366,7 @@ export class CpuWorkerPool {
         this.clearIdleTimer(slot);
         continue;
       }
-      if (warmReserved < WARM_WORKER_FLOOR) {
+      if (warmReserved < this.warmWorkerFloor) {
         warmReserved += 1;
         this.clearIdleTimer(slot);
         continue;
@@ -372,7 +389,7 @@ export class CpuWorkerPool {
       this.waiting.length > 0 ||
       this.highWaiting.length > 0 ||
       this.lowWaiting.length > 0 ||
-      this.liveWorkerCount <= WARM_WORKER_FLOOR
+      this.liveWorkerCount <= this.warmWorkerFloor
     ) {
       this.reconcileIdleTimers();
       return;

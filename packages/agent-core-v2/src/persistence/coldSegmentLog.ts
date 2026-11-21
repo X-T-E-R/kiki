@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs';
 import { mkdir, open, readFile, readdir, rmdir, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { isMainThread } from 'node:worker_threads';
 import {
   constants as zlibConstants,
   deflateRaw,
@@ -2312,21 +2313,30 @@ async function hasColdSegmentsManifest(wirePath: string): Promise<boolean> {
 const COLD_MARKER_CHUNK_BYTES = 32 * 1024 * 1024;
 const COLD_MARKER_SEARCH_SLICE_BYTES = 4 * 1024 * 1024;
 const COLD_MARKER_SCRATCH_MAX_OVERLAP = 1024;
-const COLD_MARKER_SCRATCH_IDLE_MS = 5 * 60_000;
+const COLD_MARKER_SCRATCH_POOL_BYTES = COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP;
 const COLD_MARKER_HEAD_START_MS = 30;
-let coldMarkerScratchBuf: Buffer | undefined;
+const COLD_MARKER_READ_CONCURRENCY = 4;
+const COLD_MARKER_PARALLEL_READ_MIN_BYTES = 4 * 1024 * 1024;
+const COLD_MARKER_PAGE_BYTES = 4096;
+
+function allocatePrefaultedColdMarkerScratch(size: number): Buffer {
+  const buf = Buffer.alloc(size, 0);
+  for (let i = 0; i < buf.length; i += COLD_MARKER_PAGE_BYTES) {
+    buf[i] = 0;
+  }
+  return buf;
+}
+
+let coldMarkerScratchBuf: Buffer | undefined =
+  isMainThread && process.env['VITEST'] === undefined
+    ? allocatePrefaultedColdMarkerScratch(COLD_MARKER_SCRATCH_POOL_BYTES)
+    : undefined;
 let coldMarkerScratchInUse = false;
-let coldMarkerScratchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function acquireColdMarkerScratch(neededBytes: number): { readonly buf: Buffer; readonly pooled: boolean } {
-  const poolSize = COLD_MARKER_CHUNK_BYTES + COLD_MARKER_SCRATCH_MAX_OVERLAP;
-  if (!coldMarkerScratchInUse && neededBytes <= poolSize) {
-    if (coldMarkerScratchTimer !== undefined) {
-      clearTimeout(coldMarkerScratchTimer);
-      coldMarkerScratchTimer = undefined;
-    }
+  if (!coldMarkerScratchInUse && neededBytes <= COLD_MARKER_SCRATCH_POOL_BYTES) {
     if (coldMarkerScratchBuf === undefined || coldMarkerScratchBuf.length < neededBytes) {
-      coldMarkerScratchBuf = Buffer.alloc(poolSize, 0);
+      coldMarkerScratchBuf = allocatePrefaultedColdMarkerScratch(COLD_MARKER_SCRATCH_POOL_BYTES);
     }
     coldMarkerScratchInUse = true;
     return { buf: coldMarkerScratchBuf, pooled: true };
@@ -2337,12 +2347,48 @@ function acquireColdMarkerScratch(neededBytes: number): { readonly buf: Buffer; 
 function releaseColdMarkerScratch(pooled: boolean): void {
   if (!pooled) return;
   coldMarkerScratchInUse = false;
-  if (coldMarkerScratchTimer !== undefined) clearTimeout(coldMarkerScratchTimer);
-  coldMarkerScratchTimer = setTimeout(() => {
-    coldMarkerScratchTimer = undefined;
-    if (!coldMarkerScratchInUse) coldMarkerScratchBuf = undefined;
-  }, COLD_MARKER_SCRATCH_IDLE_MS);
-  coldMarkerScratchTimer.unref?.();
+}
+
+async function readColdMarkerWindow(
+  fh: FileHandle,
+  buf: Buffer,
+  carry: number,
+  toRead: number,
+  pos: number,
+  signal: AbortSignal,
+): Promise<number> {
+  if (toRead <= COLD_MARKER_PARALLEL_READ_MIN_BYTES) {
+    const { bytesRead } = await abortable(fh.read(buf, carry, toRead, pos), signal);
+    return bytesRead;
+  }
+  const rawSlice = Math.ceil(toRead / COLD_MARKER_READ_CONCURRENCY);
+  const sliceSize = Math.ceil(rawSlice / COLD_MARKER_PAGE_BYTES) * COLD_MARKER_PAGE_BYTES;
+  const slices: Array<{ readonly offset: number; readonly length: number }> = [];
+  for (let off = 0; off < toRead; off += sliceSize) {
+    slices.push({ offset: off, length: Math.min(sliceSize, toRead - off) });
+  }
+  const counts = await Promise.all(
+    slices.map(async (slice) => {
+      let done = 0;
+      while (done < slice.length) {
+        signal.throwIfAborted();
+        const { bytesRead } = await abortable(
+          fh.read(buf, carry + slice.offset + done, slice.length - done, pos + slice.offset + done),
+          signal,
+        );
+        if (bytesRead <= 0) break;
+        done += bytesRead;
+      }
+      return done;
+    }),
+  );
+  let total = 0;
+  for (let i = 0; i < slices.length; i += 1) {
+    const count = counts[i]!;
+    total += count;
+    if (count < slices[i]!.length) break;
+  }
+  return total;
 }
 
 export async function scanColdWireMarkers(
@@ -2455,7 +2501,7 @@ export async function scanColdWireMarkers(
       while (pos < info.size && !allFound) {
         if (controller.signal.aborted) return undefined;
         const toRead = Math.min(chunkSize, info.size - pos);
-        const { bytesRead } = await abortable(fh.read(buf, carry, toRead, pos), controller.signal);
+        const bytesRead = await readColdMarkerWindow(fh, buf, carry, toRead, pos, controller.signal);
         if (bytesRead <= 0) break;
         const windowLen = carry + bytesRead;
         let searchYieldAt = performance.now();
