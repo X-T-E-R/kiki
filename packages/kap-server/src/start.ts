@@ -935,6 +935,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => core.accessor.get(IHomeRuntimeService).close() },
       { run: () => roomChangeSubscription.dispose() },
       { run: () => personaChangeSubscription.dispose() },
+      { run: () => remoteConnectionsChangeSubscription.dispose() },
+      { run: () => admissionConnectionsChangeSubscription.dispose() },
       { run: () => configWarningSubscription.dispose() },
       { run: () => pluginChangeSubscription.dispose() },
       { run: () => pluginUsageChangeSubscription.dispose() },
@@ -1059,6 +1061,34 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       personaPublishScheduled = false;
       core.accessor.get(IEventService).publish(new PersonaChanged({ payload: {} }));
     });
+  });
+  class RemoteConnectionsChanged extends Event2<{
+    readonly payload: {
+      readonly reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed';
+      readonly connection_id?: string;
+    };
+  }> {
+    static override readonly type = 'event.remote_connections.changed';
+  }
+  const publishRemoteConnectionsChanged = (
+    reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed',
+    connectionId?: string,
+  ): void => {
+    core.accessor.get(IEventService).publish(
+      new RemoteConnectionsChanged({
+        payload: {
+          reason,
+          connection_id: connectionId,
+        },
+      }),
+    );
+  };
+  const remoteConnectionsChangeSubscription = remoteConnections.onDidChange((change) => {
+    publishRemoteConnectionsChanged(change.reason, change.connection_id);
+  });
+  const admissionConnectionsChangeSubscription = admission.onDidChange((change) => {
+    const reason = change.reason ?? (change.kind === 'revoked' ? 'deleted' : 'updated');
+    publishRemoteConnectionsChanged(reason, change.grantId);
   });
   const fsWatchBridge = new FsWatchBridge({ core, logger });
 

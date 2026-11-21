@@ -857,7 +857,8 @@ export class WsConnectionV1 implements BroadcastTarget {
         await this.replay(sid, cursor, filter, transcriptGrades, effectiveTranscriptOnly, resyncRequired, serverCursors);
         await this.broadcaster.flushTranscriptSeed(sid, this);
       } else {
-        serverCursors[sid] = await this.broadcaster.getCursor(sid);
+        const current = await this.broadcaster.getCursor(sid);
+        serverCursors[sid] = { seq: current.seq, epoch: current.epoch };
       }
       if (this.closed) return;
       this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });

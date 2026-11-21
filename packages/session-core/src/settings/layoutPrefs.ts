@@ -86,7 +86,13 @@ export function shownPinnedNavItems(
     : preferences.pinnedNavItems;
 }
 
+export type SidebarMode = 'inbox' | 'sessions';
+
 export interface LayoutPreferences extends SessionListPreferences {
+  /** The primary sidebar surface shown for the current layout. */
+  sidebarMode?: SidebarMode;
+  /** The persisted space filter for the sidebar; `all` shows every space. */
+  spaceScope?: string;
   /** Sidebar (left) width in px. */
   sidebarWidth: number;
   /** Right rail width in px (the conversation /s/:id right panel). */
@@ -131,6 +137,8 @@ export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   groupBy: 'time',
   sortBy: 'updated-desc',
   filters: DEFAULT_SESSION_LIST_FILTERS,
+  sidebarMode: 'inbox',
+  spaceScope: 'all',
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   railWidth: RAIL_DEFAULT_WIDTH,
   pinnedNavItems: DEFAULT_PINNED_NAV_ITEMS,
@@ -148,6 +156,14 @@ function isGroupBy(value: unknown): value is LayoutPreferences['groupBy'] {
 
 function isSortBy(value: unknown): value is SessionSortOrder {
   return isSessionSortOrder(value);
+}
+
+function parseSidebarMode(value: unknown): SidebarMode {
+  return value === 'sessions' ? 'sessions' : 'inbox';
+}
+
+function parseSpaceScope(value: unknown): string {
+  return typeof value === 'string' && value.trim() !== '' ? value : 'all';
 }
 
 const STATUS_FILTERS: readonly SessionStatusFilter[] = ['running', 'needs-me', 'cleanup-pending', 'idle'];
@@ -199,6 +215,8 @@ export function readLayoutPreferences(): LayoutPreferences {
   const stored = readObject(STORAGE_KEY);
   const groupBy = stored['groupBy'];
   const sortBy = stored['sortBy'];
+  const sidebarMode = stored['sidebarMode'];
+  const spaceScope = stored['spaceScope'];
   const sidebarWidth = stored['sidebarWidth'];
   const railWidth = stored['railWidth'];
   const sidebarCollapsed = stored['sidebarCollapsed'];
@@ -216,6 +234,8 @@ export function readLayoutPreferences(): LayoutPreferences {
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
+    sidebarMode: parseSidebarMode(sidebarMode),
+    spaceScope: parseSpaceScope(spaceScope),
     filters: parseSessionListFilters(stored['filters']),
     sidebarWidth: clamp(
       typeof sidebarWidth === 'number' ? sidebarWidth : DEFAULT_LAYOUT_PREFERENCES.sidebarWidth,
@@ -297,6 +317,8 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
   const next: LayoutPreferences = {
     ...current,
     ...patch,
+    sidebarMode: patch.sidebarMode !== undefined ? parseSidebarMode(patch.sidebarMode) : current.sidebarMode ?? 'inbox',
+    spaceScope: patch.spaceScope !== undefined ? parseSpaceScope(patch.spaceScope) : current.spaceScope ?? 'all',
     sidebarWidth: clamp(patch.sidebarWidth ?? current.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
     railWidth: clamp(patch.railWidth ?? current.railWidth, RAIL_MIN_WIDTH, RAIL_MAX_WIDTH),
     sidebarCollapsed: patch.sidebarCollapsed !== undefined ? patch.sidebarCollapsed : current.sidebarCollapsed,

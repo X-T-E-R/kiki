@@ -2280,7 +2280,7 @@ describe('SessionEventBroadcaster', () => {
     main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
     await bc.getCursor('s1');
     main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
-    await bc.getCursor('s1');
+    const cursor = await bc.getCursor('s1');
 
     expect(published).toEqual([
       {
@@ -2293,6 +2293,7 @@ describe('SessionEventBroadcaster', () => {
           main_turn_active: true,
           pending_interaction: 'none',
           last_turn_reason: undefined,
+          attention_cursor: { epoch: cursor.epoch, seq: 1 },
         },
       },
       {
@@ -2305,6 +2306,7 @@ describe('SessionEventBroadcaster', () => {
           main_turn_active: false,
           pending_interaction: 'none',
           last_turn_reason: 'completed',
+          attention_cursor: { epoch: cursor.epoch, seq: 3 },
         },
       },
     ]);
@@ -2495,13 +2497,8 @@ describe('SessionEventBroadcaster', () => {
 
     expect(envelopes).toHaveLength(2);
     expect(envelopes[0]).toMatchObject({
-      type: 'event.session.work_changed',
-      seq: 1,
-      payload: { pending_interaction: 'question' },
-    });
-    expect(envelopes[1]).toMatchObject({
       type: 'event.question.requested',
-      seq: 2,
+      seq: 1,
       session_id: 's1',
       payload: {
         type: 'event.question.requested',
@@ -2513,27 +2510,38 @@ describe('SessionEventBroadcaster', () => {
         questions: [{ id: 'q_0', question: 'Pick one', options: [{ id: 'opt_0_0', label: 'A' }, { id: 'opt_0_1', label: 'B' }] }],
       },
     });
-    expect(envelopes[1]!.volatile).toBeUndefined();
+    expect(envelopes[0]!.volatile).toBeUndefined();
+    expect(envelopes[1]).toMatchObject({
+      type: 'event.session.work_changed',
+      seq: 2,
+      payload: {
+        pending_interaction: 'question',
+        attention_cursor: { epoch: envelopes[0]!.epoch, seq: 1 },
+      },
+    });
 
     lc.interactions.respond('q1', { answers: { q_0: 'opt_0_0' }, method: 'enter' });
     await bc.getCursor('s1');
 
     expect(envelopes).toHaveLength(4);
     expect(envelopes[2]).toMatchObject({
-      type: 'event.session.work_changed',
-      seq: 3,
-      payload: { pending_interaction: 'none' },
-    });
-    expect(envelopes[3]).toMatchObject({
       type: 'event.question.answered',
-      seq: 4,
+      seq: 3,
       session_id: 's1',
       payload: {
         question_id: 'q1',
         answers: { q_0: 'opt_0_0' },
       },
     });
-    expect((envelopes[3]!.payload as { resolved_at?: string }).resolved_at).toBeTypeOf('string');
+    expect((envelopes[2]!.payload as { resolved_at?: string }).resolved_at).toBeTypeOf('string');
+    expect(envelopes[3]).toMatchObject({
+      type: 'event.session.work_changed',
+      seq: 4,
+      payload: {
+        pending_interaction: 'none',
+        attention_cursor: { epoch: envelopes[2]!.epoch, seq: 3 },
+      },
+    });
   });
 
   it('broadcasts question dismissed when resolved with null', async () => {
@@ -2552,15 +2560,15 @@ describe('SessionEventBroadcaster', () => {
     await bc.getCursor('s1');
 
     expect(envelopes.map((e) => e.type)).toEqual([
-      'event.session.work_changed',
       'event.question.requested',
       'event.session.work_changed',
       'event.question.dismissed',
+      'event.session.work_changed',
     ]);
-    expect(envelopes[0]!.payload).toMatchObject({ pending_interaction: 'question' });
-    expect(envelopes[2]!.payload).toMatchObject({ pending_interaction: 'none' });
-    expect(envelopes[3]!.payload).toMatchObject({ question_id: 'q1' });
-    expect((envelopes[3]!.payload as { dismissed_at?: string }).dismissed_at).toBeTypeOf('string');
+    expect(envelopes[1]!.payload).toMatchObject({ pending_interaction: 'question' });
+    expect(envelopes[2]!.payload).toMatchObject({ question_id: 'q1' });
+    expect((envelopes[2]!.payload as { dismissed_at?: string }).dismissed_at).toBeTypeOf('string');
+    expect(envelopes[3]!.payload).toMatchObject({ pending_interaction: 'none' });
   });
 
   it('broadcasts question dismissed for an explicit cancelled response', async () => {
@@ -2579,10 +2587,10 @@ describe('SessionEventBroadcaster', () => {
     await bc.getCursor('s1');
 
     expect(envelopes.map((e) => e.type)).toEqual([
-      'event.session.work_changed',
       'event.question.requested',
       'event.session.work_changed',
       'event.question.dismissed',
+      'event.session.work_changed',
     ]);
     expect(envelopes.some((e) => e.type === 'event.question.answered')).toBe(false);
   });
@@ -2645,7 +2653,7 @@ describe('SessionEventBroadcaster', () => {
     lc.interactions.respond('q1', response);
     await bc.getCursor('s1');
 
-    expect(envelopes.at(-1)).toMatchObject({
+    expect(envelopes.find((e) => e.type === 'event.question.answered')).toMatchObject({
       type: 'event.question.answered',
       payload: { question_id: 'q1', answers },
     });
@@ -2703,13 +2711,8 @@ describe('SessionEventBroadcaster', () => {
 
     expect(envelopes).toHaveLength(2);
     expect(envelopes[0]).toMatchObject({
-      type: 'event.session.work_changed',
-      seq: 1,
-      payload: { pending_interaction: 'approval' },
-    });
-    expect(envelopes[1]).toMatchObject({
       type: 'event.approval.requested',
-      seq: 2,
+      seq: 1,
       session_id: 's1',
       payload: {
         approval_id: 'a1',
@@ -2721,20 +2724,23 @@ describe('SessionEventBroadcaster', () => {
         tool_input_display: { kind: 'command', command: 'ls' },
       },
     });
-    expect(envelopes[1]!.volatile).toBeUndefined();
+    expect(envelopes[0]!.volatile).toBeUndefined();
+    expect(envelopes[1]).toMatchObject({
+      type: 'event.session.work_changed',
+      seq: 2,
+      payload: {
+        pending_interaction: 'approval',
+        attention_cursor: { epoch: envelopes[0]!.epoch, seq: 1 },
+      },
+    });
 
     lc.interactions.respond('a1', { decision: 'approved', scope: 'session' });
     await bc.getCursor('s1');
 
     expect(envelopes).toHaveLength(4);
     expect(envelopes[2]).toMatchObject({
-      type: 'event.session.work_changed',
-      seq: 3,
-      payload: { pending_interaction: 'none' },
-    });
-    expect(envelopes[3]).toMatchObject({
       type: 'event.approval.resolved',
-      seq: 4,
+      seq: 3,
       session_id: 's1',
       payload: {
         approval_id: 'a1',
@@ -2742,7 +2748,15 @@ describe('SessionEventBroadcaster', () => {
         scope: 'session',
       },
     });
-    expect((envelopes[3]!.payload as { resolved_at?: string }).resolved_at).toBeTypeOf('string');
+    expect((envelopes[2]!.payload as { resolved_at?: string }).resolved_at).toBeTypeOf('string');
+    expect(envelopes[3]).toMatchObject({
+      type: 'event.session.work_changed',
+      seq: 4,
+      payload: {
+        pending_interaction: 'none',
+        attention_cursor: { epoch: envelopes[2]!.epoch, seq: 3 },
+      },
+    });
   });
 
   it('preserves a rejected approval payload on the resolved event', async () => {
@@ -2856,11 +2870,11 @@ describe('SessionEventBroadcaster', () => {
     lc.interactions.respond('q0', { answers: { q_0: 'opt_0_0' } });
     await bc.getCursor('s1');
     expect(envelopes.map((e) => e.type)).toEqual([
-      'event.session.work_changed',
       'event.question.answered',
+      'event.session.work_changed',
     ]);
-    expect(envelopes[0]!.payload).toMatchObject({ pending_interaction: 'none' });
-    expect(envelopes[1]!.payload).toMatchObject({ question_id: 'q0' });
+    expect(envelopes[0]!.payload).toMatchObject({ question_id: 'q0' });
+    expect(envelopes[1]!.payload).toMatchObject({ pending_interaction: 'none' });
   });
 
   it('fans out the legacy background.task.* alias alongside native task.* for v1 clients', async () => {
@@ -4935,6 +4949,140 @@ describe('SessionEventBroadcaster', () => {
       await bc.flushTranscriptSeed('s1', view.target);
 
       expect(transcriptEnvelopes(view.envelopes)).toHaveLength(0);
+    });
+  });
+
+  describe('attention_cursor projection and remote_connections global broadcast', () => {
+    it('advances attention_cursor on turn.ended and interactions, repeats on identical completed turns, and ignores work_changed/cleanup/meta ticks', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const workListeners: Array<(change: SessionActivityChangedEvent) => void> = [];
+      const origOnDidChange = lc.workView.onDidChange.bind(lc.workView);
+      vi.spyOn(lc.workView, 'onDidChange').mockImplementation((listener) => {
+        workListeners.push(listener);
+        return origOnDidChange(listener);
+      });
+      sessions.set('s1', lc);
+
+      const globalView = collectingTarget();
+      bc.addGlobalTarget(globalView.target);
+      const subView = collectingTarget();
+      await bc.subscribe('s1', subView.target);
+
+      main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+      await bc.getCursor('s1');
+      main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+      const afterTurn1 = await bc.getCursor('s1');
+      expect(afterTurn1.attentionSeq).toBeGreaterThan(0);
+      expect(afterTurn1.seq).toBeGreaterThan(afterTurn1.attentionSeq);
+
+      const turn1Work = globalView.envelopes.filter((e) => e.type === 'event.session.work_changed').at(-1);
+      expect(turn1Work?.payload).toMatchObject({
+        busy: false,
+        last_turn_reason: 'completed',
+        attention_cursor: { epoch: afterTurn1.epoch, seq: afterTurn1.attentionSeq },
+      });
+
+      workListeners[0]!({
+        state: {
+          busy: false,
+          executing: false,
+          cleanupPending: true,
+          mainTurnActive: false,
+          pendingInteraction: 'none',
+          lastTurnReason: 'completed',
+        },
+        cause: 'background',
+      });
+      workListeners[0]!({
+        state: {
+          busy: false,
+          executing: false,
+          cleanupPending: false,
+          mainTurnActive: false,
+          pendingInteraction: 'none',
+          lastTurnReason: 'completed',
+        },
+        cause: 'background',
+      });
+      eventBus.emit({
+        type: 'session.meta.updated',
+        payload: { sessionId: 's1', title: 'Renamed title', patch: { title: 'Renamed title' } },
+      });
+      const afterNoise = await bc.getCursor('s1');
+      expect(afterNoise.seq).toBeGreaterThan(afterTurn1.seq);
+      expect(afterNoise.attentionSeq).toBe(afterTurn1.attentionSeq);
+      const noiseWork = globalView.envelopes.filter((e) => e.type === 'event.session.work_changed').at(-1);
+      expect(noiseWork?.payload).toMatchObject({
+        cleanup_pending: false,
+        attention_cursor: { epoch: afterTurn1.epoch, seq: afterTurn1.attentionSeq },
+      });
+
+      main.bus.emit(agentEvent('turn.started', { turnId: 2 }));
+      await bc.getCursor('s1');
+      main.bus.emit(agentEvent('turn.ended', { turnId: 2, reason: 'completed' }));
+      const afterTurn2 = await bc.getCursor('s1');
+      expect(afterTurn2.attentionSeq).toBeGreaterThan(afterTurn1.attentionSeq);
+      const turn2Work = globalView.envelopes.filter((e) => e.type === 'event.session.work_changed').at(-1);
+      expect(turn2Work?.payload).toMatchObject({
+        busy: false,
+        last_turn_reason: 'completed',
+        attention_cursor: { epoch: afterTurn2.epoch, seq: afterTurn2.attentionSeq },
+      });
+
+      lc.interactions.enqueue({
+        id: 'a1',
+        kind: 'approval',
+        payload: { toolName: 'Bash', action: 'run', toolCallId: 'c1' },
+      });
+      const afterApproval1 = await bc.getCursor('s1');
+      expect(afterApproval1.attentionSeq).toBeGreaterThan(afterTurn2.attentionSeq);
+      expect(globalView.envelopes.filter((e) => e.type === 'event.session.work_changed').at(-1)?.payload).toMatchObject({
+        pending_interaction: 'approval',
+        attention_cursor: { epoch: afterApproval1.epoch, seq: afterApproval1.attentionSeq },
+      });
+
+      lc.interactions.enqueue({
+        id: 'a2',
+        kind: 'approval',
+        payload: { toolName: 'Bash', action: 'run', toolCallId: 'c2' },
+      });
+      const afterApproval2 = await bc.getCursor('s1');
+      expect(afterApproval2.attentionSeq).toBeGreaterThan(afterApproval1.attentionSeq);
+      expect(globalView.envelopes.filter((e) => e.type === 'event.session.work_changed').at(-1)?.payload).toMatchObject({
+        pending_interaction: 'approval',
+        attention_cursor: { epoch: afterApproval2.epoch, seq: afterApproval2.attentionSeq },
+      });
+
+      lc.interactions.enqueue({
+        id: 'q1',
+        kind: 'question',
+        payload: { questions: [{ question: 'Proceed?', options: [{ label: 'Yes' }] }] },
+      });
+      const afterQuestion = await bc.getCursor('s1');
+      expect(afterQuestion.attentionSeq).toBeGreaterThan(afterApproval2.attentionSeq);
+      expect(globalView.envelopes.filter((e) => e.type === 'event.session.work_changed').at(-1)?.payload).toMatchObject({
+        attention_cursor: { epoch: afterQuestion.epoch, seq: afterQuestion.attentionSeq },
+      });
+    });
+
+    it('fans out event.remote_connections.changed globally to unsubscribed targets', async () => {
+      const globalView = collectingTarget();
+      bc.addGlobalTarget(globalView.target);
+
+      eventBus.emit({
+        type: 'event.remote_connections.changed',
+        payload: { reason: 'paired', connection_id: 'conn-123' },
+      });
+
+      await vi.waitFor(() => {
+        expect(globalView.envelopes.some((e) => e.type === 'event.remote_connections.changed')).toBe(true);
+      });
+      expect(globalView.envelopes.find((e) => e.type === 'event.remote_connections.changed')?.payload).toMatchObject({
+        type: 'event.remote_connections.changed',
+        reason: 'paired',
+        connection_id: 'conn-123',
+      });
     });
   });
 });

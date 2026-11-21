@@ -74,6 +74,10 @@ export interface ConnectionSshConnector {
   withOwner<T>(planId: string, callback: (owner: { endpoint: string; localOwnerToken: string; target: ConnectionIdentity; profile: SshRemoteProfile }) => Promise<T>, signal?: AbortSignal): Promise<T>;
 }
 export interface ConnectionLease { signal: AbortSignal; release(): void }
+export interface RemoteConnectionChange {
+  readonly reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed';
+  readonly connection_id?: string;
+}
 export const BROKER_BODY_BYTES = 4 * 1024 * 1024;
 export const BROKER_FS_READ_BODY_BYTES = 16 * 1024 * 1024;
 export const BROKER_WS_MESSAGE_BYTES = 128 * 1024;
@@ -101,8 +105,8 @@ export class RemoteConnectionManager {
   private requireEpoch(id: string, epoch: number): void {
     if (this.credentialEpoch(id) !== epoch || this.replacing.has(id)) throw new AdmissionError(409, 'connection_stopped');
   }
-  private readonly changeListeners = new Set<() => void>();
-  onDidChange(listener: () => void): { dispose(): void } {
+  private readonly changeListeners = new Set<(change: RemoteConnectionChange) => void>();
+  onDidChange(listener: (change: RemoteConnectionChange) => void): { dispose(): void } {
     this.changeListeners.add(listener);
     return { dispose: () => { this.changeListeners.delete(listener); } };
   }
@@ -177,11 +181,12 @@ export class RemoteConnectionManager {
     const endpoint = input.transport === undefined ? validateEndpoint(input.endpoint) : descriptorEndpoint(input.transport);
     const id = randomUUID();
     const record: RemoteConnection = { id, label: input.label, endpoint, target: { ...input.target }, transport: input.transport, credentialRef: id, purposes: ['bridge'], enabled: true, backgroundSummary: false, state: 'offline', activeLeases: 0 };
-    return this.change(async () => { this.records.push(record); return { ...record }; });
+    return this.change(async () => { this.records.push(record); return { ...record }; }, { reason: 'created', connection_id: id });
   }
   async ensurePeerBridgeTarget(input: { grantId: string; label: string; target: ConnectionIdentity; endpoint?: string }): Promise<RemoteConnection> {
     const transport: RemoteConnection['transport'] = input.endpoint === undefined ? { kind: 'peer_socket', grantId: input.grantId } : undefined;
     const endpoint = transport === undefined ? validateEndpoint(input.endpoint!) : descriptorEndpoint(transport);
+    let created = false;
     return this.change(async () => {
       const existing = this.records.find((entry) => transport?.kind === 'peer_socket' && entry.transport?.kind === 'peer_socket' && sameIdentity(entry.target, input.target)
         || entry.transport === undefined && entry.purposes.length === 1 && entry.purposes[0] === 'bridge' && entry.endpoint === endpoint && sameIdentity(entry.target, input.target));
@@ -193,11 +198,12 @@ export class RemoteConnectionManager {
         if (existing.state === 'disabled') existing.state = 'offline';
         return { ...existing };
       }
+      created = true;
       const id = randomUUID();
       const record: RemoteConnection = { id, label: input.label, endpoint, target: { ...input.target }, transport, credentialRef: id, purposes: ['bridge'], enabled: true, backgroundSummary: false, state: 'offline', activeLeases: 0 };
       this.records.push(record);
       return { ...record };
-    });
+    }, (saved) => ({ reason: created ? 'created' : 'updated', connection_id: saved.id }));
   }
   async registerSsh(input: SshConnectionRegisterInput, signal: AbortSignal, bridge?: SshPairBridge): Promise<RemoteConnection> {
     if (this.ssh === undefined) throw new AdmissionError(503, 'ssh_transport_unavailable');
@@ -242,8 +248,8 @@ export class RemoteConnectionManager {
       }
     }, signal);
   }
-  async storePeer(record: RemoteConnection, credential: Credential, label?: string): Promise<RemoteConnection> { return this.storeGui(record, credential, label); }
-  private async storeGui(record: RemoteConnection, credential: Credential, label?: string): Promise<RemoteConnection> {
+  async storePeer(record: RemoteConnection, credential: Credential, label?: string): Promise<RemoteConnection> { return this.storeGui(record, credential, label, 'paired'); }
+  private async storeGui(record: RemoteConnection, credential: Credential, label?: string, reason?: RemoteConnectionChange['reason']): Promise<RemoteConnection> {
     return this.serialize(async () => {
       const existing = this.records.find((entry) => entry.purposes.includes('gui') && sameIdentity(entry.target, record.target));
       if (existing?.pinnedFingerprint !== undefined && record.transport === undefined && record.pinnedFingerprint === undefined) throw new AdmissionError(409, 'connection_requires_tls');
@@ -273,7 +279,7 @@ export class RemoteConnectionManager {
           catch { throw new PairingBridgeRetirementError(); }
         }
       } finally { this.replacing.delete(saved.id); }
-      for (const listener of this.changeListeners) listener();
+      for (const listener of this.changeListeners) listener({ reason: reason ?? (existing === undefined ? 'created' : 'updated'), connection_id: saved.id });
       return { ...saved };
     });
   }
@@ -293,18 +299,25 @@ export class RemoteConnectionManager {
     }
   }
   async remove(id: string): Promise<void> {
-    await this.change(async () => { const record = this.get(id); this.stop(id); this.records = this.records.filter((entry) => entry !== record); await Promise.all(['gui', 'bridge'].map((purpose) => this.secrets.remove({ connectionId: record.credentialRef, purpose: purpose as 'gui' | 'bridge' }))); });
+    await this.change(async () => { const record = this.get(id); this.stop(id); this.records = this.records.filter((entry) => entry !== record); await Promise.all(['gui', 'bridge'].map((purpose) => this.secrets.remove({ connectionId: record.credentialRef, purpose: purpose as 'gui' | 'bridge' }))); }, { reason: 'deleted', connection_id: id });
   }
   async enable(id: string, enabled: boolean): Promise<RemoteConnection> {
-    return this.change(async () => { const record = this.get(id); record.enabled = enabled; if (!enabled) { this.stop(id); record.state = 'disabled'; } else { record.state = 'offline'; delete record.lastError; } return { ...record }; });
+    return this.change(async () => { const record = this.get(id); record.enabled = enabled; if (!enabled) { this.stop(id); record.state = 'disabled'; } else { record.state = 'offline'; delete record.lastError; } return { ...record }; }, { reason: 'state_changed', connection_id: id });
   }
   async retry(id: string): Promise<RemoteConnection> {
     const record = this.get(id); if (!record.enabled) throw new AdmissionError(403, 'connection_disabled');
     if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
-    this.stop(id, 'gui'); record.state = 'offline'; delete record.lastError;
+    const epoch = this.credentialEpoch(id);
+    this.stop(id, 'gui'); delete record.lastError;
     const lease = this.lease(id, AbortSignal.timeout(15000));
-    try { await this.connect(id, lease.signal); await this.change(async () => undefined); return { ...record }; }
-    finally { lease.release(); }
+    try {
+      await this.connect(id, lease.signal, true, lease.signal, false);
+      await this.change(async () => undefined);
+      return { ...record };
+    } catch (error) {
+      this.failed(id, error, epoch);
+      throw error;
+    } finally { lease.release(); }
   }
   async verifyFingerprint(id: string): Promise<RemoteConnection> {
     return this.change(async () => {
@@ -312,13 +325,17 @@ export class RemoteConnectionManager {
       record.pinnedFingerprint = record.pinnedFingerprint ?? record.fingerprintToVerify;
       delete record.fingerprintToVerify;
       return { ...record };
-    });
+    }, { reason: 'updated', connection_id: id });
   }
   async ensureBridgePurpose(id: string): Promise<void> {
+    let added = false;
     await this.change(async () => {
       const record = this.get(id);
-      if (!record.purposes.includes('bridge')) record.purposes = [...record.purposes, 'bridge'];
-    });
+      if (!record.purposes.includes('bridge')) {
+        record.purposes = [...record.purposes, 'bridge'];
+        added = true;
+      }
+    }, () => added ? { reason: 'updated', connection_id: id } : undefined);
   }
   private readonly bridgeActive = new Map<string, Set<AbortController>>();
   resolveTransport(id: string): ConnectionTransport {
@@ -408,7 +425,7 @@ export class RemoteConnectionManager {
       record.state = 'online';
       record.lastConnectedAt = Date.now();
       delete record.lastError;
-      void this.change(async () => undefined).catch(() => {});
+      void this.change(async () => undefined, { reason: 'state_changed', connection_id: id }).catch(() => {});
     }
   }
   recordTransportStrike(id: string, error: unknown, epoch = this.credentialEpoch(id)): void {
@@ -497,8 +514,10 @@ export class RemoteConnectionManager {
         verifiedAt: Date.now(),
       });
       this.failureStrikes.delete(id);
+      const wasOnline = record.state === 'online';
       if (measuredRttMs !== undefined) record.rttMs = measuredRttMs;
       record.state = 'online'; record.lastConnectedAt = Date.now(); delete record.lastError;
+      if (!wasOnline) await this.change(async () => undefined, { reason: 'state_changed', connection_id: id });
       return { record, credential, transport, fromCache: false };
     } catch (error) {
       if (!signal.aborted) {
@@ -515,6 +534,7 @@ export class RemoteConnectionManager {
     this.failureStrikes.delete(id);
     this.stopSummary(id);
     if (record.summary !== undefined) record.summary.stale = true;
+    const previousState = record.state;
     const reason = error instanceof Error ? error.message : 'connection_failed'; record.lastError = reason;
     record.state = error instanceof AdmissionError && error.reason === 'identity_changed' ? 'identity_changed'
       : error instanceof AdmissionError && error.status === 401 ? 'authentication_required' : 'offline';
@@ -522,7 +542,10 @@ export class RemoteConnectionManager {
       evictPinnedAgent(record.endpoint, record.pinnedFingerprint);
       this.stop(id, record.state === 'identity_changed' ? undefined : 'gui');
     }
-    void this.change(async () => undefined).catch(() => {});
+    const changeEvent = record.state !== previousState
+      ? { reason: 'state_changed' as const, connection_id: id }
+      : undefined;
+    void this.change(async () => undefined, changeEvent).catch(() => {});
   }
   async forward(
     id: string,
@@ -657,7 +680,20 @@ export class RemoteConnectionManager {
     }
     return readBoundedJsonBody(response, bytes);
   }
-  private change<T>(work: () => Promise<T>): Promise<T> { return this.serialize(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.records)); for (const listener of this.changeListeners) listener(); return value; }); }
+  private change<T>(
+    work: () => Promise<T>,
+    change?: RemoteConnectionChange | ((value: T) => RemoteConnectionChange | undefined),
+  ): Promise<T> {
+    return this.serialize(async () => {
+      const value = await work();
+      await writePrivateFile(this.path, JSON.stringify(this.records));
+      const resolved = typeof change === 'function' ? change(value) : change;
+      if (resolved !== undefined) {
+        for (const listener of this.changeListeners) listener(resolved);
+      }
+      return value;
+    });
+  }
   private serialize<T>(work: () => Promise<T>): Promise<T> { const result = this.tail.then(work); this.tail = result.catch(() => undefined); return result; }
 }
 function descriptorEndpoint(transport: NonNullable<RemoteConnection['transport']>): string {

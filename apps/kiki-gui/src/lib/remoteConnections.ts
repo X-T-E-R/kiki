@@ -76,18 +76,25 @@ export function connectionsApi(client: KikiClient): ConnectionsFacade {
   return rest.connections;
 }
 
-export function useRemoteConnections(client: KikiClient | null, options?: { readonly poll?: boolean }) {
+export function useRemoteConnections(
+  client: KikiClient | null,
+  options?: { readonly poll?: boolean; readonly staleTime?: number },
+) {
+  const poll = options?.poll !== false;
   return useQuery({
     queryKey: [...remoteConnectionKeys.list(), client?.baseUrl ?? null],
     queryFn: async () => {
       if (client === null) throw new Error('The local control connection is not ready.');
       return connectionsApi(client).list();
     },
-    placeholderData: (previous) => previous,
+    placeholderData: (previous) => (previous !== undefined && previous.length > 0 ? previous : undefined),
     enabled: client !== null && client.klient?.rest?.connections !== undefined,
     retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
-    refetchInterval: (query) => (options?.poll === false || isLocalOwnerRequiredError(query.state.error) ? false : 8_000),
-    staleTime: 8_000,
+    refetchInterval: (query) => (!poll || isLocalOwnerRequiredError(query.state.error) ? false : 8_000),
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
+    refetchOnWindowFocus: poll,
+    staleTime: options?.staleTime ?? 5_000,
   });
 }
 

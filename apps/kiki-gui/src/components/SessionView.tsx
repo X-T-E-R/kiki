@@ -140,7 +140,7 @@ import {
   type SubagentBlock,
   type UserBlock,
 } from '@kiki/session-core/session';
-import { shortCwd, type SessionListData } from '@kiki/session-core/sessions';
+import { sessionAttentionCursor, shortCwd, type SessionListData } from '@kiki/session-core/sessions';
 import { errorText } from '@kiki/session-core/i18n';
 import { readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, submitFirstSessionMessage, type FirstSessionMessageRecord, type FirstSessionSubmission } from '../lib/newSessionCreation';
 import { spaceStorage } from '../lib/spaceStorage';
@@ -159,6 +159,7 @@ import {
   writeLastSessionId,
   writeLayoutPreferences,
   writeTerminalPanelPrefs,
+  type AttentionCursor,
   type ComposerModelSource,
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
@@ -922,9 +923,10 @@ export function SessionRouteView({
   sessions: readonly Session[];
   sidebarBadge?: SidebarBadge;
 }) {
+  const { spaceKey } = useConnection();
   return (
     <SessionView
-      key={sessionId}
+      key={`${spaceKey}:${sessionId ?? ''}`}
       onToggleSidebar={onToggleSidebar}
       sessions={sessions}
       sidebarBadge={sidebarBadge}
@@ -2994,12 +2996,22 @@ export function SessionView({
   }, [client, controller, sessionId, state.busy, state.session?.delivery, t]);
 
   // Advance this conversation's seen-mark only while its route is visible
-  // and focused. Other conversations and hidden mounted views stay unread.
-  const listedLastSeq = sessions.find((item) => item.id === sessionId)?.last_seq;
-  const viewedSeq = state.session === undefined && listedLastSeq === undefined
-    ? undefined
-    : Math.max(state.session?.last_seq ?? 0, state.cursor.seq, listedLastSeq ?? 0);
-  useViewedSession(host, sessionId, viewedSeq);
+  // and focused. Prefer semantic `attention_cursor` over raw `last_seq` so
+  // post-turn housekeeping ticks never resurrect unread dots.
+  const listedSession = sessions.find((item) => item.id === sessionId);
+  const viewedCursor = useMemo<AttentionCursor | undefined>(() => {
+    if (state.session === undefined && listedSession === undefined) return undefined;
+    const liveCursor = state.session !== undefined ? sessionAttentionCursor(state.session) : undefined;
+    const listCursor = listedSession !== undefined ? sessionAttentionCursor(listedSession) : undefined;
+    if (liveCursor?.epoch !== undefined || listCursor?.epoch !== undefined) {
+      if (liveCursor?.epoch !== undefined && listCursor?.epoch !== undefined && liveCursor.epoch === listCursor.epoch) {
+        return { epoch: liveCursor.epoch, seq: Math.max(liveCursor.seq, listCursor.seq) };
+      }
+      return liveCursor?.epoch !== undefined ? liveCursor : listCursor;
+    }
+    return { seq: Math.max(state.session?.last_seq ?? 0, state.cursor.seq, listedSession?.last_seq ?? 0) };
+  }, [state.session, state.cursor.seq, listedSession]);
+  useViewedSession(host, sessionId, viewedCursor);
 
   const permissionMode = resolveControlledValue(
     permissionOverride,

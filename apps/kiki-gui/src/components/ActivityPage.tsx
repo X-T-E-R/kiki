@@ -26,18 +26,26 @@ import {
   filterInboxModel,
   nextCursorAfterDismiss,
   roomRefLink,
+  sessionAttentionCursor,
   stepInboxCursor,
   type InboxItem,
   type InboxReason,
   type InboxTriageFilter,
 } from '@kiki/session-core/sessions';
 import {
+  encodeConversationRef,
+  markConversationsSeen,
   markSessionsSeen,
+  roomSeenKey,
   sessionSeenSnapshot,
   subscribeSessionSeen,
+  type AttentionCursor,
+  type ConversationRef,
+  type SessionSeenMap,
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../i18n';
+import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
 import { pushToast } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import {
@@ -404,7 +412,31 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const connection = useOptionalConnection();
-  const seen = useSessionSeen();
+  const spaceKey = connection?.spaceKey ?? 'main';
+  const legacySeen = useSessionSeen();
+  const seenV2 = useConversationSeen();
+  const seen = useMemo<SessionSeenMap>(() => {
+    const merged: Record<string, number> = { ...legacySeen };
+    let changed = false;
+    for (const session of sessions) {
+      const key = encodeConversationRef({ spaceKey, kind: 'session', id: session.id });
+      const rec = seenV2[key];
+      if (rec !== undefined && merged[session.id] !== rec.seq) {
+        merged[session.id] = rec.seq;
+        changed = true;
+      }
+    }
+    for (const room of rooms) {
+      const key = encodeConversationRef({ spaceKey, kind: 'room', id: room.id });
+      const rec = seenV2[key];
+      const roomKey = roomSeenKey(room.id);
+      if (rec !== undefined && merged[roomKey] !== rec.seq) {
+        merged[roomKey] = rec.seq;
+        changed = true;
+      }
+    }
+    return changed ? merged : legacySeen;
+  }, [legacySeen, seenV2, sessions, rooms, spaceKey]);
 
   const rawModel = useMemo(
     () => buildConversationInbox(sessions, rooms, seen, workspaceOptions),
@@ -507,18 +539,68 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     setParams(updated, { replace: true });
   };
 
-  const open = (href: string) => { void navigate(href); };
+  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+  const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
+
+  const cursorForItem = (item: InboxItem): { readonly ref: ConversationRef; readonly cursor: AttentionCursor } => {
+    if (item.roomId !== undefined) {
+      return {
+        ref: { spaceKey, kind: 'room', id: item.roomId },
+        cursor: { seq: Math.max(0, Math.trunc(item.lastSeq)) },
+      };
+    }
+    const session = sessionById.get(item.sessionId);
+    return {
+      ref: { spaceKey, kind: 'session', id: item.sessionId },
+      cursor: session !== undefined ? sessionAttentionCursor(session) : { seq: Math.max(0, Math.trunc(item.lastSeq)) },
+    };
+  };
+
+  const open = (href: string) => {
+    const sessionMatch = /^\/s\/([^/?#]+)/.exec(href);
+    const roomMatch = /^\/rooms\/([^/?#]+)/.exec(href);
+    let handle: { commit(): void; cancel(): void } | undefined;
+    if (sessionMatch?.[1] !== undefined) {
+      const id = decodeURIComponent(sessionMatch[1]);
+      const session = sessionById.get(id);
+      if (session !== undefined) {
+        handle = beginExplicitConversationOpen(
+          { spaceKey, kind: 'session', id },
+          sessionAttentionCursor(session),
+          { syncLegacy: true },
+        );
+      }
+    } else if (roomMatch?.[1] !== undefined) {
+      const id = decodeURIComponent(roomMatch[1]);
+      const room = roomById.get(id);
+      if (room !== undefined) {
+        handle = beginExplicitConversationOpen(
+          { spaceKey, kind: 'room', id },
+          { seq: Math.max(0, Math.trunc(room.lastSeq)) },
+          { syncLegacy: true },
+        );
+      }
+    }
+    void navigate(href, undefined, () => { handle?.cancel(); });
+  };
 
   const dismissOne = (item: InboxItem) => {
     const nextCursor = nextCursorAfterDismiss(model.visibleItems, item.sessionId);
-    markSessionsSeen([{ sessionId: item.sessionId, lastSeq: item.lastSeq }]);
+    const { ref, cursor } = cursorForItem(item);
+    markConversationsSeen([{ ref, cursor }]);
+    markSessionsSeen([{ sessionId: item.sessionId, lastSeq: cursor.seq }]);
     if (activeFocusedId === item.sessionId) {
       setFocusedId(nextCursor);
     }
   };
 
   const markAllRead = () => {
-    markSessionsSeen(scopedAll.unread.map((item) => ({ sessionId: item.sessionId, lastSeq: item.lastSeq })));
+    const entries = scopedAll.unread.map(cursorForItem);
+    markConversationsSeen(entries);
+    markSessionsSeen(scopedAll.unread.map((item, idx) => ({
+      sessionId: item.sessionId,
+      lastSeq: entries[idx]?.cursor.seq ?? item.lastSeq,
+    })));
     pushToast({ tone: 'success', text: t('activity.markAllReadDone') });
   };
 

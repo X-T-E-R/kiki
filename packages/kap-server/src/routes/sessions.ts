@@ -31,7 +31,7 @@ import { resolveEffectiveSessionModel } from '@kiki/agent-core-v2/app/sessionLeg
 import { loadAgentsMdDetailed } from '@kiki/agent-core-v2/agent/profile/context';
 import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
 import { ISessionInstructionsProvider } from '@kiki/agent-core-v2/session/sessionInstructions/instructionsProvider';
-import { readSessionCursorSeq } from '../lib/sessionObserver';
+import { readSessionCursor } from '../lib/sessionObserver';
 import { resolveSessionPersonaId } from './sessionPersona';
 import { resolveSessionModelBinding } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacyService';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
@@ -149,6 +149,7 @@ import {
   sessionSchema,
   workspaceIdSchema,
   type Session,
+  type SessionAttentionCursor,
   type SessionPendingInteraction,
   type SessionUsage,
   type SessionUsageError,
@@ -178,6 +179,7 @@ import {
 } from '../services/messages/messageActions';
 import { ensureMainAgent } from '../transport/mainAgent';
 import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
+import { toAttentionCursor } from '../transport/ws/v1/sessionEventJournal';
 import { parseActionSuffix } from './action-suffix';
 import { applyAgentRuntimeControls, applySessionAgentConfig } from './sessionAgentConfig';
 import { updateSessionProfile } from './sessionProfile';
@@ -451,7 +453,15 @@ export function registerSessionsRoutes(
     for (const { handle, meta } of sessions) {
       if (items.length >= (query.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE)) break;
       const ctx = handle.accessor.get(ISessionContext);
-      const session = boundedListPreview(toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), (await broadcaster?.getCursor(handle.id))?.seq, true));
+      const cursor = await broadcaster?.getCursor(handle.id);
+      const session = boundedListPreview(toWireSession(
+        { ...meta, workspaceId: ctx.workspaceId },
+        ctx.cwd,
+        resolveSessionFacts(core, handle.id),
+        cursor?.seq,
+        true,
+        toAttentionCursor(cursor),
+      ));
       const size = jsonBytes(session) + 1;
       if (bytes + size > budget) break;
       items.push(session);
@@ -663,8 +673,10 @@ export function registerSessionsRoutes(
           core.accessor.get(IEventService).publish(
             new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
           );
-          const seq = await readSessionCursorSeq(core, broadcaster, meta.id);
-          return seq === undefined ? session : { ...session, last_seq: seq };
+          const cursor = await readSessionCursor(core, broadcaster, meta.id);
+          return cursor === undefined
+            ? session
+            : { ...session, last_seq: cursor.seq, attention_cursor: toAttentionCursor(cursor) };
         } catch (error) {
           if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
             externalClients?.cancelPreparedSession(createdSessionId);
@@ -818,8 +830,8 @@ export function registerSessionsRoutes(
             } } };
           }
         }
-        const seq = await readSessionCursorSeq(core, broadcaster, summary.id, signal, true);
-        return toWireSession(summary, cwd, facts, seq);
+        const cursor = await readSessionCursor(core, broadcaster, summary.id, signal, true);
+        return toWireSession(summary, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor));
       };
 
       interface Eligible {
@@ -957,13 +969,13 @@ export function registerSessionsRoutes(
           return;
         }
         const ctx = handle.accessor.get(ISessionContext);
-        const [meta, seq] = await Promise.all([
+        const [meta, cursor] = await Promise.all([
           handle.accessor.get(ISessionMetadata).read(),
-          readSessionCursorSeq(core, broadcaster, session_id),
+          readSessionCursor(core, broadcaster, session_id),
         ]);
         reply.send(okEnvelope(toWireSession(
           { ...meta, workspaceId: ctx.workspaceId }, ctx.cwd,
-          resolveSessionFacts(core, session_id), seq, true,
+          resolveSessionFacts(core, session_id), cursor?.seq, true, toAttentionCursor(cursor),
         ), req.id));
         return;
       }
@@ -986,11 +998,11 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      let [facts, seq] = await withReplyCloseSignal(
+      let [facts, cursor] = await withReplyCloseSignal(
         reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
         (signal) => Promise.all([
           resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage, undefined, signal),
-          readSessionCursorSeq(core, broadcaster, session_id, signal, true),
+          readSessionCursor(core, broadcaster, session_id, signal, true),
         ]),
       );
       if (facts.agentConfig?.persona === undefined) {
@@ -1008,7 +1020,9 @@ export function registerSessionsRoutes(
             summary,
             cwd,
             facts,
-            seq,
+            cursor?.seq,
+            false,
+            toAttentionCursor(cursor),
           ),
           req.id,
         ),
@@ -1048,7 +1062,7 @@ export function registerSessionsRoutes(
         const meta = await handle.accessor.get(ISessionMetadata).read();
         reply.send(okEnvelope(toWireSession(
           { ...meta, workspaceId: ctx.workspaceId }, ctx.cwd,
-          resolveSessionFacts(core, session_id), cursor?.seq, true,
+          resolveSessionFacts(core, session_id), cursor?.seq, true, toAttentionCursor(cursor),
         ), req.id));
         return;
       }
@@ -1088,6 +1102,8 @@ export function registerSessionsRoutes(
             cwd,
             facts,
             cursor?.seq,
+            false,
+            toAttentionCursor(cursor),
           ),
           req.id,
         ),
@@ -1153,7 +1169,7 @@ export function registerSessionsRoutes(
           if (result.kind === 'live') {
             publishMetaUpdated(result.fields);
             const cursor = await broadcaster?.getCursor(result.fields.id);
-            const session = toWireSession(result.fields, result.fields.root, resolveSessionFacts(core, result.fields.id), cursor?.seq, result.ephemeral);
+            const session = toWireSession(result.fields, result.fields.root, resolveSessionFacts(core, result.fields.id), cursor?.seq, result.ephemeral, toAttentionCursor(cursor));
             reply.send(okEnvelope(session, req.id));
             return;
           }
@@ -1172,7 +1188,7 @@ export function registerSessionsRoutes(
             undefined,
             { sessionMetadata: result.meta },
           );
-          reply.send(okEnvelope(toWireSession({ ...result.meta, workspaceId: result.workspaceId }, cwd, facts, cursor?.seq), req.id));
+          reply.send(okEnvelope(toWireSession({ ...result.meta, workspaceId: result.workspaceId }, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor)), req.id));
           return;
         }
         await withSessionOperation(core, session_id, async (handle) => {
@@ -1182,7 +1198,7 @@ export function registerSessionsRoutes(
           if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
           publishMetaUpdated(fields);
           const cursor = await broadcaster?.getCursor(fields.id);
-          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), cursor?.seq, core.accessor.get(ISessionManager).isEphemeral(fields.id));
+          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), cursor?.seq, core.accessor.get(ISessionManager).isEphemeral(fields.id), toAttentionCursor(cursor));
           reply.send(okEnvelope(session, req.id));
         });
       } catch (error) {
@@ -1288,7 +1304,7 @@ export function registerSessionsRoutes(
           const summary = await core.accessor.get(ISessionIndex).get(id);
           if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `saved session ${id} not found`);
           const cursor = await broadcaster?.getCursor(id);
-          reply.send(okEnvelope(toWireSession(summary, summary.cwd ?? '', resolveSessionFacts(core, id, summary.usage), cursor?.seq), req.id));
+          reply.send(okEnvelope(toWireSession(summary, summary.cwd ?? '', resolveSessionFacts(core, id, summary.usage), cursor?.seq, false, toAttentionCursor(cursor)), req.id));
         } catch (error) {
           sendMappedError(reply, req, error);
         }
@@ -1426,7 +1442,12 @@ export function registerSessionsRoutes(
             { session_id: parsed.id, action: 'fork', new_session_id: session.id },
             'session action completed',
           );
-          reply.send(okEnvelope(cursor === undefined ? session : { ...session, last_seq: cursor.seq }, req.id));
+          reply.send(okEnvelope(
+            cursor === undefined
+              ? session
+              : { ...session, last_seq: cursor.seq, attention_cursor: toAttentionCursor(cursor) },
+            req.id,
+          ));
           return;
         }
 
@@ -1602,6 +1623,8 @@ export function registerSessionsRoutes(
               ctx.cwd,
               resolveSessionFacts(core, meta.id),
               cursor?.seq,
+              false,
+              toAttentionCursor(cursor),
             );
             requestLog(req)?.info({ session_id: parsed.id, action: 'restore' }, 'session action completed');
             reply.send(okEnvelope(session, req.id));
@@ -1626,6 +1649,8 @@ export function registerSessionsRoutes(
             cwd,
             facts,
             cursor?.seq,
+            false,
+            toAttentionCursor(cursor),
           );
           requestLog(req)?.info({ session_id: parsed.id, action: 'restore' }, 'session action completed');
           reply.send(okEnvelope(session, req.id));
@@ -1696,14 +1721,17 @@ export function registerSessionsRoutes(
         const roots = new Map(
           (await core.accessor.get(IWorkspaceService).list()).map((w) => [w.id, w.root]),
         );
-        const projected = await Promise.all(window.map(async (summary) =>
-          toWireSession(
+        const projected = await Promise.all(window.map(async (summary) => {
+          const cursor = await broadcaster?.getCursor(summary.id);
+          return toWireSession(
             summary,
             summary.cwd ?? roots.get(summary.workspaceId) ?? '',
             resolveSessionFacts(core, summary.id, summary.usage),
-            (await broadcaster?.getCursor(summary.id))?.seq,
-          ),
-        ));
+            cursor?.seq,
+            false,
+            toAttentionCursor(cursor),
+          );
+        }));
         const items =
           req.query.busy !== undefined
             ? projected.filter((session) => session.busy === req.query.busy)
@@ -1759,7 +1787,12 @@ export function registerSessionsRoutes(
           new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
         );
         const cursor = await broadcaster?.getCursor(meta.id);
-        reply.send(okEnvelope(cursor === undefined ? session : { ...session, last_seq: cursor.seq }, req.id));
+        reply.send(okEnvelope(
+          cursor === undefined
+            ? session
+            : { ...session, last_seq: cursor.seq, attention_cursor: toAttentionCursor(cursor) },
+          req.id,
+        ));
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -2057,6 +2090,7 @@ export function toWireSession(
   facts: SessionFacts,
   lastSeq?: number,
   ephemeral = false,
+  attentionCursor?: SessionAttentionCursor,
 ): Session {
   const mainMeta = fields.agents?.[MAIN_AGENT_ID];
   const persistedExecutor = fields.executorId ?? mainMeta?.executor;
@@ -2106,6 +2140,7 @@ export function toWireSession(
     permission_rules: [],
     message_count: 0,
     last_seq: lastSeq ?? 0,
+    attention_cursor: attentionCursor,
   };
 }
 
@@ -3084,7 +3119,9 @@ export async function liveWireSession(
   const ctx = handle.accessor.get(ISessionContext);
   const session = toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, meta.id));
   const cursor = await broadcaster?.getCursor(meta.id);
-  return cursor === undefined ? session : { ...session, last_seq: cursor.seq };
+  return cursor === undefined
+    ? session
+    : { ...session, last_seq: cursor.seq, attention_cursor: toAttentionCursor(cursor) };
 }
 
 export { sendMappedError as sendSessionError };

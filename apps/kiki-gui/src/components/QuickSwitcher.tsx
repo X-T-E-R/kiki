@@ -15,6 +15,7 @@ import {
   buildSwitcherItems,
   highlightTerms,
   resolveWorkspaceTerm,
+  sessionAttentionCursor,
   settingsCardRoute,
   splitByRanges,
   SWITCHER_RECENT_LIMIT,
@@ -32,9 +33,11 @@ import {
 } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
+import { beginExplicitConversationOpen } from '../lib/conversationOpen';
 import { isImeKeyEvent } from '../lib/shortcuts';
 import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
 import { pushToast } from '../lib/toasts';
+import { useOptionalConnection } from '../state/connection';
 import { useMemoryAdvisor } from './memory/useMemoryAdvisor';
 import { useSessionSearch } from '../lib/sessionSearch';
 import { Dialog } from './Dialog';
@@ -199,6 +202,9 @@ export function QuickSwitcher({
 }) {
   const { t, time, locale } = useI18n();
   const navigate = useGuardedNavigate();
+  const connection = useOptionalConnection();
+  const spaceKey = connection?.spaceKey ?? 'main';
+  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
   // The advisor switch is a command, not a page: it saves the mode and
   // stays here. While it still needs a source it opens Decision models.
   const advisor = useMemoryAdvisor();
@@ -388,6 +394,14 @@ export function QuickSwitcher({
       );
     } else if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
     else if (item.kind === 'hit') {
+      const targetSession = sessionById.get(item.sessionId);
+      const handle = targetSession !== undefined
+        ? beginExplicitConversationOpen(
+            { spaceKey, kind: 'session', id: item.sessionId },
+            sessionAttentionCursor(targetSession),
+            { syncLegacy: true },
+          )
+        : undefined;
       const route = item.agentId && item.agentId !== 'main'
         ? `/s/${encodeURIComponent(item.sessionId)}/agent/${encodeURIComponent(item.agentId)}`
         : `/s/${encodeURIComponent(item.sessionId)}`;
@@ -397,8 +411,18 @@ export function QuickSwitcher({
       const queryText = search.contentQuery.trim() || search.parsed.text.trim();
       if (queryText !== '') queryParams.set('q', queryText);
       const qs = queryParams.toString();
-      void navigate(qs === '' ? route : `${route}?${qs}`);
-    } else void navigate(`/s/${encodeURIComponent(item.sessionId)}`);
+      void navigate(qs === '' ? route : `${route}?${qs}`, undefined, () => { handle?.cancel(); });
+    } else {
+      const targetSession = sessionById.get(item.sessionId);
+      const handle = targetSession !== undefined
+        ? beginExplicitConversationOpen(
+            { spaceKey, kind: 'session', id: item.sessionId },
+            sessionAttentionCursor(targetSession),
+            { syncLegacy: true },
+          )
+        : undefined;
+      void navigate(`/s/${encodeURIComponent(item.sessionId)}`, undefined, () => { handle?.cancel(); });
+    }
   };
 
   const searching = search.contentPending;

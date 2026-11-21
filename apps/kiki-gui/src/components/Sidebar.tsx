@@ -50,13 +50,15 @@ import {
   isSearchable,
   pinMetadataPatch,
   projectAttachedConversationGroups,
-  buildConversationInbox,
   roomRefLink,
   sessionRowState,
   type ConversationListItem,
   type SessionRowState,
   SESSION_SORT_ORDERS,
+  sessionAttentionCursor,
   sessionStatusOf,
+  type SpaceConversationSource,
+  type UnifiedInboxItem,
   WORKSPACE_UNGROUPED_KEY,
   shortCwd,
   splitByRanges,
@@ -72,26 +74,35 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  encodeConversationRef,
   readLastSessionId,
+  roomSeenKey,
   shownPinnedNavItems,
   writeLayoutPreferences,
+  type ConversationRef,
   type SessionArchivedFilter,
   type SessionPrivateFilter,
   type SessionSeenMap,
   type SessionListFilters,
   type SessionStatusFilter,
+  type SidebarMode,
   type SidebarNavKey,
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePaneResize, usePhoneMode } from '../lib/layoutHooks';
+import { requestScopeNavigation } from '../lib/navScope';
 import { clampOverlayPosition } from '../lib/overlayPosition';
+import { remoteSpaceScope } from '../lib/remoteConnections';
 import { unzoomedPoint, unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { readExternalClientMark } from '../lib/externalClients';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
+import { useInboxTriageState, type InboxTriageController } from '../lib/useInboxTriageState';
+import { ALL_SPACE_SCOPE, type MultiSpaceHealth } from '../lib/useMultiSpaceSessions';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
@@ -112,7 +123,10 @@ import { ActionSheet } from './overlays/ActionSheet';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './icons';
-import { SpaceSwitcher } from './SpaceSwitcher';
+import { SpaceScopeControl } from './sidebar/SpaceScopeControl';
+import { SidebarModeSwitch } from './sidebar/SidebarModeSwitch';
+import { SidebarInboxView } from './sidebar/SidebarInboxView';
+import { partitionColdFold } from './sidebar/coldFold';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
 import { usePersonaDirectory, type PersonaDirectoryEntry } from './persona/usePersonaDirectory';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
@@ -745,6 +759,12 @@ export function Sidebar({
   dockedInPanelGroup = false,
   onClose,
   nowMs,
+  multiSpaceSources,
+  healthBySpace,
+  hasMultipleSpaces = false,
+  localSpaceKey: localSpaceKeyProp,
+  inboxTriage: externalInboxTriage,
+  sidebarMode: sidebarModeOverride,
 }: {
   activeSessionId: string | undefined;
   /** Every loaded session (unfiltered); the pending badge and search read it. */
@@ -787,10 +807,25 @@ export function Sidebar({
   /** Current time reference for time grouping and the recency projection;
    *  defaults to `Date.now()`. */
   nowMs?: number;
+  /** Multi-space sources from `useMultiSpaceSessions` (falls back to current space when omitted). */
+  multiSpaceSources?: readonly SpaceConversationSource[];
+  /** Per-space health state for quiet offline/stale indicator in `SpaceScopeControl`. */
+  healthBySpace?: ReadonlyMap<string, MultiSpaceHealth>;
+  /** True when >1 local or paired remote space exists. */
+  hasMultipleSpaces?: boolean;
+  /** Local control home key for returning from a remote space in `全部空间` mode. */
+  localSpaceKey?: string;
+  /** Shared inbox triage controller from App (falls back to local instance when omitted). */
+  inboxTriage?: InboxTriageController;
+  /** Optional explicit mode override (primarily for focused unit tests). */
+  sidebarMode?: SidebarMode;
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
-  const { client, scopeId, wsStatus } = useConnection();
+  const { client, scopeId, wsStatus, spaceKey: connSpaceKey, localSpaceKey: connLocalSpaceKey, localScopeId: connLocalScopeId } = useConnection();
+  const currentSpaceKey = connSpaceKey || 'main';
+  const effectiveLocalSpaceKey = localSpaceKeyProp ?? connLocalSpaceKey ?? 'main';
+  const effectiveLocalScopeId = connLocalScopeId ?? 'local';
   const { t, tp, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
@@ -977,15 +1012,141 @@ export function Sidebar({
   // closed drawer pauses them.
   const activity = useSessionActivity(sessions, inert !== true);
   // Read-state marks drive both the activity badge and the row states below.
-  const seen = useSessionSeen();
-  const inbox = useMemo(() => buildConversationInbox(sessions, rooms, seen, workspaceOptions), [sessions, rooms, seen, workspaceOptions]);
+  const legacySeen = useSessionSeen();
+  const seenV2 = useConversationSeen();
+  // Merge v2 global marks (including optimistic open overlays) over v1 for the
+  // active space so clicking any row clears its unread dot synchronously.
+  const seen = useMemo<SessionSeenMap>(() => {
+    const merged: Record<string, number> = { ...legacySeen };
+    let changed = false;
+    for (const session of sessions) {
+      const key = encodeConversationRef({ spaceKey: currentSpaceKey, kind: 'session', id: session.id });
+      const rec = seenV2[key];
+      if (rec !== undefined && merged[session.id] !== rec.seq) {
+        merged[session.id] = rec.seq;
+        changed = true;
+      }
+    }
+    for (const room of rooms) {
+      const key = encodeConversationRef({ spaceKey: currentSpaceKey, kind: 'room', id: room.id });
+      const rec = seenV2[key];
+      const rk = roomSeenKey(room.id);
+      if (rec !== undefined && merged[rk] !== rec.seq) {
+        merged[rk] = rec.seq;
+        changed = true;
+      }
+    }
+    return changed ? merged : legacySeen;
+  }, [legacySeen, seenV2, sessions, rooms, currentSpaceKey]);
+
+  const layoutPrefs = useLayoutPreferences();
+  const activeSidebarMode: SidebarMode = sidebarModeOverride ?? layoutPrefs.sidebarMode ?? 'inbox';
+  const spaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
+  const activeRoomMatch = /^\/rooms\/([^/?#]+)/.exec(location.pathname);
+  const activeRoomId = activeRoomMatch?.[1] !== undefined ? decodeURIComponent(activeRoomMatch[1]) : undefined;
+  const activeConversationKey = activeSessionId !== undefined
+    ? encodeConversationRef({ spaceKey: currentSpaceKey, kind: 'session', id: activeSessionId })
+    : activeRoomId !== undefined
+      ? encodeConversationRef({ spaceKey: currentSpaceKey, kind: 'room', id: activeRoomId })
+      : undefined;
+
+  const fallbackSources = useMemo<readonly SpaceConversationSource[]>(() => (
+    multiSpaceSources ?? [{
+      spaceKey: currentSpaceKey,
+      spaceName: '',
+      isRemote: currentSpaceKey.startsWith('remote:'),
+      sessions,
+      rooms,
+      workspaces: workspaceOptions,
+    }]
+  ), [multiSpaceSources, currentSpaceKey, sessions, rooms, workspaceOptions]);
+
+  const localInboxTriage = useInboxTriageState({
+    sources: externalInboxTriage === undefined ? fallbackSources : [],
+    currentSpaceKey,
+    spaceScope,
+    activeConversationKey,
+    nowMs,
+  });
+  const inboxTriage = externalInboxTriage ?? localInboxTriage;
+  const unifiedInbox = inboxTriage.inbox;
+  const badgeTotal = unifiedInbox.total;
+  const badgeNeedsYou = unifiedInbox.needsYouCount;
+  const badgeUnread = unifiedInbox.unreadCount;
   // Blocked-only keeps the "needs you" wording; once finished runs are in the
   // count too, the label says "new items" instead of overstating urgency.
-  const activityLabel = inbox.total === 0
+  const activityLabel = badgeTotal === 0
     ? t('sidebar.activityAria')
-    : inbox.needsYou.length === inbox.total
-      ? tp('sidebar.activityCount', inbox.total)
-      : tp('activity.badgeCount', inbox.total);
+    : badgeNeedsYou === badgeTotal
+      ? tp('sidebar.activityCount', badgeTotal)
+      : tp('activity.badgeCount', badgeTotal);
+
+  const openConversation = useCallback((
+    ref: ConversationRef,
+    cursor: { readonly epoch?: string; readonly seq: number },
+    href: string,
+    options?: { readonly pinItem?: UnifiedInboxItem },
+  ) => {
+    const sameSpace = ref.spaceKey === currentSpaceKey;
+    const handle = beginExplicitConversationOpen(ref, cursor, { syncLegacy: sameSpace });
+    if (options?.pinItem !== undefined) {
+      inboxTriage.pinViewingItem(options.pinItem);
+    } else {
+      inboxTriage.clearViewingPin();
+    }
+    const rollback = () => {
+      handle.cancel();
+      if (options?.pinItem !== undefined) {
+        inboxTriage.clearViewingPin();
+      }
+    };
+    if (sameSpace) {
+      if (location.pathname === href) {
+        handle.commit();
+      }
+      void navigate(href, undefined, rollback);
+      return;
+    }
+    if (ref.spaceKey.startsWith('remote:')) {
+      const targetConnectionId = ref.spaceKey.slice('remote:'.length);
+      void requestScopeNavigation({
+        ...remoteSpaceScope(targetConnectionId),
+        route: href,
+        inPlace: true,
+      }).catch(rollback);
+      return;
+    }
+    void requestScopeNavigation({
+      homeId: effectiveLocalSpaceKey,
+      scopeId: effectiveLocalScopeId,
+      route: href,
+      inPlace: true,
+    }).catch(rollback);
+  }, [currentSpaceKey, effectiveLocalSpaceKey, effectiveLocalScopeId, inboxTriage, location.pathname, navigate]);
+
+  const openSessionRow = useCallback((session: Session, targetSpaceKey = currentSpaceKey) => {
+    openConversation(
+      { spaceKey: targetSpaceKey, kind: 'session', id: session.id },
+      sessionAttentionCursor(session),
+      `/s/${encodeURIComponent(session.id)}`,
+    );
+  }, [currentSpaceKey, openConversation]);
+
+  const openRoomRow = useCallback((room: RoomListItem, href: string, targetSpaceKey = currentSpaceKey) => {
+    openConversation(
+      { spaceKey: targetSpaceKey, kind: 'room', id: room.id },
+      { seq: Math.max(0, Math.trunc(room.lastSeq)) },
+      href,
+    );
+  }, [currentSpaceKey, openConversation]);
+
+  const openInboxItem = useCallback((item: UnifiedInboxItem) => {
+    const href = item.ref.kind === 'room'
+      ? roomRefLink(item.ref.id)
+      : `/s/${encodeURIComponent(item.ref.id)}`;
+    openConversation(item.ref, item.attentionCursor, href, { pinItem: item });
+  }, [openConversation]);
+  const [coldFoldExpanded, setColdFoldExpanded] = useState(false);
   const activeWorkspaceId = sessions.find((session) => session.id === activeSessionId)?.workspace_id;
   const reachableSessionId = useMemo(() => {
     if (activeSessionId !== undefined && activeSessionId !== '') return activeSessionId;
@@ -1003,7 +1164,6 @@ export function Sidebar({
   // Local panel-layout prefs: the sidebar owns its own width. Local live
   // width drives the inline CSS var during a drag; the persisted pref is
   // only written on pointer-up.
-  const layoutPrefs = useLayoutPreferences();
   const [sidebarWidthValue, setSidebarWidthValue] = useState(layoutPrefs.sidebarWidth);
   useEffect(() => {
     setSidebarWidthValue(layoutPrefs.sidebarWidth);
@@ -1512,12 +1672,20 @@ export function Sidebar({
       });
     }
     for (const match of search.local.sessions) {
-      items.push({ key: `s:${match.session.id}`, open: () => { void navigate(`/s/${match.session.id}`); } });
+      items.push({ key: `s:${match.session.id}`, open: () => { openSessionRow(match.session.source); } });
     }
     search.hits.forEach((hit, index) => {
       items.push({
         key: `h:${index}`,
         open: () => {
+          const hitSession = sessions.find((s) => s.id === hit.session_id);
+          const handle = hitSession !== undefined
+            ? beginExplicitConversationOpen(
+                { spaceKey: currentSpaceKey, kind: 'session', id: hit.session_id },
+                sessionAttentionCursor(hitSession),
+                { syncLegacy: true },
+              )
+            : undefined;
           const route = hit.agent_id && hit.agent_id !== 'main'
             ? `/s/${encodeURIComponent(hit.session_id)}/agent/${encodeURIComponent(hit.agent_id)}`
             : `/s/${encodeURIComponent(hit.session_id)}`;
@@ -1526,14 +1694,14 @@ export function Sidebar({
           if (hit.step_id !== undefined && hit.step_id !== '') params.set('step', hit.step_id);
           if (search.parsed.text.trim() !== '') params.set('q', search.parsed.text.trim());
           const qs = params.toString();
-          void navigate(qs === '' ? route : `${route}?${qs}`);
+          void navigate(qs === '' ? route : `${route}?${qs}`, undefined, () => { handle?.cancel(); });
         },
       });
     });
     return items;
     // setFilters closes over the latest filters; recompute with them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchingPersonas, search.local, search.hits, filters, navigate]);
+  }, [matchingPersonas, search.local, search.hits, filters, navigate, openSessionRow, sessions, currentSpaceKey]);
   const resultsByKey = useMemo(() => {
     const map = new Map<string, { readonly index: number; readonly open: () => void }>();
     for (let index = 0; index < results.length; index += 1) {
@@ -1795,11 +1963,24 @@ export function Sidebar({
         readonly expanded: boolean;
       };
 
+  const coldFoldPartition = useMemo(() => {
+    const enabled = !search.active && !filtersActive && groupBy === 'time';
+    return partitionColdFold(sessionTree, {
+      enabled,
+      nowMs: nowMs ?? Date.now(),
+      activeSessionId,
+      activeRoomHref: location.pathname.startsWith('/rooms/') ? location.pathname : undefined,
+      rowStateOf: (node) => conversationRowState(node.item, seen),
+    });
+  }, [sessionTree, search.active, filtersActive, groupBy, nowMs, activeSessionId, location.pathname, seen]);
+  const displayedSessionTree = coldFoldExpanded ? sessionTree : coldFoldPartition.visibleGroups;
+  const coldNodes = coldFoldPartition.coldNodes;
+
   const flatSessionEntries = useMemo<readonly SidebarFlatEntry[]>(() => {
     const entries: SidebarFlatEntry[] = [];
     const collapsible = groupBy === 'workspace';
-    for (let groupIndex = 0; groupIndex < sessionTree.length; groupIndex += 1) {
-      const group = sessionTree[groupIndex]!;
+    for (let groupIndex = 0; groupIndex < displayedSessionTree.length; groupIndex += 1) {
+      const group = displayedSessionTree[groupIndex]!;
       const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
       const expanded = expandedGroups.has(group.key);
       const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
@@ -1857,9 +2038,9 @@ export function Sidebar({
       }
     }
     return entries;
-  }, [sessionTree, groupBy, foldsSuspended, collapsedGroups, expandedGroups, workspaceById, seen]);
+  }, [displayedSessionTree, groupBy, foldsSuspended, collapsedGroups, expandedGroups, workspaceById, seen]);
 
-  const listWindowed = !isCollapsed && !search.active && flatSessionEntries.length > SIDEBAR_VIRTUALIZE_THRESHOLD;
+  const listWindowed = !isCollapsed && !search.active && activeSidebarMode === 'sessions' && flatSessionEntries.length > SIDEBAR_VIRTUALIZE_THRESHOLD;
   const virtualAnchorRef = useRef<HTMLDivElement | null>(null);
   const [listScrollMargin, setListScrollMargin] = useState(0);
   useLayoutEffect(() => {
@@ -2027,7 +2208,7 @@ export function Sidebar({
           take belongs to the session list. The wordmark itself is the space
           menu (§6.4) and carries the current space's color and name. */}
       <div className="flex h-12 shrink-0 items-center gap-1 pr-2.5 pl-[18px]">
-        <div className="min-w-0 flex-1"><SpaceSwitcher /></div>
+        <div className="min-w-0 flex-1"><SpaceScopeControl healthBySpace={healthBySpace} /></div>
         <button
           type="button"
           data-search-toggle
@@ -2054,25 +2235,6 @@ export function Sidebar({
           className={`relative ${HEADER_ICON}`}
         >
           <Icon name="bell" size={16} />
-          {inbox.total > 0 ? (
-            inbox.needsYou.length > 0 ? (
-              <span
-                data-activity-badge={inbox.total}
-                data-activity-badge-tone="needs-you"
-                aria-hidden
-                className="pointer-events-none absolute top-1 right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-canvas"
-              >
-                {inbox.needsYou.length > 99 ? '99+' : inbox.needsYou.length}
-              </span>
-            ) : (
-              <span
-                data-activity-badge={inbox.total}
-                data-activity-badge-tone="unread"
-                aria-hidden
-                className="pointer-events-none absolute top-1.5 right-1.5 h-[7px] w-[7px] rounded-full bg-ink-soft/65 ring-2 ring-canvas"
-              />
-            )
-          ) : null}
         </button>
         {onClose !== undefined ? (
           // The phone drawer's exit sits in the thumb's top-left arc, beside
@@ -2157,6 +2319,16 @@ export function Sidebar({
         onCloseSidebar={onClose}
       />
 
+      {!search.active ? (
+        <SidebarModeSwitch
+          mode={activeSidebarMode}
+          onChange={(nextMode) => { writeLayoutPreferences({ sidebarMode: nextMode }); }}
+          needsYouCount={badgeNeedsYou}
+          unreadCount={badgeUnread}
+          total={badgeTotal}
+        />
+      ) : null}
+
       {search.active ? (
         <>
           {filterChips.length > 0 ? (
@@ -2197,6 +2369,31 @@ export function Sidebar({
             workspaceNames={workspaceNameById}
           />
         </>
+      ) : activeSidebarMode === 'inbox' ? (
+      <div
+        ref={listRef}
+        onScroll={onListScroll}
+        data-session-list-scrolled={listScrolled ? 'true' : undefined}
+        className={`flex min-h-0 flex-1 flex-col overflow-y-auto border-t px-2.5 pb-2 transition-colors duration-[var(--kiki-motion-quick)] ${listScrolled ? 'border-hairline/75' : 'border-transparent'}`}
+        data-session-list
+        role="region"
+        aria-label={t('sidebar.inbox.aria')}
+      >
+        <SidebarInboxView
+          inbox={unifiedInbox}
+          activeConversationKey={activeConversationKey}
+          showSpaceLabel={spaceScope === ALL_SPACE_SCOPE && hasMultipleSpaces}
+          untitled={untitled}
+          resolveTitle={resolveTitle}
+          activeShortcutsEnabled={inert !== true && !isCollapsed && !search.active}
+          onOpenItem={openInboxItem}
+          onSettleItem={inboxTriage.settleItem}
+          onSnoozeItem={inboxTriage.snoozeItem}
+          onArchiveItem={inboxTriage.archiveItem}
+          onRestoreItem={inboxTriage.restoreItem}
+          onUndo={inboxTriage.undoLast}
+        />
+      </div>
       ) : (
       <div
         ref={listRef}
@@ -2402,7 +2599,7 @@ export function Sidebar({
                   anchorFor={activity.anchorFor}
                   showLocation
                   temporary
-                  onOpen={() => { void navigate(`/s/${session.id}`); }}
+                  onOpen={() => { openSessionRow(session); }}
                   onMenu={() => undefined}
                   onTogglePin={() => undefined}
                   seen={seen}
@@ -2518,7 +2715,7 @@ export function Sidebar({
                         showLocation={!groupNamesWorkspace}
                         showPin={groupBy === 'none'}
                         location={roomLocation}
-                        onOpen={() => { void navigate(item.href); }}
+                        onOpen={() => { openRoomRow(item.room, item.href); }}
                         onMenu={(x, y, toggle) => {
                           setMenu((current) =>
                             toggle && current?.item.key === item.key ? null : { item, x, y });
@@ -2552,7 +2749,7 @@ export function Sidebar({
                         parentTitle={node.relation === undefined
                           ? undefined
                           : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
-                        onOpen={() => { void navigate(`/s/${session.id}`); }}
+                        onOpen={() => { openSessionRow(session); }}
                         selected={selected.has(session.id)}
                         onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                         onMenu={(x, y, toggle) => {
@@ -2585,7 +2782,7 @@ export function Sidebar({
               );
             })}
           </div>
-        ) : sessionTree.map((group) => {
+        ) : displayedSessionTree.map((group) => {
           // In the workspace view every bucket, Pinned included, uses the one
           // workspace header: fold, count, remembered state. Pinned keeps
           // every row visible (those are the sessions asked to stay on top).
@@ -2614,7 +2811,7 @@ export function Sidebar({
                     showLocation={!groupNamesWorkspace}
                     showPin={groupBy === 'none'}
                     location={roomLocation}
-                    onOpen={() => { void navigate(item.href); }}
+                    onOpen={() => { openRoomRow(item.room, item.href); }}
                     onMenu={(x, y, toggle) => {
                       setMenu((current) =>
                         toggle && current?.item.key === item.key ? null : { item, x, y });
@@ -2646,7 +2843,7 @@ export function Sidebar({
                   parentTitle={node.relation === undefined
                     ? undefined
                     : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
-                  onOpen={() => { void navigate(`/s/${session.id}`); }}
+                  onOpen={() => { openSessionRow(session); }}
                   selected={selected.has(session.id)}
                   onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                   onMenu={(x, y, toggle) => {
@@ -2738,6 +2935,75 @@ export function Sidebar({
             </div>
           );
         })}
+        {coldNodes.length > 0 ? (
+          <div className="mt-2" data-sidebar-cold-fold-wrap>
+            <button
+              type="button"
+              data-sidebar-cold-fold={coldFoldExpanded ? 'expanded' : 'collapsed'}
+              aria-expanded={coldFoldExpanded}
+              onClick={() => { setColdFoldExpanded((v) => !v); }}
+              className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
+            >
+              <DisclosureChevron open={coldFoldExpanded} size={12} className="shrink-0" />
+              <span className="truncate">
+                {coldFoldExpanded
+                  ? t('sidebar.coldFold.collapse')
+                  : t('sidebar.coldFold.label', { count: coldNodes.length })}
+              </span>
+            </button>
+          </div>
+        ) : null}
+        {spaceScope === ALL_SPACE_SCOPE && multiSpaceSources !== undefined ? (
+          multiSpaceSources
+            .filter((src) => src.spaceKey !== currentSpaceKey && src.sessions.length > 0)
+            .map((src) => {
+              const remoteSeen: Record<string, number> = {};
+              for (const rs of src.sessions) {
+                const rec = seenV2[encodeConversationRef({ spaceKey: src.spaceKey, kind: 'session', id: rs.id })];
+                if (rec !== undefined) remoteSeen[rs.id] = rec.seq;
+              }
+              return (
+                <div
+                  key={`remote-space:${src.spaceKey}`}
+                  data-session-group-block={`space:${src.spaceKey}`}
+                  className="mt-3 flex flex-col gap-0.5"
+                  role="group"
+                  aria-label={src.spaceName}
+                >
+                  <p className="flex min-h-7 w-full shrink-0 items-center gap-1.5 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
+                    {src.isRemote ? (
+                      <Icon name="web" size={12} className="shrink-0 text-ink-faint" />
+                    ) : (
+                      <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-ink-faint" />
+                    )}
+                    <span className="min-w-0 truncate">{src.spaceName}</span>
+                  </p>
+                  {src.sessions
+                    .filter((s) => s.archived !== true && s.private !== true)
+                    .slice(0, 12)
+                    .map((remoteSession) => (
+                      <div key={`${src.spaceKey}:${remoteSession.id}`} data-session-node="root">
+                        <SessionRow
+                          session={remoteSession}
+                          active={false}
+                          menuOpen={false}
+                          untitled={untitled}
+                          resolveTitle={resolveTitle}
+                          activity={undefined}
+                          anchorFor={activity.anchorFor}
+                          showLocation
+                          temporary
+                          onOpen={() => { openSessionRow(remoteSession, src.spaceKey); }}
+                          onMenu={() => undefined}
+                          onTogglePin={() => undefined}
+                          seen={remoteSeen}
+                        />
+                      </div>
+                    ))}
+                </div>
+              );
+            })
+        ) : null}
         {sessionsQuery.hasNextPage ? (
           <button
             type="button"

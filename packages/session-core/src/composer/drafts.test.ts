@@ -165,6 +165,125 @@ describe('debounced composer drafts', () => {
     expect(readDraft('one')).toBe('my draft');
   });
 
+  it('flushes each pending draft into the space captured at edit time', () => {
+    localStorage.clear();
+    try {
+      configureSpaceStorage({ homeId: 'space-one' });
+      writeDraft('same-id', 'draft in one');
+      configureSpaceStorage({ homeId: 'space-two' });
+      writeDraft('same-id', 'draft in two');
+      flushDrafts();
+
+      expect(JSON.parse(localStorage.getItem('kiki.space.space-one.kiki.drafts') ?? '{}')).toEqual({ 'same-id': 'draft in one' });
+      expect(JSON.parse(localStorage.getItem('kiki.space.space-two.kiki.drafts') ?? '{}')).toEqual({ 'same-id': 'draft in two' });
+    } finally {
+      configureSpaceStorage(null);
+    }
+  });
+
+  it('isolates in-memory drafts, composer chrome, history, and lazy disk hydration across in-place main <-> remote space switches', () => {
+    localStorage.clear();
+    resetComposerMemoryForTests();
+    resetInputHistoryForTests();
+    const remoteSpace = { homeId: 'remote:srv-42' };
+    try {
+      // Pre-seed persisted drafts in remote space before main hydrates.
+      localStorage.setItem(
+        'kiki.space.remote:srv-42.kiki.drafts',
+        JSON.stringify({ new: 'persisted remote new', 'shared-sess': 'persisted remote shared' }),
+      );
+      localStorage.setItem(
+        'kiki.space.remote:srv-42.kiki.composerStates',
+        JSON.stringify({ new: { modelOverride: 'remote/model' } }),
+      );
+
+      // Hydrate and edit in main space (zero reload, pending flush still in flight).
+      configureSpaceStorage(null);
+      expect(readDraft('new')).toBe('');
+      writeDraft('new', 'main unsent new');
+      writeDraft('shared-sess', 'main unsent shared');
+      writeComposerState('new', emptyState({
+        attachments: [{ kind: 'file', path: 'main.ts', name: 'main.ts', isDir: false }],
+        modelOverride: 'main/model',
+        permissionMode: 'yolo',
+      }));
+      writeComposerState('shared-sess', emptyState({ modelOverride: 'main/shared-model' }));
+      pushInputHistory('new', 'main prompt');
+      const mainFlight = beginPendingSubmissionFlight('shared-sess', {
+        scope: 'main-scope',
+        connectionScopeId: 'conn-main',
+        payload: '["main unsent shared"]',
+        key: 'k-main',
+        draftText: 'main unsent shared',
+      });
+
+      // Switch in-place to remote space without flushing or reloading.
+      configureSpaceStorage(remoteSpace);
+
+      // Remote space must lazily hydrate its own persisted drafts and never see main's in-memory state.
+      expect(readDraft('new')).toBe('persisted remote new');
+      expect(readDraft('shared-sess')).toBe('persisted remote shared');
+      expect(readComposerState('new')).toEqual({
+        modelOverride: 'remote/model',
+        effortOverride: undefined,
+        modelChoice: undefined,
+        effortChoice: undefined,
+        modelSwitchMode: undefined,
+      });
+      expect(readComposerState('shared-sess')).toEqual({});
+      expect(readInputHistory('new')).toEqual([]);
+      expect(isPendingSubmissionInFlight('shared-sess')).toBe(false);
+
+      // Clearing/editing in remote space must not mutate main's in-memory state.
+      writeDraft('new', '');
+      writeDraft('shared-sess', 'edited remote shared');
+      clearComposerState('new');
+      writeComposerState('shared-sess', emptyState({ modelOverride: 'remote/shared-model' }));
+      pushInputHistory('new', 'remote prompt');
+
+      // Finishing main's in-flight submission while remote is active settles main's flight cleanly.
+      finishPendingSubmissionFlight('shared-sess', mainFlight.generation);
+
+      // Delayed timer flush persists each space's pending writes to its originating storage key.
+      vi.advanceTimersByTime(400);
+      expect(JSON.parse(localStorage.getItem('kiki.drafts') ?? '{}')).toEqual({
+        new: 'main unsent new',
+        'shared-sess': 'main unsent shared',
+      });
+      expect(JSON.parse(localStorage.getItem('kiki.space.remote:srv-42.kiki.drafts') ?? '{}')).toEqual({
+        'shared-sess': 'edited remote shared',
+      });
+
+      // Switching back to main restores main's untouched in-memory draft, chrome, and history.
+      configureSpaceStorage(null);
+      expect(readDraft('new')).toBe('main unsent new');
+      expect(readDraft('shared-sess')).toBe('main unsent shared');
+      expect(readComposerState('new')).toMatchObject({
+        attachments: [{ kind: 'file', path: 'main.ts', name: 'main.ts', isDir: false }],
+        modelOverride: 'main/model',
+        permissionMode: 'yolo',
+      });
+      expect(readComposerState('shared-sess').modelOverride).toBe('main/shared-model');
+      expect(readInputHistory('new')).toEqual(['main prompt']);
+      expect(isPendingSubmissionInFlight('shared-sess')).toBe(false);
+      expect(readPendingSubmission('shared-sess')).toMatchObject({ key: 'k-main', scope: 'main-scope' });
+
+      // clearStoredDrafts in remote must not cancel a newly pending draft captured for main.
+      writeDraft('new', 'main pending again');
+      configureSpaceStorage(remoteSpace);
+      clearStoredDrafts();
+      vi.advanceTimersByTime(400);
+      expect(JSON.parse(localStorage.getItem('kiki.drafts') ?? '{}')).toMatchObject({
+        new: 'main pending again',
+      });
+      expect(localStorage.getItem('kiki.space.remote:srv-42.kiki.drafts')).toBeNull();
+    } finally {
+      configureSpaceStorage(null);
+      resetComposerMemoryForTests();
+      resetInputHistoryForTests();
+    }
+  });
+
   it('does not resurrect cleared or deleted drafts on a late timer', () => {
     writeDraft('one', 'discarded');
     clearStoredDrafts();

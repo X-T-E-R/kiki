@@ -11,6 +11,7 @@ export * from './modelSwitchPreferences';
 export * from './nbSearch';
 export * from './onboarding';
 export * from './sessionReadState';
+export * from './sessionTriage';
 export * from './roomReadState';
 export * from './settings';
 export * from './thinkingEffort';

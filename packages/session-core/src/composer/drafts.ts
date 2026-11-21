@@ -12,18 +12,35 @@ import {
 } from './attachments';
 import type { SelectionAnnotation, SelectionQuote } from './selectionQuote';
 import { readSettings, settingsSnapshot } from '../settings/settings';
-import { spaceStorage } from '../storage/spaceStorage';
+import { spaceStorage, spaceStorageKey, type SpaceStorage } from '../storage/spaceStorage';
 
 const KEY = 'kiki.drafts';
 const PERSISTED_COMPOSER_STATE_KEY = 'kiki.composerStates';
 const PERSISTED_NEW_SESSION_DRAFT_KEY = 'kiki.newSessionDraft';
 
-const memory = new Map<string, string>();
-const pending = new Map<string, string>();
+const memoryByScope = new Map<string, Map<string, string>>();
+const hydratedScopes = new Set<string>();
+interface PendingDraftBatch {
+  readonly storage: SpaceStorage;
+  readonly drafts: Map<string, string>;
+}
+const pending = new Map<string, PendingDraftBatch>();
 const DRAFT_WRITE_DELAY_MS = 400;
 let writeTimer: ReturnType<typeof setTimeout> | undefined;
-let hydratedFromDisk = false;
 let unloadListenersInstalled = false;
+
+function activeDraftScope(): string {
+  return spaceStorageKey(KEY);
+}
+
+function draftMemoryForScope(scope: string = activeDraftScope()): Map<string, string> {
+  let scoped = memoryByScope.get(scope);
+  if (scoped === undefined) {
+    scoped = new Map<string, string>();
+    memoryByScope.set(scope, scoped);
+  }
+  return scoped;
+}
 
 function draftsEnabledForTyping(): boolean {
   return typeof localStorage !== 'undefined' && settingsSnapshot().draftPersistence;
@@ -33,9 +50,9 @@ function draftsEnabled(): boolean {
   return typeof localStorage !== 'undefined' && readSettings().draftPersistence;
 }
 
-function readAllStored(): Record<string, string> {
+function readAllStored(storage: SpaceStorage = spaceStorage): Record<string, string> {
   try {
-    const raw = spaceStorage.getItem(KEY);
+    const raw = storage.getItem(KEY);
     if (raw === null) return {};
     const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, string>) : {};
@@ -50,6 +67,14 @@ function cancelDraftWrite(): void {
   pending.clear();
 }
 
+function cancelDraftWriteForScope(scope: string): void {
+  pending.delete(scope);
+  if (pending.size === 0 && writeTimer !== undefined) {
+    clearTimeout(writeTimer);
+    writeTimer = undefined;
+  }
+}
+
 /** Persist all pending edits together (also called when leaving a page or composer). */
 export function flushDrafts(): void {
   if (writeTimer !== undefined) clearTimeout(writeTimer);
@@ -60,17 +85,22 @@ export function flushDrafts(): void {
     return;
   }
   // Merge at flush time so edits from another tab to other sessions survive.
-  const all = readAllStored();
-  for (const [sessionId, text] of pending) {
-    if (text === '') delete all[sessionId];
-    else all[sessionId] = text;
-  }
+  // Each batch retains the space handle captured when its first edit arrived;
+  // switching spaces before this flush must not redirect that write.
+  const batches = [...pending.values()];
   pending.clear();
-  try {
-    if (Object.keys(all).length === 0) spaceStorage.removeItem(KEY);
-    else spaceStorage.setItem(KEY, JSON.stringify(all));
-  } catch {
-    // storage full / unavailable — drafts are a convenience, not a guarantee
+  for (const batch of batches) {
+    const all = readAllStored(batch.storage);
+    for (const [sessionId, text] of batch.drafts) {
+      if (text === '') delete all[sessionId];
+      else all[sessionId] = text;
+    }
+    try {
+      if (Object.keys(all).length === 0) batch.storage.removeItem(KEY);
+      else batch.storage.setItem(KEY, JSON.stringify(all));
+    } catch {
+      // storage full / unavailable — drafts are a convenience, not a guarantee
+    }
   }
 }
 
@@ -87,35 +117,42 @@ function scheduleDraftWrite(): void {
   writeTimer = setTimeout(flushDrafts, DRAFT_WRITE_DELAY_MS);
 }
 
-function hydrateFromDiskIfNeeded(): void {
-  if (hydratedFromDisk) return;
-  hydratedFromDisk = true;
-  if (!draftsEnabled()) return;
+function hydrateFromDiskIfNeeded(scope: string = activeDraftScope()): Map<string, string> {
+  const scoped = draftMemoryForScope(scope);
+  if (hydratedScopes.has(scope)) return scoped;
+  hydratedScopes.add(scope);
+  if (!draftsEnabled()) return scoped;
   for (const [sessionId, text] of Object.entries(readAllStored())) {
-    if (typeof text === 'string' && text !== '') memory.set(sessionId, text);
+    if (typeof text === 'string' && text !== '') scoped.set(sessionId, text);
   }
+  return scoped;
 }
 
 export function readDraft(sessionId: string): string {
-  hydrateFromDiskIfNeeded();
-  return memory.get(sessionId) ?? '';
+  return hydrateFromDiskIfNeeded().get(sessionId) ?? '';
 }
 
 export function writeDraft(sessionId: string, text: string): void {
-  hydrateFromDiskIfNeeded();
-  if (text === '') memory.delete(sessionId);
-  else memory.set(sessionId, text);
+  const scope = activeDraftScope();
+  const scoped = hydrateFromDiskIfNeeded(scope);
+  if (text === '') scoped.delete(sessionId);
+  else scoped.set(sessionId, text);
   if (!draftsEnabledForTyping()) {
     cancelDraftWrite();
     return;
   }
-  pending.set(sessionId, text);
+  const batch = pending.get(scope) ?? {
+    storage: spaceStorage.capture(),
+    drafts: new Map<string, string>(),
+  };
+  batch.drafts.set(sessionId, text);
+  pending.set(scope, batch);
   scheduleDraftWrite();
 }
 
-/** Drop the on-disk store. In-memory drafts for this app run stay put. */
+/** Drop the on-disk store for the active space. In-memory drafts for this app run stay put. */
 export function clearStoredDrafts(): void {
-  cancelDraftWrite();
+  cancelDraftWriteForScope(activeDraftScope());
   try {
     spaceStorage.removeItem(KEY);
     spaceStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
@@ -128,8 +165,8 @@ export function clearStoredDrafts(): void {
 /** Test-only: forget this-process memory as if the module were freshly imported. */
 export function resetDraftMemoryForTests(): void {
   cancelDraftWrite();
-  memory.clear();
-  hydratedFromDisk = false;
+  memoryByScope.clear();
+  hydratedScopes.clear();
 }
 
 // ---- per-session composer chrome ----
@@ -243,7 +280,16 @@ export interface PersistedNewSessionDraft {
   readonly dismissedPersonaSource?: string;
 }
 
-const composerMemory = new Map<string, ComposerSessionState>();
+const composerMemoryByScope = new Map<string, Map<string, ComposerSessionState>>();
+
+function composerMemoryForScope(scope: string = activeDraftScope()): Map<string, ComposerSessionState> {
+  let scoped = composerMemoryByScope.get(scope);
+  if (scoped === undefined) {
+    scoped = new Map<string, ComposerSessionState>();
+    composerMemoryByScope.set(scope, scoped);
+  }
+  return scoped;
+}
 
 function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars> {
   try {
@@ -361,7 +407,7 @@ export function clearNewSessionDraft(): void {
 export function readComposerState(
   sessionId: string,
 ): Partial<ComposerSessionState> {
-  const inMemory = composerMemory.get(sessionId);
+  const inMemory = composerMemoryForScope().get(sessionId);
   if (inMemory !== undefined) return inMemory;
   if (!draftsEnabled()) return {};
   const stored = readAllStoredComposerScalars()[sessionId];
@@ -376,7 +422,7 @@ export function readComposerState(
 }
 
 export function writeComposerState(sessionId: string, state: ComposerSessionState): void {
-  composerMemory.set(sessionId, state);
+  composerMemoryForScope().set(sessionId, state);
   persistComposerScalars(sessionId, {
     modelOverride: state.modelOverride,
     effortOverride: state.effortOverride,
@@ -387,9 +433,10 @@ export function writeComposerState(sessionId: string, state: ComposerSessionStat
 }
 
 export function clearComposerState(sessionId: string): void {
-  revokeAttachmentPreviewUrls(composerMemory.get(sessionId)?.attachments);
-  composerMemory.delete(sessionId);
-  pendingSubmissionMemory.delete(sessionId);
+  const scopedComposer = composerMemoryForScope();
+  revokeAttachmentPreviewUrls(scopedComposer.get(sessionId)?.attachments);
+  scopedComposer.delete(sessionId);
+  pendingSubmissionMemoryForScope().delete(sessionId);
   if (draftsEnabled()) {
     persistComposerScalars(sessionId, {});
   }
@@ -397,9 +444,11 @@ export function clearComposerState(sessionId: string): void {
 
 /** Test-only: forget every session's captured composer chrome. */
 export function resetComposerMemoryForTests(): void {
-  for (const state of composerMemory.values()) revokeAttachmentPreviewUrls(state.attachments);
-  composerMemory.clear();
-  pendingSubmissionMemory.clear();
+  for (const scoped of composerMemoryByScope.values()) {
+    for (const state of scoped.values()) revokeAttachmentPreviewUrls(state.attachments);
+  }
+  composerMemoryByScope.clear();
+  pendingSubmissionMemoryByScope.clear();
 }
 
 export interface PendingComposerSubmission {
@@ -416,8 +465,19 @@ export interface PendingComposerSubmission {
   readonly retryInvalidated?: boolean;
 }
 
-const pendingSubmissionMemory = new Map<string, PendingComposerSubmission>();
+const pendingSubmissionMemoryByScope = new Map<string, Map<string, PendingComposerSubmission>>();
 let nextPendingSubmissionGeneration = 0;
+
+function pendingSubmissionMemoryForScope(
+  scope: string = activeDraftScope(),
+): Map<string, PendingComposerSubmission> {
+  let scoped = pendingSubmissionMemoryByScope.get(scope);
+  if (scoped === undefined) {
+    scoped = new Map<string, PendingComposerSubmission>();
+    pendingSubmissionMemoryByScope.set(scope, scoped);
+  }
+  return scoped;
+}
 
 type PendingSubmissionListener = (sessionId: string) => void;
 const pendingSubmissionListeners = new Set<PendingSubmissionListener>();
@@ -434,11 +494,11 @@ export function subscribePendingSubmissions(listener: PendingSubmissionListener)
 }
 
 export function readPendingSubmission(sessionId: string): PendingComposerSubmission | undefined {
-  return pendingSubmissionMemory.get(sessionId);
+  return pendingSubmissionMemoryForScope().get(sessionId);
 }
 
 export function isPendingSubmissionInFlight(sessionId: string, scope?: string): boolean {
-  const current = pendingSubmissionMemory.get(sessionId);
+  const current = pendingSubmissionMemoryForScope().get(sessionId);
   if (current?.inFlightGeneration === undefined) return false;
   return scope === undefined || current.scope === scope;
 }
@@ -455,18 +515,41 @@ export function beginPendingSubmissionFlight(
     inFlightGeneration: generation,
     inFlightPromise,
   };
-  pendingSubmissionMemory.set(sessionId, next);
+  pendingSubmissionMemoryForScope().set(sessionId, next);
   notifyPendingSubmission(sessionId);
   return { submission: next, generation };
 }
 
 export function finishPendingSubmissionFlight(sessionId: string, generation: number): void {
-  const current = pendingSubmissionMemory.get(sessionId);
-  if (current === undefined || current.inFlightGeneration !== generation) return;
-  if (current.retryInvalidated === true || readDraft(sessionId) !== current.draftText) {
-    pendingSubmissionMemory.delete(sessionId);
+  const activeScope = activeDraftScope();
+  let ownerScope: string | undefined;
+  let ownerMap: Map<string, PendingComposerSubmission> | undefined;
+  let current: PendingComposerSubmission | undefined;
+  const activeMap = pendingSubmissionMemoryByScope.get(activeScope);
+  const activeCandidate = activeMap?.get(sessionId);
+  if (activeCandidate?.inFlightGeneration === generation) {
+    ownerScope = activeScope;
+    ownerMap = activeMap;
+    current = activeCandidate;
   } else {
-    pendingSubmissionMemory.set(sessionId, {
+    for (const [scope, scoped] of pendingSubmissionMemoryByScope) {
+      const candidate = scoped.get(sessionId);
+      if (candidate?.inFlightGeneration === generation) {
+        ownerScope = scope;
+        ownerMap = scoped;
+        current = candidate;
+        break;
+      }
+    }
+  }
+  if (current === undefined || ownerMap === undefined || ownerScope === undefined) return;
+  const currentDraft = ownerScope === activeScope
+    ? readDraft(sessionId)
+    : (memoryByScope.get(ownerScope)?.get(sessionId) ?? '');
+  if (current.retryInvalidated === true || currentDraft !== current.draftText) {
+    ownerMap.delete(sessionId);
+  } else {
+    ownerMap.set(sessionId, {
       scope: current.scope,
       connectionScopeId: current.connectionScopeId,
       payload: current.payload,
@@ -481,32 +564,36 @@ export function finishPendingSubmissionFlight(sessionId: string, generation: num
 }
 
 export function invalidatePendingSubmissionRetry(sessionId: string): void {
-  const current = pendingSubmissionMemory.get(sessionId);
+  const scoped = pendingSubmissionMemoryForScope();
+  const current = scoped.get(sessionId);
   if (current === undefined) return;
   if (current.inFlightGeneration === undefined) {
-    pendingSubmissionMemory.delete(sessionId);
+    scoped.delete(sessionId);
     notifyPendingSubmission(sessionId);
     return;
   }
   if (current.retryInvalidated === true) return;
-  pendingSubmissionMemory.set(sessionId, { ...current, retryInvalidated: true });
+  scoped.set(sessionId, { ...current, retryInvalidated: true });
 }
 
 export function writePendingSubmission(sessionId: string, submission: PendingComposerSubmission | undefined): void {
+  const scoped = pendingSubmissionMemoryForScope();
   if (submission === undefined) {
-    if (pendingSubmissionMemory.delete(sessionId)) notifyPendingSubmission(sessionId);
+    if (scoped.delete(sessionId)) notifyPendingSubmission(sessionId);
     return;
   }
-  pendingSubmissionMemory.set(sessionId, submission);
+  scoped.set(sessionId, submission);
   notifyPendingSubmission(sessionId);
 }
 
 export function clearPendingSubmissionsForConnection(connectionScopeId: string): void {
   const cleared: string[] = [];
-  for (const [key, entry] of pendingSubmissionMemory) {
-    if (entry.connectionScopeId === connectionScopeId) {
-      pendingSubmissionMemory.delete(key);
-      cleared.push(key);
+  for (const scoped of pendingSubmissionMemoryByScope.values()) {
+    for (const [key, entry] of scoped) {
+      if (entry.connectionScopeId === connectionScopeId) {
+        scoped.delete(key);
+        cleared.push(key);
+      }
     }
   }
   for (const key of cleared) notifyPendingSubmission(key);
@@ -517,14 +604,15 @@ export function settlePendingSubmission(
   submissionKey: string,
   sentAnnotationIds?: ReadonlySet<string>,
 ): boolean {
-  const current = pendingSubmissionMemory.get(sessionId);
+  const scoped = pendingSubmissionMemoryForScope();
+  const current = scoped.get(sessionId);
   if (current === undefined || current.key !== submissionKey) return false;
   if (current.retryInvalidated === true || readDraft(sessionId) !== current.draftText) {
-    pendingSubmissionMemory.delete(sessionId);
+    scoped.delete(sessionId);
     notifyPendingSubmission(sessionId);
     return false;
   }
-  pendingSubmissionMemory.delete(sessionId);
+  scoped.delete(sessionId);
   notifyPendingSubmission(sessionId);
   writeDraft(sessionId, '');
   const chrome = readComposerState(sessionId);
@@ -558,7 +646,16 @@ export function settlePendingSubmission(
  */
 export const INPUT_HISTORY_LIMIT = 50;
 
-const historyMemory = new Map<string, string[]>();
+const historyMemoryByScope = new Map<string, Map<string, string[]>>();
+
+function historyMemoryForScope(scope: string = activeDraftScope()): Map<string, string[]> {
+  let scoped = historyMemoryByScope.get(scope);
+  if (scoped === undefined) {
+    scoped = new Map<string, string[]>();
+    historyMemoryByScope.set(scope, scoped);
+  }
+  return scoped;
+}
 
 /**
  * Record a submitted prompt. Empty text is ignored; repeating the last entry
@@ -568,20 +665,21 @@ const historyMemory = new Map<string, string[]>();
 export function pushInputHistory(key: string, text: string): void {
   const trimmed = text.trim();
   if (trimmed === '') return;
-  const list = historyMemory.get(key) ?? [];
+  const scoped = historyMemoryForScope();
+  const list = scoped.get(key) ?? [];
   if (list.at(-1) !== trimmed) list.push(trimmed);
   while (list.length > INPUT_HISTORY_LIMIT) list.shift();
-  historyMemory.set(key, list);
+  scoped.set(key, list);
 }
 
 /** Newest-last recall order; the composer walks it backwards from the end. */
 export function readInputHistory(key: string): readonly string[] {
-  return historyMemory.get(key) ?? [];
+  return historyMemoryForScope().get(key) ?? [];
 }
 
 /** Test-only: forget every recorded prompt. */
 export function resetInputHistoryForTests(): void {
-  historyMemory.clear();
+  historyMemoryByScope.clear();
 }
 
 // ---- external draft appends (「加入对话」 and friends) ----

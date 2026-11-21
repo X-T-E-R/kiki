@@ -1465,6 +1465,60 @@ class FixtureServer {
     if (rest === '/handshake' && method === 'GET') {
       return this.envelope(res, {});
     }
+    const callMatch = /^\/([^/]+)\/call$/.exec(rest);
+    if (callMatch !== null && method === 'POST') {
+      const connId = decodeURIComponent(callMatch[1]);
+      const remote = this.scenario?.data.remoteSpaces?.[connId];
+      if (remote !== undefined) {
+        const op = body?.operation;
+        if (op === 'sessions') {
+          return this.envelope(res, { items: structuredClone(remote.sessions ?? []), has_more: false });
+        }
+        if (op === 'ephemeralSessions') {
+          return this.envelope(res, { items: [], has_more: false });
+        }
+        if (op === 'roomItems' || op === 'rooms') {
+          return this.envelope(res, structuredClone(remote.rooms ?? []));
+        }
+        if (op === 'workspaces') {
+          return this.envelope(res, { items: structuredClone(remote.workspaces ?? []) });
+        }
+        if (op === 'spaceSummary') {
+          return this.envelope(res, structuredClone(remote.summary ?? {
+            online: true,
+            busy_sessions: (remote.sessions ?? []).filter((s) => s.busy).length,
+            needs_you_sessions: (remote.sessions ?? []).filter((s) => s.pending_interaction != null).length,
+            revision: 'r1',
+            as_of: Date.now(),
+            platform: remote.platform ?? 'linux',
+          }));
+        }
+        if (op === 'meta') {
+          return this.envelope(res, {
+            server_version: '0.31.1-fixture',
+            capabilities: { websocket: true, file_upload: true, fs_query: true, mcp: true, tasks: true, terminal: true, transcript: true },
+            server_id: `fixture-remote-${connId}`,
+            server_home_id: remote.homeId ?? connId,
+            current_space_id: remote.homeId ?? connId,
+            started_at: now(),
+            open_in_apps: [],
+            dangerous_bypass_auth: false,
+            backend: 'v2',
+          });
+        }
+        if (op === 'session') {
+          const found = (remote.sessions ?? []).find((s) => s.id === body?.params?.sessionId);
+          if (found !== undefined) return this.envelope(res, structuredClone(found));
+          return this.envelope(res, null, 40401, 'session.not_found');
+        }
+        if (op === 'configRead') {
+          return this.envelope(res, {});
+        }
+        if (op === 'models' || op === 'providers' || op === 'tools' || op === 'auth' || op === 'worktrees') {
+          return this.envelope(res, { items: [] });
+        }
+      }
+    }
     return this.envelope(res, null, 40404, 'Remote connections fixture route not found');
   }
 

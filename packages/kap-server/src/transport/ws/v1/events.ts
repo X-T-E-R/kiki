@@ -6,9 +6,11 @@ import {
   type MessageContent,
   type ContextBreakdown,
   type Session,
+  type SessionAttentionCursor,
   type SessionPendingInteraction,
   type Workspace,
   type PluginWsTopicEvent,
+  type RemoteConnectionsChangedEvent,
   type RoomChangedEvent,
 } from '@kiki/protocol';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
@@ -16,7 +18,7 @@ import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
 import type { AgentPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { ConfigResponse } from '../../../protocol/rest-config';
 
-export type { PluginWsTopicEvent };
+export type { PluginWsTopicEvent, RemoteConnectionsChangedEvent };
 
 export interface AgentStatusUpdatedEvent {
   readonly type: 'agent.status.updated';
@@ -88,6 +90,7 @@ export interface SessionWorkChangedEvent {
   readonly main_turn_active?: boolean;
   readonly pending_interaction?: SessionPendingInteraction;
   readonly last_turn_reason?: 'completed' | 'cancelled' | 'failed';
+  readonly attention_cursor?: SessionAttentionCursor;
 }
 
 type LegacySessionStatus =
@@ -282,6 +285,7 @@ export type AgentEvent =
   | PersonaChangedEvent
   | PluginWsTopicEvent
   | ModelCatalogChangedEvent
+  | RemoteConnectionsChangedEvent
   | CapabilityChangedEvent
   | PromptSubmittedEvent
   | BackgroundTaskStartedEvent

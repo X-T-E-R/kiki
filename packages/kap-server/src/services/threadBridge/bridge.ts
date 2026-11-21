@@ -1127,7 +1127,11 @@ export async function authorizePeerRequestBridgeRequest(admission: ConnectionAdm
 
 export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scope, admission: ConnectionAdmission, connections: RemoteConnectionManager, transcript: TranscriptService, shutdownSignal?: AbortSignal, peerBridges?: PeerBridgeRegistry): Promise<SpaceThreadBridge> {
   const bridge = new SpaceThreadBridge(core, admission, connections, transcript, peerBridges); await bridge.ready();
-  const hook = admission.onDidChange((change) => bridge.onAdmissionChange(change));
+  const hook = admission.onDidChange((change) => {
+    if (change.kind === 'revoked' || change.reason === 'state_changed' || change.reason === undefined) {
+      return bridge.onAdmissionChange(change);
+    }
+  });
   const attachHook = peerBridges?.onDidAttach((grantId) => { void bridge.triggerPeerRetry(grantId).catch(() => {}); });
   app.addHook('preClose', async () => { attachHook?.dispose(); hook.dispose(); await bridge.close(); });
   const respond = async (req: FastifyRequest, reply: FastifyReply, work: () => unknown) => {

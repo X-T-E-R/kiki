@@ -1,7 +1,7 @@
 import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
 import { roomSeenKey, roomUnreadCount } from '../settings/roomReadState';
 import type { SessionSeenMap } from '../settings/sessionReadState';
-import { buildInboxModel, type InboxSource } from './inbox';
+import { buildInboxModel, type InboxSource, type UnifiedInboxEntry } from './inbox';
 import { roomRefLink } from './conversationLinks';
 import { filterSessions, groupSessionsByTime, groupSessionsByWorkspace, isPinnedSession, SESSION_PIN_META_KEY, sortSessionItems, type SessionFilterInput, type SessionGroup, type SessionListEntry, type SessionSortOrder, type TimeGroupLabels } from './sessionList';
 
@@ -47,7 +47,7 @@ function workspacePathKey(root: string): string {
 export function mergeConversationItems(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap, order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []): ConversationListItem[] {
   const threads: ConversationListItem[] = sessions.map((session) => ({
     ...session, updated_at: session.own_updated_at ?? session.updated_at, kind: 'session', session, key: `session:${session.id}`, href: `/s/${session.id}`,
-    unread_count: Math.max(0, session.last_seq - (seen[session.id] ?? 0)),
+    unread_count: Math.max(0, (session.attention_cursor?.seq ?? session.last_seq) - (seen[session.id] ?? 0)),
     needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
     failed: session.last_turn_reason === 'failed', pinned: isPinnedSession(session),
   }));
@@ -93,4 +93,50 @@ export function buildConversationInbox(sessions: readonly Session[], rooms: read
     last_turn_reason: room.failed ? 'failed' : 'completed',
   }));
   return buildInboxModel([...sessions, ...roomSources], seen);
+}
+
+/** Per-space conversations and workspace catalog fed into `buildUnifiedConversationEntries`. */
+export interface SpaceConversationSource {
+  readonly spaceKey: string;
+  readonly spaceName: string;
+  readonly isRemote: boolean;
+  readonly sessions: readonly Session[];
+  readonly rooms?: readonly RoomListItem[];
+  readonly workspaces?: readonly NamedConversationWorkspace[];
+}
+
+/** Flatten per-space sessions and rooms into `UnifiedInboxEntry[]` with resolved workspace ids and names. */
+export function buildUnifiedConversationEntries(
+  spaces: readonly SpaceConversationSource[],
+): UnifiedInboxEntry[] {
+  const entries: UnifiedInboxEntry[] = [];
+  for (const space of spaces) {
+    const workspaces = space.workspaces ?? [];
+    const workspaceNames = new Map<string, string>();
+    for (const ws of workspaces) workspaceNames.set(ws.id, ws.name);
+
+    for (const session of space.sessions) {
+      entries.push({
+        kind: 'session',
+        spaceKey: space.spaceKey,
+        spaceName: space.spaceName,
+        isRemote: space.isRemote,
+        workspaceName: workspaceNames.get(session.workspace_id),
+        session,
+      });
+    }
+    for (const room of space.rooms ?? []) {
+      const resolvedWorkspaceId = roomWorkspaceId(room.workspace, workspaces);
+      entries.push({
+        kind: 'room',
+        spaceKey: space.spaceKey,
+        spaceName: space.spaceName,
+        isRemote: space.isRemote,
+        workspaceId: resolvedWorkspaceId,
+        workspaceName: workspaceNames.get(resolvedWorkspaceId),
+        room,
+      });
+    }
+  }
+  return entries;
 }

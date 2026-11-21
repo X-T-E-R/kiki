@@ -27,6 +27,13 @@ interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean;
 interface State { enabled: boolean; grants: StoredGrant[]; pairingCodes: PairingCode[] }
 export interface AdmittedPeer { id: string; revision: number; source: ConnectionIdentity; allowBridge: boolean; bridgeOperations?: readonly BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: readonly MeshCapability[] }
 export interface PeerApproval { grantId: string; revision: number; peerToken: string; target: ConnectionIdentity; allowBridge: boolean; bridgeOperations: BridgeOperation[]; trustTier: PeerTrustTier; meshCapabilities: MeshCapability[] }
+export interface ConnectionAdmissionChange {
+  readonly kind: 'enabled' | 'revoked';
+  readonly enabled: boolean;
+  readonly grantId?: string;
+  readonly source?: ConnectionIdentity;
+  readonly reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed';
+}
 export interface HandshakeProofInspection { status: 'approved' | 'revoked' | 'inbound_disabled' | 'invited'; proof: string }
 export class AdmissionError extends Error {
   constructor(readonly status: number, readonly reason: string) { super(reason); }
@@ -52,11 +59,11 @@ export class ConnectionAdmission {
   private tail: Promise<unknown> = Promise.resolve();
   private connectionWriteScheduled = false;
   private readonly path: string;
-  private readonly changeListeners = new Set<(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>>();
-  onDidChange(listener: (change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>): { dispose(): void } {
+  private readonly changeListeners = new Set<(change: ConnectionAdmissionChange) => void | Promise<void>>();
+  onDidChange(listener: (change: ConnectionAdmissionChange) => void | Promise<void>): { dispose(): void } {
     this.changeListeners.add(listener); return { dispose: () => { this.changeListeners.delete(listener); } };
   }
-  private async emit(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }): Promise<void> {
+  private async emit(change: ConnectionAdmissionChange): Promise<void> {
     await Promise.allSettled([...this.changeListeners].map((listener) => listener(change)));
   }
   constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly unavailableReason?: 'dangerous_auth_bypass') { this.path = join(homeDir, 'server', 'inbound-connections.json'); }
@@ -104,7 +111,10 @@ export class ConnectionAdmission {
   setEnabled(enabled: boolean): Promise<InboundStatus> {
     return this.change(async () => {
       if (enabled && this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
-      this.state.enabled = enabled; if (!enabled) this.closeAll(); await this.emit({ kind: 'enabled', enabled: this.status().enabled }); return this.status();
+      const changed = this.state.enabled !== enabled;
+      this.state.enabled = enabled; if (!enabled) this.closeAll();
+      if (changed) await this.emit({ kind: 'enabled', enabled: this.status().enabled, reason: 'state_changed' });
+      return this.status();
     });
   }
   invite(source: ConnectionIdentity, label: string, expiresInMs = 600000): Promise<{ grant: ConnectionGrant; invitation: string }> {
@@ -113,6 +123,7 @@ export class ConnectionAdmission {
       const invitation = generateServerToken();
       const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'invited', label, createdAt: Date.now(), expiresAt: Date.now() + expiresInMs, digest: digest(invitation) };
       this.state.grants.push(entry);
+      await this.emit({ kind: 'enabled', enabled: this.status().enabled, grantId: entry.id, source, reason: 'created' });
       return { grant: connectionGrantSchema.parse({ ...entry, activeLeases: 0 }), invitation };
     });
   }
@@ -125,6 +136,7 @@ export class ConnectionAdmission {
       const grant = generateServerToken();
       await this.revokePrevious(source);
       entry.digest = digest(grant); entry.status = 'approved'; delete entry.expiresAt;
+      await this.emit({ kind: 'enabled', enabled: this.status().enabled, grantId: entry.id, source, reason: 'paired' });
       return { grantId: entry.id, revision: entry.revision, grant, target: this.identity };
     });
   }
@@ -214,7 +226,7 @@ export class ConnectionAdmission {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
       this.state.enabled = true;
-      if (!enabled) await this.emit({ kind: 'enabled', enabled: this.status().enabled });
+      if (!enabled) await this.emit({ kind: 'enabled', enabled: this.status().enabled, reason: 'state_changed' });
       const bytes = randomBytes(8);
       let compact = '';
       for (const byte of bytes) compact += PAIRING_CODE_ALPHABET[byte % PAIRING_CODE_ALPHABET.length];
@@ -227,6 +239,7 @@ export class ConnectionAdmission {
       for (const entry of this.state.pairingCodes) if (!entry.consumed) entry.consumed = true;
       this.state.pairingCodes.push({ digest: digest(code), expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations, trustTier, meshCapabilities, failures: 0, consumed: false, label: input.label ?? '' });
       if (this.state.pairingCodes.length > 32) this.state.pairingCodes = this.state.pairingCodes.slice(-32);
+      await this.emit({ kind: 'enabled', enabled: this.status().enabled, reason: 'created' });
       return { code, expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations, trustTier, meshCapabilities };
     });
   }
@@ -255,6 +268,7 @@ export class ConnectionAdmission {
       const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken), allowBridge: match.allowBridge, bridgeOperations: approved, trustTier, meshCapabilities };
       await this.revokePrevious(source);
       this.state.grants.push(entry);
+      await this.emit({ kind: 'enabled', enabled: this.status().enabled, grantId: entry.id, source, reason: 'paired' });
       const effectiveOperations = bridgeOperations === undefined ? [...approved] : approved.filter((op) => bridgeOperations.includes(op));
       return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: effectiveOperations, trustTier, meshCapabilities };
     });
@@ -264,7 +278,7 @@ export class ConnectionAdmission {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
       this.state.enabled = true;
-      if (!enabled) await this.emit({ kind: 'enabled', enabled: this.status().enabled });
+      if (!enabled) await this.emit({ kind: 'enabled', enabled: this.status().enabled, reason: 'state_changed' });
       if (sameIdentity(source, this.identity)) throw new AdmissionError(409, 'identity_changed');
       const peerToken = generateServerToken();
       const approved = [...new Set(bridgeOperations ?? DEFAULT_APPROVED_BRIDGE_OPERATIONS)];
@@ -272,6 +286,7 @@ export class ConnectionAdmission {
       const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label, createdAt: Date.now(), digest: digest(peerToken), allowBridge, bridgeOperations: approved, trustTier, meshCapabilities: resolvedCaps };
       await this.revokePrevious(source);
       this.state.grants.push(entry);
+      await this.emit({ kind: 'enabled', enabled: this.status().enabled, grantId: entry.id, source, reason: 'paired' });
       return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: [...approved], trustTier, meshCapabilities: resolvedCaps };
     });
   }
@@ -279,7 +294,10 @@ export class ConnectionAdmission {
     const next = bridgeOperationsSchema.parse([...new Set(operations)]);
     return this.change(async () => {
       const entry = this.state.grants.find((grant) => grant.id === id && grant.status === 'approved');
-      if (entry !== undefined) entry.bridgeOperations = next;
+      if (entry !== undefined) {
+        entry.bridgeOperations = next;
+        await this.emit({ kind: 'enabled', enabled: this.status().enabled, grantId: entry.id, source: entry.source, reason: 'updated' });
+      }
     });
   }
   getGrantTrust(id: string): { readonly trustTier: PeerTrustTier; readonly meshCapabilities: readonly MeshCapability[] } | undefined {
@@ -299,6 +317,7 @@ export class ConnectionAdmission {
       entry.trustTier = validatedTier;
       entry.meshCapabilities = resolvedCaps;
       entry.revision += 1;
+      await this.emit({ kind: 'enabled', enabled: this.status().enabled, grantId: entry.id, source: entry.source, reason: 'updated' });
       const { digest: _, ...pub } = entry;
       return { ...pub, activeLeases: this.leases.get(entry.id)?.size ?? 0 };
     });
@@ -316,7 +335,7 @@ export class ConnectionAdmission {
   private async revokeGrant(entry: StoredGrant): Promise<void> {
     entry.status = 'revoked'; entry.revision += 1;
     this.closeGrant(entry.id);
-    await this.emit({ kind: 'revoked', enabled: this.state.enabled, grantId: entry.id, source: entry.source });
+    await this.emit({ kind: 'revoked', enabled: this.state.enabled, grantId: entry.id, source: entry.source, reason: 'deleted' });
   }
   private closeGrant(id: string): void { const set = this.leases.get(id); this.leases.delete(id); for (const close of set ?? []) close(); }
   private find(secret: string): StoredGrant | undefined {
