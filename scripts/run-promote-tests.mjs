@@ -9,6 +9,14 @@ export const PROMOTE_TEST_COMMANDS = [
   { label: 'kap-server integration tests', args: ['-C', 'packages/kap-server', 'run', 'test:integration'] },
   { label: 'kap-server MCP binary smoke', args: ['-C', 'packages/kap-server', 'run', 'test:mcp-bin-smoke'] },
   { label: 'pi-tui node:test suite', args: ['-C', 'packages/pi-tui', 'test'] },
+  {
+    label: 'kiki-gui visual proof headless smoke',
+    args: ['-C', 'apps/kiki-gui', 'exec', 'node', 'scripts/visual-proof.mjs', '--config', 'scripts/visual-proof-headless-smoke.mjs'],
+  },
+  {
+    label: 'kiki-gui mobile rigor visual & geometry gate',
+    args: ['-C', 'apps/kiki-gui', 'run', 'proof:mobile-rigor'],
+  },
 ];
 
 export function pnpmLaunch(args, env = process.env) {

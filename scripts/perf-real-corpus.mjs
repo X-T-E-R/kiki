@@ -62,7 +62,7 @@ const [
   { parseSeed },
   { stageCorpusSandbox },
   { bootPerfServer, runProtocolSuite },
-  { runBrowserSuite },
+  { ensureGuiStaticBuild, runBrowserSuite },
 ] = await Promise.all([
   import('./perf/corpus-scanner.mjs'),
   import('./perf/metrics.mjs'),
@@ -79,6 +79,8 @@ export function parsePerfCliArgs(argv) {
     quick: false,
     browser: true,
     enforce: false,
+    extremeFullSize: false,
+    useRealCatalog: false,
     outPath: path.join(REPO_ROOT, '.tmp', 'perf-real-corpus-latest.json'),
     corpusHome: undefined,
     minIdleMs: 120_000,
@@ -95,6 +97,10 @@ export function parsePerfCliArgs(argv) {
       options.browser = false;
     } else if (arg === '--enforce') {
       options.enforce = true;
+    } else if (arg === '--extreme-full-size') {
+      options.extremeFullSize = true;
+    } else if (arg === '--real-catalog') {
+      options.useRealCatalog = true;
     } else if (arg === '--seed' && argv[i + 1] !== undefined) {
       options.seed = argv[i + 1];
       i += 1;
@@ -203,6 +209,21 @@ function evaluateSlos(report) {
     if ((b.transcriptMountFailures ?? 0) > ENFORCED_SLOS.browserTranscriptMountFailures) {
       breaches.push(`browser.transcriptMountFailures=${b.transcriptMountFailures} > 0`);
     }
+    if ((b.viewedSessionUnreadFailures ?? 0) > 0) {
+      breaches.push(`browser.viewedSessionUnreadFailures=${b.viewedSessionUnreadFailures} > 0`);
+    }
+    if ((b.personaSingleRowFailures ?? 0) > 0) {
+      breaches.push(`browser.personaSingleRowFailures=${b.personaSingleRowFailures} > 0`);
+    }
+    if ((b.falseTopToastFailures ?? 0) > 0) {
+      breaches.push(`browser.falseTopToastFailures=${b.falseTopToastFailures} > 0`);
+    }
+    if (b.webAssetsGatePassed === false) {
+      breaches.push(`browser.webAssetsGate failed: ${(report.browser.webAssetsGate?.failures ?? []).join('; ')}`);
+    }
+    if (b.mobileLegPassed === false) {
+      breaches.push(`browser.mobileLeg failed: ${(report.browser.mobileLeg?.failures ?? []).join('; ')}`);
+    }
   }
   if (report.samples.length === 0) {
     breaches.push('samples.length=0 (empty benchmark sample set)');
@@ -291,15 +312,20 @@ export async function runRealCorpusBenchmark(rawOptions = {}) {
     corpusHome,
     samples,
     backgroundRecords,
+    extremeFullSize: Boolean(rawOptions.extremeFullSize),
   });
 
+  const guiBuildInfo = rawOptions.browser !== false ? ensureGuiStaticBuild() : null;
   let serverHandle = null;
   let protocolReport = null;
   let browserReport = null;
   let immutability = null;
 
   try {
-    serverHandle = await bootPerfServer(sandbox.homeDir);
+    serverHandle = await bootPerfServer(sandbox.homeDir, {
+      webAssetsDir: guiBuildInfo?.distDir,
+      useRealCatalog: Boolean(rawOptions.useRealCatalog),
+    });
     protocolReport = await runProtocolSuite({
       endpoint: serverHandle.endpoint,
       token: serverHandle.token,
@@ -313,6 +339,7 @@ export async function runRealCorpusBenchmark(rawOptions = {}) {
         token: serverHandle.token,
         samples,
         maxPerStratum: 1,
+        buildInfo: guiBuildInfo,
       });
     }
   } finally {
@@ -343,6 +370,8 @@ export async function runRealCorpusBenchmark(rawOptions = {}) {
     },
     immutability,
     serverBootMs: serverHandle.bootMs,
+    catalogMode: serverHandle.catalogMode,
+    extremeFullSize: Boolean(rawOptions.extremeFullSize),
     samples: samples.map((s) => ({
       label: s.label,
       stratum: s.stratum,

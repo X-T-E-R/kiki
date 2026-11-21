@@ -384,9 +384,13 @@ export function sanitizeAgentProfiles(sourceHome, stagedHome, tracker) {
   return count;
 }
 
-export function stageSanitizedAgentsMd(sourceHome, stagedHome, tracker) {
+export function stageSanitizedAgentsMd(sourceHome, stagedHome, tracker, { preserveRealContent = false } = {}) {
   const srcPath = path.join(sourceHome, 'AGENTS.md');
   const st = tracker ? tracker.trackFile(srcPath) : fs.existsSync(srcPath) ? fs.statSync(srcPath) : undefined;
+  if (preserveRealContent && st && fs.existsSync(srcPath)) {
+    fs.copyFileSync(srcPath, path.join(stagedHome, 'AGENTS.md'));
+    return;
+  }
   const targetBytes = st ? Math.min(Math.max(st.size, 512), 16384) : 4096;
   const body = `# Bench Workspace Instructions\n\n${'Follow deterministic benchmark rules.\n'.repeat(Math.ceil(targetBytes / 40))}`.slice(0, targetBytes);
   fs.writeFileSync(path.join(stagedHome, 'AGENTS.md'), body, 'utf8');
@@ -487,7 +491,14 @@ function writeScrubbedStateJson(srcStatePath, dstStatePath, { sandboxId, title, 
   fs.writeFileSync(dstStatePath, JSON.stringify(scrubbedMeta), 'utf8');
 }
 
-export function stageCorpusSandbox({ corpusHome, samples, backgroundRecords = [], sandboxParentDir, isolateProcessEnv = true }) {
+export function stageCorpusSandbox({
+  corpusHome,
+  samples,
+  backgroundRecords = [],
+  sandboxParentDir,
+  isolateProcessEnv = true,
+  extremeFullSize = false,
+}) {
   const startedAt = performance.now();
   const { sandboxRoot, homeDir, osHomeDir } = createIsolatedSandboxDirs(sandboxParentDir ?? os.tmpdir(), 'kiki-perf-sandbox-');
   const workspaceRoot = path.join(sandboxRoot, 'workspace');
@@ -504,13 +515,25 @@ export function stageCorpusSandbox({ corpusHome, samples, backgroundRecords = []
     }),
     'utf8',
   );
-  fs.writeFileSync(path.join(homeDir, 'config.toml'), '[search]\nenabled = false\n', 'utf8');
+  const srcConfigPath = corpusHome ? path.join(corpusHome, 'config.toml') : null;
+  if (extremeFullSize && srcConfigPath && fs.existsSync(srcConfigPath)) {
+    fs.copyFileSync(srcConfigPath, path.join(homeDir, 'config.toml'));
+  } else {
+    fs.writeFileSync(path.join(homeDir, 'config.toml'), '[search]\nenabled = false\n', 'utf8');
+  }
 
   const tracker = createSourceImmutabilityTracker({ locksDir: corpusHome ? path.join(corpusHome, 'session-locks') : undefined });
   const copyStats = { copiedFiles: 0, copiedBytes: 0 };
   if (corpusHome) {
-    sanitizeAgentProfiles(corpusHome, homeDir, tracker);
-    stageSanitizedAgentsMd(corpusHome, homeDir, tracker);
+    if (extremeFullSize && fs.existsSync(path.join(corpusHome, 'agents'))) {
+      copyDirectoryBounded(path.join(corpusHome, 'agents'), path.join(homeDir, 'agents'), copyStats, {
+        maxFileBytes: Number.POSITIVE_INFINITY,
+        maxTotalBytes: Number.POSITIVE_INFINITY,
+      });
+    } else {
+      sanitizeAgentProfiles(corpusHome, homeDir, tracker);
+    }
+    stageSanitizedAgentsMd(corpusHome, homeDir, tracker, { preserveRealContent: extremeFullSize });
   }
 
   for (const sample of samples) {
@@ -522,10 +545,20 @@ export function stageCorpusSandbox({ corpusHome, samples, backgroundRecords = []
       cwd: workspaceRoot,
     });
     copySessionOutcomes(sample.sourceSessionDir, dstSessionDir, copyStats, tracker);
-    copyDirectoryBounded(path.join(sample.sourceSessionDir, 'media'), path.join(dstSessionDir, 'media'), copyStats);
+    copyDirectoryBounded(path.join(sample.sourceSessionDir, 'media'), path.join(dstSessionDir, 'media'), copyStats, extremeFullSize
+      ? { maxFileBytes: Number.POSITIVE_INFINITY, maxTotalBytes: Number.POSITIVE_INFINITY }
+      : undefined);
     stageSessionAgentTree(sample.sourceSessionDir, dstSessionDir, copyStats, {
       fullWires: true,
       primaryAgentIds: ['main', sample.maxChildAgentId, sample.branchAgentId],
+      ...(extremeFullSize
+        ? {
+            maxSessionWireBytes: Number.POSITIVE_INFINITY,
+            maxSecondaryWireBytes: Number.POSITIVE_INFINITY,
+            maxSecondaryAgents: Number.POSITIVE_INFINITY,
+            maxAgentBlobsBytes: Number.POSITIVE_INFINITY,
+          }
+        : {}),
       tracker,
     });
   }

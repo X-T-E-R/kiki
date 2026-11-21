@@ -1,56 +1,15 @@
-import fs from 'node:fs';
-import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import { ensureGuiStaticBuild } from '../perf/browser-runner.mjs';
+import {
+  assertKapServerWebAssets,
+  createWebAssetsAuditRecorder,
+  evaluateWebAssetsBudget,
+} from '../ccp-chaos/web-assets-bridge.mjs';
 import { roundMs } from './stats.mjs';
 
 const kapRequire = createRequire(new URL('../../packages/kap-server/package.json', import.meta.url));
 const { chromium } = kapRequire('playwright');
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript',
-  '.mjs': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-  '.mp4': 'video/mp4',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-};
-
-function startStaticGuiServer(distDir) {
-  const server = createServer((req, res) => {
-    const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-    if (urlPath === '/__kiki/local-server') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{}');
-      return;
-    }
-    let file = path.normalize(path.join(distDir, urlPath));
-    if (!file.startsWith(distDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      file = path.join(distDir, 'index.html');
-    }
-    const stream = fs.createReadStream(file);
-    stream.once('open', () => {
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream' });
-      stream.pipe(res);
-    });
-    stream.once('error', () => {
-      if (!res.headersSent) res.writeHead(404, { 'content-type': 'text/plain' });
-      res.end('not found');
-    });
-  });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve(server));
-  });
-}
 
 function installLongTaskProbe() {
   const state = { longTasks: [], rafGaps: [] };
@@ -100,24 +59,28 @@ export async function runDetailUxBrowserSuite({
   gallerySession,
   browserClones,
   clearServerMediaPreviewCache,
+  buildInfo = null,
   progress,
 }) {
-  progress('building/verifying static GUI bundle for Playwright...');
-  const buildInfo = ensureGuiStaticBuild();
-  const staticServer = await startStaticGuiServer(buildInfo.distDir);
-  const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
+  progress('verifying kap-server native webAssets for Playwright...');
+  const webInfo = await assertKapServerWebAssets(endpoint);
+  const webUrl = webInfo.webUrl;
   const browser = await chromium.launch({ headless: true, args: ['--no-proxy-server'] });
 
   const deepLink = (routePath) =>
     `${webUrl}${routePath}?server=${encodeURIComponent(endpoint)}&token=${encodeURIComponent(token)}`;
 
   const metrics = {
-    guiBuildReusedCache: buildInfo.reusedCache,
-    guiBuildMs: buildInfo.buildMs,
+    servedByKapServer: true,
+    guiBuildReusedCache: buildInfo?.reusedCache ?? null,
+    guiBuildMs: buildInfo?.buildMs ?? 0,
+    webAssetsAudit: null,
+    webAssetsGate: null,
     imagesAndLightbox: {},
     composerAndPreview: {},
     sidebarAndMenus: {},
   };
+  let webAssetsRecorder = null;
 
   try {
     const context = await browser.newContext({
@@ -132,6 +95,7 @@ export async function runDetailUxBrowserSuite({
     });
     await context.addInitScript(installLongTaskProbe);
     const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, endpoint);
 
     progress('Playwright 1/3: measuring 12-image turn paint (cold + warm) & MediaLightbox naturalWidth > 0...');
     if (typeof clearServerMediaPreviewCache === 'function') {
@@ -391,9 +355,9 @@ export async function runDetailUxBrowserSuite({
         { timeout: 45_000 },
       );
       archivedPageRestoreDisappearMs = roundMs(performance.now() - restoreClickT0);
-    } catch (restoreErr) {
+    } catch (error) {
       archivedPageRestoreDisappearMs = roundMs(performance.now() - restoreClickT0);
-      archivedPageRestoreStatus = `failed: ${String(restoreErr?.message ?? restoreErr).slice(0, 120)}`;
+      archivedPageRestoreStatus = `failed: ${String(error?.message ?? error).slice(0, 120)}`;
     }
 
     metrics.sidebarAndMenus = {
@@ -408,8 +372,13 @@ export async function runDetailUxBrowserSuite({
 
     await context.close();
   } finally {
+    if (webAssetsRecorder) {
+      await webAssetsRecorder.settle();
+      metrics.webAssetsAudit = webAssetsRecorder.snapshot();
+      metrics.webAssetsGate = evaluateWebAssetsBudget(metrics.webAssetsAudit);
+      webAssetsRecorder.detach();
+    }
     await browser.close();
-    await new Promise((resolve) => staticServer.close(resolve));
   }
 
   return metrics;

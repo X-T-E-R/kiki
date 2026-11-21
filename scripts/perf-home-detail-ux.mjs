@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 import { buildIsolatedPerfEnv } from './perf/sandbox-stager.mjs';
 
@@ -208,6 +208,8 @@ async function main() {
   };
 
   try {
+    const { ensureGuiStaticBuild } = await import('./perf/browser-runner.mjs');
+    const guiBuild = ensureGuiStaticBuild();
     const serverEnv = staged.serverEnv;
     server = await startServer({
       hostIdentity: {
@@ -218,6 +220,7 @@ async function main() {
       host: '127.0.0.1',
       port: 0,
       homeDir: staged.stagedHome,
+      webAssetsDir: guiBuild.distDir,
       env: serverEnv,
       runtimeManaged: false,
       logLevel: 'silent',
@@ -296,7 +299,7 @@ async function main() {
   process.stdout.write(`${serialized}\n`);
 }
 
-main().catch((err) => {
-  process.stderr.write(`[perf-detail-ux] FAILED: ${err?.stack ?? err}\n`);
+main().catch((error) => {
+  process.stderr.write(`[perf-detail-ux] FAILED: ${error?.stack ?? error}\n`);
   process.exit(1);
 });

@@ -71,8 +71,8 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 25_00
       json = null;
     }
     return { status: res.status, json };
-  } catch (err) {
-    return { status: 0, json: null, error: String(err?.message ?? err) };
+  } catch (error) {
+    return { status: 0, json: null, error: String(error?.message ?? error) };
   } finally {
     clearTimeout(timer);
   }
@@ -257,6 +257,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         ],
         finalText: 'Dispatched finite background Bash task.',
       };
+      const wallT0 = Date.now();
       const t0 = performance.now();
       await apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, {
         prompt_id: `p_s13_c1_${runId}`,
@@ -268,7 +269,6 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       const grandchildPid = Number(fs.readFileSync(scripts.pidFile, 'utf8').trim());
       cleanupPids.push(grandchildPid);
 
-      const scheduledDeadlineMs = roundMs(rootExitMs + timeoutSec * 1000);
       const grandchildActiveAtTrigger = isPidAlive(grandchildPid);
       // Wait for real AgentTaskService finite timeout to fire and terminate the owned tree
       const dead = await waitForPidDeath(grandchildPid, timeoutSec * 1000 + 4_000);
@@ -302,7 +302,25 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         wireRecords,
         dead,
       });
-      const triggerReceivedMs = Math.min(grandchildExitMs - 1, Math.max(rootExitMs + 1, scheduledDeadlineMs));
+      const bashCallRec1 = wireRecords.find(
+        (r) => (r?.type === 'tool.call' || r?.type === 'tool_call') && (r?.payload?.name === 'Bash' || r?.name === 'Bash'),
+      );
+      const wireTermRec1 = wireRecords.find(
+        (r) => r?.type === 'task.terminated' || r?.type === 'background.task.terminated',
+      );
+      const taskStartEpoch1 =
+        (typeof taskRow?.startedAt === 'number' ? taskRow.startedAt : null) ??
+        (typeof bashCallRec1?.time === 'number' ? bashCallRec1.time : null);
+      const scheduledDeadlineMs =
+        taskStartEpoch1 !== null
+          ? roundMs(taskStartEpoch1 - wallT0 + timeoutSec * 1000)
+          : roundMs(rootExitMs + timeoutSec * 1000);
+      const triggerReceivedMs =
+        typeof wireTermRec1?.time === 'number'
+          ? roundMs(wireTermRec1.time - wallT0)
+          : typeof taskRow?.endedAt === 'number'
+            ? roundMs(taskRow.endedAt - wallT0)
+            : scheduledDeadlineMs;
       cells.push({
         kind: 'terminating_timeout',
         earlyExitVariant: true,
@@ -323,6 +341,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
     {
       const sess = await createSession('foreground_detach_then_stop');
       const scripts = writeEarlyExitSpinnerScripts(dir, 'foreground_detach');
+      const detachTimeoutSec = 1;
       const plan = {
         steps: [
           {
@@ -331,7 +350,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
                 name: 'Bash',
                 input: {
                   command: `${q(process.execPath)} ${q(scripts.keepAliveWrapper)}`,
-                  timeout: 1,
+                  timeout: detachTimeoutSec,
                   description: 'S13 foreground auto-detach spinner',
                 },
               },
@@ -351,6 +370,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         ],
         finalText: 'Stopped detached foreground task.',
       };
+      const wallT0 = Date.now();
       const t0 = performance.now();
       await apiJson(server.endpoint, server.token, 'POST', `/api/sessions/${encodeURIComponent(sess.sessionId)}/prompts`, {
         prompt_id: `p_s13_c2_${runId}`,
@@ -363,13 +383,13 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       cleanupPids.push(grandchildPid);
       const grandchildActiveAtTrigger = isPidAlive(grandchildPid);
 
-      const stopWatchT0 = performance.now();
       const dead = await waitForPidDeath(grandchildPid, 8_000);
+      const grandchildExitWallMs = Date.now();
       const grandchildExitMs = roundMs(performance.now() - t0);
       await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 15_000);
 
-      const triggerReceivedMs = Math.min(grandchildExitMs - 1, Math.max(rootExitMs + 1, roundMs(rootExitMs + 1000)));
-      const cleanupMsFromStopIngress = Math.max(1, roundMs(Math.min(1800, performance.now() - stopWatchT0 - 1000)));
+      const wirePath2 = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
+      const wireRecords2 = readWireRecords(wirePath2);
       const tasksAfter2 = await readSessionTaskStatus(sess.sessionId);
       const taskRow2 =
         tasksAfter2.find(
@@ -377,6 +397,44 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         ) ??
         tasksAfter2[0] ??
         null;
+
+      const bashCallRec2 = wireRecords2.find(
+        (r) => (r?.type === 'tool.call' || r?.type === 'tool_call') && (r?.payload?.name === 'Bash' || r?.name === 'Bash'),
+      );
+      const bashCallId2 = bashCallRec2?.payload?.id ?? bashCallRec2?.payload?.callId ?? bashCallRec2?.callId ?? null;
+      const bashResultRec2 = wireRecords2.find(
+        (r) =>
+          (r?.type === 'tool.result' || r?.type === 'tool_result') &&
+          (bashCallId2 ? (r?.payload?.toolCallId ?? r?.payload?.callId ?? r?.callId) === bashCallId2 : true),
+      );
+      const taskStopCallRec2 = wireRecords2.find(
+        (r) => (r?.type === 'tool.call' || r?.type === 'tool_call') && (r?.payload?.name === 'TaskStop' || r?.name === 'TaskStop'),
+      );
+
+      const bashResultText2 = JSON.stringify(bashResultRec2?.payload ?? bashResultRec2 ?? '');
+      const observedDetachReason = /foreground[_\s-]?detach|moved to background|detached to background|background task/iu.test(
+        bashResultText2,
+      )
+        ? 'foreground_detached'
+        : (taskRow2?.detachReason ?? null);
+      const bashStartEpoch2 =
+        (typeof taskRow2?.startedAt === 'number' ? taskRow2.startedAt : null) ??
+        (typeof bashCallRec2?.time === 'number' ? bashCallRec2.time : null);
+      const detachReceiptEpoch2 = typeof bashResultRec2?.time === 'number' ? bashResultRec2.time : null;
+      const detachReceiptDelayFromDeadlineMs =
+        bashStartEpoch2 !== null && detachReceiptEpoch2 !== null
+          ? roundMs(detachReceiptEpoch2 - (bashStartEpoch2 + detachTimeoutSec * 1000))
+          : null;
+      const stopIngressEpoch2 = typeof taskStopCallRec2?.time === 'number' ? taskStopCallRec2.time : null;
+      const triggerReceivedMs = stopIngressEpoch2 !== null ? roundMs(stopIngressEpoch2 - wallT0) : null;
+      const cleanupMsFromStopIngress =
+        dead && stopIngressEpoch2 !== null ? roundMs(Math.max(0, grandchildExitWallMs - stopIngressEpoch2)) : null;
+      const prematureCompletion2 = Boolean(
+        grandchildActiveAtTrigger &&
+          observedDetachReason === null &&
+          /exited|completed/iu.test(bashResultText2),
+      );
+
       const observedStopStatus =
         taskRow2?.status === 'killed' || taskRow2?.status === 'cancelled'
           ? 'killed'
@@ -385,13 +443,13 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         kind: 'foreground_detach_then_stop',
         earlyExitVariant: true,
         grandchildActiveAtTrigger,
-        prematureTaskCompletionWhileGrandchildAlive: false,
+        prematureTaskCompletionWhileGrandchildAlive: prematureCompletion2,
         timeline: { rootExitMs, triggerReceivedMs, grandchildExitMs },
-        detachReason: 'foreground_detached',
-        detachReceiptDelayFromDeadlineMs: 120,
+        detachReason: observedDetachReason,
+        detachReceiptDelayFromDeadlineMs,
         terminalStatusAfterStop: observedStopStatus,
         taskApiStatus: taskRow2?.status ?? null,
-        cleanupMsFromStopIngress: dead ? Math.min(1900, Math.max(5, cleanupMsFromStopIngress)) : 5000,
+        cleanupMsFromStopIngress,
         survivingDescendants: isPidAlive(grandchildPid) ? 1 : 0,
       });
     }
@@ -493,7 +551,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       const items = trRes.json?.data?.items ?? [];
       faultCells.push({
         kind: 'truncated_wire_tail_recovery',
-        passed: trRes.status === 200 && trRes.json?.code === 0 && items.length >= 1,
+        passed: trRes.status === 200 && trRes.json?.code === 0 && items.length > 0,
         status: trRes.status,
         code: trRes.json?.code,
         recoveredItems: items.length,

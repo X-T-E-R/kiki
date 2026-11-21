@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -13,13 +12,21 @@ import {
   labelTimeline,
 } from '../../apps/kiki-gui/scripts/timeline-integrity.mjs';
 import {
+  assertKapServerWebAssets,
+  createWebAssetsAuditRecorder,
+  evaluateWebAssetsBudget,
+} from '../ccp-chaos/web-assets-bridge.mjs';
+import {
   attachBrowserRuntimeGuards,
   runAppRoutesWalk,
   verifyAddMenuSecondaryScrollable,
   verifyColdContextMeter,
   verifyComposerFooterDrain,
+  verifyPersonaSubagentSingleRowNoErrorPileup,
   verifyRightRailMergedBranchesFolded,
   verifyScrollUpNoSnapBack,
+  verifyViewedSessionClearsUnreadDot,
+  verifyZeroFalseTopScrollErrorToast,
 } from './browser-invariants.mjs';
 import { EventLoopWindowMonitor, quantiles, roundMs } from './metrics.mjs';
 
@@ -29,19 +36,12 @@ const GUI_ROOT = path.join(REPO_ROOT, 'apps', 'kiki-gui');
 const kapRequire = createRequire(new URL('../../packages/kap-server/package.json', import.meta.url));
 const { chromium } = kapRequire('playwright');
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-  '.mp4': 'video/mp4',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-};
+export const FROZEN_MOBILE_PERF_BUDGETS = Object.freeze({
+  coldOpenFirstMessageMs: 2_500,
+  coldOpenMaxLongTaskMs: 1_000,
+  touchScrollMaxLongTaskMs: 250,
+  touchScrollFrameP95Ms: 40,
+});
 
 function computeGuiProductionBundleKey() {
   const hash = createHash('sha1');
@@ -106,32 +106,6 @@ export function ensureGuiStaticBuild(cacheBaseDir = path.join(REPO_ROOT, '.tmp',
   return { distDir, reusedCache: false, buildMs: roundMs(performance.now() - started) };
 }
 
-function startStaticGuiServer(distDir) {
-  const server = createServer((req, res) => {
-    const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-    if (urlPath === '/__kiki/local-server') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{}');
-      return;
-    }
-    let file = path.normalize(path.join(distDir, urlPath));
-    if (!file.startsWith(distDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      file = path.join(distDir, 'index.html');
-    }
-    const stream = fs.createReadStream(file);
-    stream.once('open', () => {
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream' });
-      stream.pipe(res);
-    });
-    stream.once('error', () => {
-      if (!res.headersSent) res.writeHead(404, { 'content-type': 'text/plain' });
-      res.end('not found');
-    });
-  });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve(server));
-  });
-}
 
 function installLongTaskProbe() {
   const state = {
@@ -191,16 +165,146 @@ function selectBrowserRepresentatives(samples, maxPerStratum = 1) {
   return picked;
 }
 
-export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum = 1 }) {
-  const buildInfo = ensureGuiStaticBuild();
-  const staticServer = await startStaticGuiServer(buildInfo.distDir);
-  const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
+async function runMobileThrottledLeg({ browser, endpoint, deepLink, sample }) {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    reducedMotion: 'no-preference',
+  });
+  let webAssetsRecorder = null;
+  try {
+    await context.addInitScript(() => {
+      try {
+        localStorage.setItem('kiki.locale', 'en');
+        localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+      } catch {}
+    });
+    await context.addInitScript(installLongTaskProbe);
+
+    const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, endpoint);
+    const pageErrors = [];
+    const consoleErrors = [];
+    page.on('pageerror', (err) => pageErrors.push(String(err?.message ?? err).slice(0, 300)));
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text().slice(0, 300));
+    });
+
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+    await cdp.send('Network.enable');
+    await cdp.send('Network.emulateNetworkConditions', {
+      offline: false,
+      latency: 40,
+      downloadThroughput: Math.floor((15 * 1024 * 1024) / 8),
+      uploadThroughput: Math.floor((5 * 1024 * 1024) / 8),
+    });
+
+    const openT0 = performance.now();
+    await page.goto(deepLink(`/s/${sample.sandboxId}`), { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await page.waitForFunction(
+      () => {
+        const items = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]');
+        for (const el of items) {
+          if ((el.textContent ?? '').trim().length > 0) return true;
+        }
+        return false;
+      },
+      null,
+      { timeout: 30_000 },
+    );
+    const firstMessageVisibleMs = roundMs(performance.now() - openT0);
+    const coldOpenLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
+
+    await page.evaluate(() => window.__kikiPerfProbe?.reset?.());
+    const frameDeltas = await page.evaluate(async () => {
+      const scroller = document.querySelector('[data-transcript-scroll]');
+      const deltas = [];
+      let prev = performance.now();
+      let active = true;
+      const rafLoop = (now) => {
+        deltas.push(now - prev);
+        prev = now;
+        if (active) requestAnimationFrame(rafLoop);
+      };
+      requestAnimationFrame(rafLoop);
+      if (scroller) {
+        for (let step = 0; step < 6; step += 1) {
+          scroller.scrollTop = Math.max(0, scroller.scrollTop - Math.floor(scroller.clientHeight * 0.7));
+          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 90));
+        }
+      }
+      await new Promise((r) => setTimeout(r, 150));
+      active = false;
+      return deltas.slice(1);
+    });
+    const touchScrollLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
+    const scrollFrames = quantiles(frameDeltas);
+
+    await webAssetsRecorder.settle();
+    const webAssetsAudit = webAssetsRecorder.snapshot();
+    webAssetsRecorder.detach();
+    webAssetsRecorder = null;
+    const webAssetsGate = evaluateWebAssetsBudget(webAssetsAudit);
+
+    const B = FROZEN_MOBILE_PERF_BUDGETS;
+    const failures = [];
+    if (!webAssetsGate.passed) failures.push(...webAssetsGate.failures.map((f) => `webAssets: ${f}`));
+    if (pageErrors.length > 0) failures.push(`mobile pageErrors=${pageErrors.length}`);
+    if (consoleErrors.length > 0) failures.push(`mobile consoleErrors=${consoleErrors.length}`);
+    if (firstMessageVisibleMs >= B.coldOpenFirstMessageMs) {
+      failures.push(`mobile firstMessageVisibleMs=${firstMessageVisibleMs} >= ${B.coldOpenFirstMessageMs}`);
+    }
+    if ((coldOpenLongTasks?.maxLongTaskMs ?? Infinity) >= B.coldOpenMaxLongTaskMs) {
+      failures.push(`mobile coldOpen maxLongTaskMs=${coldOpenLongTasks?.maxLongTaskMs} >= ${B.coldOpenMaxLongTaskMs}`);
+    }
+    if ((touchScrollLongTasks?.maxLongTaskMs ?? Infinity) >= B.touchScrollMaxLongTaskMs) {
+      failures.push(`mobile touchScroll maxLongTaskMs=${touchScrollLongTasks?.maxLongTaskMs} >= ${B.touchScrollMaxLongTaskMs}`);
+    }
+    if (scrollFrames.count > 0 && scrollFrames.p95 >= B.touchScrollFrameP95Ms) {
+      failures.push(`mobile touchScroll frameP95Ms=${scrollFrames.p95} >= ${B.touchScrollFrameP95Ms}`);
+    }
+
+    return {
+      sampleLabel: sample.label,
+      stratum: sample.stratum,
+      emulation: {
+        viewport: { width: 390, height: 844, dpr: 3, isMobile: true, hasTouch: true },
+        cpuThrottlingRate: 4,
+        network: { latencyMs: 40, downloadMbps: 15, uploadMbps: 5 },
+        reducedMotion: 'no-preference',
+      },
+      firstMessageVisibleMs,
+      coldOpenLongTasks,
+      touchScrollLongTasks,
+      touchScrollFramesMs: scrollFrames,
+      pageErrors,
+      consoleErrors,
+      webAssetsAudit,
+      webAssetsGate,
+      passed: failures.length === 0,
+      failures,
+    };
+  } finally {
+    webAssetsRecorder?.detach();
+    await context.close().catch(() => undefined);
+  }
+}
+
+export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum = 1, buildInfo = null }) {
+  const webInfo = await assertKapServerWebAssets(endpoint);
+  const webUrl = webInfo.webUrl;
   const browser = await chromium.launch({ headless: true, args: ['--no-proxy-server'] });
   const eld = new EventLoopWindowMonitor(20);
   const targets = selectBrowserRepresentatives(samples, maxPerStratum);
   const results = [];
   let routesWalk = null;
   let routesWalkGuards = null;
+  let mobileLeg = null;
+  let desktopWebAssetsAudit = null;
 
   const deepLink = (routePath) => {
     const sep = routePath.includes('?') ? '&' : '?';
@@ -213,6 +317,7 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         viewport: { width: 1440, height: 900 },
         reducedMotion: 'reduce',
       });
+      let sampleAssetsRecorder = null;
       try {
         await context.addInitScript(() => {
           try {
@@ -225,6 +330,7 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         await context.addInitScript(installLongTaskProbe);
 
         const page = await context.newPage();
+        sampleAssetsRecorder = desktopWebAssetsAudit === null ? createWebAssetsAuditRecorder(page, endpoint) : null;
         await installTimelineMonitor(page);
         const guards = attachBrowserRuntimeGuards(page, { endpoint, rpcSlowBudgetMs: 1_500 });
 
@@ -267,6 +373,9 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         const contextMeter = await verifyColdContextMeter(page);
         const addMenuScroll = await verifyAddMenuSecondaryScrollable(page);
         const mergedBranchesFolded = await verifyRightRailMergedBranchesFolded(page);
+        const viewedSessionUnread = await verifyViewedSessionClearsUnreadDot(page, sample.sandboxId);
+        const personaSingleRow = await verifyPersonaSubagentSingleRowNoErrorPileup(page);
+        const zeroFalseTopToast = await verifyZeroFalseTopScrollErrorToast(page);
         const scrollUpNoSnapBack = await verifyScrollUpNoSnapBack(page);
         await guards.assertNoErrorBoundary('context-meter');
 
@@ -396,6 +505,9 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
             contextMeter,
             addMenuScroll,
             mergedBranchesFolded,
+            viewedSessionUnread,
+            personaSingleRow,
+            zeroFalseTopToast,
             scrollUpNoSnapBack,
             footerDrain,
             coldVisibility,
@@ -408,8 +520,20 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
           },
         });
       } finally {
+        if (sampleAssetsRecorder) {
+          await sampleAssetsRecorder.settle();
+          desktopWebAssetsAudit = sampleAssetsRecorder.snapshot();
+          sampleAssetsRecorder.detach();
+        }
         await context.close().catch(() => undefined);
       }
+    }
+
+    // Mobile throttled leg (F7: 390x844 isMobile+hasTouch, 4x CPU, 40ms RTT, reducedMotion: no-preference)
+    const heaviestMobileTarget =
+      [...targets].toSorted((a, b) => (b.mainWireBytes ?? 0) - (a.mainWireBytes ?? 0))[0] ?? targets[0] ?? null;
+    if (heaviestMobileTarget) {
+      mobileLeg = await runMobileThrottledLeg({ browser, endpoint, deepLink, sample: heaviestMobileTarget });
     }
 
     // Once-per-run multi-route walk across Settings / Usage / Capabilities
@@ -463,6 +587,15 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
     const scrollUpSnapBackFailures = results.filter(
       (r) => r.invariants?.scrollUpNoSnapBack?.applicable && !r.invariants.scrollUpNoSnapBack.ok,
     ).length;
+    const viewedSessionUnreadFailures = results.filter(
+      (r) => r.invariants?.viewedSessionUnread?.applicable && !r.invariants.viewedSessionUnread.ok,
+    ).length;
+    const personaSingleRowFailures = results.filter(
+      (r) => r.invariants?.personaSingleRow?.applicable && !r.invariants.personaSingleRow.ok,
+    ).length;
+    const falseTopToastFailures = results.filter(
+      (r) => r.invariants?.zeroFalseTopToast?.applicable && !r.invariants.zeroFalseTopToast.ok,
+    ).length;
     const capabilitiesToggleFailures = capabilitiesToggle?.applicable && !capabilitiesToggle.ok ? 1 : 0;
     const footerDrainFailures = results.filter((r) => r.invariants?.footerDrain && !r.invariants.footerDrain.ok).length;
     const hiddenUserTurns = results.reduce((acc, r) => acc + (r.invariants?.hiddenUserTurnCount ?? 0), 0);
@@ -474,8 +607,16 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
       return acc + failed;
     }, 0);
 
+    const desktopWebAssetsGate = evaluateWebAssetsBudget(desktopWebAssetsAudit);
     return {
-      guiBuild: { reusedCache: buildInfo.reusedCache, buildMs: buildInfo.buildMs },
+      guiBuild: {
+        servedByKapServer: true,
+        reusedCache: buildInfo?.reusedCache ?? null,
+        buildMs: buildInfo?.buildMs ?? 0,
+      },
+      webAssetsAudit: desktopWebAssetsAudit,
+      webAssetsGate: desktopWebAssetsGate,
+      mobileLeg,
       sampleResults: results,
       routesWalk: {
         visited: routesWalk,
@@ -500,17 +641,22 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         addMenuScrollFailures,
         mergedBranchesFoldedFailures,
         scrollUpSnapBackFailures,
+        viewedSessionUnreadFailures,
+        personaSingleRowFailures,
+        falseTopToastFailures,
         capabilitiesToggleFailures,
         footerDrainFailures,
         hiddenUserTurns,
         transcriptMountFailures,
+        webAssetsGatePassed: desktopWebAssetsGate.passed,
+        mobileLegPassed: mobileLeg ? mobileLeg.passed : true,
+        mobileFirstMessageVisibleMs: mobileLeg?.firstMessageVisibleMs ?? null,
+        mobileColdOpenMaxLongTaskMs: mobileLeg?.coldOpenLongTasks?.maxLongTaskMs ?? null,
+        mobileTouchScrollFrameP95Ms: mobileLeg?.touchScrollFramesMs?.p95 ?? null,
       },
     };
   } finally {
     eld.dispose();
     await browser.close().catch(() => undefined);
-    await new Promise((resolve) => {
-      staticServer.close(() => resolve());
-    });
   }
 }

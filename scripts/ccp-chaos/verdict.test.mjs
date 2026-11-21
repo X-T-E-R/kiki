@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import {
   buildDecodableMp4,
@@ -32,6 +31,7 @@ import {
   evaluateP04BlindMutationControl,
   evaluateP1TimeoutVsDetachCell,
   evaluateS10Verdict,
+  evaluateS16MobileVerdict,
   EXIT_HARNESS_FAIL,
   EXIT_PASS,
   EXIT_PRODUCT_FAIL,
@@ -39,12 +39,12 @@ import {
   verifySavedBundle,
   verifySixStageChildChain,
 } from './verify/verdict.mjs';
+import { evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AST_BUILD_SCRIPT = path.resolve(__dirname, 'workloads', 'ast-build.mjs');
+const AST_BUILD_SCRIPT = path.resolve(import.meta.dirname, 'workloads', 'ast-build.mjs');
 
-describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
-  it('meta-gate #1: dropping child tool calls fails S10 verdict with EXIT_HARNESS_FAIL', () => {
+void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
+  void it('meta-gate #1: dropping child tool calls fails S10 verdict with EXIT_HARNESS_FAIL', () => {
     const res = evaluateS10Verdict(
       {
         peakActiveChildren: 4,
@@ -61,7 +61,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.match(res.harnessFailures.join(' '), /child tool calls/i);
   });
 
-  it('meta-gate #2: removing browser flight recorder when required fails S10 verdict', () => {
+  void it('meta-gate #2: removing browser flight recorder when required fails S10 verdict', () => {
     const res = evaluateS10Verdict(
       {
         peakActiveChildren: 4,
@@ -80,7 +80,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.match(res.harnessFailures.join(' '), /flight recorder/i);
   });
 
-  it('meta-gate #3 (CRIT #1): remote runner exit 1 with a stale green JSON fails non-zero', () => {
+  void it('meta-gate #3 (CRIT #1): remote runner exit 1 with a stale green JSON fails non-zero', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-verdict-stale-'));
     try {
       fs.writeFileSync(
@@ -126,7 +126,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     }
   });
 
-  it('S10 product failure gate catches 16s prompt_admission & transcript root remounts', () => {
+  void it('S10 product failure gate catches 16s prompt_admission & transcript root remounts', () => {
     const res = evaluateS10Verdict({
       tier: 'smoke',
       peakActiveChildren: 8,
@@ -170,7 +170,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.ok(res.productFailures.some((f) => f.includes('ELD')));
   });
 
-  it('§10.1 P0-1 cold child gate enforces both legacy (>2GB/s raw pass, <=2MiB parse) and reopen (<=2MiB raw+parse) lanes', () => {
+  void it('§10.1 P0-1 cold child gate enforces both legacy (>2GB/s raw pass, <=2MiB parse) and reopen (<=2MiB raw+parse) lanes', () => {
     const completeResponses = (hooksCode = 40901) => [
       { path: '/api/sessions/s/transcript?agent_id=c&transcript_coverage_version=2', status: 200, code: 0 },
       { path: '/api/agents/capabilities?session_id=s&agent_id=c&metrics_settle=true', status: 200, code: 0 },
@@ -326,7 +326,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(failReopenFixtureCheat.exitCode, EXIT_PRODUCT_FAIL);
   });
 
-  it('§10.2 P0-2 main-only WS gate rejects unsubscribed child byte leaks AND rolling-5s underproduction', () => {
+  void it('§10.2 P0-2 main-only WS gate rejects unsubscribed child byte leaks AND rolling-5s underproduction', () => {
     const leak = evaluateP02MainOnlyWsGate({
       requiredStreamingChildren: 12,
       activeStreamingChildren: 12,
@@ -411,7 +411,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(underproduced.exitCode, EXIT_HARNESS_FAIL);
   });
 
-  it('§10.3 mesh state machine yields on Incomplete, forwards on Ready, and verifies structured wire origin & Cron recovery', () => {
+  void it('§10.3 mesh state machine yields on Incomplete, forwards on Ready, and verifies structured wire origin & Cron recovery', () => {
     const node = new MeshNodeStateMachine({
       runId: 'r1',
       epoch: 1,
@@ -512,7 +512,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     }
   });
 
-  it('§10.4 blind 4-trial HMAC-SHA256 mutation control passes authentic controls and rejects tampered returns', () => {
+  void it('§10.4 blind 4-trial HMAC-SHA256 mutation control passes authentic controls and rejects tampered returns', () => {
     const key = 'isolated-test-hmac-key-v23';
     const makeRec = (run, resultValue, artifactDigest) => ({
       version: 'v2.3',
@@ -561,7 +561,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(res.passed, true);
   });
 
-  it('§10.5 distinguishes terminating timeout from foreground_detached -> TaskStop and rejects premature completion', () => {
+  void it('§10.5 distinguishes terminating timeout from foreground_detached -> TaskStop and rejects premature completion', () => {
     const okTimeout = evaluateP1TimeoutVsDetachCell({
       kind: 'terminating_timeout',
       earlyExitVariant: true,
@@ -630,7 +630,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(unconfirmedFailure.observedStatus, 'failed');
   });
 
-  it('6-stage child chain verifier catches corrupted spill tail or altered constant', () => {
+  void it('6-stage child chain verifier catches corrupted spill tail or altered constant', () => {
     const runId = 'r_chain';
     const childId = 'c0';
     const finalDigest = domainDigest('child-final/v2', [runId, childId, '12345', 'sha_edit', 'sha_footer', 'sha_spill', 'mem1', 'hist1']);
@@ -667,7 +667,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(failSpill.firstBrokenStage, 'recover');
   });
 
-  it('HIGH #2 media fixtures generate genuine ftyp+moov+trak+mdat MP4, valid Ogg/Opus, realistic PNG, and real CPU ast-build.mjs', () => {
+  void it('HIGH #2 media fixtures generate genuine ftyp+moov+trak+mdat MP4, valid Ogg/Opus, realistic PNG, and real CPU ast-build.mjs', () => {
     const mp4 = buildDecodableMp4({ durationSec: 2, minBytes: 32 * 1024 });
     const info = inspectMp4Structure(mp4);
     assert.equal(info.hasFtyp, true);
@@ -711,7 +711,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     }
   });
 
-  it('idle CPU gate requires rAF disabled and enforces <=2% server / <=3% renderer / 0 descendants', () => {
+  void it('idle CPU gate requires rAF disabled and enforces <=2% server / <=3% renderer / 0 descendants', () => {
     const pass = evaluateIdleCpuGate({
       tier: 'smoke',
       windowSec: 10,
@@ -751,7 +751,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(isKnownInternalKikiHelper('node /tmp/untrusted/indexerDev.ts'), false);
   });
 
-  it('closes all 6 fail-open counterexamples in verdict.mjs', () => {
+  void it('closes all 6 fail-open counterexamples in verdict.mjs', () => {
     // Counterexample #1: P0-1 HTTP 302, missing code, slow wsFirstResetMs (>300ms), or driver-simulated scan must FAIL
     const p01Base = {
       lane: 'legacy',
@@ -888,7 +888,7 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.ok(r6.harnessFailures.some((f) => f.includes('chaos report buildId')));
   });
 
-  it('Round-2 affirmative evidence & bundle stage/tier binding negative gates', () => {
+  void it('Round-2 affirmative evidence & bundle stage/tier binding negative gates', () => {
     // 1. hygiene-only receipt rejected by verifySavedBundle with EXIT_HARNESS_FAIL
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-verdict-hygiene-only-'));
     try {
@@ -1009,5 +1009,148 @@ describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(rP01Hooks.passed, false);
     assert.equal(rP01Hooks.exitCode, EXIT_PRODUCT_FAIL);
     assert.ok(rP01Hooks.productFailures.some((f) => f.includes('/hooks')));
+  });
+
+  void it('F2/F3/F4/S16 zero-compromise gates: webAssets compression, honest wireReadyMs + browserGuiCheck, and S16 mobile thresholds', () => {
+    // F2: 0%-compressed 6.57 MiB JS fails evaluateWebAssetsBudget; compressed passes
+    const badAssets = evaluateWebAssetsBudget({
+      servedByKapServer: true,
+      jsAssetsCount: 17,
+      jsTotalTransferBytes: 6_890_000,
+      jsCompressedCount: 0,
+      jsUncompressedCount: 17,
+      allJsCompressed: false,
+      contentEncodings: ['identity'],
+      failedAssets: [],
+      jsWrongContentType: [],
+    });
+    assert.equal(badAssets.passed, false);
+    assert.ok(badAssets.failures.some((f) => /uncompressed/i.test(f)));
+
+    const goodAssets = evaluateWebAssetsBudget({
+      servedByKapServer: true,
+      jsAssetsCount: 8,
+      jsTotalTransferBytes: 900_000,
+      jsCompressedCount: 8,
+      jsUncompressedCount: 0,
+      allJsCompressed: true,
+      contentEncodings: ['br'],
+      failedAssets: [],
+      jsWrongContentType: [],
+    });
+    assert.equal(goodAssets.passed, true);
+
+    // F3 & F4: P01 rejects failed browserGuiCheck (never ignored!)
+    const p01FailBrowser = evaluateP01ColdChildGate({
+      wasColdBeforeOpen: true,
+      checkpoints: [],
+      httpTranscriptMs: 90,
+      wsFirstResetMs: 110,
+      wireReadyMs: 120,
+      controlBarSettleMs: 180,
+      responses: [
+        { path: '/api/sessions/s/transcript?agent_id=c', status: 200, code: 0 },
+        { path: '/api/agents/capabilities?session_id=s&agent_id=c&metrics_settle=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/model-switches', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/hooks?observe=true', status: 200, code: 40901 },
+        { path: '/api/sessions/s/agents/c/auto-compact?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/context-strategy?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/status', status: 200, code: 0 },
+        { path: '/api/sessions/s/transcript/plan?agent_id=c', status: 200, code: 0 },
+      ],
+      rawPassCount: 1,
+      wireBytes: 20 * 1024 * 1024,
+      aggregateWireReadBytes: 20 * 1024 * 1024,
+      legacyScanBytesPerSec: 3_000_000_000,
+      aggregateParseInputBytes: 256 * 1024,
+      ioTraceSource: 'server_product_trace',
+      fullReplayMatches: true,
+      browserGuiCheck: {
+        ok: false,
+        firstMessagePaintMs: 4200,
+        pageErrors: ['ReferenceError: x'],
+        mobileCheck: { ok: false, firstMessagePaintMs: 5500, error: 'mobile slow paint' },
+      },
+    });
+    assert.equal(p01FailBrowser.passed, false);
+    assert.equal(p01FailBrowser.exitCode, EXIT_PRODUCT_FAIL);
+    assert.ok(p01FailBrowser.productFailures.some((f) => /browser GUI/i.test(f)));
+    assert.ok(p01FailBrowser.productFailures.some((f) => /mobile Chromium/i.test(f)));
+
+    const mobileEmulation = {
+      viewport: { width: 393, height: 852, dpr: 3 },
+      cpuThrottlingRate: 4,
+      network: { latencyMs: 40, downloadMbps: 15, uploadMbps: 5 },
+      reducedMotion: 'no-preference',
+    };
+
+    // S16: reproduces real dorm-3090 baseline failure (0%-compressed 6.57 MiB JS, 7266ms boot, 1805ms TTFM, 66.7ms scroll P95)
+    const s16Lag = evaluateS16MobileVerdict({
+      emulation: mobileEmulation,
+      coldBoot: { coldBootToShellMs: 7266, totalBlockingTimeMs: 2980, maxLongTaskMs: 1844 },
+      webAssetsAudit: {
+        servedByKapServer: true,
+        jsChunkCount: 17,
+        compressedJsChunkCount: 0,
+        uncompressedJsChunkCount: 17,
+        jsTotalEncodedMiB: 6.57,
+      },
+      heavyOpen: {
+        firstMessagePaintMs: 1805,
+        totalBlockingTimeMs: 950,
+        maxLongTaskMs: 490,
+        httpRpcRequestCount: 17,
+        httpRpcTransferBytes: 162_700,
+        errorToastsOnOpen: 0,
+      },
+      touchScroll: { frameP95Ms: 66.7, maxLongTaskMs: 101 },
+      rapidSwitch: { count: 5, latencyMs: { p95: 420 }, stickyUnreadCount: 0 },
+      pageErrors: [],
+      consoleErrorCount: 0,
+    });
+    assert.equal(s16Lag.passed, false);
+    assert.equal(s16Lag.exitCode, EXIT_PRODUCT_FAIL);
+    assert.ok(s16Lag.productFailures.length >= 4);
+
+    // S16: clean optimized mobile session passes
+    const s16Fast = evaluateS16MobileVerdict({
+      emulation: mobileEmulation,
+      coldBoot: { coldBootToShellMs: 1400, totalBlockingTimeMs: 180, maxLongTaskMs: 160 },
+      webAssetsAudit: {
+        servedByKapServer: true,
+        jsChunkCount: 6,
+        compressedJsChunkCount: 6,
+        uncompressedJsChunkCount: 0,
+        jsTotalEncodedMiB: 0.42,
+      },
+      heavyOpen: {
+        firstMessagePaintMs: 520,
+        totalBlockingTimeMs: 120,
+        maxLongTaskMs: 110,
+        httpRpcRequestCount: 6,
+        httpRpcTransferBytes: 48_000,
+        errorToastsOnOpen: 0,
+      },
+      touchScroll: { frameP95Ms: 22, maxLongTaskMs: 40 },
+      rapidSwitch: { count: 5, latencyMs: { p95: 380 }, stickyUnreadCount: 0 },
+      pageErrors: [],
+      consoleErrorCount: 0,
+    });
+    assert.equal(s16Fast.passed, true);
+    assert.equal(s16Fast.exitCode, EXIT_PASS);
+
+    // S16 meta-gate: unthrottled CPU fails with EXIT_HARNESS_FAIL
+    const s16Cheated = evaluateS16MobileVerdict({
+      emulation: { ...mobileEmulation, cpuThrottlingRate: 1 },
+      coldBoot: { coldBootToShellMs: 500, totalBlockingTimeMs: 10, maxLongTaskMs: 20 },
+      webAssetsAudit: { servedByKapServer: true, jsChunkCount: 6, compressedJsChunkCount: 6, jsTotalEncodedMiB: 0.42 },
+      heavyOpen: { firstMessagePaintMs: 200, totalBlockingTimeMs: 10, maxLongTaskMs: 20, httpRpcRequestCount: 5, errorToastsOnOpen: 0 },
+      touchScroll: { frameP95Ms: 16.7, maxLongTaskMs: 20 },
+      rapidSwitch: { count: 5, latencyMs: { p95: 150 }, stickyUnreadCount: 0 },
+      pageErrors: [],
+      consoleErrorCount: 0,
+    });
+    assert.equal(s16Cheated.passed, false);
+    assert.equal(s16Cheated.exitCode, EXIT_HARNESS_FAIL);
   });
 });

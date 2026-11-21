@@ -1,7 +1,6 @@
 import { execFileSync, fork, spawnSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { createServer as createHttpServer } from 'node:http';
 import { Session as InspectorSession } from 'node:inspector/promises';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
@@ -31,7 +30,10 @@ import { runScenarioS11Mesh256 } from './scenarios/s11-mesh-256-1024.mjs';
 import { runScenarioS12BlindHmacTrials } from './scenarios/s12-blind-hmac-trials.mjs';
 import { runScenarioS13ChaosFaults } from './scenarios/s13-chaos-faults.mjs';
 import { runScenarioS14IdleCpu } from './scenarios/s14-idle-cpu.mjs';
+import { runScenarioS16MobileHeavySession } from './scenarios/s16-mobile-heavy-session.mjs';
 import { listDescendantPids } from './telemetry/process-tree.mjs';
+import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
+import { ensureGuiStaticBuild } from '../perf/browser-runner.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -57,7 +59,7 @@ function quantile(sorted, p) {
 }
 
 function summarize(samples) {
-  if (!samples.length) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
+  if (samples.length === 0) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
   const sorted = [...samples].toSorted((a, b) => a - b);
   const sum = sorted.reduce((acc, v) => acc + v, 0);
   return {
@@ -237,7 +239,7 @@ if (isServerWorker) {
             state.fullPassBytes = Math.max(state.fullPassBytes, handleBytes);
           }
           return res;
-        } catch (err) {
+        } catch (error) {
           const now = performance.now();
           inFlightReads -= 1;
           if (inFlightReads === 0) {
@@ -245,7 +247,7 @@ if (isServerWorker) {
             handleReadMs += windowDt;
             state.wireScanMs += windowDt;
           }
-          throw err;
+          throw error;
         }
       };
     }
@@ -356,6 +358,7 @@ if (isServerWorker) {
     userAgentProfileHomeDir: path.join(osHomeDir, 'agents'),
     logLevel: 'silent',
     runtimeManaged: false,
+    ...(process.env.KIKI_CHAOS_WEB_ASSETS_DIR ? { webAssetsDir: process.env.KIKI_CHAOS_WEB_ASSETS_DIR } : {}),
   });
   const bootMs = roundMs(performance.now() - bootT0);
 
@@ -396,8 +399,9 @@ if (isServerWorker) {
     };
   };
 
-  process.on('message', async (msg) => {
-    if (!msg || typeof msg !== 'object') return;
+  process.on('message', (msg) => {
+    void (async () => {
+      if (!msg || typeof msg !== 'object') return;
     if (msg.cmd === 'metrics') {
       process.send?.({ id: msg.id, metrics: snapshotMetrics(Boolean(msg.includeSpaces)) });
     } else if (msg.cmd === 'resetWindow') {
@@ -414,8 +418,8 @@ if (isServerWorker) {
           heapSamplingActive = true;
         }
         process.send?.({ id: msg.id, ok: true });
-      } catch (err) {
-        process.send?.({ id: msg.id, ok: false, error: String(err) });
+      } catch (error) {
+        process.send?.({ id: msg.id, ok: false, error: String(error) });
       }
     } else if (msg.cmd === 'sampleHeapNow') {
       try {
@@ -425,8 +429,8 @@ if (isServerWorker) {
           topRetainers = summarizeHeapProfile(profile, 20);
         }
         process.send?.({ id: msg.id, metrics: snapshotMetrics(true), topRetainers });
-      } catch (err) {
-        process.send?.({ id: msg.id, metrics: snapshotMetrics(true), topRetainers: [], error: String(err) });
+      } catch (error) {
+        process.send?.({ id: msg.id, metrics: snapshotMetrics(true), topRetainers: [], error: String(error) });
       }
     } else if (msg.cmd === 'stopHeapSampling') {
       try {
@@ -437,8 +441,8 @@ if (isServerWorker) {
           topRetainers = summarizeHeapProfile(profile, 25);
         }
         process.send?.({ id: msg.id, metrics: snapshotMetrics(true), topRetainers });
-      } catch (err) {
-        process.send?.({ id: msg.id, metrics: snapshotMetrics(true), topRetainers: [], error: String(err) });
+      } catch (error) {
+        process.send?.({ id: msg.id, metrics: snapshotMetrics(true), topRetainers: [], error: String(error) });
       }
     } else if (msg.cmd === 'gc') {
       if (typeof globalThis.gc === 'function') {
@@ -479,10 +483,11 @@ if (isServerWorker) {
       try {
         inspector.disconnect();
       } catch {}
-      await server.close().catch(() => undefined);
-      process.send?.({ id: msg.id, metrics: snapshotMetrics(false) });
-      process.exit(0);
-    }
+        await server.close().catch(() => undefined);
+        process.send?.({ id: msg.id, metrics: snapshotMetrics(false) });
+        process.exit(0);
+      }
+    })();
   });
 
   process.send?.({
@@ -511,7 +516,7 @@ if (isServerWorker) {
   process.exit(child.status ?? 1);
 }
 
-async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, extraEnv = {} }) {
+async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, webAssetsDir, extraEnv = {} }) {
   fs.mkdirSync(osHomeDir, { recursive: true });
   const req = createRequire(path.join(REPO_ROOT, 'package.json'));
   const tsxUrl = pathToFileURL(req.resolve('tsx/esm')).href;
@@ -528,6 +533,7 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
         KIKI_CHAOS_TSX_READY: '1',
         KIKI_CRON_NO_JITTER: '1',
         KIKI_CRON_NO_STALE: '1',
+        ...(webAssetsDir ? { KIKI_CHAOS_WEB_ASSETS_DIR: webAssetsDir } : {}),
         ...extraEnv,
       },
     }),
@@ -600,9 +606,9 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
             reject(err);
           }
         });
-      } catch (err) {
+      } catch (error) {
         cleanup();
-        reject(err);
+        reject(error);
       }
     });
 
@@ -641,7 +647,7 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, ex
     sigkill: async () => {
       const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
       const descendants = listDescendantPids(child.pid);
-      for (const pid of [...descendants].reverse()) {
+      for (const pid of [...descendants].toReversed()) {
         try {
           process.kill(pid, 'SIGKILL');
         } catch {}
@@ -673,13 +679,13 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 45_00
       json = JSON.parse(text);
     } catch {}
     return { status: res.status, elapsedMs: roundMs(performance.now() - t0), json, rawText: text.slice(0, 400) };
-  } catch (err) {
+  } catch (error) {
     return {
       status: 0,
       elapsedMs: roundMs(performance.now() - t0),
       json: null,
-      rawText: String(err?.message ?? err).slice(0, 200),
-      networkError: err?.name === 'AbortError' ? 'timeout' : String(err?.code ?? err?.message ?? 'fetch_error'),
+      rawText: String(error?.message ?? error).slice(0, 200),
+      networkError: error?.name === 'AbortError' ? 'timeout' : String(error?.code ?? error?.message ?? 'fetch_error'),
     };
   } finally {
     clearTimeout(timer);
@@ -1219,10 +1225,12 @@ async function runScenarioS2bExtreme1000({ server, twin, workspaceDir, extremeCo
   const profileCounts = Object.fromEntries(profiles.map((p) => [p, 0]));
 
   try {
-    const midTimer = setTimeout(async () => {
-      try {
-        midSnapshot = await server.sampleHeapNow();
-      } catch {}
+    const midTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          midSnapshot = await server.sampleHeapNow();
+        } catch {}
+      })();
     }, 3500);
 
     const turnPromises = sessionIds.map(async (sid, idx) => {
@@ -1256,9 +1264,9 @@ async function runScenarioS2bExtreme1000({ server, twin, workspaceDir, extremeCo
     try {
       postMetrics = await server.metrics(true);
       if (postMetrics.rssMiB > peakRssMiB) peakRssMiB = postMetrics.rssMiB;
-    } catch (err) {
+    } catch (error) {
       rpcMetricsTimedOut = true;
-      progress(`S2b breaking-point signal: post-storm server.metrics() timed out (${String(err?.message ?? err)})`);
+      progress(`S2b breaking-point signal: post-storm server.metrics() timed out (${String(error?.message ?? error)})`);
     }
 
     if (server.child.connected) {
@@ -1274,8 +1282,8 @@ async function runScenarioS2bExtreme1000({ server, twin, workspaceDir, extremeCo
       try {
         gcRes = await server.gc();
         heapStop = await server.stopHeapSampling();
-      } catch (err) {
-        progress(`S2b post-drain gc/heapStop note: ${String(err?.message ?? err)}`);
+      } catch (error) {
+        progress(`S2b post-drain gc/heapStop note: ${String(error?.message ?? error)}`);
       }
     }
     const finalProc = readLinuxProcMetrics(server.pid);
@@ -1371,8 +1379,8 @@ async function runScenarioS3({ workRoot, twin, createKlient, WebSocket, progress
           fs.writeSync(fd, chunk);
           filledMb += 1;
         }
-      } catch (err) {
-        if (err?.code === 'ENOSPC') enospcResult.realKernelEnospc = true;
+      } catch (error) {
+        if (error?.code === 'ENOSPC') enospcResult.realKernelEnospc = true;
       } finally {
         fs.closeSync(fd);
       }
@@ -1409,8 +1417,8 @@ async function runScenarioS3({ workRoot, twin, createKlient, WebSocket, progress
       enospcResult.dataUriPreserved = offloaded?.[0]?.image_url?.url === dataUri;
       enospcResult.agentBlobGracefulFallback = enospcResult.dataUriPreserved;
     }
-  } catch (err) {
-    enospcResult.error = String(err?.stack ?? err).slice(0, 400);
+  } catch (error) {
+    enospcResult.error = String(error?.stack ?? error).slice(0, 400);
   } finally {
     if (mountedTmpfs) {
       try {
@@ -1509,8 +1517,8 @@ async function runScenarioS3({ workRoot, twin, createKlient, WebSocket, progress
       timeoutMs: 30_000,
     });
     sigkillResult.postRestartTurnSucceeded = postTurn.ok && postTurn.lastTurnReason === 'completed';
-  } catch (err) {
-    sigkillResult.error = String(err?.stack ?? err).slice(0, 600);
+  } catch (error) {
+    sigkillResult.error = String(error?.stack ?? error).slice(0, 600);
   } finally {
     if (s1) await s1.shutdown().catch(() => undefined);
     if (s2) await s2.shutdown().catch(() => undefined);
@@ -1665,8 +1673,8 @@ async function runScenarioS4({ workRoot, twin, createKlient, progress }) {
       result.tlsPinnedFingerprintMatched &&
       result.invitedHandshakeProofVerified &&
       result.approvedHandshakeProofVerified;
-  } catch (err) {
-    result.error = String(err?.stack ?? err).slice(0, 600);
+  } catch (error) {
+    result.error = String(error?.stack ?? error).slice(0, 600);
   } finally {
     await mainClient?.close().catch(() => undefined);
     await childClient?.close().catch(() => undefined);
@@ -1676,29 +1684,21 @@ async function runScenarioS4({ workRoot, twin, createKlient, progress }) {
   return result;
 }
 
-const GUI_MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-};
-
 async function runScenarioS5BrowserUx({ server, corpus, progress }) {
   progress('S5: Frontend Perceived-UX & CDP Renderer Memory Gate under live concurrent backend load...');
   const kapRequire = createRequire(path.join(REPO_ROOT, 'packages', 'kap-server', 'package.json'));
   const { chromium } = kapRequire('playwright');
-  const { ensureGuiStaticBuild } = await import('../perf/browser-runner.mjs');
 
   const result = {
     passed: false,
-    guiBuildMs: 0,
+    servedByKapServer: false,
+    webAssetsAudit: null,
+    webAssetsGate: null,
     coldOpenFirstTurnMs: null,
+    coldOpenLongTasks: null,
     stuckPreparingDetected: false,
     pageErrors: [],
+    consoleErrors: [],
     scrollLongTasks: null,
     subagentSwitchMs: null,
     subagentSwitchLongTasks: null,
@@ -1706,40 +1706,18 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
     composerTypingLatencyMs: null,
     cdpMemory: {},
     backgroundTurnsCompletedDuringBrowser: 0,
+    failures: [],
     error: null,
   };
 
-  let staticServer = null;
   let browser = null;
+  let webAssetsRecorder = null;
   let stopBackgroundLoad = false;
 
   try {
-    const build = ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'));
-    result.guiBuildMs = build.buildMs;
-
-    staticServer = createHttpServer((req, res) => {
-      const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-      if (urlPath === '/__kiki/local-server') {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end('{}');
-        return;
-      }
-      let file = path.normalize(path.join(build.distDir, urlPath));
-      if (!file.startsWith(build.distDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-        file = path.join(build.distDir, 'index.html');
-      }
-      const stream = fs.createReadStream(file);
-      stream.once('open', () => {
-        res.writeHead(200, { 'content-type': GUI_MIME[path.extname(file)] ?? 'application/octet-stream' });
-        stream.pipe(res);
-      });
-      stream.once('error', () => {
-        if (!res.headersSent) res.writeHead(404);
-        res.end('not found');
-      });
-    });
-    await new Promise((resolve) => staticServer.listen(0, '127.0.0.1', resolve));
-    const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
+    const webInfo = await assertKapServerWebAssets(server.endpoint);
+    result.servedByKapServer = webInfo.servedByKapServer;
+    const webUrl = webInfo.webUrl;
     const deepLink = (routePath) =>
       `${webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
 
@@ -1790,9 +1768,9 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
           const durations = state.longTasks.map((t) => t.duration);
           const out = {
             longTaskCount: durations.length,
-            maxLongTaskMs: durations.length ? Number(Math.max(...durations).toFixed(2)) : 0,
+            maxLongTaskMs: durations.length > 0 ? Number(Math.max(...durations).toFixed(2)) : 0,
             totalBlockingTimeMs: Number(durations.reduce((a, d) => a + Math.max(0, d - 50), 0).toFixed(2)),
-            maxRafGapMs: state.rafGaps.length ? Number(Math.max(...state.rafGaps).toFixed(2)) : 0,
+            maxRafGapMs: state.rafGaps.length > 0 ? Number(Math.max(...state.rafGaps).toFixed(2)) : 0,
           };
           state.longTasks = [];
           state.rafGaps = [];
@@ -1816,7 +1794,11 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
     });
 
     const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, server.endpoint);
     page.on('pageerror', (err) => result.pageErrors.push(String(err?.message ?? err).slice(0, 300)));
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && result.consoleErrors.length < 30) result.consoleErrors.push(msg.text().slice(0, 300));
+    });
 
     const cdp = await context.newCDPSession(page);
     await cdp.send('Performance.enable');
@@ -1881,7 +1863,8 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
       },
       { sid: corpus.giantSessionId, aid: branchId },
     );
-    await sleep(300);
+    await page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 20_000 });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     result.branchSwitchMs = roundMs(performance.now() - sw2T0);
 
     await page.evaluate(
@@ -1918,23 +1901,52 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
 
     stopBackgroundLoad = true;
     await bgWorker;
-
-    result.passed =
-      result.pageErrors.length === 0 &&
-      !result.stuckPreparingDetected &&
-      result.coldOpenFirstTurnMs !== null &&
-      result.coldOpenFirstTurnMs < 2000 &&
-      (result.composerTypingLatencyMs === null || result.composerTypingLatencyMs.p95 < 50);
-  } catch (err) {
+  } catch (error) {
     stopBackgroundLoad = true;
-    result.error = String(err?.stack ?? err).slice(0, 600);
+    result.error = String(error?.stack ?? error).slice(0, 600);
   } finally {
+    if (webAssetsRecorder) {
+      await webAssetsRecorder.settle();
+      result.webAssetsAudit = webAssetsRecorder.snapshot();
+      webAssetsRecorder.detach();
+    }
     await browser?.close().catch(() => undefined);
-    if (staticServer) await new Promise((resolve) => staticServer.close(() => resolve()));
   }
+
+  result.webAssetsGate = evaluateWebAssetsBudget(result.webAssetsAudit);
+  const S5 = FROZEN_S5_DESKTOP_BUDGETS;
+  const checks = [
+    [result.error === null, `harness error: ${result.error}`],
+    [result.servedByKapServer, 'GUI not served by kap-server webAssets'],
+    [result.webAssetsGate.passed, `webAssets: ${result.webAssetsGate.failures.join('; ')}`],
+    [result.pageErrors.length === 0, `${result.pageErrors.length} page errors`],
+    [result.consoleErrors.length === 0, `${result.consoleErrors.length} console errors`],
+    [!result.stuckPreparingDetected, 'transcript stuck on "History is preparing"'],
+    [result.coldOpenFirstTurnMs !== null && result.coldOpenFirstTurnMs < S5.coldOpenFirstTurnMs, `coldOpenFirstTurnMs=${result.coldOpenFirstTurnMs} >= ${S5.coldOpenFirstTurnMs}`],
+    [(result.coldOpenLongTasks?.maxLongTaskMs ?? Infinity) < S5.coldOpenMaxLongTaskMs, `coldOpen maxLongTaskMs=${result.coldOpenLongTasks?.maxLongTaskMs} >= ${S5.coldOpenMaxLongTaskMs}`],
+    [(result.scrollLongTasks?.maxLongTaskMs ?? Infinity) < S5.scrollMaxLongTaskMs, `scroll maxLongTaskMs=${result.scrollLongTasks?.maxLongTaskMs} >= ${S5.scrollMaxLongTaskMs}`],
+    [result.subagentSwitchMs !== null && result.subagentSwitchMs < S5.agentSwitchMs, `subagentSwitchMs=${result.subagentSwitchMs} >= ${S5.agentSwitchMs}`],
+    [(result.subagentSwitchLongTasks?.maxLongTaskMs ?? Infinity) < S5.agentSwitchMaxLongTaskMs, `subagentSwitch maxLongTaskMs=${result.subagentSwitchLongTasks?.maxLongTaskMs} >= ${S5.agentSwitchMaxLongTaskMs}`],
+    [result.branchSwitchMs !== null && result.branchSwitchMs < S5.agentSwitchMs, `branchSwitchMs=${result.branchSwitchMs} >= ${S5.agentSwitchMs}`],
+    [result.composerTypingLatencyMs !== null && result.composerTypingLatencyMs.p95 < S5.composerTypingP95Ms, `composer typing p95=${result.composerTypingLatencyMs?.p95 ?? 'composer missing'} >= ${S5.composerTypingP95Ms}`],
+    [(result.cdpMemory.afterSwitchAwayLightSession?.jsHeapUsedMiB ?? Infinity) < S5.switchAwayJsHeapMiB, `renderer heap after switch-away=${result.cdpMemory.afterSwitchAwayLightSession?.jsHeapUsedMiB} MiB >= ${S5.switchAwayJsHeapMiB}`],
+    [result.backgroundTurnsCompletedDuringBrowser > 0, 'no background turns completed during browser UX (load generator idle)'],
+  ];
+  result.failures = checks.filter(([ok]) => !ok).map(([, msg]) => msg);
+  result.passed = result.failures.length === 0;
 
   return result;
 }
+
+const FROZEN_S5_DESKTOP_BUDGETS = Object.freeze({
+  coldOpenFirstTurnMs: 2_000,
+  coldOpenMaxLongTaskMs: 1_000,
+  scrollMaxLongTaskMs: 250,
+  agentSwitchMs: 2_000,
+  agentSwitchMaxLongTaskMs: 500,
+  composerTypingP95Ms: 50,
+  switchAwayJsHeapMiB: 512,
+});
 
 export async function runChaosScaleSuite(options = {}) {
   const startedAt = performance.now();
@@ -1958,13 +1970,14 @@ export async function runChaosScaleSuite(options = {}) {
   const s12Only = Boolean(options.s12Only);
   const s13Only = Boolean(options.s13Only);
   const s14Only = Boolean(options.s14Only);
+  const s16Only = Boolean(options.s16Only);
   const v23Smoke = Boolean(options.v23Smoke);
   const v23Full = Boolean(options.v23Full);
   const effectiveTier = v23Full ? 'full' : v23Smoke ? 'smoke' : tier;
   const runS7S8 = Boolean(options.runS7S8);
   const runAll = Boolean(options.runAll);
   const isolatedOnly =
-    s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || s11Only || s12Only || s13Only || s14Only || v23Smoke || v23Full || runS7S8;
+    s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || s11Only || s12Only || s13Only || s14Only || s16Only || v23Smoke || v23Full || runS7S8;
   const runS6 = s6Only || runAll || Boolean(options.runS6);
   const runS7 = s7Only || runS7S8 || runAll || Boolean(options.runS7);
   const runS8 = s8Only || runS7S8 || runAll || Boolean(options.runS8);
@@ -1975,6 +1988,7 @@ export async function runChaosScaleSuite(options = {}) {
   const runS12 = s12Only || v23Smoke || v23Full || runAll || Boolean(options.runS12);
   const runS13 = s13Only || v23Smoke || v23Full || runAll || Boolean(options.runS13);
   const runS14 = s14Only || v23Smoke || v23Full || runAll || Boolean(options.runS14);
+  const runS16 = s16Only || v23Smoke || v23Full || runAll || Boolean(options.runS16);
   const runId = options.runId ?? `chaos_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const s7Cycles = options.s7Cycles ?? 200;
   const tenKSubagentCount = options.tenKSubagentCount ?? (tier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
@@ -2124,8 +2138,21 @@ export async function runChaosScaleSuite(options = {}) {
         }
       : null,
     scenarios: {},
+    skippedScenarios: [],
     overallPassed: false,
     totalWallMs: 0,
+  };
+
+  const recordSkipped = (scenarioKey, reason) => {
+    report.scenarios[scenarioKey] = {
+      skipped: true,
+      passed: false,
+      exitCode: 2,
+      reason,
+    };
+    report.skipped += 1;
+    report.skippedScenarios.push({ scenario: scenarioKey, reason });
+    progress(`SKIPPED ${scenarioKey}: ${reason}`);
   };
 
   const persistCheckpoint = () => {
@@ -2135,8 +2162,20 @@ export async function runChaosScaleSuite(options = {}) {
     fs.writeFileSync(options.outPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   };
 
+  const needsGuiWebAssets =
+    runBrowser && (!isolatedOnly || runS6 || runS7 || runS8 || runS9 || runS10 || runP01 || runS16);
+  const guiDistBuild = needsGuiWebAssets
+    ? ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'))
+    : null;
+  const webAssetsDir = guiDistBuild?.distDir;
+  if (guiDistBuild) {
+    progress(
+      `Prepared real kiki-gui webAssetsDir=${guiDistBuild.distDir} (reusedCache=${guiDistBuild.reusedCache}, buildMs=${guiDistBuild.buildMs}ms)`,
+    );
+  }
+
   try {
-    mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb });
+    mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb, webAssetsDir });
     progress(`Booted Kiki kap-server pid=${mainServer.pid} in ${mainServer.bootMs}ms (rss=${mainServer.initialMetrics.rssMiB} MiB)`);
     report.serverBootMs = mainServer.bootMs;
     report.initialServerMetrics = mainServer.initialMetrics;
@@ -2171,8 +2210,10 @@ export async function runChaosScaleSuite(options = {}) {
           corpus,
           progress,
         });
-        persistCheckpoint();
+      } else {
+        recordSkipped('S5_frontendBrowserUx', 'skipped by --no-browser flag');
       }
+      persistCheckpoint();
 
       report.scenarios.S3_enospcAndSigkill = await runScenarioS3({
         workRoot: dir,
@@ -2200,11 +2241,11 @@ export async function runChaosScaleSuite(options = {}) {
             extremeConcurrency,
             progress,
           });
-        } catch (err) {
+        } catch (error) {
           report.scenarios.S2b_extremeBreakingPoint1000 = {
             diagnosticOnly: true,
             targetConcurrency: extremeConcurrency,
-            error: String(err?.stack ?? err).slice(0, 800),
+            error: String(error?.stack ?? error).slice(0, 800),
             serverExitInfo: mainServer?.getExitInfo?.() ?? null,
             serverStderrTail: mainServer?.stderrLines?.slice(-10) ?? [],
           };
@@ -2213,58 +2254,83 @@ export async function runChaosScaleSuite(options = {}) {
       }
     }
 
-    if (runS6 && tenKCorpus) {
-      report.scenarios.S6_tenKSubagentsScale = await runScenarioS6TenKSubagents({
-        server: mainServer,
-        twin,
-        target: tenKCorpus,
-        createKlient,
-        WebSocket,
-        runBrowser,
-        stepTimeoutMs: s6StepTimeoutMs,
-        progress,
-      });
-      persistCheckpoint();
-    }
-
-    if (runS7 && mediaCorpus && runBrowser) {
-      report.scenarios.S7_longRunningSoak = await runScenarioS7LongRunningSoak({
-        server: mainServer,
-        corpus,
-        mediaCorpus,
-        tenKCorpus,
-        totalCycles: s7Cycles,
-        progress,
-      });
-      persistCheckpoint();
-    }
-
-    if (runS8 && mediaCorpus && runBrowser) {
-      report.scenarios.S8_extremeMediaWeakNet = await runScenarioS8MediaWeakNetStorm({
-        server: mainServer,
-        mediaCorpus,
-        stepTimeoutMs: s6StepTimeoutMs,
-        progress,
-      });
-      persistCheckpoint();
-    }
-
-    if (runS9 && s9Corpus && runBrowser) {
-      // HIGH #3: Evict and reboot kap-server before S9 Drill 1 if earlier scenarios ran (e.g. S5 warmed chaos_giant_3g)
-      if (!isolatedOnly || runS6 || runS7 || runS8) {
-        progress('S9 Coldness Guard: restarting kap-server so chaos_giant_3g starts genuinely COLD for S9 Drill 1...');
-        await mainServer.closeSession(corpus.giantSessionId).catch(() => undefined);
-        await mainServer.shutdown().catch(() => undefined);
-        mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb });
+    if (runS6) {
+      if (tenKCorpus) {
+        report.scenarios.S6_tenKSubagentsScale = await runScenarioS6TenKSubagents({
+          server: mainServer,
+          twin,
+          target: tenKCorpus,
+          createKlient,
+          WebSocket,
+          runBrowser,
+          stepTimeoutMs: s6StepTimeoutMs,
+          progress,
+        });
+      } else {
+        recordSkipped('S6_tenKSubagentsScale', 'missing 10k subagent corpus');
       }
-      report.scenarios.S9_fullstackBrowserFlightRecorder = await runScenarioS9BrowserFlightRecorder({
-        server: mainServer,
-        corpus,
-        tenKCorpus,
-        s9Corpus,
-        tier,
-        progress,
-      });
+      persistCheckpoint();
+    }
+
+    if (runS7) {
+      if (mediaCorpus && runBrowser) {
+        report.scenarios.S7_longRunningSoak = await runScenarioS7LongRunningSoak({
+          server: mainServer,
+          corpus,
+          mediaCorpus,
+          tenKCorpus,
+          totalCycles: s7Cycles,
+          progress,
+        });
+      } else {
+        recordSkipped(
+          'S7_longRunningSoak',
+          !runBrowser ? 'skipped by --no-browser flag' : 'missing media corpus',
+        );
+      }
+      persistCheckpoint();
+    }
+
+    if (runS8) {
+      if (mediaCorpus && runBrowser) {
+        report.scenarios.S8_extremeMediaWeakNet = await runScenarioS8MediaWeakNetStorm({
+          server: mainServer,
+          mediaCorpus,
+          stepTimeoutMs: s6StepTimeoutMs,
+          progress,
+        });
+      } else {
+        recordSkipped(
+          'S8_extremeMediaWeakNet',
+          !runBrowser ? 'skipped by --no-browser flag' : 'missing media corpus',
+        );
+      }
+      persistCheckpoint();
+    }
+
+    if (runS9) {
+      if (s9Corpus && runBrowser) {
+        // HIGH #3: Evict and reboot kap-server before S9 Drill 1 if earlier scenarios ran (e.g. S5 warmed chaos_giant_3g)
+        if (!isolatedOnly || runS6 || runS7 || runS8) {
+          progress('S9 Coldness Guard: restarting kap-server so chaos_giant_3g starts genuinely COLD for S9 Drill 1...');
+          await mainServer.closeSession(corpus.giantSessionId).catch(() => undefined);
+          await mainServer.shutdown().catch(() => undefined);
+          mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb, webAssetsDir });
+        }
+        report.scenarios.S9_fullstackBrowserFlightRecorder = await runScenarioS9BrowserFlightRecorder({
+          server: mainServer,
+          corpus,
+          tenKCorpus,
+          s9Corpus,
+          tier,
+          progress,
+        });
+      } else {
+        recordSkipped(
+          'S9_fullstackBrowserFlightRecorder',
+          !runBrowser ? 'skipped by --no-browser flag' : 'missing S9 corpus',
+        );
+      }
       persistCheckpoint();
     }
 
@@ -2326,7 +2392,7 @@ export async function runChaosScaleSuite(options = {}) {
       const s11Res = await runScenarioS11Mesh256({
         server: mainServer,
         respawnServer: async () => {
-          mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb });
+          mainServer = await spawnManagedServer({ homeDir: corpus.homeDir, osHomeDir, maxOldSpaceMb, webAssetsDir });
           return mainServer;
         },
         corpus,
@@ -2392,6 +2458,23 @@ export async function runChaosScaleSuite(options = {}) {
       persistCheckpoint();
     }
 
+    if (runS16) {
+      if (runBrowser) {
+        const s16Res = await runScenarioS16MobileHeavySession({
+          server: mainServer,
+          corpus,
+          tier: effectiveTier,
+          progress,
+        });
+        report.scenarios.S16_mobileHeavySession = s16Res;
+        report.scenarios.s16 = s16Res;
+      } else {
+        recordSkipped('S16_mobileHeavySession', 'skipped by --no-browser flag');
+        report.scenarios.s16 = report.scenarios.S16_mobileHeavySession;
+      }
+      persistCheckpoint();
+    }
+
     if (sharedBrowserHandle) {
       await sharedBrowserHandle.close().catch(() => undefined);
       sharedBrowserHandle = null;
@@ -2423,15 +2506,16 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS12) checks.push(recordCheck(report.scenarios.S12_blindHmacControl));
       if (runS13) checks.push(recordCheck(report.scenarios.S13_chaosFaults));
       if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
-      report.overallPassed = checks.length > 0 && checks.every(Boolean);
+      if (runS16) checks.push(recordCheck(report.scenarios.S16_mobileHeavySession));
+      report.overallPassed = report.skipped === 0 && checks.length > 0 && checks.every(Boolean);
     } else {
       const checks = [
         recordCheck(report.scenarios.S1_giantColdSession),
         recordCheck(report.scenarios.S2a_concurrencyChaosStorm128),
         recordCheck(report.scenarios.S3_enospcAndSigkill),
         recordCheck(report.scenarios.S4_multiSpaceAndPairing),
+        recordCheck(report.scenarios.S5_frontendBrowserUx),
       ];
-      if (runBrowser) checks.push(recordCheck(report.scenarios.S5_frontendBrowserUx));
       if (runS6) checks.push(recordCheck(report.scenarios.S6_tenKSubagentsScale));
       if (runS7) checks.push(recordCheck(report.scenarios.S7_longRunningSoak));
       if (runS8) checks.push(recordCheck(report.scenarios.S8_extremeMediaWeakNet));
@@ -2442,7 +2526,8 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS12) checks.push(recordCheck(report.scenarios.S12_blindHmacControl));
       if (runS13) checks.push(recordCheck(report.scenarios.S13_chaosFaults));
       if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
-      report.overallPassed = checks.every(Boolean);
+      if (runS16) checks.push(recordCheck(report.scenarios.S16_mobileHeavySession));
+      report.overallPassed = report.skipped === 0 && checks.every(Boolean);
     }
     report.exitCode = report.overallPassed ? 0 : exitCodes.includes(2) ? 2 : 1;
   } finally {
@@ -2481,6 +2566,7 @@ if (isCliMain && !isServerWorker) {
     s12Only: false,
     s13Only: false,
     s14Only: false,
+    s16Only: false,
     v23Smoke: false,
     v23Full: false,
     p01Bytes: undefined,
@@ -2500,6 +2586,7 @@ if (isCliMain && !isServerWorker) {
     runS12: false,
     runS13: false,
     runS14: false,
+    runS16: false,
     runId: undefined,
     buildId: undefined,
     s7Cycles: 200,
@@ -2529,6 +2616,7 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s12-only') opts.s12Only = true;
     else if (args[i] === '--s13-only') opts.s13Only = true;
     else if (args[i] === '--s14-only') opts.s14Only = true;
+    else if (args[i] === '--s16-only') opts.s16Only = true;
     else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
     else if (args[i] === '--v23-full') { opts.v23Full = true; opts.tier = 'full'; }
     else if (args[i] === '--p01-bytes' && args[i + 1]) opts.p01Bytes = Number(args[++i]);
@@ -2548,6 +2636,7 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--run-s12') opts.runS12 = true;
     else if (args[i] === '--run-s13') opts.runS13 = true;
     else if (args[i] === '--run-s14') opts.runS14 = true;
+    else if (args[i] === '--run-s16') opts.runS16 = true;
     else if (args[i] === '--manifest' && args[i + 1]) {
       const m = JSON.parse(fs.readFileSync(args[++i], 'utf8'));
       if (m.tier) opts.tier = m.tier;
@@ -2561,6 +2650,7 @@ if (isCliMain && !isServerWorker) {
           else if (sc === 's12') opts.runS12 = true;
           else if (sc === 's13') opts.runS13 = true;
           else if (sc === 's14') opts.runS14 = true;
+          else if (sc === 's16') opts.runS16 = true;
         }
         opts.v23Smoke = true;
       }
