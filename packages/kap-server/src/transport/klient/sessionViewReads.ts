@@ -584,7 +584,7 @@ async function readSessionViewTranscriptPageRaw(
       const cursor = transcriptService.getTranscriptCursor(sessionId, input.agentId);
       const coverage = coverageForItems(page.items, hasMore, verified);
       const emptyContinuation = page.items.length === 0 && hasMore;
-      const anchorCursor = anchorState === 'pending' || emptyContinuation ? requestedAnchor({ ...input, ...query }) : undefined;
+      const anchorCursor = emptyContinuation ? requestedAnchor({ ...input, ...query }) ?? 'tail' : undefined;
       const requested = query.beforeItem ?? looseAnchor(input.beforeItem, input.agentId);
       const refreshedAnchor = page.items.length === 0 ? undefined
         : query.refreshTurn !== undefined && requested !== undefined && requested !== `turn:${query.refreshTurn}`
@@ -633,7 +633,7 @@ async function readSessionViewTranscriptPageRaw(
     : !page.hasMore && typeof transcriptService.coldHistoryTruncated === 'function'
       ? await transcriptService.coldHistoryTruncated(sessionId, input.agentId) : false;
   const hasMore = page.hasMore || truncated || snapshot.hasMoreOlder === true;
-  const continuationAnchor = page.items.length > 0 ? undefined : requestedAnchor({ ...input, ...loaded.query });
+  const continuationAnchor = page.items.length === 0 && hasMore ? requestedAnchor({ ...input, ...loaded.query }) ?? 'tail' : undefined;
   const roster = (await transcriptService.readColdRoster(sessionId, input.signal)) ?? [];
   if (!roster.some((descriptor) => descriptor.agentId === input.agentId) &&
       (snapshot.items.length > 0 || snapshot.tasks.length > 0 || input.agentId === MAIN_AGENT_ID)) {

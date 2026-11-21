@@ -4061,27 +4061,39 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
-  it('derives beforeItem for marker-only snapshots without cursor and settles cleanly without olderError', async () => {
-    const { controller, client } = await openTranscriptController();
+  it.each(['empty', 'marker-only'] as const)('loads older history for an unverified %s branch without a reset cursor', async (shape) => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const marker = { kind: 'marker' as const, markerId: 'branch.base', marker: 'branch.base' };
+    const agentId = 'branch-1';
     try {
-      const marker = { kind: 'marker' as const, markerId: 'm0', marker: 'notice' };
-      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [marker], hasMoreOlder: true }), 1, true));
-      client.getAgentTranscript.mockResolvedValueOnce({
-        agent_id: 'main',
-        items: [],
-        has_more: false,
-        coverage: { kind: 'unknown', hasMoreOlder: true },
-      });
-      expect(await controller.loadOlderHistory()).toEqual({ kind: 'exhausted', changed: true });
-      expect(controller.getState()).toMatchObject({
-        hasMoreHistory: false,
-        olderError: undefined,
-      });
-      expect(client.getAgentTranscript).toHaveBeenCalledWith(
-        'session_test',
-        'main',
-        expect.objectContaining({ beforeItem: 'marker:m0' }),
-      );
+      const reset = resetEvent(agentId, emptySnapshot({ items: shape === 'marker-only' ? [marker] : [] }), 1, true);
+      controller.handleTranscript({ ...reset, coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'partial', reason: 'source_unverified' } });
+      flushAll();
+      expect(controller.getAgentState(agentId).hasMoreHistory).toBe(true);
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: agentId, items: [], has_more: false,
+        coverage: { kind: 'unknown', hasMoreOlder: true } });
+      expect((await controller.loadOlderHistory(agentId)).kind).toBe('exhausted');
+      expect(controller.getAgentState(agentId)).toMatchObject({ hasMoreHistory: false, olderError: undefined, loadingOlder: false });
+      expect(await controller.loadOlderHistory(agentId)).toEqual({ kind: 'exhausted', changed: false });
+      expect(client.getAgentTranscript).toHaveBeenCalledExactlyOnceWith('session_test', agentId,
+        expect.objectContaining({ beforeItem: shape === 'marker-only' ? 'marker:branch.base' : undefined, beforeTurn: undefined }));
+    } finally { controller.close(); }
+  });
+
+  it('uses the explicit pagination boundary when a later unverified branch reset is still empty', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const agentId = 'branch-1';
+    const coverage = { kind: 'unknown', hasMoreOlder: true } as const;
+    try {
+      controller.handleTranscript({ ...resetEvent(agentId, emptySnapshot(), 1, true), coverage });
+      flushAll();
+      expect(controller.getAgentState(agentId).hasMoreHistory).toBe(true);
+      controller.handleTranscript({ ...resetEvent(agentId, emptySnapshot(), 2), coverage });
+      flushAll();
+      expect(controller.getAgentState(agentId)).toMatchObject({ hasMoreHistory: false, historyCoverageKind: 'unknown', olderError: undefined });
+      expect(await controller.loadOlderHistory(agentId)).toEqual({ kind: 'exhausted', changed: false });
+      expect(client.getAgentTranscript).not.toHaveBeenCalled();
     } finally { controller.close(); }
   });
 

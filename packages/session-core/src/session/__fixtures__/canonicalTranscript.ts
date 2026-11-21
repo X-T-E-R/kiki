@@ -1,5 +1,5 @@
 import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter,
-  type AgentTranscriptSnapshot, type TranscriptEvent, type TranscriptOperation, type TranscriptWireRecord } from '@kiki/transcript';
+  type AgentTranscriptSnapshot, type TranscriptEvent, type TranscriptOperation, type TranscriptResetEvent, type TranscriptWireRecord } from '@kiki/transcript';
 
 export const FIXED_AT = '2026-01-01T00:00:00.000Z';
 export const FIXED_AT_1 = '2026-01-01T00:00:01.000Z';
@@ -36,7 +36,7 @@ export function resetEvent(
   seq: number,
   hasMoreOlder = false,
   sessionId = 'session_test',
-): TranscriptEvent {
+): TranscriptResetEvent {
   return {
     type: 'transcript.reset',
     session_id: sessionId,

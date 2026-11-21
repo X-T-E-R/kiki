@@ -10002,17 +10002,15 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
-  it('handles same-microtask exhaustion from initial hasMoreHistory=true without false load-failed toast or retry pill', async () => {
+  it.each(['first turn', 'empty branch', 'marker-only branch'] as const)('handles same-microtask exhaustion (%s) without false load-failed toast or retry pill', async (shape) => {
     resetTimelineLocatorsForTests();
     clearToasts();
     act(() => clearNavHistory());
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const { controller, client } = await openLiveTranscript();
-    // Simulate an unverified live WS reset at t0 where hasMoreOlder starts true,
-    // then the older page returns empty + has_more: false ({ kind: 'exhausted', changed: false })
-    // in the same microtask before React commits the updated state prop.
+    const branchMarker = { kind: 'marker' as const, markerId: 'branch.base', marker: 'branch.base' };
     const t0Reset = resetEvent('main', emptySnapshot({
-      items: [{
+      items: shape === 'marker-only branch' ? [branchMarker] : shape === 'empty branch' ? [] : [{
         kind: 'turn',
         turnId: 't0',
         ordinal: 0,
@@ -10069,12 +10067,13 @@ describe('settled history folds and the unified locate entry', () => {
     const router = createMemoryRouter([{ path: '*', element: <I18nProvider><Page /></I18nProvider> }], { initialEntries: [location] });
     try {
       await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+      await act(async () => { await vi.waitFor(() => expect(controller.getState().hasMoreHistory).toBe(false), { timeout: 2000 }); });
       await settleReadingFrames();
-      expect(controller.getState().hasMoreHistory).toBe(false);
       expect(probe.container.querySelector('[data-reading-restore-retry]')).toBeNull();
+      expect(probe.container.querySelector('[data-top-edge="error"]')).toBeNull();
       expect(getToasts().filter((toast) => toast.tone === 'error')).toEqual([]);
 
-      // F2: locate() with initial hasMoreHistory=true + stale pre-render olderError settles as not-found when loadOlderHistory exhausts in the same microtask.
+      // A stale React prop must not turn clean exhaustion into locate failure.
       clearToasts();
       controller.handleTranscript({
         ...t0Reset,

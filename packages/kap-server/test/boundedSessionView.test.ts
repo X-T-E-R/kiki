@@ -1767,6 +1767,52 @@ describe('bounded session-view canonical reads', () => {
     });
   });
 
+  it.each(['empty', 'marker-only'] as const)('opens an unverified %s branch and finishes paging over both HTTP routes', async (shape) => {
+    const marker = { kind: 'marker' as const, markerId: 'branch.base', marker: 'branch.base' };
+    const agentId = 'branch-1';
+    const cursor = { seq: 1, epoch: 'branch-epoch' };
+    const items = shape === 'marker-only' ? [marker] : [];
+    const resident = { ...empty(), items, hasMoreOlder: true };
+    const transcript = new AgentTranscript(agentId);
+    transcript.apply([{ op: 'reset', agentId, snapshot: resident }]);
+    let reachedStart = false;
+    const service = {
+      forSessionLive: () => ({ agents: () => [] }),
+      ensureAgentHistory: async () => transcript,
+      isTranscriptLiveCoverageVerified: () => false,
+      verifyTranscriptLiveCoverage: async () => false,
+      getTranscriptCursor: () => cursor,
+      coldWindowBoundary: async () => ({ fingerprint: 'branch-wire', start: reachedStart ? 0 : 1024, end: 2048 }),
+      readColdPageSnapshot: async (_sid: string, _aid: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
+        _signal: AbortSignal, extend: boolean) => {
+        if (extend) reachedStart = true;
+        return project({ ...resident, hasMoreOlder: !reachedStart });
+      },
+      readFullAgentSnapshot: async (_sid: string, _aid: string, _transcript: AgentTranscript, _signal: AbortSignal,
+        _project: unknown, _beforeTurn: string | undefined, pageSource: AgentTranscriptSnapshot) => pageSource,
+    } as unknown as TranscriptService;
+    const app = Fastify();
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+    await app.register(async (api) => {
+      registerTranscriptRoutes(api as unknown as Parameters<typeof registerTranscriptRoutes>[0], { core: {} as Scope, transcriptService: service });
+    }, { prefix: '/api' });
+    try {
+      for (const prefix of ['/api/klient/session-view', '/api/sessions']) {
+        reachedStart = shape === 'marker-only';
+        const url = `${prefix}/fixture-session/transcript?agent_id=${agentId}&page_size=40&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`;
+        const first = (await app.inject({ url })).json();
+        expect(first).toMatchObject({ code: 0, data: { items, has_more: shape === 'empty', coverage: { kind: 'unknown' } } });
+        const beforeItem = shape === 'empty' ? first.data.next_cursor : sessionViewSnapshotHistoryCursor(resident, agentId, 'derived', cursor.epoch);
+        expect(beforeItem).toEqual(expect.any(String));
+        const older = (await app.inject({ url: `${url}&before_item=${encodeURIComponent(beforeItem)}` })).json();
+        expect(older).toMatchObject({ code: 0, data: { items: [], has_more: false,
+          coverage: { kind: 'unknown', hasMoreOlder: true }, read: { reason: 'source_unverified' } } });
+        expect(older.data.next_cursor).toBeUndefined();
+      }
+    } finally { await app.close(); }
+  });
+
   it('derives continuation cursors for forced hasMoreOlder snapshots and accepts derived cursors on live boundary pages', async () => {
     const markerItem = { kind: 'marker' as const, markerId: 'm-top', marker: 'notice' };
     const markerCursor = sessionViewSnapshotHistoryCursor(

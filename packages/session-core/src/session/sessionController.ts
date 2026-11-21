@@ -3137,10 +3137,7 @@ export class SessionController {
     const keptEdge = window.kept.length > 0;
     const snapshotHasMore = snapshot.hasMoreOlder ?? coverage.hasMoreOlder;
     const unsure = coverage.kind === 'unknown' && snapshotHasMore;
-    const hasMoreOlder = keptEdge ? window.held.hasMoreOlder || unsure
-      : coverage.kind === 'unknown' && snapshot.items.length === 0
-        ? window.held.hasMoreOlder || snapshotHasMore
-        : snapshotHasMore;
+    const hasMoreOlder = keptEdge ? window.held.hasMoreOlder || unsure : snapshotHasMore;
     if (final.length !== current.length || final.some((item, index) => item !== current[index])) store.replaceItems(final, hasMoreOlder);
     else store.setHasMoreOlder(hasMoreOlder);
     if (!keptEdge) {
