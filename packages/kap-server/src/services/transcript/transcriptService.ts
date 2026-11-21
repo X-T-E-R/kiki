@@ -20,6 +20,7 @@ import {
   IQueryStore,
   ISessionIndex,
   ISessionInteractionService,
+  ISessionManager,
   ISessionMetadata,
   IWireService,
   agentScopeOf,
@@ -1154,6 +1155,14 @@ export class TranscriptService {
   private coldReadRecords = 0;
   private coldReadDurationMs = 0;
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+  private sessionManagerCache?: ISessionManager;
+
+  private getLiveSession(sessionId: string) {
+    if (this.sessionManagerCache === undefined) {
+      this.sessionManagerCache = this.deps.core.accessor.get(ISessionManager);
+    }
+    return this.sessionManagerCache.get(sessionId);
+  }
 
   constructor(private readonly deps: TranscriptServiceDeps) {
     this.eventLoopDelay.enable();
@@ -1199,13 +1208,13 @@ export class TranscriptService {
   forSessionLive(sessionId: string, options: { readonly tailFirst?: boolean } = {}): TranscriptStore | undefined {
     const existing = this.live.get(sessionId);
     if (existing !== undefined) {
-      if (getLiveSessionById(this.deps.core.accessor, sessionId) !== undefined) {
+      if (this.getLiveSession(sessionId) !== undefined) {
         return existing.store;
       }
       this.dropSession(sessionId);
       return undefined;
     }
-    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    const session = this.getLiveSession(sessionId);
     if (session === undefined) return undefined;
     const store = new TranscriptStore(sessionId, this.resolveResidentLimits());
     let binding: TranscriptBinding;

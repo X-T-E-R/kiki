@@ -1061,7 +1061,8 @@ export class SessionEventBroadcaster {
     const envelope = this.buildTranscriptEnvelope(state, 'transcript.ops', {
       session_id: state.sessionId, agent_id: agentId, ops: filtered, cursor, through_seq: throughSeq,
     });
-    if (jsonBytes(envelope) > TRANSCRIPT_WINDOW_BYTES) {
+    const needsWindowSizeCheck = filtered.length > 8 || filtered.some((op) => op.op === 'reset' || op.op === 'turn.upsert');
+    if (needsWindowSizeCheck && jsonBytes(envelope) > TRANSCRIPT_WINDOW_BYTES) {
       if (grade === 'off') return true;
       const current = this.opts.transcriptService!.getTranscriptCursor(state.sessionId, agentId);
       return this.sendTranscriptReset(state, target, transcript, grade, current, generation);
@@ -1123,6 +1124,8 @@ export class SessionEventBroadcaster {
       state.sessionId,
       ({ agentId, ops }, cursor) => {
         for (const [target, sub] of state.targets) {
+          const grade = gradeFor(sub.transcriptGrades, agentId);
+          if (grade === 'off') continue;
           if (!this.hasTranscriptBaseline(state, target, agentId)) continue;
           const seed = state.pendingTranscriptSeeds.get(target);
           const through = seed?.delivered.get(agentId);
@@ -1132,7 +1135,7 @@ export class SessionEventBroadcaster {
             state,
             target,
             agentId,
-            gradeFor(sub.transcriptGrades, agentId),
+            grade,
             ops,
             cursor,
             cursor.seq,
@@ -1991,6 +1994,26 @@ export class SessionEventBroadcaster {
       (event as { phase?: unknown }).phase !== undefined
     ) {
       return;
+    }
+
+    if (
+      event.type === 'assistant.delta' ||
+      event.type === 'thinking.delta' ||
+      event.type === 'tool_call.delta'
+    ) {
+      let hasLegacyDeltaRecipient = false;
+      for (const sub of state.targets.values()) {
+        if (sub.transcriptGrades === undefined) {
+          hasLegacyDeltaRecipient = true;
+          break;
+        }
+        const grade = gradeFor(sub.transcriptGrades, agentId);
+        if (grade === 'off' && (!sub.transcriptOnly || sub.detachedTranscriptAgents?.has(agentId) === true)) {
+          hasLegacyDeltaRecipient = true;
+          break;
+        }
+      }
+      if (!hasLegacyDeltaRecipient) return;
     }
 
     let wireEvent: Event;

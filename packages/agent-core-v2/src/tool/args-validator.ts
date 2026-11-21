@@ -88,16 +88,26 @@ function formatValidationError(error: ErrorObject): string {
   return `${path}${error.message ?? 'is invalid'}`;
 }
 
+const compiledValidatorCache = new WeakMap<Record<string, unknown>, ToolArgsValidator>();
+
 export function compileToolArgsValidator(schema: Record<string, unknown>): ToolArgsValidator {
-  const ajv = ajvFor(schema);
   const id = schema['$id'];
   const rootId = typeof id === 'string' ? normalizeId(id) : '';
+  if (rootId === '') {
+    const cached = compiledValidatorCache.get(schema);
+    if (cached !== undefined) return cached;
+  }
+  const ajv = ajvFor(schema);
   if (rootId !== '' && (ajv.schemas[rootId] !== undefined || ajv.refs[rootId] !== undefined)) {
     throw new Error(`schema with key or id "${rootId}" already exists`);
   }
   const registered = new Set([...Object.keys(ajv.schemas), ...Object.keys(ajv.refs)]);
   try {
-    return ajv.compile(schema) as ToolArgsValidator;
+    const compiled = ajv.compile(schema) as ToolArgsValidator;
+    if (rootId === '') {
+      compiledValidatorCache.set(schema, compiled);
+    }
+    return compiled;
   } finally {
     ajv.removeSchema(schema);
     for (const key of Object.keys(ajv.schemas)) if (!registered.has(key)) delete ajv.schemas[key];

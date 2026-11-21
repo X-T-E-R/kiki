@@ -51,6 +51,25 @@ import {
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'] as const;
 
+interface SharedRgGlobOutcome {
+  readonly kind: 'ok';
+  readonly rawPaths: readonly string[];
+  readonly kept: readonly string[];
+  readonly filteredSensitive: number;
+  readonly bufferTruncated: boolean;
+  readonly timedOut: boolean;
+  readonly traversalWarning?: string;
+}
+
+interface SharedRgGlobFlight {
+  readonly promise: Promise<SharedRgGlobOutcome | ExecutableToolResult>;
+  readonly controller: AbortController;
+  waiters: number;
+}
+
+const inflightRgGlobs = new Map<string, SharedRgGlobFlight>();
+const sensitiveFilterCache = new WeakMap<readonly string[], { readonly kept: readonly string[]; readonly filteredSensitive: number }>();
+
 export class GlobTool implements IGlobTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Glob' as const;
@@ -201,116 +220,212 @@ export class GlobTool implements IGlobTool {
     let timedOut = false;
     let traversalWarning: string | undefined;
     if (rawPaths === undefined) {
-      let rgPath: string;
-      try {
-        if (processService instanceof SshHostProcessService) {
-          rgPath = 'rg';
-        } else {
-          const resolution = await ensureRgPath(createRgProbe(processService), {
-            signal,
-            allowCachedFallback: true,
-            ...this.rgShareOptions(),
-          });
-          rgPath = resolution.path;
-          if (resolution.source !== 'system-path') {
-            this.telemetry.track2('glob_tool_rg_fallback', {
-              source: resolution.source,
-              outcome: 'resolved',
-            });
+      const canShareFlight = !(processService instanceof SshHostProcessService);
+      const flightKey = canShareFlight
+        ? `${resolve(searchRoot)}\0${args.pattern}\0${args.include_ignored === true ? '1' : '0'}`
+        : undefined;
+      let sharedFlight = flightKey === undefined ? undefined : inflightRgGlobs.get(flightKey);
+      if (sharedFlight === undefined) {
+        const controller = new AbortController();
+        const flightSignal = canShareFlight ? controller.signal : signal;
+        const runFlight = (async (): Promise<SharedRgGlobOutcome | ExecutableToolResult> => {
+          let rgPath: string;
+          try {
+            if (processService instanceof SshHostProcessService) {
+              rgPath = 'rg';
+            } else {
+              const resolution = await ensureRgPath(createRgProbe(processService), {
+                signal: flightSignal,
+                allowCachedFallback: true,
+                ...this.rgShareOptions(),
+              });
+              rgPath = resolution.path;
+              if (resolution.source !== 'system-path') {
+                this.telemetry.track2('glob_tool_rg_fallback', {
+                  source: resolution.source,
+                  outcome: 'resolved',
+                });
+              }
+            }
+          } catch (error) {
+            if (flightSignal.aborted) {
+              return { isError: true, output: 'Glob aborted' };
+            }
+            this.telemetry.track2('glob_tool_rg_fallback', { outcome: 'failed' });
+            return { isError: true, output: rgUnavailableMessage(error) };
           }
+
+          let run;
+          try {
+            run = await runRgOnce(processService, buildRgArgs(rgPath, args, false, env.pathClass === 'win32'), flightSignal, { cwd: searchRoot });
+          } catch (error) {
+            return { isError: true, output: formatRgSpawnError(error) };
+          }
+          if (run.kind === 'aborted') {
+            return { isError: true, output: 'Glob aborted' };
+          }
+
+          if (shouldRetryRipgrepEagain(run)) {
+            try {
+              run = await runRgOnce(processService, buildRgArgs(rgPath, args, true, env.pathClass === 'win32'), flightSignal, { cwd: searchRoot });
+            } catch (error) {
+              return { isError: true, output: formatRgSpawnError(error) };
+            }
+            if (run.kind === 'aborted') {
+              return { isError: true, output: 'Glob aborted' };
+            }
+          }
+
+          const { exitCode, stdoutText, stderrText } = run;
+          const runBufferTruncated = run.bufferTruncated;
+          const runTimedOut = run.timedOut;
+          let runTraversalWarning: string | undefined;
+          if (!runTimedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
+            const rawPathsBeforeError = splitCompletePaths(stdoutText, true);
+            if (rawPathsBeforeError.length === 0) {
+              return { isError: true, output: formatGlobError(searchRoot, stderrText) };
+            }
+            runTraversalWarning = formatGlobWarning(stderrText);
+          }
+          if (flightSignal.aborted) {
+            return { isError: true, output: 'Glob aborted' };
+          }
+
+          const normalizedRoot = resolve(searchRoot);
+          const rootPrefix = normalizedRoot.endsWith('/') ? normalizedRoot : `${normalizedRoot}/`;
+          const splitPaths = splitCompletePaths(stdoutText, runBufferTruncated || runTimedOut);
+          const resolvedPaths: string[] = [];
+          let resolveYieldAt = performance.now();
+          for (let i = 0; i < splitPaths.length; i += 1) {
+            const entry = splitPaths[i]!;
+            const trimmed = entry.startsWith('./') || entry.startsWith('.\\') ? entry.slice(2) : entry;
+            if (
+              trimmed.length > 0 &&
+              trimmed.charCodeAt(0) !== 47 &&
+              trimmed.charCodeAt(0) !== 92 &&
+              !trimmed.includes(':') &&
+              !trimmed.includes('..')
+            ) {
+              resolvedPaths.push(`${rootPrefix}${trimmed.includes('\\') ? trimmed.replaceAll('\\', '/') : trimmed}`);
+            } else {
+              resolvedPaths.push(resolve(normalizedRoot, entry));
+            }
+            if ((i & 511) === 511 && performance.now() - resolveYieldAt >= 2.5) {
+              await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
+              if (flightSignal.aborted) return { isError: true, output: 'Glob aborted' };
+              resolveYieldAt = performance.now();
+            }
+          }
+          let flightPaths: readonly string[] = resolvedPaths;
+          if (args.include_ignored !== true && !(processService instanceof SshHostProcessService) && flightPaths.length > 0) {
+            const filteredText = await runCpuTask<string | null>(
+              { type: 'workspace.pathFilterPacked', root: searchRoot, pathsText: flightPaths.join('\n') },
+              { signal: flightSignal, priority: 'low' },
+            );
+            if (filteredText !== null) {
+              flightPaths = filteredText.length === 0 ? [] : filteredText.split('\n');
+            }
+          }
+          const flightKept: string[] = [];
+          let flightFilteredSensitive = 0;
+          let filterYieldAt = performance.now();
+          for (let i = 0; i < flightPaths.length; i += 1) {
+            const candidate = flightPaths[i]!;
+            if (isSensitiveFile(candidate)) flightFilteredSensitive++;
+            else flightKept.push(candidate);
+            if ((i & 511) === 511 && performance.now() - filterYieldAt >= 2.5) {
+              await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
+              if (flightSignal.aborted) return { isError: true, output: 'Glob aborted' };
+              filterYieldAt = performance.now();
+            }
+          }
+          sensitiveFilterCache.set(flightPaths, { kept: flightKept, filteredSensitive: flightFilteredSensitive });
+          return {
+            kind: 'ok',
+            rawPaths: flightPaths,
+            kept: flightKept,
+            filteredSensitive: flightFilteredSensitive,
+            bufferTruncated: runBufferTruncated,
+            timedOut: runTimedOut,
+            traversalWarning: runTraversalWarning,
+          };
+        })();
+        sharedFlight = { promise: runFlight, controller, waiters: 0 };
+        if (flightKey !== undefined) {
+          inflightRgGlobs.set(flightKey, sharedFlight);
+          const currentFlight = sharedFlight;
+          void runFlight.finally(() => {
+            if (inflightRgGlobs.get(flightKey) === currentFlight) inflightRgGlobs.delete(flightKey);
+          });
         }
-      } catch (error) {
+      }
+      const activeFlight = sharedFlight;
+      activeFlight.waiters += 1;
+      const outcome = await new Promise<SharedRgGlobOutcome | ExecutableToolResult>((resolveOutcome, rejectOutcome) => {
         if (signal.aborted) {
-          return { isError: true, output: 'Glob aborted' };
+          activeFlight.waiters -= 1;
+          if (activeFlight.waiters <= 0) activeFlight.controller.abort();
+          resolveOutcome({ isError: true, output: 'Glob aborted' });
+          return;
         }
-        this.telemetry.track2('glob_tool_rg_fallback', { outcome: 'failed' });
-        return { isError: true, output: rgUnavailableMessage(error) };
-      }
-
-      let run;
-      try {
-        run = await runRgOnce(processService, buildRgArgs(rgPath, args, false, env.pathClass === 'win32'), signal, { cwd: searchRoot });
-      } catch (error) {
-        return { isError: true, output: formatRgSpawnError(error) };
-      }
-      if (run.kind === 'aborted') {
-        return { isError: true, output: 'Glob aborted' };
-      }
-
-      if (shouldRetryRipgrepEagain(run)) {
-        try {
-          run = await runRgOnce(processService, buildRgArgs(rgPath, args, true, env.pathClass === 'win32'), signal, { cwd: searchRoot });
-        } catch (error) {
-          return { isError: true, output: formatRgSpawnError(error) };
-        }
-        if (run.kind === 'aborted') {
-          return { isError: true, output: 'Glob aborted' };
-        }
-      }
-
-      const { exitCode, stdoutText, stderrText } = run;
-      bufferTruncated = run.bufferTruncated;
-      timedOut = run.timedOut;
-      if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
-        const rawPathsBeforeError = splitCompletePaths(stdoutText, true);
-        if (rawPathsBeforeError.length === 0) {
-          return { isError: true, output: formatGlobError(searchRoot, stderrText) };
-        }
-        traversalWarning = formatGlobWarning(stderrText);
-      }
-      if (signal.aborted) {
-        return { isError: true, output: 'Glob aborted' };
-      }
-
-      const normalizedRoot = resolve(searchRoot);
-      const rootPrefix = normalizedRoot.endsWith('/') ? normalizedRoot : `${normalizedRoot}/`;
-      const splitPaths = splitCompletePaths(stdoutText, bufferTruncated || timedOut);
-      const resolvedPaths: string[] = [];
-      let resolveYieldAt = performance.now();
-      for (let i = 0; i < splitPaths.length; i += 1) {
-        const entry = splitPaths[i]!;
-        const trimmed = entry.startsWith('./') || entry.startsWith('.\\') ? entry.slice(2) : entry;
-        if (
-          trimmed.length > 0 &&
-          trimmed.charCodeAt(0) !== 47 &&
-          trimmed.charCodeAt(0) !== 92 &&
-          !trimmed.includes(':') &&
-          !trimmed.includes('..')
-        ) {
-          resolvedPaths.push(`${rootPrefix}${trimmed.includes('\\') ? trimmed.replaceAll('\\', '/') : trimmed}`);
-        } else {
-          resolvedPaths.push(resolve(normalizedRoot, entry));
-        }
-        if ((i & 511) === 511 && performance.now() - resolveYieldAt >= 2.5) {
-          await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
-          if (signal.aborted) return { isError: true, output: 'Glob aborted' };
-          resolveYieldAt = performance.now();
-        }
-      }
-      rawPaths = resolvedPaths;
-      if (args.include_ignored !== true && !(processService instanceof SshHostProcessService) && rawPaths.length > 0) {
-        const filteredText = await runCpuTask<string | null>(
-          { type: 'workspace.pathFilterPacked', root: searchRoot, pathsText: rawPaths.join('\n') },
-          { signal, priority: 'low' },
+        let settled = false;
+        const onAbort = (): void => {
+          if (settled) return;
+          settled = true;
+          activeFlight.waiters -= 1;
+          if (activeFlight.waiters <= 0) activeFlight.controller.abort();
+          resolveOutcome({ isError: true, output: 'Glob aborted' });
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        activeFlight.promise.then(
+          (result) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            activeFlight.waiters -= 1;
+            resolveOutcome(result);
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            activeFlight.waiters -= 1;
+            rejectOutcome(error);
+          },
         );
-        if (filteredText !== null) {
-          rawPaths = filteredText.length === 0 ? [] : filteredText.split('\n');
-        }
+      });
+      if (!('kind' in outcome)) {
+        return outcome;
       }
+      rawPaths = outcome.rawPaths;
+      bufferTruncated = outcome.bufferTruncated;
+      timedOut = outcome.timedOut;
+      traversalWarning = outcome.traversalWarning;
     }
 
-    const kept: string[] = [];
-    let filteredSensitive = 0;
-    let yieldedAt = performance.now();
-    for (let i = 0; i < rawPaths.length; i += 1) {
-      const candidate = rawPaths[i]!;
-      if (isSensitiveFile(candidate)) filteredSensitive++;
-      else kept.push(candidate);
-      if ((i & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
-        await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
-        if (signal.aborted) return { isError: true, output: 'Glob aborted' };
-        yieldedAt = performance.now();
+    let kept: readonly string[];
+    let filteredSensitive: number;
+    const cachedSensitive = sensitiveFilterCache.get(rawPaths);
+    if (cachedSensitive !== undefined) {
+      kept = cachedSensitive.kept;
+      filteredSensitive = cachedSensitive.filteredSensitive;
+    } else {
+      const nextKept: string[] = [];
+      let nextFiltered = 0;
+      let yieldedAt = performance.now();
+      for (let i = 0; i < rawPaths.length; i += 1) {
+        const candidate = rawPaths[i]!;
+        if (isSensitiveFile(candidate)) nextFiltered++;
+        else nextKept.push(candidate);
+        if ((i & 511) === 511 && performance.now() - yieldedAt >= 2.5) {
+          await new Promise<void>((resolveYield) => { setImmediate(resolveYield); });
+          if (signal.aborted) return { isError: true, output: 'Glob aborted' };
+          yieldedAt = performance.now();
+        }
       }
+      sensitiveFilterCache.set(rawPaths, { kept: nextKept, filteredSensitive: nextFiltered });
+      kept = nextKept;
+      filteredSensitive = nextFiltered;
     }
 
     const offset = args.offset ?? 0;

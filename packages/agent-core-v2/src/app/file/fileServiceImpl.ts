@@ -89,16 +89,43 @@ export class FileServiceImpl extends Disposable implements IFileService {
 
     const id = `f_${randomUUID()}`;
     let size = 0;
-    const counting = async function* (): AsyncIterable<Uint8Array> {
-      for await (const chunk of source) {
-        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
-        size += buf.length;
-        yield buf;
-      }
-    };
+    const SMALL_UPLOAD_BUFFER_LIMIT = 4 * 1024 * 1024;
     let saveOptions: SaveOptions;
     try {
-      await this.blobs.putStream(BLOB_SCOPE, id, counting());
+      const bufferedChunks: Buffer[] = [];
+      let streamed = false;
+      const iterator = source[Symbol.asyncIterator]();
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) break;
+        const buf = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as string);
+        size += buf.length;
+        bufferedChunks.push(buf);
+        if (size > SMALL_UPLOAD_BUFFER_LIMIT) {
+          streamed = true;
+          const remaining = async function* (): AsyncIterable<Uint8Array> {
+            for (const chunk of bufferedChunks) yield chunk;
+            bufferedChunks.length = 0;
+            while (true) {
+              const more = await iterator.next();
+              if (more.done) break;
+              const moreBuf = Buffer.isBuffer(more.value) ? more.value : Buffer.from(more.value as string);
+              size += moreBuf.length;
+              yield moreBuf;
+            }
+          };
+          await this.blobs.putStream(BLOB_SCOPE, id, remaining());
+          break;
+        }
+      }
+      if (!streamed) {
+        const payload = bufferedChunks.length === 0
+          ? Buffer.alloc(0)
+          : bufferedChunks.length === 1
+            ? bufferedChunks[0]!
+            : Buffer.concat(bufferedChunks, size);
+        await this.blobs.put(BLOB_SCOPE, id, payload);
+      }
       saveOptions = typeof options === 'function' ? options() : options;
     } catch (error) {
       await this.blobs.delete(BLOB_SCOPE, id).catch(() => undefined);

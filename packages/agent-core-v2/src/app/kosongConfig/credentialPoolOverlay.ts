@@ -44,6 +44,7 @@ export function resolveProvidersWithCredentialPool(
 }
 
 export const credentialPoolOverlay: ConfigEffectiveOverlay = {
+  domains: [PROVIDERS_SECTION],
   apply(effective, getEnv, validate) {
     const rawProviders = effective[PROVIDERS_SECTION];
     const rawCredentials = effective[CREDENTIALS_POOL_SECTION];

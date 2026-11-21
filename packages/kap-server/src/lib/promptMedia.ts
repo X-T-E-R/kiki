@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -479,20 +480,39 @@ export async function resolvePromptMediaFiles(
       let finalFile = file;
       if (compressed.changed) {
         const compressedBuffer = Buffer.from(compressed.data);
-        const [originalPath, saved] = await Promise.all([
+        const compressedName = compressedUploadName(file.meta.name, compressed.mimeType);
+        const [originalPath, finalSaved] = await Promise.all([
           resolveOriginalsDir().then((dir) => persistOriginalImage(data, mediaType, { dir })),
-          store.save(
-            Readable.from(compressedBuffer),
-            compressedUploadName(file.meta.name, compressed.mimeType),
-            { mimeType: compressed.mimeType },
-          ),
+          (async () => {
+            if (options.sessionMedia !== undefined) {
+              const savedMeta: FileMeta = {
+                id: `f_${randomUUID()}`,
+                name: compressedName,
+                media_type: compressed.mimeType,
+                size: compressedBuffer.byteLength,
+                created_at: new Date().toISOString(),
+              };
+              const savedFile: GetResult = {
+                meta: savedMeta,
+                stream: () => Readable.from(compressedBuffer),
+              };
+              await retainSessionMedia(options.sessionMedia, savedFile, compressedBuffer, true);
+              return savedFile;
+            }
+            const saved = await store.save(
+              Readable.from(compressedBuffer),
+              compressedName,
+              { mimeType: compressed.mimeType },
+            );
+            ownedFileIds.add(saved.id);
+            const savedFile: GetResult = {
+              meta: saved,
+              stream: () => Readable.from(compressedBuffer),
+            };
+            return savedFile;
+          })(),
         ]);
-        ownedFileIds.add(saved.id);
-        finalFile = {
-          meta: saved,
-          stream: () => Readable.from(compressedBuffer),
-        };
-        await retainSessionMedia(options.sessionMedia, finalFile, compressedBuffer, true);
+        finalFile = finalSaved;
         const text = buildImageCompressionCaption({
           original: {
             width: compressed.originalWidth,

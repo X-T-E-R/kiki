@@ -50,6 +50,7 @@ export class WorkspacePathIndex {
   private readonly globInflight = new Map<string, Promise<readonly string[] | undefined>>();
   private readonly fuzzyCache = new Map<string, readonly WorkspacePathEntry[]>();
   private readonly controller = new AbortController();
+  private refreshController: AbortController | undefined;
   private started = false;
   private disposed = false;
   private watching = false;
@@ -116,6 +117,8 @@ export class WorkspacePathIndex {
   invalidate(): void {
     if (!this.started || this.disposed) return;
     this.revision++;
+    this.refreshController?.abort();
+    this.refreshController = undefined;
     this.clearPublishedState();
     this.trigram?.invalidate();
     this.globCache.clear();
@@ -248,9 +251,13 @@ export class WorkspacePathIndex {
     }
     if (this.disposed || !this.watching) return;
     const revision = this.revision;
+    const refreshController = new AbortController();
+    this.refreshController = refreshController;
+    const onDispose = (): void => { refreshController.abort(); };
+    this.controller.signal.addEventListener('abort', onDispose, { once: true });
     this.pending = this.cpu.request<WorkspacePathInventory>(
       { type: 'workspace.paths', root: this.root, limit: 250_000 },
-      { signal: this.controller.signal, timeoutMs: 120_000, priority: 'low' },
+      { signal: refreshController.signal, timeoutMs: 120_000, priority: 'low' },
     )
       .then(async inventory => {
         if (inventory.overflow) {
@@ -307,6 +314,8 @@ export class WorkspacePathIndex {
         this.error = undefined;
       }, error => { this.error = error; })
       .finally(() => {
+        this.controller.signal.removeEventListener('abort', onDispose);
+        if (this.refreshController === refreshController) this.refreshController = undefined;
         this.pending = undefined;
         if (!this.disposed && revision !== this.revision && this.timer === undefined) void this.refresh();
       });

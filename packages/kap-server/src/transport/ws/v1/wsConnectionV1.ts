@@ -1033,32 +1033,56 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.overLimitBackpressureRounds = 0;
 
     const serializedByFrame = new Map<unknown, string>();
+    const byteLengthsByFrame = new Map<unknown, number>();
     for (let i = 0; i < this.outbound.length; i++) {
       const text = this.outboundSerialized[i];
-      if (text !== undefined) serializedByFrame.set(this.outbound[i], text);
+      if (text !== undefined) {
+        serializedByFrame.set(this.outbound[i], text);
+        byteLengthsByFrame.set(this.outbound[i], Buffer.byteLength(text));
+      }
     }
-    this.outbound = coalesceFrames(this.outbound);
+    this.outbound = coalesceFrames(this.outbound, byteLengthsByFrame);
     this.outboundSerialized = this.outbound.map((frame) => serializedByFrame.get(frame) ?? JSON.stringify(frame));
-    this.outboundBytes = this.outboundSerialized.reduce((total, text) => total + (text === undefined ? 0 : Buffer.byteLength(text)), 0);
-    while (this.outbound.length > 0) {
-      if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
-      if (!force && this.socket.bufferedAmount > this.highWaterMarkBytes) {
-        this.deferForBackpressure();
-        return;
+    const frameBytes = this.outboundSerialized.map((text) => (text === undefined ? 0 : Buffer.byteLength(text)));
+    this.outboundBytes = frameBytes.reduce((total, bytes) => total + bytes, 0);
+    let sent = 0;
+    try {
+      for (let i = 0; i < this.outbound.length; i += 1) {
+        if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
+        if (!force && this.socket.bufferedAmount > this.highWaterMarkBytes) {
+          this.deferForBackpressure();
+          return;
+        }
+        const frame = this.outbound[i];
+        const text = this.outboundSerialized[i];
+        const bytes = frameBytes[i] ?? 0;
+        sent = i + 1;
+        if (text === undefined) continue;
+        this.outboundBytes -= bytes;
+        const type = typeof frame === 'object' && frame !== null && 'type' in frame ? frame.type : undefined;
+        if ((type === 'transcript.reset' || type === 'transcript.ops') &&
+            bytes > Math.min(64 * 1024, this.maxOutboundBufferBytes)) {
+          this.outbound.splice(0, sent);
+          this.outboundSerialized.splice(0, sent);
+          sent = 0;
+          void this.sendFragments(text);
+          return;
+        }
+        try {
+          this.socket.send(text);
+        } catch {
+        }
       }
-      const frame = this.outbound.shift();
-      const text = this.outboundSerialized.shift();
-      if (text === undefined) continue;
-      this.outboundBytes -= Buffer.byteLength(text);
-      const type = typeof frame === 'object' && frame !== null && 'type' in frame ? frame.type : undefined;
-      if ((type === 'transcript.reset' || type === 'transcript.ops') &&
-          Buffer.byteLength(text) > Math.min(64 * 1024, this.maxOutboundBufferBytes)) {
-        void this.sendFragments(text);
-        return;
-      }
-      try {
-        this.socket.send(text);
-      } catch {
+    } finally {
+      if (sent > 0) {
+        if (sent >= this.outbound.length) {
+          this.outbound = [];
+          this.outboundSerialized = [];
+          this.outboundBytes = 0;
+        } else {
+          this.outbound.splice(0, sent);
+          this.outboundSerialized.splice(0, sent);
+        }
       }
     }
   }
@@ -1441,7 +1465,15 @@ function compactTranscriptOps(ops: readonly unknown[]): unknown[] {
  * Merge adjacent compatible volatile text deltas or contiguous `transcript.ops`
  * batches into a single envelope while preserving frame order and bounds.
  */
-export function coalesceFrames(frames: readonly unknown[]): unknown[] {
+export function coalesceFrames(
+  frames: readonly unknown[],
+  byteLengths?: ReadonlyMap<unknown, number>,
+): unknown[] {
+  if (frames.length <= 1) return [...frames];
+  const measureFrameBytes = (frame: unknown): number => {
+    const cached = byteLengths?.get(frame);
+    return cached !== undefined ? cached : Buffer.byteLength(JSON.stringify(frame));
+  };
   const out: unknown[] = [];
   let pending: {
     base: CoalescableTranscriptOps;
@@ -1486,7 +1518,7 @@ export function coalesceFrames(frames: readonly unknown[]): unknown[] {
       frame.payload.cursor.seq === pending.throughSeq + 1 &&
       !frame.payload.ops.some(isUrgentTranscriptOp)
     ) {
-      const nextBytes = Buffer.byteLength(JSON.stringify(frame));
+      const nextBytes = measureFrameBytes(frame);
       if (pending.approxBytes + nextBytes > MAX_COALESCED_TRANSCRIPT_OPS_BYTES && pending.hasCompactableDup) {
         pending.ops = compactTranscriptOps(pending.ops);
         pending.approxBytes = Buffer.byteLength(JSON.stringify({
@@ -1522,7 +1554,7 @@ export function coalesceFrames(frames: readonly unknown[]): unknown[] {
         lastSeq: frame.seq,
         throughSeq: frame.payload.through_seq,
         ops: [...frame.payload.ops],
-        approxBytes: Buffer.byteLength(JSON.stringify(frame)),
+        approxBytes: measureFrameBytes(frame),
         hasCompactableDup: false,
       };
       continue;

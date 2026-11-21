@@ -40,6 +40,8 @@ export { readLogicalRange, readPinnedRange, wireFileAddress } from '#/persistenc
 const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
 const MAX_APPEND_BATCH_BYTES = 4 * 1024 * 1024;
+const AUTO_FLUSH_COALESCE_MS = 12;
+const AUTO_FLUSH_IMMEDIATE_BATCH = 64;
 
 const pendingRetirements = new Set<Promise<void>>();
 
@@ -84,6 +86,7 @@ interface LogState {
   pending: PendingAppendEntry[];
   flushPromise: Promise<void> | undefined;
   flushScheduled: boolean;
+  flushTimer?: ReturnType<typeof setTimeout>;
   storageFailure: { readonly error: unknown } | undefined;
   storageFailureRetriable: boolean;
   cutoverEpoch: number;
@@ -612,12 +615,24 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   }
 
   private scheduleFlush(scope: string, key: string, state: LogState): void {
-    if (state.flushScheduled || state.flushPromise !== undefined) return;
-    state.flushScheduled = true;
-    queueMicrotask(() => {
+    if (state.flushPromise !== undefined) return;
+    if (state.pending.length >= AUTO_FLUSH_IMMEDIATE_BATCH) {
+      if (state.flushTimer !== undefined) {
+        clearTimeout(state.flushTimer);
+        state.flushTimer = undefined;
+      }
       state.flushScheduled = false;
       void this.flushState(scope, key, state).catch((error) => state.onError?.(error));
-    });
+      return;
+    }
+    if (state.flushScheduled) return;
+    state.flushScheduled = true;
+    state.flushTimer = setTimeout(() => {
+      state.flushTimer = undefined;
+      state.flushScheduled = false;
+      void this.flushState(scope, key, state).catch((error) => state.onError?.(error));
+    }, AUTO_FLUSH_COALESCE_MS);
+    state.flushTimer.unref?.();
   }
 
   private flushLog(scope: string, key: string): Promise<void> {
@@ -626,6 +641,11 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   }
 
   private flushState(scope: string, key: string, state: LogState, retryFailure = false, recoverFailure = false): Promise<void> {
+    if (state.flushTimer !== undefined) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = undefined;
+      state.flushScheduled = false;
+    }
     if (state.flushPromise !== undefined) return state.flushPromise;
     if (state.uncertainAppend !== undefined) {
       if (!recoverFailure) return Promise.reject(state.storageFailure?.error);
