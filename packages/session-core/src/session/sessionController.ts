@@ -126,6 +126,25 @@ const WINDOW_KEEP_TURNS = 40;
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 const VISIBLE_BURST_FLUSH_INTERVAL_MS = 32;
+const INTERACTIVE_TYPING_MAX_DEFER_MS = 1200;
+
+let interactiveInputUntilMs = 0;
+
+/**
+ * Signal that the user is actively typing so browser frame flushes and
+ * background session-list updates coalesce onto a gentler cadence (~120ms)
+ * instead of competing with `beforeinput -> rAF` keystroke paints.
+ */
+export function markInteractiveInputActive(windowMs = 160): void {
+  const until = Date.now() + Math.max(0, windowMs);
+  if (until > interactiveInputUntilMs) interactiveInputUntilMs = until;
+}
+
+/** Remaining ms in the active interactive-typing yield window (0 when idle). */
+export function interactiveInputRemainingMs(): number {
+  const remaining = interactiveInputUntilMs - Date.now();
+  return remaining > 0 ? remaining : 0;
+}
 /**
  * Roster reads one agent id may cost before its row is given up on: one
  * speculative read when the agent appears, plus up to two more when later
@@ -515,6 +534,7 @@ export class SessionController {
   private frameHandle: unknown = null;
   private visibleBurstTimer: ReturnType<typeof setTimeout> | null = null;
   private lastVisibleFlushAt = 0;
+  private typingDeferStartAt = 0;
   private inFrameFlush = false;
   private frameFlushContentDirty = false;
   private frameFlushForestChanged = false;
@@ -949,9 +969,21 @@ export class SessionController {
       return;
     }
     const now = Date.now();
-    const remainingBurstCooldown = this.usesBrowserScheduler && this.lastVisibleFlushAt > 0
-      ? VISIBLE_BURST_FLUSH_INTERVAL_MS - (now - this.lastVisibleFlushAt)
-      : 0;
+    const typingRemainingMs = this.usesBrowserScheduler ? interactiveInputRemainingMs() : 0;
+    let remainingBurstCooldown = 0;
+    if (this.usesBrowserScheduler) {
+      if (typingRemainingMs > 0) {
+        if (this.typingDeferStartAt === 0) this.typingDeferStartAt = now;
+        const deferredMs = now - this.typingDeferStartAt;
+        if (deferredMs < INTERACTIVE_TYPING_MAX_DEFER_MS) {
+          remainingBurstCooldown = Math.min(typingRemainingMs, INTERACTIVE_TYPING_MAX_DEFER_MS - deferredMs);
+        }
+      } else {
+        this.typingDeferStartAt = 0;
+        const elapsedSinceFlush = this.lastVisibleFlushAt > 0 ? now - this.lastVisibleFlushAt : VISIBLE_BURST_FLUSH_INTERVAL_MS;
+        remainingBurstCooldown = VISIBLE_BURST_FLUSH_INTERVAL_MS - elapsedSinceFlush;
+      }
+    }
     if (remainingBurstCooldown > 0) {
       this.visibleBurstTimer = setTimeout(() => {
         this.visibleBurstTimer = null;
@@ -960,14 +992,21 @@ export class SessionController {
           this.scheduleFrameFlush();
           return;
         }
-        this.frameHandle = this.scheduler.schedule(() => {
-          this.frameHandle = null;
-          this.lastVisibleFlushAt = Date.now();
-          this.flushFrames();
-        });
+        const stillTypingMs = interactiveInputRemainingMs();
+        if (stillTypingMs > 0) {
+          if (this.typingDeferStartAt === 0) this.typingDeferStartAt = Date.now();
+          if (Date.now() - this.typingDeferStartAt < INTERACTIVE_TYPING_MAX_DEFER_MS) {
+            this.scheduleFrameFlush();
+            return;
+          }
+        }
+        this.typingDeferStartAt = 0;
+        this.lastVisibleFlushAt = Date.now();
+        this.flushFrames();
       }, remainingBurstCooldown);
       return;
     }
+    this.typingDeferStartAt = 0;
     this.frameHandle = this.scheduler.schedule(() => {
       this.frameHandle = null;
       if (this.usesBrowserScheduler) this.lastVisibleFlushAt = Date.now();

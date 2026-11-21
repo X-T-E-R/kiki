@@ -1,7 +1,16 @@
 import { startTransition, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
-import { dedupeSessions, isPinnedSession, mergeConversationItems, mergeSessionActivity, type ConversationWorkspace, type SessionListData, type SessionSortOrder } from '@kiki/session-core/sessions';
+import {
+  dedupeSessions,
+  isPinnedSession,
+  mergeConversationItems,
+  mergeSessionActivity,
+  type ConversationWorkspace,
+  type SessionListData,
+  type SessionSortOrder,
+} from '@kiki/session-core/sessions';
+import { interactiveInputRemainingMs } from '@kiki/session-core/session';
 import { forgetRoomSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 import { ROOMS_QUERY_KEY } from './botRooms';
@@ -55,12 +64,42 @@ export function useConversationList(sessions: readonly Session[], order: Session
     const dirty = new Set<string>();
     const lastStart = new Map<string, number>();
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    const pendingActivity = new Map<string, Session>();
+    let activityFlushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushPendingActivity = () => {
+      activityFlushTimer = undefined;
+      if (disposed || pendingActivity.size === 0) return;
+      const typingDelay = interactiveInputRemainingMs();
+      if (typingDelay > 0) {
+        activityFlushTimer = setTimeout(flushPendingActivity, typingDelay);
+        return;
+      }
+      const batch = [...pendingActivity.values()];
+      pendingActivity.clear();
+      startTransition(() => {
+        for (const fresh of batch) {
+          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
+        }
+      });
+      const pinnedReads = queryClient.getQueriesData<SessionListData>({ queryKey: PINNED_SESSIONS_QUERY_KEY });
+      if (batch.some((fresh) => isPinnedSession(fresh) && pinnedReads.some(([, data]) => !dedupeSessions(data).some((session) => session.id === fresh.id)))) {
+        void queryClient.invalidateQueries({ queryKey: PINNED_SESSIONS_QUERY_KEY });
+      }
+    };
     const read = (sessionId: string) => {
       inFlight.add(sessionId);
       dirty.delete(sessionId);
       lastStart.set(sessionId, Date.now());
       void client.getSession(sessionId).then((fresh) => {
         if (disposed) return;
+        const typingDelay = interactiveInputRemainingMs();
+        if (typingDelay > 0) {
+          pendingActivity.set(fresh.id, fresh);
+          if (activityFlushTimer === undefined) {
+            activityFlushTimer = setTimeout(flushPendingActivity, typingDelay);
+          }
+          return;
+        }
         startTransition(() => {
           queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
         });
@@ -97,6 +136,8 @@ export function useConversationList(sessions: readonly Session[], order: Session
     return () => {
       disposed = true;
       subscription.dispose();
+      if (activityFlushTimer !== undefined) clearTimeout(activityFlushTimer);
+      pendingActivity.clear();
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
     };

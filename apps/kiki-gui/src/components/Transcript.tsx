@@ -4924,7 +4924,7 @@ export const TurnTailLine = memo(function TurnTailLine({
       data-turn-tail-state={tail.state}
       role={gap === undefined ? undefined : 'status'}
       aria-live={gap === undefined ? undefined : 'polite'}
-      className={`anim-enter py-1 ${isCancelled ? 'text-amber-ink' : ''}`}
+      className={`anim-enter min-h-7 py-1 [contain:layout_style] ${isCancelled ? 'text-amber-ink' : ''}`}
     >
       <div className="flex items-center gap-3">
         <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />

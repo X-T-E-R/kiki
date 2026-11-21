@@ -3,6 +3,7 @@ import { Compartment, EditorState, StateEffect, StateField, Transaction } from '
 import { Decoration, EditorView, WidgetType, keymap, placeholder, type DecorationSet } from '@codemirror/view';
 import { insertNewline, standardKeymap } from '@codemirror/commands';
 import { findAgentRefs, findConversationRefs } from '@kiki/session-core/composer';
+import { markInteractiveInputActive } from '@kiki/session-core/session';
 import { normalizeComposerText, registerComposerInput, type ComposerInputHandle } from '../lib/composerInput';
 
 export interface ComposerReferenceLabel {
@@ -233,7 +234,12 @@ export function ComposerInput(props: ComposerInputProps) {
           inputTheme, EditorView.lineWrapping, references, skillTokens,
           config.current.of(configuration()),
           EditorView.domEventHandlers({
+            beforeinput: () => {
+              markInteractiveInputActive(160);
+              return false;
+            },
             keydown: (event) => {
+              markInteractiveInputActive(160);
               compositionKey = composing || event.isComposing || event.keyCode === 229;
               if (compositionKey) return false;
               propsRef.current.onKeyDown(event);

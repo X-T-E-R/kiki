@@ -176,6 +176,7 @@ import {
 import { usePluginPicker } from './capabilities/usePluginPicker';
 import { useMcpPicker } from './capabilities/useMcpPicker';
 import {
+  interactiveInputRemainingMs,
   interpolatePluginPromptText,
   resolvePluginLocalizedText,
   selectComposerToolbarSlots,
@@ -839,59 +840,96 @@ export function Composer({
   // Phone contract: the IME's Enter is the newline key (sending belongs to
   // the button), and the input text stays ≥16px so iOS never zooms on focus.
   const coarsePointer = useCoarsePointer();
-  // Mirror the controlled `value` locally and defer plain prose continuation
-  // updates via `startDraftTransition` so CodeMirror paints each keystroke
-  // immediately without blocking rAF on a full Composer + route re-render.
-  // Empty <-> non-empty transitions, slash/mention/link triggers, and external
-  // resets still update synchronously; `liveTextRef` always holds the latest
-  // keystroke so immediate Enter/undo/send never reads a stale prefix.
+  // Mirror the controlled `value` locally and coalesce plain prose typing
+  // updates behind a short trailing timer + `startDraftTransition` so
+  // CodeMirror paints each keystroke immediately without blocking rAF on a
+  // full Composer + SessionView re-render. Slash/mention/link triggers, IME
+  // composition, and external resets still update synchronously; `liveTextRef`
+  // always holds the latest keystroke and is passed to `ComposerInput` so a
+  // deferred local commit can never clobber newer characters.
   const normalizedPropValue = normalizeComposerText(value);
   const [, startDraftTransition] = useTransition();
   const [localText, setLocalText] = useState(normalizedPropValue);
   const liveTextRef = useRef(normalizedPropValue);
   const pendingEmitsRef = useRef<string[]>([]);
   const prevPropValueRef = useRef(normalizedPropValue);
+  const draftSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelDraftSyncTimer = useCallback(() => {
+    if (draftSyncTimerRef.current !== null) {
+      clearTimeout(draftSyncTimerRef.current);
+      draftSyncTimerRef.current = null;
+    }
+  }, []);
   if (prevPropValueRef.current !== normalizedPropValue) {
     prevPropValueRef.current = normalizedPropValue;
     const echoIndex = pendingEmitsRef.current.indexOf(normalizedPropValue);
     if (echoIndex >= 0) {
       pendingEmitsRef.current.splice(0, echoIndex + 1);
     } else {
+      cancelDraftSyncTimer();
       pendingEmitsRef.current.length = 0;
       liveTextRef.current = normalizedPropValue;
       if (localText !== normalizedPropValue) setLocalText(normalizedPropValue);
     }
   }
   const text = localText;
+  const emitChange = useCallback((next: string) => {
+    pendingEmitsRef.current.push(next);
+    if (pendingEmitsRef.current.length > 64) {
+      pendingEmitsRef.current.splice(0, pendingEmitsRef.current.length - 64);
+    }
+    onChange(next);
+  }, [onChange]);
+  const flushDraftSync = useCallback(() => {
+    cancelDraftSyncTimer();
+    const latest = liveTextRef.current;
+    startDraftTransition(() => {
+      setLocalText(latest);
+      emitChange(latest);
+    });
+  }, [cancelDraftSyncTimer, emitChange, startDraftTransition]);
+  useEffect(() => () => {
+    cancelDraftSyncTimer();
+  }, [cancelDraftSyncTimer]);
   const commitText = useCallback((nextText: string, urgent = false) => {
     const normalized = normalizeComposerText(nextText);
     const prevLive = liveTextRef.current;
     liveTextRef.current = normalized;
     if (composingRef.current) {
+      cancelDraftSyncTimer();
       pendingEmitsRef.current.length = 0;
       setLocalText(normalized);
       onChange(normalized);
       return;
     }
-    pendingEmitsRef.current.push(normalized);
-    if (pendingEmitsRef.current.length > 64) {
-      pendingEmitsRef.current.splice(0, pendingEmitsRef.current.length - 64);
-    }
-    const emptyEdgeChanged = (prevLive.trim() === '') !== (normalized.trim() === '');
     const syntaxEdge = hasSpecialDraftSyntax(prevLive) || hasSpecialDraftSyntax(normalized);
-    if (urgent || emptyEdgeChanged || syntaxEdge) {
+    if (urgent || syntaxEdge) {
+      cancelDraftSyncTimer();
       setLocalText(normalized);
       startDraftTransition(() => {
-        onChange(liveTextRef.current);
+        emitChange(liveTextRef.current);
       });
       return;
     }
+    // Plain-prose typing / clearing during active keyboard input: coalesce
+    // React state + parent sync behind a 120ms trailing timer so CodeMirror
+    // paints every keystroke with zero intermediate Composer/SessionView renders.
+    const deltaLen = Math.abs(normalized.length - prevLive.length);
+    const isInteractiveBurstEdit =
+      (interactiveInputRemainingMs() > 0 && (deltaLen === 1 || normalized === '')) ||
+      (deltaLen === 1 && prevLive.trim() !== '' && normalized.trim() !== '');
+    if (isInteractiveBurstEdit) {
+      cancelDraftSyncTimer();
+      draftSyncTimerRef.current = setTimeout(flushDraftSync, 120);
+      return;
+    }
+    cancelDraftSyncTimer();
     startDraftTransition(() => {
       const latest = liveTextRef.current;
       setLocalText(latest);
-      onChange(latest);
+      emitChange(latest);
     });
-  }, [onChange, startDraftTransition]);
+  }, [cancelDraftSyncTimer, emitChange, flushDraftSync, onChange, startDraftTransition]);
   const textareaRef = useRef<ComposerInputHandle>(null);
   const composingRef = useRef(false);
   // Custom right-click menu for the input (cut / copy / paste / select all).
@@ -1907,6 +1945,7 @@ export function Composer({
 
   /** Write a local edit and its caret in one editor transaction, then mirror the controlled value. */
   const applyTextChange = (nextText: string, cursor: number) => {
+    cancelDraftSyncTimer();
     setMenu(null);
     const nextValue = normalizeComposerText(nextText);
     const nextCursor = normalizeComposerText(nextText.slice(0, Math.max(0, Math.min(cursor, nextText.length)))).length;
@@ -2643,10 +2682,19 @@ export function Composer({
 
   /** `now`: join the running turn instead of queueing behind it (plain prompts only). */
   const send = (now = false, timing?: DeferredAppendTiming) => {
+    cancelDraftSyncTimer();
     const currentText = liveTextRef.current;
-    if (!canSend || slashCatalogPendingRef.current || composingRef.current) return;
+    const liveHasContent =
+      currentText.trim() !== '' ||
+      attachments.length > 0 ||
+      (annotations !== undefined && annotations.length > 0) ||
+      quoteItems.length > 0;
+    const canSendLive = queueEditing || messageEditing
+      ? liveHasContent && !disabled && !sendDisabled && !turnInFlight && !pendingAttachments
+      : liveHasContent && !disabled && !sendDisabled && !selectionBlocked && !pendingAttachments && !ssh.pending && !turnInFlight && !slashCatalogPending;
+    if (!canSendLive || slashCatalogPendingRef.current || composingRef.current) return;
     if (currentText !== localText) setLocalText(currentText);
-    if (currentText !== normalizedPropValue) onChange(currentText);
+    if (currentText !== normalizedPropValue) emitChange(currentText);
     sendNowRef.current = now && onSendNow !== undefined;
     sendTimingRef.current = timing;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
@@ -4033,7 +4081,7 @@ export function Composer({
             >
             <ComposerInput
               inputRef={textareaRef}
-              value={text}
+              value={liveTextRef.current}
               references={overlayTokens}
               skillSpans={skillSpans}
               label={t('composer.inputAria')}
@@ -4080,9 +4128,10 @@ export function Composer({
               }}
               onFocus={() => { setInputFocused(true); }}
               onBlur={() => {
+                cancelDraftSyncTimer();
                 const latest = liveTextRef.current;
                 if (latest !== localText) setLocalText(latest);
-                if (latest !== normalizedPropValue) onChange(latest);
+                if (latest !== normalizedPropValue) emitChange(latest);
                 setMenu(null);
                 setInputFocused(false);
                 if (textareaRef.current?.disabled) refocusOnEnableRef.current = true;
@@ -4116,7 +4165,7 @@ export function Composer({
               so regrouping them stays a local change. */}
           <div
             data-composer-toolbar
-            className="@container/toolbar flex items-center gap-0.5 px-2 pt-1 pb-2"
+            className="@container/toolbar flex items-center gap-0.5 px-2 pt-1 pb-2 [contain:layout_style]"
           >
             <input
               ref={fileInputRef}
@@ -4503,7 +4552,7 @@ export function Composer({
             Left: SSH summary trigger (`>_ GPU box +2 ▾` opening upward), active
             plugin status capsules, and working line.
             Right: SessionRemainder, statusNotice, takenOver Stop, or idle focus hints. */}
-        <div data-composer-status-line className="mt-1.5 flex min-h-6 min-w-0 items-center gap-2.5 px-1">
+        <div data-composer-status-line className="mt-1.5 flex min-h-6 min-w-0 items-center gap-2.5 px-1 [contain:layout_style]">
           {ssh.resident !== null || hasPluginStatusCapsules || working !== undefined || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
             <>
               {ssh.resident}

@@ -36,8 +36,8 @@ import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen'
 import { useHost } from '../host';
 import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../lib/peerAccess';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
-import type { SessionController } from '@kiki/session-core/session';
-import { mergeSessionWorkChanged, patchSessionWorkChanged, type SessionListData } from '@kiki/session-core/sessions';
+import { interactiveInputRemainingMs, type SessionController } from '@kiki/session-core/session';
+import { mergeSessionWorkChanged, patchSessionWorkChanged, type SessionListData, type SessionWorkChangedPatch } from '@kiki/session-core/sessions';
 import {
   settingsServerSnapshot,
   settingsSnapshot,
@@ -1466,15 +1466,50 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // and a reconnect can carry one this window never saw.
     let offPlugins = subscribePluginFreshness(klient, queryClient);
     let offPersonas = subscribePersonaFreshness(klient, queryClient);
-    const workChanged = klient.events.on('session.workChanged', (change) => {
+    const pendingWorkChanges = new Map<string, SessionWorkChangedPatch>();
+    let workChangedTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastWorkChangedFlushAt = 0;
+    const WORK_CHANGED_BURST_MS = 120;
+    const applyWorkChanges = (batch: readonly SessionWorkChangedPatch[]) => {
+      if (!active || batch.length === 0) return;
+      lastWorkChangedFlushAt = Date.now();
       startTransition(() => {
-        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
-          mergeSessionWorkChanged(old, change),
-        );
-        queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
-          old === undefined ? old : patchSessionWorkChanged(old, change),
-        );
+        for (const change of batch) {
+          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+            mergeSessionWorkChanged(old, change),
+          );
+          queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
+            old === undefined ? old : patchSessionWorkChanged(old, change),
+          );
+        }
       });
+    };
+    const flushPendingWorkChanges = () => {
+      workChangedTimer = undefined;
+      if (!active || pendingWorkChanges.size === 0) return;
+      const typingDelay = interactiveInputRemainingMs();
+      if (typingDelay > 0) {
+        workChangedTimer = setTimeout(flushPendingWorkChanges, typingDelay);
+        return;
+      }
+      const batch = [...pendingWorkChanges.values()];
+      pendingWorkChanges.clear();
+      applyWorkChanges(batch);
+    };
+    const workChanged = klient.events.on('session.workChanged', (change) => {
+      const typingDelay = interactiveInputRemainingMs();
+      const burstDelay = lastWorkChangedFlushAt > 0
+        ? Math.max(0, WORK_CHANGED_BURST_MS - (Date.now() - lastWorkChangedFlushAt))
+        : 0;
+      const delay = Math.max(typingDelay, burstDelay);
+      if (delay <= 0 && pendingWorkChanges.size === 0 && workChangedTimer === undefined) {
+        applyWorkChanges([change]);
+        return;
+      }
+      pendingWorkChanges.set(change.sessionId, change);
+      if (workChangedTimer === undefined) {
+        workChangedTimer = setTimeout(flushPendingWorkChanges, delay);
+      }
     });
     const offStatus = socket.onStatus((status) => {
       if (!active) return;
@@ -1555,6 +1590,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       active = false;
       if (initialGraceTimer !== undefined) clearTimeout(initialGraceTimer);
       if (transientGraceTimer !== undefined) clearTimeout(transientGraceTimer);
+      if (workChangedTimer !== undefined) clearTimeout(workChangedTimer);
+      pendingWorkChanges.clear();
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
