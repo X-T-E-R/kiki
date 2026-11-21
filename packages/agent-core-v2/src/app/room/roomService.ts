@@ -583,7 +583,6 @@ export class RoomService extends Disposable implements IRoomService {
         content: [{ type: 'text', text: wrapSystemReminder(text) }],
         toolCalls: [],
         origin,
-        source: 'injection',
       };
       const storage = this.storage?.current;
       if (storage !== undefined) {

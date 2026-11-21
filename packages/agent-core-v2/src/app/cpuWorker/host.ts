@@ -393,7 +393,7 @@ export class CpuWorkerPool {
       worker.once('exit', () => { resolve(); });
     });
     worker.on('message', (response: CpuResponse) => {
-      if ('type' in response && response.type === 'ready') {
+      if (!('id' in response)) {
         if (slot.worker === worker && slot.retiring === undefined) {
           slot.ready = true;
           if (slot.active === undefined && slot.drainingCancel === undefined) {
