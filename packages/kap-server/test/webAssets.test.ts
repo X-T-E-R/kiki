@@ -118,11 +118,11 @@ describe('web asset cache policy', () => {
     expect(gzip.rawPayload).toEqual(gzipSync(Buffer.from('export {};')));
   });
 
-  it('honors q=0 and falls back to the identity representation', async () => {
+  it.each(['br;q=0, gzip;q=0', 'identity;q=1, br;q=0.1'])('serves the identity representation for %s', async (acceptEncoding) => {
     const response = await app.inject({
       method: 'GET',
       url: '/assets/index-Dy7xs5tu.js',
-      headers: { 'accept-encoding': 'br;q=0, gzip;q=0' },
+      headers: { 'accept-encoding': acceptEncoding },
     });
 
     expect(response.statusCode).toBe(200);

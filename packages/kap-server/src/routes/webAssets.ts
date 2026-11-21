@@ -134,8 +134,9 @@ function negotiateAssetEncoding(
   ];
   compressed.sort((left, right) => right.quality - left.quality);
   const selected = compressed.find((candidate) => candidate.quality > 0);
-  if (selected !== undefined) return selected.encoding;
-  const identityQuality = qualities.get('identity') ?? (wildcard === 0 ? 0 : 1);
+  const explicitIdentity = qualities.get('identity');
+  if (selected !== undefined && selected.quality >= (explicitIdentity ?? 0)) return selected.encoding;
+  const identityQuality = explicitIdentity ?? (wildcard === 0 ? 0 : 1);
   return identityQuality > 0 ? 'identity' : undefined;
 }
 
