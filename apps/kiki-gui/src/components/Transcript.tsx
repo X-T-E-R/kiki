@@ -33,7 +33,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { isUndoAnchorOrigin, shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
+import { isUndoAnchorOrigin, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
 import { defaultRangeExtractor, elementScroll, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
@@ -52,15 +52,10 @@ import {
   writeAnnotationOverride,
   sourceTextVersion,
   parseSelectionCarryovers,
-  selectionCarryoverPresentation,
-  reconcileEditedThreadRefs,
   buildQuotePrefix,
   type TimelineAnnotation,
   type ComposerAttachment,
-  retainedAttachmentsFromContent,
   appendToDraft,
-  prepareThreadRefContext,
-  findThreadRefs,
 } from '@kiki/session-core/composer';
 import {
   subscribeSettings,
@@ -205,11 +200,10 @@ import { InvocationContext, SubagentResultSummary, useInvocationDetails } from '
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { plainFailure } from './agent-panel/failureText';
 import { CopyButton } from './timeline/ContentCopyButton';
-import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
+import { MessageLinkContext, MessageRowActions, messageLinkHref, useMessageLink, useMessageRowTapActions } from './RowActions';
 import { AgentRefText, AgentRefResolutionProvider, useAgentRefResolution } from './AgentRefChip';
 import { ThreadRefText } from './ThreadRefChip';
 import { PeerThreadSource } from './PeerThreadSource';
-import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
@@ -221,7 +215,8 @@ import { ContentRangeText } from './ContentRangeText';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
-import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
+import { displayUserMessageText } from './message/messageSource';
+import { EditUserRow } from './message/EditUserRow';
 import { buildMessageNodes, completedTurnIds, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
 import { writeTimelineView, type TimelineView } from './message/messageViewMode';
 import { useMessageViewContext } from './message/messageViewContext';
@@ -396,6 +391,12 @@ function isUserBlockContentIncomplete(user: UserBlock, contentRefs: readonly Con
   );
 }
 
+function canChangeUserRow(block: UserBlock): boolean {
+  return block.userMessageId !== undefined && block.promptStatus === undefined && block.steerStatus === undefined &&
+    (block.promptOutcome === undefined || (block.promptOutcome.inHistory ?? block.promptOutcome.delivered)) &&
+    block.contentPending !== true && isUndoAnchorOrigin(block.sourceOrigin);
+}
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued,
@@ -430,9 +431,6 @@ const UserMessage = memo(function UserMessage({
   const clipped = !expanded && isOverflowing;
   useFindReveal(`clamp:${block.id}`, expanded, useCallback((open: boolean) => { if (open) toggle(); }, [toggle]));
 
-  // Edit/fork need the stable wire identity; parked prompts settle through
-  // the queue strip instead of a rewrite.
-  const settled = block.promptStatus === undefined && block.steerStatus === undefined;
   const continuation = useContentContinuation(block.contentSource, USER_MESSAGE_ROOTS);
   const retryTextRead = useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
   const retryDetailsRead = useAutomaticContentRead(
@@ -519,10 +517,7 @@ const UserMessage = memo(function UserMessage({
   const isServerLoading = !isServerFailed && serverRemaining && (automaticTextRead || serverStatus?.status === 'loading');
   const anyRange = continuation.pending.some((ref) => reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
   const incomplete = block.contentPending === true || continuation.pending.length > 0;
-  const inConversationHistory = block.promptOutcome === undefined || (block.promptOutcome.inHistory ?? block.promptOutcome.delivered);
-  const origin = block.sourceOrigin as { readonly kind?: string } | undefined;
-  const editableOrigin = isUndoAnchorOrigin(block.sourceOrigin);
-  const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && inConversationHistory && !incomplete && editableOrigin;
+  const canMutate = rowActions !== undefined && !incomplete && canChangeUserRow(block);
   const canLoadIncomplete = continuation.pending.length > 0 && continuation.canRequest === true && !anyRange;
   const anyContinuationFailed = continuation.pending.some((ref) => continuation.statusOf(ref)?.status === 'error');
   const errorSignature = continuation.pending
@@ -648,45 +643,6 @@ const UserMessage = memo(function UserMessage({
     retryDetailsRead,
     continuation,
   ]);
-  // Editing rewrites the durable message, so it opens the text the message
-  // actually carries: the envelope stays (only the bubble hides it) while the
-  // generated spans around it are still projected out.
-  const editInitialText = useMemo(() => {
-    if (!editing) return '';
-    if (display.text === block.text) return bodyText;
-    return editableUserMessageText(block);
-  }, [editing, display.text, block, bodyText]);
-  const initialEditAttachments = useMemo<readonly ComposerAttachment[]>(() => {
-    if (!editing) return [];
-    if (block.queuedContent !== undefined) {
-      return retainedAttachmentsFromContent(block.queuedContent);
-    }
-    if (block.media !== undefined && block.media.length > 0) {
-      return block.media.flatMap((mediaItem): ComposerAttachment[] => {
-        const url = mediaItem.blobHash === undefined ? mediaItem.url : `blobref:${mediaItem.mime};${mediaItem.blobHash}`;
-        if (mediaItem.kind === 'file') {
-          const fileId = mediaItem.fileId;
-          if (fileId === undefined) return [];
-          return [{ kind: 'retained', name: mediaItem.name ?? fileId, content: { type: 'file', file_id: fileId, name: mediaItem.name ?? fileId, media_type: mediaItem.mime ?? 'application/octet-stream', size: mediaItem.size ?? 0 } }];
-        }
-        if (url === undefined && mediaItem.fileId === undefined) return [];
-        return [{
-          kind: 'retained',
-          name: mediaItem.name ?? mediaItem.kind,
-          content: {
-            type: mediaItem.kind,
-            name: mediaItem.name,
-            source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: mediaItem.fileId! },
-          },
-          previewUrl: url !== undefined && /^(?:data:|blob:|https?:)/.test(url) ? url : undefined,
-        }];
-      });
-    }
-    return [];
-  }, [editing, block.queuedContent, block.media]);
-  const threadRefDirectory = useThreadRefDirectory(
-    useMemo(() => findThreadRefs(bodyText).map((ref) => ref.sessionId), [bodyText]),
-  );
   const carried = carry.annotations.length > 0 || quoteItems.length > 0;
   const media = block.media ?? [];
   const agentRefs = useMemo(() => agentRefsOfBlock(block), [block]);
@@ -807,22 +763,7 @@ const UserMessage = memo(function UserMessage({
         <div className="mb-1 flex justify-end"><BridgedOriginRow block={block} /></div>
       ) : null}
       {editing && rowActions !== undefined ? (
-        <UserMessageEditor
-          initialText={editInitialText}
-          replacesCommand={origin?.kind === 'skill_activation' || origin?.kind === 'plugin_command'}
-          initialAttachments={initialEditAttachments}
-          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : (signal) => rowActions.loadEditAttachments!(block, signal)}
-          onSubmit={async (text, attachments, editedPresentation) => {
-            const prepared = reconcileEditedThreadRefs(block, editedPresentation === undefined
-              ? prepareThreadRefContext(text, threadRefDirectory.info)
-              : { text, presentation: editedPresentation });
-            const selections = selectionCarryoverPresentation(carry.selections, []);
-            const presentation = { spans: [...selections.presentation.spans, ...(shiftTextPresentation(prepared.presentation, selections.prefix.length)?.spans ?? [])] };
-            await rowActions.onEditMessage(block, selections.prefix + prepared.text, attachments, presentation);
-            setEditing(false);
-          }}
-          onCancel={() => { setEditing(false); }}
-        />
+        <EditUserRow block={block} rowActions={rowActions} onClose={() => { setEditing(false); }} />
       ) : orderedPromptSegments !== undefined ? (
         <div className="flex w-full flex-col items-end gap-1.5">
           {orderedPromptSegments.map((segment) =>
@@ -3521,6 +3462,10 @@ const MessageViewRow = memo(function MessageViewRow({
   const preview = useMediaPreview();
   const tap = useMessageRowTapActions<HTMLDivElement>();
   const messageLink = useMessageLink();
+  const [editing, setEditing] = useState(false);
+  const handoffInput = node.kind === 'user' ? node : undefined;
+  const continuation = useContentContinuation(handoffInput?.contentSource, USER_MESSAGE_ROOTS);
+  const mutateHandoff = rowActions !== undefined && handoffInput !== undefined && canChangeUserRow(handoffInput) && continuation.pending.length === 0;
   const agentLabel = t('agentMessage.agent');
   const turnId = displayNodeTurnId(node);
   const reply = node.kind === 'message' ? node.sourceBlock : undefined;
@@ -3555,13 +3500,11 @@ const MessageViewRow = memo(function MessageViewRow({
         />
       );
     }
-  } else if (node.kind === 'user' && rowActions !== undefined && node.userMessageId !== undefined && isUndoAnchorOrigin(node.sourceOrigin)) {
-    body = <UserMessage block={node} rowActions={rowActions} onOpenAgent={onOpenAgent} />;
   } else if (node.kind === 'user') {
     const sender = node.peerThread?.senderName ?? node.peerThread?.personaId ?? agentLabel;
     const receiver = context.persona?.name ?? agentLabel;
     const sourceSession = node.peerThread?.sessionId;
-    body = (
+    body = editing && mutateHandoff ? <EditUserRow block={node} rowActions={rowActions} onClose={() => { setEditing(false); }} /> : (
       <HandoffRow
         from={sender}
         to={receiver}
@@ -3614,11 +3557,16 @@ const MessageViewRow = memo(function MessageViewRow({
   // an activity summary is a projection of many, so its members carry their own
   // above and the summary itself has no index to hand over.
   const galleryId = node.kind === 'message' ? node.sourceTool?.id ?? node.sourceBlock?.id ?? node.id : node.id;
+  const showActions = mutateReply || (mutateHandoff && !editing);
   return (
     <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}
-      ref={mutateReply ? tap.rowRef : undefined} onClick={mutateReply ? tap.onClick : undefined}
-      data-actions-open={mutateReply && tap.open ? 'true' : undefined} className={mutateReply ? 'group/msg relative' : undefined}>
+      ref={showActions ? tap.rowRef : undefined} onClick={showActions ? tap.onClick : undefined}
+      data-actions-open={showActions && tap.open ? 'true' : undefined} className={showActions ? 'group/msg relative' : undefined}>
       {withGalleryOrder(galleryId, agentId, blockOrder, body)}
+      {mutateHandoff && !editing ? <MessageRowActions role="user" messageId={handoffInput.id}
+        copyText={displayUserMessageText(handoffInput).text} linkHref={messageLink?.(handoffInput.id)}
+        canEdit canFork={rowActions.canFork !== false} disabled={rowActions.disabled} forkBusy={rowActions.forkBusy}
+        onEdit={() => { setEditing(true); }} onFork={(seed) => rowActions.onFork(handoffInput, seed)} /> : null}
       {mutateReply ? <MessageRowActions role="assistant" messageId={reply.id} copyText={reply.text} linkHref={messageLink?.(reply.id)}
         canRegenerate={reply.id === latestFinalAssistantId} canFork={rowActions.canFork !== false && forkableAssistantIds.has(reply.id)}
         disabled={rowActions.disabled} forkBusy={rowActions.forkBusy}

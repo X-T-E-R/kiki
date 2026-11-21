@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Fix editing, rerunning, and forking messages sent from other threads or delivered with Send now.
+Fix editing and forking messages from other threads or Send now, and retrying failed turns that produced no reply.

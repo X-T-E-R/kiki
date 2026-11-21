@@ -148,6 +148,7 @@ export function sessionActionErrorKey(error: unknown): I18nKey | null {
         if (reason === 'background_work') return 'error.sessionBusyBackground';
         return 'error.sessionBusy';
       case API_CODES.MESSAGE_ACTION_UNAVAILABLE:
+        if (reason === 'not_latest_user_input') return 'error.messageNotLatestUserInput';
         if (reason === 'not_latest_final_assistant') return 'error.messageNotLatestAssistant';
         if (reason === 'unsupported_origin_or_role') return 'error.messageUnsupportedOrigin';
         if (reason === 'assistant_has_no_completed_user_turn') return 'error.messageNoUserTurn';

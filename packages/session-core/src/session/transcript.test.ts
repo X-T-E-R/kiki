@@ -371,6 +371,16 @@ describe('message-closure anchors', () => {
     expect(latestFinalAssistantBlockId([assistant('preamble'), { ...tool, turnId: undefined }])).toBeUndefined();
   });
 
+  it.each([undefined, 't2'])('does not regenerate an older reply past a settled input (%s)', (turnId) => {
+    const previous = { ...assistant('previous'), turnId: 't1' };
+    const input: UserBlock = { ...user('u2'), userMessageId: 'u2', turnId, sourceOrigin: { kind: 'peer_thread' } };
+    expect(latestFinalAssistantBlockId([previous, input])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([previous, input, { kind: 'tool', id: 'tool', turnId, status: 'done' } as ToolBlock])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([previous, { ...input, promptOutcome: { status: 'failed', delivered: true } }])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([previous, { ...input, promptOutcome: { status: 'failed', delivered: false } }])).toBe('previous');
+    expect(latestFinalAssistantBlockId([previous, { ...input, promptStatus: 'queued' }])).toBe('previous');
+  });
+
   it('rejects preambles followed by specialized tool-call projections', () => {
     const previous = { ...assistant('previous'), turnId: 't1' };
     const preamble = { ...assistant('preamble'), turnId: 't2' };

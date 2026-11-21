@@ -20,6 +20,7 @@ import { createViewState, projectAgentTranscriptView, type AssistantBlock, type 
 type TranscriptTurn = Parameters<typeof projectAgentTranscriptView>[2]['items'][number];
 
 import { I18nProvider } from '../i18n';
+import { createConnectedTranscriptFixture } from '../test/connectedTranscriptFixture';
 import { TranscriptDetailProvider } from './transcriptDetail';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { readTimelineView, type TimelineView } from './message/messageViewMode';
@@ -72,10 +73,14 @@ beforeAll(() => {
   install('scrollHeight', { get(this: HTMLElement) { return this.hasAttribute('data-transcript-scroll') ? 4000 : 0; } });
   install('scrollTo', { value() {} });
   vi.stubGlobal('ResizeObserver', StillResizeObserver);
+  vi.stubGlobal('__KIKI_PROXY_TARGET__', 'http://127.0.0.1:58627');
 });
+
+const editFixture = createConnectedTranscriptFixture();
 
 afterAll(async () => {
   for (const root of roots) await act(async () => { flushSync(() => { root.unmount(); }); });
+  await editFixture.close();
   for (const [key, descriptor] of originals) {
     if (descriptor === undefined) delete (HTMLElement.prototype as unknown as Record<PropertyKey, unknown>)[key];
     else Object.defineProperty(HTMLElement.prototype, key, descriptor);
@@ -93,7 +98,7 @@ function state(blocks: Block[], overrides: Partial<SessionViewState> = {}): Sess
   return { ...createViewState('session_bot'), loaded: true, transcriptReady: true, blocks, ...overrides };
 }
 
-async function render(node: ReactNode): Promise<{ container: HTMLDivElement; rerender: (next: ReactNode) => Promise<void> }> {
+async function render(node: ReactNode, connected = false): Promise<{ container: HTMLDivElement; rerender: (next: ReactNode) => Promise<void> }> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -106,8 +111,9 @@ async function render(node: ReactNode): Promise<{ container: HTMLDivElement; rer
       });
     });
   };
-  await paint(node);
-  return { container, rerender: paint };
+  const rerender = (next: ReactNode) => connected ? editFixture.render(next, paint) : paint(next);
+  await rerender(node);
+  return { container, rerender };
 }
 
 function timeline(blocks: Block[], view: TimelineView, overrides: Partial<SessionViewState> = {}, context = BOT_CONTEXT, rowActions?: TranscriptRowActions): ReactNode {
@@ -503,6 +509,32 @@ describe('message view (Bot mode)', () => {
     expect(received?.textContent).toContain('小柚 → 豆豆');
     expect(received?.textContent).toContain('changelog 还差三条，你来起草');
     expect(received?.textContent).not.toContain('来自');
+  });
+
+  it('keeps the incoming handoff and source link until Edit opens the shared editor', async () => {
+    const onOpenSession = vi.fn();
+    const onFork = vi.fn();
+    const handoff = user('incoming', '来自 小柚：请检查改动', 't1', {
+      userMessageId: 'inbound-id', sourceOrigin: { kind: 'peer_thread' },
+      peerThread: { sessionId: 'source-session', personaId: LIN.id, senderName: LIN.name, messageId: 'inbound-id' },
+    });
+    const { container } = await render(timeline([handoff], 'message', {}, { ...BOT_CONTEXT, onOpenSession }, {
+      disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork,
+    }), true);
+    const row = container.querySelector('[data-message-view-row="user"]')!;
+    expect(row.querySelector('[data-message-handoff]')?.textContent).toContain('请检查改动');
+    expect(row.querySelector('[data-edit-editor]')).toBeNull();
+    await act(async () => {
+      row.querySelector<HTMLButtonElement>('[data-message-handoff] button')!.click();
+      row.querySelector<HTMLButtonElement>('[data-row-action="fork"]')!.click();
+      row.querySelector<HTMLButtonElement>('[data-row-action="edit"]')!.click();
+    });
+    expect(onOpenSession).toHaveBeenCalledWith('source-session');
+    expect(onFork).toHaveBeenCalledWith(handoff, undefined);
+    expect(row.querySelector('[data-message-handoff]')).toBeNull();
+    expect(row.querySelector('[data-edit-editor]')?.children).toHaveLength(1);
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-edit-cancel]')!.click(); });
+    expect(row.querySelector('[data-message-handoff]')).not.toBeNull();
   });
 
   it('shows only the body of a peer-thread bubble in the message view too', async () => {

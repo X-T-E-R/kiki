@@ -99,7 +99,7 @@ async function rewriteMessage(
     const entries = await loadMessageHistoryEntries(deps.core, session.id);
     const target = requireTarget(entries, session.id, targetMessageId);
     let userEntry = target;
-    if (action === 'regenerate') userEntry = assertRegeneratableAssistant(entries, target, targetMessageId);
+    if (action === 'regenerate') userEntry = resolveRegenerationInput(entries, target, targetMessageId);
     else assertEditableUser(target, 'edit_resend', targetMessageId);
     const original = await locateLiveUser(agent, userEntry);
     const turns = undoCountFrom(agent, original);
@@ -256,13 +256,17 @@ function assertEditableUser(
   unavailable(action, targetMessageId, 'unsupported_origin_or_role', target.contextMessage.role);
 }
 
-function assertRegeneratableAssistant(
+function resolveRegenerationInput(
   entries: readonly MessageHistoryEntry[],
   target: MessageHistoryEntry,
   targetMessageId: string,
 ): MessageHistoryEntry {
-  const latestAssistant = entries.findLast((entry) => entry.contextMessage.role === 'assistant' && entry.contextMessage.toolCalls.length === 0);
   const latestInput = entries.findLast((entry) => isUndoAnchor(entry.contextMessage));
+  if (target.contextMessage.role === 'user') {
+    if (target === latestInput) return target;
+    unavailable('regenerate', targetMessageId, isUndoAnchor(target.contextMessage) ? 'not_latest_user_input' : 'unsupported_origin_or_role', 'user');
+  }
+  const latestAssistant = entries.findLast((entry) => entry.contextMessage.role === 'assistant' && entry.contextMessage.toolCalls.length === 0);
   if (
     target.contextMessage.role !== 'assistant' ||
     target.contextMessage.toolCalls.length > 0 ||

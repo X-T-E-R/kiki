@@ -723,14 +723,12 @@ export function mergeLoadedAttachments(
 /** Inline edit-resend with the same attachment pipeline as the main composer. */
 export function UserMessageEditor({
   initialText,
-  replacesCommand = false,
   initialAttachments = [],
   loadAttachments,
   onSubmit,
   onCancel,
 }: {
   initialText: string;
-  replacesCommand?: boolean;
   initialAttachments?: readonly ComposerAttachment[];
   loadAttachments?: (signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onSubmit: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<void>;
@@ -774,7 +772,6 @@ export function UserMessageEditor({
     // the X beside its send button is where this edit ends, so an outer border,
     // background and padding only drew a second frame around both.
     <div data-edit-editor className="w-full max-w-[85%]">
-      <p className="mb-1.5 px-1 text-xs text-ink-soft">{t(replacesCommand ? 'transcript.editCommandEffect' : 'transcript.editEffect')}</p>
       <Composer
         busy={false}
         disabled={submitting}

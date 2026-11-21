@@ -1076,6 +1076,27 @@ describe('TranscriptWireAdapter', () => {
     expect(invalid.getTurn('t0')?.presentation).toBeUndefined();
   });
 
+  it('opens the replacement of a legacy steer and undoes it as its own turn', () => {
+    const origin = { kind: 'peer_thread' };
+    const content = [{ type: 'text', text: 'steered input' }];
+    const history: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'opening', origin: { kind: 'user' }, input: [{ type: 'text', text: 'opening' }] },
+      { type: 'turn.steer', turnId: 0, promptId: 'steered', origin, input: content },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, uuid: 'steer-step' } },
+      { type: 'context.append_message', message: { id: 'steered', role: 'user', origin, content } },
+    ];
+    const replacement: TranscriptWireRecord = { type: 'context.undo', count: 1, replacementPrompt: {
+      promptId: 'new-request', userMessageId: 'steered',
+      message: { id: 'steered', role: 'user', origin, content: [{ type: 'text', text: 'edited input' }] },
+    } };
+    const rewritten = replay([...history, replacement]);
+    expect(rewritten.getTurn('t0')?.steps.flatMap(step => step.frames)).not.toContainEqual(expect.objectContaining({ frameId: 'steered' }));
+    expect(rewritten.getTurn('t1')).toMatchObject({ prompt: 'edited input', message: { messageId: 'steered' } });
+    const undone = replay([...history, replacement, { type: 'context.undo', count: 1 }]);
+    expect(undone.getTurn('t0')?.prompt).toBe('opening');
+    expect(undone.getTurn('t1')).toBeUndefined();
+  });
+
   it('classifies unfinished turns after a restart without a user stop', () => {
     const transcript = replay([records[0]!]);
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'recovery' });

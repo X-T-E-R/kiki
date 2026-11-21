@@ -15,7 +15,7 @@ import type {
   UsageStatus,
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
-import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
+import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, isUndoAnchorOrigin, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import { turnGapOf } from './window';
 
 export { recoverTranscriptTurn } from './window';
@@ -4781,7 +4781,12 @@ export function latestFinalAssistantBlockId(
         return assistantMessageIdFromBlock(block) === undefined ? undefined : block.id;
       }
     }
-    if (block.kind === 'user' && turnId === undefined) unscopedTurn += 1;
+    if (block.kind === 'user') {
+      if (block.promptStatus === undefined && block.steerStatus === undefined && block.optimisticStatus === undefined &&
+          (block.promptOutcome === undefined || (block.promptOutcome.inHistory ?? block.promptOutcome.delivered)) &&
+          isUndoAnchorOrigin(block.sourceOrigin)) return undefined;
+      if (turnId === undefined) unscopedTurn += 1;
+    }
   }
   return undefined;
 }

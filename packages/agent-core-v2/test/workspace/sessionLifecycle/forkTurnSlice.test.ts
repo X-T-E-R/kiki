@@ -74,12 +74,23 @@ describe('sliceMainRecordsAtTurn message boundaries', () => {
     expect(latest.lastPrompt).toBe('three');
   });
 
+  it('keeps the settled steer through the selected reply and drops unpaired input records', () => {
+    const steer = { type: 'turn.steer', turnId: 0, promptId: 'steer-input', input: [{ type: 'text', text: 'follow-up' }], origin: { kind: 'user' }, time: 5 };
+    const undelivered = { ...steer, promptId: 'undelivered', input: [{ type: 'text', text: 'not delivered' }], time: 4 };
+    const settled = user('steer-input', 'follow-up', 6);
+    const reply = assistant('steered-reply', 'follow-up reply', 7);
+    const slice = sliceMainRecordsAtTurn([...records.slice(0, 4), undelivered, steer, settled, reply], 'source', 1, false, 'steered-reply');
+    expect(slice.records).toEqual([...records.slice(0, 4), steer, settled, reply]);
+  });
+
   it('cuts edit and regenerate replacements at their undo fact rather than the original user record', () => {
     const replacement = {
       type: 'context.undo', count: 1, time: 8,
-      replacementPrompt: { id: 'replacement', message: user('u2', 'edited', 8)['message'] },
+      replacementPrompt: { promptId: 'replacement', message: user('u2', 'edited', 8)['message'] },
     };
-    const rewritten = [...records, replacement, assistant('a3', 'new reply', 9)];
+    const prompt = { type: 'turn.prompt', turnId: 2, promptId: 'replacement', managed: true, origin: { kind: 'user' }, time: 9 };
+    const rewritten = [...records, replacement, prompt, assistant('a3', 'new reply', 10)];
+    expect(sliceMainRecordsAtTurn(rewritten, 'session_test', 1, false, 'a3').records).toContainEqual(prompt);
     const sliced = sliceMainRecordsAtTurn(rewritten, 'session_test', 1, true);
     expect(sliced.records.at(-1)).toEqual(replacement);
     expect(sliced.cutoffTime).toBe(8);

@@ -92,7 +92,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
   let base: string;
   let seeds: ScopeSeed | undefined;
   let modelRequestCount = 0;
-  let modelRequestMode: 'complete' | 'pending' = 'complete';
+  let modelRequestMode: 'complete' | 'pending' | 'fail' = 'complete';
   let modelRequestStarted: (() => void) | undefined;
   let modelRequestGate: Promise<void> | undefined;
 
@@ -137,6 +137,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
             modelRequestStarted?.();
             await gate;
           }
+          if (modelRequestMode === 'fail') throw new Error('fixture failure before assistant output');
           if (modelRequestMode === 'pending') {
             modelRequestStarted?.();
             yield { type: 'part' as const, part: { type: 'text' as const, text: 'partial answer' } };
@@ -1001,6 +1002,44 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect((await getJson<PageWire>(`/api/sessions/${id}/messages`)).body.data.items.map((item) => item.id)).toEqual(['failed_input', 'system_reply', 'prior_input']);
   });
 
+  it('retries the latest failed user input with its original origin and attachment', async () => {
+    const { id, main, submitted } = await createTerminalPrompt('Earlier input');
+    const earlierReply = (await readActionBlocks(id)).findLast((block) => block.kind === 'assistant')!;
+    const earlierReplyId = assistantMessageIdFromBlock(earlierReply)!;
+    const origin = { kind: 'system_trigger', name: 'thread_create' } as const;
+    const content: ContextMessage['content'] = [
+      { type: 'text', text: 'Input with no assistant output' },
+      { type: 'audio_url', audioUrl: { url: 'data:audio/ogg;base64,T2dnUw==', name: 'voice.ogg' } },
+    ];
+    modelRequestMode = 'fail';
+    const failed = await main.accessor.get(IAgentPromptService).enqueue({
+      id: 'failed-user-input', message: { role: 'user', content, toolCalls: [], origin },
+    });
+    expect(await failed.completion).toMatchObject({ state: 'failed' });
+    await waitForTerminal(main);
+    const failedBlocks = await readActionBlocks(id);
+    expect(failedBlocks.filter((block) => block.kind === 'assistant').map(assistantMessageIdFromBlock)).toEqual([earlierReplyId]);
+    expect(failedBlocks.findLast((block) => block.kind === 'user')).toMatchObject({ userMessageId: failed.userMessageId, sourceOrigin: origin });
+
+    const expected_cursor = await stableCursor(id);
+    for (const [messageId, reason] of [[earlierReplyId, 'not_latest_final_assistant'], [submitted.data.user_message_id, 'not_latest_user_input']]) {
+      const stale = await postJson(`/api/sessions/${id}/messages/${messageId}:regenerate`, { expected_cursor });
+      expect(stale).toMatchObject({ code: 40936, details: { reason } });
+    }
+    modelRequestMode = 'complete';
+    const regenerated = await postJson<PromptWire>(`/api/sessions/${id}/messages/${failed.userMessageId}:regenerate`, { expected_cursor });
+    expect(regenerated.code, JSON.stringify(regenerated)).toBe(0);
+    expect(regenerated.data.prompt_id).not.toBe(failed.id);
+    expect(regenerated.data.user_message_id).toBe(failed.userMessageId);
+    await waitForTerminal(main);
+    const context = main.accessor.get(IAgentContextMemoryService).get();
+    expect(context.filter((message) => message.id === failed.userMessageId)).toMatchObject([{ origin, content }]);
+    const retried = await readActionBlocks(id);
+    const input = retried.findLast((block) => block.kind === 'user');
+    expect(input?.turnId).toBeDefined();
+    expect(retried.findLast((block) => block.kind === 'assistant')).toMatchObject({ turnId: input?.turnId, text: 'fixture answer' });
+  });
+
   it('rejects unsupported message roles with MESSAGE_ACTION_UNAVAILABLE', async () => {
     const id = await createSession();
     await seedMainAgentMessages(id, [
@@ -1511,9 +1550,11 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     return agentTranscriptToBlocks(body.data);
   }
 
-  it('forks, edits and regenerates the initial prompt from ThreadCreate across a server restart', async () => {
+  it('forks the original, regenerated and edited ThreadCreate prompt across cold loads', async () => {
     const source = await createSession();
-    const caller = await ensureMainAgent(getLiveSessionById(server!.core.accessor, source)!);
+    const sourceSession = getLiveSessionById(server!.core.accessor, source)!;
+    const caller = await ensureMainAgent(sourceSession);
+    const workspaceId = sourceSession.accessor.get(ISessionContext).workspaceId;
     const execution = await caller.accessor.get(IThreadCreateTool).resolveExecution({ prompt: 'Created thread task', model_alias: 'stub', effort: 'high' });
     if (!('execute' in execution)) throw new Error(JSON.stringify(execution.output));
     const created = await execution.execute({ turnId: 0, toolCallId: 'create-thread', signal: new AbortController().signal });
@@ -1534,12 +1575,30 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       expect.objectContaining({ kind: 'message', origin: 'ordinary_final', messageId: replyId }),
     ]));
 
-    const fork = await postJson<{ id: string; forked_from: unknown }>(`/api/sessions/${id}:fork`, {
-      through_message_id: replyId, expected_cursor: await stableCursor(id), seed: 'verbatim',
-    });
-    expect(fork.code, JSON.stringify(fork)).toBe(0);
-    expect(fork.data.forked_from).toMatchObject({ turn_index: 0, through_user_message: false });
-    expect((await readActionBlocks(fork.data.id)).some((block) => block.kind === 'assistant' && block.text === 'fixture answer')).toBe(true);
+    async function forkAndColdRead(throughMessageId: string, expectedText: string, promptId?: string) {
+      const fork = await postJson<{ id: string; forked_from: unknown }>(`/api/sessions/${id}:fork`, {
+        through_message_id: throughMessageId, expected_cursor: await stableCursor(id), seed: 'verbatim',
+      });
+      expect(fork.code, JSON.stringify(fork)).toBe(0);
+      expect(fork.data.forked_from).toMatchObject({ turn_index: 0, through_user_message: false });
+      const core = server!.core.accessor;
+      const forkId = fork.data.id;
+      const forkMain = await ensureMainAgent(getLiveSessionById(core, forkId)!);
+      const wire = await readMainWireRecords(forkMain);
+      const head = wire.findLast((record) => record.type === 'turn.prompt');
+      expect(head).toMatchObject({ origin: { kind: 'system_trigger', name: 'thread_create' }, ...(promptId === undefined ? {} : { promptId }) });
+      await closeSessionById(core, forkId);
+      expect(getLiveSessionById(core, forkId)).toBeUndefined();
+      const cold = await readActionBlocks(forkId);
+      const userBlock = cold.findLast((block) => block.kind === 'user');
+      expect(userBlock).toMatchObject({ userMessageId, text: expectedText, sourceOrigin: { kind: 'system_trigger', name: 'thread_create' } });
+      expect(userBlock?.turnId).toBeDefined();
+      expect(cold.findLast((block) => block.kind === 'assistant')).toMatchObject({ turnId: userBlock?.turnId, text: 'fixture answer' });
+      const read = await core.get(IThreadCommunicationService).readThread({ thread: { hostId: 'local', workspaceId, sessionId: forkId } });
+      expect(read.turns.at(-1)).toMatchObject({ turnId: head?.['turnId'], input: expectedText, output: 'fixture answer', origin: 'thread_created', reason: 'completed' });
+    }
+
+    await forkAndColdRead(replyId, 'Created thread task');
 
     await server!.close();
     await boot();
@@ -1556,6 +1615,10 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(regenerated.data.user_message_id).toBe(userMessageId);
     const restored = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
     await waitForTerminal(restored);
+    const regeneratedReply = (await readActionBlocks(id)).findLast((block) => block.kind === 'assistant')!;
+    const regeneratedReplyId = assistantMessageIdFromBlock(regeneratedReply)!;
+    expect(regeneratedReplyId).not.toBe(replyId);
+    await forkAndColdRead(regeneratedReplyId, 'Created thread task', regenerated.data.prompt_id);
 
     const edited = await postJson<PromptWire>(`/api/sessions/${id}/messages/${userMessageId}:edit`, {
       content: [{ type: 'text', text: 'Edited thread task' }], expected_cursor: await stableCursor(id),
@@ -1564,6 +1627,10 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(edited.data.user_message_id).toBe(userMessageId);
     await waitForTerminal(restored);
     expect(modelRequestCount).toBe(3);
+    const editedReply = (await readActionBlocks(id)).findLast((block) => block.kind === 'assistant')!;
+    const editedReplyId = assistantMessageIdFromBlock(editedReply)!;
+    expect(editedReplyId).not.toBe(regeneratedReplyId);
+    await forkAndColdRead(editedReplyId, 'Edited thread task', edited.data.prompt_id);
     const checkEdited = async () => expect((await readActionBlocks(id)).filter((block) => block.kind === 'user')).toMatchObject([
       { userMessageId, text: 'Edited thread task', sourceOrigin: { kind: 'system_trigger', name: 'thread_create' } },
     ]);

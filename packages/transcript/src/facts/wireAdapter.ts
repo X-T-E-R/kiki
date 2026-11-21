@@ -61,7 +61,7 @@ interface PendingSteerMedia {
 export interface PendingSteer {
   readonly promptId: string;
   readonly explicitPromptId?: string;
-  readonly ordinal?: number;
+  readonly ordinal: number;
   readonly text: string;
   readonly presentation?: import('../contract/presentation').TextPresentation;
   readonly media: readonly PendingSteerMedia[];
@@ -109,7 +109,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly canonicalTurns: readonly string[];
   readonly undoAnchors: readonly string[];
   readonly turnOwnedItemIds: readonly [string, readonly string[]][];
-  readonly steeredMessageIds: readonly string[];
+  readonly steeredMessages: readonly [string, number][];
   readonly pendingSteers: readonly [string, readonly PendingSteer[]][];
   readonly pendingTaskNotifications: readonly [string, readonly TranscriptWireRecord[]][];
   readonly projectedTaskNotificationIds: readonly string[];
@@ -159,7 +159,7 @@ export class TranscriptWireAdapter {
   readonly #canonicalTurns = new Set<string>();
   readonly #undoAnchors = new Set<string>();
   readonly #turnOwnedItemIds = new Map<string, string[]>();
-  readonly #steeredMessageIds = new Set<string>();
+  readonly #steeredMessages = new Map<string, number>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
   readonly #pendingTaskNotifications = new Map<string, TranscriptWireRecord[]>();
   readonly #projectedTaskNotificationIds = new Set<string>();
@@ -235,7 +235,7 @@ export class TranscriptWireAdapter {
       canonicalTurns: [...this.#canonicalTurns],
       undoAnchors: [...this.#undoAnchors],
       turnOwnedItemIds: [...this.#turnOwnedItemIds],
-      steeredMessageIds: [...this.#steeredMessageIds],
+      steeredMessages: [...this.#steeredMessages],
       pendingSteers: [...this.#pendingSteers],
       pendingTaskNotifications: [...this.#pendingTaskNotifications],
       projectedTaskNotificationIds: [...this.#projectedTaskNotificationIds],
@@ -313,7 +313,7 @@ export class TranscriptWireAdapter {
     replaceSet(this.#canonicalTurns, checkpoint.canonicalTurns);
     replaceSet(this.#undoAnchors, checkpoint.undoAnchors);
     replaceMap(this.#turnOwnedItemIds, checkpoint.turnOwnedItemIds.map(([key, value]) => [key, [...value]]));
-    replaceSet(this.#steeredMessageIds, checkpoint.steeredMessageIds);
+    replaceMap(this.#steeredMessages, checkpoint.steeredMessages);
     replaceMap(this.#pendingSteers, checkpoint.pendingSteers.map(([key, value]) => [key, [...value]]));
     replaceMap(
       this.#pendingTaskNotifications,
@@ -1707,9 +1707,9 @@ export class TranscriptWireAdapter {
     this.#pendingSteers.delete(turnId);
     const operations: TranscriptOperation[] = [];
     for (const steer of pending) {
-      if (steer.explicitPromptId !== undefined) this.#steeredMessageIds.add(steer.explicitPromptId);
+      if (steer.explicitPromptId !== undefined) this.#steeredMessages.set(steer.explicitPromptId, steer.ordinal);
       if (isUndoAnchorOrigin(steer.origin) && !this.#deliveryUndoRecords.has(steer.promptId)) {
-        this.#deliveryUndoRecords.set(steer.promptId, { ordinal: steer.ordinal ?? this.#recordOrdinal, anchor: true });
+        this.#deliveryUndoRecords.set(steer.promptId, { ordinal: steer.ordinal, anchor: true });
         if (!this.#deliveries.has(steer.promptId)) {
           this.#deliveries.set(steer.promptId, {
             deliveryId: `legacy:steer:${steer.promptId}`,
@@ -1764,12 +1764,14 @@ export class TranscriptWireAdapter {
   private consumeSteeredUserMessage(
     messageId: string,
     origin: Readonly<Record<string, unknown>> | undefined,
+    ordinal: number,
   ): boolean {
-    if (this.#steeredMessageIds.has(messageId)) return true;
+    if (this.#steeredMessages.has(messageId)) return true;
     const turnId = this.#currentTurnId;
     const pending = turnId === undefined ? undefined : this.#pendingSteers.get(turnId);
-    if (pending?.some((steer) => steer.explicitPromptId === messageId)) {
-      this.#steeredMessageIds.add(messageId);
+    const steer = pending?.find((item) => item.explicitPromptId === messageId);
+    if (steer !== undefined) {
+      this.#steeredMessages.set(messageId, steer.ordinal);
       return true;
     }
     if (turnId === undefined || !isVisibleLegacyTurnOrigin(this.agentId, origin)) return false;
@@ -1778,7 +1780,7 @@ export class TranscriptWireAdapter {
     const count = credits?.get(originKind) ?? 0;
     if (count === 0) return false;
     credits!.set(originKind, count - 1);
-    this.#steeredMessageIds.add(messageId);
+    this.#steeredMessages.set(messageId, ordinal);
     return true;
   }
 
@@ -1800,16 +1802,14 @@ export class TranscriptWireAdapter {
       }
       const canonicalDelivery = objectOf(record['delivery']);
       if (canonicalDelivery !== undefined) return this.deliveredMessage(record, message, ordinal, canonicalDelivery);
-      if (messageId === this.#currentPromptId || this.#deliveries.has(messageId)) return [];
-      const origin = objectOf(message['origin']);
-      if (this.consumeSteeredUserMessage(messageId, origin)) return [];
-      if (
+      if (!opensTurn && (messageId === this.#currentPromptId || this.#deliveries.has(messageId) || this.consumeSteeredUserMessage(messageId, origin, ordinal))) return [];
+      if (!opensTurn && (
         notificationId !== undefined ||
         origin?.['kind'] === 'agent_message' ||
         origin?.['kind'] === 'branch_fold' ||
         origin?.['kind'] === 'injection' ||
-        (!opensTurn && this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
-      ) return this.deliveredMessage(record, message, ordinal);
+        (this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
+      )) return this.deliveredMessage(record, message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
       if (!isVisibleLegacyTurnOrigin(this.agentId, origin)) return [];
       const turnId = `t${turnOrdinal}`;
@@ -2846,6 +2846,7 @@ export class TranscriptWireAdapter {
   }
 
   private removeDeliverySuffix(ordinal: number): TranscriptOperation[] {
+    for (const [id, source] of this.#steeredMessages) if (source >= ordinal) this.#steeredMessages.delete(id);
     const ids: string[] = [];
     for (const [messageId, record] of this.#deliveryUndoRecords) {
       if (record.ordinal < ordinal) continue;

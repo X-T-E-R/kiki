@@ -327,6 +327,7 @@ export const commonZh = {
   'error.messageNoUserTurn': '这条回复前没有可重跑的对话轮次。',
   'error.messageNotFoundInHistory': '这条消息不在已提交的会话历史中。',
   'error.messageNotLatestAssistant': '只能重新执行最新一条最终回复。',
+  'error.messageNotLatestUserInput': '只能重试最新一条输入。',
   'error.messageUnsupportedForkBoundary': '只能从用户消息或每轮的最终回复处复刻。',
   'error.messageUnsupportedOrigin': '系统或非用户输入消息无法直接编辑。',
   'error.nothingToCompact': '暂无可安全压缩的较早上下文。',

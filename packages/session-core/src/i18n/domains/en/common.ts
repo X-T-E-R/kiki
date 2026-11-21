@@ -327,6 +327,7 @@ export const commonEn = {
   'error.messageNoUserTurn': 'This reply has no preceding editable turn to re-run.',
   'error.messageNotFoundInHistory': 'This message is not in the committed conversation history.',
   'error.messageNotLatestAssistant': 'Only the latest final reply can be re-run.',
+  'error.messageNotLatestUserInput': 'Only the latest input can be retried.',
   'error.messageUnsupportedForkBoundary': 'Forking is only available from a user message or a turn’s final reply.',
   'error.messageUnsupportedOrigin': 'System or non-editable messages cannot be edited directly.',
   'error.nothingToCompact': 'There is no safe earlier context to compact.',

@@ -89,7 +89,7 @@ export function sliceMainRecordsAtTurn(
       }
     }
   }
-  const retainedTurnInputs = turnInputIndicesThrough(records, start);
+  const retainedTurnInputs = retainedTurnInputIndices(records, end);
   const retained = records
     .slice(0, end)
     .filter(
@@ -162,27 +162,29 @@ function isUserVisibleTurnInputRecord(record: WireRecord): boolean {
   return isUserVisibleTurnOrigin(origin);
 }
 
-function turnInputIndicesThrough(
+function retainedTurnInputIndices(
   records: readonly WireRecord[],
-  throughRecordIndex: number,
+  end: number,
 ): ReadonlySet<number> {
   const pending: number[] = [];
   const retained = new Set<number>();
-  for (let index = 0; index < records.length; index += 1) {
+  const replacements = new Set<string>();
+  for (let index = 0; index < end; index += 1) {
     const record = records[index]!;
+    if (record.type === 'context.undo') {
+      const promptId = asRecord(record['replacementPrompt'])?.['promptId'];
+      if (typeof promptId === 'string') replacements.add(promptId);
+    }
     if (isUserVisibleTurnInputRecord(record)) {
-      pending.push(index);
+      const promptId = record['promptId'];
+      if (typeof promptId === 'string' && replacements.has(promptId)) retained.add(index);
+      else pending.push(index);
       continue;
     }
     if (!isUserVisibleTurnRecord(record)) continue;
 
     const matchAt = findMatchingTurnInput(records, pending, record);
-    if (matchAt !== -1) {
-      const [inputIndex] = pending.splice(matchAt, 1);
-      if (index <= throughRecordIndex && inputIndex !== undefined) {
-        retained.add(inputIndex);
-      }
-    }
+    if (matchAt !== -1) retained.add(pending.splice(matchAt, 1)[0]!);
   }
   return retained;
 }
