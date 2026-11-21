@@ -138,7 +138,7 @@ function holdSegmentReads(): { entered: Promise<void>; release: () => void; rest
   let releaseHold: () => void = () => {};
   const hold = new Promise<void>((resolve) => { releaseHold = resolve; });
   FileStorageService.prototype.read = async function (this: FileStorageService, scope, key, options) {
-    if (arm && key.includes('.deflate')) {
+    if (arm && (key.includes('.deflate') || key.includes('.zst'))) {
       if (!seen) {
         seen = true;
         notify();

@@ -45,7 +45,7 @@ export interface IConstructorSignature<T, Args extends any[] = []> {
 
 export type GetLeadingNonServiceArgs<TArgs extends any[]> =
   TArgs extends [] ? []
-  : TArgs extends [...infer TFirst, BrandedService] ? GetLeadingNonServiceArgs<TFirst>
+  : TArgs extends [...infer TFirst, BrandedService | LiveRef<any>] ? GetLeadingNonServiceArgs<TFirst>
   : TArgs;
 
 export interface ServiceIdentifier<T> {

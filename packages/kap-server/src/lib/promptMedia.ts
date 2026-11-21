@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -501,21 +500,6 @@ export async function resolvePromptMediaFiles(
         const [originalPath, finalSaved] = await Promise.all([
           resolveOriginalsDir().then((dir) => persistOriginalImage(data, mediaType, { dir })),
           (async () => {
-            if (options.sessionMedia !== undefined) {
-              const savedMeta: FileMeta = {
-                id: `f_${randomUUID()}`,
-                name: compressedName,
-                media_type: compressed.mimeType,
-                size: compressedBuffer.byteLength,
-                created_at: new Date().toISOString(),
-              };
-              const savedFile: GetResult = {
-                meta: savedMeta,
-                stream: () => Readable.from(compressedBuffer),
-              };
-              await retainSessionMedia(options.sessionMedia, savedFile, compressedBuffer, true);
-              return savedFile;
-            }
             const saved = await store.save(
               Readable.from(compressedBuffer),
               compressedName,
@@ -526,6 +510,7 @@ export async function resolvePromptMediaFiles(
               meta: saved,
               stream: () => Readable.from(compressedBuffer),
             };
+            await retainSessionMedia(options.sessionMedia, savedFile, compressedBuffer, true);
             return savedFile;
           })(),
         ]);

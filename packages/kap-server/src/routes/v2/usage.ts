@@ -66,7 +66,7 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
     reply.send(okEnvelope(core.accessor.get(IRequestGovernance).agentSnapshot(), req.id));
   });
   app.get(agents.path, agents.options, agents.handler as Parameters<V2UsageRouteHost['get']>[2]);
-  const { service } = usageRuntime(core);
+  const getService = () => usageRuntime(core).service;
   const accounting = defineRoute({
     method: 'GET', path: '/usage/sessions/:sessionId/accounting',
     params: z.object({ sessionId: z.string().min(1) }), success: { data: usageAccountingSnapshotSchema },
@@ -80,7 +80,7 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
       }
       const result = await withReplyCloseSignal(
         reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
-        (signal) => service.readSessionAccounting(summary.workspaceId, summary.id, signal), req,
+        (signal) => getService().readSessionAccounting(summary.workspaceId, summary.id, signal), req,
       );
       reply.send(okEnvelope(result, req.id));
     } catch (error) {
@@ -96,14 +96,14 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
     method: 'GET', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
     operationId: 'getUsageRescan', tags: ['usage'],
   }, (req, reply) => {
-    reply.send(okEnvelope(service.rescanStatus(), req.id));
+    reply.send(okEnvelope(getService().rescanStatus(), req.id));
   });
   app.get(rescanStatus.path, rescanStatus.options, rescanStatus.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const rescanStart = defineRoute({
     method: 'POST', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
     operationId: 'startUsageRescan', tags: ['usage'],
   }, (req, reply) => {
-    reply.send(okEnvelope(service.startFullRescan(), req.id));
+    reply.send(okEnvelope(getService().startFullRescan(), req.id));
   });
   app.post(rescanStart.path, rescanStart.options, rescanStart.handler as Parameters<V2UsageRouteHost['post']>[2]);
   const route = defineRoute(
@@ -124,7 +124,7 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
       try {
         const result = await withReplyCloseSignal(
           reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
-          (signal) => service.query(req.query, signal),
+          (signal) => getService().query(req.query, signal),
           req,
         );
         reply.send(okEnvelope(result, req.id));

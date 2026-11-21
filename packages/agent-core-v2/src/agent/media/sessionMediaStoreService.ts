@@ -1,4 +1,5 @@
 import { extname } from 'node:path';
+import { Readable } from 'node:stream';
 
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -113,25 +114,19 @@ export class ScopedMediaStore implements ISessionMediaStore {
     const ext = extname(input.name) || (mediaExtensionForMime(input.mimeType) ?? '.bin');
     const key = this.keyFor(input.fileId, ext);
     const existingSize = await this.storage.size(this.scope, key);
-    const writeBytes = existingSize === input.size
-      ? Promise.resolve()
-      : input.data !== undefined
-        ? this.storage.write(this.scope, key, input.data, { atomic: true })
-        : this.storage.writeStream(
-            this.scope,
-            key,
-            input.stream() as NodeJS.ReadableStream & AsyncIterable<Uint8Array>,
-            { atomic: true, signal: input.signal },
-          );
-    await Promise.all([
-      writeBytes,
-      this.documents.set(this.scope, this.metadataKey(input.fileId), {
-        version: 1,
-        key,
-        name: input.name,
-        mediaType: input.mimeType,
-      }),
-    ]);
+    if (existingSize !== input.size) {
+      const source = (input.data !== undefined ? Readable.from([input.data]) : input.stream()) as NodeJS.ReadableStream & AsyncIterable<Uint8Array>;
+      await this.storage.writeStream(this.scope, key, source, {
+        atomic: true,
+        signal: input.signal,
+      });
+    }
+    await this.documents.set(this.scope, this.metadataKey(input.fileId), {
+      version: 1,
+      key,
+      name: input.name,
+      mediaType: input.mimeType,
+    });
     return this.storage.pathFor(this.scope, key);
   }
 

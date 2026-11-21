@@ -949,7 +949,7 @@ export class ExternalTurnRecorder {
       );
     }
     await this.#wire.flush();
-    this.#context.appendLoopEvent(this.#session.isPrivate?.() === true
+    this.#context.appendLoopEvent(this.#session?.isPrivate?.() === true
       ? {
           type: 'step.end',
           uuid: this.stepId,

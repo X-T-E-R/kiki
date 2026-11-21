@@ -164,7 +164,7 @@ export class SubagentTool implements ISubagentTool {
     @IModelService private readonly models: IModelService,
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
-    @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
+    @IAdhocEndpointVault private readonly endpointVault?: IAdhocEndpointVault,
     @ref(IAgentGoalService) private readonly goals?: LiveRef<IAgentGoalService>,
   ) {
     this.callerAgentId = scopeContext.agentId;
@@ -236,12 +236,12 @@ export class SubagentTool implements ISubagentTool {
       if (alias === undefined) return;
       const trimmed = alias.trim();
       if (trimmed.length === 0 || trimmed === 'auto' || trimmed === 'inherit') return;
-      const resolved = this.models.resolveId(trimmed) ?? trimmed;
+      const resolved = this.models.resolveId?.(trimmed) ?? trimmed;
       if (seen.has(resolved)) return;
       seen.add(resolved);
       out.push(resolved);
     };
-    add(this.models.getDefaultModel());
+    add(this.models.getDefaultModel?.());
     add(this.config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.defaultModel);
     add(callerModelAlias);
     for (const profile of profiles) {
@@ -604,7 +604,7 @@ export class SubagentTool implements ISubagentTool {
             selectorCall: { turnId: parentTurnId, toolCallId },
             name: args.name?.trim(),
             endpoint: normalizeEndpointLayer(args as unknown as Record<string, unknown>),
-            endpointSecretRef: this.endpointVault.claim(this.callerAgentId, toolCallId),
+            endpointSecretRef: this.endpointVault?.claim(this.callerAgentId, toolCallId),
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
             thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
             executorInstance: args.executor_instance,
@@ -623,7 +623,7 @@ export class SubagentTool implements ISubagentTool {
             args.prompt,
             {
               endpoint: normalizeEndpointLayer(args as unknown as Record<string, unknown>),
-              endpointSecretRef: this.endpointVault.claim(this.callerAgentId, toolCallId),
+              endpointSecretRef: this.endpointVault?.claim(this.callerAgentId, toolCallId),
               signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: prepared.policy,
               allowParentNotify: args.allow_parent_notify,
               description: args.description,

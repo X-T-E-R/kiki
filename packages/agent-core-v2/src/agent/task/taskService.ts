@@ -2190,9 +2190,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     settlement: AgentTaskSettlement,
   ): Promise<boolean> {
     if (entry.stopCleanup !== undefined) await entry.stopCleanup;
-    if (entry.cleanupFailure !== undefined || TERMINAL_STATUSES.has(entry.status)) return false;
+    if (this.restoreDisposed || entry.cleanupFailure !== undefined || TERMINAL_STATUSES.has(entry.status)) return false;
     const info = this.toInfo(entry);
-    if (info.kind === 'agent' && info.agentId !== undefined && this.executionControl.isParked(info.agentId)) {
+    if (this.executionControl.isHeld()) await this.syncPausedRequiredAgents();
+    if (this.restoreDisposed || entry.cleanupFailure !== undefined || TERMINAL_STATUSES.has(entry.status)) return false;
+    if (this.hasPausedExecution(info)) {
       await this.persistLive(entry);
       return false;
     }
@@ -2218,7 +2220,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       (entry.finalOutput !== undefined && Buffer.byteLength(entry.finalOutput, 'utf-8') > MAX_OUTPUT_BYTES))) {
       await this.commitTerminal(entry);
     }
-    if (entry.cleanupFailure !== undefined) return false;
+    if (this.restoreDisposed || entry.cleanupFailure !== undefined) return false;
     this.fireTerminalEffects(entry);
     foregroundRelease?.resolve('terminal');
     this.resolveWaiters(entry);
@@ -2241,6 +2243,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           outputTail = (await this.getOutputSnapshot(info.taskId, TERMINAL_OUTPUT_TAIL_BYTES)).preview;
         } catch {}
       }
+      if (this.restoreDisposed) return;
       this.recordTaskTerminated(info, outputTail);
       try {
         await this.dispatcher.flush();

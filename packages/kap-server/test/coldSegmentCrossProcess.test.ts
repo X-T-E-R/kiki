@@ -183,7 +183,7 @@ async function manifestGone(path: string): Promise<boolean> {
 async function deflateNames(directory: string): Promise<string[]> {
   try {
     const names = await readdir(directory, { recursive: true });
-    return names.map((name) => String(name)).filter((name) => name.endsWith('.deflate'));
+    return names.map((name) => String(name)).filter((name) => name.endsWith('.deflate') || name.endsWith('.zst'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;

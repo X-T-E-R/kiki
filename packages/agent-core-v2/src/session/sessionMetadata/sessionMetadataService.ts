@@ -1,3 +1,4 @@
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -215,7 +216,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
     @ISessionIndexMirror private readonly mirror: ISessionIndexMirror,
-    @IUsageFactStore private readonly usageFacts: IUsageFactStore,
+    @ref(IUsageFactStore) private readonly usageFacts: LiveRef<IUsageFactStore>,
   ) {
     super();
     this._register({
@@ -396,12 +397,12 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     if (this.disposed) return false;
     this.mergePatch(patch, opts);
     if (patch.private === true && this.ctx.ephemeral !== true) {
-      await this.usageFacts.setSessionPrivacy(buildSessionSummary({ ...this.data, workspaceId: this.ctx.workspaceId }));
+      await this.usageFacts?.current?.setSessionPrivacy(buildSessionSummary({ ...this.data, workspaceId: this.ctx.workspaceId }));
     }
     const { absorbed, encoded } = await this.persistAbsorbingDeferred();
     if (this.disposed) return false;
     if (patch.private === false && this.ctx.ephemeral !== true) {
-      await this.usageFacts.setSessionPrivacy(buildSessionSummary({ ...encoded, workspaceId: this.ctx.workspaceId }));
+      await this.usageFacts?.current?.setSessionPrivacy(buildSessionSummary({ ...encoded, workspaceId: this.ctx.workspaceId }));
     }
     this.mirrorToReadModel(encoded);
     this._onDidChangeMetadata.fire({

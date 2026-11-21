@@ -520,8 +520,10 @@ export class SessionDispatchService implements ISessionDispatchService {
     if (options.requesterAgentId !== undefined) {
       const caller = this.requireHandle(options.requesterAgentId, 'Requester agent');
       const inheritedCeiling = caller.accessor.get(IAgentPermissionModeService).modeCeiling;
-      const permission = child.agent.accessor.get(IAgentPermissionModeService);
-      if (inheritedCeiling !== undefined) permission.setModeCeiling(constrainPermissionMode(inheritedCeiling, permission.modeCeiling ?? 'yolo'));
+      if (inheritedCeiling !== undefined) {
+        const permission = child.agent.accessor.get(IAgentPermissionModeService);
+        permission.setModeCeiling(constrainPermissionMode(inheritedCeiling, permission.modeCeiling ?? 'yolo'));
+      }
       const binding = child.agent.accessor.get(IAgentProfileService).data();
       const selectionKind = binding.dispatchDecision?.selectionKind;
       const referencesNamedTarget = selectionKind !== 'profile_file' && selectionKind !== 'route'

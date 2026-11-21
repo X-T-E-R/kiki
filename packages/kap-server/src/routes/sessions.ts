@@ -2221,11 +2221,17 @@ async function coldSessionArtifactStats(
   workspaceId: string,
   sessionId: string,
 ): Promise<{ readonly revision: string; readonly wireRevision: string } | undefined> {
+  let storage: IFileSystemStorageService;
+  let bootstrap: IBootstrapService;
+  try {
+    storage = core.accessor.get(IFileSystemStorageService);
+    bootstrap = core.accessor.get(IBootstrapService);
+  } catch {
+    return undefined;
+  }
   const state = getColdSessionCacheState(core);
-  const storage = core.accessor.get(IFileSystemStorageService);
   const statFn = storage.stat?.bind(storage);
   if (statFn === undefined) return undefined;
-  const bootstrap = core.accessor.get(IBootstrapService);
   const sessionScope = sessionScopeOf(workspacePersistenceScope(bootstrap.scope('sessions'), workspaceId), sessionId);
   const mainScope = agentScopeOf(sessionScope, MAIN_AGENT_ID);
   const [stateStat, wireStat, ckptStat] = await Promise.all([
@@ -2454,7 +2460,14 @@ async function computeColdSessionBindingBase(
     }
   }
   const controls = runtime.complete ? runtime.controls : undefined;
-  const planConfig = core.accessor.get(IConfigService).get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG;
+  let planGate = controls?.planGate;
+  if (controls !== undefined && planGate === undefined) {
+    try {
+      planGate = (core.accessor.get(IConfigService).get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG).gate;
+    } catch {
+      planGate = DEFAULT_PLAN_CONFIG.gate;
+    }
+  }
   return {
     contextTokens: runtime.contextTokens ?? 0,
     contextLimit: contextLimit ?? 0,
@@ -2467,7 +2480,7 @@ async function computeColdSessionBindingBase(
       persona: wirePersona,
       permission_mode: controls?.permissionConfigured ? controls.permissionMode : undefined,
       plan_mode: controls?.planActive,
-      plan_gate: controls?.planGate ?? (controls !== undefined ? planConfig.gate : undefined),
+      plan_gate: planGate,
     },
   };
 }

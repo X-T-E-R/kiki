@@ -20,7 +20,6 @@ import {
   IQueryStore,
   ISessionIndex,
   ISessionInteractionService,
-  ISessionManager,
   ISessionMetadata,
   IWireService,
   agentScopeOf,
@@ -138,6 +137,9 @@ const TURN_ID_KEY_NEEDLE = Buffer.from('"turnId":');
 const ROLE_KEY_NEEDLE = Buffer.from('"role":');
 const HOOK_RESULT_NEEDLE = Buffer.from('"hook_result"');
 const DELIVERY_NEEDLE = Buffer.from('"delivery"');
+const TOOL_CALL_ID_NEEDLE = Buffer.from('"toolCallId":');
+const TOOL_CALL_ID_SNAKE_NEEDLE = Buffer.from('"tool_call_id":');
+const TOOL_CALLS_NEEDLE = Buffer.from('"toolCalls"');
 const DEFAULT_DIRECT_TURN_MAX_BYTES = 64 << 20;
 const DEFAULT_COLD_TURN_SPAN_MAX_TURNS = 16_384;
 const DEFAULT_COLD_TURN_SPAN_MAX_WIRES = 32;
@@ -220,13 +222,39 @@ function extractTurnIdFromBuffer(buf: Buffer, maxScan: number): string | undefin
   if (cursor >= limit) return undefined;
   if (head[cursor] === 0x22) {
     const value = readJsonQuotedAscii(head, cursor, limit);
-    if (value === undefined) return undefined;
-    return value.startsWith('t') ? value : `t${value}`;
+    if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) return undefined;
+    const ordinal = Number(value);
+    return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
   }
   const digitStart = cursor;
   while (cursor < limit && head[cursor]! >= 0x30 && head[cursor]! <= 0x39) cursor += 1;
   if (cursor === digitStart) return undefined;
-  return `t${head.toString('ascii', digitStart, cursor)}`;
+  const raw = head.toString('ascii', digitStart, cursor);
+  if (raw.length > 1 && raw.charCodeAt(0) === 0x30) return undefined;
+  const ordinal = Number(raw);
+  return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
+}
+
+function pushToolCallIdsFromSlice(slice: Buffer, turnId: string, out: Array<readonly [string, string]>): void {
+  for (const needle of [TOOL_CALL_ID_NEEDLE, TOOL_CALL_ID_SNAKE_NEEDLE]) {
+    let from = 0;
+    while (from < slice.length) {
+      const idx = slice.indexOf(needle, from);
+      if (idx < 0) break;
+      const value = readJsonQuotedAscii(slice, idx + needle.length, slice.length);
+      if (value !== undefined) out.push([value, turnId]);
+      from = idx + needle.length;
+    }
+  }
+}
+
+function extractLoopEventToolCallIdsFromBuffer(line: Buffer, turnId: string, out: Array<readonly [string, string]>): void {
+  const headLimit = Math.min(line.length, 512);
+  pushToolCallIdsFromSlice(line.subarray(0, headLimit), turnId, out);
+  if (line.length > 512) {
+    const tailStart = Math.max(headLimit, line.length - 256);
+    pushToolCallIdsFromSlice(line.subarray(tailStart), turnId, out);
+  }
 }
 
 function extractRoleFromBuffer(buf: Buffer, maxScan: number): 'tool' | 'assistant' | undefined {
@@ -1155,14 +1183,6 @@ export class TranscriptService {
   private coldReadRecords = 0;
   private coldReadDurationMs = 0;
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
-  private sessionManagerCache?: ISessionManager;
-
-  private getLiveSession(sessionId: string) {
-    if (this.sessionManagerCache === undefined) {
-      this.sessionManagerCache = this.deps.core.accessor.get(ISessionManager);
-    }
-    return this.sessionManagerCache.get(sessionId);
-  }
 
   constructor(private readonly deps: TranscriptServiceDeps) {
     this.eventLoopDelay.enable();
@@ -1208,13 +1228,13 @@ export class TranscriptService {
   forSessionLive(sessionId: string, options: { readonly tailFirst?: boolean } = {}): TranscriptStore | undefined {
     const existing = this.live.get(sessionId);
     if (existing !== undefined) {
-      if (this.getLiveSession(sessionId) !== undefined) {
+      if (getLiveSessionById(this.deps.core.accessor, sessionId) !== undefined) {
         return existing.store;
       }
       this.dropSession(sessionId);
       return undefined;
     }
-    const session = this.getLiveSession(sessionId);
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (session === undefined) return undefined;
     const store = new TranscriptStore(sessionId, this.resolveResidentLimits());
     let binding: TranscriptBinding;
@@ -2662,11 +2682,7 @@ export class TranscriptService {
       return projected;
     }
     if (cached !== undefined) this.deleteColdSnapshotCache(wirePath);
-    const mode = !tailFirst && !(boundedPage && !preserveWindow && info.size > FIRST_SCREEN_WINDOW_MAX_BYTES)
-      ? 'headers'
-      : preserveWindow
-        ? 'records'
-        : 'first-screen';
+    const mode = !tailFirst ? 'headers' : preserveWindow ? 'records' : 'first-screen';
     const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, mode, preserveWindow);
     if (window === undefined) {
       return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, tailFirst || boundedPage);
@@ -3514,12 +3530,6 @@ export class TranscriptService {
           const lineStart = previous + 1;
           const prefix = chunk.subarray(lineStart, lineEnd);
           boundary = start + lineStart;
-          if (!oversizedLine && suffixBytes + prefix.length > FIRST_SCREEN_WINDOW_MAX_BYTES) {
-            oversizedLine = true;
-            oversizedLeading = prefix.subarray(0, Math.min(64, prefix.length));
-            suffix.length = 0;
-            suffixBytes = 0;
-          }
           if (oversizedLine) {
             const head = prefix.length >= 64 ? prefix : Buffer.concat([prefix, oversizedLeading]);
             const opaque = transcriptOpaqueHeaderRecord(head);
@@ -3567,12 +3577,8 @@ export class TranscriptService {
                 }
                 const effectiveTurn = headTurn ?? reverseTurn;
                 if (effectiveTurn !== undefined) {
+                  extractLoopEventToolCallIdsFromBuffer(line, effectiveTurn, toolTurnIds);
                   skippedTurnIds.add(effectiveTurn);
-                  if (turns === 0 && (end - start) >= FIRST_SCREEN_WINDOW_BYTES) {
-                    boundary = recordEnd;
-                    complete = false;
-                    return finish();
-                  }
                 } else {
                   skippedUnknownTurn = true;
                 }
@@ -3596,7 +3602,10 @@ export class TranscriptService {
               const role = extractRoleFromBuffer(line, 512);
               if (
                 (role === 'tool' || (role === 'assistant' && !line.includes(HOOK_RESULT_NEEDLE))) &&
-                !line.includes(DELIVERY_NEEDLE)
+                !line.includes(DELIVERY_NEEDLE) &&
+                !line.includes(TOOL_CALL_ID_NEEDLE) &&
+                !line.includes(TOOL_CALL_ID_SNAKE_NEEDLE) &&
+                !line.includes(TOOL_CALLS_NEEDLE)
               ) {
                 if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
                 recordEnd = boundary;
@@ -3696,11 +3705,6 @@ export class TranscriptService {
           }
         }
         position = start;
-        if (turns === 0 && reverseTurn !== undefined && skippedTurnIds.has(reverseTurn) && (end - position) >= FIRST_SCREEN_WINDOW_BYTES) {
-          boundary = recordEnd;
-          complete = false;
-          return finish();
-        }
         if (pendingRead === undefined) pendingRead = startChunkRead(position);
       }
       if (suffix.length > 0 || oversizedLine) {

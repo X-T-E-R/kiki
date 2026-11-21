@@ -88,7 +88,6 @@ export class SpaceSummaryProjection {
   }
 
   async disposeAsync(): Promise<void> {
-    if (this.refreshFlight !== undefined) await this.refreshFlight.catch(() => undefined);
     await Promise.all(this.pendingDisposals.splice(0));
   }
 
