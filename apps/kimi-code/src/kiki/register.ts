@@ -15,6 +15,7 @@ import { registerConnectionsCommand } from './connections';
 import { registerSessionAccessCommand } from './sessionAccess';
 import { registerThreadBridgesCommand } from './thread-bridges';
 import { registerUsageExportCommand } from './usage-export';
+import { registerSpaceCommand } from './space';
 
 export function registerKikiCommands(program: Command): void {
   registerServeCommand(program);
@@ -23,6 +24,7 @@ export function registerKikiCommands(program: Command): void {
   registerSessionAccessCommand(program);
   registerThreadBridgesCommand(program);
   registerUsageExportCommand(program);
+  registerSpaceCommand(program);
   const seat = registerSeatCommand(program);
   registerSeatInstallCommand(seat);
   registerMcpCommand(program);

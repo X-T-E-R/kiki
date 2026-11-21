@@ -39,6 +39,7 @@ import {
   type IMemoryStore,
 } from '@kiki/agent-core-v2';
 
+import { mergePortableNotifications } from '@kiki/agent-core-v2/app/config/configLayers';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 
 export interface SyncPeerTransport {
@@ -239,7 +240,7 @@ export class SyncService {
       for (const [domain, value] of Object.entries(sanitized)) {
         if (domain === CREDENTIALS_POOL_SECTION) continue;
         const existingUser = this.options.configService.inspect(domain).userValue;
-        const merged = deepMergePortableConfig(existingUser, value);
+        const merged = domain === 'notifications' ? mergePortableNotifications(existingUser, value) : deepMergePortableConfig(existingUser, value);
         await this.options.configService.replace(domain, merged, ConfigTarget.User);
         configDomainsApplied.push(domain);
       }

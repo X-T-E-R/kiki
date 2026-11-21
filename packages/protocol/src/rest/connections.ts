@@ -98,13 +98,14 @@ export const connectionPairInputSchema = z.object({
   fingerprint: fingerprintSchema.optional(),
 }).strict();
 export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
+export const MAX_PAIR_SOURCE_WORKSPACES = 1024;
 export const pairClaimInputSchema = z.object({
   code: z.string().min(8).max(16),
   source: connectionIdentitySchema,
   sourceLabel: z.string().min(1).max(128),
   requestBridge: z.boolean().optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
-  sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(),
+  sourceWorkspaces: z.array(z.string().min(1).max(512)).max(MAX_PAIR_SOURCE_WORKSPACES).optional(),
   x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
   includeTrustMetadata: z.boolean().optional(),
 }).strict();

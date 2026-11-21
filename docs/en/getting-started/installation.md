@@ -54,7 +54,20 @@ To update a signed release, open a newer release APK signed with the same persis
 
 ## Install the CLI
 
-For a terminal-only install, pick the standalone executable for your platform from a `kiki-v<version>` tag on [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). Windows has no standalone CLI file; the desktop installer provides `kiki` there.
+On Linux and macOS, the fastest terminal-only install is the bootstrap script — it needs no Node.js, Python, or `sudo`, downloads the standalone executable for your platform, verifies its `.sha256` checksum, and places `kiki` in `~/.local/bin`:
+
+```sh
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh
+```
+
+To install the newest beta build or pin a specific release tag, pass flags after `sh -s --`:
+
+```sh
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- --channel beta
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- --version 0.6.0
+```
+
+You can also download and verify the standalone executable manually from any `kiki-v<version>` tag on [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). Windows has no standalone CLI file; the desktop installer provides `kiki` there.
 
 | Platform | Standalone file |
 | --- | --- |
@@ -77,6 +90,42 @@ Install one of the two, not both — each one provides the same `kiki` command. 
 
 Both npm packages use the [Windows Bash requirements above](#install-the-desktop-app). If you installed Git Bash somewhere other than the default location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
+### Quick clone and cloud notebooks (Colab / SSH)
+
+When you move to a fresh Linux server, an SSH host, or an ephemeral cloud notebook such as Google Colab, you can pack your Kiki [space](../features/spaces.md#spaces-the-kikis-you-open) (settings, skills, agents, memory, and optionally credentials) and bring it up alongside the CLI in one command.
+
+1. On your primary machine, export your space either as a plaintext directory (ready for Git) or as a `.kiki.age` (an age-encrypted portable archive safe for shared drives such as Google Drive). Pass `--passphrase` so a fresh remote machine can decrypt the archive without your primary machine's local key (set `KIKI_AGE_PASSPHRASE` to supply it non-interactively, or pass `-r <age1...>` when encrypting for a known device key):
+
+```sh
+# Export as a plaintext Git repository
+kiki space export ./my-space --git-init
+
+# Export as a passphrase-encrypted portable archive (for fresh VMs / Colab)
+kiki space export ./main.kiki.age --passphrase
+```
+
+2. On the fresh Linux machine or Google Colab runtime, export `KIKI_AGE_PASSPHRASE` (for example from Colab Secrets) and chain `--apply` onto `install.sh` to install `kiki` and immediately hydrate the space. Repeat `--apply` to stack an overlay (a small patch layer that overrides only host-specific settings) on top of your base archive, pass `--override` so later sources win on conflicts, or pass `--home <dir>` to target a custom Kiki home directory:
+
+```sh
+export KIKI_AGE_PASSPHRASE="<your-passphrase>"
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- \
+  --apply /content/drive/MyDrive/kiki/main.kiki.age \
+  --apply /content/drive/MyDrive/kiki/colab.kiki.age \
+  --override
+```
+
+`--apply` also accepts a Git repository reference such as `github:owner/repo#colab`.
+
+3. When you finish working on the remote machine, carry your changes back with `kiki space delta` (writes a small incremental patch containing only what changed since your baseline snapshot) or synchronize bidirectionally against a shared directory or Git repository with `kiki space sync`. Pass `--passphrase` (or `-r <age1...>` for your primary machine's recipient key) on `kiki space delta` so the return archive can be decrypted back on your primary machine instead of sealing only to the ephemeral runtime's key:
+
+```sh
+# Export only what changed since the starting snapshot
+kiki space delta --since /content/drive/MyDrive/kiki/main.kiki.age /content/drive/MyDrive/kiki/colab-return.kiki.age --passphrase
+
+# Or run two-way sync with a shared directory or Git repository
+kiki space sync ./my-space
+```
+
 ### Development from source
 
 Working on the CLI itself needs Node.js `24.22.1` or later on the 24 line, or Node.js `26.12.1` or later, and pnpm `10.33.0`. Node.js 25 and Node.js 26 releases before `26.12.1` are not supported. The repository is a pnpm (Node.js package manager) workspace; from its root:
@@ -98,7 +147,7 @@ For a release build, verify the installed version before upgrading:
 kiki --version
 ```
 
-**Update**: replace a standalone `kiki` executable with the newer file from the matching Release asset, or run `npm install -g kiki-agent@latest` / `npm install -g kiki-agent-lite@latest` for stable (or `@beta` for the beta channel). On Windows the desktop app can also check for and install signed NSIS updates from **Settings → About**; see [Kiki desktop](./desktop-app.md#update). Linux and macOS desktop bundles have no in-app updater, so download the newer bundle yourself.
+**Update**: re-run the `install.sh` command above (passing `--channel beta` for beta builds) or replace a standalone `kiki` executable with the newer file from the matching Release asset, or run `npm install -g kiki-agent@latest` / `npm install -g kiki-agent-lite@latest` for stable (or `@beta` for the beta channel). On Windows the desktop app can also check for and install signed NSIS updates from **Settings → About**; see [Kiki desktop](./desktop-app.md#update). Linux and macOS desktop bundles have no in-app updater, so download the newer bundle yourself.
 
 **Uninstall**: delete a standalone `kiki` executable from your `PATH`, or run `npm uninstall -g kiki-agent` / `npm uninstall -g kiki-agent-lite`. That removes the CLI only — remove the desktop app through the system: **Installed apps** in Windows Settings, your package manager for a Linux deb, or dragging Kiki.app out of Applications on macOS. To stop working on the source, delete your checkout.
 

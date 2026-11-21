@@ -54,7 +54,20 @@ Android 应用连接电脑上的 Kiki，打开那台服务器提供的 GUI。需
 
 ## 安装 CLI
 
-只需终端时，在 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 的 `kiki-v<version>` 版本中按平台下载独立可执行文件。Windows 不单独分发 CLI 文件，Windows 上的 `kiki` 由桌面安装包提供。
+在 Linux 和 macOS 上，最快的纯终端安装方式是运行一键安装脚本。它不依赖 Node.js、Python 或 `sudo`，会自动下载对应平台的独立可执行文件、校验 `.sha256` 哈希，并将 `kiki` 安装到 `~/.local/bin`：
+
+```sh
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh
+```
+
+如需安装最新 Beta 测试渠道或指定版本标签，可在 `sh -s --` 后追加参数：
+
+```sh
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- --channel beta
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- --version 0.6.0
+```
+
+你也可以在 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 的 `kiki-v<version>` 版本中手动下载并核对独立可执行文件。Windows 不单独分发 CLI 文件，Windows 上的 `kiki` 由桌面安装包提供。
 
 | 平台 | 独立文件 |
 | --- | --- |
@@ -77,6 +90,42 @@ kiki --version
 
 两个 npm 包都遵循[上面的 Windows Bash 要求](#安装桌面版)。Git Bash 装在非默认位置时，把 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
 
+### 快速迁移与云端环境（Colab / SSH）
+
+切换到全新的 Linux 服务器、SSH 主机或 Google Colab 等临时云端环境时，你可以导出当前的 Kiki [空间](../features/spaces.md#空间-你打开的那些个-kiki)（包含配置、Skill、Agent、记忆以及可选凭据），再用一条命令同时安装 CLI 并还原环境。
+
+1. 在主力机器上导出空间，可选明文目录（适合 Git 管理）或 `.kiki.age`（使用 age 加密的便携空间归档，适合存入 Google Drive 等网盘）。导出给全新远端机器使用时，请传入 `--passphrase` 以口令加密，避免只加密给主力机器的本地密钥（可用环境变量 `KIKI_AGE_PASSPHRASE` 非交互提供口令，或针对已知目标设备密钥传入 `-r <age1...>`）：
+
+```sh
+# 导出为明文目录并初始化 Git 仓库
+kiki space export ./my-space --git-init
+
+# 导出为口令加密的便携归档（适合全新虚拟机或 Colab）
+kiki space export ./main.kiki.age --passphrase
+```
+
+2. 在新 Linux 主机或 Google Colab 运行时中，先设置 `KIKI_AGE_PASSPHRASE`（例如从 Colab Secrets 注入），再通过 `install.sh` 的 `--apply` 参数一键安装 `kiki` 并立即还原空间。重复传入 `--apply` 可在基础归档之上叠加 overlay（仅覆盖特定主机差异的小型补丁层），搭配 `--override` 让后传入的源优先覆盖冲突项，或用 `--home <dir>` 指定自定义 Kiki 目录：
+
+```sh
+export KIKI_AGE_PASSPHRASE="<your-passphrase>"
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- \
+  --apply /content/drive/MyDrive/kiki/main.kiki.age \
+  --apply /content/drive/MyDrive/kiki/colab.kiki.age \
+  --override
+```
+
+`--apply` 也支持 Git 仓库引用，例如 `github:owner/repo#colab`。
+
+3. 在远端完成工作后，使用 `kiki space delta`（导出增量补丁，只包含自基线快照以来发生变更的内容）或 `kiki space sync`（与共享目录或 Git 仓库双向同步）把改动带回主力机器。执行 `kiki space delta` 时同样加上 `--passphrase`（或指定主力机器公钥 `-r <age1...>`），确保回传归档可在主力机器上解密，而不只是加密给临时运行时的本地密钥：
+
+```sh
+# 仅导出在远端相对基线新增或修改的内容
+kiki space delta --since /content/drive/MyDrive/kiki/main.kiki.age /content/drive/MyDrive/kiki/colab-return.kiki.age --passphrase
+
+# 或与共享目录 / Git 仓库双向同步
+kiki space sync ./my-space
+```
+
 ### 从源码开发
 
 需要 24 线上的 Node.js `24.22.1` 或更高版本，或者 Node.js `26.12.1` 或更高版本，以及 pnpm `10.33.0`。Node.js 25，以及 `26.12.1` 之前的 Node.js 26，不受支持。仓库是 pnpm（Node.js 的包管理器）工作区，在仓库根目录执行：
@@ -98,7 +147,7 @@ pnpm dev:cli -- --help
 kiki --version
 ```
 
-**更新**：独立 CLI 用新版 Release 文件替换；npm 安装稳定版运行 `npm install -g kiki-agent@latest` 或 `npm install -g kiki-agent-lite@latest`（Beta 测试渠道使用 `@beta`）。Windows 桌面版还可以在 **设置 → 关于** 中检查并安装已签名的 NSIS 更新，见 [Kiki 桌面版](./desktop-app.md#更新)。Linux 和 macOS 桌面版没有应用内更新器，需要自己下载新版构建。
+**更新**：重新运行上面的 `install.sh` 命令（Beta 测试渠道加 `--channel beta`），或手动用新版 Release 文件替换独立 CLI；npm 安装稳定版运行 `npm install -g kiki-agent@latest` 或 `npm install -g kiki-agent-lite@latest`（Beta 测试渠道使用 `@beta`）。Windows 桌面版还可以在 **设置 → 关于** 中检查并安装已签名的 NSIS 更新，见 [Kiki 桌面版](./desktop-app.md#更新)。Linux 和 macOS 桌面版没有应用内更新器，需要自己下载新版构建。
 
 **卸载**：独立 CLI 从 `PATH` 中删除；npm 包运行 `npm uninstall -g kiki-agent` 或 `npm uninstall -g kiki-agent-lite`。这两条只卸载 CLI，桌面应用请通过系统卸载：Windows 在「已安装的应用」中操作，Linux deb 用系统包管理器，macOS 把「应用程序」里的 Kiki.app 拖到废纸篓。源码开发直接删除仓库检出即可。
 

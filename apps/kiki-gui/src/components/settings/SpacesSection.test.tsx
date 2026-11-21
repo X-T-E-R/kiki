@@ -80,9 +80,24 @@ const host = {
 };
 
 const localMeta = vi.fn();
+const portableSpaces = {
+  listSources: vi.fn(),
+  registerSource: vi.fn(),
+  removeSource: vi.fn(),
+  inspect: vi.fn(),
+  exportSpace: vi.fn(),
+  preview: vi.fn(),
+  apply: vi.fn(),
+  pack: vi.fn(),
+  unpack: vi.fn(),
+  fork: vi.fn(),
+  mutate: vi.fn(),
+  rekey: vi.fn(),
+};
 const client = {
   baseUrl: 'http://127.0.0.1:58627',
   klient: { rest: { homes, connections, threadBridges, config, ssh } },
+  portableSpaces,
   getConfig,
   listWorkspaceCatalog,
   meta: localMeta,
@@ -139,6 +154,7 @@ beforeEach(() => {
     ...Object.values(config),
     ...Object.values(ssh),
     ...Object.values(hostConnection),
+    ...Object.values(portableSpaces),
     getConfig,
     listWorkspaceCatalog,
     host.spaceStatuses,
@@ -146,6 +162,11 @@ beforeEach(() => {
   ]) fn.mockReset();
   homes.list.mockResolvedValue(LIST);
   homes.inspect.mockResolvedValue({ state: 'missing' });
+  portableSpaces.listSources.mockResolvedValue({
+    deviceRecipient: 'age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2x4v2p',
+    knownRecipients: [],
+    items: [],
+  });
   connections.list.mockResolvedValue([]);
   threadBridges.status.mockResolvedValue({
     identity: { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 },
@@ -386,6 +407,14 @@ describe('SpacesSection in the main space', () => {
     await click('[data-space-menu-item="restart"]');
     expect(host.restartSpace).toHaveBeenCalledWith('h-acme');
     expect(document.body.textContent).toContain('1 pending interaction');
+  });
+
+  it('opens ExportSpacePanel from SpaceRowMenu Export… on a local space', async () => {
+    await render(<SpacesSection />);
+    await click('[data-space-menu="h-acme"]');
+    await click('[data-space-menu-item="export"]');
+    expect(document.querySelector('[data-portable-export-panel="export"]')).not.toBeNull();
+    expect(document.querySelector('[data-portable-export-source]')?.getAttribute('data-portable-export-source')).toBe('live:h-acme');
   });
 
   it('deletes only after the exact name is typed', async () => {
@@ -907,9 +936,9 @@ describe('Spaces & Access IA (#16)', () => {
     expect(document.querySelector('[data-owner-ssh-manage]')).toBeNull();
     expect(document.querySelector('[data-owner-ssh-dialog]')).toBeNull();
 
-    // Window mode card sits at the bottom after local and remote lists.
+    // Window mode card sits at the bottom after local, portable, and remote lists.
     const cardIds = [...document.querySelectorAll('section[id^="st-card-"]')].map((el) => el.id);
-    expect(cardIds).toEqual(['st-card-spaces', 'st-card-remote-connections', 'st-card-space-window']);
+    expect(cardIds).toEqual(['st-card-spaces', 'st-card-portable-spaces', 'st-card-remote-connections', 'st-card-space-window']);
   });
 
   it('lists local spaces read-only in a browser host without New space or Add existing space buttons', async () => {

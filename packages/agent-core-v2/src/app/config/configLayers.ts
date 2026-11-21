@@ -1,6 +1,7 @@
 import { deepMerge, isPlainObject } from './configPure';
 import type { ConfigOrigin, ConfigSyncScope, IConfigRegistry } from './config';
 import { snakeToCamel } from './toml';
+import { DEFAULT_NOTIFICATIONS_CONFIG, NOTIFICATIONS_SECTION } from '#/app/notifications/configSection';
 
 export const LOCAL_CONFIG_KEY = 'config.local.toml';
 
@@ -19,6 +20,24 @@ const PORTABLE_DEFAULT_DOMAINS = new Set([
   'notifications',
   'toolPolicy',
   'permissionRules',
+  'experimental',
+  'recipes',
+  'agents',
+  'subagent',
+  'memory',
+  'permission',
+  'defaultPermissionMode',
+  'defaultPlanMode',
+  'plan',
+  'loopControl',
+  'sessionTitle',
+  'fastModel',
+  'tokenCounting',
+  'image',
+  'optionalCapabilities',
+  'pluginSettings',
+  'requestGovernance',
+  'nbSearch',
 ]);
 
 const MACHINE_ONLY_DOMAINS = new Set([
@@ -129,6 +148,8 @@ export function classifyConfigSyncScope(
   registry?: Pick<IConfigRegistry, 'getSection'>,
 ): ConfigSyncScope {
   const camelDomain = snakeToCamel(domain);
+  if (camelDomain === NOTIFICATIONS_SECTION && keyPath[0] === 'credential_values') return 'machine';
+  if (camelDomain === 'experimental' && keyPath[0] !== undefined && keyPath[0] !== 'recipes') return 'machine';
   for (let i = 0; i < keyPath.length; i++) {
     const segment = keyPath[i]!;
     const compact = segment.replaceAll(/[_-]/g, '').toLowerCase();
@@ -184,12 +205,19 @@ function filterConfigBySyncScope(
   return out;
 }
 
+/** Completes a portable notifications layer without dropping owner-local settings or credentials. */
+export function mergePortableNotifications(existing: unknown, incoming: unknown): typeof DEFAULT_NOTIFICATIONS_CONFIG {
+  return deepMerge(deepMerge(structuredClone(DEFAULT_NOTIFICATIONS_CONFIG), existing), incoming);
+}
+
 /** Extracts only portable configuration entries suitable for cross-machine sync. */
 export function extractPortableConfigLayer(
   rawSnake: Record<string, unknown>,
   registry?: Pick<IConfigRegistry, 'getSection'>,
 ): Record<string, unknown> {
-  return filterConfigBySyncScope(rawSnake, 'portable', registry);
+  const result = filterConfigBySyncScope(rawSnake, 'portable', registry);
+  if (isPlainObject(rawSnake[NOTIFICATIONS_SECTION])) result[NOTIFICATIONS_SECTION] = mergePortableNotifications(undefined, result[NOTIFICATIONS_SECTION]);
+  return result;
 }
 
 /** Extracts machine-local configuration entries that stay pinned to this host. */

@@ -406,6 +406,10 @@ jobs:
             test -f "cli-native/$binary.sha256"
             ( cd cli-native && sha256sum -c "$binary.sha256" )
           done
+          tr -d '\r' < scripts/install.sh > cli-native/install.sh
+          chmod 0755 cli-native/install.sh
+          sh -n cli-native/install.sh
+          ( cd cli-native && sha256sum install.sh > install.sh.sha256 && sha256sum -c install.sh.sha256 )
 
       - name: Create or resume exact release
         shell: bash
@@ -422,7 +426,7 @@ jobs:
             args+=(--notes-file "$notes_file")
             echo "Using release notes from $notes_file"
           else
-            args+=(--generate-notes --notes "Desktop: Windows x64 NSIS (includes CLI), Linux x64 AppImage/deb, macOS Apple Silicon/Intel dmg (unsigned, not notarized). CLI: platform-named standalone Linux/macOS executables and .sha256 checksums; no archives. Android: signed APK for Android 7.0+, adjacent .sha256 and android-receipt.json. npm: kiki-agent (desktop + CLI) or kiki-agent-lite (CLI only), Node.js 24.22.1+ on the 24 line or 26.12.1+. On macOS, see the installation guide for first-open and CLI linking: https://x-t-e-r.github.io/kiki/en/getting-started/installation")
+            args+=(--generate-notes --notes "Desktop: Windows x64 NSIS (includes CLI), Linux x64 AppImage/deb, macOS Apple Silicon/Intel dmg (unsigned, not notarized). CLI: install.sh bootstrapper, platform-named standalone Linux/macOS executables, and .sha256 checksums; no archives. Android: signed APK for Android 7.0+, adjacent .sha256 and android-receipt.json. npm: kiki-agent (desktop + CLI) or kiki-agent-lite (CLI only), Node.js 24.22.1+ on the 24 line or 26.12.1+. On macOS, see the installation guide for first-open and CLI linking: https://x-t-e-r.github.io/kiki/en/getting-started/installation")
             echo "No curated notes at $notes_file; generating notes from commits with installation details."
           fi
           if [ "$KIKI_CHANNEL" = 'beta' ]; then
@@ -518,6 +522,8 @@ jobs:
             "$installer.sha256"
             'release-candidate/latest.json'
             'apps/kiki-gui/THIRD_PARTY_NOTICES.md'
+            'cli-native/install.sh'
+            'cli-native/install.sh.sha256'
           )
           shopt -s nullglob
           for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
@@ -595,6 +601,13 @@ jobs:
             fi
           done
           shopt -u nullglob
+          for name in 'install.sh' 'install.sh.sha256'; do
+            if [ ! -f "$download/$name" ] || ! cmp -s "cli-native/$name" "$download/$name"; then
+              echo "Draft asset is missing or differs: $name" >&2
+              exit 1
+            fi
+          done
+          ( cd "$download" && sha256sum -c install.sh.sha256 )
 
       - name: Build and stage npm distributions
         shell: bash

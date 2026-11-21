@@ -7,7 +7,7 @@ import { isLegacyTlsError, peerFetch } from './peerTls';
 import { hostname, networkInterfaces } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, meshCapabilitySchema, normalizePairingCode, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
+import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, MAX_PAIR_SOURCE_WORKSPACES, meshCapabilitySchema, normalizePairingCode, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError } from './admission';
 import { PairingBridgeRetirementError, validateEndpoint, type RemoteConnectionManager } from './manager';
@@ -269,7 +269,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   const code = normalizePairingCode(parsedUri?.code ?? input.code);
   if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
   const requestBridge = input.requestBridge ?? true;
-  const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
+  const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : (await hooks.workspaces()).slice(0, MAX_PAIR_SOURCE_WORKSPACES);
   const localRecipient = hooks?.x25519Recipient?.();
   const init: RequestInit = {
     method: 'POST',

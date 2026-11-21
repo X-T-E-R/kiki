@@ -7,7 +7,7 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IMemoryPersistence, type MemoryCommit, type MemoryObjectEdit, type MemoryReadView, type MemoryProvenance } from '#/persistence/interface/memoryPersistence';
 import { IMemoryScopes, type MemoryScope } from './memoryScopes';
-import { decodeMemoryEntry, type IMemoryStore, type MemoryEntry, type MemoryJournalRecord, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource, type MemoryStatus } from './memoryStore';
+import { decodeMemoryEntry, importedMemoryId, type IMemoryStore, type MemoryEntry, type MemoryJournalRecord, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource, type MemoryStatus } from './memoryStore';
 import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryHostApplicability, normalizeMemoryValidity, normalizeOriginHostId } from './memoryMetadata';
 import { isMemoryVisibleOnHost, resolveMemoryHostId } from './projectIdentityBindings';
 import { memoryQueryCursor, memoryQueryRequest } from './memoryQuery';
@@ -316,7 +316,9 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       if (dependency.id === input.id || covered === null || covered === undefined || covered.status !== 'active' || covered.revision !== dependency.expected_revision || memoryApplicability(covered) === 'expired') fail('covered_target_changed', 'Retained same-scope memory changed or is not active');
     }
     const now = new Date().toISOString();
-    const id = create || proposal ? `m_${randomUUID().replaceAll('-', '')}` : input.id!;
+    const importedId = importedMemoryId(input);
+    if (importedId !== undefined && objects.has(importedId)) fail('invalid_input', 'Imported memory ID already exists');
+    const id = create || proposal ? importedId ?? `m_${randomUUID().replaceAll('-', '')}` : input.id!;
     const resolvedApplicability = archive
       ? old?.applicability
       : input.applicability === undefined

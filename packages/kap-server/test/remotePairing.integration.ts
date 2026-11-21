@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -6,10 +7,11 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
+import { createServer as createHttpServer } from 'node:http';
 import { connect, createServer, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { createConnectionKlient, createKlient } from '@kiki/klient/http';
-import { formatPairingUri, parsePairingUri, type ConnectionBrokerInput, type MetaResponse } from '@kiki/protocol';
+import { formatPairingUri, MAX_PAIR_SOURCE_WORKSPACES, parsePairingUri, type ConnectionBrokerInput, type MetaResponse } from '@kiki/protocol';
 import { IConfigService, IEventService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
 import { SEND_PEER_THREAD_MESSAGE, type IThreadPeerSendCapability } from '@kiki/agent-core-v2/app/threadCommunication/peerThreadCapability';
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
@@ -309,6 +311,37 @@ describe('short-code pairing on two real servers', () => {
       ws?.terminate(); for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => relay.close(() => resolve()));
       await client.close(); await targetClient.close();
+    }
+  }, 120_000);
+  it('sends the most recently active workspaces first and caps a real outbound pairing claim', async () => {
+    const source = await boot();
+    const sourceClient = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
+    const targetIdentity = { homeId: randomUUID(), hostId: 'pair-target', protocol: 1 as const };
+    const workspaceService = source.core.accessor.get(IWorkspaceService);
+    const workspaces = Array.from({ length: MAX_PAIR_SOURCE_WORKSPACES + 1 }, (_, index) => ({ id: `recent-${index}`, lastOpenedAt: 100_000 - index })) as unknown as Awaited<ReturnType<typeof workspaceService.list>>;
+    const list = vi.spyOn(workspaceService, 'list').mockResolvedValue(workspaces);
+    const received: string[][] = [];
+    const peer = createHttpServer((request, response) => {
+      void (async () => {
+        let raw = '';
+        for await (const chunk of request) raw += String(chunk);
+        const body = JSON.parse(raw) as { sourceWorkspaces?: string[] };
+        received.push(body.sourceWorkspaces ?? []);
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ code: 0, msg: 'OK', data: { target: targetIdentity, targetLabel: 'Pair target', grantId: randomUUID(), revision: 1, peerToken: 'p'.repeat(43) } }));
+      })().catch(() => { response.statusCode = 500; response.end(); });
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No pair target address');
+    try {
+      const paired = await sourceClient.rest!.connections.pair({ endpoint: `http://127.0.0.1:${address.port}`, code: 'K9F2-7X4M', backgroundSummary: false, requestBridge: true });
+      expect(paired.target).toEqual(targetIdentity);
+      expect(received).toEqual([workspaces.slice(0, MAX_PAIR_SOURCE_WORKSPACES).map((workspace) => workspace.id)]);
+    } finally {
+      list.mockRestore();
+      await sourceClient.close();
+      peer.closeAllConnections();
+      await new Promise<void>((resolve) => peer.close(() => resolve()));
     }
   }, 120_000);
   it('pairs GUI and bridge over a real non-loopback endpoint, defers thread enablement until claim succeeds, and revokes only the paired bridge grant', async () => {

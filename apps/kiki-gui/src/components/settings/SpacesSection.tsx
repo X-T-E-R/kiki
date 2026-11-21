@@ -48,6 +48,7 @@ import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
+import { PortableSpacesCard, type PortableExportRequest } from './spaces/PortableSpacesCard';
 import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 
 /**
@@ -56,7 +57,7 @@ import { RemoteConnectionsSection } from './RemoteConnectionsSection';
  * rename is not offered: the contract has no rename yet.
  */
 export function SpacesSection() {
-  const { client, localClient, meta, connectionId, sshLabel } = useConnection();
+  const { client, localClient, meta, connectionId, sshLabel, config } = useConnection();
   const host = useHost();
   const { t } = useI18n();
   const inRemotePair = typeof connectionId === 'string' && connectionId !== '';
@@ -73,6 +74,9 @@ export function SpacesSection() {
   const localSpaceName = localHomeId === MAIN_SPACE_ID
     ? t('st.spaces.main')
     : (localHere?.name ?? controlSpaces.data?.find((item) => item.id === localHomeId)?.name ?? t('sidebar.space.unnamed'));
+  const mainSpacePath = controlSpaces.data?.find((item) => item.id === MAIN_SPACE_ID)?.path ?? '';
+  const [portableExportRequest, setPortableExportRequest] = useState<PortableExportRequest | null>(null);
+  const clearPortableExport = useCallback(() => { setPortableExportRequest(null); }, []);
   return (
     <>
       {inRemoteScope ? (
@@ -81,7 +85,21 @@ export function SpacesSection() {
         </p>
       ) : null}
       {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
-        <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
+        <SpaceListCard
+          sub={sub}
+          client={controlClient}
+          target={controlTarget}
+          openLocalSpace={openLocalSpace}
+          onExportSpace={(spaceId) => { setPortableExportRequest({ intent: 'export', source: { kind: 'live', spaceId } }); }}
+        />
+        <PortableSpacesCard
+          client={controlClient}
+          token={controlClient === client ? config?.token : undefined}
+          spaces={controlSpaces.data ?? []}
+          mainPath={mainSpacePath}
+          externalExportRequest={portableExportRequest}
+          onClearExternalExport={clearPortableExport}
+        />
         <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
         {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
@@ -204,11 +222,12 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   );
 }
 
-function SpaceListCard({ sub, client, target, openLocalSpace }: {
+function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
   sub: boolean;
   client: KikiClient;
   target: SpaceSettingsTarget | null;
   openLocalSpace: (id: string, mode: SpaceWindowMode) => void | Promise<void>;
+  onExportSpace: (spaceId: string) => void;
 }) {
   const host = useHost();
   const { connectionId, sshLabel } = useConnection();
@@ -352,6 +371,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
       // Every row, the main space included: what this space follows, what it
       // holds, and the way to change either — without opening the space first.
       { key: 'settings', label: t('st.spaces.settingsMenu'), run: () => { detail.open(space.id); } },
+      { key: 'export', label: t('st.spaces.exportMenu'), run: () => { onExportSpace(space.id); } },
       ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), separatorBefore: true, run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
       ...(!isMain ? [{ key: 'credentials', label: t('st.spaces.credentials'), run: () => { setDialog({ kind: 'credentials', space }); } }] : []),
       ...(desktop && host.createSpaceShortcut !== undefined ? [{
