@@ -30,8 +30,9 @@ public class MainActivity extends BridgeActivity {
                         }
                     }
                 );
-            getBridge()
-                .setWebChromeClient(
+            WebView webView = getBridge().getWebView();
+            if (webView != null) {
+                webView.setWebChromeClient(
                     new BridgeWebChromeClient(getBridge()) {
                         @Override
                         public void onPermissionRequest(PermissionRequest request) {
@@ -39,6 +40,7 @@ public class MainActivity extends BridgeActivity {
                         }
                     }
                 );
+            }
         }
     }
 }

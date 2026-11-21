@@ -27,7 +27,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
     "desktop": "tauri",
     "desktop:prepare": "node scripts/prepare-sidecar.mjs",
     "desktop:prepare:test": "node --test scripts/prepare-sidecar.test.mjs",
