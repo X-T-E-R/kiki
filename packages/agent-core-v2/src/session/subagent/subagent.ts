@@ -42,10 +42,12 @@ export interface AgentTaskStartHookContext {
   readonly parentAgentId?: string;
   readonly agentRole?: 'root' | 'subagent';
   readonly profileName?: string;
-  readonly appendContext?: (message: ContextMessage) => void;
+  readonly routeId?: string;
+  readonly appendReminder?: (content: string, origin: PromptOrigin) => void;
 }
 
 export interface AgentTaskStopHookContext {
+  readonly agentId?: string;
   readonly agentName: string;
   readonly response: string;
 }

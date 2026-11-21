@@ -13,6 +13,7 @@ import type { ILogService } from '#/_base/log/log';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { externalPromptHints } from '#/agent/execution/externalPromptHints';
 import { IAgentFullCompactionService, type FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type AfterStepContext } from '#/agent/loop/loop';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
@@ -20,6 +21,10 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { IAgentSkillService } from '#/agent/skill/skill';
+import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
+import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
@@ -36,6 +41,7 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { parseSkillText, resolveSkillHookCommand, SkillParseError } from '#/app/skillCatalog/parser';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { IAgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooks';
@@ -46,16 +52,19 @@ import { HOOKS_SECTION } from '#/features/externalHooks/configSection';
 import { ISessionHookWorkspace } from '#/features/externalHooks/session/hookRules';
 import { ISessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooks';
 import { SessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooksService';
+import { SessionInitService } from '#/features/sessionInit/sessionInitService';
 import { createHooks } from '#/hooks';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IModelService } from '#/kosong/model/model';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import {
   type AgentRunHandle,
@@ -64,6 +73,8 @@ import {
   ISessionSubagentService,
 } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
+import { SubagentFailed, SubagentSpawned } from '#/session/subagent/mirrorAgentRun';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ToolAccesses } from '#/tool/toolContract';
 import type { SessionCreatedEvent, SessionCreateSource } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import type { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
@@ -125,24 +136,31 @@ function stubSessionContext(cwd: string): ISessionContext {
   };
 }
 
-function stubSessionMetadata(): ISessionMetadata {
+function stubSessionMetadata(initial?: Partial<SessionMeta>): ISessionMetadata & {
+  readonly current: () => SessionMeta;
+} {
+  let state: SessionMeta = {
+    id: 'session-skill-hooks',
+    title: 'Skill Hooks Session',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+    ...initial,
+  };
   return {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     onDidChangeMetadata: Event.None,
-    read: async () => ({
-      id: 'session-skill-hooks',
-      title: 'Skill Hooks Session',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    }),
+    read: async () => structuredClone(state),
     getAgentExecutor: async () => undefined,
-    update: async () => {},
+    update: async (patch: Partial<SessionMeta>) => {
+      state = { ...state, ...patch };
+    },
     setTitle: async () => {},
     setArchived: async () => {},
     registerAgent: async () => {},
-  } as unknown as ISessionMetadata;
+    current: () => state,
+  } as unknown as ISessionMetadata & { readonly current: () => SessionMeta };
 }
 
 function stubProfileCatalog(): ISessionAgentProfileCatalog {
@@ -222,6 +240,14 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       'python3 --script=/skills/demo/hooks/run.py',
     );
     expect(resolveSkillHookCommand('echo foo./bar', '/skills/demo')).toBe('echo foo./bar');
+    expect(resolveSkillHookCommand('node "${CLAUDE_SKILL_DIR}/check.mjs" "%VAR%"', '/skills/demo')).toBe(
+      'node "${CLAUDE_SKILL_DIR}/check.mjs" "%VAR%"',
+    );
+    if (process.platform !== 'win32') {
+      expect(resolveSkillHookCommand('./my\\ dir/check.sh --arg "%VAR%"', '/skills/demo')).toBe(
+        "'/skills/demo/my dir/check.sh' --arg \"%VAR%\"",
+      );
+    }
 
     const skillDir = '/tmp/example-skill';
     const parsed = parseSkillText({
@@ -247,9 +273,67 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
         matcher: 'worker',
         command: `node ${skillDir}/scripts/start.mjs`,
         timeout: 10,
-        env: { KIKI_SKILL_DIR: skillDir },
+        env: { KIKI_SKILL_DIR: skillDir, CLAUDE_SKILL_DIR: skillDir },
       },
     ]);
+
+    const claudeParsed = parseSkillText({
+      skillMdPath: `${skillDir}/SKILL.md`,
+      skillDirName: 'example-skill',
+      source: 'user',
+      text: [
+        '---',
+        'name: claude-skill',
+        'description: Claude Code hook groups',
+        'hooks:',
+        '  PreToolUse:',
+        '    - matcher: Bash',
+        '      hooks:',
+        '        - type: command',
+        '          command: node "${CLAUDE_SKILL_DIR}/guard.mjs"',
+        '          timeout: 15',
+        '  PostCompact:',
+        '    - hooks:',
+        '        - type: command',
+        '          command: node ./scripts/post.mjs',
+        '---',
+        'Body',
+      ].join('\n'),
+    });
+    expect(claudeParsed.hooks).toEqual([
+      {
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        command: 'node "${CLAUDE_SKILL_DIR}/guard.mjs"',
+        timeout: 15,
+        env: { KIKI_SKILL_DIR: skillDir, CLAUDE_SKILL_DIR: skillDir },
+      },
+      {
+        event: 'PostCompact',
+        command: `node ${skillDir}/scripts/post.mjs`,
+        env: { KIKI_SKILL_DIR: skillDir, CLAUDE_SKILL_DIR: skillDir },
+      },
+    ]);
+
+    expect(() =>
+      parseSkillText({
+        skillMdPath: `${skillDir}/SKILL.md`,
+        skillDirName: 'example-skill',
+        source: 'user',
+        text: [
+          '---',
+          'name: broken-claude-skill',
+          'description: Bad Claude hook',
+          'hooks:',
+          '  PreToolUse:',
+          '    - hooks:',
+          '        - type: prompt',
+          '          command: echo hi',
+          '---',
+          'Body',
+        ].join('\n'),
+      }),
+    ).toThrow(SkillParseError);
 
     expect(() =>
       parseSkillText({
@@ -444,6 +528,8 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
 
       const mainContext = stubContextMemory();
       const childContext = stubContextMemory();
+      const mainReminder = new AgentSystemReminderService(mainContext);
+      const childReminder = new AgentSystemReminderService(childContext);
       const childEvents: string[] = [];
 
       const childExecution = {
@@ -477,6 +563,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
             },
           ],
           [IAgentContextMemoryService, childContext],
+          [IAgentSystemReminderService, childReminder],
           [IAgentExecutionService, childExecution],
         ]),
       );
@@ -540,6 +627,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
           reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
           reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
           reg.defineInstance(IAgentContextMemoryService, mainContext);
+          reg.defineInstance(IAgentSystemReminderService, mainReminder);
           reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
           reg.define(IEventBus, EventBusService);
           reg.definePartialInstance(IAgentPromptService, {
@@ -578,7 +666,10 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
 
       const mainHandle = makeFakeAgentHandle(
         MAIN_AGENT_ID,
-        new Map<unknown, unknown>([[IAgentContextMemoryService, mainContext]]),
+        new Map<unknown, unknown>([
+          [IAgentContextMemoryService, mainContext],
+          [IAgentSystemReminderService, mainReminder],
+        ]),
       );
       agents.set(MAIN_AGENT_ID, mainHandle);
       didCreateAgent.fire(mainHandle);
@@ -586,8 +677,11 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       expect(mainContext.messages).toHaveLength(1);
       expect(mainContext.messages[0]).toMatchObject({
         role: 'user',
-        origin: { kind: 'hook_result', event: 'SessionStart' },
-        content: [{ type: 'text', text: '<hook_result hook_event="SessionStart">\nsession-boot-note\n</hook_result>' }],
+        origin: { kind: 'injection', variant: 'hook/SessionStart' },
+        content: [{
+          type: 'text',
+          text: '<system-reminder>\n<hook_result hook_event="SessionStart">\nsession-boot-note\n</hook_result>\n</system-reminder>',
+        }],
       });
 
       const projectSkill = parseSkillText({
@@ -633,12 +727,16 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       expect(childContext.messages).toHaveLength(1);
       expect(childContext.messages[0]).toMatchObject({
         role: 'user',
-        origin: { kind: 'hook_result', event: 'SubagentStart' },
+        origin: { kind: 'injection', variant: 'hook/SubagentStart' },
       });
       const childText = childContext.messages[0]?.content[0];
       expect(childText?.type === 'text' ? childText.text : '').toContain(
         `child=child-42 role=subagent profile=implementer parent=main session=session-skill-hooks cwd=${cwd}`,
       );
+      const externalHints = externalPromptHints(childContext.messages, new Set());
+      expect(externalHints).toHaveLength(1);
+      expect(externalHints[0]?.origin).toBe('injection:hook/SubagentStart');
+      expect(externalHints[0]?.text).toContain('child=child-42');
 
       const compactTask: FullCompactionTask = {
         abortController: new AbortController(),
@@ -667,8 +765,11 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       expect(mainContext.messages).toHaveLength(2);
       expect(mainContext.messages[1]).toMatchObject({
         role: 'user',
-        origin: { kind: 'hook_result', event: 'PostCompact' },
-        content: [{ type: 'text', text: '<hook_result hook_event="PostCompact">\npost-compact:auto:321\n</hook_result>' }],
+        origin: { kind: 'injection', variant: 'hook/PostCompact' },
+        content: [{
+          type: 'text',
+          text: '<system-reminder>\n<hook_result hook_event="PostCompact">\npost-compact:auto:321\n</hook_result>\n</system-reminder>',
+        }],
       });
     } finally {
       await ix?.dispose();
@@ -828,6 +929,547 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       });
     } finally {
       await explicitStopRunner.dispose();
+    }
+  });
+
+  it('gates workspace-contained user skills on trust and revokes disabled plugin skill hooks immediately', async () => {
+    const disposables = new DisposableStore();
+    const cwd = mkdtempSync(join(tmpdir(), 'skill-hooks-trust-plugin-'));
+    const containedSkillDir = join(cwd, 'custom-skills', 'local-hook');
+    mkdirSync(containedSkillDir, { recursive: true });
+    let ix: TestInstantiationService | undefined;
+    try {
+      let workspaceTrusted = false;
+      let pluginGloballyEnabled = true;
+      let pluginUsageAllowed = true;
+      const trustEmitter = disposables.add(new Emitter<{ readonly trusted: boolean }>());
+      const trust: IWorkspaceTrust = {
+        _serviceBrand: undefined,
+        ready: Promise.resolve(),
+        get: async () => workspaceTrusted,
+        isTrusted: () => workspaceTrusted,
+        trust: async () => {
+          workspaceTrusted = true;
+          trustEmitter.fire({ trusted: true });
+        },
+        untrust: async () => {
+          workspaceTrusted = false;
+          trustEmitter.fire({ trusted: false });
+        },
+        onDidChange: trustEmitter.event,
+      };
+      const subagentHooks = createHooks<AgentTaskHooks, keyof AgentTaskHooks>(['onWillStartAgentTask']);
+
+      ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          reg.defineInstance(ISessionContext, stubSessionContext(cwd));
+          reg.definePartialInstance(ISessionManager, {
+            onDidCreateSession: Event.None as ISessionManager['onDidCreateSession'],
+            onWillCloseSession: Event.None as ISessionManager['onWillCloseSession'],
+          });
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+          reg.defineInstance(ISessionAgentProfileCatalog, stubProfileCatalog());
+          reg.defineInstance(IModelService, stubModelService());
+          reg.definePartialInstance(ISessionSubagentService, {
+            hooks: subagentHooks,
+            onDidStopAgentTask: Event.None as Event<AgentTaskStopHookContext>,
+          });
+          reg.defineInstance(ISessionHookWorkspace, {
+            _serviceBrand: undefined,
+            root: cwd,
+            trust,
+            runtime: {
+              identity: { workspaceId: 'workspace-skill-hooks', runtimeId: 'local', generation: '1' },
+            } as ISessionHookWorkspace['runtime'],
+          });
+          reg.definePartialInstance(IConfigService, {
+            ready: Promise.resolve(),
+            get: <T = unknown>() => undefined as T,
+          });
+          reg.definePartialInstance(IPluginService, {
+            enabledHooks: async () => [],
+            onDidReload: Event.None as IPluginService['onDidReload'],
+            hasLoadedSnapshot: () => true,
+            pluginSkillRoots: async () => pluginGloballyEnabled
+              ? [{ path: '/plugins/demo/skills', source: 'extra', plugin: { id: 'demo-plugin', name: 'Demo' } }]
+              : [],
+          });
+          reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, {
+            get: async () => ({ workspaceId: 'workspace-skill-hooks' }) as Awaited<ReturnType<ISessionIndex['get']>>,
+          });
+          reg.definePartialInstance(IPluginUsageService, {
+            enabled: () => true,
+            allows: async () => pluginUsageAllowed,
+          });
+        },
+      });
+      ix.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
+      ix.set(ISessionExternalHooksService, new SyncDescriptor(SessionExternalHooksService));
+      const runner = ix.get(IExternalHooksRunnerService);
+      const sessionHooks = ix.get(ISessionExternalHooksService);
+
+      sessionHooks.registerSkillHooks({
+        skillName: 'local-hook',
+        skillPath: join(containedSkillDir, 'SKILL.md'),
+        skillDir: containedSkillDir,
+        source: 'user',
+        hooks: [{ event: 'PostCompact', command: nodeCommand('process.stdout.write("local-ok");'), timeout: 5 }],
+      });
+      expect(await sessionHooks.getSkillHooks()).toEqual([]);
+
+      await trust.trust();
+      expect(await sessionHooks.getSkillHooks()).toHaveLength(1);
+
+      sessionHooks.registerSkillHooks({
+        skillName: 'plugin-skill',
+        skillPath: '/plugins/demo/skills/plugin-skill/SKILL.md',
+        skillDir: '/plugins/demo/skills/plugin-skill',
+        source: 'extra',
+        pluginId: 'demo-plugin',
+        hooks: [{ event: 'SessionStart', command: nodeCommand('process.stdout.write("plugin-ok");'), timeout: 5 }],
+      });
+      const allowedResults = await runner.trigger('SessionStart', {
+        sessionId: 'session-skill-hooks',
+        additionalHooks: () => sessionHooks.getSkillHooks(),
+      });
+      expect(allowedResults.map((r) => r.stdout?.trim())).toEqual(['plugin-ok']);
+
+      pluginUsageAllowed = false;
+      const usageRevoked = await runner.trigger('SessionStart', {
+        sessionId: 'session-skill-hooks',
+        additionalHooks: () => sessionHooks.getSkillHooks(),
+      });
+      expect(usageRevoked).toEqual([]);
+
+      pluginUsageAllowed = true;
+      pluginGloballyEnabled = false;
+      const globallyRevoked = await runner.trigger('SessionStart', {
+        sessionId: 'session-skill-hooks',
+        additionalHooks: () => sessionHooks.getSkillHooks(),
+      });
+      expect(globallyRevoked).toEqual([]);
+    } finally {
+      await ix?.dispose();
+      await disposables.dispose();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('delivers PreToolUse and PostToolUse additionalContext as canonical system reminders', async () => {
+    const disposables = new DisposableStore();
+    const runner = makeHookRunner([
+      {
+        event: 'PreToolUse',
+        matcher: 'EchoTool',
+        command: nodeCommand(
+          'process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "pre-tool-note" } }));',
+        ),
+        timeout: 5,
+      },
+      {
+        event: 'PostToolUse',
+        matcher: 'EchoTool',
+        command: nodeCommand(
+          'process.stdout.write(JSON.stringify({ additionalContext: "post-tool-note" }));',
+        ),
+        timeout: 5,
+      },
+    ]);
+    let ix: TestInstantiationService | undefined;
+    try {
+      const context = stubContextMemory();
+      const reminder = new AgentSystemReminderService(context);
+      ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/tool-hook-context');
+          reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.defineInstance(ISessionContext, stubSessionContext(process.cwd()));
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+          reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
+          reg.defineInstance(IAgentContextMemoryService, context);
+          reg.defineInstance(IAgentSystemReminderService, reminder);
+          reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+          reg.define(IEventBus, EventBusService);
+          reg.definePartialInstance(IAgentPromptService, { hooks: createHooks(['onBeforeSubmitPrompt']) });
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.definePartialInstance(IAgentToolResultTruncationService, {
+            truncateForModel: async (input) => input.result,
+          });
+          reg.definePartialInstance(IAgentPermissionGate, {});
+          reg.definePartialInstance(IAgentFullCompactionService, {
+            hooks: createHooks(['onWillCompact', 'onDidCommit']),
+          });
+          reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
+        },
+      });
+      ix.set(IExternalHooksRunnerService, runner);
+      ix.set(IAgentExternalHooksService, new SyncDescriptor(AgentExternalHooksService));
+      ix.get(IAgentExternalHooksService);
+
+      ix.get(IAgentToolRegistryService).register({
+        name: 'EchoTool',
+        description: 'Fixture',
+        parameters: { type: 'object' },
+        resolveExecution: () => ({
+          approvalRule: 'EchoTool',
+          accesses: ToolAccesses.none(),
+          execute: async () => ({ output: 'ok' }),
+        }),
+      });
+
+      const executor = ix.get(IAgentToolExecutorService);
+      for await (const _item of executor.execute(
+        [{ id: 'call-echo', name: 'EchoTool', type: 'function', arguments: '{}' }],
+        { turnId: 0, signal: new AbortController().signal },
+      )) {
+      }
+
+      await vi.waitFor(() => {
+        expect(context.messages).toHaveLength(2);
+      });
+      expect(context.messages[0]).toMatchObject({
+        role: 'user',
+        origin: { kind: 'injection', variant: 'hook/PreToolUse' },
+        content: [{
+          type: 'text',
+          text: '<system-reminder>\n<hook_result hook_event="PreToolUse">\npre-tool-note\n</hook_result>\n</system-reminder>',
+        }],
+      });
+      expect(context.messages[1]).toMatchObject({
+        role: 'user',
+        origin: { kind: 'injection', variant: 'hook/PostToolUse' },
+        content: [{
+          type: 'text',
+          text: '<system-reminder>\n<hook_result hook_event="PostToolUse">\npost-tool-note\n</hook_result>\n</system-reminder>',
+        }],
+      });
+    } finally {
+      await ix?.dispose();
+      await disposables.dispose();
+      await runner.dispose();
+    }
+  });
+
+  it('matches SubagentStart by routeId, enforces real SubagentStop veto without duplicate fire, and emits SubagentFailed on init start failure', async () => {
+    const disposables = new DisposableStore();
+    const cwd = mkdtempSync(join(tmpdir(), 'skill-hooks-subagent-veto-'));
+    let subagentStopCount = 0;
+    let ix: TestInstantiationService | undefined;
+    try {
+      const childContext = stubContextMemory();
+      childContext.append({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'partial child answer' }],
+        toolCalls: [],
+      });
+      const childReminder = new AgentSystemReminderService(childContext);
+      const childLoop = stubLoopWithHooks();
+      const childExecution = {
+        _serviceBrand: undefined,
+        run: vi.fn(async () => ({
+          agentId: 'child-route-1',
+          turn: { id: 1 } as AgentRunHandle['turn'],
+          completion: Promise.resolve({ summary: 'done' }),
+        })),
+      };
+      const childHandle = makeFakeAgentHandle(
+        'child-route-1',
+        new Map<unknown, unknown>([
+          [
+            IAgentScopeContext,
+            makeAgentScopeContext({
+              agentId: 'child-route-1',
+              agentScope: 'agents/child-route-1',
+              parentAgentId: MAIN_AGENT_ID,
+            }),
+          ],
+          [
+            IAgentProfileService,
+            {
+              data: () => ({ profileName: 'implementer', routeId: 'fast-implementer', executorId: 'native' }),
+              getRecipeScriptHooks: async () => [],
+            },
+          ],
+          [IAgentContextMemoryService, childContext],
+          [IAgentSystemReminderService, childReminder],
+          [IAgentExecutionService, childExecution],
+        ]),
+      );
+
+      const runner = makeHookRunner(
+        [
+          {
+            event: 'SubagentStart',
+            matcher: 'fast-implementer',
+            command: nodeCommand('process.stdout.write("route-matched-start");'),
+            timeout: 5,
+          },
+          {
+            event: 'SubagentStop',
+            matcher: 'fast-implementer',
+            command: nodeCommand('process.stderr.write("finish child checks"); process.exit(2);'),
+            timeout: 5,
+          },
+        ],
+        {
+          onResolved: (event) => {
+            if (event === 'SubagentStop') subagentStopCount += 1;
+          },
+        },
+      );
+
+      ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/subagent-stop-veto');
+          reg.defineInstance(ISessionContext, stubSessionContext(cwd));
+          reg.definePartialInstance(ISessionManager, {
+            onDidCreateSession: Event.None as ISessionManager['onDidCreateSession'],
+            onWillCloseSession: Event.None as ISessionManager['onWillCloseSession'],
+          });
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+          reg.defineInstance(ISessionAgentProfileCatalog, stubProfileCatalog());
+          reg.defineInstance(IModelService, stubModelService());
+          reg.definePartialInstance(IAgentLifecycleService, {
+            onWillCreate: Event.None as Event<IAgentScopeHandle>,
+            onDidCreate: Event.None as Event<IAgentScopeHandle>,
+            onDidDispose: Event.None as Event<string>,
+            get: (id: string) => (id === 'child-route-1' ? childHandle : undefined),
+          });
+          reg.definePartialInstance(IFlagService, { enabled: () => false });
+          reg.definePartialInstance(IAtomicDocumentStore, {});
+          reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
+          reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.defineInstance(IAgentContextMemoryService, childContext);
+          reg.defineInstance(IAgentSystemReminderService, childReminder);
+          reg.defineInstance(IAgentLoopService, childLoop);
+          reg.define(IEventBus, EventBusService);
+          reg.definePartialInstance(IAgentPromptService, { hooks: createHooks(['onBeforeSubmitPrompt']) });
+          reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
+          reg.definePartialInstance(IAgentPermissionGate, {});
+          reg.definePartialInstance(IAgentFullCompactionService, {
+            hooks: createHooks(['onWillCompact', 'onDidCommit']),
+          });
+          reg.definePartialInstance(IAgentTaskService, {});
+          reg.defineInstance(
+            IAgentScopeContext,
+            makeAgentScopeContext({
+              agentId: 'child-route-1',
+              agentScope: 'agents/child-route-1',
+              parentAgentId: MAIN_AGENT_ID,
+            }),
+          );
+          reg.definePartialInstance(IAgentProfileService, {
+            data: () => ({ profileName: 'implementer', routeId: 'fast-implementer', executorId: 'native' } as ReturnType<IAgentProfileService['data']>),
+            getRecipeScriptHooks: async () => [],
+          });
+        },
+      });
+      ix.set(IExternalHooksRunnerService, runner);
+      ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
+      ix.set(ISessionExternalHooksService, new SyncDescriptor(SessionExternalHooksService));
+      ix.set(IAgentExternalHooksService, new SyncDescriptor(AgentExternalHooksService));
+
+      const subagents = ix.get(ISessionSubagentService);
+      ix.get(ISessionExternalHooksService);
+      ix.get(IAgentExternalHooksService);
+
+      await subagents.run(
+        'child-route-1',
+        { kind: 'prompt', prompt: 'Do routed work' },
+        { signal: new AbortController().signal },
+      );
+      expect(childContext.messages.some((m) =>
+        m.origin?.kind === 'injection' &&
+        m.origin.variant === 'hook/SubagentStart' &&
+        m.content.some((p) => p.type === 'text' && p.text.includes('route-matched-start')),
+      )).toBe(true);
+
+      await childLoop.hooks.onDidFinishStep.run(makeAfterStep(new AbortController().signal));
+      expect(childLoop.hasPendingRequests()).toBe(true);
+      expect(childContext.messages.at(-1)).toMatchObject({
+        role: 'user',
+        origin: { kind: 'system_trigger', name: 'stop_hook' },
+        content: [{ type: 'text', text: 'finish child checks' }],
+      });
+      expect(subagentStopCount).toBe(1);
+
+      subagents.notifyAgentTaskStopped({
+        agentId: 'child-route-1',
+        agentName: 'fast-implementer',
+        response: 'done',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(subagentStopCount).toBe(1);
+      await runner.dispose();
+
+      const dispatched: unknown[] = [];
+      const initChildHandle = makeFakeAgentHandle(
+        'init-child',
+        new Map<unknown, unknown>([
+          [IAgentPermissionModeService, { mode: 'auto', setMode: () => {} }],
+          [IAgentProfileService, { data: () => ({}), getEffectiveThinkingLevel: () => undefined, republishStatus: () => {} }],
+        ]),
+      );
+      const initLifecycle = {
+        get: (id: string) => (id === MAIN_AGENT_ID ? mainHandle : id === 'init-child' ? initChildHandle : undefined),
+        create: async () => initChildHandle,
+      } as unknown as IAgentLifecycleService;
+      const mainHandle = makeFakeAgentHandle(
+        MAIN_AGENT_ID,
+        new Map<unknown, unknown>([
+          [IAgentProfileService, { data: () => ({ modelAlias: 'kimi-test', thinkingLevel: 'low' }) }],
+          [IAgentPermissionModeService, { mode: 'auto', setMode: () => {} }],
+          [IAgentAgentsMdReminderService, { seedInjected: () => {} }],
+          [IAgentSystemReminderService, { appendSystemReminder: () => {} }],
+          [IAgentLifecycleService, initLifecycle],
+          [ITelemetryService, { track2: () => {} }],
+          [IEventDispatcher, { dispatch: async (ev: unknown) => { dispatched.push(ev); }, flush: async () => {} }],
+        ]),
+      );
+      const initService = new SessionInitService(
+        initLifecycle,
+        {
+          run: async () => {
+            throw new Error('SubagentStart hook failed');
+          },
+        } as unknown as ISessionSubagentService,
+        {} as IHostFileSystem,
+        { homeDir: cwd } as IHostEnvironment,
+        stubBootstrap(cwd),
+        stubSessionContext(cwd),
+        { get: () => ({ defaultProfile: 'worker' }) } as unknown as IConfigService,
+      );
+      await expect(initService.generateAgentsMd()).rejects.toThrow('SubagentStart hook failed');
+      expect(dispatched.some((event) => event instanceof SubagentSpawned && event.subagentId === 'init-child')).toBe(true);
+      expect(dispatched.some((event) => event instanceof SubagentFailed && event.subagentId === 'init-child')).toBe(true);
+    } finally {
+      await ix?.dispose();
+      await disposables.dispose();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('persists session-active skill hooks across cold resume and triggers them on SessionStart resume', async () => {
+    const disposables = new DisposableStore();
+    const cwd = mkdtempSync(join(tmpdir(), 'skill-hooks-cold-resume-'));
+    const externalSkillDir = mkdtempSync(join(tmpdir(), 'skill-hooks-user-dir-'));
+    let first: TestInstantiationService | undefined;
+    let resumed: TestInstantiationService | undefined;
+    try {
+      const sharedMeta = stubSessionMetadata();
+      const buildSession = (sessionCreated: AsyncEmitter<SessionCreatedEvent & IWaitUntil>, mainContext: ReturnType<typeof stubContextMemory>) => {
+        const mainHandle = makeFakeAgentHandle(
+          MAIN_AGENT_ID,
+          new Map<unknown, unknown>([
+            [IAgentContextMemoryService, mainContext],
+            [IAgentSystemReminderService, new AgentSystemReminderService(mainContext)],
+          ]),
+        );
+        const container = createServices(disposables, {
+          strict: true,
+          additionalServices: (reg) => {
+            registerStateServices(reg);
+            reg.defineInstance(ISessionContext, stubSessionContext(cwd));
+            reg.definePartialInstance(ISessionManager, {
+              onDidCreateSession: sessionCreated.event,
+              onWillCloseSession: Event.None as ISessionManager['onWillCloseSession'],
+            });
+            reg.defineInstance(ISessionMetadata, sharedMeta);
+            reg.defineInstance(ISessionAgentProfileCatalog, stubProfileCatalog());
+            reg.defineInstance(IModelService, stubModelService());
+            reg.definePartialInstance(ISessionSubagentService, {
+              hooks: createHooks<AgentTaskHooks, keyof AgentTaskHooks>(['onWillStartAgentTask']),
+              onDidStopAgentTask: Event.None as Event<AgentTaskStopHookContext>,
+            });
+            reg.definePartialInstance(IAgentLifecycleService, {
+              onWillCreate: Event.None as Event<IAgentScopeHandle>,
+              onDidCreate: Event.None as Event<IAgentScopeHandle>,
+              onDidDispose: Event.None as Event<string>,
+              get: (id: string) => (id === MAIN_AGENT_ID ? mainHandle : undefined),
+            });
+            reg.definePartialInstance(IConfigService, {
+              ready: Promise.resolve(),
+              get: <T = unknown>() => undefined as T,
+            });
+            reg.definePartialInstance(IPluginService, {
+              enabledHooks: async () => [],
+              onDidReload: Event.None as IPluginService['onDidReload'],
+            });
+            reg.defineInstance(IBootstrapService, stubBootstrap());
+            reg.define(IHostProcessService, HostProcessService);
+            reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+            reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
+          },
+        });
+        container.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
+        container.set(ISessionExternalHooksService, new SyncDescriptor(SessionExternalHooksService));
+        return container;
+      };
+
+      const firstCreated = new AsyncEmitter<SessionCreatedEvent & IWaitUntil>();
+      first = buildSession(firstCreated, stubContextMemory());
+      const firstHooks = first.get(ISessionExternalHooksService);
+      firstHooks.registerSkillHooks({
+        skillName: 'resume-skill',
+        skillPath: join(externalSkillDir, 'SKILL.md'),
+        skillDir: externalSkillDir,
+        source: 'user',
+        hooks: [
+          {
+            event: 'SessionStart',
+            matcher: 'resume',
+            command: nodeCommand('process.stdout.write("cold-resume-skill-note");'),
+            timeout: 5,
+          },
+        ],
+      });
+      await vi.waitFor(() => {
+        expect(sharedMeta.current().custom?.['active_skill_hooks']).toBeDefined();
+      });
+      await first.dispose();
+      first = undefined;
+
+      const resumeCreated = new AsyncEmitter<SessionCreatedEvent & IWaitUntil>();
+      const resumedMainContext = stubContextMemory();
+      resumed = buildSession(resumeCreated, resumedMainContext);
+      const resumedHooks = resumed.get(ISessionExternalHooksService);
+      expect(await resumedHooks.getSkillHooks()).toHaveLength(1);
+
+      await resumeCreated.fireAsync(
+        {
+          sessionId: 'session-skill-hooks',
+          handle: {} as ISessionScopeHandle,
+          source: 'resume' as SessionCreateSource,
+        },
+        new AbortController().signal,
+      );
+      expect(resumedMainContext.messages).toHaveLength(1);
+      expect(resumedMainContext.messages[0]).toMatchObject({
+        role: 'user',
+        origin: { kind: 'injection', variant: 'hook/SessionStart' },
+        content: [{
+          type: 'text',
+          text: '<system-reminder>\n<hook_result hook_event="SessionStart">\ncold-resume-skill-note\n</hook_result>\n</system-reminder>',
+        }],
+      });
+    } finally {
+      await first?.dispose();
+      await resumed?.dispose();
+      await disposables.dispose();
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(externalSkillDir, { recursive: true, force: true });
     }
   });
 });

@@ -128,7 +128,8 @@ export class SkillTool implements ISkillTool {
           if (this.catalog.catalog.isSkillDisabled?.(definition.name) === true) {
             return errorResult(`Skill "${definition.name}" is disabled.`);
           }
-          return await executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, definition, this.sessionHooks?.current);
+          const pluginId = await this.plugins?.pluginSkillOwner?.(actualPath);
+          return await executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, definition, this.sessionHooks?.current, pluginId);
         } finally {
           lease.dispose();
         }
@@ -149,6 +150,7 @@ export class SkillTool implements ISkillTool {
   private async execution(args: SkillToolInput): Promise<ExecutableToolResult> {
     await this.catalog.ready;
     const definition = args.skill === undefined ? undefined : this.catalog.catalog.getSkill(args.skill);
+    let pluginId = definition?.plugin?.id;
     if (definition !== undefined) {
       try {
         await assertPluginSkillUsage(
@@ -158,10 +160,11 @@ export class SkillTool implements ISkillTool {
           this.usage,
           this.sessionContext.sessionId,
         );
+        pluginId ??= await this.plugins?.pluginSkillOwner?.(definition.path);
       }
       catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
     }
-    return executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, undefined, this.sessionHooks?.current);
+    return executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, undefined, this.sessionHooks?.current, pluginId);
   }
 }
 
@@ -236,6 +239,7 @@ export async function executeModelSkill(
   sessionId: string,
   explicitDefinition?: SkillDefinition,
   sessionHooks?: ISessionExternalHooksService,
+  explicitPluginId?: string,
 ): Promise<ExecutableToolResult> {
   const currentDepth = queryDepth;
   if (currentDepth >= MAX_SKILL_QUERY_DEPTH) {
@@ -294,8 +298,9 @@ export async function executeModelSkill(
     sessionHooks?.registerSkillHooks({
       skillName: skill.name,
       skillPath: skill.path,
+      skillDir: skill.dir,
       source: skill.source,
-      pluginId: skill.plugin?.id,
+      pluginId: skill.plugin?.id ?? explicitPluginId,
       hooks: skill.hooks,
     });
   }

@@ -256,6 +256,7 @@ export async function mirrorAgentRun(
       }),
     );
     subagents?.notifyAgentTaskStopped({
+      agentId: run.agentId,
       agentName: options.profileName,
       response: result.summary,
     });

@@ -146,6 +146,13 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
       throw new Error(`Plugin "${broken.pluginId}" failed to load its hooks: ${broken.message}`);
     }
     let byEvent = this.byEvent;
+    if (args.additionalHooks !== undefined) {
+      const extra = await args.additionalHooks();
+      if (extra.length > 0) {
+        const additional = indexHooks(extra);
+        byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
+      }
+    }
     if (this.usage?.enabled() && (byEvent.get(event) ?? []).some((entry) => entry.hook.pluginId !== undefined)) {
       const resolvedWorkspaceId = await resolveWorkspaceId();
       if (args.sessionId !== undefined && this.sessions !== undefined && resolvedWorkspaceId === undefined) {
@@ -159,13 +166,6 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
             args.sessionId,
           ) ? indexed : undefined));
         byEvent = new Map([[event, hooks.filter((indexed) => indexed !== undefined)]]);
-      }
-    }
-    if (args.additionalHooks !== undefined) {
-      const extra = await args.additionalHooks();
-      if (extra.length > 0) {
-        const additional = indexHooks(extra);
-        byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
       }
     }
     return runMatchedHooks(

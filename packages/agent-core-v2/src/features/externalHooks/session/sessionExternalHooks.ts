@@ -5,6 +5,7 @@ import type { HookDef } from '../internal/types';
 export interface SkillHookRegistration {
   readonly skillName: string;
   readonly skillPath: string;
+  readonly skillDir?: string;
   readonly source: SkillSource;
   readonly pluginId?: string;
   readonly hooks: readonly HookDef[];
@@ -14,6 +15,7 @@ export interface ISessionExternalHooksService {
   readonly _serviceBrand: undefined;
   registerSkillHooks(registration: SkillHookRegistration): void;
   getSkillHooks(): Promise<readonly HookDef[]>;
+  markSubagentStopEvaluated?(agentId: string): void;
 }
 
 export const ISessionExternalHooksService: ServiceIdentifier<ISessionExternalHooksService> =

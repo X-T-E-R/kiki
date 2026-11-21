@@ -406,6 +406,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     this.sessionHooks?.current?.registerSkillHooks({
       skillName: skill.name,
       skillPath: skill.path,
+      skillDir: skill.dir,
       source: skill.source,
       pluginId: skill.plugin?.id,
       hooks: skill.hooks,

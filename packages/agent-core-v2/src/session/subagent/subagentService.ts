@@ -27,6 +27,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -291,16 +292,31 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     try {
       if (agentId !== MAIN_AGENT_ID && request.kind === 'prompt') {
         const scope = optionalFromHandle(handle, IAgentScopeContext);
-        const profileName = optionalFromHandle(handle, IAgentProfileService)?.data().profileName ?? agentId;
+        const profileData = optionalFromHandle(handle, IAgentProfileService)?.data();
+        const targetName = profileData?.routeId ?? profileData?.profileName ?? agentId;
+        const profileName = profileData?.profileName ?? targetName;
         await this.hooks.onWillStartAgentTask.run({
-          agentName: profileName,
+          agentName: targetName,
           prompt: request.prompt,
           signal: opts.signal,
           agentId: scope?.agentId ?? agentId,
           parentAgentId: scope?.parentAgentId,
           agentRole: scope === undefined ? 'subagent' : scope.parentAgentId === undefined ? 'root' : 'subagent',
           profileName,
-          appendContext: (message) => optionalFromHandle(handle, IAgentContextMemoryService)?.appendObservable(message),
+          routeId: profileData?.routeId,
+          appendReminder: (content, origin) => {
+            const reminder = optionalFromHandle(handle, IAgentSystemReminderService);
+            if (reminder !== undefined) {
+              reminder.appendSystemReminder(content, origin);
+              return;
+            }
+            optionalFromHandle(handle, IAgentContextMemoryService)?.appendObservable({
+              role: 'user',
+              content: [{ type: 'text', text: wrapSystemReminder(content) }],
+              toolCalls: [],
+              origin,
+            });
+          },
         });
         opts.signal.throwIfAborted();
       }
