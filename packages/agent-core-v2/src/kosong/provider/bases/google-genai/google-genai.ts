@@ -9,6 +9,8 @@ import {
   markProviderHttpError,
   normalizeAPIStatusError,
   noteExplicitUpstreamRetryDenial,
+  parseRetryAfterMs,
+  parseTraceId,
   readProviderErrorIdentifier,
 } from '#/kosong/contract/errors';
 import { attachErrorDetails } from '#/_base/errors/errors';
@@ -891,9 +893,12 @@ function googleEnvelopeStatusType(envelope: unknown): string | undefined {
 }
 
 function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'): ChatProviderError {
+  const headers = (error as { headers?: unknown }).headers;
   const details = googleRpcDetails(error.message);
   const envelope = googleErrorEnvelope(error.message);
-  const converted = normalizeAPIStatusError(error.status, error.message, undefined, parseRetryInfoDelayMs(details), undefined, envelope);
+  const retryAfterMs = parseRetryInfoDelayMs(details) ?? parseRetryAfterMs(headers);
+  const traceId = parseTraceId(headers);
+  const converted = normalizeAPIStatusError(error.status, error.message, undefined, retryAfterMs, traceId, envelope);
   const upstreamErrorType = googleEnvelopeStatusType(envelope);
   if (upstreamErrorType !== undefined) attachErrorDetails(converted, { upstreamErrorType });
   const marked = source === 'event'
@@ -901,7 +906,7 @@ function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'):
       ? 'gateway_stream_terminal_error'
       : antigravityErrorInfoReason(details))
     : markProviderHttpError(converted, antigravityErrorInfoReason(details));
-  return noteExplicitUpstreamRetryDenial(marked, envelope);
+  return noteExplicitUpstreamRetryDenial(marked, envelope, headers);
 }
 
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {

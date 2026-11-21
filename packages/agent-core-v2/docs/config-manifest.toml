@@ -1084,6 +1084,7 @@ rules = []
 
 [retry]
 # max_attempts: integer
+# max_retry_after_ms: integer
 # retry_partial_responses: boolean
 # policies: object[] — one entry per item:
   # match: string
@@ -1091,6 +1092,7 @@ rules = []
   # providers: string[]
   # max_attempts: integer
   # backoff: integer
+  # max_retry_after_ms: integer
   # retry: boolean (default: true)
 
 # ##########################################################################

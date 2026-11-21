@@ -20,11 +20,13 @@ interface PolicyDraft {
   providers?: string[];
   maxAttempts: string;
   backoff: string;
+  maxRetryAfterMs?: number;
   retry: boolean;
 }
 
 interface RetryDraft {
   maxAttempts: string;
+  maxRetryAfterMs?: number;
   retryPartialResponses: boolean;
   policies: PolicyDraft[];
 }
@@ -33,6 +35,10 @@ let policySeq = 0;
 
 function numberText(value: unknown): string {
   return typeof value === 'number' ? String(value) : '';
+}
+
+function positiveInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
 function stringList(value: unknown): string[] | undefined {
@@ -48,6 +54,7 @@ function draftFromConfig(config: KikiConfigResponse): RetryDraft {
   const partialResponses = raw['retryPartialResponses'] ?? raw['retry_partial_responses'];
   return {
     maxAttempts: numberText(raw['maxAttempts'] ?? raw['max_attempts']),
+    maxRetryAfterMs: positiveInt(raw['maxRetryAfterMs'] ?? raw['max_retry_after_ms']),
     retryPartialResponses: typeof partialResponses === 'boolean' ? partialResponses : true,
     policies: policies.map((policy) => ({
       id: ++policySeq,
@@ -56,6 +63,7 @@ function draftFromConfig(config: KikiConfigResponse): RetryDraft {
       providers: stringList(policy['providers']),
       maxAttempts: numberText(policy['maxAttempts'] ?? policy['max_attempts']),
       backoff: numberText(policy['backoff']),
+      maxRetryAfterMs: positiveInt(policy['maxRetryAfterMs'] ?? policy['max_retry_after_ms']),
       retry: policy['retry'] !== false,
     })),
   };
@@ -95,6 +103,7 @@ function retryPatch(draft: RetryDraft, t: ReturnType<typeof useI18n>['t']): { pa
       providers: policy.providers,
       ...(attempts === undefined ? {} : { max_attempts: attempts }),
       ...(backoff === undefined ? {} : { backoff }),
+      ...(policy.maxRetryAfterMs === undefined ? {} : { max_retry_after_ms: policy.maxRetryAfterMs }),
       retry: policy.retry,
     });
   }
@@ -102,6 +111,7 @@ function retryPatch(draft: RetryDraft, t: ReturnType<typeof useI18n>['t']): { pa
     patch: {
       retry: {
         ...(top === undefined ? {} : { max_attempts: top }),
+        ...(draft.maxRetryAfterMs === undefined ? {} : { max_retry_after_ms: draft.maxRetryAfterMs }),
         retry_partial_responses: draft.retryPartialResponses,
         ...(policies.length === 0 ? {} : { policies }),
       },

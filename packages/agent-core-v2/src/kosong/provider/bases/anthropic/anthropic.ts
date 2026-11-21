@@ -671,7 +671,7 @@ export function convertAnthropicError(
   }
   const hooked = convertErrorHook?.(error);
   if (hooked !== undefined) {
-    return error instanceof AnthropicAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error) : hooked;
+    return error instanceof AnthropicAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error, error.headers) : hooked;
   }
   if (error instanceof AnthropicTimeoutError) {
     return new APITimeoutError(error.message);
@@ -688,7 +688,7 @@ export function convertAnthropicError(
       parseRetryAfterMs(error.headers),
       parseTraceId(error.headers),
       error.error,
-    ), anthropicStreamErrorCode(error.error)), error.error);
+    ), anthropicStreamErrorCode(error.error)), error.error, error.headers);
   }
   if (error instanceof AnthropicAPIError) {
     const permanentStatus = permanentAnthropicStreamStatus(anthropicStreamErrorType(error));
@@ -700,14 +700,14 @@ export function convertAnthropicError(
         parseRetryAfterMs(error.headers),
         parseTraceId(error.headers),
         error.error,
-      ), error.error);
+      ), error.error, error.headers);
     }
   }
   if (error instanceof AnthropicAPIError && error.error !== undefined) {
     const displayMessage = `Anthropic error: ${error.message}`;
-    return new ChatProviderError(displayMessage, undefined, {
+    return noteExplicitUpstreamRetryDenial(new ChatProviderError(displayMessage, undefined, {
       details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers), displayMessage),
-    });
+    }), error.error, error.headers);
   }
   if (error instanceof AnthropicError) {
     return new ChatProviderError(`Anthropic error: ${error.message}`);

@@ -677,7 +677,9 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 ## `retry`
 
-`retry` 可为指定的单步错误、Output Layer 转换和会话标题请求定制总尝试次数与固定退避时间。默认情况下，每次可重试操作最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。对于尚未确认执行、可重试的网关 HTTP 502/503/504 失败，provider 返回的 `Retry-After` 只能延长、不能缩短默认指数退避。显式策略的 `backoff` 仍使用固定等待时间，且 `Retry-After` 优先；其它错误也保持原有的 `Retry-After` 行为。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+`retry` 可为指定的单步错误、Output Layer 转换和会话标题请求定制总尝试次数、固定退避时间与 HTTP 429 `Retry-After` 快速失败上限。默认情况下，每次可重试操作最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。对于尚未确认执行、可重试的网关 HTTP 502/503/504 失败，provider 返回的 `Retry-After` 会封顶在 60 秒并继续探测重试，且只能延长、不能缩短默认指数退避。对于 HTTP 429，Kiki 优先读取 `Retry-After-Ms`（毫秒）或 `Retry-After`（整数秒）；当等待时长超过 `max_retry_after_ms`（默认 `60000`，即 60 秒）时，直接零重试快速失败并显示可读等待时长，不再长时间挂起或退回短退避盲撞。显式策略的 `backoff` 仍使用固定等待时间，且未超阈值的 `Retry-After` 优先。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+
+Kiki 同样遵循上游返回的标准重试与配额信号：HTTP 响应头 `x-should-retry: false`（或错误体中的 `retryable: false`）会立即停止重试；`x-should-retry: true` 允许符合条件的 `APIStatusError` 在未命中取消、已有输出、本地拒绝、安全拦截、上下文溢出或配额耗尽的前提下进入重试评估，但仍受 `max_attempts` 与 `max_retry_after_ms` 约束。当 HTTP 429 携带标准结构化配额耗尽错误码（如 `insufficient_quota`、`exceeded_current_quota_error`、`usage_limit_reached`、`usage_not_included`、`credit_balance_exhausted`、`billing_hard_limit_reached`、`organization_spend_limit_exceeded`、`project_spend_limit_exceeded`、`organization_usage_limit_exceeded`）时，Kiki 统一归类为不可重试的配额耗尽错误并零重试快速失败。
 
 `retry_partial_responses` 默认为 `true`。设为 `false` 时，只关闭原生 Agent 轮次在部分输出后的重试；首 token 前符合条件的失败仍按原有重试预算处理。网关标记为 `gateway_stream_terminal_error` 的错误会直接结束请求，即使还没有输出首个 token，重试设置也不会重新发送。符合条件的连接重试最多尝试 5 次（含首发）；`max_attempts` 或命中的策略可以进一步降低这个上限。其它协议会撤掉部分输出。Google GenAI 暂时保留可见文本和思考摘要，只复用完全一致的可见前缀，并撤回分歧或提前终止的块。它只在后续输出尚未越过检查点时使用完整的 continuation token；否则重试原始请求快照。工具只在完整响应后执行，重试可能产生额外计费。
 
@@ -686,6 +688,7 @@ history = ["as I said", "earlier", "之前", "我说过"]
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `max_attempts` | `integer` | — | 最大总尝试次数（含首次尝试）；用于 Agent 单步时优先于 `loop_control.max_attempts_per_step` |
+| `max_retry_after_ms` | `integer` | `60000` | HTTP 429 `Retry-After` 的快速失败上限（毫秒，1–2147483647）；超过该值时零重试直接失败，不影响 502/503/504 的 60 秒封顶探测 |
 | `retry_partial_responses` | `boolean` | `true` | 原生 Agent 轮次已有部分输出时，是否允许重试符合条件的失败 |
 | `policies` | `array<table>` | — | 用 `[[retry.policies]]` 编写的有序逐错误策略；首个命中的策略生效 |
 
@@ -698,7 +701,8 @@ history = ["as I said", "earlier", "之前", "我说过"]
 | `providers` | `array<string>` | 否 | 精确的 `[providers]` 配置键；仅绑定 provider 在列表中时生效 |
 | `max_attempts` | `integer` | 否 | 命中错误的最大总尝试次数（含首次尝试）；优先于本节的总预算 |
 | `backoff` | `integer` | 否 | 每次重试前固定等待的毫秒数；provider 返回的 retry-after 提示仍优先 |
-| `retry` | `boolean` | 否 | 默认为 `true`。`false` 可抑制 Kiki 内建判定原本会重试的错误；`true` 不能强制重试被判定为不可重试的错误 |
+| `max_retry_after_ms` | `integer` | 否 | 覆盖命中策略的 HTTP 429 `Retry-After` 快速失败上限（毫秒，1–2147483647）；未设置时继承 `[retry].max_retry_after_ms`（默认 `60000`） |
+| `retry` | `boolean` | 否 | 默认为 `true`。`false` 可抑制 Kiki 内建判定原本会重试的错误；`true` 不能强制重试被判定为不可重试的错误或超过 `max_retry_after_ms` 的 429 |
 
 策略从上到下检查。`models` 或 `providers` 不包含当前绑定时会跳过该策略，余下策略中首个 `match` 命中错误的策略生效；同时设置两个 selector（选择条件）时必须全部命中。省略两个 selector 时保持原有的全局逐错误行为。
 

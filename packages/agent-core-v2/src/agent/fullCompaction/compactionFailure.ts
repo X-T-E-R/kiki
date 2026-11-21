@@ -8,8 +8,9 @@ import {
   readUpstreamSafetySubCode,
 } from '#/kosong/contract/errors';
 import { isAbortError } from '#/_base/utils/abort';
+import { MAX_RETRY_AFTER_MS, readRetryAfterMs } from '#/_base/utils/retry';
 import { sliceUtf16 } from '#/_base/text/utf16';
-import { isCodedError, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
+import { Error2, isCodedError, readAttachedErrorDetails, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
 
 export function isStreamedSafetyRefusalText(text: string): boolean {
   return text.includes("This request was blocked by Gemini's filters.") && text.includes('generative-ai/use-policy');
@@ -39,11 +40,50 @@ export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'qu
   return 'upstream';
 }
 
+function is429CompactionError(error: unknown, cause: unknown): boolean {
+  if (cause instanceof APIStatusError && cause.statusCode === 429) return true;
+  if (error instanceof APIStatusError && error.statusCode === 429) return true;
+  for (const candidate of [error, cause]) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const attached = readAttachedErrorDetails(candidate);
+    const declared = candidate instanceof Error2 ? candidate.details : undefined;
+    if (
+      attached?.['statusCode'] === 429 ||
+      attached?.['upstreamStatus'] === 429 ||
+      declared?.['statusCode'] === 429 ||
+      declared?.['upstreamStatus'] === 429
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasUpstreamRetryDenial(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const attached = readAttachedErrorDetails(current);
+    const declared = current instanceof Error2 ? current.details : undefined;
+    if (attached?.['upstream_retryable'] === false || declared?.['upstream_retryable'] === false) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export function isRetryableCompactionError(error: unknown): boolean {
   const cause = unwrapErrorCause(error);
   if (isAbortError(error) || isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
+  if (is429CompactionError(error, cause)) {
+    const retryAfterMs = readRetryAfterMs(cause) ?? readRetryAfterMs(error);
+    if (retryAfterMs !== null && retryAfterMs > MAX_RETRY_AFTER_MS) return false;
+    if (hasUpstreamRetryDenial(error)) return false;
+  }
   if (!isRetryableBufferedRequestError(error)) return false;
   if (cause instanceof APIStatusError && cause.statusCode === 400 && !(cause instanceof APIContextOverflowError)) return false;
   return true;

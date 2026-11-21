@@ -165,4 +165,11 @@ describe('compaction-only retry classification', () => {
     expect(described).toContain('Upstream stream ended before a terminal event');
     expect(described).not.toContain('HTTP n/a error');
   });
+
+  it('fails fast on 429 with excessive Retry-After or upstream_retryable=false while keeping short 429 and clamped 503 retryable', () => {
+    expect(isRetryableCompactionError(new APIStatusError(429, 'rate limit', null, 44_083_000))).toBe(false);
+    expect(isRetryableCompactionError(new APIStatusError(429, 'rate limit', null, 15_000))).toBe(true);
+    expect(isRetryableCompactionError(attachErrorDetails(new APIStatusError(429, 'rate limit'), { upstream_retryable: false }))).toBe(false);
+    expect(isRetryableCompactionError(new APIStatusError(503, 'relay overloaded', null, 120_000))).toBe(true);
+  });
 });

@@ -24,13 +24,15 @@ import {
   isRetryableBufferedRequestError,
   isRetryableMalformedFunctionCallError,
   isRetryableMissingTerminalError,
+  isStructuredQuotaExhaustedCode,
   markProviderEventError,
   markProviderHttpError,
-  noteExplicitUpstreamRetryDenial,
-  sameRequestRetryProhibition,
   normalizeAPIStatusError,
   noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
+  noteExplicitUpstreamRetryDenial,
+  parseRetryAfterMs,
+  sameRequestRetryProhibition,
   requestDeliveryProvenance,
   PROVIDER_API_ERROR_CODE,
   PROVIDER_FILTERED_ERROR_CODE,
@@ -431,6 +433,7 @@ describe('providerErrorKind', () => {
     expect(error.details).toEqual({
       statusCode: 429,
       requestId: 'req-1',
+      retryAfterMs: 7_000,
       traceId: 'trace-1',
       error_kind: 'rate_limit',
     });
@@ -515,4 +518,116 @@ it.each(['ECONNRESET', 'EPIPE', 'socket hang up', 'unexpected EOF'])('classifies
 it.each([new APIStatusError(503, 'unavailable'), new APIStatusError(429, 'slow down'), new ChatProviderError('decode failed')])('does not discard observed output for a non-network failure: %s', error => {
   noteExecutedRequestDelivery(error);
   expect(isRetryableRequestInterruption(error)).toBe(false);
+});
+
+describe('429 fail-fast primitives: retry-after-ms, x-should-retry, and structured quota codes', () => {
+  it('parses retry-after-ms ahead of retry-after while preserving existing header boundaries', () => {
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '1500.6', 'retry-after': '30' }))).toBe(1_501);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': '0', 'retry-after': '12' }))).toBe(0);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after-ms': 'not-a-number', 'retry-after': '12' }))).toBe(12_000);
+    expect(parseRetryAfterMs(new Headers({ 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }))).toBeNull();
+    expect(parseRetryAfterMs({})).toBeNull();
+  });
+
+  it('honors x-should-retry false and true across Headers and plain header records', () => {
+    const deniedHeaders = noteExplicitUpstreamRetryDenial(
+      new APIProviderRateLimitError('429 slow down', null, 5_000),
+      undefined,
+      new Headers({ 'X-Should-Retry': 'false' }),
+    );
+    expect(isRetryableGenerateError(deniedHeaders)).toBe(false);
+    expect(hasExplicitRetryVeto(deniedHeaders)).toBe(true);
+    expect(readAttachedErrorDetails(deniedHeaders)).toMatchObject({ upstream_retryable: false });
+
+    const deniedRecord = noteExplicitUpstreamRetryDenial(
+      new APIStatusError(503, 'maintenance'),
+      undefined,
+      { 'X-Should-Retry': 'false' },
+    );
+    expect(isRetryableGenerateError(deniedRecord)).toBe(false);
+
+    const allowed = noteExplicitUpstreamRetryDenial(
+      new APIStatusError(422, 'retryable upstream proxy error'),
+      undefined,
+      new Headers({ 'x-should-retry': 'true' }),
+    );
+    expect(isRetryableGenerateError(allowed)).toBe(true);
+    expect(isRetryableRequestInterruption(allowed)).toBe(false);
+
+    const quotaWithTrue = noteExplicitUpstreamRetryDenial(
+      new APIProviderQuotaExhaustedError('quota gone'),
+      undefined,
+      new Headers({ 'x-should-retry': 'true' }),
+    );
+    expect(isRetryableGenerateError(quotaWithTrue)).toBe(false);
+
+    const overflowWithTrue = noteExplicitUpstreamRetryDenial(
+      new APIContextOverflowError(400, 'context length exceeded'),
+      undefined,
+      new Headers({ 'x-should-retry': 'true' }),
+    );
+    expect(isRetryableGenerateError(overflowWithTrue)).toBe(false);
+
+    const tooLargeWithTrue = noteExplicitUpstreamRetryDenial(
+      new APIRequestTooLargeError(413, 'payload too large'),
+      undefined,
+      new Headers({ 'x-should-retry': 'true' }),
+    );
+    expect(isRetryableGenerateError(tooLargeWithTrue)).toBe(false);
+
+    const imageFormatWithTrue = noteExplicitUpstreamRetryDenial(
+      new APIStatusError(400, 'invalid image format'),
+      undefined,
+      new Headers({ 'x-should-retry': 'true' }),
+    );
+    expect(isRetryableGenerateError(imageFormatWithTrue)).toBe(false);
+
+    const executedWithTrue = noteExplicitUpstreamRetryDenial(
+      new APIStatusError(422, 'after output'),
+      undefined,
+      new Headers({ 'x-should-retry': 'true' }),
+    );
+    noteExecutedRequestDelivery(executedWithTrue);
+    expect(isRetryableGenerateError(executedWithTrue)).toBe(false);
+  });
+
+  it.each([
+    'insufficient_quota',
+    'exceeded_current_quota_error',
+    'usage_limit_reached',
+    'usage_not_included',
+    'credit_balance_exhausted',
+    'billing_hard_limit_reached',
+    'organization_spend_limit_exceeded',
+    'project_spend_limit_exceeded',
+    'organization_usage_limit_exceeded',
+  ])('classifies structured 429 code %s as APIProviderQuotaExhaustedError without text regexes', (code) => {
+    expect(isStructuredQuotaExhaustedCode(code)).toBe(true);
+    const byErrorCode = normalizeAPIStatusError(429, '429', 'req-q', 44_083_000, 'trace-q', {
+      error: { code, message: 'quota exhausted' },
+    });
+    expect(byErrorCode).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(byErrorCode)).toBe(false);
+    expect(byErrorCode.details).toMatchObject({ retryAfterMs: 44_083_000, statusCode: 429 });
+
+    const byTopType = normalizeAPIStatusError(429, '429', null, null, null, {
+      type: code,
+      message: 'quota exhausted',
+    });
+    expect(byTopType).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(byTopType)).toBe(false);
+  });
+
+  it('keeps natural-language quota wording with rate_limit_error as APIProviderRateLimitError', () => {
+    const error = normalizeAPIStatusError(429, '429', null, 44_083_000, null, {
+      type: 'error',
+      error: {
+        type: 'rate_limit_error',
+        message: 'Your weekly usage quota has been exhausted.',
+      },
+    });
+    expect(error).toBeInstanceOf(APIProviderRateLimitError);
+    expect(error).not.toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(error.details).toMatchObject({ retryAfterMs: 44_083_000 });
+  });
 });

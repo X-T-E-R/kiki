@@ -1,6 +1,6 @@
-import { readRetryAfterMs, retryBackoffDelay } from '#/_base/utils/retry';
+import { MAX_RETRY_AFTER_MS, readRetryAfterMs, retryBackoffDelay } from '#/_base/utils/retry';
 import { APIStatusError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
-import { unwrapErrorCause } from '#/errors';
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
 
 import type { RetryConfig, RetryPolicy } from './configSection';
 
@@ -14,10 +14,16 @@ export interface RetryBindingIdentity {
   readonly provider?: string;
 }
 
+export interface RetryAfterExceeded {
+  readonly retryAfterMs: number;
+  readonly maxRetryAfterMs: number;
+}
+
 export interface RetryPolicyDecision {
   readonly retry: boolean;
   readonly maxAttempts?: number;
   readonly backoffMs?: number;
+  readonly retryAfterExceeded?: RetryAfterExceeded;
 }
 
 type RetryBindingSource = RetryBindingIdentity | (() => RetryBindingIdentity | undefined) | undefined;
@@ -57,14 +63,46 @@ export function findRetryPolicy(
   return undefined;
 }
 
+export function check429RetryAfterExceeded(
+  error: unknown,
+  config?: RetryConfig,
+  policy?: RetryPolicy,
+): RetryAfterExceeded | undefined {
+  const raw = unwrapErrorCause(error);
+  if (!is429StatusError(raw)) return undefined;
+  const retryAfterMs = readRetryAfterMs(raw);
+  if (retryAfterMs === null) return undefined;
+  const maxRetryAfterMs = policy?.maxRetryAfterMs ?? config?.maxRetryAfterMs ?? MAX_RETRY_AFTER_MS;
+  if (retryAfterMs > maxRetryAfterMs) {
+    return { retryAfterMs, maxRetryAfterMs };
+  }
+  return undefined;
+}
+
+export function noteRetryAfterExceeded(error: unknown, exceeded: RetryAfterExceeded): void {
+  const details = {
+    retry_after_exceeded: true,
+    retry_after_ms: exceeded.retryAfterMs,
+    max_retry_after_ms: exceeded.maxRetryAfterMs,
+  };
+  attachErrorDetails(error, details);
+  const raw = unwrapErrorCause(error);
+  if (raw !== error) attachErrorDetails(raw, details);
+}
+
 export function resolveRetryPolicy(
   config: RetryConfig | undefined,
   error: unknown,
   binding: RetryBindingSource = {},
 ): RetryPolicyDecision {
   if (!isRetryableGenerateError(error)) return { retry: false };
-  const policy = findRetryPolicy(config?.policies, unwrapErrorCause(error), binding);
+  const raw = unwrapErrorCause(error);
+  const policy = findRetryPolicy(config?.policies, raw, binding);
   if (policy?.retry === false) return { retry: false };
+  const retryAfterExceeded = check429RetryAfterExceeded(raw, config, policy);
+  if (retryAfterExceeded !== undefined) {
+    return { retry: false, retryAfterExceeded };
+  }
   return {
     retry: true,
     maxAttempts: policy?.maxAttempts,
@@ -96,6 +134,17 @@ function retryErrorCode(error: unknown): string | undefined {
 
 function matchesSelector(selector: readonly string[] | undefined, value: string | undefined): boolean {
   return selector === undefined || (value !== undefined && selector.includes(value));
+}
+
+function is429StatusError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  if ((error as { statusCode?: unknown }).statusCode === 429) return true;
+  const details = (error as { details?: unknown }).details;
+  if (details !== null && typeof details === 'object') {
+    const record = details as Record<string, unknown>;
+    if (record['statusCode'] === 429 || record['upstreamStatus'] === 429) return true;
+  }
+  return false;
 }
 
 function compileRetryPattern(pattern: string): RegExp | undefined {

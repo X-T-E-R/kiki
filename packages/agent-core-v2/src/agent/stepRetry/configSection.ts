@@ -21,10 +21,11 @@ export const RETRY_SECTION = 'retry';
  * first entry whose error pattern and optional exact model/provider selectors
  * match decides. `retry = false` suppresses retrying that error even though the
  * built-in classification would retry it. `max_attempts` replaces the section
- * budget for that error, and `backoff` is a fixed delay in milliseconds applied
- * before every retry of that error, replacing the default exponential backoff.
- * An entry whose `match` is not a valid regular expression is reported as a
- * load-time warning and ignored.
+ * budget for that error, `backoff` is a fixed delay in milliseconds applied
+ * before every retry of that error, replacing the default exponential backoff,
+ * and `max_retry_after_ms` overrides the HTTP 429 `Retry-After` fail-fast
+ * ceiling for that policy. An entry whose `match` is not a valid regular
+ * expression is reported as a load-time warning and ignored.
  */
 export const RetryPolicySchema = z
   .object({
@@ -33,6 +34,7 @@ export const RetryPolicySchema = z
     providers: z.array(z.string().min(1)).min(1).optional(),
     maxAttempts: z.number().int().min(1).optional(),
     backoff: z.number().int().min(0).optional(),
+    maxRetryAfterMs: z.number().int().min(1).max(2_147_483_647).optional(),
     retry: z.boolean().default(true),
   })
   .strict();
@@ -43,7 +45,9 @@ export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
  * `[retry]` — retry policy for agent steps, Output Layer and session titles.
  * `max_attempts` bounds the total attempts including the first; for agent steps
  * it takes precedence over `[loop_control] max_attempts_per_step`. A provider
- * retry-after hint still wins over any configured `backoff`. `retry_partial_responses`
+ * retry-after hint still wins over any configured `backoff`. `max_retry_after_ms`
+ * defaults to 60000 ms for HTTP 429; a 429 `Retry-After` exceeding it fails fast
+ * without retrying, while 502/503/504 keep the 60s probe cap. `retry_partial_responses`
  * defaults to enabled for native agent turns; false disables replay after observed
  * output without disabling zero-output connection recovery. Connection interruption
  * retries are capped at five total attempts; configured budgets may lower that cap.
@@ -51,6 +55,7 @@ export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
 export const RetryConfigSchema = z
   .object({
     maxAttempts: z.number().int().min(1).optional(),
+    maxRetryAfterMs: z.number().int().min(1).max(2_147_483_647).optional(),
     retryPartialResponses: z.boolean().optional(),
     policies: z.array(RetryPolicySchema).optional(),
   })
@@ -76,9 +81,11 @@ export const retryToToml = (value: unknown, rawSnake: unknown): unknown => {
   if (!isPlainObject(value)) return value;
   const out = cloneRecord(rawSnake);
   delete out['max_attempts'];
+  delete out['max_retry_after_ms'];
   delete out['retry_partial_responses'];
   delete out['policies'];
   setDefined(out, 'max_attempts', value['maxAttempts']);
+  setDefined(out, 'max_retry_after_ms', value['maxRetryAfterMs']);
   setDefined(out, 'retry_partial_responses', value['retryPartialResponses']);
   const policies = value['policies'];
   if (Array.isArray(policies)) {

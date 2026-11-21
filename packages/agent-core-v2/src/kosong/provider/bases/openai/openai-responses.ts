@@ -14,10 +14,13 @@ import {
   createAbortError,
   isAbortError,
   isContextOverflowErrorCode,
+  isStructuredQuotaExhaustedCode,
   markProviderEventError,
+  normalizeAPIStatusError,
   noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
   noteExplicitUpstreamRetryDenial,
+  parseRetryAfterMs,
   parseTraceId,
   providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
@@ -54,7 +57,6 @@ import {
   convertOpenAIError,
   hasModelPrefix,
   isMediaPart,
-  isOpenAIInsufficientQuotaCode,
   isOpenAIReasoningModel,
   OPENAI_REASONING_CAPABILITY,
   OPENAI_VISION_TOOL_CAPABILITY,
@@ -141,6 +143,44 @@ function asRawObject(value: unknown): RawObject | null {
   return value as RawObject;
 }
 
+function readTransportCauseHeaders(cause: unknown): unknown {
+  const object = asRawObject(cause);
+  if (object === null) return undefined;
+  if (object['headers'] !== undefined) return object['headers'];
+  const response = readObjectField(object, 'response');
+  if (response?.['headers'] !== undefined) return response['headers'];
+  const nested = readObjectField(object, 'error');
+  if (nested?.['headers'] !== undefined) return nested['headers'];
+  return undefined;
+}
+
+function readPlainHeadersRetryAfterMs(headers: unknown): number | null {
+  const object = asRawObject(headers);
+  if (object === null) return null;
+  let msRaw: string | undefined;
+  let secRaw: string | undefined;
+  for (const [key, value] of Object.entries(object)) {
+    const text = typeof value === 'string'
+      ? value
+      : Array.isArray(value) && value.length === 1 && typeof value[0] === 'string'
+        ? value[0]
+        : undefined;
+    if (text === undefined) continue;
+    const lower = key.toLowerCase();
+    if (lower === 'retry-after-ms') msRaw = text;
+    else if (lower === 'retry-after') secRaw = text;
+  }
+  if (msRaw !== undefined) {
+    const parsedMs = Number.parseFloat(msRaw);
+    if (Number.isFinite(parsedMs) && parsedMs > 0) return Math.round(parsedMs);
+  }
+  if (secRaw !== undefined) {
+    const parsedSec = Number.parseInt(secRaw, 10);
+    if (Number.isFinite(parsedSec) && parsedSec > 0) return parsedSec * 1_000;
+  }
+  return null;
+}
+
 function transportStatusError(error: unknown): ChatProviderError | undefined {
   if ((error instanceof ResponsesWebSocketError || error instanceof OpenAIAPIError) &&
     error.code === 'websocket_connection_limit_reached') {
@@ -152,16 +192,30 @@ function transportStatusError(error: unknown): ChatProviderError | undefined {
   }
   if (!(error instanceof ResponsesWebSocketError)) return undefined;
   if (error.status === undefined || error.status < 400 || error.status > 599) return undefined;
-  const failure = isContextOverflowErrorCode(error.code) ? new APIContextOverflowError(error.status, error.message)
-    : isOpenAIInsufficientQuotaCode(error.code) ? new APIProviderQuotaExhaustedError(error.message)
-    : new APIStatusError(error.status, error.message);
-  return withTransportExecution(attachErrorDetails(markProviderEventError(failure, error.code), {
-    errorSource: 'provider_event', nativeCode: error.code,
-  }), error.execution);
+  const headers = readTransportCauseHeaders(error.cause);
+  const retryAfterMs = parseRetryAfterMs(headers) ?? readPlainHeadersRetryAfterMs(headers);
+  const traceId = parseTraceId(headers);
+  const failure = isContextOverflowErrorCode(error.code)
+    ? new APIContextOverflowError(error.status, error.message, null, retryAfterMs, traceId)
+    : isStructuredQuotaExhaustedCode(error.code)
+      ? new APIProviderQuotaExhaustedError(error.message, null, retryAfterMs, traceId)
+      : normalizeAPIStatusError(error.status, error.message, null, retryAfterMs, traceId);
+  return withTransportExecution(
+    noteExplicitUpstreamRetryDenial(
+      attachErrorDetails(markProviderEventError(failure, error.code), {
+        errorSource: 'provider_event', nativeCode: error.code,
+      }),
+      error,
+      headers,
+    ),
+    error.execution,
+  );
 }
 
 function withTransportRetryDenial(failure: ChatProviderError, error: unknown): ChatProviderError {
-  return error instanceof ResponsesWebSocketError ? noteExplicitUpstreamRetryDenial(failure, error) : failure;
+  return error instanceof ResponsesWebSocketError
+    ? noteExplicitUpstreamRetryDenial(failure, error, readTransportCauseHeaders(error.cause))
+    : failure;
 }
 
 function withTransportExecution(failure: ChatProviderError, execution: string | undefined): ChatProviderError {
@@ -359,16 +413,20 @@ function errorFromOpenAIResponsesEvent(
   const raw = asRawObject(options?.rawEvent);
   const failedResponse = raw === null ? undefined : readObjectField(raw, 'response');
   const body = failedResponse === undefined ? raw : readObjectField(failedResponse, 'error');
+  const bodyObj = asRawObject(body);
+  const rawType = bodyObj === null ? undefined : readStringField(bodyObj, 'type');
+  const embeddedHeaders = bodyObj === null ? undefined : readObjectField(bodyObj, 'headers');
+  const retryAfterMs = readEmbeddedBodyRetryAfterMs(bodyObj);
   const withEventDetails = (error: ChatProviderError): ChatProviderError => {
     const metadata = providerStreamErrorDetails({
       error: body ?? { type: 'error', code },
       request_id: raw?.['request_id'],
     }, undefined, undefined, error.message);
-    return attachErrorDetails(markProviderEventError(error, code), {
+    return noteExplicitUpstreamRetryDenial(attachErrorDetails(markProviderEventError(error, code), {
       ...metadata,
       ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
       errorSource: 'provider_event',
-    });
+    }), body, embeddedHeaders);
   };
   if (code === 'websocket_connection_limit_reached') {
     return withEventDetails(new APIConnectionError(fullMessage));
@@ -382,12 +440,9 @@ function errorFromOpenAIResponsesEvent(
   if (isContextOverflowErrorCode(code)) {
     return withEventDetails(new APIContextOverflowError(400, fullMessage));
   }
-  if (isOpenAIInsufficientQuotaCode(code)) {
-    return withEventDetails(new APIProviderQuotaExhaustedError(fullMessage));
+  if (isStructuredQuotaExhaustedCode(code) || isStructuredQuotaExhaustedCode(rawType)) {
+    return withEventDetails(new APIProviderQuotaExhaustedError(fullMessage, null, retryAfterMs));
   }
-  const bodyObj = asRawObject(body);
-  const rawType = bodyObj === null ? undefined : readStringField(bodyObj, 'type');
-  const retryAfterMs = readEmbeddedBodyRetryAfterMs(bodyObj);
   if (code === 'rate_limit_exceeded' || readEmbeddedStatusCode(message) === 429) {
     return withEventDetails(new APIProviderRateLimitError(fullMessage, null, retryAfterMs));
   }

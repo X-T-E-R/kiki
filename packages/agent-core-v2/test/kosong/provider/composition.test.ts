@@ -2328,7 +2328,16 @@ describe('quota-exhausted classification through the real composition (behavior 
     },
   };
 
-  function mockQuota429Client(provider: ChatProvider): void {
+  const MOONSHOT_WORDING_ONLY_QUOTA_BODY = {
+    type: 'error',
+    error: {
+      type: 'rate_limit_error',
+      message:
+        'Your account is suspended due to insufficient balance, please recharge your account',
+    },
+  };
+
+  function mockQuota429Client(provider: ChatProvider, body: Record<string, unknown> = MOONSHOT_QUOTA_BODY): void {
     const client = sdkClient(provider) as {
       messages: { create: unknown };
       beta: { messages: { create: unknown } };
@@ -2336,7 +2345,7 @@ describe('quota-exhausted classification through the real composition (behavior 
     const reject = vi.fn().mockImplementation(() => {
       throw AnthropicAPIError.generate(
         429,
-        MOONSHOT_QUOTA_BODY,
+        body,
         'Too many requests',
         new Headers(),
       );
@@ -2352,7 +2361,7 @@ describe('quota-exhausted classification through the real composition (behavior 
       modelName: 'kimi-for-coding',
       apiKey: 'sk-probe',
     });
-    mockQuota429Client(provider);
+    mockQuota429Client(provider, MOONSHOT_WORDING_ONLY_QUOTA_BODY);
 
     const caught = await provider.generate('', [], PROBE_HISTORY).then(
       () => undefined,
@@ -2362,21 +2371,29 @@ describe('quota-exhausted classification through the real composition (behavior 
     expect(isRetryableGenerateError(caught)).toBe(false);
   });
 
-  it('keeps the same 429 a retryable rate limit on a plain anthropic composition', async () => {
+  it('keeps a wording-only 429 a retryable rate limit on a plain anthropic composition while failing fast on structured quota codes', async () => {
     const provider = registry.createChatProvider({
       protocol: 'anthropic',
       modelName: 'claude-opus-4-6',
       apiKey: 'sk-probe',
     });
-    mockQuota429Client(provider);
+    mockQuota429Client(provider, MOONSHOT_WORDING_ONLY_QUOTA_BODY);
 
-    const caught = await provider.generate('', [], PROBE_HISTORY).then(
+    const caughtWording = await provider.generate('', [], PROBE_HISTORY).then(
       () => undefined,
       (error: unknown) => error,
     );
-    expect(caught).toBeInstanceOf(APIProviderRateLimitError);
-    expect(caught).not.toBeInstanceOf(APIProviderQuotaExhaustedError);
-    expect(isRetryableGenerateError(caught)).toBe(true);
+    expect(caughtWording).toBeInstanceOf(APIProviderRateLimitError);
+    expect(caughtWording).not.toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(caughtWording)).toBe(true);
+
+    mockQuota429Client(provider, MOONSHOT_QUOTA_BODY);
+    const caughtStructured = await provider.generate('', [], PROBE_HISTORY).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(caughtStructured).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(caughtStructured)).toBe(false);
   });
 });
 
