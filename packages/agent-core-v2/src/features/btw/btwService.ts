@@ -14,7 +14,6 @@ import type { BranchFoldOrigin, ContextMessage } from '#/agent/contextMemory/typ
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { turnKey } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -40,6 +39,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
   AgentBranchSealed,
+  BranchTurnMerged,
   AgentToolLockChanged,
   branchSealedKey,
   branchToolLockKey,
@@ -465,17 +465,9 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       let handedBackCount = 0;
       if (done) this.sealingBranches.add(branchId);
       try {
-        if ((targetHandle.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native') {
-          targetHandle.accessor.get(IAgentLoopService).enqueue(new MessageStepRequest(foldMessage, {
-            kind: 'branch_fold',
-            admission: 'activeOrNewTurn',
-            mergeable: false,
-            turnScoped: false,
-            deliveryOrigin: 'mailbox',
-          }));
-        } else {
-          await targetHandle.accessor.get(IAgentPromptService).enqueue({ message: foldMessage, waitForLaunch: false });
-        }
+        await targetHandle.accessor.get(IAgentPromptService).enqueue({ id: foldId, message: foldMessage, waitForLaunch: false });
+
+        if (hasTurns) await branchHandle.accessor.get(IEventDispatcher).dispatchDurably(new BranchTurnMerged({ turnId: throughTurnId }));
 
         if (done) {
           await this.metadata.updateAgent(branchId, (current) => ({

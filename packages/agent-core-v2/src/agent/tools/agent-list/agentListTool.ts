@@ -25,6 +25,7 @@ import type { DirectChildAgent } from '#/session/agentCollaboration/directChildr
 import { subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { hasReceiptWork } from '#/session/subagent/autonomousReceipt';
 import { isUnknownCapability } from '#/kosong/contract/capability';
 import {
   AGENT_LIST_TELEMETRY_FIELDS,
@@ -101,13 +102,21 @@ export class AgentListTool implements IAgentListTool {
             let status: AgentListStatus;
             let fromOutcome = false;
             let persistenceFailure: AgentListEntry['persistence_failure'];
-            if (loop?.persistenceFailure !== undefined) {
+            const branch = meta.labels?.['branch'] === 'true';
+            if (branch && meta.labels?.['branchSealed'] === 'true') {
+              status = 'completed';
+            } else if (loop?.persistenceFailure !== undefined) {
               status = 'persistence_failed';
               persistenceFailure = {
                 turn_id: loop.activeTurnId,
                 execution_outcome: loop.persistenceFailure.executionOutcome,
                 message: loop.persistenceFailure.message,
               };
+            } else if (branch) {
+              const outcome = loop?.lastTurnResult ?? meta.branchTurn?.outcome;
+              status = live !== undefined && hasReceiptWork(live) ? 'running'
+                : outcome === 'failed' || execution?.state === 'broken' ? 'errored'
+                : outcome === 'cancelled' ? 'interrupted' : 'idle';
             } else {
               const outcome = task === undefined || (task.status === 'running' && task.taskId === meta.taskId)
                 ? meta.status
@@ -127,7 +136,7 @@ export class AgentListTool implements IAgentListTool {
             const rank = status === 'running' || status === 'persistence_failed' ? 0 : FINISHED_STATUSES.has(status) ? 2 : 1;
             const recency = rank === 0
               ? (task?.startedAt ?? execution?.startedAt ?? meta.createdAt ?? -1)
-              : (meta.completedAt ?? task?.endedAt ?? task?.startedAt ?? meta.createdAt ?? -1);
+              : (meta.completedAt ?? meta.branchTurn?.endedAt ?? task?.endedAt ?? task?.startedAt ?? meta.createdAt ?? -1);
             const candidate: RankedCandidate = {
               agentId,
               name,
@@ -214,7 +223,7 @@ function buildEntry(input: BuildEntryInput): AgentListEntry {
     elapsed_ms: allowedFields.has('elapsed_ms')
       ? resolveElapsedMs(child, status, execution, activityTelemetry, task, fromOutcome, now)
       : undefined,
-    idle_ms: allowedFields.has('idle_ms') ? resolveIdleMs(status, activityTelemetry, now) : undefined,
+    idle_ms: allowedFields.has('idle_ms') ? resolveIdleMs(child, status, activityTelemetry, now) : undefined,
     tool_call_count: allowedFields.has('tool_call_count')
       ? resolveToolCallCount(child, status, activityView, activityTelemetry)
       : undefined,
@@ -295,6 +304,16 @@ function resolveElapsedMs(
   fromOutcome: boolean,
   now: number,
 ): number | undefined {
+  if (child.meta.labels?.['branch'] === 'true') {
+    const turn = child.meta.branchTurn;
+    if (status === 'running' || status === 'persistence_failed') {
+      const start = execution?.startedAt ?? activityTelemetry?.activeTurnStartedAt ?? turn?.startedAt ?? child.meta.createdAt;
+      return start === undefined ? undefined : Math.max(0, now - start);
+    }
+    const end = child.meta.completedAt ?? turn?.endedAt;
+    const start = turn?.startedAt ?? child.meta.createdAt;
+    return start === undefined || end === undefined ? undefined : Math.max(0, end - start);
+  }
   if (status === 'running' || status === 'persistence_failed') {
     const runningTaskStart = task?.status === 'running' ? task.startedAt : undefined;
     const liveRunStart = execution?.startedAt ?? activityTelemetry?.activeTurnStartedAt;
@@ -323,13 +342,17 @@ function resolveElapsedMs(
 }
 
 function resolveIdleMs(
+  child: DirectChildAgent,
   status: AgentListStatus,
   activityTelemetry: AgentActivityTelemetry | undefined,
   now: number,
 ): number | undefined {
-  if (status !== 'running' && status !== 'persistence_failed') return undefined;
-  if (activityTelemetry?.lastActivityAt === undefined) return undefined;
-  return Math.max(0, now - activityTelemetry.lastActivityAt);
+  const branch = child.meta.labels?.['branch'] === 'true';
+  if (!branch && status !== 'running' && status !== 'persistence_failed') return undefined;
+  const at = branch && status === 'completed'
+    ? child.meta.completedAt ?? child.meta.branchTurn?.endedAt
+    : activityTelemetry?.lastActivityAt ?? (branch ? child.meta.branchTurn?.endedAt ?? child.meta.createdAt : undefined);
+  return at === undefined ? undefined : Math.max(0, now - at);
 }
 
 function resolveToolCallCount(

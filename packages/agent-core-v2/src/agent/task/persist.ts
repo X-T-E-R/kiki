@@ -433,6 +433,7 @@ function normalizePersistedTask(task: DiskPersistedTask): PersistedTask {
     receipt: record.receipt,
     receiptVerification: record.receiptVerification,
     kind: 'agent',
+    continued: record.continued,
     agentId: record.agentId,
     profile,
     parentToolCallId: record.parentToolCallId,

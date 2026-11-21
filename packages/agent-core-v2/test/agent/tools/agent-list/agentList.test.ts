@@ -167,6 +167,31 @@ async function listAgents(
 }
 
 describe('AgentListTool', () => {
+  it('ranks open branches and projects cold terminal and idle telemetry without tasks', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      const branch: AgentMeta = { parentAgentId: 'main', labels: { branch: 'true' }, createdAt: 100 };
+      const tool = makeTool({
+        agents: {
+          working: branch,
+          waiting: { ...branch, branchTurn: { startedAt: 200, endedAt: 300, outcome: 'completed' } },
+          merged: { ...branch, labels: { ...branch.labels, branchSealed: 'true' }, completedAt: 400 },
+          broken: { ...branch, branchTurn: { startedAt: 500, endedAt: 600, outcome: 'failed' } },
+        },
+        liveChildren: { working: { execution: { state: 'running', startedAt: 800 }, activity: { telemetry: { lastActivityAt: 900, toolCallCount: 0 } } } },
+      });
+      expect((await listAgents(tool)).agents).toEqual([
+        expect.objectContaining({ agent_id: 'working', status: 'running', elapsed_ms: 200, idle_ms: 100 }),
+        expect.objectContaining({ agent_id: 'waiting', status: 'idle', elapsed_ms: 100, idle_ms: 700 }),
+      ]);
+      expect((await listAgents(tool, { include_finished: true })).agents.slice(2)).toEqual([
+        expect.objectContaining({ agent_id: 'broken', status: 'errored', elapsed_ms: 100, idle_ms: 400 }),
+        expect.objectContaining({ agent_id: 'merged', status: 'completed', elapsed_ms: 300, idle_ms: 600 }),
+      ]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
   it.each(['completed', 'failed', 'cancelled'] as const)('uses a committed %s outcome when its task is no longer retained', async (status) => {
     for (const execution of [undefined, { worker: 'idle' as const }]) {
       const tool = makeTool({ agents: { worker: { ...childMeta({}), status, taskId: 'old-task', completedAt: 10 } }, execution });

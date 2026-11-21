@@ -141,6 +141,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private readonly externalEpoch = new Map<string, number>();
   private readonly externalWaiters = new Map<string, Array<() => void>>();
   private readonly withheld = new Set<string>();
+  private readonly ownedContinuations = new WeakMap<IAgentScopeHandle, { readonly turnId: number; readonly pending: Set<string>; started: boolean }>();
   private readonly reportedContinuationBlocks = new Map<string, string>();
 
   constructor(
@@ -229,9 +230,22 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         `Agent "${input.targetAgentId}" does not accept Kiki mail while allow_kiki_subagents is false.`,
       );
     }
+    const targetMeta = this.metadata.snapshot?.().agents?.[input.targetAgentId];
+    const parentId = targetMeta?.parentAgentId ?? (targetMeta?.delegator?.kind === 'agent' ? targetMeta.delegator.agentId : undefined);
+    const preceding = idleWake === 'owned-child' && input.senderKind !== 'user' && parentId === input.sourceAgentId && handle !== undefined
+      ? handle.accessor.get(IAgentExecutionService).status().turnId ?? handle.accessor.get(IAgentStateService).get(turnKey)?.lastEnded?.turnId
+      : undefined;
     const acceptance = await this.store.accept(storedInput);
     if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     if (handle === undefined) return acceptance;
+    if (preceding !== undefined) {
+      let continuation = this.ownedContinuations.get(handle);
+      if (continuation?.turnId !== preceding) {
+        continuation = { turnId: preceding, pending: new Set(), started: false };
+        this.ownedContinuations.set(handle, continuation);
+      }
+      continuation.pending.add(acceptance.message.messageId);
+    }
     const sentWhileCancelling = handle.accessor.get(IAgentExecutionService).status().state === 'cancelling';
     if (waitForRunningDelivery !== true) {
       await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling);
@@ -258,6 +272,14 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       });
     }
     return { ...acceptance, delivery: refreshed.delivery, resumed: resumed || undefined };
+  }
+
+  hasOwnedContinuation(agentId: string, turnId: number): boolean {
+    const handle = this.lifecycle.get(agentId);
+    if (handle === undefined) return false;
+    const continuation = this.ownedContinuations.get(handle);
+    return continuation?.turnId === turnId && (continuation.started || [...continuation.pending].some(id =>
+      !this.withheld.has(id) && !this.messageLanded(handle, id)));
   }
 
   private async armBackgroundDelivery(
@@ -650,6 +672,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           this.dispatch.recordDelegatedRun(sourceAgentId, handle.id);
         }
         const started = await run.started;
+        const continuation = this.ownedContinuations.get(handle);
+        if (continuation?.pending.has(message.messageId) && continuation.turnId !== started.turn.id) continuation.started = true;
         void started.completion.catch(() => {});
         await this.serializeDelivery(handle.id, () => this.recoverAppliedClaims(handle));
         return this.messageLanded(handle, message.messageId) ? 'landed' : 'other';

@@ -268,6 +268,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   const taskService = { list: vi.fn(() => activeTasks) };
   const externalTurns: Array<{ finish(): void }> = [];
   const externalSteer = vi.fn(async (): Promise<boolean | 'unknown'> => true);
+  const waitForSteerBoundary = vi.fn(async (_turnId: number): Promise<boolean> => true);
   const externalRun = vi.fn(async () => {
     const finished = deferred<{ type: 'completed'; steps: number; truncated: boolean }>();
     const turn = { id: 200 + externalTurns.length, state: 'running' as const,
@@ -300,7 +301,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.defineInstance(ISessionExecutionControl, stubExecutionControl());
       reg.define(IWorkAdmissionService, WorkAdmissionService);
       reg.define(IAgentPromptService, AgentPromptService);
-      reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer, waitForPromptRun: async () => {} });
+      reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer, waitForPromptRun: async () => {}, waitForSteerBoundary });
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
       reg.definePartialInstance(ISessionMetadata, metadata);
       reg.definePartialInstance(IEventService, { publish: () => {} });
@@ -331,6 +332,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     context,
     externalRun,
     externalSteer,
+    waitForSteerBoundary,
     externalTurns,
     fullCompaction,
     eventBus: ix.get(IEventBus),
@@ -642,6 +644,38 @@ describe('AgentPromptService', () => {
     await expect(queued.completion).resolves.toMatchObject({ promptId: queued.id, state: 'failed' });
     await expect(queued.launched).resolves.toBeUndefined();
     expect(reported).toHaveBeenCalledWith(hintFailure);
+  });
+
+  it('delivers three separate external Send now clicks FIFO in one boundary attempt with separate prompt receipts', async () => {
+    const { prompt, context, setExecutor, externalSteer, externalRun, externalTurns, eventBus, states, waitForSteerBoundary } = harness();
+    const deliveries: ExecutorHintDelivery[] = [];
+    eventBus.subscribe(ExecutorHintDelivery, (event) => deliveries.push(event));
+    setExecutor('grok-acp');
+    const boundary = deferred<boolean>();
+    const entered = deferred<void>();
+    waitForSteerBoundary.mockImplementationOnce(() => { entered.resolve(); return boundary.promise; });
+    externalSteer.mockImplementationOnce(async () => {
+      for (const id of ['one', 'two', 'three']) expect(states.get(promptQueueKey).entries.get(id)).toMatchObject({ externalDeliveryReason: 'external_retry' });
+      return true;
+    });
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    await active.launched;
+    const one = await prompt.enqueue({ id: 'one', userMessageId: 'first-message', message: message('first') });
+    const two = await prompt.enqueue({ id: 'two', userMessageId: 'second-message', message: message('second') });
+    const three = await prompt.enqueue({ id: 'three', userMessageId: 'third-message', message: message('third') });
+    const first = prompt.acceptSteer([three.id]);
+    await entered.promise;
+    const second = prompt.acceptSteer([one.id]);
+    const third = prompt.acceptSteer([two.id]);
+    expect(externalSteer).not.toHaveBeenCalled();
+    boundary.resolve(true);
+    await expect(Promise.all([first, second, third])).resolves.toEqual([[three], [one], [two]]);
+    expect(externalSteer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ content: [...three.message.content, ...one.message.content, ...two.message.content] }));
+    expect(context.get().slice(-3).map(entry => entry.id)).toEqual(['third-message', 'first-message', 'second-message']);
+    expect(deliveries.map(event => [event.promptId, event.status])).toEqual([['three', 'delivered'], ['one', 'delivered'], ['two', 'delivered']]);
+    expect(externalRun).toHaveBeenCalledTimes(1);
+    externalTurns[0]!.finish();
+    await Promise.all([active.completion, one.completion, two.completion, three.completion]);
   });
 
   it('shares an in-flight external attempt and retries a definite refusal on the same prompt', async () => {
@@ -2999,6 +3033,31 @@ describe('AgentPromptService', () => {
     const three = await prompt.enqueue({ id: 'three', message: message('three') });
     await prompt.steer([three.id]);
     expect(hooks).toEqual(['onetwo', 'three']);
+  });
+
+  it('accepts three separate native Send now clicks FIFO at the next step boundary', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    loop.drainNextBatch(context);
+    const turnId = (await active.launched)!.id;
+    const one = await prompt.enqueue({ id: 'one', message: message('one') });
+    const two = await prompt.enqueue({ id: 'two', message: message('two') });
+    const three = await prompt.enqueue({ id: 'three', message: message('three') });
+    const boundary = deferred<void>();
+    const entered = deferred<void>();
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => { entered.resolve(); await boundary.promise; await run(undefined); });
+    const hooks: string[] = [];
+    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(turnPromptText(ctx.promptMessage.content, ctx.promptMessage.origin) ?? ''); await next(); });
+    await prompt.acceptSteer([three.id], turnId);
+    await entered.promise;
+    await prompt.acceptSteer([one.id], turnId);
+    await prompt.acceptSteer([two.id], turnId);
+    boundary.resolve();
+    await Promise.all([one.launched, two.launched, three.launched]);
+    expect(loop.atStepBoundary).toHaveBeenCalledTimes(1);
+    expect(hooks).toEqual(['threeonetwo']);
+    loop.drainNextBatch(context);
+    expect(context.get().slice(-3)).toEqual([three.message, one.message, two.message]);
   });
 
   it('cancels one scheduled steer call without stranding another call at the shared boundary', async () => {

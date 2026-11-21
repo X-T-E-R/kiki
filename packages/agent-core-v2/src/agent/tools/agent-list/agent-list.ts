@@ -13,7 +13,7 @@ export const AgentListInputSchema = z.object({
     .optional()
     .default(false)
     .describe(
-      'When true, also include finished or errored children. The default includes live executions even after their background task settles, and idle children with no tracking task.',
+      'When true, also include finished or errored children. Open branches that are running or idle appear by default.',
     ),
   query: z
     .string()
@@ -33,6 +33,7 @@ export type AgentListInput = z.infer<typeof AgentListInputSchema>;
 export type AgentListStatus =
   | 'persistence_failed'
   | 'running'
+  | 'idle'
   | 'completed'
   | 'interrupted'
   | 'errored'

@@ -94,6 +94,8 @@ import type { AgentRunRequest, RunAgentOptions } from '#/session/subagent/subage
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
 import { agentService, createTestAgent, InMemoryWireRecordPersistence } from '../../harness';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
+import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { TurnPrompt, TurnSteer } from '#/agent/loop/turnOps';
 import { PromptEnqueued, PromptLaunchCommitted } from '#/agent/prompt/promptService';
 import { PromptOutcomeCommitted } from '#/agent/prompt/promptReplay';
@@ -1730,6 +1732,91 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(new Set(taskIds).size).toBe(2);
       expect(ctx.llmCalls).toHaveLength(2);
     } finally {
+      await service.dispose();
+      await disposables.dispose();
+      await ctx.dispose();
+    }
+  });
+
+  it('marks the settling task continued before a queued owned message wakes the same child and returns its final receipt', async () => {
+    const ctx = createTestAgent();
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const target = agentHandle('agent-target');
+    const executors = { get: () => undefined, list: () => [] } as unknown as IAgentExecutorRegistry;
+    const targetHandle: IAgentScopeHandle = { ...target.handle, accessor: { get: <T>(id: ServiceIdentifier<T>): T => {
+      if (id === IAgentExecutorRegistry) return executors as T;
+      if (id === IAgentActivityView) return { state: () => ({ lifecycle: 'ready', background: [] }), telemetry: () => ({}) } as T;
+      return target.handle.accessor.get(id);
+    } } };
+    const agents: Record<string, AgentMeta> = { main: { type: 'main' }, 'agent-target': { type: 'sub', parentAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' } } };
+    const meta = metadataHarness(() => agents);
+    const metadata: ISessionMetadata = {
+      ...meta,
+      snapshot: () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false, agents }),
+      updateAgent: async (agentId, update) => { agents[agentId] = update(agents[agentId]!); },
+    };
+    let service!: AgentCollaborationMessagingService;
+    let lifecycle!: AgentLifecycle;
+    const main: IAgentScopeHandle = {
+      id: 'main', kind: LifecycleScope.Agent, accessor: { get: <T>(id: ServiceIdentifier<T>): T => {
+        if (id === ISessionMetadata) return metadata as T;
+        if (id === IAgentLifecycleService) return lifecycle as T;
+        if (id === IAgentCollaborationMessagingService) return service as T;
+        if (id === ISessionSubagentService) return ix.get(ISessionSubagentService) as T;
+        return ctx.get(id);
+      } }, dispose: () => {},
+    };
+    lifecycle = lifecycleHarness([main, targetHandle]).service;
+    let finishNext!: (outcome: { summary: string }) => void;
+    const continuation = new Promise<{ summary: string }>(resolve => { finishNext = resolve; });
+    const runNext = vi.fn(async (agentId: string, request: AgentRunRequest, options: RunAgentOptions) => {
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return { agentId, turn: { id: 2 } as never, completion: continuation };
+    });
+    ix.stub(IAgentLifecycleService, lifecycle);
+    ix.stub(ISessionMetadata, metadata);
+    ix.stub(ISessionSubagentService, { retain: () => ({ dispose: () => {} }), run: runNext, notifyAgentTaskStopped: () => {} });
+    ix.stub(ISessionAgentProfileCatalog, {});
+    ix.stub(IAgentCollaborationRegistry, {});
+    ix.stub(IAgentExecutorRegistry, executors);
+    ix.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
+    ix.stub(IModelCatalog, {});
+    ix.stub(IModelService, {});
+    ix.stub(ILogService, { warn: () => {} });
+    ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    service = messagingService(mailboxStore(tempDir()), lifecycle, sessionContext(), metadata, ix.get(ISessionDispatchService));
+    const tasks = ctx.get(IAgentTaskService);
+    let finishFirst!: (outcome: { summary: string }) => void;
+    const first = new Promise<{ summary: string }>(resolve => { finishFirst = resolve; });
+    try {
+      target.setRunning(true);
+      ctx.mockNextResponse({ type: 'text', text: 'Noted the initial phase.' });
+      const previous = tasks.registerTask(new SubagentTask({ agentId: 'agent-target', profileName: 'test',
+        completion: mirrorAgentRun(main, { agentId: 'agent-target', turn: { id: 1 } as never, completion: first }, { profileName: 'test', signal })
+          .then(result => ({ result: result.summary, continued: result.continued })),
+      }, 'First stage', new AbortController()), { detached: true });
+      await expect(service.send({ ...sendInput('continue with this', 'during-settlement'), idleWake: 'owned-child', waitForRunningDelivery: false }))
+        .resolves.toMatchObject({ delivery: 'queued' });
+      finishFirst({ summary: 'First phase result.' });
+      await tasks.wait(previous, 3000);
+      expect(await tasks.getTaskSnapshot(previous)).toMatchObject({ status: 'completed', continued: true });
+      expect(await tasks.readOutput(previous)).toContain('First phase result.');
+      expect(await tasks.readOutput(previous)).toContain('continuing automatically');
+      target.setRunning(false);
+      await vi.waitFor(() => expect(runNext).toHaveBeenCalledExactlyOnceWith('agent-target', expect.objectContaining({ kind: 'mailbox' }), expect.anything()));
+      await vi.waitFor(() => expect(tasks.list(false).filter(task => task.status === 'running')).toHaveLength(1));
+      const next = tasks.list(false).find(task => task.status === 'running')!;
+      ctx.mockNextResponse({ type: 'text', text: 'Noted the final result.' });
+      finishNext({ summary: 'Continuation final result.' });
+      await tasks.wait(next.taskId, 3000);
+      expect(await tasks.readOutput(next.taskId)).toBe('Continuation final result.');
+      expect((await tasks.getTaskSnapshot(next.taskId))).not.toHaveProperty('continued', true);
+    } finally {
+      finishFirst({ summary: 'released' });
+      finishNext({ summary: 'released' });
+      target.setRunning(false);
       await service.dispose();
       await disposables.dispose();
       await ctx.dispose();

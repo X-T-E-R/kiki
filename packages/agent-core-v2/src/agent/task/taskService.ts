@@ -707,11 +707,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return entry.taskId;
   }
 
-  async recordCompletedTask(info: AgentTaskInfo & { readonly status: 'completed' }, finalOutput: string): Promise<void> {
+  async recordCompletedTask(info: AgentTaskInfo & { readonly status: Exclude<AgentTaskStatus, 'running'> }, finalOutput: string): Promise<void> {
     const terminal = { ...info, detached: true,
       terminalNotificationSuppressed: info.terminalNotificationSuppressed || undefined };
     const existing = this.ghosts.get(info.taskId) ?? await this.persistence.readTask(info.taskId);
-    const committed = existing?.status === 'completed' && existing.receiptVerification === 'verified'
+    const committed = existing?.status === info.status && existing.receiptVerification === 'verified'
       ? existing : { ...terminal, receipt: await this.persistence.commitTerminalTask(terminal, finalOutput), receiptVerification: 'verified' as const };
     this.ghosts.set(info.taskId, committed);
     this.localTaskIds.add(info.taskId);
@@ -2874,6 +2874,7 @@ function buildAgentTaskNotificationBody(info: AgentTaskInfo): string {
           ? `${info.description} ${info.status === 'killed' ? 'was stopped' : info.status}. Reason: ${info.stopReason}`
           : `${info.description} ${info.status}.`;
 
+  if (info.kind === 'agent' && info.continued === true) return `${baseLine} The child is continuing after AgentSend; no additional resume is needed.`;
   if (info.kind === 'process') {
     const elapsed = info.endedAt === null ? 'unknown' : String(Math.max(0, info.endedAt - info.startedAt));
     return `${baseLine} Exit code: ${info.exitCode ?? 'unavailable'}. Duration: ${elapsed} ms.`;
@@ -2905,7 +2906,8 @@ function buildAgentTaskNotification(
     source_kind: 'background_task',
     source_id: info.taskId,
     agent_id: info.kind === 'agent' ? info.agentId : undefined,
-    title: question?.title ?? `Background ${info.kind} ${info.status}`,
+    title: question?.title ?? (info.kind === 'agent' && info.continued === true
+      ? 'Agent phase completed; child continuing after AgentSend' : `Background ${info.kind} ${info.status}`),
     severity: info.status === 'completed' ? 'info' : 'warning',
     body: question?.body ?? buildAgentTaskNotificationBody(info),
     children: agentTaskNotificationChildren(info, output),

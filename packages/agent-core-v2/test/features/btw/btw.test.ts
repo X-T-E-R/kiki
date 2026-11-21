@@ -43,6 +43,7 @@ import {
 import {
   AgentBranchSealed,
   AgentToolLockChanged,
+  BranchTurnMerged,
   branchSealedKey,
   branchToolLockKey,
 } from '#/features/btw/branchOps';
@@ -269,14 +270,8 @@ describe('SessionBranchService completion metadata', () => {
   it.each(['native', 'example-external'])('delivers a fold through the %s execution owner even while finalizing', async (executorId) => {
     const harness = createBranchFoldHarness(ix, {}, executorId);
     await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Fold result', done: false });
-    if (executorId === 'native') {
-      expect(harness.enqueue).toHaveBeenCalledOnce();
-      expect(harness.enqueue.mock.calls[0]![0]).toMatchObject({ admissionPolicy: 'activeOrNewTurn' });
-      expect(harness.prompt).not.toHaveBeenCalled();
-    } else {
-      expect(harness.prompt).toHaveBeenCalledWith(expect.objectContaining({ message: expect.objectContaining({ origin: expect.objectContaining({ kind: 'branch_fold' }) }), waitForLaunch: false }));
-      expect(harness.enqueue).not.toHaveBeenCalled();
-    }
+    expect(harness.prompt).toHaveBeenCalledWith(expect.objectContaining({ id: expect.stringMatching(/^fold_/), message: expect.objectContaining({ origin: expect.objectContaining({ kind: 'branch_fold' }) }), waitForLaunch: false }));
+    expect(harness.enqueue).not.toHaveBeenCalled();
   });
 
   it.each(['BTW', 'Custom branch title'])('restores a cold %s branch from its persisted profile binding', async (displayName) => {
@@ -294,7 +289,7 @@ describe('SessionBranchService completion metadata', () => {
     await harness.service.setToolsLocked({ branchId: 'branch-1', locked: false });
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({ restoreBinding: expect.objectContaining({ profileName: 'example', modelAlias: 'example-model', thinkingEffort: 'high' }) }));
     await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Cold result', done: false });
-    expect(harness.enqueue).toHaveBeenCalledOnce();
+    expect(harness.prompt).toHaveBeenCalledOnce();
   });
 
   it('binds unbound persisted branches to the default agent profile on restore and binds new branches from unbound main when default_model is configured', async () => {
@@ -451,7 +446,7 @@ describe('SessionBranchService completion metadata', () => {
     if (secondOutcome.status === 'rejected') {
       expect(secondOutcome.reason).toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     }
-    expect(harness.enqueue).toHaveBeenCalledTimes(1);
+    expect(harness.prompt).toHaveBeenCalledTimes(1);
     expect(harness.updateAgent).toHaveBeenCalledTimes(1);
   });
 });
@@ -930,6 +925,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
           get: (token: unknown) => {
             if (token === IEventDispatcher) {
               return {
+                dispatchDurably: vi.fn(async (ev: unknown) => { dispatchedBranchEvents.push(ev); }),
                 dispatch: vi.fn(async (ev: unknown) => {
                   dispatchedBranchEvents.push(ev);
                   if (ev instanceof AgentBranchSealed) {
@@ -1070,7 +1066,13 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         through_turn: 2,
       });
 
-      const mergedMsg = mainMessages.at(-1)!;
+      expect(dispatchedBranchEvents.filter((event) => event instanceof BranchTurnMerged)).toEqual([
+        expect.objectContaining({ turnId: 2 }),
+      ]);
+      const queuedFold = mainPromptEnqueued[0] as { id: string; message: ContextMessage };
+      expect(queuedFold.id).toBe(parsedReceipt.fold_id);
+      const mergedMsg = queuedFold.message;
+      mainMessages.push(mergedMsg);
       expect(mergedMsg.origin).toMatchObject({
         kind: 'branch_fold',
         branchId: 'branch-side-1',
@@ -1089,7 +1091,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       expect(textBody).toContain('Branch history: HistoryList({ agent_id: "branch-side-1" }) · HistoryRead({ agent_id: "branch-side-1", turn: 2 })');
       expect(textBody).not.toContain('Edited files:');
       expect(textBody).not.toContain('Commands run:');
-      expect(mainPromptEnqueued).toHaveLength(1);
+      expect(mainPromptEnqueued).toHaveLength(2);
 
       const undoCutAfterMerge = computeUndoCut(mainMessages, 1);
       expect(undoCutAfterMerge.removedCount).toBe(1);

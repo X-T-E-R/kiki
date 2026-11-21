@@ -686,7 +686,7 @@ export class SubagentTool implements ISubagentTool {
       dispatchDecision: run.child.dispatchDecision,
       parentNotify,
       queued: admitted === 'queued' ? true : undefined,
-      completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
+      completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage, continued: result.continued })),
     };
   }
 

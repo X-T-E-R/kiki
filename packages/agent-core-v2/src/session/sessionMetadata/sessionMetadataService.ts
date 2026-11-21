@@ -675,6 +675,9 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.allowKikiSubagents === b.allowKikiSubagents &&
     a.status === b.status &&
     a.completedAt === b.completedAt &&
+    a.branchTurn?.startedAt === b.branchTurn?.startedAt &&
+    a.branchTurn?.endedAt === b.branchTurn?.endedAt &&
+    a.branchTurn?.outcome === b.branchTurn?.outcome &&
     a.resultSummary === b.resultSummary &&
     a.error === b.error &&
     a.taskId === b.taskId &&

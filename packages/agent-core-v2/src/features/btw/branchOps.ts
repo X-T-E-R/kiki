@@ -29,6 +29,16 @@ export class AgentBranchSealed extends Event2<z.infer<typeof agentBranchSealedSc
 }
 export interface AgentBranchSealed extends z.infer<typeof agentBranchSealedSchema> {}
 
+const branchTurnMergedSchema = z.object({ turnId: z.number().int().nonnegative() });
+
+export class BranchTurnMerged extends Event2<z.infer<typeof branchTurnMergedSchema>> {
+  static override readonly type = 'agent.branch_turn_merged';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = branchTurnMergedSchema;
+}
+export interface BranchTurnMerged extends z.infer<typeof branchTurnMergedSchema> {}
+
 export const branchToolLockKey = defineState('branch.toolsLocked', () => false)
   .replayable({ schema: z.boolean() })
   .on(AgentToolLockChanged, (_state, event) => event.locked);

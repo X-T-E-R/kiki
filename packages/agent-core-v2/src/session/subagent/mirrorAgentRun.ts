@@ -17,7 +17,12 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { SubagentCreatedEvent } from '#/app/telemetry/events';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentTaskService } from '#/agent/task/task';
+import { AGENT_SEND_CONTINUED } from '#/agent/tools/agent/subagent-task';
+import { IWireService } from '#/wire/wire';
 
 import { type AgentRunHandle, ISessionSubagentService } from './subagent';
 
@@ -212,7 +217,7 @@ export async function mirrorAgentRun(
   requester: IAgentScopeHandle,
   run: Pick<AgentRunHandle, 'agentId' | 'completion'> & Partial<Pick<AgentRunHandle, 'turn'>>,
   options: MirrorAgentRunOptions,
-): Promise<{ summary: string; usage?: TokenUsage }> {
+): Promise<{ summary: string; usage?: TokenUsage; continued?: boolean }> {
   const dispatcher = requester.accessor.get(IEventDispatcher);
   const subagents = requester.accessor.get(ISessionSubagentService);
   const agentLifecycle = requester.accessor.get(IAgentLifecycleService);
@@ -221,6 +226,28 @@ export async function mirrorAgentRun(
       new SubagentStarted({ subagentId: run.agentId, taskId: await options.resolveTaskId?.() }),
     );
   }
+  const child = run.turn === undefined || options.resolveTaskId === undefined ? undefined : agentLifecycle?.get(run.agentId);
+  const phaseSubscription = child?.accessor.get(IAgentLoopService)?.hooks.onWillBeginStep.register(
+    `subagent-phase:${run.agentId}:${run.turn!.id}`, async (step, next) => {
+      const phase = step.continuedParentPhase;
+      if (step.turnId === run.turn!.id && phase !== undefined) {
+        const id = await options.resolveTaskId!();
+        const tasks = requester.accessor.get(IAgentTaskService);
+        const task = id === undefined ? undefined : tasks.getTask(id);
+        if (task?.kind === 'agent' && task.status === 'running' && task.detached === true && task.terminalNotificationSuppressed !== true) {
+          const key = phase.stepId.replaceAll('-', '');
+          try {
+            await child.accessor.get(IWireService).flush();
+            await tasks.recordCompletedTask({ ...task, taskId: `agent-phase-${key.slice(0, -8)}-${key.slice(-8)}`, status: 'completed', continued: true, endedAt: Date.now(),
+              description: `${task.description} — phase completed; child already continued after AgentSend`,
+            }, `${AGENT_SEND_CONTINUED}\n\n${phase.summary}`);
+          } catch (error) {
+            requester.accessor.get(ILogService).error('failed to record continued AgentSend phase', { agentId: run.agentId, stepId: phase.stepId, error });
+          }
+        }
+      }
+      await next();
+    });
   let hookFailed = false;
   try {
     if (options.prompt !== undefined) {
@@ -274,7 +301,8 @@ export async function mirrorAgentRun(
       agentName: options.profileName,
       response: result.summary,
     });
-    return result;
+    const continued = run.turn !== undefined && requester.accessor.get(IAgentCollaborationMessagingService)?.hasOwnedContinuation?.(run.agentId, run.turn.id);
+    return continued === true ? { ...result, continued } : result;
   } catch (error) {
     if (requester.accessor.get(ISessionExecutionControl).isParked(run.agentId)) throw error;
     const cancelled = isAbortError(error) || (!hookFailed && options.signal.aborted && error === options.signal.reason);
@@ -299,6 +327,8 @@ export async function mirrorAgentRun(
       );
     }
     throw error;
+  } finally {
+    await phaseSubscription?.dispose();
   }
 }
 

@@ -42,6 +42,7 @@ export interface IAgentExecutionService {
   /** True when external construction can be retried after no session was opened or its failed wrapper was fully released. */
   canRetryBrokenExecution(): boolean;
   attachLocalSession(source: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource): Promise<void>;
+  waitForSteerBoundary?(turnId: number): Promise<boolean>;
   steer?(
     message: ContextMessage,
     trailingMessages?: readonly ContextMessage[],
