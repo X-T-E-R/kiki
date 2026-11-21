@@ -1,4 +1,4 @@
-import { pino, type Logger, type LoggerOptions } from 'pino';
+import { destination, pino, type Logger, type LoggerOptions } from 'pino';
 
 export type ServerLogger = Logger;
 
@@ -17,7 +17,7 @@ export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
     redact: { paths: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]', 'req.body.code', 'body.code', 'cookie', 'authorization', 'accessCode', 'sessionSecret'], censor: '[redacted]' },
   };
   if (opts.async === true) {
-    const dest = pino.destination({ fd: 2, sync: false });
+    const dest = destination({ fd: 2, sync: false });
     dest.on('error', () => {});
     return pino(base, dest);
   }
