@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -8,23 +7,11 @@ import { performance } from 'node:perf_hooks';
 import { computeChaosWorkDirKey } from './corpus-generator.mjs';
 import { buildDecodableMp4 } from './fixtures/media.mjs';
 import { generateSyntheticPng } from './scenario-soak-and-media-weaknet.mjs';
+import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const MiB = 1024 * 1024;
 const BASE_TIME = 1_760_300_000_000;
-
-const GUI_MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-  '.ogg': 'audio/ogg',
-  '.mp4': 'video/mp4',
-};
 
 function roundMs(val) {
   return Number(Number(val ?? 0).toFixed(2));
@@ -633,19 +620,19 @@ export function buildFlightRecorderInitScript() {
       const style = getComputedStyle(el);
       if (style.position === 'fixed' || style.position === 'absolute') return true;
       if (
-        el.hasAttribute('data-select-panel') ||
-        el.hasAttribute('data-execution-panel') ||
-        el.hasAttribute('data-anchored-popover') ||
-        el.hasAttribute('data-add-panel') ||
-        el.hasAttribute('data-permission-panel') ||
-        el.hasAttribute('data-run-mode-panel') ||
-        el.hasAttribute('data-composer-ssh-panel') ||
-        el.hasAttribute('data-composer-ssh-list') ||
-        el.hasAttribute('data-composer-menu') ||
-        el.hasAttribute('data-composer-notes-panel') ||
-        el.hasAttribute('data-composer-queued-popover') ||
-        el.hasAttribute('data-context-details') ||
-        el.hasAttribute('data-send-timing-menu') ||
+        Object.hasOwn(el.dataset, "selectPanel") ||
+        Object.hasOwn(el.dataset, "executionPanel") ||
+        Object.hasOwn(el.dataset, "anchoredPopover") ||
+        Object.hasOwn(el.dataset, "addPanel") ||
+        Object.hasOwn(el.dataset, "permissionPanel") ||
+        Object.hasOwn(el.dataset, "runModePanel") ||
+        Object.hasOwn(el.dataset, "composerSshPanel") ||
+        Object.hasOwn(el.dataset, "composerSshList") ||
+        Object.hasOwn(el.dataset, "composerMenu") ||
+        Object.hasOwn(el.dataset, "composerNotesPanel") ||
+        Object.hasOwn(el.dataset, "composerQueuedPopover") ||
+        Object.hasOwn(el.dataset, "contextDetails") ||
+        Object.hasOwn(el.dataset, "sendTimingMenu") ||
         el.getAttribute('role') === 'dialog' ||
         el.getAttribute('role') === 'menu'
       ) {
@@ -710,13 +697,13 @@ export function buildFlightRecorderInitScript() {
       const sessionBase = getSessionBasePath(pathNow);
       const urlSid = sessionBase ? decodeURIComponent(sessionBase.slice(3)) : null;
       const composerSessionEl = document.querySelector('[data-composer-session]');
-      const renderedSid = composerSessionEl ? composerSessionEl.getAttribute('data-composer-session') : null;
+      const renderedSid = composerSessionEl ? composerSessionEl.dataset.composerSession : null;
       const domMatchesUrlSession = urlSid !== null && (renderedSid === urlSid || renderedSid === null);
       state.lastPath = pathNow;
 
       // 1. ConversationShell data-phase tracking (only after DOM matches current URL session!)
       const shell = document.querySelector('.conversation-shell');
-      const phase = shell ? shell.getAttribute('data-phase') : null;
+      const phase = shell ? shell.dataset.phase : null;
       if (phase !== state.lastPhase) {
         state.phaseTransitions.push({ ts: now, path: pathNow, from: state.lastPhase, to: phase, source, renderedSid });
         if (
@@ -972,11 +959,11 @@ export function buildFlightRecorderInitScript() {
       },
       getSummary() {
         const fpsSamples = state.frameDeltas.filter((d) => d >= 1).map((d) => Math.min(120, 1000 / d));
-        const sortedFps = [...fpsSamples].sort((a, b) => a - b);
-        const meanFps = sortedFps.length
+        const sortedFps = [...fpsSamples].toSorted((a, b) => a - b);
+        const meanFps = sortedFps.length > 0
           ? Number((sortedFps.reduce((a, b) => a + b, 0) / sortedFps.length).toFixed(2))
           : 0;
-        const p5Fps = sortedFps.length
+        const p5Fps = sortedFps.length > 0
           ? Number(sortedFps[Math.max(0, Math.floor(sortedFps.length * 0.05))].toFixed(2))
           : 0;
         const durations = state.longTasks.map((t) => t.duration);
@@ -988,7 +975,7 @@ export function buildFlightRecorderInitScript() {
           clsEntryCount: state.clsEntries.length,
           longTasks: {
             count: durations.length,
-            maxMs: durations.length ? Number(Math.max(...durations).toFixed(2)) : 0,
+            maxMs: durations.length > 0 ? Number(Math.max(...durations).toFixed(2)) : 0,
             totalBlockingTimeMs: Number(durations.reduce((a, d) => a + Math.max(0, d - 50), 0).toFixed(2)),
           },
           phaseTransitionsCount: state.phaseTransitions.length,
@@ -1225,52 +1212,19 @@ async function apiJsonRaw(endpoint, token, method, urlPath, body, timeoutMs = 30
       json = JSON.parse(text);
     } catch {}
     return { status: res.status, elapsedMs: roundMs(performance.now() - t0), json, rawText: text.slice(0, 300) };
-  } catch (err) {
+  } catch (error) {
     return {
       status: 0,
       elapsedMs: roundMs(performance.now() - t0),
       json: null,
-      rawText: String(err?.message ?? err).slice(0, 200),
-      networkError: err?.name === 'AbortError' ? 'timeout' : String(err?.code ?? err?.message ?? 'fetch_error'),
+      rawText: String(error?.message ?? error).slice(0, 200),
+      networkError: error?.name === 'AbortError' ? 'timeout' : String(error?.code ?? error?.message ?? 'fetch_error'),
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function startGuiStaticServer() {
-  const { ensureGuiStaticBuild } = await import('../perf/browser-runner.mjs');
-  const build = ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'));
-  const staticServer = createHttpServer((req, res) => {
-    const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-    if (urlPath === '/__kiki/local-server') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{}');
-      return;
-    }
-    let file = path.normalize(path.join(build.distDir, urlPath));
-    if (!file.startsWith(build.distDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      file = path.join(build.distDir, 'index.html');
-    }
-    const stream = fs.createReadStream(file);
-    stream.once('open', () => {
-      res.writeHead(200, { 'content-type': GUI_MIME[path.extname(file)] ?? 'application/octet-stream' });
-      stream.pipe(res);
-    });
-    stream.once('error', () => {
-      if (!res.headersSent) res.writeHead(404);
-      res.end('not found');
-    });
-  });
-  await new Promise((resolve) => staticServer.listen(0, '127.0.0.1', resolve));
-  const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
-  return {
-    webUrl,
-    buildMs: build.buildMs,
-    reusedCache: build.reusedCache,
-    close: () => new Promise((resolve) => staticServer.close(() => resolve())),
-  };
-}
 
 async function waitForSessionIdle(endpoint, token, sessionId, timeoutMs = 25_000) {
   const deadline = performance.now() + timeoutMs;
@@ -1349,7 +1303,7 @@ async function probeMediaPlaybackAndRange(endpoint, token, sessionId, fileId) {
   let contentType = null;
   let contentRange = null;
   let bytes = 0;
-  let error = null;
+  let rangeError = null;
   try {
     const res = await fetch(`${endpoint}/media-preview/${previewId}`, {
       headers: { range: 'bytes=0-65535' },
@@ -1359,8 +1313,8 @@ async function probeMediaPlaybackAndRange(endpoint, token, sessionId, fileId) {
     contentRange = res.headers.get('content-range');
     const buf = Buffer.from(await res.arrayBuffer());
     bytes = buf.byteLength;
-  } catch (err) {
-    error = String(err?.message ?? err).slice(0, 200);
+  } catch (error) {
+    rangeError = String(error?.message ?? error).slice(0, 200);
   }
   const rangeLatencyMs = roundMs(performance.now() - rangeT0);
   await apiJsonRaw(endpoint, token, 'DELETE', `/api/sessions/media-playback/${previewId}`, undefined, 5_000).catch(
@@ -1377,7 +1331,7 @@ async function probeMediaPlaybackAndRange(endpoint, token, sessionId, fileId) {
     contentType,
     contentRange,
     bytes,
-    error,
+    error: rangeError,
   };
 }
 
@@ -1393,8 +1347,8 @@ async function readCdpMetrics(cdp) {
       layoutCount: map.LayoutCount ?? 0,
       recalcStyleCount: map.RecalcStyleCount ?? 0,
     };
-  } catch (err) {
-    return { error: String(err?.message ?? err).slice(0, 200) };
+  } catch (error) {
+    return { error: String(error?.message ?? error).slice(0, 200) };
   }
 }
 
@@ -1430,7 +1384,8 @@ export async function runScenarioS9BrowserFlightRecorder({
   const redundantMediaPlaybackRemints = [];
   let trackRedundantMediaRemints = false;
 
-  let staticSrv = null;
+  let webAssetsRecorder = null;
+  let webAssetsAudit = null;
   let browser = null;
   const churnWorker = startSessionIndexChurnWorker(s9Corpus.churnTargetPaths, tierConfig.churnIntervalMs);
 
@@ -1443,12 +1398,16 @@ export async function runScenarioS9BrowserFlightRecorder({
   let fatalError = null;
 
   try {
-    staticSrv = await startGuiStaticServer();
-    guiBuildInfo = { buildMs: staticSrv.buildMs, reusedCache: staticSrv.reusedCache };
-    progress(`S9: Real kiki-gui bundle ready (reusedCache=${staticSrv.reusedCache}, buildMs=${staticSrv.buildMs}ms)`);
+    const webInfo = await assertKapServerWebAssets(server.endpoint);
+    guiBuildInfo = {
+      servedByKapServer: webInfo.servedByKapServer,
+      indexStatus: webInfo.indexStatus,
+      indexContentEncoding: webInfo.indexContentEncoding,
+    };
+    progress(`S9: kap-server webAssets verified at ${webInfo.webUrl} (index encoding=${webInfo.indexContentEncoding})`);
 
     const deepLink = (routePath) =>
-      `${staticSrv.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
+      `${webInfo.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
 
     // Launch real Chromium cleanly on both Ubuntu Colab VMs (--no-sandbox --disable-dev-shm-usage) and local desktops
     browser = await chromium.launch({
@@ -1459,6 +1418,7 @@ export async function runScenarioS9BrowserFlightRecorder({
     await context.addInitScript(buildFlightRecorderInitScript());
 
     const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, server.endpoint);
     page.on('pageerror', (err) => {
       if (pageErrors.length < 40) pageErrors.push(String(err?.message ?? err).slice(0, 400));
     });
@@ -1623,7 +1583,7 @@ export async function runScenarioS9BrowserFlightRecorder({
       await spaNavigate(`/s/${corpus.giantSessionId}`);
       await page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: tierConfig.stepTimeoutMs });
       await page.waitForFunction(
-        () => document.querySelector('.conversation-shell')?.getAttribute('data-phase') === 'active',
+        () => document.querySelector('.conversation-shell').dataset.phase === 'active',
         null,
         { timeout: 15_000 },
       ).catch(() => undefined);
@@ -1724,8 +1684,8 @@ export async function runScenarioS9BrowserFlightRecorder({
         breachCount: sweepBreaches,
         steps: sweepSteps,
       };
-    } catch (err) {
-      drill1.error = String(err?.stack ?? err).slice(0, 600);
+    } catch (error) {
+      drill1.error = String(error?.stack ?? error).slice(0, 600);
     }
 
     // =========================================================================
@@ -1918,10 +1878,10 @@ export async function runScenarioS9BrowserFlightRecorder({
 
       // Let the concurrent slow turn finish cleanly so it doesn't leak into Drill 3
       await waitForSessionIdle(server.endpoint, server.token, s9Corpus.mediaSessionId, 20_000);
-    } catch (err) {
+    } catch (error) {
       trackRedundantMediaRemints = false;
       await page.evaluate(() => window.__s9FlightRecorder?.disarmAudioWatch?.()).catch(() => undefined);
-      drill2.error = String(err?.stack ?? err).slice(0, 600);
+      drill2.error = String(error?.stack ?? error).slice(0, 600);
     }
 
     // =========================================================================
@@ -1995,10 +1955,10 @@ export async function runScenarioS9BrowserFlightRecorder({
           const rows = Array.from(anchor.querySelectorAll(':scope > [data-index]'))
             .map((el) => {
               const r = el.getBoundingClientRect();
-              return { index: Number(el.getAttribute('data-index')), top: r.top, bottom: r.bottom, height: r.height };
+              return { index: Number(el.dataset.index), top: r.top, bottom: r.bottom, height: r.height };
             })
             .filter((r) => r.height > 0)
-            .sort((a, b) => a.top - b.top);
+            .toSorted((a, b) => a.top - b.top);
           const visibleRows = rows.filter((r) => r.bottom > visibleTop + 1 && r.top < visibleBottom - 1);
           let blankGapPx = 0;
           if (visibleBottom > visibleTop + 40) {
@@ -2166,7 +2126,7 @@ export async function runScenarioS9BrowserFlightRecorder({
           return {
             mounted: true,
             inViewport,
-            highlightedIndex: hl.getAttribute('data-index'),
+            highlightedIndex: hl.dataset.index,
             listScrollTop: Math.round(list.scrollTop),
             mountedItemCount: list.querySelectorAll('[data-index]').length,
             rectInfo: {
@@ -2248,19 +2208,23 @@ export async function runScenarioS9BrowserFlightRecorder({
         foundColdNeedleB,
         searchBMs,
       };
-    } catch (err) {
-      drill3.error = String(err?.stack ?? err).slice(0, 600);
+    } catch (error) {
+      drill3.error = String(error?.stack ?? error).slice(0, 600);
     }
 
     flightRecorder = await page.evaluate(() => window.__s9FlightRecorder?.getSummary?.() ?? null).catch(() => null);
     cdpFinal = await readCdpMetrics(cdp);
-  } catch (err) {
-    fatalError = String(err?.stack ?? err).slice(0, 800);
+  } catch (error) {
+    fatalError = String(error?.stack ?? error).slice(0, 800);
   } finally {
     const churnStats = churnWorker.stop();
     if (drill2) drill2.indexChurnStats = churnStats;
+    if (webAssetsRecorder) {
+      await webAssetsRecorder.settle();
+      webAssetsAudit = webAssetsRecorder.snapshot();
+      webAssetsRecorder.detach();
+    }
     await browser?.close().catch(() => undefined);
-    await staticSrv?.close().catch(() => undefined);
   }
 
   const heapSnap = await server.stopHeapSampling();
@@ -2306,6 +2270,11 @@ export async function runScenarioS9BrowserFlightRecorder({
     verdict.passed = false;
     verdict.breaches.unshift(`fatalError=${fatalError.slice(0, 200)}`);
   }
+  const webAssetsGate = evaluateWebAssetsBudget(webAssetsAudit);
+  if (!webAssetsGate.passed) {
+    verdict.passed = false;
+    verdict.breaches.push(...webAssetsGate.failures.map((f) => `kap-server webAssets: ${f}`));
+  }
 
   progress(
     `S9 Finished (tier=${tierConfig.tier}, passed=${verdict.passed}, breaches=${verdict.breaches.length}, eldP99=${serverHealth.eldP99Ms}ms, vmRss=${serverHealth.vmRssMiB} MiB, fps=${flightRecorder?.fps?.mean ?? 0}, cls=${flightRecorder?.cls ?? 0})`,
@@ -2320,6 +2289,8 @@ export async function runScenarioS9BrowserFlightRecorder({
     tier: tierConfig.tier,
     wallMs: roundMs(performance.now() - startedAt),
     guiBuild: guiBuildInfo,
+    webAssetsAudit,
+    webAssetsGate,
     corpusSummary: {
       giantSessionId: corpus.giantSessionId,
       giantMainWireGiB: corpus.giantMainWireGiB,

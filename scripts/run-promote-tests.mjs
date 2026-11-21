@@ -9,6 +9,18 @@ export const PROMOTE_TEST_COMMANDS = [
   { label: 'kap-server integration tests', args: ['-C', 'packages/kap-server', 'run', 'test:integration'] },
   { label: 'kap-server MCP binary smoke', args: ['-C', 'packages/kap-server', 'run', 'test:mcp-bin-smoke'] },
   { label: 'pi-tui node:test suite', args: ['-C', 'packages/pi-tui', 'test'] },
+  {
+    label: 'kiki-gui visual proof headless smoke',
+    args: ['-C', 'apps/kiki-gui', 'exec', 'node', 'scripts/visual-proof.mjs', '--config', 'scripts/visual-proof-headless-smoke.mjs'],
+  },
+  {
+    label: 'kiki-gui mobile rigor visual & geometry gate (--strict)',
+    args: ['-C', 'apps/kiki-gui', 'exec', 'node', 'scripts/visual-proof-mobile-rigor.mjs', '--strict'],
+  },
+  {
+    label: 'mobile heavy-session & kap-server webAssets compression gate (S16)',
+    args: ['exec', 'node', 'scripts/ccp-chaos/scenarios/s16-mobile-heavy-session.mjs', '--tier=smoke', '--wire-mb=8', '--subagents=120'],
+  },
 ];
 
 export function pnpmLaunch(args, env = process.env) {
@@ -29,8 +41,8 @@ export function pnpmSpawnArgs(args, env = process.env) {
 }
 
 export const LOCAL_REAL_CORPUS_PROMOTE_COMMAND = {
-  label: 'real-corpus quick performance gate',
-  args: ['run', 'perf:real-corpus:quick'],
+  label: 'real-corpus full-size performance gate',
+  args: ['exec', 'node', 'scripts/perf-real-corpus.mjs', '--quick', '--extreme-full-size', '--real-catalog', '--enforce'],
 };
 
 export function readVerifiedGitHead(cwd = process.cwd(), spawn = spawnSync) {

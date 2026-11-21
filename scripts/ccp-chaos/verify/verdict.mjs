@@ -19,7 +19,10 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
   p01: Object.freeze({
     httpTranscriptMaxMs: 300,
     wsFirstResetMaxMs: 300,
+    wireReadyMaxMs: 300,
     firstPaintMaxMs: 300,
+    browserFirstMessagePaintMaxMs: 2_500,
+    mobileFirstMessagePaintMaxMs: 4_000,
     controlBarSettleMaxMs: 500,
     maxParseInputBytes: 2 * 1024 * 1024,
     maxReopenWireReadBytes: 2 * 1024 * 1024,
@@ -71,6 +74,15 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
     maxRendererPlusGpuCorePct: 3.0,
     minWindowsSmoke: 3,
     minWindowsFull: 12,
+  }),
+  s16: Object.freeze({
+    coldBootToShellMaxMs: 4_000,
+    heavyFirstMessagePaintMaxMs: 2_500,
+    heavyTbtMaxMs: 1_200,
+    heavyMaxLongTaskMs: 600,
+    scrollFrameP95MaxMs: 33.4,
+    switchFirstMessagePaintP95MaxMs: 2_000,
+    maxJsWireMiB: 2.5,
   }),
 });
 
@@ -379,8 +391,53 @@ export function evaluateP01ColdChildGate(trial) {
   } else if (trial.wsFirstResetMs >= T.wsFirstResetMaxMs) {
     productFailures.push(`P0-1 WS transcript.reset ${trial.wsFirstResetMs}ms >= ${T.wsFirstResetMaxMs}ms`);
   }
-  if (typeof trial.firstPaintMs !== 'number' || trial.firstPaintMs >= T.firstPaintMaxMs) {
-    productFailures.push(`P0-1 first paint ${trial.firstPaintMs}ms >= ${T.firstPaintMaxMs}ms`);
+  const wireReadyMs = typeof trial.wireReadyMs === 'number' ? trial.wireReadyMs : trial.firstPaintMs;
+  const wireReadyLimit = T.wireReadyMaxMs ?? T.firstPaintMaxMs;
+  if (typeof wireReadyMs !== 'number' || !Number.isFinite(wireReadyMs) || wireReadyMs >= wireReadyLimit) {
+    productFailures.push(`P0-1 wire-ready (HTTP+WS bootstrap) ${wireReadyMs}ms >= ${wireReadyLimit}ms`);
+  }
+  if (trial.browserGuiRequired === true && (!trial.browserGuiCheck || typeof trial.browserGuiCheck !== 'object')) {
+    harnessFailures.push('P0-1 expected browserGuiCheck receipt is missing');
+  } else if (trial.browserGuiCheck !== undefined && trial.browserGuiCheck !== null) {
+    const bg = trial.browserGuiCheck;
+    if (bg.ok !== true) {
+      productFailures.push(`P0-1 browser GUI child open failed: ${bg.error ?? JSON.stringify(bg)}`);
+    }
+    if (typeof bg.newConsoleErrors === 'number' && bg.newConsoleErrors > 0) {
+      productFailures.push(`P0-1 browser GUI emitted ${bg.newConsoleErrors} console error(s)`);
+    }
+    if (Array.isArray(bg.pageErrors) && bg.pageErrors.length > 0) {
+      productFailures.push(`P0-1 browser GUI emitted ${bg.pageErrors.length} pageerror(s): ${bg.pageErrors[0]}`);
+    }
+    const guiPaintMs =
+      typeof bg.firstMessagePaintMs === 'number'
+        ? bg.firstMessagePaintMs
+        : typeof bg.navigatedMs === 'number'
+          ? bg.navigatedMs
+          : null;
+    if (guiPaintMs === null || !Number.isFinite(guiPaintMs)) {
+      harnessFailures.push('P0-1 browser GUI check missing firstMessagePaintMs / navigatedMs');
+    } else if (guiPaintMs >= T.browserFirstMessagePaintMaxMs) {
+      productFailures.push(`P0-1 browser GUI firstMessagePaintMs ${guiPaintMs}ms >= ${T.browserFirstMessagePaintMaxMs}ms`);
+    }
+    if (bg.mobileCheck) {
+      if (bg.mobileCheck.ok !== true) {
+        productFailures.push(`P0-1 mobile Chromium child open failed: ${bg.mobileCheck.error ?? 'not ok'}`);
+      }
+      if (typeof bg.mobileCheck.newConsoleErrors === 'number' && bg.mobileCheck.newConsoleErrors > 0) {
+        productFailures.push(`P0-1 mobile Chromium emitted ${bg.mobileCheck.newConsoleErrors} console error(s)`);
+      }
+      if (
+        typeof bg.mobileCheck.firstMessagePaintMs !== 'number'
+        || !Number.isFinite(bg.mobileCheck.firstMessagePaintMs)
+      ) {
+        harnessFailures.push('P0-1 mobile Chromium check missing firstMessagePaintMs');
+      } else if (bg.mobileCheck.firstMessagePaintMs >= T.mobileFirstMessagePaintMaxMs) {
+        productFailures.push(
+          `P0-1 mobile Chromium firstMessagePaintMs ${bg.mobileCheck.firstMessagePaintMs}ms >= ${T.mobileFirstMessagePaintMaxMs}ms`,
+        );
+      }
+    }
   }
   if (typeof trial.controlBarSettleMs !== 'number' || trial.controlBarSettleMs >= T.controlBarSettleMaxMs) {
     productFailures.push(`P0-1 control bar settle ${trial.controlBarSettleMs}ms >= ${T.controlBarSettleMaxMs}ms`);
@@ -431,7 +488,7 @@ export function evaluateP01ColdChildGate(trial) {
   }
 
   if (lane === 'legacy') {
-    if (!Array.isArray(trial.checkpoints) || trial.checkpoints.length !== 0) {
+    if (!Array.isArray(trial.checkpoints) || trial.checkpoints.length > 0) {
       harnessFailures.push('P0-1 legacy lane violation: target child had non-empty checkpoints');
     }
     if (trial.preexistingSummaryOrSidecar === true) {
@@ -896,7 +953,7 @@ export function evaluateCcpRunVerdict({
         chaosReport.tier === 'v23-full';
 
       if (enforceV23Set) {
-        for (const key of ['p01', 's10', 's11', 's12', 's13', 's14']) {
+        for (const key of ['p01', 's10', 's11', 's12', 's13', 's14', 's16']) {
           if (!sc[key] || typeof sc[key] !== 'object') {
             harnessFailures.push(`Missing required v2.3 scenario "${key}" in chaos report`);
           }
@@ -1015,6 +1072,12 @@ export function evaluateCcpRunVerdict({
           productFailures.push(...idle.productFailures);
           harnessFailures.push(...idle.harnessFailures);
         }
+      }
+
+      if (sc.s16) {
+        const s16Eval = evaluateS16MobileVerdict(sc.s16);
+        productFailures.push(...s16Eval.productFailures);
+        harnessFailures.push(...s16Eval.harnessFailures);
       }
     }
   }
@@ -1195,6 +1258,134 @@ export function evaluateS10Verdict(evidence, options = {}) {
       const p01 = evaluateP01ColdChildGate(trial);
       productFailures.push(...p01.productFailures);
       harnessFailures.push(...p01.harnessFailures);
+    }
+  }
+
+  const exitCode =
+    harnessFailures.length > 0
+      ? EXIT_HARNESS_FAIL
+      : productFailures.length > 0
+        ? EXIT_PRODUCT_FAIL
+        : EXIT_PASS;
+
+  return {
+    passed: exitCode === EXIT_PASS,
+    exitCode,
+    status: exitCode === EXIT_PASS ? 'PASS' : exitCode === EXIT_PRODUCT_FAIL ? 'PRODUCT_FAIL' : 'HARNESS_FAIL',
+    productFailures,
+    harnessFailures,
+  };
+}
+
+/**
+ * S16 Mobile Extreme Heavy-Session Load & Lag Root-Cause Gate.
+ * Strictly gates kap-server webAssets delivery + compression, mobile 4x CPU + 40ms/15Mbps
+ * cold boot, heavy-session TTFM/TBT/LongTask, touch scroll P95 frame time, rapid 5-session
+ * switching, and escaped UI regressions (zero error toasts / zero sticky unread dots).
+ */
+export function evaluateS16MobileVerdict(report) {
+  const productFailures = [];
+  const harnessFailures = [];
+  if (!report || typeof report !== 'object') {
+    harnessFailures.push('S16 missing mobile heavy-session report');
+    return { passed: false, exitCode: EXIT_HARNESS_FAIL, status: 'HARNESS_FAIL', productFailures, harnessFailures };
+  }
+  const T = FROZEN_V23_THRESHOLDS.s16;
+
+  if (report.webAssetsAudit?.servedByKapServer !== true) {
+    harnessFailures.push('S16 GUI was not served through kap-server real webAssets route');
+  }
+  if ((report.emulation?.cpuThrottlingRate ?? 0) < 4) {
+    harnessFailures.push(`S16 missing mobile CPU throttling (rate=${report.emulation?.cpuThrottlingRate})`);
+  }
+  if ((report.emulation?.network?.latencyMs ?? 0) < 30) {
+    harnessFailures.push(`S16 missing mobile RTT throttling (latencyMs=${report.emulation?.network?.latencyMs})`);
+  }
+  if (report.emulation?.reducedMotion !== 'no-preference') {
+    harnessFailures.push(`S16 reducedMotion must be "no-preference" for real jank measurement (got ${report.emulation?.reducedMotion})`);
+  }
+
+  if (Array.isArray(report.pageErrors) && report.pageErrors.length > 0) {
+    productFailures.push(`S16 emitted ${report.pageErrors.length} pageerror(s): ${report.pageErrors[0]}`);
+  }
+
+  const web = report.webAssetsAudit;
+  if (!web || typeof web !== 'object') {
+    harnessFailures.push('S16 missing webAssetsAudit telemetry');
+  } else {
+    if (typeof web.jsChunkCount !== 'number' || web.jsChunkCount <= 0) {
+      harnessFailures.push(`S16 webAssetsAudit observed ${web.jsChunkCount ?? 0} JS chunks (must be > 0)`);
+    } else if (web.compressedJsChunkCount < web.jsChunkCount) {
+      productFailures.push(
+        `S16 kap-server webAssets served uncompressed JS (${web.compressedJsChunkCount}/${web.jsChunkCount} compressed, ${web.jsTotalEncodedMiB} MiB wire)`,
+      );
+    }
+    if (typeof web.jsTotalEncodedMiB !== 'number' || !Number.isFinite(web.jsTotalEncodedMiB) || web.jsTotalEncodedMiB <= 0) {
+      harnessFailures.push(`S16 webAssetsAudit missing positive jsTotalEncodedMiB (got ${web.jsTotalEncodedMiB})`);
+    } else if (web.jsTotalEncodedMiB > T.maxJsWireMiB) {
+      productFailures.push(`S16 JS wire transfer ${web.jsTotalEncodedMiB} MiB > ${T.maxJsWireMiB} MiB budget`);
+    }
+  }
+
+  const bootMs = report.coldBoot?.coldBootToShellMs;
+  if (typeof bootMs !== 'number' || !Number.isFinite(bootMs)) {
+    harnessFailures.push('S16 missing coldBootToShellMs');
+  } else if (bootMs > T.coldBootToShellMaxMs) {
+    productFailures.push(`S16 mobile cold boot ${bootMs}ms > ${T.coldBootToShellMaxMs}ms`);
+  }
+
+  const heavy = report.heavyOpen;
+  if (!heavy) {
+    harnessFailures.push('S16 missing heavyOpen measurements');
+  } else {
+    if (typeof heavy.firstMessagePaintMs !== 'number' || !Number.isFinite(heavy.firstMessagePaintMs)) {
+      harnessFailures.push('S16 missing heavyOpen.firstMessagePaintMs');
+    } else if (heavy.firstMessagePaintMs > T.heavyFirstMessagePaintMaxMs) {
+      productFailures.push(`S16 heavy session TTFM ${heavy.firstMessagePaintMs}ms > ${T.heavyFirstMessagePaintMaxMs}ms`);
+    }
+    if (typeof heavy.totalBlockingTimeMs !== 'number' || !Number.isFinite(heavy.totalBlockingTimeMs)) {
+      harnessFailures.push('S16 missing heavyOpen.totalBlockingTimeMs');
+    } else if (heavy.totalBlockingTimeMs > T.heavyTbtMaxMs) {
+      productFailures.push(`S16 heavy session TBT ${heavy.totalBlockingTimeMs}ms > ${T.heavyTbtMaxMs}ms`);
+    }
+    if (typeof heavy.maxLongTaskMs !== 'number' || !Number.isFinite(heavy.maxLongTaskMs)) {
+      harnessFailures.push('S16 missing heavyOpen.maxLongTaskMs');
+    } else if (heavy.maxLongTaskMs > T.heavyMaxLongTaskMs) {
+      productFailures.push(`S16 heavy session max LongTask ${heavy.maxLongTaskMs}ms > ${T.heavyMaxLongTaskMs}ms`);
+    }
+    if (Array.isArray(heavy.errorToastsOnOpen) && heavy.errorToastsOnOpen.length > 0) {
+      productFailures.push(`S16 heavy session raised ${heavy.errorToastsOnOpen.length} error toast(s) on open: ${heavy.errorToastsOnOpen[0]}`);
+    }
+  }
+
+  const scroll = report.touchScroll;
+  if (!scroll || typeof scroll !== 'object') {
+    harnessFailures.push('S16 missing touchScroll measurements');
+  } else {
+    if (typeof scroll.frameCount !== 'number' || scroll.frameCount <= 0) {
+      harnessFailures.push(`S16 touchScroll observed ${scroll.frameCount ?? 0} frames (must be > 0)`);
+    }
+    if (typeof scroll.frameP95Ms !== 'number' || !Number.isFinite(scroll.frameP95Ms)) {
+      harnessFailures.push('S16 missing touchScroll.frameP95Ms');
+    } else if (scroll.frameP95Ms > T.scrollFrameP95MaxMs) {
+      productFailures.push(`S16 mobile touch-scroll frame P95 ${scroll.frameP95Ms}ms > ${T.scrollFrameP95MaxMs}ms`);
+    }
+  }
+
+  const sw = report.rapidSwitch;
+  if (!sw || typeof sw !== 'object') {
+    harnessFailures.push('S16 missing rapidSwitch measurements');
+  } else {
+    if ((sw.count ?? 0) < 5) {
+      harnessFailures.push(`S16 rapid switch ran only ${sw.count ?? 0}/5 sessions`);
+    }
+    if (typeof sw.latencyMs?.p95 !== 'number' || !Number.isFinite(sw.latencyMs.p95)) {
+      harnessFailures.push('S16 rapid switch missing latencyMs.p95');
+    } else if (sw.latencyMs.p95 > T.switchFirstMessagePaintP95MaxMs) {
+      productFailures.push(`S16 rapid switch TTFM P95 ${sw.latencyMs.p95}ms > ${T.switchFirstMessagePaintP95MaxMs}ms`);
+    }
+    if ((sw.stickyUnreadCount ?? 0) > 0) {
+      productFailures.push(`S16 rapid switch left ${sw.stickyUnreadCount} viewed session(s) with sticky unread state`);
     }
   }
 

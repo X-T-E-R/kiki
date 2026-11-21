@@ -36,12 +36,12 @@ async function fetchEndpoint(endpoint, token, urlPath, timeoutMs = 20_000) {
       bytes: Buffer.byteLength(text, 'utf8'),
       elapsedMs: roundMs(performance.now() - t0),
     };
-  } catch (err) {
+  } catch (error) {
     return {
       path: urlPath,
       status: 0,
       code: 'network_error',
-      reason: String(err?.message ?? err),
+      reason: String(error?.message ?? error),
       bytes: 0,
       elapsedMs: roundMs(performance.now() - t0),
     };
@@ -330,7 +330,8 @@ async function executeColdChildFanout({ server, WebSocket, sessionId, childAgent
   const transcriptRes = httpResults.find((r) => r.path.includes('/transcript?'));
   const planRes = httpResults.find((r) => r.path.includes('/transcript/plan'));
   const httpTranscriptMs = transcriptRes?.elapsedMs ?? null;
-  const firstPaintMs =
+  // Honest name: this is the Node HTTP+WS wire-ready time (no browser JS parse or DOM paint).
+  const wireReadyMs =
     typeof httpTranscriptMs === 'number' && typeof wsFirstResetMs === 'number'
       ? Math.max(httpTranscriptMs, wsFirstResetMs)
       : (httpTranscriptMs ?? wsFirstResetMs ?? fanoutWallMs);
@@ -343,7 +344,8 @@ async function executeColdChildFanout({ server, WebSocket, sessionId, childAgent
     wsLiveResetMs: wsLiveResetMs ?? wsFirstResetMs,
     wsResetCount,
     wsFirstResetCursor,
-    firstPaintMs,
+    wireReadyMs,
+    backendBootstrapMs: wireReadyMs,
     controlBarSettleMs,
     wsResetItemsCount,
     fanoutWallMs,
@@ -492,9 +494,34 @@ export async function runP01ColdChildFanoutProbe({
         ? Math.round((fanout.ioTrace.wireReadBytes / fanout.ioTrace.wireScanMs) * 1000)
         : null;
 
+    const browserGuiRequired = Boolean(browserHandle && si === sizes.length - 1);
     let browserGuiCheck = null;
-    if (browserHandle?.openChildView && si === sizes.length - 1) {
-      browserGuiCheck = await browserHandle.openChildView(sessionId, childAgentId);
+    if (browserGuiRequired) {
+      if (typeof browserHandle.openChildView === 'function') {
+        try {
+          browserGuiCheck = await browserHandle.openChildView(sessionId, childAgentId);
+        } catch (error) {
+          browserGuiCheck = {
+            ok: false,
+            firstMessagePaintMs: null,
+            navigatedMs: null,
+            transcriptVisible: false,
+            newConsoleErrors: 0,
+            pageErrors: [],
+            error: String(error?.message ?? error).slice(0, 300),
+          };
+        }
+      } else {
+        browserGuiCheck = {
+          ok: false,
+          firstMessagePaintMs: null,
+          navigatedMs: null,
+          transcriptVisible: false,
+          newConsoleErrors: 0,
+          pageErrors: [],
+          error: 'browserHandle missing openChildView()',
+        };
+      }
     }
 
     const legacyTrial = {
@@ -509,7 +536,8 @@ export async function runP01ColdChildFanoutProbe({
       wsFirstResetMs: fanout.wsFirstResetMs,
       wsLiveResetMs: fanout.wsLiveResetMs,
       wsResetCount: fanout.wsResetCount,
-      firstPaintMs: fanout.firstPaintMs,
+      wireReadyMs: fanout.wireReadyMs,
+      backendBootstrapMs: fanout.backendBootstrapMs,
       controlBarSettleMs: fanout.controlBarSettleMs,
       wsResetItemsCount: fanout.wsResetItemsCount,
       fanoutWallMs: fanout.fanoutWallMs,
@@ -523,6 +551,7 @@ export async function runP01ColdChildFanoutProbe({
       legacyScanBytesPerSec: measuredScanBytesPerSec,
       fullReplayMatches: independent.fullReplayMatches,
       fullReplayProof: independent.fullReplayProof,
+      browserGuiRequired,
       browserGuiCheck,
       eldP99Ms: fanout.postMetrics.eldP99Ms,
       eldMaxMs: fanout.postMetrics.eldMaxMs,
@@ -569,7 +598,8 @@ export async function runP01ColdChildFanoutProbe({
       wsFirstResetMs: reopenFanout.wsFirstResetMs,
       wsLiveResetMs: reopenFanout.wsLiveResetMs,
       wsResetCount: reopenFanout.wsResetCount,
-      firstPaintMs: reopenFanout.firstPaintMs,
+      wireReadyMs: reopenFanout.wireReadyMs,
+      backendBootstrapMs: reopenFanout.backendBootstrapMs,
       controlBarSettleMs: reopenFanout.controlBarSettleMs,
       wsResetItemsCount: reopenFanout.wsResetItemsCount,
       fanoutWallMs: reopenFanout.fanoutWallMs,

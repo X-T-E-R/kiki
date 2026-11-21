@@ -305,25 +305,33 @@ async function hydrateContentRefWithRetry(view, { agentId, ref, maxAttempts = 16
   };
 }
 
-export async function bootPerfServer(homeDir) {
+export async function bootPerfServer(homeDir, { webAssetsDir, useRealCatalog = false } = {}) {
   const [{ IModelCatalog }, { startServer }] = await Promise.all([
     import(new URL('../../packages/agent-core-v2/src/index.ts', import.meta.url).href),
     import(new URL('../../packages/kap-server/src/start.ts', import.meta.url).href),
   ]);
   const bootStarted = performance.now();
-  const seeds = [[IModelCatalog, createReadOnlyPerfModelCatalog(homeDir)]];
+  const seeds = useRealCatalog ? undefined : [[IModelCatalog, createReadOnlyPerfModelCatalog(homeDir)]];
   const server = await startServer({
     hostIdentity: PERF_HOST_IDENTITY,
     host: '127.0.0.1',
     port: 0,
     homeDir,
+    ...(webAssetsDir ? { webAssetsDir } : {}),
     logLevel: 'silent',
-    seeds,
+    ...(seeds ? { seeds } : {}),
   });
   const bootMs = roundMs(performance.now() - bootStarted);
   const endpoint = `http://127.0.0.1:${server.port}`;
   const token = server.localOwnerToken;
-  return { server, endpoint, token, bootMs };
+  return {
+    server,
+    endpoint,
+    token,
+    bootMs,
+    catalogMode: useRealCatalog ? 'real-config' : 'read-only-mock',
+    webAssetsServed: Boolean(webAssetsDir),
+  };
 }
 
 export async function runProtocolSuite({ endpoint, token, samples, warmupSessionId = null, maxScrollPages = 4 }) {
@@ -394,11 +402,12 @@ export async function runProtocolSuite({ endpoint, token, samples, warmupSession
     }
     const coldCatalogMs = roundMs(performance.now() - listStarted);
     const coldCatalogEld = eld.endWindow();
-    if (warmupSessionId) {
+    const warmupId = warmupSessionId === null || warmupSessionId === undefined ? '' : String(warmupSessionId);
+    if (warmupId.length > 0) {
       const warmupKlient = createKlient({ endpoint, token, fetch, WebSocket, timeoutMs: 15_000 });
       await Promise.all([
-        fetch(`${endpoint}/api/sessions/${warmupSessionId}/status`, { headers }).then((r) => r.text()).catch(() => null),
-        warmupKlient.global.agentPanel.read({ session_id: warmupSessionId, agent_id: 'main' }).catch(() => null),
+        fetch(`${endpoint}/api/sessions/${warmupId}/status`, { headers }).then((r) => r.text()).catch(() => null),
+        warmupKlient.global.agentPanel.read({ session_id: warmupId, agent_id: 'main' }).catch(() => null),
       ]);
       await warmupKlient.close?.().catch?.(() => undefined);
     }

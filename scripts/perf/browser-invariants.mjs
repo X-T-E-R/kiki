@@ -52,18 +52,18 @@ export function sanitizeDiagnosticText(raw, maxLen = 400) {
     out = out.replaceAll(token, '<redacted>');
     const lowerToken = token.toLowerCase();
     if (lowerToken !== token) {
-      out = out.replace(new RegExp(lowerToken.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'giu'), '<redacted>');
+      out = out.replaceAll(new RegExp(lowerToken.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'giu'), '<redacted>');
     }
   }
-  out = out.replace(/session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu, 'session_<redacted>');
+  out = out.replaceAll(/session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu, 'session_<redacted>');
   return out.slice(0, maxLen);
 }
 
 function normalizeRouteKey(method, rawUrl) {
   const parsed = new URL(rawUrl);
   const normPath = parsed.pathname
-    .replace(/\/sessions\/[^/]+/gu, '/sessions/:id')
-    .replace(/\/agents\/(?!capabilities|references|shipped)[^/]+/gu, '/agents/:aid');
+    .replaceAll(/\/sessions\/[^/]+/gu, '/sessions/:id')
+    .replaceAll(/\/agents\/(?!capabilities|references|shipped)[^/]+/gu, '/agents/:aid');
   const safeParams = [];
   for (const [k, v] of parsed.searchParams.entries()) {
     safeParams.push(SAFE_QUERY_KEYS.has(k) ? `${k}=${v}` : `${k}=:redacted`);
@@ -230,7 +230,7 @@ export async function verifyColdContextMeter(page) {
     () => {
       const compact = document.querySelector('[data-context-compact-section]') !== null;
       const strategyEl = document.querySelector('[data-context-strategy]');
-      const strategyReady = strategyEl !== null && !strategyEl.hasAttribute('data-strategy-loading');
+      const strategyReady = strategyEl !== null && !Object.hasOwn(strategyEl.dataset, "strategyLoading");
       return compact && strategyReady;
     },
     null,
@@ -245,8 +245,8 @@ export async function verifyColdContextMeter(page) {
       hasNativeCompactSection: compactEl !== null,
       hasStrategySection: strategyEl !== null && !strategyLoading,
       hasUsageSection: document.querySelector('[data-context-usage]') !== null,
-      compactSource: compactEl?.getAttribute('data-compact-source') ?? null,
-      strategy: strategyEl?.getAttribute('data-strategy') ?? null,
+      compactSource: compactEl.dataset.compactSource ?? null,
+      strategy: strategyEl.dataset.strategy ?? null,
     };
   });
 
@@ -429,7 +429,7 @@ export async function verifyCapabilitiesToggleNoJumpNoOverlap(page) {
     });
     return {
       scrollTop: scroller.scrollTop,
-      targetIdx: targetIdx >= 0 ? targetIdx : 0,
+      targetIdx: Math.max(targetIdx, 0),
     };
   });
 
@@ -457,7 +457,7 @@ export async function verifyCapabilitiesToggleNoJumpNoOverlap(page) {
       const rows = Array.from(body.querySelectorAll('[role="listitem"]'))
         .map((el) => el.getBoundingClientRect())
         .filter((r) => r.height > 0 && r.width > 0)
-        .sort((a, b) => a.top - b.top);
+        .toSorted((a, b) => a.top - b.top);
       for (let i = 1; i < rows.length; i += 1) {
         if (rows[i].top < rows[i - 1].bottom - 1.5) {
           overlapCount += 1;
@@ -543,6 +543,101 @@ export async function verifyScrollUpNoSnapBack(page, { settleMs = 700 } = {}) {
     snappedToBottom,
     distanceFromBottomPx: settled.distanceFromBottomPx,
   };
+}
+
+/**
+ * F13 regression gate: opening/viewing a session must clear any sticky unread dot
+ * on that session's sidebar row (matches Sidebar.tsx `data-session-row` & `data-session-row-state`).
+ * Fails closed when the viewed session row is absent instead of passing vacuously.
+ */
+export async function verifyViewedSessionClearsUnreadDot(page, sessionId) {
+  return page.evaluate((sid) => {
+    const escaped = CSS.escape(sid);
+    const row = document.querySelector(`[data-session-row="${escaped}"]`);
+    if (!row) {
+      return {
+        applicable: true,
+        ok: false,
+        reason: `target_session_row_not_rendered:${sid}`,
+        matchedRows: 0,
+        hasUnreadDot: false,
+      };
+    }
+    const rowState = row.dataset.sessionRowState ?? '';
+    const lifeEl = row.querySelector('[data-life]');
+    const life = lifeEl.dataset.life ?? '';
+    const unreadEl = row.querySelector('[data-life="unread"], [data-unread-dot], [data-session-unread="true"]');
+    const hasUnreadDot =
+      rowState === 'unread' ||
+      life === 'unread' ||
+      row.dataset.sessionUnread === 'true' ||
+      Boolean(unreadEl);
+    return {
+      applicable: true,
+      ok: !hasUnreadDot,
+      reason: hasUnreadDot ? `sticky_unread_dot_on_viewed_session(state=${rowState},life=${life})` : null,
+      matchedRows: 1,
+      rowState,
+      hasUnreadDot,
+    };
+  }, sessionId);
+}
+
+/**
+ * F13 regression gate: Persona / subagent stream must render at most one active
+ * status row per subagent id and must not pile up stale repeated error banners at
+ * the bottom of the transcript.
+ */
+export async function verifyPersonaSubagentSingleRowNoErrorPileup(page) {
+  return page.evaluate(() => {
+    const subRows = [...document.querySelectorAll('[data-subagent-row][data-agent-id], [data-agent-row][data-agent-id]')];
+    const seen = new Map();
+    const duplicateAgentIds = [];
+    for (const el of subRows) {
+      const aid = el.dataset.agentId;
+      if (!aid) continue;
+      const count = (seen.get(aid) ?? 0) + 1;
+      seen.set(aid, count);
+      if (count === 2) duplicateAgentIds.push(aid);
+    }
+    const bottomErrors = [
+      ...document.querySelectorAll('[data-transcript-scroll] [role="alert"], [data-persona-error], [data-toast="error"]'),
+    ];
+    const normalizedErrs = bottomErrors.map((e) => (e.textContent ?? '').trim()).filter(Boolean);
+    const uniqueErrs = new Set(normalizedErrs);
+    const duplicateErrorPileup = normalizedErrs.length - uniqueErrs.size;
+    const ok = duplicateAgentIds.length === 0 && duplicateErrorPileup === 0;
+    return {
+      applicable: true,
+      ok,
+      reason: !ok
+        ? duplicateAgentIds.length > 0
+          ? `duplicate_subagent_rows:${duplicateAgentIds.slice(0, 5).join(',')}`
+          : `stale_bottom_error_pileup:${duplicateErrorPileup}`
+        : null,
+      duplicateAgentIds: duplicateAgentIds.slice(0, 10),
+      duplicateErrorPileup,
+    };
+  });
+}
+
+/**
+ * F13 regression gate: cold open / top-of-scroll at t0 must never emit spurious
+ * error toasts (matches Toasts.tsx `[data-toast="error"][role="status"]`).
+ */
+export async function verifyZeroFalseTopScrollErrorToast(page) {
+  return page.evaluate(() => {
+    const toasts = [...document.querySelectorAll('[data-toast="error"][role="status"], [data-toast="error"], [data-toast][role="alert"]')];
+    const uniqueNodes = [...new Set(toasts)];
+    const texts = uniqueNodes.map((t) => (t.textContent ?? '').trim()).filter(Boolean);
+    return {
+      applicable: true,
+      ok: uniqueNodes.length === 0,
+      reason: uniqueNodes.length > 0 ? `false_error_toast:${(texts[0] ?? 'empty').slice(0, 120)}` : null,
+      errorToastCount: uniqueNodes.length,
+      samples: texts.slice(0, 5),
+    };
+  });
 }
 
 export async function runAppRoutesWalk(page, { deepLink, guards }) {

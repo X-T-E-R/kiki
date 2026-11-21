@@ -2,10 +2,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { buildRankStratifiedSizes, EMPIRICAL_POPULATIONS } from '../fixtures/empirical-manifest.mjs';
 import { buildScreenshotPng } from '../fixtures/media.mjs';
-import { startGuiStaticServer } from '../scenario-s9-browser-flight-recorder.mjs';
+import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from '../web-assets-bridge.mjs';
 import { findChildBrowserRootPid, startExternalHeartbeatWatchdog } from '../telemetry/process-tree.mjs';
 import { evaluateS10Verdict } from '../verify/verdict.mjs';
 
@@ -25,7 +24,7 @@ function summarize(values) {
   if (!values || values.length === 0) {
     return { samples: 0, count: 0, minMs: 0, p50Ms: 0, p95Ms: 0, p99Ms: 0, maxMs: 0, avgMs: 0 };
   }
-  const sorted = [...values].sort((a, b) => a - b);
+  const sorted = [...values].toSorted((a, b) => a - b);
   const pct = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
   const sum = sorted.reduce((a, b) => a + b, 0);
   return {
@@ -35,7 +34,7 @@ function summarize(values) {
     p50Ms: roundMs(pct(0.5)),
     p95Ms: roundMs(pct(0.95)),
     p99Ms: roundMs(pct(0.99)),
-    maxMs: roundMs(sorted[sorted.length - 1]),
+    maxMs: roundMs(sorted.at(-1)),
     avgMs: roundMs(sum / sorted.length),
   };
 }
@@ -62,8 +61,8 @@ async function apiJson(endpoint, token, method, urlPath, body, timeoutMs = 30_00
       json = null;
     }
     return { status: res.status, json, rawText, elapsedMs: roundMs(performance.now() - t0) };
-  } catch (err) {
-    return { status: 0, json: null, rawText: '', networkError: String(err?.message ?? err), elapsedMs: roundMs(performance.now() - t0) };
+  } catch (error) {
+    return { status: 0, json: null, rawText: '', networkError: String(error?.message ?? error), elapsedMs: roundMs(performance.now() - t0) };
   } finally {
     clearTimeout(timer);
   }
@@ -268,11 +267,10 @@ async function openWs(WebSocket, endpoint, token) {
  * on the exact same live page with the test harness's rAF loop cleanly stopped.
  */
 async function startLiveGuiBrowserDriver({ server, sessionId }) {
-  const staticSrv = await startGuiStaticServer();
+  const webInfo = await assertKapServerWebAssets(server.endpoint);
   const kapRequire = createRequire(path.join(REPO_ROOT, 'packages', 'kap-server', 'package.json'));
   const { chromium } = kapRequire('playwright');
   if (!chromium) {
-    await staticSrv.close();
     throw new Error('Playwright chromium unavailable');
   }
 
@@ -285,6 +283,7 @@ async function startLiveGuiBrowserDriver({ server, sessionId }) {
     findChildBrowserRootPid(process.pid);
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
+  const webAssetsRecorder = createWebAssetsAuditRecorder(page, server.endpoint);
   const consoleErrors = [];
   page.on('console', (msg) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text().slice(0, 300));
@@ -358,7 +357,7 @@ async function startLiveGuiBrowserDriver({ server, sessionId }) {
   }, { token: server.token, sid: sessionId });
 
   const deepLink = (routePath) =>
-    `${staticSrv.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
+    `${webInfo.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
 
   await page.goto(deepLink(`/s/${encodeURIComponent(sessionId)}`), { waitUntil: 'domcontentloaded', timeout: 25_000 });
   await page.locator('[data-composer-input], [data-composer], textarea').first().waitFor({ state: 'visible', timeout: 25_000 }).catch(() => undefined);
@@ -371,15 +370,24 @@ async function startLiveGuiBrowserDriver({ server, sessionId }) {
     browserPid,
     page,
     guiDistServed: true,
-    buildInfo: { buildMs: staticSrv.buildMs, reusedCache: staticSrv.reusedCache },
+    servedByKapServer: webInfo.servedByKapServer,
+    async collectWebAssetsAudit() {
+      await webAssetsRecorder.settle();
+      return webAssetsRecorder.snapshot();
+    },
+    buildInfo: {
+      servedByKapServer: webInfo.servedByKapServer,
+      indexContentEncoding: webInfo.indexContentEncoding,
+    },
     async resetFlightMetrics() {
       await page.evaluate(() => window.__KIKI_S10_RESET_METRICS__?.()).catch(() => undefined);
     },
     async reconnectToServer(nextServer, nextSessionId) {
       if (!nextServer?.endpoint || !nextServer?.token) return;
+      const nextBase = String(nextServer.endpoint).replace(/\/+$/u, '');
       const targetUrl = nextSessionId
-        ? `${staticSrv.webUrl}/s/${encodeURIComponent(nextSessionId)}?server=${encodeURIComponent(nextServer.endpoint)}&token=${encodeURIComponent(nextServer.token)}`
-        : `${staticSrv.webUrl}/new?server=${encodeURIComponent(nextServer.endpoint)}&token=${encodeURIComponent(nextServer.token)}`;
+        ? `${nextBase}/s/${encodeURIComponent(nextSessionId)}?server=${encodeURIComponent(nextServer.endpoint)}&token=${encodeURIComponent(nextServer.token)}`
+        : `${nextBase}/new?server=${encodeURIComponent(nextServer.endpoint)}&token=${encodeURIComponent(nextServer.token)}`;
       await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => undefined);
       await page.locator('[data-composer-input], [data-composer]').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined);
       await sleep(1_000);
@@ -458,23 +466,58 @@ async function startLiveGuiBrowserDriver({ server, sessionId }) {
     async openChildView(targetSessionId, childAgentId) {
       const t0 = performance.now();
       const beforeErrors = consoleErrors.length;
-      await page.goto(
-        deepLink(`/s/${encodeURIComponent(targetSessionId)}/a/${encodeURIComponent(childAgentId)}`),
-        { waitUntil: 'domcontentloaded', timeout: 20_000 },
-      );
-      await page.locator('[data-transcript-scroll-root], [data-composer-input], main').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
-      await sleep(250);
-      return {
-        navigatedMs: roundMs(performance.now() - t0),
-        newConsoleErrors: consoleErrors.length - beforeErrors,
-      };
+      const childPageErrors = [];
+      const onChildPageError = (err) => childPageErrors.push(String(err?.message ?? err).slice(0, 300));
+      page.on('pageerror', onChildPageError);
+      try {
+        await page.goto(
+          deepLink(`/s/${encodeURIComponent(targetSessionId)}/agent/${encodeURIComponent(childAgentId)}`),
+          { waitUntil: 'domcontentloaded', timeout: 20_000 },
+        );
+        await page.waitForFunction(
+          () => {
+            const items = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]');
+            for (const el of items) {
+              if ((el.textContent ?? '').trim().length > 0) return true;
+            }
+            return false;
+          },
+          null,
+          { timeout: 10_000 },
+        );
+        const firstMessagePaintMs = roundMs(performance.now() - t0);
+        const newConsoleErrors = consoleErrors.length - beforeErrors;
+        return {
+          ok: newConsoleErrors === 0 && childPageErrors.length === 0,
+          firstMessagePaintMs,
+          navigatedMs: firstMessagePaintMs,
+          transcriptVisible: true,
+          newConsoleErrors,
+          pageErrors: childPageErrors,
+          error: newConsoleErrors > 0 ? `${newConsoleErrors} console error(s)` : childPageErrors[0] ?? null,
+        };
+      } catch (error) {
+        const elapsedMs = roundMs(performance.now() - t0);
+        const newConsoleErrors = consoleErrors.length - beforeErrors;
+        return {
+          ok: false,
+          firstMessagePaintMs: elapsedMs,
+          navigatedMs: elapsedMs,
+          transcriptVisible: false,
+          newConsoleErrors,
+          pageErrors: childPageErrors,
+          error: String(error?.message ?? error).slice(0, 300),
+        };
+      } finally {
+        page.off('pageerror', onChildPageError);
+      }
     },
     async stopFlightRecorder() {
       return Boolean(await page.evaluate(() => (typeof window.__KIKI_STOP_FLIGHT__ === 'function' ? window.__KIKI_STOP_FLIGHT__() : false)).catch(() => false));
     },
     async close() {
+      webAssetsRecorder.detach();
       await browser.close().catch(() => undefined);
-      await staticSrv.close().catch(() => undefined);
     },
   };
 }
@@ -997,8 +1040,8 @@ export async function runScenarioS10LiveStorm({
         uploadStatus = upRes.status;
         const upJson = await upRes.json().catch(() => null);
         uploadedRef = upJson?.data?.file_id ?? upJson?.data?.id ?? null;
-      } catch (err) {
-        uploadErrors.push(`round=${round}: ${String(err?.message ?? err)}`);
+      } catch (error) {
+        uploadErrors.push(`round=${round}: ${String(error?.message ?? error)}`);
       }
       const uploadMs = roundMs(performance.now() - sendT0);
       pngUploadLatenciesMs.push(uploadMs);
@@ -1083,8 +1126,10 @@ export async function runScenarioS10LiveStorm({
   await activeMonitor;
 
   let flightRecorder = null;
+  let webAssetsAudit = null;
   if (browserDriver) {
     flightRecorder = await browserDriver.collectFlightSnapshot();
+    webAssetsAudit = await browserDriver.collectWebAssetsAudit();
     if (!keepBrowserAlive) {
       await browserDriver.close();
       browserDriver = null;
@@ -1117,7 +1162,7 @@ export async function runScenarioS10LiveStorm({
   if (controlTelemetry.childDeltaEvents.length > 0) {
     const events = controlTelemetry.childDeltaEvents;
     const firstTs = events[0].tsMs;
-    const lastTs = events[events.length - 1].tsMs;
+    const lastTs = events.at(-1).tsMs;
     const winMs = 5_000;
     const stepMs = 1_000;
     const candidateWindows = [];
@@ -1201,9 +1246,9 @@ export async function runScenarioS10LiveStorm({
   const textPromptAdmissionSummary = summarize(textAdmissionLatenciesMs);
   const pngPromptAdmissionSummary = summarize(pngAdmissionLatenciesMs);
 
-  const bytesPerSecArr = [...wsTelemetry.perSecBytes.values()].sort((a, b) => a - b);
-  const framesPerSecArr = [...wsTelemetry.perSecFrames.values()].sort((a, b) => a - b);
-  const p99Of = (arr) => (arr.length ? arr[Math.min(arr.length - 1, Math.floor(arr.length * 0.99))] : 0);
+  const bytesPerSecArr = [...wsTelemetry.perSecBytes.values()].toSorted((a, b) => a - b);
+  const framesPerSecArr = [...wsTelemetry.perSecFrames.values()].toSorted((a, b) => a - b);
+  const p99Of = (arr) => (arr.length > 0 ? arr[Math.min(arr.length - 1, Math.floor(arr.length * 0.99))] : 0);
 
   const reopenCandidates = [];
   const agentsDir = path.join(seeded.sessionDir, 'agents');
@@ -1231,9 +1276,9 @@ export async function runScenarioS10LiveStorm({
         unsubscribedChildContentBytes: wsTelemetry.unsubscribedChildContentBytes,
         unsubscribedChildContentFrames: wsTelemetry.unsubscribedChildContentFrames,
         inboundBytesPerSecP99: p99Of(bytesPerSecArr),
-        inboundBytesPerSecPeak: bytesPerSecArr.length ? bytesPerSecArr[bytesPerSecArr.length - 1] : 0,
+        inboundBytesPerSecPeak: bytesPerSecArr.length > 0 ? bytesPerSecArr.at(-1) : 0,
         inboundFramesPerSecP99: p99Of(framesPerSecArr),
-        inboundFramesPerSecPeak: framesPerSecArr.length ? framesPerSecArr[framesPerSecArr.length - 1] : 0,
+        inboundFramesPerSecPeak: framesPerSecArr.length > 0 ? framesPerSecArr.at(-1) : 0,
         rolling5sWindows,
         frameTypeCounts: wsTelemetry.frameTypeCounts,
         largestFrames: wsTelemetry.largestFrames,
@@ -1260,6 +1305,7 @@ export async function runScenarioS10LiveStorm({
     browserRequired: Boolean(runBrowser),
     guiDistServed,
     usedStubHtml: false,
+    webAssetsAudit,
     flightRecorder,
     promptAdmission: promptAdmissionSummary,
     textPromptAdmission: textPromptAdmissionSummary,
@@ -1289,6 +1335,15 @@ export async function runScenarioS10LiveStorm({
     verdict.productFailures.push(...uploadErrors.map((e) => `S10 PNG upload failed: ${e}`));
     verdict.passed = false;
     verdict.exitCode = 1;
+  }
+  if (runBrowser) {
+    const webAssetsGate = evaluateWebAssetsBudget(webAssetsAudit);
+    evidence.webAssetsGate = webAssetsGate;
+    if (!webAssetsGate.passed) {
+      verdict.productFailures.push(...webAssetsGate.failures.map((f) => `S10 kap-server webAssets: ${f}`));
+      verdict.passed = false;
+      verdict.exitCode = 1;
+    }
   }
 
   progress(

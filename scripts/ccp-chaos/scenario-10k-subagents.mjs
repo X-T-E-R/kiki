@@ -1,21 +1,10 @@
-import fs from 'node:fs';
-import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
+import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 
-const GUI_MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-};
+const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
 function roundMs(val) {
   return Number(Number(val ?? 0).toFixed(2));
@@ -36,7 +25,7 @@ function quantile(sorted, p) {
 }
 
 function summarize(samples) {
-  if (!samples.length) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
+  if (samples.length === 0) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
   const sorted = [...samples].toSorted((a, b) => a - b);
   const sum = sorted.reduce((acc, v) => acc + v, 0);
   return {
@@ -70,14 +59,14 @@ async function apiJsonRaw(endpoint, token, method, urlPath, body, timeoutMs = 45
       json = JSON.parse(text);
     } catch {}
     return { status: res.status, elapsedMs: roundMs(performance.now() - t0), bytes, json, rawText: text.slice(0, 400) };
-  } catch (err) {
+  } catch (error) {
     return {
       status: 0,
       elapsedMs: roundMs(performance.now() - t0),
       bytes: 0,
       json: null,
-      rawText: String(err?.message ?? err).slice(0, 200),
-      networkError: err?.name === 'AbortError' ? 'timeout' : String(err?.code ?? err?.message ?? 'fetch_error'),
+      rawText: String(error?.message ?? error).slice(0, 200),
+      networkError: error?.name === 'AbortError' ? 'timeout' : String(error?.code ?? error?.message ?? 'fetch_error'),
     };
   } finally {
     clearTimeout(timer);
@@ -335,9 +324,9 @@ async function runBackendProtocolS6({ server, target, createKlient, WebSocket, s
           },
         );
       }));
-    } catch (err) {
-      wsTimedOut = err?.code === 'STEP_TIMEOUT';
-      wsError = String(err?.message ?? err).slice(0, 300);
+    } catch (error) {
+      wsTimedOut = error?.code === 'STEP_TIMEOUT';
+      wsError = String(error?.message ?? error).slice(0, 300);
     } finally {
       sub?.close?.();
     }
@@ -362,9 +351,9 @@ async function runBackendProtocolS6({ server, target, createKlient, WebSocket, s
       drillPage = await withStepTimeout('subagent_10000_transcript_page', stepTimeoutMs, () =>
         view.transcript.page({ agentId: inspectSubagentId, pageSize: 20 }),
       );
-    } catch (err) {
-      drillTimedOut = err?.code === 'STEP_TIMEOUT';
-      drillError = String(err?.message ?? err).slice(0, 300);
+    } catch (error) {
+      drillTimedOut = error?.code === 'STEP_TIMEOUT';
+      drillError = String(error?.message ?? error).slice(0, 300);
     }
     const drillMs = roundMs(performance.now() - drillT0);
     const drillSerialized = drillPage ? JSON.stringify(drillPage) : '';
@@ -526,10 +515,11 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
 
   const kapRequire = createRequire(path.join(REPO_ROOT, 'packages', 'kap-server', 'package.json'));
   const { chromium } = kapRequire('playwright');
-  const { ensureGuiStaticBuild } = await import('../perf/browser-runner.mjs');
 
   const frontend = {
-    guiBuildMs: 0,
+    servedByKapServer: false,
+    webAssetsAudit: null,
+    webAssetsGate: null,
     pageErrors: [],
     consoleErrors: [],
     step1_coldOpen: null,
@@ -540,37 +530,14 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
     error: null,
   };
 
-  let staticServer = null;
   let browser = null;
+  let webAssetsRecorder = null;
 
   try {
-    const build = ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'));
-    frontend.guiBuildMs = build.buildMs;
-    progress(`S6 Frontend: GUI static build ready (reusedCache=${build.reusedCache}, buildMs=${build.buildMs}ms)`);
-
-    staticServer = createHttpServer((req, res) => {
-      const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-      if (urlPath === '/__kiki/local-server') {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end('{}');
-        return;
-      }
-      let file = path.normalize(path.join(build.distDir, urlPath));
-      if (!file.startsWith(build.distDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-        file = path.join(build.distDir, 'index.html');
-      }
-      const stream = fs.createReadStream(file);
-      stream.once('open', () => {
-        res.writeHead(200, { 'content-type': GUI_MIME[path.extname(file)] ?? 'application/octet-stream' });
-        stream.pipe(res);
-      });
-      stream.once('error', () => {
-        if (!res.headersSent) res.writeHead(404);
-        res.end('not found');
-      });
-    });
-    await new Promise((resolve) => staticServer.listen(0, '127.0.0.1', resolve));
-    const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
+    const webInfo = await assertKapServerWebAssets(server.endpoint);
+    frontend.servedByKapServer = webInfo.servedByKapServer;
+    progress(`S6 Frontend: kap-server webAssets verified at ${webInfo.webUrl} (index encoding=${webInfo.indexContentEncoding})`);
+    const webUrl = webInfo.webUrl;
     const deepLink = (routePath) =>
       `${webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
 
@@ -592,9 +559,9 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
           const durations = state.longTasks.map((t) => t.duration);
           const out = {
             longTaskCount: durations.length,
-            maxLongTaskMs: durations.length ? Number(Math.max(...durations).toFixed(2)) : 0,
+            maxLongTaskMs: durations.length > 0 ? Number(Math.max(...durations).toFixed(2)) : 0,
             totalBlockingTimeMs: Number(durations.reduce((a, d) => a + Math.max(0, d - 50), 0).toFixed(2)),
-            maxRafGapMs: state.rafGaps.length ? Number(Math.max(...state.rafGaps).toFixed(2)) : 0,
+            maxRafGapMs: state.rafGaps.length > 0 ? Number(Math.max(...state.rafGaps).toFixed(2)) : 0,
           };
           state.longTasks = [];
           state.rafGaps = [];
@@ -618,6 +585,7 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
     });
 
     const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, server.endpoint);
     page.on('pageerror', (err) => {
       if (frontend.pageErrors.length < 30) frontend.pageErrors.push(String(err?.message ?? err).slice(0, 300));
     });
@@ -641,8 +609,8 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
           layoutCount: map.LayoutCount ?? 0,
           recalcStyleCount: map.RecalcStyleCount ?? 0,
         };
-      } catch (err) {
-        return { error: String(err?.message ?? err).slice(0, 200) };
+      } catch (error) {
+        return { error: String(error?.message ?? error).slice(0, 200) };
       }
     };
 
@@ -701,9 +669,9 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
       const bodyText = await page.evaluate(() => document.body.innerText ?? '').catch(() => '');
       step1.stuckPreparingDetected = /History is preparing/iu.test(bodyText);
       step1.cdp = await readCdpMetrics();
-    } catch (err) {
-      step1.timedOut = err?.code === 'STEP_TIMEOUT';
-      step1.error = String(err?.message ?? err).slice(0, 400);
+    } catch (error) {
+      step1.timedOut = error?.code === 'STEP_TIMEOUT';
+      step1.error = String(error?.message ?? error).slice(0, 400);
       step1.httpRequestsFirst5s = summarizeApiRequestsSince(openT0, openT0 + 5_000);
       step1.httpRequestsAtSettle = summarizeApiRequestsSince(openT0);
       step1.cdp = await readCdpMetrics();
@@ -801,7 +769,7 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
             (needle) => {
               const items = document.querySelectorAll('[data-agent-roster] [data-agent-id]');
               if (items.length === 0) return Boolean(document.querySelector('[data-roster-empty]'));
-              return Array.from(items).some((el) => (el.getAttribute('data-agent-id') ?? '') === needle);
+              return Array.from(items).some((el) => (el.dataset.agentId ?? '') === needle);
             },
             coldNeedleA,
             { timeout: 10_000 },
@@ -845,9 +813,9 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
           await searchInput.fill('').catch(() => undefined);
         }
       });
-    } catch (err) {
-      step2.timedOut = err?.code === 'STEP_TIMEOUT';
-      step2.error = String(err?.message ?? err).slice(0, 400);
+    } catch (error) {
+      step2.timedOut = error?.code === 'STEP_TIMEOUT';
+      step2.error = String(error?.message ?? error).slice(0, 400);
       step2.cdpAfterExpand = step2.cdpAfterExpand ?? (await readCdpMetrics());
     }
     frontend.step2_inspectorRoster = step2;
@@ -939,9 +907,9 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
         );
         await sleep(300);
       });
-    } catch (err) {
-      step3.timedOut = err?.code === 'STEP_TIMEOUT';
-      step3.error = String(err?.message ?? err).slice(0, 400);
+    } catch (error) {
+      step3.timedOut = error?.code === 'STEP_TIMEOUT';
+      step3.error = String(error?.message ?? error).slice(0, 400);
       step3.cdpAfterOpen = step3.cdpAfterOpen ?? (await readCdpMetrics());
     }
     frontend.step3_agentFamilyPopover = step3;
@@ -991,9 +959,9 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
           await sleep(250);
         }
       });
-    } catch (err) {
-      step4.timedOut = err?.code === 'STEP_TIMEOUT';
-      step4.error = String(err?.message ?? err).slice(0, 400);
+    } catch (error) {
+      step4.timedOut = error?.code === 'STEP_TIMEOUT';
+      step4.error = String(error?.message ?? error).slice(0, 400);
       step4.cdpAfterCockpit = await readCdpMetrics();
       step4.httpRequestsDuringCockpit = summarizeApiRequestsSince(cockpitReqStart);
     }
@@ -1034,17 +1002,22 @@ async function runFrontendChromiumCdpS6({ server, target, stepTimeoutMs, progres
           };
         }
       });
-    } catch (err) {
-      step5.timedOut = err?.code === 'STEP_TIMEOUT';
-      step5.error = String(err?.message ?? err).slice(0, 400);
+    } catch (error) {
+      step5.timedOut = error?.code === 'STEP_TIMEOUT';
+      step5.error = String(error?.message ?? error).slice(0, 400);
     }
     frontend.step5_switchAwayReclamation = step5;
-  } catch (err) {
-    frontend.error = String(err?.stack ?? err).slice(0, 600);
+  } catch (error) {
+    frontend.error = String(error?.stack ?? error).slice(0, 600);
   } finally {
+    if (webAssetsRecorder) {
+      await webAssetsRecorder.settle();
+      frontend.webAssetsAudit = webAssetsRecorder.snapshot();
+      webAssetsRecorder.detach();
+    }
     await browser?.close().catch(() => undefined);
-    if (staticServer) await new Promise((resolve) => staticServer.close(() => resolve()));
   }
+  frontend.webAssetsGate = evaluateWebAssetsBudget(frontend.webAssetsAudit);
 
   return frontend;
 }
@@ -1108,12 +1081,16 @@ export async function runScenarioS6TenKSubagents({
       backend.agentListToolTurn?.boundedUnder50Rows,
   );
 
-  const frontendPassed = !runBrowser
-    ? true
+  const frontendSkipped = !runBrowser;
+  const frontendPassed = frontendSkipped
+    ? false
     : Boolean(
         frontend &&
           !frontend.error &&
+          frontend.servedByKapServer === true &&
+          frontend.webAssetsGate?.passed === true &&
           frontend.pageErrors.length === 0 &&
+          frontend.consoleErrors.length === 0 &&
           !frontend.step1_coldOpen?.timedOut &&
           !frontend.step1_coldOpen?.stuckPreparingDetected &&
           frontend.step1_coldOpen?.coldOpenFirstTurnMs !== null &&
@@ -1131,9 +1108,11 @@ export async function runScenarioS6TenKSubagents({
       );
 
   return {
-    passed: backendPassed && frontendPassed,
+    passed: backendPassed && frontendPassed && !frontendSkipped,
+    exitCode: frontendSkipped ? 2 : backendPassed && frontendPassed ? 0 : 1,
     backendPassed,
     frontendPassed,
+    frontendSkipped,
     stepTimeoutMs,
     wallMs: roundMs(performance.now() - startedAt),
     corpusSummary: {

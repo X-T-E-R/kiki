@@ -235,16 +235,19 @@ void test('full collection is complete only through the explicit full mode', () 
   const commands = fullCommands();
   const rootVitest = commands.find(entry => entry.args.includes('vitest'));
   assert.deepEqual(rootVitest.args, ['exec', 'vitest', 'run', '--project=!kap-server']);
-  assert.deepEqual(commands.slice(4, 9).map(entry => entry.args), PROMOTE_TEST_COMMANDS.map(entry => entry.args));
+  assert.deepEqual(
+    commands.slice(4, 4 + PROMOTE_TEST_COMMANDS.length).map(entry => entry.args),
+    PROMOTE_TEST_COMMANDS.map(entry => entry.args),
+  );
   const labels = commands.map(entry => entry.label);
   assert.ok(labels.indexOf('repository lint') < labels.indexOf('repository typecheck'));
   assert.ok(labels.indexOf('repository typecheck') < labels.indexOf('repository build'));
   assert.ok(commands.some(entry => entry.label === 'repository node:test contracts' && entry.args.includes('--test-concurrency=2')));
 });
 
-void test('legacy promote entry keeps its five-command contract and continues after failure', () => {
+void test('promote entry keeps its full command contract (including visual smoke & mobile rigor) and continues after failure', () => {
   const launches = [];
-  const exits = [1, 0, 0, 0, 0];
+  const exits = PROMOTE_TEST_COMMANDS.map((_, idx) => (idx === 0 ? 1 : 0));
   const code = runPromoteTests({
     env: { ...process.env, npm_execpath: '/fixture/pnpm.cjs' },
     spawn(command, args, options) {
@@ -253,8 +256,10 @@ void test('legacy promote entry keeps its five-command contract and continues af
     },
   });
   assert.equal(code, 1);
-  assert.equal(launches.length, 5);
   assert.equal(launches.length, PROMOTE_TEST_COMMANDS.length);
+  assert.ok(launches.some((l) => l.args.includes('scripts/visual-proof-headless-smoke.mjs')));
+  assert.ok(launches.some((l) => l.args.includes('scripts/visual-proof-mobile-rigor.mjs') && l.args.includes('--strict')));
+  assert.ok(launches.some((l) => l.args.includes('scripts/ccp-chaos/scenarios/s16-mobile-heavy-session.mjs')));
   assert.deepEqual(launches[0].args, ['/fixture/pnpm.cjs', ...PROMOTE_TEST_COMMANDS[0].args]);
   assert.ok(launches.every(launch => Array.isArray(launch.args)));
 });

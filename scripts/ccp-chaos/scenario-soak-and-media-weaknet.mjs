@@ -1,27 +1,27 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { deflateSync } from 'node:zlib';
 
 import { computeChaosWorkDirKey } from './corpus-generator.mjs';
+import { buildDecodableMp4 } from './fixtures/media.mjs';
+import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const MiB = 1024 * 1024;
 const BASE_TIME = 1_760_200_000_000;
 
-const GUI_MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-};
+export const FROZEN_S8_WEAKNET_BUDGETS = Object.freeze({
+  coldOpenMs: 8_000,
+  firstMessageVisibleMs: 8_000,
+  longTaskMaxMs: 2_000,
+  jsHeapUsedBytes: 512 * MiB,
+  requestCountBeforeFirstMessage: 60,
+  promptUnderMediaStormMs: 3_000,
+  rpcUnderMediaStormMs: 2_000,
+});
 
 function roundMs(val) {
   return Number(Number(val ?? 0).toFixed(2));
@@ -42,7 +42,7 @@ function quantile(sorted, p) {
 }
 
 function summarize(samples) {
-  if (!samples.length) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
+  if (samples.length === 0) return { count: 0, min: 0, p50: 0, p95: 0, p99: 0, max: 0, mean: 0 };
   const sorted = [...samples].toSorted((a, b) => a - b);
   const sum = sorted.reduce((acc, v) => acc + v, 0);
   return {
@@ -118,20 +118,13 @@ export function generateSyntheticPng(width, height, { deflateLevel = 1, smoothBa
 }
 
 export function generateSyntheticMp4(totalBytes = 192 * 1024) {
-  const ftyp = Buffer.from([
-    0x00, 0x00, 0x00, 0x18,
-    0x66, 0x74, 0x79, 0x70, // 'ftyp'
-    0x69, 0x73, 0x6f, 0x6d, // 'isom'
-    0x00, 0x00, 0x02, 0x00,
-    0x69, 0x73, 0x6f, 0x6d, // 'isom'
-    0x6d, 0x70, 0x34, 0x31, // 'mp41'
-  ]);
-  const mdatSize = Math.max(64, totalBytes - ftyp.length);
-  const mdatHeader = Buffer.alloc(8);
-  mdatHeader.writeUInt32BE(mdatSize, 0);
-  mdatHeader.write('mdat', 4, 'ascii');
-  const payload = Buffer.alloc(mdatSize - 8, 0x2a);
-  return Buffer.concat([ftyp, mdatHeader, payload]);
+  const base = buildDecodableMp4();
+  const padBytes = Math.max(0, totalBytes - base.length);
+  if (padBytes < 8) return base;
+  const freeBox = Buffer.alloc(padBytes);
+  freeBox.writeUInt32BE(padBytes, 0);
+  freeBox.write('free', 4, 'ascii');
+  return Buffer.concat([base, freeBox]);
 }
 
 export function generateSyntheticWav(totalBytes = 192 * 1024) {
@@ -540,52 +533,19 @@ async function apiJsonRaw(endpoint, token, method, urlPath, body, timeoutMs = 30
       json = JSON.parse(text);
     } catch {}
     return { status: res.status, elapsedMs: roundMs(performance.now() - t0), json, rawText: text.slice(0, 300) };
-  } catch (err) {
+  } catch (error) {
     return {
       status: 0,
       elapsedMs: roundMs(performance.now() - t0),
       json: null,
-      rawText: String(err?.message ?? err).slice(0, 200),
-      networkError: err?.name === 'AbortError' ? 'timeout' : String(err?.code ?? err?.message ?? 'fetch_error'),
+      rawText: String(error?.message ?? error).slice(0, 200),
+      networkError: error?.name === 'AbortError' ? 'timeout' : String(error?.code ?? error?.message ?? 'fetch_error'),
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function startGuiStaticServer() {
-  const { ensureGuiStaticBuild } = await import('../perf/browser-runner.mjs');
-  const build = ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'));
-  const staticServer = createHttpServer((req, res) => {
-    const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-    if (urlPath === '/__kiki/local-server') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{}');
-      return;
-    }
-    let file = path.normalize(path.join(build.distDir, urlPath));
-    if (!file.startsWith(build.distDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      file = path.join(build.distDir, 'index.html');
-    }
-    const stream = fs.createReadStream(file);
-    stream.once('open', () => {
-      res.writeHead(200, { 'content-type': GUI_MIME[path.extname(file)] ?? 'application/octet-stream' });
-      stream.pipe(res);
-    });
-    stream.once('error', () => {
-      if (!res.headersSent) res.writeHead(404);
-      res.end('not found');
-    });
-  });
-  await new Promise((resolve) => staticServer.listen(0, '127.0.0.1', resolve));
-  const webUrl = `http://127.0.0.1:${staticServer.address().port}`;
-  return {
-    webUrl,
-    buildMs: build.buildMs,
-    reusedCache: build.reusedCache,
-    close: () => new Promise((resolve) => staticServer.close(() => resolve())),
-  };
-}
 
 function buildObjectUrlAndTimerInitScript({ enableFastTimers: _enableFastTimers = false } = {}) {
   return (fastTimers) => {
@@ -649,8 +609,8 @@ async function readCdpSnapshot(cdp) {
       domNodes: map.Nodes ?? 0,
       jsEventListeners: map.JSEventListeners ?? 0,
     };
-  } catch (err) {
-    return { error: String(err?.message ?? err).slice(0, 200) };
+  } catch (error) {
+    return { error: String(error?.message ?? error).slice(0, 200) };
   }
 }
 
@@ -752,24 +712,30 @@ export async function runScenarioS7LongRunningSoak({
     liveTurnsSucceeded: 0,
   };
 
-  let staticSrv = null;
   let browser = null;
+  let webAssetsRecorder = null;
+  let webAssetsAudit = null;
+  const consoleErrors = [];
   const checkpointSet = new Set(checkpointCycles.filter((c) => c <= totalCycles));
   if (!checkpointSet.has(totalCycles)) checkpointSet.add(totalCycles);
   const reconnectSet = new Set(reconnectCycles);
 
   try {
-    staticSrv = await startGuiStaticServer();
+    const webInfo = await assertKapServerWebAssets(server.endpoint);
     const deepLink = (routePath) =>
-      `${staticSrv.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
+      `${webInfo.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
 
     browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--no-proxy-server'] });
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
     await context.addInitScript(buildObjectUrlAndTimerInitScript({ enableFastTimers: true }), true);
 
     const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, server.endpoint);
     page.on('pageerror', (err) => {
       if (pageErrors.length < 30) pageErrors.push(String(err?.message ?? err).slice(0, 300));
+    });
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && consoleErrors.length < 30) consoleErrors.push(msg.text().slice(0, 300));
     });
 
     const cdp = await context.newCDPSession(page);
@@ -947,7 +913,7 @@ export async function runScenarioS7LongRunningSoak({
       }
 
       if (checkpointSet.has(cycle)) {
-        await Promise.allSettled(inflightTurns.splice(0, inflightTurns.length));
+        await Promise.allSettled(inflightTurns.splice(0));
         await recordCheckpoint(cycle);
       }
     }
@@ -960,9 +926,18 @@ export async function runScenarioS7LongRunningSoak({
       await server.closeSession(sid).catch(() => undefined);
     }
 
+    if (webAssetsRecorder) {
+      await webAssetsRecorder.settle();
+      webAssetsAudit = webAssetsRecorder.snapshot();
+      webAssetsRecorder.detach();
+      webAssetsRecorder = null;
+    }
+    const webAssetsGate = evaluateWebAssetsBudget(webAssetsAudit);
     const slopes = computeSoakLinearSlopes(checkpoints);
     const passed = Boolean(
-      pageErrors.length === 0 &&
+      webAssetsGate.passed &&
+        pageErrors.length === 0 &&
+        consoleErrors.length === 0 &&
         slopes !== null &&
         slopes.jsHeapKbPerCycle < 250 &&
         slopes.listenersPerCycle < 10 &&
@@ -974,6 +949,9 @@ export async function runScenarioS7LongRunningSoak({
 
     return {
       passed,
+      servedByKapServer: true,
+      webAssetsAudit,
+      webAssetsGate,
       totalCycles,
       wallMs: roundMs(performance.now() - startedAt),
       poolSessionCount: poolSessions.length,
@@ -982,6 +960,7 @@ export async function runScenarioS7LongRunningSoak({
       checkpoints,
       slopes,
       pageErrors,
+      consoleErrors,
       serverHealth: {
         unhandledRejections: finalSrvMetrics.unhandledRejections,
         uncaughtExceptions: finalSrvMetrics.uncaughtExceptions,
@@ -989,7 +968,7 @@ export async function runScenarioS7LongRunningSoak({
         maxSingleTickStallMs: finalSrvMetrics.maxSingleTickStallMs,
       },
     };
-  } catch (err) {
+  } catch (error) {
     return {
       passed: false,
       totalCycles,
@@ -998,11 +977,12 @@ export async function runScenarioS7LongRunningSoak({
       checkpoints,
       slopes: computeSoakLinearSlopes(checkpoints),
       pageErrors,
-      error: String(err?.stack ?? err).slice(0, 600),
+      consoleErrors,
+      error: String(error?.stack ?? error).slice(0, 600),
     };
   } finally {
+    webAssetsRecorder?.detach();
     await browser?.close().catch(() => undefined);
-    await staticSrv?.close().catch(() => undefined);
   }
 }
 
@@ -1064,8 +1044,8 @@ export async function runScenarioS8MediaWeakNetStorm({
         contentRange: res.headers.get('content-range'),
         elapsedMs: roundMs(performance.now() - t0),
       };
-    } catch (err) {
-      return { status: 0, bytes: 0, error: String(err?.message ?? err).slice(0, 160) };
+    } catch (error) {
+      return { status: 0, bytes: 0, error: String(error?.message ?? error).slice(0, 160) };
     }
   };
 
@@ -1118,37 +1098,70 @@ export async function runScenarioS8MediaWeakNetStorm({
   let media429Count = 0;
   let mediaFailedCount = 0;
 
-  let staticSrv = null;
   let browser = null;
+  let webAssetsRecorder = null;
+  let webAssetsAudit = null;
+  const consoleErrors = [];
   let peakServerRssMb = preSrv.rssMiB;
-  const rssPoller = setInterval(async () => {
-    try {
-      const m = await server.metrics(false);
-      if (m.rssMiB > peakServerRssMb) peakServerRssMb = m.rssMiB;
-    } catch {}
+  const rssPoller = setInterval(() => {
+    void (async () => {
+      try {
+        const m = await server.metrics(false);
+        if (m.rssMiB > peakServerRssMb) peakServerRssMb = m.rssMiB;
+      } catch {}
+    })();
   }, 400);
 
   let weakNetBrowser = null;
   let concurrent32Storm = null;
 
   try {
-    staticSrv = await startGuiStaticServer();
+    const webInfo = await assertKapServerWebAssets(server.endpoint);
     const deepLink = (routePath) =>
-      `${staticSrv.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
+      `${webInfo.webUrl}${routePath}?server=${encodeURIComponent(server.endpoint)}&token=${encodeURIComponent(server.token)}`;
 
     browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--no-proxy-server'] });
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
     await context.addInitScript(buildObjectUrlAndTimerInitScript({ enableFastTimers: false }), false);
+    await context.addInitScript(() => {
+      const longTasks = [];
+      window.__kikiS8LongTasks = {
+        snapshot() {
+          const maxMs = longTasks.length > 0 ? Math.max(...longTasks) : 0;
+          const tbtMs = longTasks.reduce((sum, d) => sum + Math.max(0, d - 50), 0);
+          return {
+            count: longTasks.length,
+            longTaskMaxMs: Number(maxMs.toFixed(2)),
+            totalBlockingTimeMs: Number(tbtMs.toFixed(2)),
+          };
+        },
+      };
+      try {
+        new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) longTasks.push(e.duration);
+        }).observe({ type: 'longtask', buffered: true });
+      } catch {}
+    });
 
     const page = await context.newPage();
+    webAssetsRecorder = createWebAssetsAuditRecorder(page, server.endpoint);
     page.on('pageerror', (err) => {
       if (pageErrors.length < 30) pageErrors.push(String(err?.message ?? err).slice(0, 300));
+    });
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && consoleErrors.length < 30) consoleErrors.push(msg.text().slice(0, 300));
     });
     const isMediaUrl = (url) =>
       url.startsWith(server.endpoint) &&
       (url.includes('/media') || url.includes('/files/') || url.includes('/media-preview/'));
+    let firstMessagePainted = false;
+    let requestCountBeforeFirstMessage = 0;
     page.on('request', (req) => {
-      if (isMediaUrl(req.url())) mediaRequestsTotal += 1;
+      const url = req.url();
+      if (!firstMessagePainted && url.startsWith(server.endpoint)) {
+        requestCountBeforeFirstMessage += 1;
+      }
+      if (isMediaUrl(url)) mediaRequestsTotal += 1;
     });
     page.on('requestfailed', (req) => {
       if (isMediaUrl(req.url())) {
@@ -1178,6 +1191,25 @@ export async function runScenarioS8MediaWeakNetStorm({
     await page.goto(deepLink(`/s/${sessionId}`), { waitUntil: 'domcontentloaded', timeout: stepTimeoutMs });
     await page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: stepTimeoutMs });
     const coldOpenMs = roundMs(performance.now() - openT0);
+    await page.waitForFunction(
+      () => {
+        const items = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]');
+        for (const el of items) {
+          if ((el.textContent ?? '').trim().length > 0) return true;
+        }
+        return false;
+      },
+      null,
+      { timeout: stepTimeoutMs },
+    );
+    firstMessagePainted = true;
+    const firstMessageVisibleMs = roundMs(performance.now() - openT0);
+    const coldOpenLongTasks = await page
+      .evaluate(() => window.__kikiS8LongTasks?.snapshot?.() ?? { count: 0, longTaskMaxMs: 0, totalBlockingTimeMs: 0 })
+      .catch(() => ({ count: 0, longTaskMaxMs: 0, totalBlockingTimeMs: 0 }));
+    const coldOpenCdpMetrics = await cdp.send('Performance.getMetrics');
+    const coldOpenMetricMap = Object.fromEntries(coldOpenCdpMetrics.metrics.map((m) => [m.name, m.value]));
+    const jsHeapUsedBytes = Math.round(coldOpenMetricMap.JSHeapUsedSize ?? 0);
 
     // Prepare 32 concurrent giant requests against kap-server
     const uploadPngSmall = generateSyntheticPng(1200, 900, { deflateLevel: 0, smoothBands: true }); // ~3.2 MiB valid PNG
@@ -1232,8 +1264,8 @@ export async function runScenarioS8MediaWeakNetStorm({
                 signal: ac.signal,
               });
               abortedUploadsHandledCleanly += 1;
-            } catch (err) {
-              if (err?.name === 'AbortError') abortedUploadsHandledCleanly += 1;
+            } catch (error) {
+              if (error?.name === 'AbortError') abortedUploadsHandledCleanly += 1;
             } finally {
               clearTimeout(abortTimer);
               latencies.push(roundMs(performance.now() - t0));
@@ -1338,15 +1370,19 @@ export async function runScenarioS8MediaWeakNetStorm({
         const auth = { authorization: `Bearer ${token}` };
         const rpcT0 = performance.now();
         let rpcStatus = 0;
+        let rpcError = null;
         try {
           const r = await fetch(`${endpoint}/api/sessions/${encodeURIComponent(probeSid)}/status`, { headers: auth });
           rpcStatus = r.status;
           await r.text();
-        } catch {}
+        } catch (error) {
+          rpcError = String(error?.message ?? error).slice(0, 200);
+        }
         const rpcMs = Number((performance.now() - rpcT0).toFixed(2));
 
         const pT0 = performance.now();
         let promptStatus = 0;
+        let promptError = null;
         try {
           const p = await fetch(`${endpoint}/api/sessions/${encodeURIComponent(probeSid)}/prompts`, {
             method: 'POST',
@@ -1358,9 +1394,18 @@ export async function runScenarioS8MediaWeakNetStorm({
           });
           promptStatus = p.status;
           await p.text();
-        } catch {}
+        } catch (error) {
+          promptError = String(error?.message ?? error).slice(0, 200);
+        }
         const promptMs = Number((performance.now() - pT0).toFixed(2));
-        return { rpcUnderMediaStormMs: rpcMs, rpcStatus, promptUnderMediaStormMs: promptMs, promptStatus };
+        return {
+          rpcUnderMediaStormMs: rpcMs,
+          rpcStatus,
+          rpcError,
+          promptUnderMediaStormMs: promptMs,
+          promptStatus,
+          promptError,
+        };
       },
       { endpoint: server.endpoint, token: server.token, probeSid: promptProbeSid },
     );
@@ -1373,8 +1418,15 @@ export async function runScenarioS8MediaWeakNetStorm({
     const cdpAfterScroll = await readCdpSnapshot(cdp);
 
     weakNetBrowser = {
+      servedByKapServer: true,
       emulation: { downloadMbps: 3, uploadMbps: 1.5, latencyMs: 180 },
       coldOpenMs,
+      firstMessageVisibleMs,
+      longTaskMaxMs: coldOpenLongTasks.longTaskMaxMs,
+      longTaskCount: coldOpenLongTasks.count,
+      totalBlockingTimeMs: coldOpenLongTasks.totalBlockingTimeMs,
+      jsHeapUsedBytes,
+      requestCountBeforeFirstMessage,
       scroll12ViewportsMs,
       ...scrollInfo,
       ...inBrowserProbes,
@@ -1387,20 +1439,27 @@ export async function runScenarioS8MediaWeakNetStorm({
       revokedObjectUrls: urlStats.revoked,
       cdpAfterScroll,
       pageErrors,
+      consoleErrors,
     };
-  } catch (err) {
+  } catch (error) {
     weakNetBrowser = {
-      error: String(err?.stack ?? err).slice(0, 600),
+      servedByKapServer: false,
+      error: String(error?.stack ?? error).slice(0, 600),
       mediaRequestsTotal,
       abortedMediaRequests,
       media429Count,
       mediaFailedCount,
       pageErrors,
+      consoleErrors,
     };
   } finally {
     clearInterval(rssPoller);
+    if (webAssetsRecorder) {
+      await webAssetsRecorder.settle();
+      webAssetsAudit = webAssetsRecorder.snapshot();
+      webAssetsRecorder.detach();
+    }
     await browser?.close().catch(() => undefined);
-    await staticSrv?.close().catch(() => undefined);
     await server.closeSession(promptProbeSid).catch(() => undefined);
   }
 
@@ -1408,25 +1467,62 @@ export async function runScenarioS8MediaWeakNetStorm({
   const postSrv = await server.metrics(false);
   if (postSrv.rssMiB > peakServerRssMb) peakServerRssMb = postSrv.rssMiB;
   const gcSrv = await server.gc();
+  const webAssetsGate = evaluateWebAssetsBudget(webAssetsAudit);
+  const B = FROZEN_S8_WEAKNET_BUDGETS;
 
-  const passed = Boolean(
-    pageErrors.length === 0 &&
-      grantBoundaryProbe.grant1RangeStatus === 206 &&
-      grantBoundaryProbe.grant70RangeStatus === 206 &&
-      grantBoundaryProbe.rejected429 === 0 &&
-      weakNetBrowser &&
-      !weakNetBrowser.error &&
-      (weakNetBrowser.promptUnderMediaStormMs ?? 99999) < 3000 &&
-      (weakNetBrowser.rpcUnderMediaStormMs ?? 99999) < 2000 &&
-      concurrent32Storm &&
-      concurrent32Storm.uploadsSucceeded === 12 &&
-      concurrent32Storm.abortedUploadsHandledCleanly === 4 &&
-      postSrv.unhandledRejections === 0 &&
-      postSrv.uncaughtExceptions === 0,
-  );
+  const s8Failures = [];
+  if (pageErrors.length > 0) s8Failures.push(`pageErrors=${pageErrors.length}`);
+  if (consoleErrors.length > 0) s8Failures.push(`consoleErrors=${consoleErrors.length}`);
+  if (!webAssetsGate.passed) s8Failures.push(...webAssetsGate.failures.map((f) => `webAssets: ${f}`));
+  if (grantBoundaryProbe.grant1RangeStatus !== 206) s8Failures.push(`grant1RangeStatus=${grantBoundaryProbe.grant1RangeStatus}`);
+  if (grantBoundaryProbe.grant70RangeStatus !== 206) s8Failures.push(`grant70RangeStatus=${grantBoundaryProbe.grant70RangeStatus}`);
+  if (grantBoundaryProbe.rejected429 !== 0) s8Failures.push(`grantBoundary rejected429=${grantBoundaryProbe.rejected429}`);
+  if (!weakNetBrowser || weakNetBrowser.error) s8Failures.push(`weakNetBrowser error=${weakNetBrowser?.error ?? 'missing'}`);
+  if (weakNetBrowser?.servedByKapServer !== true) s8Failures.push('GUI not served by kap-server webAssets');
+  if (!(typeof weakNetBrowser?.coldOpenMs === 'number' && weakNetBrowser.coldOpenMs < B.coldOpenMs)) {
+    s8Failures.push(`coldOpenMs=${weakNetBrowser?.coldOpenMs} >= ${B.coldOpenMs}`);
+  }
+  if (!(typeof weakNetBrowser?.firstMessageVisibleMs === 'number' && weakNetBrowser.firstMessageVisibleMs < B.firstMessageVisibleMs)) {
+    s8Failures.push(`firstMessageVisibleMs=${weakNetBrowser?.firstMessageVisibleMs} >= ${B.firstMessageVisibleMs}`);
+  }
+  if (!(typeof weakNetBrowser?.longTaskMaxMs === 'number' && weakNetBrowser.longTaskMaxMs < B.longTaskMaxMs)) {
+    s8Failures.push(`longTaskMaxMs=${weakNetBrowser?.longTaskMaxMs} >= ${B.longTaskMaxMs}`);
+  }
+  if (!(typeof weakNetBrowser?.jsHeapUsedBytes === 'number' && weakNetBrowser.jsHeapUsedBytes > 0 && weakNetBrowser.jsHeapUsedBytes < B.jsHeapUsedBytes)) {
+    s8Failures.push(`jsHeapUsedBytes=${weakNetBrowser?.jsHeapUsedBytes} outside (0, ${B.jsHeapUsedBytes})`);
+  }
+  if (!(typeof weakNetBrowser?.requestCountBeforeFirstMessage === 'number' && weakNetBrowser.requestCountBeforeFirstMessage > 0 && weakNetBrowser.requestCountBeforeFirstMessage < B.requestCountBeforeFirstMessage)) {
+    s8Failures.push(`requestCountBeforeFirstMessage=${weakNetBrowser?.requestCountBeforeFirstMessage} outside (0, ${B.requestCountBeforeFirstMessage})`);
+  }
+  if (!((weakNetBrowser?.promptUnderMediaStormMs ?? 99999) < B.promptUnderMediaStormMs)) {
+    s8Failures.push(`promptUnderMediaStormMs=${weakNetBrowser?.promptUnderMediaStormMs} >= ${B.promptUnderMediaStormMs}`);
+  }
+  if (!(typeof weakNetBrowser?.promptStatus === 'number' && weakNetBrowser.promptStatus >= 200 && weakNetBrowser.promptStatus < 300)) {
+    s8Failures.push(`promptStatus=${weakNetBrowser?.promptStatus ?? 0} (error=${weakNetBrowser?.promptError ?? 'non-2xx'})`);
+  }
+  if (!((weakNetBrowser?.rpcUnderMediaStormMs ?? 99999) < B.rpcUnderMediaStormMs)) {
+    s8Failures.push(`rpcUnderMediaStormMs=${weakNetBrowser?.rpcUnderMediaStormMs} >= ${B.rpcUnderMediaStormMs}`);
+  }
+  if (!(typeof weakNetBrowser?.rpcStatus === 'number' && weakNetBrowser.rpcStatus >= 200 && weakNetBrowser.rpcStatus < 300)) {
+    s8Failures.push(`rpcStatus=${weakNetBrowser?.rpcStatus ?? 0} (error=${weakNetBrowser?.rpcError ?? 'non-2xx'})`);
+  }
+  if (!concurrent32Storm || concurrent32Storm.uploadsSucceeded !== 12 || (concurrent32Storm.uploadsFailed ?? 0) > 0) {
+    s8Failures.push(`uploadsSucceeded=${concurrent32Storm?.uploadsSucceeded ?? 0} !== 12 (failed=${concurrent32Storm?.uploadsFailed ?? 0})`);
+  }
+  if (!concurrent32Storm || concurrent32Storm.abortedUploadsHandledCleanly !== 4) {
+    s8Failures.push(`abortedUploadsHandledCleanly=${concurrent32Storm?.abortedUploadsHandledCleanly ?? 0} !== 4`);
+  }
+  if (postSrv.unhandledRejections !== 0) s8Failures.push(`unhandledRejections=${postSrv.unhandledRejections}`);
+  if (postSrv.uncaughtExceptions !== 0) s8Failures.push(`uncaughtExceptions=${postSrv.uncaughtExceptions}`);
+
+  const passed = s8Failures.length === 0;
 
   return {
     passed,
+    failures: s8Failures,
+    budgets: B,
+    webAssetsAudit,
+    webAssetsGate,
     wallMs: roundMs(performance.now() - startedAt),
     corpusSummary: {
       sessionId,
