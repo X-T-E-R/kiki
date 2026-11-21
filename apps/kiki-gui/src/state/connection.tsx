@@ -1474,14 +1474,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       if (!active || batch.length === 0) return;
       lastWorkChangedFlushAt = Date.now();
       startTransition(() => {
-        for (const change of batch) {
-          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
-            mergeSessionWorkChanged(old, change),
-          );
-          queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
-            old === undefined ? old : patchSessionWorkChanged(old, change),
-          );
-        }
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => {
+          let next = old;
+          for (const change of batch) next = mergeSessionWorkChanged(next, change);
+          return next;
+        });
+        queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) => {
+          if (old === undefined) return old;
+          let next = old;
+          for (const change of batch) next = patchSessionWorkChanged(next, change);
+          return next;
+        });
       });
     };
     const flushPendingWorkChanges = () => {

@@ -2083,13 +2083,12 @@ export function Composer({
    * not seed the next draft's undo or clear its error. Local shortcut actions
    * (`/plan` …) are not sent, so they never land here.
    */
-  const recordSubmission = (surface: boolean) => {
-    const currentText = liveTextRef.current;
-    if (historyKey !== undefined) pushInputHistory(historyKey, currentText);
+  const recordSubmission = (surface: boolean, submittedText = liveTextRef.current) => {
+    if (historyKey !== undefined) pushInputHistory(historyKey, submittedText);
     if (!surface) return;
     setAttachmentError(null);
     historyIndexRef.current = null;
-    pushUndoSnapshot({ text: currentText, cursor: lastCursorRef.current });
+    pushUndoSnapshot({ text: submittedText, cursor: lastCursorRef.current });
   };
   const submissionVisible = (flight: SendFlight): boolean =>
     composerAliveRef.current
@@ -2856,9 +2855,10 @@ export function Composer({
         ? onSend(prepared.text, sentAttachments)
         : onSend(prepared.text, sentAttachments, merged);
     };
+    const submittedText = liveTextRef.current;
     if (!vscodeRuntime) {
       runAgentTurn(async (flight) => {
-        recordSubmission(submissionVisible(flight));
+        recordSubmission(submissionVisible(flight), submittedText);
         await deliver(content);
       });
       return;
@@ -2869,26 +2869,27 @@ export function Composer({
     // mutations wait until this flight is still that visible generation.
     runAgentTurn(async (flight) => {
       const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
-      recordSubmission(submissionVisible(flight));
+      recordSubmission(submissionVisible(flight), submittedText);
       await deliver(prepared);
     });
   };
 
   const activateSkill = (name: string, args: string) => {
+    const submittedText = liveTextRef.current;
     const sentAttachments = sessionId === undefined && ssh.snapshot.length > 0
       ? [...attachments, ...ssh.snapshot]
       : attachments;
     if (!vscodeRuntime) {
       runAgentTurn(async (flight) => {
-        recordSubmission(submissionVisible(flight));
-        await onActivateSkill?.(name, args, sentAttachments, text);
+        recordSubmission(submissionVisible(flight), submittedText);
+        await onActivateSkill?.(name, args, sentAttachments, submittedText);
       });
       return;
     }
     runAgentTurn(async (flight) => {
       await vscodeHost.preparePrompt('', vscodeConversationId, false);
-      recordSubmission(submissionVisible(flight));
-      await onActivateSkill?.(name, args, sentAttachments, text);
+      recordSubmission(submissionVisible(flight), submittedText);
+      await onActivateSkill?.(name, args, sentAttachments, submittedText);
     });
   };
 

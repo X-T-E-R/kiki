@@ -2825,6 +2825,42 @@ describe('explicit unknown timing', () => {
     expect(card?.textContent).not.toContain('—');
   });
 
+  it('keeps useSyncExternalStore snapshots stable for settled and live subagents when Date.now advances across commit', async () => {
+    let clockMs = 1_795_235_712_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      clockMs += 1;
+      return clockMs;
+    });
+    try {
+      const container = await renderTranscript([
+        subagentBlock({
+          subagentId: 'agent-settled-1',
+          status: 'completed',
+          startedAt: '2026-11-21T04:00:00.000Z',
+          endedAt: '2026-11-21T04:00:04.200Z',
+        }),
+        subagentBlock({
+          subagentId: 'agent-settled-2',
+          status: 'failed',
+          startedAt: '2026-11-21T04:00:00.000Z',
+          endedAt: '2026-11-21T04:00:02.500Z',
+        }),
+        ...Array.from({ length: 12 }, (_, idx) =>
+          subagentBlock({
+            subagentId: `agent-live-${idx + 1}`,
+            status: 'running',
+            startedAt: new Date(clockMs - 3_000).toISOString(),
+          }),
+        ),
+      ]);
+      expect(container.querySelector('[data-subagent-id="agent-settled-1"]')?.textContent).toContain('4.2s');
+      expect(container.querySelector('[data-subagent-id="agent-settled-2"]')?.textContent).toContain('2.5s');
+      expect(container.querySelector('[data-subagent-id="agent-live-12"]')?.textContent).toMatch(/\d\.\ds/);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   async function renderToolCard(block: Block): Promise<HTMLDivElement> {
     const { root, container } = makeRoot();
     await renderSettled(root, <ToolCard block={block as Extract<Block, { kind: 'tool' }>} />);

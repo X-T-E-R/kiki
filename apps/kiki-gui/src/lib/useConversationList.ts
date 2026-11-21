@@ -77,9 +77,11 @@ export function useConversationList(sessions: readonly Session[], order: Session
       const batch = [...pendingActivity.values()];
       pendingActivity.clear();
       startTransition(() => {
-        for (const fresh of batch) {
-          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
-        }
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => {
+          let next = old;
+          for (const fresh of batch) next = mergeSessionActivity(next, fresh);
+          return next;
+        });
       });
       const pinnedReads = queryClient.getQueriesData<SessionListData>({ queryKey: PINNED_SESSIONS_QUERY_KEY });
       if (batch.some((fresh) => isPinnedSession(fresh) && pinnedReads.some(([, data]) => !dedupeSessions(data).some((session) => session.id === fresh.id)))) {

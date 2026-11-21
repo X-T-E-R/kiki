@@ -1807,6 +1807,10 @@ function tickSharedSecondClock(): void {
 function startSharedSecondClock(): void {
   if (sharedSecondClockTimer !== null || sharedSecondClockListeners.size === 0) return;
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  const now = Date.now();
+  if (now - sharedSecondClockNow >= 1000 || now < sharedSecondClockNow) {
+    sharedSecondClockNow = now;
+  }
   sharedSecondClockTimer = setInterval(tickSharedSecondClock, 1000);
 }
 
@@ -1826,7 +1830,6 @@ function subscribeSharedSecondClock(listener: () => void): () => void {
     sharedSecondClockVisibilityBound = true;
     document.addEventListener('visibilitychange', onSharedSecondClockVisibility);
   }
-  sharedSecondClockNow = Date.now();
   startSharedSecondClock();
   return () => {
     sharedSecondClockListeners.delete(listener);
@@ -1842,12 +1845,16 @@ function getSharedSecondClockNow(): number {
   return sharedSecondClockNow;
 }
 
+function idleSharedSecondClockSnapshot(): number {
+  return 0;
+}
+
 /** Single synchronized 1-second clock shared across all live elapsed counters; pauses when hidden. */
 function useSharedSecondClock(enabled: boolean): number {
   return useSyncExternalStore(
     enabled ? subscribeSharedSecondClock : noopSubscribe,
-    enabled ? getSharedSecondClockNow : Date.now,
-    Date.now,
+    enabled ? getSharedSecondClockNow : idleSharedSecondClockSnapshot,
+    idleSharedSecondClockSnapshot,
   );
 }
 
