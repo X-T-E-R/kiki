@@ -2,8 +2,9 @@ import { z } from 'zod';
 
 import { sessionSeedCarryWireSchema, sessionSeedModeWireSchema } from './lifecycle.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const createSessionBranchInputSchema = z.object({
+export const createSessionBranchInputSchema = /* @__PURE__ */ z.object({
   parentAgentId: z.string().optional(),
   initiator: z.enum(['user', 'agent']).optional(),
   task: z.string().optional(),
@@ -19,7 +20,7 @@ export const createSessionBranchInputSchema = z.object({
   toolsLocked: z.boolean().optional(),
 });
 
-export const createSessionBranchResultSchema = z.object({
+export const createSessionBranchResultSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
   parentAgentId: z.string(),
   seed: sessionSeedModeWireSchema,
@@ -28,7 +29,7 @@ export const createSessionBranchResultSchema = z.object({
   started: z.boolean(),
 });
 
-export const foldSessionBranchInputSchema = z.object({
+export const foldSessionBranchInputSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
   summary: z.string().optional(),
   context: z.string().optional(),
@@ -37,7 +38,7 @@ export const foldSessionBranchInputSchema = z.object({
   fromTool: z.boolean().optional(),
 });
 
-export const foldSessionBranchResultSchema = z.object({
+export const foldSessionBranchResultSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
   foldId: z.string().optional(),
   status: z.enum(['merged', 'prompted']),
@@ -47,44 +48,44 @@ export const foldSessionBranchResultSchema = z.object({
   throughTurnId: z.number(),
 });
 
-export const discardSessionBranchInputSchema = z.object({
+export const discardSessionBranchInputSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
 });
 
-export const discardSessionBranchResultSchema = z.object({
+export const discardSessionBranchResultSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
   discarded: z.boolean(),
 });
 
-export const setSessionBranchToolsLockInputSchema = z.object({
+export const setSessionBranchToolsLockInputSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
   locked: z.boolean(),
 });
 
-export const setSessionBranchToolsLockResultSchema = z.object({
+export const setSessionBranchToolsLockResultSchema = /* @__PURE__ */ z.object({
   branchId: z.string(),
   toolsLocked: z.boolean(),
 });
 
 export const sessionBranchContract = {
-  createBranch: {
-    input: z.tuple([createSessionBranchInputSchema.optional()]),
+  createBranch: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([createSessionBranchInputSchema.optional()]),
     output: createSessionBranchResultSchema,
-  },
-  foldBranch: {
-    input: z.tuple([foldSessionBranchInputSchema]),
+  }), 'input', 'output'),
+  foldBranch: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([foldSessionBranchInputSchema]),
     output: foldSessionBranchResultSchema,
-  },
-  discardBranch: {
-    input: z.tuple([discardSessionBranchInputSchema]),
+  }), 'input', 'output'),
+  discardBranch: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([discardSessionBranchInputSchema]),
     output: discardSessionBranchResultSchema,
-  },
-  setToolsLocked: {
-    input: z.tuple([setSessionBranchToolsLockInputSchema]),
+  }), 'input', 'output'),
+  setToolsLocked: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([setSessionBranchToolsLockInputSchema]),
     output: setSessionBranchToolsLockResultSchema,
-  },
+  }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const sessionBtwContract = {
-  start: { input: z.tuple([]), output: z.string() },
+  start: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.string() }), 'input', 'output'),
 } satisfies ServiceContract;

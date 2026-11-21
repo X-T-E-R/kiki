@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from '../time';
 
-export const oauthFlowStatusEnum = z.enum([
+export const oauthFlowStatusEnum = /* @__PURE__ */ z.enum([
   'pending',
   'authenticated',
   'denied',
@@ -18,7 +18,7 @@ export const oauthFlowStatusEnum = z.enum([
 ]);
 export type OAuthFlowStatus = z.infer<typeof oauthFlowStatusEnum>;
 
-export const oauthLoginStartRequestSchema = z.object({
+export const oauthLoginStartRequestSchema = /* @__PURE__ */ z.object({
   provider: z.string().min(1).optional(),
   region: z.enum(['mainland-cn', 'global']).optional(),
 });
@@ -36,7 +36,7 @@ export type OAuthLoginStartRequest = z.infer<typeof oauthLoginStartRequestSchema
  *     issued. The client can skip the device-code step and treat the login
  *     as already complete.
  */
-export const oauthFlowStartPendingSchema = z.object({
+export const oauthFlowStartPendingSchema = /* @__PURE__ */ z.object({
   flow_id: z.string().min(1),
   provider: z.string().min(1),
   status: z.literal('pending'),
@@ -49,20 +49,20 @@ export const oauthFlowStartPendingSchema = z.object({
 });
 export type OAuthFlowStartPending = z.infer<typeof oauthFlowStartPendingSchema>;
 
-export const oauthFlowStartAuthenticatedSchema = z.object({
+export const oauthFlowStartAuthenticatedSchema = /* @__PURE__ */ z.object({
   flow_id: z.string().min(1),
   provider: z.string().min(1),
   status: z.literal('authenticated'),
 });
 export type OAuthFlowStartAuthenticated = z.infer<typeof oauthFlowStartAuthenticatedSchema>;
 
-export const oauthFlowStartSchema = z.discriminatedUnion('status', [
+export const oauthFlowStartSchema = /* @__PURE__ */ z.discriminatedUnion('status', [
   oauthFlowStartPendingSchema,
   oauthFlowStartAuthenticatedSchema,
 ]);
 export type OAuthFlowStart = z.infer<typeof oauthFlowStartSchema>;
 
-export const oauthFlowSnapshotSchema = z.object({
+export const oauthFlowSnapshotSchema = /* @__PURE__ */ z.object({
   flow_id: z.string().min(1),
   provider: z.string().min(1),
   status: oauthFlowStatusEnum,
@@ -77,36 +77,36 @@ export const oauthFlowSnapshotSchema = z.object({
 });
 export type OAuthFlowSnapshot = z.infer<typeof oauthFlowSnapshotSchema>;
 
-export const oauthLoginQuerySchema = z.object({
+export const oauthLoginQuerySchema = /* @__PURE__ */ z.object({
   provider: z.string().min(1).optional(),
 });
 export type OAuthLoginQuery = z.infer<typeof oauthLoginQuerySchema>;
 
-export const oauthLoginCancelResponseSchema = z.object({
+export const oauthLoginCancelResponseSchema = /* @__PURE__ */ z.object({
   cancelled: z.boolean(),
   status: oauthFlowStatusEnum,
 });
 export type OAuthLoginCancelResponse = z.infer<typeof oauthLoginCancelResponseSchema>;
 
-export const oauthLogoutRequestSchema = z.object({
+export const oauthLogoutRequestSchema = /* @__PURE__ */ z.object({
   provider: z.string().min(1).optional(),
 });
 export type OAuthLogoutRequest = z.infer<typeof oauthLogoutRequestSchema>;
 
-export const oauthLogoutResponseSchema = z.object({
+export const oauthLogoutResponseSchema = /* @__PURE__ */ z.object({
   logged_out: z.literal(true),
   provider: z.string().min(1),
 });
 export type OAuthLogoutResponse = z.infer<typeof oauthLogoutResponseSchema>;
 
-export const managedUsageRowSchema = z.object({
+export const managedUsageRowSchema = /* @__PURE__ */ z.object({
   name: z.string().optional(),
   window: z.object({ duration: z.number().int(), unit: z.enum(['minute', 'hour', 'day', 'week']) }).optional(),
   used: z.number().int(),
   limit: z.number().int(),
   reset_at: z.string().optional(),
 });
-export const managedUsageResultSchema = z.discriminatedUnion('kind', [
+export const managedUsageResultSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ok'),
     summary: managedUsageRowSchema.nullable(),
@@ -121,20 +121,20 @@ export const managedUsageResultSchema = z.discriminatedUnion('kind', [
 ]);
 export type ManagedUsageResult = z.infer<typeof managedUsageResultSchema>;
 
-export const originalOAuthStateSchema = z.enum(['ready', 'refresh_required', 'signed_out', 'unreadable', 'unsupported', 'account_changed', 'refresh_failed']);
-export const originalOAuthStorageBackendSchema = z.enum(['file', 'keyring', 'encrypted', 'ephemeral']).nullable();
-export const originalOAuthRequestSchema = z.object({
+export const originalOAuthStateSchema = /* @__PURE__ */ z.enum(['ready', 'refresh_required', 'signed_out', 'unreadable', 'unsupported', 'account_changed', 'refresh_failed']);
+export const originalOAuthStorageBackendSchema = /* @__PURE__ */ z.enum(['file', 'keyring', 'encrypted', 'ephemeral']).nullable();
+export const originalOAuthRequestSchema = /* @__PURE__ */ z.object({
   provider: z.enum(['openai-codex', 'grok-build', 'kimi-code']),
   home_dir: z.string().min(1).optional(),
 });
 export type OriginalOAuthRequest = z.infer<typeof originalOAuthRequestSchema>;
-export const connectOriginalOAuthRequestSchema = originalOAuthRequestSchema.extend({ expected_account_id: z.string().min(1).optional() }).superRefine((request, ctx) => {
+export const connectOriginalOAuthRequestSchema = /* @__PURE__ */ originalOAuthRequestSchema.extend({ expected_account_id: z.string().min(1).optional() }).superRefine((request, ctx) => {
   if (request.provider !== 'kimi-code' && request.expected_account_id === undefined) {
     ctx.addIssue({ code: 'custom', path: ['expected_account_id'], message: 'Confirm the original account identity before connecting.' });
   }
 });
 export type ConnectOriginalOAuthRequest = z.infer<typeof connectOriginalOAuthRequestSchema>;
-export const originalOAuthProbeSchema = z.object({
+export const originalOAuthProbeSchema = /* @__PURE__ */ z.object({
   provider: z.enum(['openai-codex', 'grok-build', 'kimi-code']),
   home_dir: z.string(),
   storage_backend: originalOAuthStorageBackendSchema,
@@ -144,7 +144,7 @@ export const originalOAuthProbeSchema = z.object({
   reason: z.string().optional(),
 });
 export type OriginalOAuthProbe = z.infer<typeof originalOAuthProbeSchema>;
-export const oAuthSourceSchema = z.discriminatedUnion('kind', [
+export const oAuthSourceSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('kiki') }),
   z.object({ kind: z.literal('local_original'), home_dir: z.string(), storage_backend: originalOAuthStorageBackendSchema, source_state: originalOAuthStateSchema }),
 ]);

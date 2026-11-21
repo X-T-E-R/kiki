@@ -20,7 +20,7 @@ import { fileMetaSchema } from '../file';
 export const uploadFileResponseSchema = fileMetaSchema;
 export type UploadFileResponse = z.infer<typeof uploadFileResponseSchema>;
 
-const fileIdParamSchema = z.object({
+const fileIdParamSchema = /* @__PURE__ */ z.object({
   file_id: z.string().min(1),
 });
 
@@ -30,7 +30,7 @@ export type GetFileParam = z.infer<typeof getFileParamSchema>;
 export const deleteFileParamSchema = fileIdParamSchema;
 export type DeleteFileParam = z.infer<typeof deleteFileParamSchema>;
 
-export const deleteFileResponseSchema = z.object({
+export const deleteFileResponseSchema = /* @__PURE__ */ z.object({
   deleted: z.literal(true),
 });
 export type DeleteFileResponse = z.infer<typeof deleteFileResponseSchema>;

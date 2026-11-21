@@ -1,9 +1,9 @@
 import { z } from 'zod';
 
-export const toolSourceSchema = z.enum(['builtin', 'skill', 'mcp', 'plugin']);
+export const toolSourceSchema = /* @__PURE__ */ z.enum(['builtin', 'skill', 'mcp', 'plugin']);
 export type ToolSource = z.infer<typeof toolSourceSchema>;
 
-export const toolDescriptorSchema = z.object({
+export const toolDescriptorSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   description: z.string(),
   input_schema: z.unknown(),
@@ -16,7 +16,7 @@ export const toolDescriptorSchema = z.object({
 });
 export type ToolDescriptor = z.infer<typeof toolDescriptorSchema>;
 
-export const mcpServerStatusSchema = z.enum([
+export const mcpServerStatusSchema = /* @__PURE__ */ z.enum([
   'connected',
   'connecting',
   'disconnected',
@@ -24,10 +24,10 @@ export const mcpServerStatusSchema = z.enum([
 ]);
 export type McpServerStatus = z.infer<typeof mcpServerStatusSchema>;
 
-export const mcpServerTransportSchema = z.enum(['stdio', 'http', 'sse']);
+export const mcpServerTransportSchema = /* @__PURE__ */ z.enum(['stdio', 'http', 'sse']);
 export type McpServerTransport = z.infer<typeof mcpServerTransportSchema>;
 
-export const mcpServerSchema = z.object({
+export const mcpServerSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   transport: mcpServerTransportSchema,

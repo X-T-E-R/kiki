@@ -16,21 +16,22 @@ import {
 import { z } from 'zod';
 
 import type { ServiceContract, StreamingProcedureContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 export const requestIdentityPolicySchema = RequestIdentityPolicyWireSchema;
 
 export { modelCatalogItemSchema, providerCatalogItemSchema, setDefaultModelResponseSchema };
 
-export const providerCatalogStatusSchema = z.enum(['connected', 'error', 'unconfigured']);
+export const providerCatalogStatusSchema = /* @__PURE__ */ z.enum(['connected', 'error', 'unconfigured']);
 
-const generateInputSchema = z.object({
+const generateInputSchema = /* @__PURE__ */ z.object({
   systemPrompt: z.string(),
   messages: z.array(z.unknown()),
   tools: z.array(z.unknown()).optional(),
   responseFormat: z.unknown().optional(),
 });
 
-const generateParamsSchema = z.object({
+const generateParamsSchema = /* @__PURE__ */ z.object({
   cacheKey: z.string().optional(),
   temperature: z.number().optional(),
   topP: z.number().optional(),
@@ -38,15 +39,15 @@ const generateParamsSchema = z.object({
   maxCompletionTokens: z.number().optional(),
 }).optional();
 
-const generateEventSchema = z.object({
+const generateEventSchema = /* @__PURE__ */ z.object({
   type: z.string(),
 }).passthrough();
 
 export const catalogContract = {
-  listModels: { input: z.tuple([]), output: z.array(modelCatalogItemSchema) },
-  listProviders: { input: z.tuple([]), output: z.array(providerCatalogItemSchema) },
-  getProvider: { input: z.tuple([z.string()]), output: providerCatalogItemSchema },
-  setDefaultModel: { input: z.tuple([z.string()]), output: setDefaultModelResponseSchema },
+  listModels: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(modelCatalogItemSchema) }), 'input', 'output'),
+  listProviders: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(providerCatalogItemSchema) }), 'input', 'output'),
+  getProvider: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: providerCatalogItemSchema }), 'input', 'output'),
+  setDefaultModel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: setDefaultModelResponseSchema }), 'input', 'output'),
   generate: {
     input: z.tuple([z.string(), generateInputSchema, generateParamsSchema]),
     chunk: generateEventSchema,

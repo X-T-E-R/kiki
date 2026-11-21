@@ -18,6 +18,7 @@ import { CodeBlock } from 'streamdown';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { afterPaint } from '../../lib/afterPaint';
 import { usePhoneMode } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
@@ -113,6 +114,14 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const canCollapse = isIncomplete !== true && totalLines > COLLAPSE_AFTER_LINES;
   const collapsed = canCollapse && !expanded;
   const plainPhonePreview = collapsed && phoneMode;
+  const [highlight, setHighlight] = useState(false);
+  const annotated = hasAnnotation(children);
+  const canHighlight = !plainPhonePreview && !annotated && language !== 'text' && language !== 'mermaid';
+
+  useEffect(() => {
+    if (!canHighlight || highlight) return;
+    return afterPaint(() => { setHighlight(true); });
+  }, [canHighlight, highlight]);
 
   useEffect(() => () => {
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
@@ -168,11 +177,11 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           overflowY: collapsed ? 'hidden' : undefined,
         }}
       >
-        {hasAnnotation(children) ? (
+        {annotated ? (
           <div data-streamdown="code-block-body"><pre className="font-mono whitespace-pre">{children}</pre></div>
-        ) : plainPhonePreview ? (
-          <div data-streamdown="code-block-body" data-plain-preview>
-            <pre className="font-mono whitespace-pre">{lines.slice(0, PREVIEW_LINES).join('\n')}</pre>
+        ) : plainPhonePreview || !highlight || !canHighlight ? (
+          <div data-streamdown="code-block-body" data-plain-preview={plainPhonePreview || undefined}>
+            <pre className="font-mono whitespace-pre"><code>{plainPhonePreview ? lines.slice(0, PREVIEW_LINES).join('\n') : code}</code></pre>
           </div>
         ) : (
           <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />

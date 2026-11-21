@@ -25,8 +25,9 @@ import {
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const threadRefSchema = z.object({
+export const threadRefSchema = /* @__PURE__ */ z.object({
   hostId: z.string().trim().min(1),
   workspaceId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1),
@@ -36,7 +37,7 @@ export const threadRefSchema = z.object({
   connectionId: z.string().uuid().optional(),
 });
 
-export const threadSummarySchema = z.object({
+export const threadSummarySchema = /* @__PURE__ */ z.object({
   ref: threadRefSchema,
   title: z.string().optional(),
   updatedAt: z.number().int().nonnegative(),
@@ -44,18 +45,18 @@ export const threadSummarySchema = z.object({
   state: z.enum(['cold', 'idle', 'running', 'cleanup_pending', 'unknown']),
 });
 
-export const listThreadsInputSchema = z.object({
+export const listThreadsInputSchema = /* @__PURE__ */ z.object({
   workspaceId: z.string().trim().min(1).optional(),
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
 
-export const listThreadsResultSchema = z.object({
+export const listThreadsResultSchema = /* @__PURE__ */ z.object({
   threads: z.array(threadSummarySchema),
   nextCursor: z.string().optional(),
 });
 
-export const threadTurnSchema = z.object({
+export const threadTurnSchema = /* @__PURE__ */ z.object({
   turnId: z.number().int().nonnegative(),
   startedAt: z.number().int().nonnegative().optional(),
   endedAt: z.number().int().nonnegative(),
@@ -72,43 +73,43 @@ export const threadTurnSchema = z.object({
   contentRefs: z.array(contentRefSchema).optional(),
 });
 
-export const readThreadInputSchema = z.object({
+export const readThreadInputSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   contentRef: contentRefSchema.optional(),
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
 
-const wireContentRefsSchema = z.array(contentRefSchema).optional();
-const wireTextFrameSchema = textFrameSchema.extend({
+const wireContentRefsSchema = /* @__PURE__ */ z.array(contentRefSchema).optional();
+const wireTextFrameSchema = /* @__PURE__ */ textFrameSchema.extend({
   contentRefs: wireContentRefsSchema,
   attachmentIds: z.array(z.string()).optional(),
 });
-const wireThinkingFrameSchema = thinkingFrameSchema.extend({ contentRefs: wireContentRefsSchema });
-const wireToolCallFrameSchema = toolCallFrameSchema.extend({
+const wireThinkingFrameSchema = /* @__PURE__ */ thinkingFrameSchema.extend({ contentRefs: wireContentRefsSchema });
+const wireToolCallFrameSchema = /* @__PURE__ */ toolCallFrameSchema.extend({
   contentRefs: wireContentRefsSchema,
   agentRefs: z.array(agentRefSchema).optional(),
 });
-const wireNoticeFrameSchema = noticeFrameSchema.extend({ contentRefs: wireContentRefsSchema });
-const wireTranscriptFrameSchema = z.discriminatedUnion('kind', [
+const wireNoticeFrameSchema = /* @__PURE__ */ noticeFrameSchema.extend({ contentRefs: wireContentRefsSchema });
+const wireTranscriptFrameSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   wireTextFrameSchema,
   wireThinkingFrameSchema,
   wireToolCallFrameSchema,
   wireNoticeFrameSchema,
 ]);
-const wireTranscriptStepSchema = transcriptStepSchema.extend({ frames: z.array(wireTranscriptFrameSchema) });
-const wireTranscriptTurnSchema = transcriptTurnSchema.extend({
+const wireTranscriptStepSchema = /* @__PURE__ */ transcriptStepSchema.extend({ frames: z.array(wireTranscriptFrameSchema) });
+const wireTranscriptTurnSchema = /* @__PURE__ */ transcriptTurnSchema.extend({
   contentRefs: wireContentRefsSchema,
   attachmentIds: z.array(z.string()).optional(),
   steps: z.array(wireTranscriptStepSchema),
   execution: transcriptTurnExecutionSchema.extend({ losses: z.array(z.string()) }).optional(),
 });
-const wireTranscriptItemSchema = z.discriminatedUnion('kind', [
+const wireTranscriptItemSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   wireTranscriptTurnSchema,
   transcriptMarkerSchema.extend({ contentRefs: wireContentRefsSchema }),
   transcriptTaskRefSchema,
 ]);
-const wireTranscriptPageSchema = transcriptResponseSchema.extend({
+const wireTranscriptPageSchema = /* @__PURE__ */ transcriptResponseSchema.extend({
   items: z.array(wireTranscriptItemSchema),
   tasks: z.array(transcriptTaskSchema.extend({ contentRefs: wireContentRefsSchema })),
   interactions: z.array(interactionSchema.extend({ contentRefs: wireContentRefsSchema })).default([]),
@@ -117,7 +118,7 @@ const wireTranscriptPageSchema = transcriptResponseSchema.extend({
   prompts: z.array(transcriptPromptSchema.extend({ contentRefs: wireContentRefsSchema })).default([]),
   meta: transcriptMetaSchema.extend({ contentRefs: wireContentRefsSchema }),
 });
-export const readThreadResultSchema = z.object({
+export const readThreadResultSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   nextCursor: z.string().optional(),
@@ -125,7 +126,7 @@ export const readThreadResultSchema = z.object({
   view: z.object({ transcript: wireTranscriptPageSchema.optional(), segment: contentSegmentSchema.optional() }).optional(),
 });
 
-export const sendThreadMessageInputSchema = z
+export const sendThreadMessageInputSchema = /* @__PURE__ */ z
   .object({
     target: threadRefSchema,
     content: z.string().min(1).max(100_000),
@@ -133,7 +134,7 @@ export const sendThreadMessageInputSchema = z
   })
   .strict();
 
-export const sendThreadMessageResultSchema = z.object({
+export const sendThreadMessageResultSchema = /* @__PURE__ */ z.object({
   messageId: z.string().min(1),
   targetSeq: z.number().int().nonnegative(),
   acceptedAt: z.number().int().nonnegative(),
@@ -141,7 +142,7 @@ export const sendThreadMessageResultSchema = z.object({
   delivery: z.enum(['pending', 'delivered', 'undeliverable']),
 });
 
-export const threadActivitySchema = z.object({
+export const threadActivitySchema = /* @__PURE__ */ z.object({
   ref: threadRefSchema,
   seq: z.number().int().nonnegative(),
   kind: z.enum(['terminal', 'attention', 'lifecycle', 'message_undeliverable']),
@@ -151,12 +152,12 @@ export const threadActivitySchema = z.object({
   messageId: z.string().min(1).optional(),
 });
 
-export const waitThreadInputSchema = z.object({
+export const waitThreadInputSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   cursor: z.string().min(1).optional(),
 });
 
-export const waitThreadsInputSchema = z
+export const waitThreadsInputSchema = /* @__PURE__ */ z
   .object({
     threads: z.array(waitThreadInputSchema).min(1).max(8),
     timeoutMs: z.number().int().min(0).max(60_000).optional(),
@@ -177,21 +178,21 @@ export const waitThreadsInputSchema = z
     });
   });
 
-export const waitThreadResultSchema = z.object({
+export const waitThreadResultSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   cursor: z.string().min(1),
   activities: z.array(threadActivitySchema),
 });
 
-export const waitThreadsResultSchema = z.object({
+export const waitThreadsResultSchema = /* @__PURE__ */ z.object({
   threads: z.array(waitThreadResultSchema),
   timedOut: z.boolean(),
 });
 
-export const threadMessageEndpointSchema = z.object({
+export const threadMessageEndpointSchema = /* @__PURE__ */ z.object({
   ref: threadRefSchema, title: z.string().optional(), deleted: z.boolean(), archived: z.boolean(),
 });
-export const threadCommunicationMessageSchema = z.object({
+export const threadCommunicationMessageSchema = /* @__PURE__ */ z.object({
   messageId: z.string().describe('Stable recipient main-agent prompt id and user-message id, including steered delivery and retries; navigate only delivered records.'),
   source: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('thread'), thread: threadMessageEndpointSchema }),
@@ -206,12 +207,12 @@ export const threadCommunicationMessageSchema = z.object({
   ]).optional(),
   reasonDetail: z.string().optional(),
 });
-export const listThreadMessagesInputSchema = z.object({
+export const listThreadMessagesInputSchema = /* @__PURE__ */ z.object({
   workspaceId: z.string().trim().min(1).optional(), sessionId: z.string().trim().min(1).optional(),
   peerSessionId: z.string().trim().min(1).optional(), cursor: z.string().min(1).max(4096).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 }).strict().refine((input) => input.peerSessionId === undefined || input.sessionId !== undefined);
-export const listThreadMessagesResultSchema = z.object({
+export const listThreadMessagesResultSchema = /* @__PURE__ */ z.object({
   items: z.array(threadCommunicationMessageSchema), nextCursor: z.string().optional(),
   incomplete: z.enum(['scan_budget', 'history_preparing']).optional(),
   history: z.object({
@@ -222,26 +223,26 @@ export const listThreadMessagesResultSchema = z.object({
 });
 
 export const threadsContract = {
-  listMessages: { input: z.tuple([listThreadMessagesInputSchema.optional()]), output: listThreadMessagesResultSchema },
-  hostId: { input: z.tuple([]), output: z.string().min(1) },
-  listThreads: {
-    input: z.tuple([listThreadsInputSchema.optional()]),
+  listMessages: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([listThreadMessagesInputSchema.optional()]), output: listThreadMessagesResultSchema }), 'input', 'output'),
+  hostId: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.string().min(1) }), 'input', 'output'),
+  listThreads: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([listThreadsInputSchema.optional()]),
     output: listThreadsResultSchema,
-  },
-  readThread: { input: z.tuple([readThreadInputSchema]), output: readThreadResultSchema },
-  sendMessage: {
-    input: z.tuple([sendThreadMessageInputSchema]),
+  }), 'input', 'output'),
+  readThread: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([readThreadInputSchema]), output: readThreadResultSchema }), 'input', 'output'),
+  sendMessage: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([sendThreadMessageInputSchema]),
     output: sendThreadMessageResultSchema,
-  },
-  waitThreads: { input: z.tuple([waitThreadsInputSchema]), output: waitThreadsResultSchema },
-  getWorkspaceOverride: {
-    input: z.tuple([z.string().trim().min(1)]),
-    output: maybe(z.boolean()),
-  },
-  setWorkspaceOverride: {
-    input: z.tuple([z.string().trim().min(1), z.boolean()]),
+  }), 'input', 'output'),
+  waitThreads: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([waitThreadsInputSchema]), output: waitThreadsResultSchema }), 'input', 'output'),
+  getWorkspaceOverride: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().trim().min(1)]),
+    output: /* @__PURE__ */ maybe(z.boolean()),
+  }), 'input', 'output'),
+  setWorkspaceOverride: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().trim().min(1), z.boolean()]),
     output: noResult,
-  },
-  clearWorkspaceOverride: { input: z.tuple([z.string().trim().min(1)]), output: noResult },
-  isWorkspaceEnabled: { input: z.tuple([z.string().trim().min(1)]), output: z.boolean() },
+  }), 'input', 'output'),
+  clearWorkspaceOverride: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().trim().min(1)]), output: noResult }), 'input', 'output'),
+  isWorkspaceEnabled: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().trim().min(1)]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
 } satisfies ServiceContract;

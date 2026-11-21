@@ -10,8 +10,9 @@ import { connectOriginalOAuthRequestSchema, originalOAuthProbeSchema, originalOA
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const oAuthFlowStatusSchema = z.enum([
+export const oAuthFlowStatusSchema = /* @__PURE__ */ z.enum([
   'pending',
   'authenticated',
   'denied',
@@ -20,7 +21,7 @@ export const oAuthFlowStatusSchema = z.enum([
   'cancelled',
 ]);
 
-export const oAuthFlowStartSchema = z.discriminatedUnion('status', [
+export const oAuthFlowStartSchema = /* @__PURE__ */ z.discriminatedUnion('status', [
   z.object({
     flow_id: z.string(),
     provider: z.string(),
@@ -39,7 +40,7 @@ export const oAuthFlowStartSchema = z.discriminatedUnion('status', [
   }),
 ]);
 
-export const oAuthFlowSnapshotSchema = z.object({
+export const oAuthFlowSnapshotSchema = /* @__PURE__ */ z.object({
   flow_id: z.string(),
   provider: z.string(),
   status: oAuthFlowStatusSchema,
@@ -53,23 +54,23 @@ export const oAuthFlowSnapshotSchema = z.object({
   error_message: z.string().optional(),
 });
 
-export const oAuthLoginCancelResponseSchema = z.object({
+export const oAuthLoginCancelResponseSchema = /* @__PURE__ */ z.object({
   cancelled: z.boolean(),
   status: oAuthFlowStatusSchema,
 });
 
-export const oAuthLogoutResponseSchema = z.object({
+export const oAuthLogoutResponseSchema = /* @__PURE__ */ z.object({
   logged_out: z.literal(true),
   provider: z.string(),
 });
 
-export const authStatusSchema = z.object({
+export const authStatusSchema = /* @__PURE__ */ z.object({
   loggedIn: z.boolean(),
   provider: z.string().optional(),
 });
 
 /** Same shape as `refreshProviderModelsResponseSchema` in `./catalog.js` — keep in sync. */
-export const refreshOAuthProviderModelsResponseSchema = z.object({
+export const refreshOAuthProviderModelsResponseSchema = /* @__PURE__ */ z.object({
   changed: z.array(
     z.object({
       provider_id: z.string(),
@@ -82,11 +83,11 @@ export const refreshOAuthProviderModelsResponseSchema = z.object({
   failed: z.array(z.object({ provider: z.string(), reason: z.string() })),
 });
 
-export const oAuthLoginOptionsSchema = z.object({
+export const oAuthLoginOptionsSchema = /* @__PURE__ */ z.object({
   region: z.enum(['mainland-cn', 'global']).optional(),
 });
 
-export const oAuthMethodStatusSchema = z.object({
+export const oAuthMethodStatusSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   label: z.string(),
   provider: z.string(),
@@ -111,30 +112,30 @@ export const oAuthMethodStatusSchema = z.object({
 });
 
 export const authContract = {
-  probeOriginal: { input: z.tuple([originalOAuthRequestSchema]), output: originalOAuthProbeSchema },
-  connectOriginal: { input: z.tuple([connectOriginalOAuthRequestSchema]), output: originalOAuthProbeSchema },
-  listMethods: { input: z.tuple([]), output: z.array(oAuthMethodStatusSchema) },
-  startLogin: {
-    input: z.tuple([z.string().optional(), oAuthLoginOptionsSchema.optional()]),
+  probeOriginal: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([originalOAuthRequestSchema]), output: originalOAuthProbeSchema }), 'input', 'output'),
+  connectOriginal: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([connectOriginalOAuthRequestSchema]), output: originalOAuthProbeSchema }), 'input', 'output'),
+  listMethods: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(oAuthMethodStatusSchema) }), 'input', 'output'),
+  startLogin: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().optional(), oAuthLoginOptionsSchema.optional()]),
     output: oAuthFlowStartSchema,
-  },
-  getFlow: {
-    input: z.tuple([z.string().optional()]),
-    output: maybe(oAuthFlowSnapshotSchema),
-  },
-  cancelLogin: {
-    input: z.tuple([z.string().optional()]),
+  }), 'input', 'output'),
+  getFlow: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().optional()]),
+    output: /* @__PURE__ */ maybe(oAuthFlowSnapshotSchema),
+  }), 'input', 'output'),
+  cancelLogin: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().optional()]),
     output: oAuthLoginCancelResponseSchema,
-  },
-  logout: { input: z.tuple([z.string().optional()]), output: oAuthLogoutResponseSchema },
-  status: { input: z.tuple([z.string().optional()]), output: authStatusSchema },
-  refreshOAuthProviderModels: {
-    input: z.tuple([]),
+  }), 'input', 'output'),
+  logout: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().optional()]), output: oAuthLogoutResponseSchema }), 'input', 'output'),
+  status: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().optional()]), output: authStatusSchema }), 'input', 'output'),
+  refreshOAuthProviderModels: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([]),
     output: refreshOAuthProviderModelsResponseSchema,
-  },
+  }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const authSummaryContract = {
-  summarize: { input: z.tuple([]), output: z.array(authStatusSchema) },
-  ensureReady: { input: z.tuple([z.string().optional()]), output: noResult },
+  summarize: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(authStatusSchema) }), 'input', 'output'),
+  ensureReady: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().optional()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const searchMessagesBodySchema = z.object({
+export const searchMessagesBodySchema = /* @__PURE__ */ z.object({
   query: z.string().min(1),
   mode: z.enum(['terms', 'literal']).optional(),
   op: z.enum(['AND', 'OR']).optional(),
@@ -21,7 +21,7 @@ export const searchMessagesBodySchema = z.object({
 });
 export type SearchMessagesBody = z.infer<typeof searchMessagesBodySchema>;
 
-export const searchMessageHitSchema = z.object({
+export const searchMessageHitSchema = /* @__PURE__ */ z.object({
   session_id: z.string(),
   workspace_id: z.string(),
   session_title: z.string(),
@@ -34,7 +34,7 @@ export const searchMessageHitSchema = z.object({
   score: z.number(),
 });
 
-export const searchMessagesResponseSchema = z.object({
+export const searchMessagesResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(searchMessageHitSchema),
   has_more: z.boolean(),
   page_token: z.string().optional(),

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from './time';
 
-export const fileMetaSchema = z.object({
+export const fileMetaSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   media_type: z.string().min(1),

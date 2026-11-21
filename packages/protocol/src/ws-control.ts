@@ -25,14 +25,14 @@ export const WS_PROTOCOL_VERSION = 2;
  * not match the server's current epoch is invalid and triggers
  * `resync_required(epoch_changed)`. `epoch` is absent on a fresh cursor.
  */
-export const sessionCursorSchema = z.object({
+export const sessionCursorSchema = /* @__PURE__ */ z.object({
   seq: z.number().int().nonnegative(),
   epoch: z.string().min(1).optional(),
 });
 
 export type SessionCursor = z.infer<typeof sessionCursorSchema>;
 
-export const cursorsBySessionSchema = z.record(z.string(), sessionCursorSchema);
+export const cursorsBySessionSchema = /* @__PURE__ */ z.record(z.string(), sessionCursorSchema);
 
 export type CursorsBySession = z.infer<typeof cursorsBySessionSchema>;
 
@@ -72,7 +72,7 @@ export const wsAckEnvelopeSchema = <T extends z.ZodTypeAny>(payload: T) =>
     payload,
   });
 
-export const serverHelloPayloadSchema = z.object({
+export const serverHelloPayloadSchema = /* @__PURE__ */ z.object({
   ws_connection_id: z.string(),
   protocol_version: z.number().int().positive(),
   /**
@@ -88,7 +88,7 @@ export const serverHelloPayloadSchema = z.object({
   }),
 });
 
-export const serverHelloMessageSchema = z.object({
+export const serverHelloMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('server_hello'),
   timestamp: isoDateTimeSchema,
   payload: serverHelloPayloadSchema,
@@ -103,7 +103,7 @@ export type ServerHelloMessage = z.infer<typeof serverHelloMessageSchema>;
  * whole field omitted) fall back to receiving every agent — the legacy
  * session-grained behavior.
  */
-export const agentFilterSchema = z.record(z.string(), z.array(z.string()).min(1));
+export const agentFilterSchema = /* @__PURE__ */ z.record(z.string(), z.array(z.string()).min(1));
 
 export type AgentFilter = z.infer<typeof agentFilterSchema>;
 
@@ -115,7 +115,7 @@ export type AgentFilter = z.infer<typeof agentFilterSchema>;
  * @deprecated Inline subscriptions on `client_hello` are kept for older
  * clients; prefer `subscribe`.
  */
-export const clientHelloPayloadSchema = z.object({
+export const clientHelloPayloadSchema = /* @__PURE__ */ z.object({
   client_id: z.string(),
   /** @deprecated Legacy inline subscriptions — use `subscribe` instead. */
   subscriptions: z.array(z.string()).optional(),
@@ -125,7 +125,7 @@ export const clientHelloPayloadSchema = z.object({
   agent_filter: agentFilterSchema.optional(),
 });
 
-export const clientHelloMessageSchema = z.object({
+export const clientHelloMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('client_hello'),
   id: z.string(),
   payload: clientHelloPayloadSchema,
@@ -133,7 +133,7 @@ export const clientHelloMessageSchema = z.object({
 
 export type ClientHelloMessage = z.infer<typeof clientHelloMessageSchema>;
 
-export const clientHelloAckPayloadSchema = z.object({
+export const clientHelloAckPayloadSchema = /* @__PURE__ */ z.object({
   accepted_subscriptions: z.array(z.string()),
   resync_required: z.array(z.string()),
   /** Server-side current cursor per accepted session ({seq, epoch}). */
@@ -142,21 +142,21 @@ export const clientHelloAckPayloadSchema = z.object({
 
 export const helloAckPayloadSchema = clientHelloAckPayloadSchema;
 
-export const clientHelloAckMessageSchema = wsAckEnvelopeSchema(clientHelloAckPayloadSchema);
+export const clientHelloAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(clientHelloAckPayloadSchema);
 
-export const watchFsConfigSchema = z.object({
+export const watchFsConfigSchema = /* @__PURE__ */ z.object({
   paths: z.array(z.string()),
   recursive: z.boolean().optional(),
 });
 
-export const subscribePayloadSchema = z.object({
+export const subscribePayloadSchema = /* @__PURE__ */ z.object({
   session_ids: z.array(z.string()),
   cursors: cursorsBySessionSchema.optional(),
   watch_fs: z.record(z.string(), watchFsConfigSchema).optional(),
   agent_filter: agentFilterSchema.optional(),
 });
 
-export const subscribeMessageSchema = z.object({
+export const subscribeMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('subscribe'),
   id: z.string(),
   payload: subscribePayloadSchema,
@@ -164,7 +164,7 @@ export const subscribeMessageSchema = z.object({
 
 export type SubscribeMessage = z.infer<typeof subscribeMessageSchema>;
 
-export const subscribeAckPayloadSchema = z.object({
+export const subscribeAckPayloadSchema = /* @__PURE__ */ z.object({
   accepted: z.array(z.string()),
   not_found: z.array(z.string()),
   resync_required: z.array(z.string()),
@@ -172,24 +172,24 @@ export const subscribeAckPayloadSchema = z.object({
   cursors: cursorsBySessionSchema.optional(),
 });
 
-export const subscribeAckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
+export const subscribeAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(subscribeAckPayloadSchema);
 
 export const subscribeV2PayloadSchema = transcriptSubscribeV2PayloadSchema;
 export type SubscribeV2Payload = z.infer<typeof subscribeV2PayloadSchema>;
-export const subscribeV2MessageSchema = z.object({ type: z.literal('subscribe_v2'), id: z.string(), payload: subscribeV2PayloadSchema });
+export const subscribeV2MessageSchema = /* @__PURE__ */ z.object({ type: z.literal('subscribe_v2'), id: z.string(), payload: subscribeV2PayloadSchema });
 export type SubscribeV2Message = z.infer<typeof subscribeV2MessageSchema>;
-export const subscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema.extend({ transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION).optional() }));
+export const subscribeV2AckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(subscribeAckPayloadSchema.extend({ transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION).optional() }));
 
-export const unsubscribeV2PayloadSchema = z.object({ session_id: z.string().min(1), agent_ids: z.array(z.string().min(1)).min(1).optional() });
-export const unsubscribeV2MessageSchema = z.object({ type: z.literal('unsubscribe_v2'), id: z.string(), payload: unsubscribeV2PayloadSchema });
+export const unsubscribeV2PayloadSchema = /* @__PURE__ */ z.object({ session_id: z.string().min(1), agent_ids: z.array(z.string().min(1)).min(1).optional() });
+export const unsubscribeV2MessageSchema = /* @__PURE__ */ z.object({ type: z.literal('unsubscribe_v2'), id: z.string(), payload: unsubscribeV2PayloadSchema });
 export type UnsubscribeV2Message = z.infer<typeof unsubscribeV2MessageSchema>;
-export const unsubscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
+export const unsubscribeV2AckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(subscribeAckPayloadSchema);
 
-export const unsubscribePayloadSchema = z.object({
+export const unsubscribePayloadSchema = /* @__PURE__ */ z.object({
   session_ids: z.array(z.string()),
 });
 
-export const unsubscribeMessageSchema = z.object({
+export const unsubscribeMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('unsubscribe'),
   id: z.string(),
   payload: unsubscribePayloadSchema,
@@ -199,16 +199,16 @@ export type UnsubscribeMessage = z.infer<typeof unsubscribeMessageSchema>;
 
 export const unsubscribeAckPayloadSchema = subscribeAckPayloadSchema;
 
-export const unsubscribeAckMessageSchema = wsAckEnvelopeSchema(unsubscribeAckPayloadSchema);
+export const unsubscribeAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(unsubscribeAckPayloadSchema);
 
-export const watchFsAddPayloadSchema = z.object({
+export const watchFsAddPayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string(),
   runtime_id: z.string().min(1).optional(),
   paths: z.array(z.string()),
   recursive: z.boolean().optional(),
 });
 
-export const watchFsAddMessageSchema = z.object({
+export const watchFsAddMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('watch_fs_add'),
   id: z.string(),
   payload: watchFsAddPayloadSchema,
@@ -216,13 +216,13 @@ export const watchFsAddMessageSchema = z.object({
 
 export type WatchFsAddMessage = z.infer<typeof watchFsAddMessageSchema>;
 
-export const watchFsRemovePayloadSchema = z.object({
+export const watchFsRemovePayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string(),
   runtime_id: z.string().min(1).optional(),
   paths: z.array(z.string()),
 });
 
-export const watchFsRemoveMessageSchema = z.object({
+export const watchFsRemoveMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('watch_fs_remove'),
   id: z.string(),
   payload: watchFsRemovePayloadSchema,
@@ -230,19 +230,19 @@ export const watchFsRemoveMessageSchema = z.object({
 
 export type WatchFsRemoveMessage = z.infer<typeof watchFsRemoveMessageSchema>;
 
-export const watchFsAckPayloadSchema = z.object({
+export const watchFsAckPayloadSchema = /* @__PURE__ */ z.object({
   watched_paths: z.array(z.string()).optional(),
   current_count: z.number().int().nonnegative().optional(),
 });
 
-export const watchFsAckMessageSchema = wsAckEnvelopeSchema(watchFsAckPayloadSchema);
+export const watchFsAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(watchFsAckPayloadSchema);
 
-export const abortPayloadSchema = z.object({
+export const abortPayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string(),
   prompt_id: z.string(),
 });
 
-export const abortMessageSchema = z.object({
+export const abortMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('abort'),
   id: z.string(),
   payload: abortPayloadSchema,
@@ -250,20 +250,20 @@ export const abortMessageSchema = z.object({
 
 export type AbortMessage = z.infer<typeof abortMessageSchema>;
 
-export const abortAckPayloadSchema = z.object({
+export const abortAckPayloadSchema = /* @__PURE__ */ z.object({
   aborted: z.boolean().optional(),
   at_seq: z.number().int().nonnegative().optional(),
 });
 
-export const abortAckMessageSchema = wsAckEnvelopeSchema(abortAckPayloadSchema);
+export const abortAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(abortAckPayloadSchema);
 
-export const terminalAttachPayloadSchema = z.object({
+export const terminalAttachPayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   terminal_id: z.string().min(1),
   since_seq: z.number().int().nonnegative().optional(),
 });
 
-export const terminalAttachMessageSchema = z.object({
+export const terminalAttachMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_attach'),
   id: z.string(),
   payload: terminalAttachPayloadSchema,
@@ -271,7 +271,7 @@ export const terminalAttachMessageSchema = z.object({
 
 export type TerminalAttachMessage = z.infer<typeof terminalAttachMessageSchema>;
 
-export const terminalAttachAckPayloadSchema = z.object({
+export const terminalAttachAckPayloadSchema = /* @__PURE__ */ z.object({
   attached: z.literal(true),
   replayed: z.number().int().nonnegative(),
   /** First retained terminal_output seq, or null when no output is retained. */
@@ -280,16 +280,16 @@ export const terminalAttachAckPayloadSchema = z.object({
   truncated: z.boolean(),
 });
 
-export const terminalAttachAckMessageSchema = wsAckEnvelopeSchema(
+export const terminalAttachAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(
   terminalAttachAckPayloadSchema,
 );
 
-export const terminalDetachPayloadSchema = z.object({
+export const terminalDetachPayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   terminal_id: z.string().min(1),
 });
 
-export const terminalDetachMessageSchema = z.object({
+export const terminalDetachMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_detach'),
   id: z.string(),
   payload: terminalDetachPayloadSchema,
@@ -297,21 +297,21 @@ export const terminalDetachMessageSchema = z.object({
 
 export type TerminalDetachMessage = z.infer<typeof terminalDetachMessageSchema>;
 
-export const terminalDetachAckPayloadSchema = z.object({
+export const terminalDetachAckPayloadSchema = /* @__PURE__ */ z.object({
   detached: z.literal(true),
 });
 
-export const terminalDetachAckMessageSchema = wsAckEnvelopeSchema(
+export const terminalDetachAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(
   terminalDetachAckPayloadSchema,
 );
 
-export const terminalInputPayloadSchema = z.object({
+export const terminalInputPayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   terminal_id: z.string().min(1),
   data: z.string(),
 });
 
-export const terminalInputMessageSchema = z.object({
+export const terminalInputMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_input'),
   id: z.string(),
   payload: terminalInputPayloadSchema,
@@ -319,22 +319,22 @@ export const terminalInputMessageSchema = z.object({
 
 export type TerminalInputMessage = z.infer<typeof terminalInputMessageSchema>;
 
-export const terminalInputAckPayloadSchema = z.object({
+export const terminalInputAckPayloadSchema = /* @__PURE__ */ z.object({
   accepted: z.literal(true),
 });
 
-export const terminalInputAckMessageSchema = wsAckEnvelopeSchema(
+export const terminalInputAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(
   terminalInputAckPayloadSchema,
 );
 
-export const terminalResizePayloadSchema = z.object({
+export const terminalResizePayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   terminal_id: z.string().min(1),
   cols: z.number().int().positive(),
   rows: z.number().int().positive(),
 });
 
-export const terminalResizeMessageSchema = z.object({
+export const terminalResizeMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_resize'),
   id: z.string(),
   payload: terminalResizePayloadSchema,
@@ -342,20 +342,20 @@ export const terminalResizeMessageSchema = z.object({
 
 export type TerminalResizeMessage = z.infer<typeof terminalResizeMessageSchema>;
 
-export const terminalResizeAckPayloadSchema = z.object({
+export const terminalResizeAckPayloadSchema = /* @__PURE__ */ z.object({
   resized: z.literal(true),
 });
 
-export const terminalResizeAckMessageSchema = wsAckEnvelopeSchema(
+export const terminalResizeAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(
   terminalResizeAckPayloadSchema,
 );
 
-export const terminalClosePayloadSchema = z.object({
+export const terminalClosePayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   terminal_id: z.string().min(1),
 });
 
-export const terminalCloseMessageSchema = z.object({
+export const terminalCloseMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_close'),
   id: z.string(),
   payload: terminalClosePayloadSchema,
@@ -363,19 +363,19 @@ export const terminalCloseMessageSchema = z.object({
 
 export type TerminalCloseMessage = z.infer<typeof terminalCloseMessageSchema>;
 
-export const terminalCloseAckPayloadSchema = z.object({
+export const terminalCloseAckPayloadSchema = /* @__PURE__ */ z.object({
   closed: z.literal(true),
 });
 
-export const terminalCloseAckMessageSchema = wsAckEnvelopeSchema(
+export const terminalCloseAckMessageSchema = /* @__PURE__ */ wsAckEnvelopeSchema(
   terminalCloseAckPayloadSchema,
 );
 
-export const pingPayloadSchema = z.object({
+export const pingPayloadSchema = /* @__PURE__ */ z.object({
   nonce: z.string(),
 });
 
-export const pingMessageSchema = z.object({
+export const pingMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('ping'),
   timestamp: isoDateTimeSchema,
   payload: pingPayloadSchema,
@@ -383,21 +383,21 @@ export const pingMessageSchema = z.object({
 
 export type PingMessage = z.infer<typeof pingMessageSchema>;
 
-export const pongPayloadSchema = z.object({
+export const pongPayloadSchema = /* @__PURE__ */ z.object({
   nonce: z.string(),
 });
 
-export const pongMessageSchema = z.object({
+export const pongMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('pong'),
   payload: pongPayloadSchema,
 });
 
 export type PongMessage = z.infer<typeof pongMessageSchema>;
 
-export const resyncRequiredReasonSchema = z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten', 'journal_gap']);
+export const resyncRequiredReasonSchema = /* @__PURE__ */ z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten', 'journal_gap']);
 export type ResyncRequiredReason = z.infer<typeof resyncRequiredReasonSchema>;
 
-export const resyncRequiredPayloadSchema = z.object({
+export const resyncRequiredPayloadSchema = /* @__PURE__ */ z.object({
   session_id: z.string(),
   reason: resyncRequiredReasonSchema,
   current_seq: z.number().int().nonnegative(),
@@ -405,7 +405,7 @@ export const resyncRequiredPayloadSchema = z.object({
   epoch: z.string().min(1).optional(),
 });
 
-export const resyncRequiredMessageSchema = z.object({
+export const resyncRequiredMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('resync_required'),
   timestamp: isoDateTimeSchema,
   payload: resyncRequiredPayloadSchema,
@@ -413,7 +413,7 @@ export const resyncRequiredMessageSchema = z.object({
 
 export type ResyncRequiredMessage = z.infer<typeof resyncRequiredMessageSchema>;
 
-export const wsErrorPayloadSchema = z.object({
+export const wsErrorPayloadSchema = /* @__PURE__ */ z.object({
   code: z.number().int(),
   msg: z.string(),
   fatal: z.boolean(),
@@ -421,7 +421,7 @@ export const wsErrorPayloadSchema = z.object({
   details: z.unknown().optional(),
 });
 
-export const wsErrorMessageSchema = z.object({
+export const wsErrorMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('error'),
   timestamp: isoDateTimeSchema,
   payload: wsErrorPayloadSchema,
@@ -429,13 +429,13 @@ export const wsErrorMessageSchema = z.object({
 
 export type WsErrorMessage = z.infer<typeof wsErrorMessageSchema>;
 
-export const sessionEventMessageSchema = wsEventEnvelopeSchema(eventSchema);
+export const sessionEventMessageSchema = /* @__PURE__ */ wsEventEnvelopeSchema(eventSchema);
 
-export const terminalOutputPayloadSchema = z.object({
+export const terminalOutputPayloadSchema = /* @__PURE__ */ z.object({
   data: z.string(),
 });
 
-export const terminalOutputMessageSchema = z.object({
+export const terminalOutputMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_output'),
   seq: z.number().int().positive(),
   session_id: z.string().min(1),
@@ -446,11 +446,11 @@ export const terminalOutputMessageSchema = z.object({
 
 export type TerminalOutputMessage = z.infer<typeof terminalOutputMessageSchema>;
 
-export const terminalExitPayloadSchema = z.object({
+export const terminalExitPayloadSchema = /* @__PURE__ */ z.object({
   exit_code: z.number().int().nullable().optional(),
 });
 
-export const terminalExitMessageSchema = z.object({
+export const terminalExitMessageSchema = /* @__PURE__ */ z.object({
   type: z.literal('terminal_exit'),
   session_id: z.string().min(1),
   terminal_id: z.string().min(1),
@@ -460,7 +460,7 @@ export const terminalExitMessageSchema = z.object({
 
 export type TerminalExitMessage = z.infer<typeof terminalExitMessageSchema>;
 
-export const clientControlMessageSchema = z.discriminatedUnion('type', [
+export const clientControlMessageSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   clientHelloMessageSchema,
   subscribeMessageSchema,
   subscribeV2MessageSchema,
@@ -479,7 +479,7 @@ export const clientControlMessageSchema = z.discriminatedUnion('type', [
 
 export type ClientControlMessage = z.infer<typeof clientControlMessageSchema>;
 
-export const serverSystemMessageSchema = z.discriminatedUnion('type', [
+export const serverSystemMessageSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   serverHelloMessageSchema,
   pingMessageSchema,
   resyncRequiredMessageSchema,

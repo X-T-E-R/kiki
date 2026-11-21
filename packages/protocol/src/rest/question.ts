@@ -17,12 +17,12 @@ import { z } from 'zod';
 import { questionRequestSchema, questionResponseSchema } from '../question';
 import { isoDateTimeSchema } from '../time';
 
-export const listPendingQuestionsQuerySchema = z.object({
+export const listPendingQuestionsQuerySchema = /* @__PURE__ */ z.object({
   status: z.literal('pending'),
 });
 export type ListPendingQuestionsQuery = z.infer<typeof listPendingQuestionsQuerySchema>;
 
-export const listPendingQuestionsResponseSchema = z.object({
+export const listPendingQuestionsResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(questionRequestSchema),
 });
 export type ListPendingQuestionsResponse = z.infer<typeof listPendingQuestionsResponseSchema>;
@@ -30,18 +30,18 @@ export type ListPendingQuestionsResponse = z.infer<typeof listPendingQuestionsRe
 export const questionResolveRequestSchema = questionResponseSchema;
 export type QuestionResolveRequest = z.infer<typeof questionResolveRequestSchema>;
 
-export const questionResolveResultSchema = z.object({
+export const questionResolveResultSchema = /* @__PURE__ */ z.object({
   resolved: z.literal(true),
   resolved_at: isoDateTimeSchema,
 });
 export type QuestionResolveResult = z.infer<typeof questionResolveResultSchema>;
 
-export const questionAlreadyResolvedDataSchema = z.object({
+export const questionAlreadyResolvedDataSchema = /* @__PURE__ */ z.object({
   resolved: z.literal(false),
 });
 export type QuestionAlreadyResolvedData = z.infer<typeof questionAlreadyResolvedDataSchema>;
 
-export const questionDismissResultSchema = z.object({
+export const questionDismissResultSchema = /* @__PURE__ */ z.object({
   dismissed: z.literal(true),
   dismissed_at: isoDateTimeSchema,
 });

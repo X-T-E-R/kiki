@@ -14,8 +14,9 @@ import { z } from 'zod';
 
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const fileMetaSchema = z.object({
+export const fileMetaSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   media_type: z.string().min(1),
@@ -25,7 +26,7 @@ export const fileMetaSchema = z.object({
   session_id: z.string().optional(),
 });
 
-export const fileSaveOptionsSchema = z.object({
+export const fileSaveOptionsSchema = /* @__PURE__ */ z.object({
   name: z.string().optional(),
   mimeType: z.string().optional(),
   expiresInSec: z.number().optional(),
@@ -33,16 +34,16 @@ export const fileSaveOptionsSchema = z.object({
 });
 
 /** Wire result of `get` — the engine's `GetResult.stream` buffered to base64. */
-export const fileGetResultSchema = z.object({
+export const fileGetResultSchema = /* @__PURE__ */ z.object({
   meta: fileMetaSchema,
   data: z.string(),
 });
 
 export const filesContract = {
-  save: {
-    input: z.tuple([z.string(), z.string().min(1), fileSaveOptionsSchema]),
+  save: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), z.string().min(1), fileSaveOptionsSchema]),
     output: fileMetaSchema,
-  },
-  get: { input: z.tuple([z.string().min(1)]), output: fileGetResultSchema },
-  delete: { input: z.tuple([z.string().min(1)]), output: noResult },
+  }), 'input', 'output'),
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().min(1)]), output: fileGetResultSchema }), 'input', 'output'),
+  delete: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().min(1)]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

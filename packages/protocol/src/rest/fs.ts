@@ -77,7 +77,7 @@ import {
   fsSuggestItemSchema,
 } from '../fs';
 
-export const fsListSortSchema = z.enum([
+export const fsListSortSchema = /* @__PURE__ */ z.enum([
   'type_first',
   'name_asc',
   'name_desc',
@@ -86,7 +86,7 @@ export const fsListSortSchema = z.enum([
 ]);
 export type FsListSort = z.infer<typeof fsListSortSchema>;
 
-export const fsListRequestSchema = z.object({
+export const fsListRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().default('.'),
   depth: z.number().int().min(1).max(10).default(1),
   limit: z.number().int().min(1).max(1000).default(200),
@@ -98,18 +98,18 @@ export const fsListRequestSchema = z.object({
 });
 export type FsListRequest = z.infer<typeof fsListRequestSchema>;
 
-export const fsListResponseSchema = z.object({
+export const fsListResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(fsEntrySchema),
   children_by_path: z.record(z.string(), z.array(fsEntrySchema)).optional(),
   truncated: z.boolean(),
 });
 export type FsListResponse = z.infer<typeof fsListResponseSchema>;
 
-export const fsReadEncodingRequestSchema = z.enum(['auto', 'utf-8', 'base64']);
-export const fsReadEncodingResponseSchema = z.enum(['utf-8', 'base64']);
+export const fsReadEncodingRequestSchema = /* @__PURE__ */ z.enum(['auto', 'utf-8', 'base64']);
+export const fsReadEncodingResponseSchema = /* @__PURE__ */ z.enum(['utf-8', 'base64']);
 export type FsReadEncoding = z.infer<typeof fsReadEncodingResponseSchema>;
 
-export const fsReadRequestSchema = z.object({
+export const fsReadRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
   offset: z.number().int().nonnegative().default(0),
   length: z.number().int().min(1).max(10_485_760).default(1_048_576),
@@ -117,7 +117,7 @@ export const fsReadRequestSchema = z.object({
 });
 export type FsReadRequest = z.infer<typeof fsReadRequestSchema>;
 
-export const fsReadResponseSchema = z.object({
+export const fsReadResponseSchema = /* @__PURE__ */ z.object({
   path: z.string(),
   content: z.string(),
   encoding: fsReadEncodingResponseSchema,
@@ -131,28 +131,28 @@ export const fsReadResponseSchema = z.object({
 });
 export type FsReadResponse = z.infer<typeof fsReadResponseSchema>;
 
-export const fsOpenRequestSchema = z.object({
+export const fsOpenRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
   line: z.number().int().positive().optional(),
 });
 export type FsOpenRequest = z.infer<typeof fsOpenRequestSchema>;
 
-export const fsOpenResponseSchema = z.object({
+export const fsOpenResponseSchema = /* @__PURE__ */ z.object({
   opened: z.literal(true),
 });
 export type FsOpenResponse = z.infer<typeof fsOpenResponseSchema>;
 
-export const fsRevealRequestSchema = z.object({
+export const fsRevealRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
 });
 export type FsRevealRequest = z.infer<typeof fsRevealRequestSchema>;
 
-export const fsRevealResponseSchema = z.object({
+export const fsRevealResponseSchema = /* @__PURE__ */ z.object({
   revealed: z.literal(true),
 });
 export type FsRevealResponse = z.infer<typeof fsRevealResponseSchema>;
 
-export const fsMkdirRequestSchema = z.object({
+export const fsMkdirRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
   recursive: z.boolean().default(false),
 });
@@ -161,7 +161,7 @@ export type FsMkdirRequest = z.infer<typeof fsMkdirRequestSchema>;
 export const fsMkdirResponseSchema = fsEntrySchema;
 export type FsMkdirResponse = z.infer<typeof fsMkdirResponseSchema>;
 
-export const fsOpenInAppIdSchema = z.enum([
+export const fsOpenInAppIdSchema = /* @__PURE__ */ z.enum([
   'finder',
   'cursor',
   'vscode',
@@ -170,19 +170,19 @@ export const fsOpenInAppIdSchema = z.enum([
 ]);
 export type FsOpenInAppId = z.infer<typeof fsOpenInAppIdSchema>;
 
-export const fsOpenInRequestSchema = z.object({
+export const fsOpenInRequestSchema = /* @__PURE__ */ z.object({
   app_id: fsOpenInAppIdSchema,
   path: z.string().min(1),
   line: z.number().int().positive().optional(),
 });
 export type FsOpenInRequest = z.infer<typeof fsOpenInRequestSchema>;
 
-export const fsOpenInResponseSchema = z.object({
+export const fsOpenInResponseSchema = /* @__PURE__ */ z.object({
   opened: z.literal(true),
 });
 export type FsOpenInResponse = z.infer<typeof fsOpenInResponseSchema>;
 
-export const fsListManyRequestSchema = z.object({
+export const fsListManyRequestSchema = /* @__PURE__ */ z.object({
   paths: z.array(z.string().min(1)).min(1).max(100),
   depth: z.number().int().min(1).max(10).default(1),
   limit: z.number().int().min(1).max(1000).default(200),
@@ -194,20 +194,20 @@ export const fsListManyRequestSchema = z.object({
 });
 export type FsListManyRequest = z.infer<typeof fsListManyRequestSchema>;
 
-export const fsListManyPartialErrorSchema = z.object({
+export const fsListManyPartialErrorSchema = /* @__PURE__ */ z.object({
   code: z.number().int(),
   msg: z.string(),
 });
 export type FsListManyPartialError = z.infer<typeof fsListManyPartialErrorSchema>;
 
-export const fsListManyResponseSchema = z.object({
+export const fsListManyResponseSchema = /* @__PURE__ */ z.object({
   results: z.record(z.string(), z.array(fsEntrySchema)),
   truncated_paths: z.array(z.string()).optional(),
   partial_errors: z.record(z.string(), fsListManyPartialErrorSchema).optional(),
 });
 export type FsListManyResponse = z.infer<typeof fsListManyResponseSchema>;
 
-export const fsStatRequestSchema = z.object({
+export const fsStatRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
 });
 export type FsStatRequest = z.infer<typeof fsStatRequestSchema>;
@@ -215,17 +215,17 @@ export type FsStatRequest = z.infer<typeof fsStatRequestSchema>;
 export const fsStatResponseSchema = fsEntrySchema;
 export type FsStatResponse = z.infer<typeof fsStatResponseSchema>;
 
-export const fsStatManyRequestSchema = z.object({
+export const fsStatManyRequestSchema = /* @__PURE__ */ z.object({
   paths: z.array(z.string().min(1)).min(1).max(1000),
 });
 export type FsStatManyRequest = z.infer<typeof fsStatManyRequestSchema>;
 
-export const fsStatManyResponseSchema = z.object({
+export const fsStatManyResponseSchema = /* @__PURE__ */ z.object({
   entries: z.record(z.string(), fsEntrySchema.nullable()),
 });
 export type FsStatManyResponse = z.infer<typeof fsStatManyResponseSchema>;
 
-export const fsSearchRequestSchema = z.object({
+export const fsSearchRequestSchema = /* @__PURE__ */ z.object({
   // An empty query is allowed: the server then lists the workspace root's
   // top-level entries (dirs first) instead of fuzzy-matching — the starting
   // set for @-mention style file pickers.
@@ -239,7 +239,7 @@ export const fsSearchRequestSchema = z.object({
 export type FsSearchRequest = z.infer<typeof fsSearchRequestSchema>;
 
 /** Each page is sorted independently. Drain next_cursor and merge by score descending, path ascending for global order; empty-query pages place directories first. An empty page with next_cursor still has unsearched entries. */
-export const fsSearchResponseSchema = z.object({
+export const fsSearchResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(fsSearchHitSchema),
   truncated: z.boolean(),
   next_cursor: z.string().optional(),
@@ -247,7 +247,7 @@ export const fsSearchResponseSchema = z.object({
 });
 export type FsSearchResponse = z.infer<typeof fsSearchResponseSchema>;
 
-export const fsSuggestRequestSchema = z.object({
+export const fsSuggestRequestSchema = /* @__PURE__ */ z.object({
   query: z.string(),
   limit: z.number().int().min(1).max(200).default(50),
   follow_gitignore: z.boolean().default(true),
@@ -257,13 +257,13 @@ export const fsSuggestRequestSchema = z.object({
 });
 export type FsSuggestRequest = z.infer<typeof fsSuggestRequestSchema>;
 
-export const fsSuggestResponseSchema = z.object({
+export const fsSuggestResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(fsSuggestItemSchema),
   truncated: z.boolean(),
 });
 export type FsSuggestResponse = z.infer<typeof fsSuggestResponseSchema>;
 
-export const fsGrepRequestSchema = z.object({
+export const fsGrepRequestSchema = /* @__PURE__ */ z.object({
   pattern: z.string().min(1),
   regex: z.boolean().default(false),
   case_sensitive: z.boolean().default(true),
@@ -277,7 +277,7 @@ export const fsGrepRequestSchema = z.object({
 });
 export type FsGrepRequest = z.infer<typeof fsGrepRequestSchema>;
 
-export const fsGrepResponseSchema = z.object({
+export const fsGrepResponseSchema = /* @__PURE__ */ z.object({
   files: z.array(fsGrepFileHitSchema),
   files_scanned: z.number().int().nonnegative(),
   truncated: z.boolean(),
@@ -285,19 +285,19 @@ export const fsGrepResponseSchema = z.object({
 });
 export type FsGrepResponse = z.infer<typeof fsGrepResponseSchema>;
 
-export const fsGitStatusRequestSchema = z.object({
+export const fsGitStatusRequestSchema = /* @__PURE__ */ z.object({
   paths: z.array(z.string().min(1)).optional(),
 });
 export type FsGitStatusRequest = z.infer<typeof fsGitStatusRequestSchema>;
 
-export const fsPullRequestSchema = z.object({
+export const fsPullRequestSchema = /* @__PURE__ */ z.object({
   number: z.number().int().positive(),
   state: z.enum(['open', 'merged', 'closed', 'draft']),
   url: z.string().url(),
 });
 export type FsPullRequest = z.infer<typeof fsPullRequestSchema>;
 
-export const fsGitStatusResponseSchema = z.object({
+export const fsGitStatusResponseSchema = /* @__PURE__ */ z.object({
   branch: z.string(),
   ahead: z.number().int().nonnegative(),
   behind: z.number().int().nonnegative(),
@@ -314,19 +314,19 @@ export const fsGitStatusResponseSchema = z.object({
 });
 export type FsGitStatusResponse = z.infer<typeof fsGitStatusResponseSchema>;
 
-export const fsDiffRequestSchema = z.object({
+export const fsDiffRequestSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
 });
 export type FsDiffRequest = z.infer<typeof fsDiffRequestSchema>;
 
-export const fsDiffResponseSchema = z.object({
+export const fsDiffResponseSchema = /* @__PURE__ */ z.object({
   path: z.string(),
   diff: z.string(),
   truncated: z.boolean(),
 });
 export type FsDiffResponse = z.infer<typeof fsDiffResponseSchema>;
 
-export const fsDownloadParamsSchema = z.object({
+export const fsDownloadParamsSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
   range: z.string().optional(),
   if_none_match: z.string().optional(),

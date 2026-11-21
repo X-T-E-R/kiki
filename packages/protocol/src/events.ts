@@ -146,7 +146,7 @@ export interface BackgroundTaskOrigin {
 
 export type CronDeliveryMode = 'queue' | 'steer' | 'idle';
 
-export const cronDeliveryModeSchema = z.enum(['queue', 'steer', 'idle']);
+export const cronDeliveryModeSchema = /* @__PURE__ */ z.enum(['queue', 'steer', 'idle']);
 
 export interface CronJobOrigin {
   readonly kind: 'cron_job';
@@ -1723,7 +1723,7 @@ const kimiErrorPayloadObjectSchema = z.object({
   cause: kimiErrorPayloadSchema.optional(),
 }) satisfies z.ZodType<KimiErrorPayload>;
 
-export const agentTaskReceiptSchema = z.object({
+export const agentTaskReceiptSchema = /* @__PURE__ */ z.object({
   schemaVersion: z.literal(1),
   path: z.string(),
   mediaType: z.literal('text/plain; charset=utf-8'),
@@ -2564,7 +2564,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptSteeredEventSchema,
 ]) satisfies z.ZodType<AgentEvent>;
 
-export const roomChangedEventSchema = z.object({
+export const roomChangedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('event.room.changed'),
   room_id: z.string().min(1),
   room: roomDocumentSchema,

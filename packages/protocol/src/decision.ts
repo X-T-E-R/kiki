@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const decisionProtocolSchema = z.enum(['system_one', 'pair_score', 'openai_decisions']);
+export const decisionProtocolSchema = /* @__PURE__ */ z.enum(['system_one', 'pair_score', 'openai_decisions']);
 export type DecisionProtocol = z.infer<typeof decisionProtocolSchema>;
 
 export const DECISION_PROTOCOL_PATHS: Readonly<Record<DecisionProtocol, string>> = {
@@ -12,7 +12,7 @@ export const DECISION_PROTOCOL_PATHS: Readonly<Record<DecisionProtocol, string>>
 export function decisionProtocolForProviderType(type: string | undefined): DecisionProtocol | undefined {
   return type === 'system_one' || type === 'pair_score' || type === 'openai_decisions' ? type : undefined;
 }
-export const decisionSourceSchema = z.discriminatedUnion('kind', [
+export const decisionSourceSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('connection'),
     connection: z.string().trim().min(1),
@@ -22,7 +22,7 @@ export const decisionSourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('model'), model: z.string().trim().min(1) }).strict(),
 ]);
 export type DecisionSource = z.infer<typeof decisionSourceSchema>;
-export const decisionSourceStatusSchema = z.object({
+export const decisionSourceStatusSchema = /* @__PURE__ */ z.object({
   state: z.enum(['ready', 'unconfigured', 'auth', 'protocol', 'capability_mismatch']),
   connection: z.string().optional(),
   model: z.string().optional(),
@@ -33,11 +33,11 @@ export const decisionSourceStatusSchema = z.object({
   credential_env: z.string().optional(),
 }).strict();
 export type DecisionSourceStatus = z.infer<typeof decisionSourceStatusSchema>;
-export const decisionConnectionProbeInputSchema = z.object({
+export const decisionConnectionProbeInputSchema = /* @__PURE__ */ z.object({
   source: decisionSourceSchema,
   confirm_destination: z.string().min(1),
 }).strict();
-export const decisionConnectionProbeResultSchema = z.object({
+export const decisionConnectionProbeResultSchema = /* @__PURE__ */ z.object({
   ok: z.boolean(),
   status: decisionSourceStatusSchema,
   duration_ms: z.number().nonnegative(),
@@ -45,8 +45,8 @@ export const decisionConnectionProbeResultSchema = z.object({
 }).strict();
 export type DecisionConnectionProbeInput = z.infer<typeof decisionConnectionProbeInputSchema>;
 export type DecisionConnectionProbeResult = z.infer<typeof decisionConnectionProbeResultSchema>;
-export const moveReviewerKeyInputSchema = z.object({ connection: z.string().min(1) }).strict();
-export const moveReviewerKeyResultSchema = z.object({
+export const moveReviewerKeyInputSchema = /* @__PURE__ */ z.object({ connection: z.string().min(1) }).strict();
+export const moveReviewerKeyResultSchema = /* @__PURE__ */ z.object({
   connection: z.string().min(1),
   state: z.enum(['complete', 'connection_saved', 'source_switched']),
   retryable: z.boolean(),

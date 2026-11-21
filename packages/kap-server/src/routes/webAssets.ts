@@ -1,8 +1,12 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join, normalize, relative, resolve, sep } from 'node:path';
+import { pipeline } from 'node:stream';
+import { createBrotliCompress, createGzip } from 'node:zlib';
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
+
+const PRECOMPRESSIBLE_EXTENSIONS = new Set(['.js', '.mjs', '.css', '.html', '.svg', '.json', '.wasm']);
 
 interface WebAssetRouteHost {
   get(
@@ -43,7 +47,8 @@ async function serveWebAsset(
 ): Promise<unknown> {
   const requestUrl = new URL(req.url, 'http://kimi-web.local');
   if (isReservedPath(requestUrl.pathname)) {
-    return reply.callNotFound();
+    reply.callNotFound();
+    return;
   }
 
   const filePath = await resolveStaticFile(assetsDir, requestUrl.pathname);
@@ -51,16 +56,129 @@ async function serveWebAsset(
     return reply.code(404).type('text/plain; charset=utf-8').send('Not found');
   }
 
-  const fileInfo = await stat(filePath).catch(() => undefined);
-  if (fileInfo === undefined || !fileInfo.isFile()) {
+  const fileInfo = await statIfFile(filePath);
+  if (fileInfo === undefined) {
     return reply.code(404).type('text/plain; charset=utf-8').send('Not found');
   }
 
-  return reply
-    .type(mimeType(filePath))
-    .header('Cache-Control', cacheControl(assetsDir, filePath))
-    .header('Content-Length', String(fileInfo.size))
-    .send(createReadStream(filePath));
+  reply.type(mimeType(filePath)).header('Cache-Control', cacheControl(assetsDir, filePath));
+  if (!isPrecompressible(filePath)) {
+    return reply.header('Content-Length', String(fileInfo.size)).send(createReadStream(filePath));
+  }
+
+  mergeVaryHeader(reply, 'Accept-Encoding');
+  const encoding = negotiateAssetEncoding(req.headers['accept-encoding']);
+  if (encoding === undefined) return reply.code(406).send();
+  const etag = assetEtag(fileInfo, encoding);
+  reply.header('ETag', etag);
+  if (encoding !== 'identity') reply.header('Content-Encoding', encoding);
+  if (matchesIfNoneMatch(req.headers['if-none-match'], etag)) return reply.code(304).send();
+
+  if (encoding === 'identity') {
+    reply.header('Content-Length', String(fileInfo.size));
+    return reply.send(createReadStream(filePath));
+  }
+
+  const sidecarPath = `${filePath}.${encoding === 'gzip' ? 'gz' : 'br'}`;
+  const sidecarInfo = await statIfFile(sidecarPath);
+  if (sidecarInfo !== undefined) {
+    reply.header('Content-Length', String(sidecarInfo.size));
+    return reply.send(createReadStream(sidecarPath));
+  }
+
+  const compressor = encoding === 'br' ? createBrotliCompress() : createGzip();
+  const source = createReadStream(filePath);
+  pipeline(source, compressor, (error) => {
+    if (error !== null && !reply.raw.destroyed) req.log.debug({ err: error }, 'Asset compression stream closed');
+  });
+  return reply.send(compressor);
+}
+
+type AssetEncoding = 'br' | 'gzip' | 'identity';
+
+function isPrecompressible(filePath: string): boolean {
+  return PRECOMPRESSIBLE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+function negotiateAssetEncoding(
+  acceptEncoding: string | string[] | undefined,
+): AssetEncoding | undefined {
+  if (acceptEncoding === undefined) return 'identity';
+  const header = Array.isArray(acceptEncoding) ? acceptEncoding.join(',') : acceptEncoding;
+  const qualities = new Map<string, number>();
+  for (const part of header.split(',')) {
+    const [rawCoding, ...parameters] = part.trim().split(';');
+    const coding = rawCoding?.trim().toLowerCase() ?? '';
+    if (coding === '') continue;
+    let quality = 1;
+    let valid = true;
+    for (const parameter of parameters) {
+      const item = parameter.trim();
+      if (!item.toLowerCase().startsWith('q=')) continue;
+      const value = Number.parseFloat(item.slice(2));
+      if (!Number.isFinite(value) || value < 0 || value > 1) {
+        valid = false;
+        break;
+      }
+      quality = value;
+    }
+    if (!valid) continue;
+    const existing = qualities.get(coding);
+    if (existing === undefined || quality > existing) qualities.set(coding, quality);
+  }
+
+  const wildcard = qualities.get('*');
+  const compressed: { readonly encoding: 'br' | 'gzip'; readonly quality: number }[] = [
+    { encoding: 'br', quality: qualities.get('br') ?? wildcard ?? 0 },
+    { encoding: 'gzip', quality: qualities.get('gzip') ?? wildcard ?? 0 },
+  ];
+  compressed.sort((left, right) => right.quality - left.quality);
+  const selected = compressed.find((candidate) => candidate.quality > 0);
+  if (selected !== undefined) return selected.encoding;
+  const identityQuality = qualities.get('identity') ?? (wildcard === 0 ? 0 : 1);
+  return identityQuality > 0 ? 'identity' : undefined;
+}
+
+function assetEtag(
+  fileInfo: { readonly size: number; readonly mtimeMs: number },
+  encoding: AssetEncoding,
+): string {
+  return `W/"${fileInfo.size.toString(16)}-${fileInfo.mtimeMs.toString(16)}-${encoding}"`;
+}
+
+function matchesIfNoneMatch(
+  header: string | string[] | undefined,
+  etag: string,
+): boolean {
+  if (header === undefined) return false;
+  const raw = Array.isArray(header) ? header.join(',') : header;
+  const weakEtag = etag.replace(/^W\//, '');
+  return raw.split(',').some((candidate) => {
+    const trimmed = candidate.trim();
+    return trimmed === '*' || trimmed.replace(/^W\//, '') === weakEtag;
+  });
+}
+
+async function statIfFile(filePath: string): Promise<Awaited<ReturnType<typeof stat>> | undefined> {
+  try {
+    const info = await stat(filePath);
+    return info.isFile() ? info : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function mergeVaryHeader(reply: FastifyReply, token: string): void {
+  const current = reply.getHeader('vary');
+  if (current === undefined) {
+    reply.header('Vary', token);
+    return;
+  }
+  const raw = Array.isArray(current) ? current.join(', ') : String(current);
+  const existing = raw.split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  if (existing.includes('*') || existing.some((entry) => entry.toLowerCase() === token.toLowerCase())) return;
+  reply.header('Vary', [...existing, token].join(', '));
 }
 
 function cacheControl(assetsDir: string, filePath: string): string {
@@ -94,8 +212,8 @@ async function resolveStaticFile(
     return undefined;
   }
 
-  const info = await stat(candidate).catch(() => undefined);
-  if (info?.isFile() === true) {
+  const info = await statIfFile(candidate);
+  if (info !== undefined) {
     return candidate;
   }
   if (extname(pathname) !== '') {
@@ -124,6 +242,8 @@ function mimeType(filePath: string): string {
       return 'text/css; charset=utf-8';
     case '.json':
       return 'application/json; charset=utf-8';
+    case '.wasm':
+      return 'application/wasm';
     case '.webmanifest':
       return 'application/manifest+json; charset=utf-8';
     case '.svg':

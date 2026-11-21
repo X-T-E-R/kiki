@@ -8,8 +8,9 @@ import { z } from 'zod';
 
 import { maybe } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const experimentalFeatureStateSchema = z.object({
+export const experimentalFeatureStateSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   title: z.string(),
   description: z.string(),
@@ -22,9 +23,9 @@ export const experimentalFeatureStateSchema = z.object({
 });
 
 export const flagsContract = {
-  enabled: { input: z.tuple([z.string()]), output: z.boolean() },
-  snapshot: { input: z.tuple([]), output: z.record(z.string(), z.boolean()) },
-  enabledIds: { input: z.tuple([]), output: z.array(z.string()) },
-  explain: { input: z.tuple([z.string()]), output: maybe(experimentalFeatureStateSchema) },
-  explainAll: { input: z.tuple([]), output: z.array(experimentalFeatureStateSchema) },
+  enabled: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
+  snapshot: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.record(z.string(), z.boolean()) }), 'input', 'output'),
+  enabledIds: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(z.string()) }), 'input', 'output'),
+  explain: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(experimentalFeatureStateSchema) }), 'input', 'output'),
+  explainAll: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(experimentalFeatureStateSchema) }), 'input', 'output'),
 } satisfies ServiceContract;

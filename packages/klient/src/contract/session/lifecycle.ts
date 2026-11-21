@@ -11,8 +11,9 @@ import { executionSelectionWireSchema as executionSelectionSchema } from '../exe
 import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const createSessionOptionsSchema = z.object({
+export const createSessionOptionsSchema = /* @__PURE__ */ z.object({
   sessionId: z.string().optional(),
   localSession: z.object({ localId: z.string(), executorId: z.string(), engine: z.enum(['claude', 'codex']),
     externalId: z.string(), home: z.string() }).optional(),
@@ -35,7 +36,7 @@ export const createSessionOptionsSchema = z.object({
 });
 
 /** Same fields as `ResumeSessionOptions` in the engine — keep in sync. */
-export const resumeSessionOptionsSchema = z.object({
+export const resumeSessionOptionsSchema = /* @__PURE__ */ z.object({
   additionalDirs: z.array(z.string()).optional(),
   waitForSessionMs: z.number().nonnegative().finite().optional(),
   /**
@@ -46,13 +47,13 @@ export const resumeSessionOptionsSchema = z.object({
 });
 
 /** Same fields as `ForkSessionOptions` in the engine — keep in sync. */
-export const sessionSeedModeWireSchema = z.enum(['fresh', 'compact', 'verbatim']);
-export const sessionSeedCarryWireSchema = z.union([
+export const sessionSeedModeWireSchema = /* @__PURE__ */ z.enum(['fresh', 'compact', 'verbatim']);
+export const sessionSeedCarryWireSchema = /* @__PURE__ */ z.union([
   z.object({ last: z.number().int().nonnegative() }).strict(),
   z.object({ fromMessageId: z.string().min(1) }).strict(),
 ]);
 
-export const forkSessionOptionsSchema = z.object({
+export const forkSessionOptionsSchema = /* @__PURE__ */ z.object({
   sourceSessionId: z.string(),
   newSessionId: z.string().optional(),
   private: z.boolean().optional(),
@@ -67,7 +68,7 @@ export const forkSessionOptionsSchema = z.object({
 });
 
 /** Same fields as `ForkSessionOptions` in the engine, minus the fork-only truncation. */
-export const createChildSessionOptionsSchema = forkSessionOptionsSchema.omit({
+export const createChildSessionOptionsSchema = /* @__PURE__ */ forkSessionOptionsSchema.omit({
   turnIndex: true,
   throughUserMessage: true,
   throughMessageId: true,
@@ -77,29 +78,29 @@ export const createChildSessionOptionsSchema = forkSessionOptionsSchema.omit({
 });
 
 /** `IScopeHandle` as it survives JSON — `{ id, kind }` plus extras. */
-export const handleWireSchema = z.looseObject({
+export const handleWireSchema = /* @__PURE__ */ z.looseObject({
   id: z.string(),
   kind: z.string(),
 });
 
 export const agentLifecycleContract = {
-  countPendingBackgroundTasks: { input: z.tuple([]), output: z.number() },
-  drainBackgroundTasks: { input: z.tuple([z.number().positive().finite()]), output: noResult },
+  countPendingBackgroundTasks: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.number() }), 'input', 'output'),
+  drainBackgroundTasks: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.number().positive().finite()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const sessionManagerContract = {
-  create: { input: z.tuple([createSessionOptionsSchema]), output: handleWireSchema },
-  resume: {
-    input: z.tuple([z.string(), resumeSessionOptionsSchema.optional()]),
-    output: maybe(handleWireSchema),
-  },
-  close: { input: z.tuple([z.string()]), output: noResult },
-  archive: { input: z.tuple([z.string()]), output: noResult },
-  restore: {
-    input: z.tuple([z.string(), resumeSessionOptionsSchema.optional()]),
-    output: maybe(handleWireSchema),
-  },
-  delete: { input: z.tuple([z.string()]), output: noResult },
-  fork: { input: z.tuple([forkSessionOptionsSchema]), output: handleWireSchema },
-  createChild: { input: z.tuple([createChildSessionOptionsSchema]), output: handleWireSchema },
+  create: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([createSessionOptionsSchema]), output: handleWireSchema }), 'input', 'output'),
+  resume: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), resumeSessionOptionsSchema.optional()]),
+    output: /* @__PURE__ */ maybe(handleWireSchema),
+  }), 'input', 'output'),
+  close: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  archive: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  restore: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), resumeSessionOptionsSchema.optional()]),
+    output: /* @__PURE__ */ maybe(handleWireSchema),
+  }), 'input', 'output'),
+  delete: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  fork: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([forkSessionOptionsSchema]), output: handleWireSchema }), 'input', 'output'),
+  createChild: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([createChildSessionOptionsSchema]), output: handleWireSchema }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -7,10 +7,11 @@ import { z } from 'zod';
 
 import { maybe } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 export const sessionTitleContract = {
-  generateTitle: {
-    input: z.tuple([
+  generateTitle: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([
       z
         .object({
           force: z.boolean().optional(),
@@ -18,6 +19,6 @@ export const sessionTitleContract = {
         })
         .optional(),
     ]),
-    output: maybe(z.string()),
-  },
+    output: /* @__PURE__ */ maybe(z.string()),
+  }), 'input', 'output'),
 } satisfies ServiceContract;

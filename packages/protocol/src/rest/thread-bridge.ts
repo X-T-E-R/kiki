@@ -2,9 +2,9 @@ import { z } from 'zod';
 import { bridgeOperationsSchema, connectionIdentitySchema } from './connections';
 import { contentRefSchema, contentSegmentSchema, transcriptResponseSchema } from '@kiki/transcript';
 
-export const bridgeThreadRefSchema = z.object({ hostId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256) }).strict();
-export const bridgeScopeSchema = z.object({ workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256).optional() }).strict();
-export const bridgePolicySchema = z.object({
+export const bridgeThreadRefSchema = /* @__PURE__ */ z.object({ hostId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256) }).strict();
+export const bridgeScopeSchema = /* @__PURE__ */ z.object({ workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256).optional() }).strict();
+export const bridgePolicySchema = /* @__PURE__ */ z.object({
   source: connectionIdentitySchema, target: connectionIdentitySchema,
   sourceScope: bridgeScopeSchema, targetScope: bridgeScopeSchema,
   operations: bridgeOperationsSchema,
@@ -12,25 +12,25 @@ export const bridgePolicySchema = z.object({
   messagesPerMinute: z.number().int().min(1).max(600).default(10),
   location: z.enum(['local', 'network']), label: z.string().min(1).max(128),
 }).strict();
-export const bridgeGrantSchema = bridgePolicySchema.extend({ id: z.string().uuid(), revision: z.number().int().positive(), enabled: z.boolean(), revoked: z.boolean(), createdAt: z.number().int().positive() });
-export const bridgeInstallSchema = z.object({ connectionId: z.string().uuid(), grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict();
-export const bridgeRequestSchema = z.object({ bridgeId: z.string().uuid(), revision: z.number().int().positive(), source: bridgeThreadRefSchema }).strict();
-export const bridgeListSchema = bridgeRequestSchema.extend({ workspaceId: z.string().min(1).max(512).optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).optional() }).strict();
-export const bridgeReadSchema = bridgeRequestSchema.extend({ target: bridgeThreadRefSchema, cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).optional(), contentRef: contentRefSchema.optional() }).strict();
-export const bridgeSendSchema = bridgeRequestSchema.extend({
+export const bridgeGrantSchema = /* @__PURE__ */ bridgePolicySchema.extend({ id: z.string().uuid(), revision: z.number().int().positive(), enabled: z.boolean(), revoked: z.boolean(), createdAt: z.number().int().positive() });
+export const bridgeInstallSchema = /* @__PURE__ */ z.object({ connectionId: z.string().uuid(), grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict();
+export const bridgeRequestSchema = /* @__PURE__ */ z.object({ bridgeId: z.string().uuid(), revision: z.number().int().positive(), source: bridgeThreadRefSchema }).strict();
+export const bridgeListSchema = /* @__PURE__ */ bridgeRequestSchema.extend({ workspaceId: z.string().min(1).max(512).optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).optional() }).strict();
+export const bridgeReadSchema = /* @__PURE__ */ bridgeRequestSchema.extend({ target: bridgeThreadRefSchema, cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).optional(), contentRef: contentRefSchema.optional() }).strict();
+export const bridgeSendSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   target: bridgeThreadRefSchema, content: z.string().min(1).max(100000), idempotencyKey: z.string().min(1).max(256),
   sourceHomeId: z.string().uuid(), targetHomeId: z.string().uuid(),
   createdAt: z.number().int().positive(), expiresAt: z.number().int().positive(), sourceSeq: z.number().int().positive(),
   causeId: z.string().min(1).max(128), hop: z.number().int().min(0).max(4),
 }).strict();
-export const bridgeWaitSchema = bridgeRequestSchema.extend({ target: bridgeThreadRefSchema, cursor: z.string().max(4096).optional(), timeoutMs: z.number().int().min(0).max(60000).optional() }).strict();
+export const bridgeWaitSchema = /* @__PURE__ */ bridgeRequestSchema.extend({ target: bridgeThreadRefSchema, cursor: z.string().max(4096).optional(), timeoutMs: z.number().int().min(0).max(60000).optional() }).strict();
 export type BridgePolicy = z.infer<typeof bridgePolicySchema>;
 export type BridgeGrant = z.infer<typeof bridgeGrantSchema>;
 export type BridgeInstall = z.infer<typeof bridgeInstallSchema>;
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeSend = z.infer<typeof bridgeSendSchema>;
 export type BridgeOperation = 'read' | 'send' | 'wait' | 'wake' | 'create' | 'tools';
-export const bridgeCreateSchema = bridgeRequestSchema.extend({
+export const bridgeCreateSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   workspaceId: z.string().min(1).max(512).optional(),
   idempotencyKey: z.string().min(1).max(256),
   title: z.string().min(1).max(256).optional(),
@@ -49,7 +49,7 @@ export interface BridgeCreateResult {
   profile: string;
   promptStarted: boolean;
 }
-export const remoteExportedToolSchema = z.object({
+export const remoteExportedToolSchema = /* @__PURE__ */ z.object({
   remoteName: z.string().min(1).max(256),
   kind: z.enum(['plugin', 'mcp']),
   pluginId: z.string().min(1).max(128).optional(),
@@ -60,31 +60,31 @@ export const remoteExportedToolSchema = z.object({
   concurrencySafe: z.boolean().optional(),
 }).strict();
 export type RemoteExportedTool = z.infer<typeof remoteExportedToolSchema>;
-export const remoteToolMediaAttachmentSchema = z.object({
+export const remoteToolMediaAttachmentSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1).max(128),
   mimeType: z.string().min(1).max(128),
   filename: z.string().min(1).max(256).optional(),
   dataBase64: z.string().min(1),
 }).strict();
 export type RemoteToolMediaAttachment = z.infer<typeof remoteToolMediaAttachmentSchema>;
-export const bridgeToolsListSchema = bridgeRequestSchema.extend({
+export const bridgeToolsListSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   workspaceId: z.string().min(1).max(512).optional(),
 }).strict();
 export type BridgeToolsList = z.infer<typeof bridgeToolsListSchema>;
-export const bridgeToolsListResultSchema = z.object({
+export const bridgeToolsListResultSchema = /* @__PURE__ */ z.object({
   spaceLabel: z.string().min(1).max(128),
   platform: z.enum(['win32', 'linux', 'darwin']).optional(),
   tools: z.array(remoteExportedToolSchema).max(512),
 }).strict();
 export type BridgeToolsListResult = z.infer<typeof bridgeToolsListResultSchema>;
-export const bridgeToolsCallSchema = bridgeRequestSchema.extend({
+export const bridgeToolsCallSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   workspaceId: z.string().min(1).max(512).optional(),
   remoteName: z.string().min(1).max(256),
   arguments: z.record(z.string(), z.unknown()),
   callId: z.string().min(1).max(256),
 }).strict();
 export type BridgeToolsCall = z.infer<typeof bridgeToolsCallSchema>;
-export const bridgeToolsCallResultSchema = z.object({
+export const bridgeToolsCallResultSchema = /* @__PURE__ */ z.object({
   isError: z.boolean().optional(),
   output: z.unknown(),
   media: z.array(remoteToolMediaAttachmentSchema).max(32).optional(),
@@ -95,29 +95,29 @@ export interface BridgeReceipt { id: string; bridgeId: string; connectionId: str
 export interface BridgeStatus { identity: z.infer<typeof connectionIdentitySchema>; inboundEnabled: boolean; inbound: BridgeGrant[]; outbound: BridgeLink[] }
 export type BridgeContentRef = import('@kiki/transcript').ContentRef;
 export interface BridgeReadView { transcript?: import('@kiki/transcript').TranscriptResponse; segment?: import('@kiki/transcript').ContentSegment }
-export const bridgeReadViewSchema = z.object({ transcript: transcriptResponseSchema.optional(), segment: contentSegmentSchema.optional() });
-export const localBridgePolicySchema = bridgePolicySchema.omit({ source: true, target: true, location: true }).extend({ spaceId: z.string().min(1).max(128) }).strict();
+export const bridgeReadViewSchema = /* @__PURE__ */ z.object({ transcript: transcriptResponseSchema.optional(), segment: contentSegmentSchema.optional() });
+export const localBridgePolicySchema = /* @__PURE__ */ bridgePolicySchema.omit({ source: true, target: true, location: true }).extend({ spaceId: z.string().min(1).max(128) }).strict();
 export type LocalBridgePolicy = z.infer<typeof localBridgePolicySchema>;
-export const bridgeTargetInputSchema = z.object({ label: z.string().min(1).max(128), endpoint: z.string().url().max(2048), target: connectionIdentitySchema }).strict();
+export const bridgeTargetInputSchema = /* @__PURE__ */ z.object({ label: z.string().min(1).max(128), endpoint: z.string().url().max(2048), target: connectionIdentitySchema }).strict();
 export type BridgeTargetInput = z.infer<typeof bridgeTargetInputSchema>;
-export const peerBridgeInstallSchema = z.object({
+export const peerBridgeInstallSchema = /* @__PURE__ */ z.object({
   grant: bridgeGrantSchema,
   credential: z.string().min(32).max(128),
   endpoint: z.string().url().max(2048).optional(),
 }).strict();
 export type PeerBridgeInstall = z.infer<typeof peerBridgeInstallSchema>;
 export const PEER_BRIDGE_CAPABILITY_CHUNKED_V1 = 'chunked_v1';
-export const peerBridgeAttachPayloadSchema = z.object({
+export const peerBridgeAttachPayloadSchema = /* @__PURE__ */ z.object({
   operations: z.array(z.enum(['list', 'read', 'send', 'wait', 'create', 'tools_list', 'tools_call'])).min(1).max(7).optional(),
   capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),
 }).strict();
 export type PeerBridgeAttachPayload = z.infer<typeof peerBridgeAttachPayloadSchema>;
-export const peerBridgeResponsePayloadSchema = z.object({
+export const peerBridgeResponsePayloadSchema = /* @__PURE__ */ z.object({
   status: z.number().int().min(200).max(599),
   envelope: z.object({ code: z.number().int(), msg: z.string(), data: z.unknown().optional() }).passthrough(),
 }).strict();
 export type PeerBridgeResponsePayload = z.infer<typeof peerBridgeResponsePayloadSchema>;
-export const peerBridgeResponseChunkPayloadSchema = z.object({
+export const peerBridgeResponseChunkPayloadSchema = /* @__PURE__ */ z.object({
   seq: z.number().int().min(0),
   total: z.number().int().min(1),
   status: z.number().int().min(200).max(599).optional(),

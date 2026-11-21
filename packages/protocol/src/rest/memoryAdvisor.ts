@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import { decisionSourceSchema, decisionSourceStatusSchema } from '../decision';
 
-export const memoryAdvisorSelectorSchema = z
+export const memoryAdvisorSelectorSchema = /* @__PURE__ */ z
   .object({
     protocol: z.enum(['chat_json', 'system_one', 'pair_score', 'openai_decisions']),
     model: z.string().trim().min(1),
     endpoint: z.string().url().optional(),
   })
   .strict();
-export const memoryAdvisorConfigSchema = z
+export const memoryAdvisorConfigSchema = /* @__PURE__ */ z
   .object({
     mode: z.enum(['off', 'rank', 'select']).default('rank'),
     selector: memoryAdvisorSelectorSchema.optional(),
@@ -27,7 +27,7 @@ export const memoryAdvisorConfigSchema = z
       .default([]),
   })
   .strict();
-export const memoryAdvisorPatchSchema = z
+export const memoryAdvisorPatchSchema = /* @__PURE__ */ z
   .object({
     mode: memoryAdvisorConfigSchema.shape.mode.unwrap().optional(),
     selector: memoryAdvisorSelectorSchema.nullable().optional(),
@@ -44,7 +44,7 @@ export const memoryAdvisorPatchSchema = z
     egress_ack: memoryAdvisorConfigSchema.shape.egress_ack.unwrap().optional(),
   })
   .strict();
-export const memorySettingsPatchSchema = z
+export const memorySettingsPatchSchema = /* @__PURE__ */ z
   .object({
     enabled: z.boolean().optional(),
     approval: z.enum(['auto', 'review', 'off']).optional(),
@@ -52,7 +52,7 @@ export const memorySettingsPatchSchema = z
     advisor: memoryAdvisorPatchSchema.nullable().optional(),
   })
   .strict();
-export const memoryAdvisorFailureSchema = z.enum([
+export const memoryAdvisorFailureSchema = /* @__PURE__ */ z.enum([
   'unconfigured',
   'not_permitted',
   'consent_required',
@@ -67,7 +67,7 @@ export const memoryAdvisorFailureSchema = z.enum([
   'input_budget',
   'unavailable',
 ]);
-export const memoryAdvisorStatusSchema = z.object({
+export const memoryAdvisorStatusSchema = /* @__PURE__ */ z.object({
   state: z.enum([
     'off',
     'unconfigured',
@@ -99,10 +99,10 @@ export const memoryAdvisorStatusSchema = z.object({
   displaced_ids: z.array(z.string()).default([]),
   unjudged_count: z.number().int().default(0),
 });
-export const memoryAdvisorProbeInputSchema = z
+export const memoryAdvisorProbeInputSchema = /* @__PURE__ */ z
   .object({ confirm_destination: z.string().min(1) })
   .strict();
-export const memoryAdvisorProbeResultSchema = z.object({
+export const memoryAdvisorProbeResultSchema = /* @__PURE__ */ z.object({
   ok: z.boolean(),
   status: memoryAdvisorStatusSchema,
   duration_ms: z.number(),
@@ -110,7 +110,7 @@ export const memoryAdvisorProbeResultSchema = z.object({
   output_tokens: z.number().optional(),
   usage_known: z.boolean(),
 });
-export const memorySettingsResponseSchema = z.object({
+export const memorySettingsResponseSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean(),
   approval: z.enum(['auto', 'review', 'off']),
   budget: z.number(),

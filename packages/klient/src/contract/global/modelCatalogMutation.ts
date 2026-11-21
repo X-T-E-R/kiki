@@ -19,31 +19,32 @@ import {
 import { z } from 'zod';
 
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 export { providerEntitySchema };
 
-export const deleteModelOptionsSchema = z.object({
+export const deleteModelOptionsSchema = /* @__PURE__ */ z.object({
   baseRevision: z.string().min(1).optional(),
 });
 
 export const modelCatalogMutationContract = {
-  readModel: { input: z.tuple([z.string()]), output: modelEntitySchema },
-  createModel: { input: z.tuple([createModelRequestSchema]), output: modelEntitySchema },
-  updateModel: {
-    input: z.tuple([z.string(), patchModelRequestSchema]),
+  readModel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: modelEntitySchema }), 'input', 'output'),
+  createModel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([createModelRequestSchema]), output: modelEntitySchema }), 'input', 'output'),
+  updateModel: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), patchModelRequestSchema]),
     output: modelEntitySchema,
-  },
-  deleteModel: {
-    input: z.tuple([z.string(), deleteModelOptionsSchema.optional()]),
-    output: z.void(),
-  },
-  readProvider: { input: z.tuple([z.string()]), output: providerEntitySchema },
-  createProvider: { input: z.tuple([createProviderRequestSchema]), output: providerEntitySchema },
-  updateProvider: {
-    input: z.tuple([z.string(), patchProviderRequestSchema]),
+  }), 'input', 'output'),
+  deleteModel: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), deleteModelOptionsSchema.optional()]),
+    output: /* @__PURE__ */ z.void(),
+  }), 'input', 'output'),
+  readProvider: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: providerEntitySchema }), 'input', 'output'),
+  createProvider: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([createProviderRequestSchema]), output: providerEntitySchema }), 'input', 'output'),
+  updateProvider: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), patchProviderRequestSchema]),
     output: providerEntitySchema,
-  },
-  deleteProvider: { input: z.tuple([z.string()]), output: z.void() },
+  }), 'input', 'output'),
+  deleteProvider: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ z.void() }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export { getModelResponseSchema };

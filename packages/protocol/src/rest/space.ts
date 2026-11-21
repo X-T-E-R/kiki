@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const removeSpaceConfigOverrideRequestSchema = z.object({
+export const removeSpaceConfigOverrideRequestSchema = /* @__PURE__ */ z.object({
   domain: z.string().min(1),
   key_path: z.array(z.string().min(1)),
 }).strict();
@@ -13,31 +13,31 @@ export type RemoveSpaceConfigOverrideRequest = z.infer<typeof removeSpaceConfigO
  */
 export const SPACE_ID_PATTERN = /^h-[a-z0-9-]+$/;
 export const SPACE_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
-export const spaceIdSchema = z.string().regex(SPACE_ID_PATTERN);
-export const spaceNameSchema = z.string().trim().min(1);
-export const spaceColorSchema = z.string().regex(SPACE_COLOR_PATTERN);
-export const spacePresetIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
-export const spaceUiConfigSchema = z.object({
+export const spaceIdSchema = /* @__PURE__ */ z.string().regex(SPACE_ID_PATTERN);
+export const spaceNameSchema = /* @__PURE__ */ z.string().trim().min(1);
+export const spaceColorSchema = /* @__PURE__ */ z.string().regex(SPACE_COLOR_PATTERN);
+export const spacePresetIdSchema = /* @__PURE__ */ z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
+export const spaceUiConfigSchema = /* @__PURE__ */ z.object({
   defaultSkin: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).default('paper'),
   landingPage: z.enum(['/new', '/bots']).default('/new'),
   plugins: z.array(z.string().min(1)).default([]),
 }).strict();
-export const spaceUiConfigPatchSchema = z.object({
+export const spaceUiConfigPatchSchema = /* @__PURE__ */ z.object({
   default_skin: spaceUiConfigSchema.shape.defaultSkin.removeDefault().optional(),
   landing_page: spaceUiConfigSchema.shape.landingPage.removeDefault().optional(),
   plugins: spaceUiConfigSchema.shape.plugins.removeDefault().optional(),
 }).strict();
-export const spacePresetSchema = z.object({
+export const spacePresetSchema = /* @__PURE__ */ z.object({
   id: spacePresetIdSchema,
   name: spaceNameSchema,
   color: spaceColorSchema.optional(),
   description: z.string(),
 });
-export const spacePresetsResponseSchema = z.object({ items: z.array(spacePresetSchema) });
+export const spacePresetsResponseSchema = /* @__PURE__ */ z.object({ items: z.array(spacePresetSchema) });
 export type SpacePreset = z.infer<typeof spacePresetSchema>;
 export type SpacePresetsResponse = z.infer<typeof spacePresetsResponseSchema>;
 
-export const spaceRecordSchema = z.object({
+export const spaceRecordSchema = /* @__PURE__ */ z.object({
   id: spaceIdSchema,
   name: spaceNameSchema,
   color: spaceColorSchema.optional(),
@@ -46,10 +46,10 @@ export const spaceRecordSchema = z.object({
   lastOpenedAt: z.string().optional(),
 });
 export type SpaceRecord = z.infer<typeof spaceRecordSchema>;
-export const spacesResponseSchema = z.object({ items: z.array(spaceRecordSchema.extend({ id: z.union([z.literal('main'), spaceRecordSchema.shape.id]), primary: z.boolean(), credentials_shared: z.boolean().optional() })) });
+export const spacesResponseSchema = /* @__PURE__ */ z.object({ items: z.array(spaceRecordSchema.extend({ id: z.union([z.literal('main'), spaceRecordSchema.shape.id]), primary: z.boolean(), credentials_shared: z.boolean().optional() })) });
 export type ListSpacesResponse = z.infer<typeof spacesResponseSchema>;
 
-export const createSpaceRequestSchema = z.object({
+export const createSpaceRequestSchema = /* @__PURE__ */ z.object({
   name: spaceRecordSchema.shape.name.optional(),
   color: spaceRecordSchema.shape.color,
   preset: spacePresetIdSchema.optional(),
@@ -67,33 +67,33 @@ export const createSpaceRequestSchema = z.object({
   }).strict().optional(),
 }).strict();
 export type CreateSpaceRequest = z.infer<typeof createSpaceRequestSchema>;
-export const attachSpaceRequestSchema = z.object({ path: spaceRecordSchema.shape.path }).strict();
+export const attachSpaceRequestSchema = /* @__PURE__ */ z.object({ path: spaceRecordSchema.shape.path }).strict();
 export type AttachSpaceRequest = z.infer<typeof attachSpaceRequestSchema>;
-export const inspectSpacePathResponseSchema = z.object({
+export const inspectSpacePathResponseSchema = /* @__PURE__ */ z.object({
   state: z.enum(['missing', 'empty', 'nonempty', 'space']),
 });
 export type InspectSpacePathResponse = z.infer<typeof inspectSpacePathResponseSchema>;
-export const spaceIdParamsSchema = z.object({ id: spaceRecordSchema.shape.id });
-export const sshCopyTargetSchema = z.object({
+export const spaceIdParamsSchema = /* @__PURE__ */ z.object({ id: spaceRecordSchema.shape.id });
+export const sshCopyTargetSchema = /* @__PURE__ */ z.object({
   hostId: z.string().min(1),
   workspaceId: z.string().min(1).optional(),
 }).strict();
-export const sshCopyCandidatesResponseSchema = z.object({
+export const sshCopyCandidatesResponseSchema = /* @__PURE__ */ z.object({
   hosts: z.array(sshCopyTargetSchema.extend({ name: z.string(), credential_kinds: z.array(z.enum(['password', 'passphrase'])) })),
 });
 export type SshCopyCandidatesResponse = z.infer<typeof sshCopyCandidatesResponseSchema>;
-export const updateSpaceRequestSchema = z.object({
+export const updateSpaceRequestSchema = /* @__PURE__ */ z.object({
   inherit: z.object({ credentials: z.enum(['shared', 'isolated']) }).strict(),
   copy_ssh_credentials: z.union([z.boolean(), z.object({ hosts: z.array(sshCopyTargetSchema).max(64) }).strict()]).optional(),
 }).strict();
 export type UpdateSpaceRequest = z.infer<typeof updateSpaceRequestSchema>;
-export const updateSpaceResponseSchema = z.object({
+export const updateSpaceResponseSchema = /* @__PURE__ */ z.object({
   space: spaceRecordSchema.extend({ credentials_shared: z.boolean() }),
   restart_required: z.boolean(),
   copied_ssh_entries: z.number().int().min(0),
   retained_isolated_ssh_entries: z.number().int().min(0).optional(),
 });
 export type UpdateSpaceResponse = z.infer<typeof updateSpaceResponseSchema>;
-export const deleteSpaceParamsSchema = z.object({ tail: z.string().min(1) });
-export const deleteSpaceRequestSchema = z.object({ confirm_name: spaceRecordSchema.shape.name }).strict();
+export const deleteSpaceParamsSchema = /* @__PURE__ */ z.object({ tail: z.string().min(1) });
+export const deleteSpaceRequestSchema = /* @__PURE__ */ z.object({ confirm_name: spaceRecordSchema.shape.name }).strict();
 export type DeleteSpaceRequest = z.infer<typeof deleteSpaceRequestSchema>;

@@ -1071,7 +1071,11 @@ export function Composer({
   const slashCatalogPendingRef = useRef(false);
   const skillCwd = agentProfileCatalogMode.mode === 'cwd' ? agentProfileCatalogMode.cwd : undefined;
   const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined || agentProfileCatalogMode.mode !== 'disabled';
-  const skillScope = JSON.stringify([scopeId, sessionId, workspaceId, skillCwd, skillCatalogReady]);
+  const skillScope = sessionId !== undefined
+    ? [scopeId, 'session', sessionId]
+    : workspaceId !== undefined
+      ? [scopeId, 'workspace', workspaceId]
+      : [scopeId, 'draft', skillCwd];
   const currentSlashDraftRef = useRef({ skillScope });
   currentSlashDraftRef.current = { skillScope };
   // Queue-edit remove is a two-step control: the first click arms the button
@@ -1749,7 +1753,7 @@ export function Composer({
       : [
           ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
           ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string, profile: ref.profile as string | undefined })),
-        ].sort((a, b) => a.start - b.start || a.end - b.end)),
+        ].toSorted((a, b) => a.start - b.start || a.end - b.end)),
     [conversationRefs, agentRefs],
   );
   const threadRefs = useMemo(

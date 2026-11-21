@@ -23,7 +23,7 @@ import { cursorQuerySchema } from '../pagination';
 import { expectedSessionCursorSchema } from '../session';
 import { promptExecutionOverridesSchema, promptSubmitResultSchema } from './prompt';
 
-export const listMessagesQuerySchema = cursorQuerySchema.and(
+export const listMessagesQuerySchema = /* @__PURE__ */ cursorQuerySchema.and(
   z.object({
     role: messageRoleSchema.optional(),
     order: z.enum(['asc', 'desc']).optional(),
@@ -31,7 +31,7 @@ export const listMessagesQuerySchema = cursorQuerySchema.and(
 );
 export type ListMessagesQuery = z.infer<typeof listMessagesQuerySchema>;
 
-export const listMessagesResponseSchema = z.object({
+export const listMessagesResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(messageSchema),
   has_more: z.boolean(),
 });
@@ -40,21 +40,21 @@ export type ListMessagesResponse = z.infer<typeof listMessagesResponseSchema>;
 export const getMessageResponseSchema = messageSchema;
 export type GetMessageResponse = z.infer<typeof getMessageResponseSchema>;
 
-export const editableMessageContentSchema = z.discriminatedUnion('type', [
+export const editableMessageContentSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   textContentSchema,
   imageContentSchema,
   videoContentSchema,
   fileContentSchema,
 ]);
 
-export const editMessageRequestSchema = promptExecutionOverridesSchema.extend({
+export const editMessageRequestSchema = /* @__PURE__ */ promptExecutionOverridesSchema.extend({
   content: z.array(editableMessageContentSchema).min(1),
   expected_cursor: expectedSessionCursorSchema,
   operation_id: z.string().min(1).optional(),
 });
 export type EditMessageRequest = z.infer<typeof editMessageRequestSchema>;
 
-export const regenerateMessageRequestSchema = promptExecutionOverridesSchema.extend({
+export const regenerateMessageRequestSchema = /* @__PURE__ */ promptExecutionOverridesSchema.extend({
   expected_cursor: expectedSessionCursorSchema,
   operation_id: z.string().min(1).optional(),
 });

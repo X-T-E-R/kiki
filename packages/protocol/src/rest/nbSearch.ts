@@ -4,13 +4,13 @@ import { fetchRoutingConfigSchema, fetchRoutingCapabilitySchema } from '@nb-corp
 export { fetchRoutingConfigSchema, fetchRoutingCapabilitySchema, fetchRouteRuleSchema, fetchRouteDecisionSchema, selectFetchRoute, canonicalFetchUrl, pathMatchesGlob, BUILTIN_FETCH_ROUTE_RULES, FETCH_ROUTING_PACKAGE } from '@nb-corp/nb-search/contracts';
 export type { FetchRoutingConfig, FetchRouteRule, FetchRouteDecision, FetchRoutingCapability } from '@nb-corp/nb-search/contracts';
 
-export const nbSearchSourceConfigSchema = z.object({
+export const nbSearchSourceConfigSchema = /* @__PURE__ */ z.object({
   reuse_local_config: z.boolean().default(true),
 }).strict();
 
 export type NbSearchSourceConfig = z.infer<typeof nbSearchSourceConfigSchema>;
 
-export const nbSearchConfigSourceStatusSchema = z.object({
+export const nbSearchConfigSourceStatusSchema = /* @__PURE__ */ z.object({
   reuse_local_config: z.boolean(),
   layers: z.array(z.enum(['defaults', 'local', 'environment', 'kiki'])),
   local_config: z.enum(['present', 'missing', 'ignored', 'unreadable', 'invalid']),
@@ -23,17 +23,17 @@ export const nbSearchConfigSourceStatusSchema = z.object({
 export type NbSearchConfigSourceStatus = z.infer<typeof nbSearchConfigSourceStatusSchema>;
 
 /** POST bodies keep identifiers and secrets out of URLs and query strings. */
-export const nbSearchManagedCredentialReadSchema = z.object({
+export const nbSearchManagedCredentialReadSchema = /* @__PURE__ */ z.object({
   instance_id: z.string().min(1).max(256),
   reveal: z.boolean().default(false),
 }).strict();
-export const nbSearchManagedCredentialWriteSchema = z.object({
+export const nbSearchManagedCredentialWriteSchema = /* @__PURE__ */ z.object({
   instance_id: z.string().min(1).max(256),
   value: z.string().trim().min(1).max(8192).nullable(),
   expected_version: z.union([z.literal('none'), z.string().regex(/^[a-f0-9]{64}$/)]),
   expected_binding: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
-export const nbSearchManagedCredentialViewSchema = z.object({
+export const nbSearchManagedCredentialViewSchema = /* @__PURE__ */ z.object({
   instance_id: z.string(),
   slot_id: z.string(),
   stored: z.boolean(),
@@ -48,11 +48,11 @@ export const nbSearchManagedCredentialViewSchema = z.object({
 export type NbSearchManagedCredentialView = z.infer<typeof nbSearchManagedCredentialViewSchema>;
 
 /** Explicit user request only: even refresh=false can query remote balances on a cold/expired cache. */
-export const nbSearchKeyUsageRequestSchema = z.object({
+export const nbSearchKeyUsageRequestSchema = /* @__PURE__ */ z.object({
   instance_id: z.string().min(1).max(256),
   refresh: z.boolean().default(false),
 }).strict();
-export const nbSearchKeyUsageViewSchema = z.object({
+export const nbSearchKeyUsageViewSchema = /* @__PURE__ */ z.object({
   provider_instance_id: z.string(),
   provider_id: z.string(),
   balance_supported: z.boolean(),
@@ -80,13 +80,13 @@ export const nbSearchKeyUsageViewSchema = z.object({
 }).strict();
 export type NbSearchKeyUsageView = z.infer<typeof nbSearchKeyUsageViewSchema>;
 
-const fetchInputKindSchema = z.enum(['url', 'inline_text', 'inline_bytes', 'file']);
-const fetchRepresentationSchema = z.enum(['markdown', 'text']);
-const executionModeSchema = z.enum(['sync', 'async']);
-const latencySchema = z.enum(['fast', 'medium', 'slow']);
-const costSchema = z.enum(['free', 'cheap', 'expensive']);
+const fetchInputKindSchema = /* @__PURE__ */ z.enum(['url', 'inline_text', 'inline_bytes', 'file']);
+const fetchRepresentationSchema = /* @__PURE__ */ z.enum(['markdown', 'text']);
+const executionModeSchema = /* @__PURE__ */ z.enum(['sync', 'async']);
+const latencySchema = /* @__PURE__ */ z.enum(['fast', 'medium', 'slow']);
+const costSchema = /* @__PURE__ */ z.enum(['free', 'cheap', 'expensive']);
 
-const providerInstancePatchSchema = z
+const providerInstancePatchSchema = /* @__PURE__ */ z
   .object({
     provider_id: z.string().trim().min(1).max(128).optional(),
     enabled: z.boolean().optional(),
@@ -98,14 +98,14 @@ const providerInstancePatchSchema = z
   })
   .strict();
 
-const credentialSlotSchema = z
+const credentialSlotSchema = /* @__PURE__ */ z
   .object({
     provider_id: z.string().trim().min(1).max(128),
     env: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
   })
   .strict();
 
-const laneConfigSchema = z
+const laneConfigSchema = /* @__PURE__ */ z
   .object({
     provider_instance_id: z.string().trim().min(1).max(256),
     operation_id: z.string().trim().min(1).max(128),
@@ -115,7 +115,7 @@ const laneConfigSchema = z
   })
   .strict();
 
-const fetchChainConfigSchema = z
+const fetchChainConfigSchema = /* @__PURE__ */ z
   .object({
     input_kind: fetchInputKindSchema,
     representation: fetchRepresentationSchema.optional(),
@@ -123,11 +123,11 @@ const fetchChainConfigSchema = z
   })
   .strict();
 
-const presetConfigSchema = z
+const presetConfigSchema = /* @__PURE__ */ z
   .object({ lanes: z.array(z.string().trim().min(1).max(256)).min(1) })
   .strict();
 
-const fileScopeSchema = z
+const fileScopeSchema = /* @__PURE__ */ z
   .object({
     id: z.string().trim().min(1).max(256),
     root: z.string().trim().min(1),
@@ -135,7 +135,7 @@ const fileScopeSchema = z
   })
   .strict();
 
-export const nbSearchConfigurationViewSchema = z.object({
+export const nbSearchConfigurationViewSchema = /* @__PURE__ */ z.object({
   lanes: z.record(z.string(), laneConfigSchema),
   presets: z.record(z.string(), presetConfigSchema),
   provider_instance_ids: z.array(z.string()),
@@ -146,14 +146,14 @@ export const nbSearchConfigurationViewSchema = z.object({
 });
 export type NbSearchConfigurationView = z.infer<typeof nbSearchConfigurationViewSchema>;
 
-const qualityPatchSchema = z
+const qualityPatchSchema = /* @__PURE__ */ z
   .object({
     min_content_chars: z.number().int().min(0).max(10_000_000).optional(),
     blocked_markers: z.array(z.string().min(1).max(256)).max(64).optional(),
   })
   .strict();
 
-const fetchExecutionPatchSchema = z
+const fetchExecutionPatchSchema = /* @__PURE__ */ z
   .object({
     max_source_bytes: z.number().int().min(1).max(64 * 1024 * 1024).optional(),
     max_response_bytes: z.number().int().min(1024).max(64 * 1024 * 1024).optional(),
@@ -163,7 +163,7 @@ const fetchExecutionPatchSchema = z
   })
   .strict();
 
-const executionPatchSchema = z
+const executionPatchSchema = /* @__PURE__ */ z
   .object({
     max_provider_calls: z.number().int().min(1).max(1024).optional(),
     max_concurrency: z.number().int().min(1).max(128).optional(),
@@ -175,7 +175,7 @@ const executionPatchSchema = z
   })
   .strict();
 
-export const nbSearchConfigPatchSchema = z
+export const nbSearchConfigPatchSchema = /* @__PURE__ */ z
   .object({
     schema_version: z.literal('4').nullable().optional(),
     home: z.string().trim().min(1).nullable().optional(),
@@ -211,19 +211,19 @@ export const nbSearchConfigPatchSchema = z
 
 export type NbSearchConfigPatch = z.infer<typeof nbSearchConfigPatchSchema>;
 
-const capabilityIssueSchema = z
+const capabilityIssueSchema = /* @__PURE__ */ z
   .object({
     code: z.string(),
     execution: executionModeSchema.optional(),
   })
   .passthrough();
 
-const queryOutputSchema = z.discriminatedUnion('channel', [
+const queryOutputSchema = /* @__PURE__ */ z.discriminatedUnion('channel', [
   z.object({ channel: z.literal('results'), schema_id: z.literal('nb-search.results@1') }),
   z.object({ channel: z.literal('typed'), schema_id: z.string().min(1) }),
 ]);
 
-const providerDescriptorSchema = z
+const providerDescriptorSchema = /* @__PURE__ */ z
   .object({
     provider_id: z.string(),
     adapter_version: z.string(),
@@ -243,7 +243,7 @@ const providerDescriptorSchema = z
   })
   .passthrough();
 
-const providerInstanceCapabilitySchema = z
+const providerInstanceCapabilitySchema = /* @__PURE__ */ z
   .object({
     id: z.string(),
     provider_id: z.string(),
@@ -266,7 +266,7 @@ const providerInstanceCapabilitySchema = z
   })
   .passthrough();
 
-const searchLaneCapabilitySchema = z
+const searchLaneCapabilitySchema = /* @__PURE__ */ z
   .object({
     id: z.string(),
     output: queryOutputSchema,
@@ -278,7 +278,7 @@ const searchLaneCapabilitySchema = z
   })
   .passthrough();
 
-const searchPresetCapabilitySchema = z
+const searchPresetCapabilitySchema = /* @__PURE__ */ z
   .object({
     name: z.string(),
     lanes: z.array(z.string()),
@@ -288,7 +288,7 @@ const searchPresetCapabilitySchema = z
   })
   .passthrough();
 
-const fetchPipelineCapabilitySchema = z
+const fetchPipelineCapabilitySchema = /* @__PURE__ */ z
   .object({
     id: z.string(),
     input_kinds: z.array(fetchInputKindSchema),
@@ -309,7 +309,7 @@ const fetchPipelineCapabilitySchema = z
   })
   .passthrough();
 
-export const nbSearchCapabilitiesSchema = z
+export const nbSearchCapabilitiesSchema = /* @__PURE__ */ z
   .object({
     config_source: nbSearchConfigSourceStatusSchema.optional(),
     configuration: nbSearchConfigurationViewSchema.optional(),
@@ -363,14 +363,14 @@ export const nbSearchCapabilitiesSchema = z
 
 export type NbSearchCapabilities = z.infer<typeof nbSearchCapabilitiesSchema>;
 
-export const nbSearchReadinessSchema = z.object({
+export const nbSearchReadinessSchema = /* @__PURE__ */ z.object({
   configured: z.boolean(),
   available: z.boolean(),
   selection: z.string().optional(),
   issues: z.array(z.string()),
 });
 
-export const nbSearchTestStatusSchema = z.object({
+export const nbSearchTestStatusSchema = /* @__PURE__ */ z.object({
   revision: z.string(),
   search: nbSearchReadinessSchema,
   fetch: nbSearchReadinessSchema,

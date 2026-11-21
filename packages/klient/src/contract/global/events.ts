@@ -17,6 +17,7 @@ import type { IOAuthService } from '@kiki/agent-core-v2/app/auth/auth';
 
 import { stringDeltaSchema } from '../helpers.js';
 import type { EventRegistration } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 /** Payload of `event.session.archived` on the global bus. */
 export interface SessionArchivedPayload {
@@ -72,14 +73,14 @@ export interface KlientEventPayloads {
 
 export type KlientEventName = keyof KlientEventPayloads;
 
-const configChangedSchema = z.object({
+const configChangedSchema = /* @__PURE__ */ z.object({
   domain: z.string(),
   source: z.enum(['load', 'reload', 'set']),
   value: z.unknown(),
   previousValue: z.unknown(),
 });
 
-const reloadSummarySchema = z.object({
+const reloadSummarySchema = /* @__PURE__ */ z.object({
   added: z.array(z.string()),
   removed: z.array(z.string()),
   errors: z.array(z.object({ id: z.string(), message: z.string() })),
@@ -106,7 +107,7 @@ const sessionMetaUpdatedSchema = z.object({
   }),
 }) satisfies z.ZodType<SessionMetaUpdatedPayload>;
 
-export const catalogChangedSchema = z.object({
+export const catalogChangedSchema = /* @__PURE__ */ z.object({
   changed: z.array(
     z.object({
       provider_id: z.string(),
@@ -119,7 +120,7 @@ export const catalogChangedSchema = z.object({
   failed: z.array(z.object({ provider: z.string(), reason: z.string() })),
 });
 
-export const searchIndexStateSchema = z.object({
+export const searchIndexStateSchema = /* @__PURE__ */ z.object({
   state: z.enum(['building', 'ready', 'readonly', 'unavailable']),
   indexed_sessions: z.number(), total_sessions: z.number(), documents: z.number(),
   stale: z.boolean().optional(), degraded: z.string().optional(),
@@ -133,7 +134,7 @@ export const searchIndexStateSchema = z.object({
  * `failed`. `installId` ties the steps of one install together.
  */
 const installTag = { installId: z.string().min(1), version: z.string().min(1) };
-export const antigravityInstallProgressSchema = z.discriminatedUnion('stage', [
+export const antigravityInstallProgressSchema = /* @__PURE__ */ z.discriminatedUnion('stage', [
   z.object({ ...installTag, stage: z.literal('download'), receivedBytes: z.number().nonnegative(), totalBytes: z.number().positive().optional() }),
   z.object({ ...installTag, stage: z.literal('extract') }),
   z.object({ ...installTag, stage: z.literal('activate') }),
@@ -143,10 +144,10 @@ export const antigravityInstallProgressSchema = z.discriminatedUnion('stage', [
 
 /** Public event name → source binding + payload schema. */
 export const globalEvents = {
-  'usage.settled': {
+  'usage.settled': /* @__PURE__ */ lazyContract(() => ({
     kind: 'bus', type: 'event.usage.settled',
-    schema: z.object({ sessionId: z.string().optional(), agentId: z.string().optional() }),
-  },
+    schema: /* @__PURE__ */ z.object({ sessionId: z.string().optional(), agentId: z.string().optional() }),
+  }), 'kind', 'type', 'schema'),
   'room.changed': {
     kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
   },
@@ -188,22 +189,22 @@ export const globalEvents = {
     event: 'onDidReload',
     schema: reloadSummarySchema,
   },
-  'plugins.changed': {
-    kind: 'bus', type: 'event.plugin.changed', schema: z.object({}).strict(),
-  },
-  'personas.changed': {
-    kind: 'bus', type: 'event.persona.changed', schema: z.object({}).strict(),
-  },
-  'session.created': {
+  'plugins.changed': /* @__PURE__ */ lazyContract(() => ({
+    kind: 'bus', type: 'event.plugin.changed', schema: /* @__PURE__ */ z.object({}).strict(),
+  }), 'kind', 'type', 'schema'),
+  'personas.changed': /* @__PURE__ */ lazyContract(() => ({
+    kind: 'bus', type: 'event.persona.changed', schema: /* @__PURE__ */ z.object({}).strict(),
+  }), 'kind', 'type', 'schema'),
+  'session.created': /* @__PURE__ */ lazyContract(() => ({
     kind: 'bus',
     type: 'event.session.created',
-    schema: z.object({ sessionId: z.string() }),
-  },
-  'session.archived': {
+    schema: /* @__PURE__ */ z.object({ sessionId: z.string() }),
+  }), 'kind', 'type', 'schema'),
+  'session.archived': /* @__PURE__ */ lazyContract(() => ({
     kind: 'bus',
     type: 'event.session.archived',
-    schema: z.object({ sessionId: z.string() }),
-  },
+    schema: /* @__PURE__ */ z.object({ sessionId: z.string() }),
+  }), 'kind', 'type', 'schema'),
   'session.metaUpdated': {
     kind: 'bus',
     type: 'session.meta.updated',

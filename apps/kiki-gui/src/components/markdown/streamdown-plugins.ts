@@ -129,24 +129,20 @@ export function useStreamdownPlugins(text: string | null | undefined): PluginCon
       text.includes('$$') || text.includes('\\(') || text.includes('\\[') ||
       /(?:```|~~~)[^\S\r\n]*math\b/i.test(text)
     ),
-    mermaid: typeof text === 'string' && /(?:```|~~~)[^\S\r\n]*mermaid\b/i.test(text),
   }), [text]);
-  const { code, math, mermaid } = needs;
+  const { code, math } = needs;
   const currentVersion = useSyncExternalStore(subscribe, getVersion, getVersion);
 
   useEffect(() => {
-    if (code) ensure('code');
     if (math) ensure('math');
-    if (mermaid) ensure('mermaid');
-  }, [code, math, mermaid]);
+  }, [math]);
 
   return useMemo(() => {
-    if (!math && !mermaid) return code ? CODE_PLUGINS : CJK_PLUGINS;
+    if (!math) return code ? CODE_PLUGINS : CJK_PLUGINS;
     const plugins: PluginConfig = { cjk };
     if (code) plugins.code = LAZY_CODE;
     if (math && loaded.math !== undefined) plugins.math = loaded.math;
-    if (mermaid && loaded.mermaid !== undefined) plugins.mermaid = loaded.mermaid;
     return plugins;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, math, mermaid, currentVersion]);
+  }, [code, math, currentVersion]);
 }

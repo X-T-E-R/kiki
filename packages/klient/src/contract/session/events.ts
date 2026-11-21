@@ -21,6 +21,7 @@ import {
   interactionSchema,
 } from './interaction.js';
 import { sessionMetadataChangedEventSchema } from './metadata.js';
+import { lazyContract } from '../lazyContract.js';
 
 /**
  * Scope-stream registration (`kind: 'stream'`). Declared structurally here
@@ -59,19 +60,19 @@ export const sessionEvents = {
     event: 'onDidChangeMetadata',
     schema: sessionMetadataChangedEventSchema,
   },
-  'skills.changed': {
+  'skills.changed': /* @__PURE__ */ lazyContract(() => ({
     kind: 'emitter',
     service: 'sessionSkillCatalog',
     event: 'onDidChange',
-    schema: z.string(),
-  },
+    schema: /* @__PURE__ */ z.string(),
+  }), 'kind', 'service', 'event', 'schema'),
   // Passthrough stream (no `type` filter): the source pushes the full
   // pending interaction set on every change.
-  'interactions.changed': {
+  'interactions.changed': /* @__PURE__ */ lazyContract(() => ({
     kind: 'stream',
     name: 'interactions',
-    schema: z.array(interactionSchema),
-  },
+    schema: /* @__PURE__ */ z.array(interactionSchema),
+  }), 'kind', 'name', 'schema'),
   'interactions.resolved': {
     kind: 'stream',
     name: 'interactions:resolved',

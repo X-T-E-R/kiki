@@ -11,8 +11,9 @@ import { executionBindingWireSchema as executionBindingSchema } from '../executi
 import { tokenUsageSchema } from '../agent/schemas.js';
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const negotiatedExecutorSchema = z.object({
+export const negotiatedExecutorSchema = /* @__PURE__ */ z.object({
   agentVersion: z.string().optional(), image: z.boolean().optional(), audio: z.boolean().optional(),
   fork: z.boolean().optional(), nativeSteering: z.boolean().optional(), questionForm: z.boolean().optional(),
   planApproval: z.boolean().optional(), models: z.array(z.string()).optional(),
@@ -20,7 +21,7 @@ export const negotiatedExecutorSchema = z.object({
   resume: z.boolean().optional(), load: z.boolean().optional(), permissionModes: z.array(z.string()).optional(),
 });
 
-export const agentMetaSchema = z.object({
+export const agentMetaSchema = /* @__PURE__ */ z.object({
   execution: executionBindingSchema.optional(),
   homedir: z.string().optional(),
   type: z.enum(['main', 'sub', 'independent']).optional(),
@@ -49,16 +50,16 @@ export const agentMetaSchema = z.object({
   toolCallCount: z.number().int().nonnegative().optional(),
 });
 
-const sessionWorktreeSchema = z.object({
+const sessionWorktreeSchema = /* @__PURE__ */ z.object({
   worktreeId: z.string(), branch: z.string(), sourceRoot: z.string(), baseRef: z.string(),
 });
 
-const sessionPromotedFromSchema = z.object({
+const sessionPromotedFromSchema = /* @__PURE__ */ z.object({
   sessionId: z.string(), agentId: z.string(), agentName: z.string().optional(),
   profile: z.string().optional(), promotedAt: z.number().optional(),
 });
 
-export const sessionMetaSchema = z.object({
+export const sessionMetaSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   version: z.number().optional(),
   title: z.string().optional(),
@@ -83,7 +84,7 @@ export const sessionMetaSchema = z.object({
 });
 
 /** `Partial<Omit<SessionMeta, 'id' | 'createdAt'>>` — every key optional. */
-export const sessionMetaPatchSchema = z.object({
+export const sessionMetaPatchSchema = /* @__PURE__ */ z.object({
   version: z.number().optional(),
   title: z.string().optional(),
   titleKind: z.enum(['replaceable', 'generated', 'custom']).optional(),
@@ -105,7 +106,7 @@ export const sessionMetaPatchSchema = z.object({
 });
 
 /** `keyof SessionMeta` — keep in sync with `sessionMetaSchema`. */
-export const sessionMetaKeySchema = z.enum([
+export const sessionMetaKeySchema = /* @__PURE__ */ z.enum([
   'id',
   'version',
   'title',
@@ -130,15 +131,15 @@ export const sessionMetaKeySchema = z.enum([
   'usage',
 ]);
 
-export const sessionMetadataChangedEventSchema = z.object({
+export const sessionMetadataChangedEventSchema = /* @__PURE__ */ z.object({
   changed: z.array(sessionMetaKeySchema),
 });
 
 export const sessionMetadataContract = {
-  read: { input: z.tuple([]), output: sessionMetaSchema },
-  getAgentExecutor: { input: z.tuple([z.string().min(1)]), output: maybe(z.string()) },
-  update: { input: z.tuple([sessionMetaPatchSchema]), output: noResult },
-  setTitle: { input: z.tuple([z.string()]), output: noResult },
-  setArchived: { input: z.tuple([z.boolean()]), output: noResult },
-  registerAgent: { input: z.tuple([z.string(), agentMetaSchema]), output: noResult },
+  read: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: sessionMetaSchema }), 'input', 'output'),
+  getAgentExecutor: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().min(1)]), output: /* @__PURE__ */ maybe(z.string()) }), 'input', 'output'),
+  update: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([sessionMetaPatchSchema]), output: noResult }), 'input', 'output'),
+  setTitle: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  setArchived: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.boolean()]), output: noResult }), 'input', 'output'),
+  registerAgent: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), agentMetaSchema]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

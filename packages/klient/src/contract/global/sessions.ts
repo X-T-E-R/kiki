@@ -8,8 +8,9 @@ import { z } from 'zod';
 import { maybe, pageOf } from '../helpers.js';
 import { negotiatedExecutorSchema } from '../session/metadata.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const sessionSummarySchema = z.object({
+export const sessionSummarySchema = /* @__PURE__ */ z.object({
   id: z.string(),
   workspaceId: z.string(),
   cwd: z.string().optional(),
@@ -29,7 +30,7 @@ export const sessionSummarySchema = z.object({
   allowKikiSubagents: z.boolean().optional(),
 });
 
-export const sessionListQuerySchema = z.object({
+export const sessionListQuerySchema = /* @__PURE__ */ z.object({
   workspaceIds: z.array(z.string()).optional(),
   sessionId: z.string().optional(),
   includeArchived: z.boolean().optional(),
@@ -39,13 +40,13 @@ export const sessionListQuerySchema = z.object({
   after: z.string().optional(),
 });
 
-export const sessionCountQuerySchema = z.object({
+export const sessionCountQuerySchema = /* @__PURE__ */ z.object({
   workspaceIds: z.array(z.string()).optional(),
   includeArchived: z.boolean().optional(),
 });
 
 export const sessionsContract = {
-  listRecent: { input: z.tuple([sessionListQuerySchema]), output: pageOf(sessionSummarySchema) },
-  get: { input: z.tuple([z.string()]), output: maybe(sessionSummarySchema) },
-  count: { input: z.tuple([sessionCountQuerySchema]), output: z.number() },
+  listRecent: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([sessionListQuerySchema]), output: /* @__PURE__ */ pageOf(sessionSummarySchema) }), 'input', 'output'),
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(sessionSummarySchema) }), 'input', 'output'),
+  count: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([sessionCountQuerySchema]), output: /* @__PURE__ */ z.number() }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -2,10 +2,10 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from './time';
 
-export const fsKindSchema = z.enum(['file', 'directory', 'symlink']);
+export const fsKindSchema = /* @__PURE__ */ z.enum(['file', 'directory', 'symlink']);
 export type FsKind = z.infer<typeof fsKindSchema>;
 
-export const fsGitStatusSchema = z.enum([
+export const fsGitStatusSchema = /* @__PURE__ */ z.enum([
   'clean',
   'modified',
   'added',
@@ -17,7 +17,7 @@ export const fsGitStatusSchema = z.enum([
 ]);
 export type FsGitStatus = z.infer<typeof fsGitStatusSchema>;
 
-export const fsEntrySchema = z.object({
+export const fsEntrySchema = /* @__PURE__ */ z.object({
   path: z.string(),
   name: z.string(),
   kind: fsKindSchema,
@@ -33,7 +33,7 @@ export const fsEntrySchema = z.object({
 });
 export type FsEntry = z.infer<typeof fsEntrySchema>;
 
-export const fsSearchHitSchema = z.object({
+export const fsSearchHitSchema = /* @__PURE__ */ z.object({
   path: z.string(),
   name: z.string(),
   kind: fsKindSchema,
@@ -42,7 +42,7 @@ export const fsSearchHitSchema = z.object({
 });
 export type FsSearchHit = z.infer<typeof fsSearchHitSchema>;
 
-export const fsSuggestItemSchema = z.object({
+export const fsSuggestItemSchema = /* @__PURE__ */ z.object({
   path: z.string(),
   name: z.string(),
   kind: fsKindSchema,
@@ -51,7 +51,7 @@ export const fsSuggestItemSchema = z.object({
 });
 export type FsSuggestItem = z.infer<typeof fsSuggestItemSchema>;
 
-export const fsGrepMatchSchema = z.object({
+export const fsGrepMatchSchema = /* @__PURE__ */ z.object({
   line: z.number().int().positive(),
   col: z.number().int().positive(),
   text: z.string(),
@@ -60,26 +60,26 @@ export const fsGrepMatchSchema = z.object({
 });
 export type FsGrepMatch = z.infer<typeof fsGrepMatchSchema>;
 
-export const fsGrepFileHitSchema = z.object({
+export const fsGrepFileHitSchema = /* @__PURE__ */ z.object({
   path: z.string(),
   matches: z.array(fsGrepMatchSchema),
 });
 export type FsGrepFileHit = z.infer<typeof fsGrepFileHitSchema>;
 
-export const fsGitStatusEntrySchema = z.object({
+export const fsGitStatusEntrySchema = /* @__PURE__ */ z.object({
   path: z.string(),
   status: fsGitStatusSchema,
   rename_from: z.string().optional(),
 });
 export type FsGitStatusEntry = z.infer<typeof fsGitStatusEntrySchema>;
 
-export const fsChangeKindSchema = z.enum(['file', 'directory', 'symlink']);
+export const fsChangeKindSchema = /* @__PURE__ */ z.enum(['file', 'directory', 'symlink']);
 export type FsChangeKind = z.infer<typeof fsChangeKindSchema>;
 
-export const fsChangeActionSchema = z.enum(['created', 'modified', 'deleted']);
+export const fsChangeActionSchema = /* @__PURE__ */ z.enum(['created', 'modified', 'deleted']);
 export type FsChangeAction = z.infer<typeof fsChangeActionSchema>;
 
-export const fsChangeEntrySchema = z.object({
+export const fsChangeEntrySchema = /* @__PURE__ */ z.object({
   path: z.string(),
   change: fsChangeActionSchema,
   kind: fsChangeKindSchema,
@@ -88,7 +88,7 @@ export const fsChangeEntrySchema = z.object({
 });
 export type FsChangeEntry = z.infer<typeof fsChangeEntrySchema>;
 
-export const fsChangeEventSchema = z.object({
+export const fsChangeEventSchema = /* @__PURE__ */ z.object({
   changes: z.array(fsChangeEntrySchema),
   coalesced_window_ms: z.number().int().positive(),
   truncated: z.boolean().optional(),

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const OUTPUT_LAYER_PLUGIN_ID = 'kiki-output-layer';
-export const outputLayerPresetSchema = z.object({
+export const outputLayerPresetSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   instruction: z.string().min(1),
@@ -15,7 +15,7 @@ export const outputLayerPresetSchema = z.object({
 });
 export type OutputLayerPreset = z.infer<typeof outputLayerPresetSchema>;
 
-export const outputLayerSettingsSchema = z.object({
+export const outputLayerSettingsSchema = /* @__PURE__ */ z.object({
   groupChars: z.number().int().min(80).max(10000).default(600),
   preloadBefore: z.number().int().min(0).max(20).default(1),
   preloadAfter: z.number().int().min(0).max(20).default(1),
@@ -51,7 +51,7 @@ export const OUTPUT_LAYER_DEFAULT_PRESETS: readonly OutputLayerPreset[] = [
   },
 ];
 
-export const outputLayerConfigurationSchema = z.object({
+export const outputLayerConfigurationSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean(),
   presets: z.array(outputLayerPresetSchema),
   templates: z.array(outputLayerPresetSchema).optional(),
@@ -59,12 +59,12 @@ export const outputLayerConfigurationSchema = z.object({
 });
 export type OutputLayerConfiguration = z.infer<typeof outputLayerConfigurationSchema>;
 
-export const outputLayerHistoryPairSchema = z.object({
+export const outputLayerHistoryPairSchema = /* @__PURE__ */ z.object({
   sourceId: z.string(), sourceRevision: z.string(), original: z.string(), output: z.string(),
 }).strict();
 export type OutputLayerHistoryPair = z.infer<typeof outputLayerHistoryPairSchema>;
 
-export const outputLayerRequestSchema = z.object({
+export const outputLayerRequestSchema = /* @__PURE__ */ z.object({
   sessionId: z.string().min(1),
   sourceId: z.string().min(1),
   sourceRevision: z.string().min(1),
@@ -76,7 +76,7 @@ export const outputLayerRequestSchema = z.object({
 }).strict();
 export type OutputLayerRequest = z.infer<typeof outputLayerRequestSchema>;
 
-export const outputLayerEventSchema = z.discriminatedUnion('type', [
+export const outputLayerEventSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   z.object({ type: z.literal('started'), cycleId: z.string().min(1), historyReset: z.boolean(), contextWindow: z.number(), inputTokensEstimate: z.number() }),
   z.object({ type: z.literal('delta'), text: z.string() }),
   z.object({ type: z.literal('reset') }),

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
+export const ToolInputDisplaySchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('command'),
     command: z.string(),
@@ -109,7 +109,7 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
-export const ToolResultDisplaySchema = z.discriminatedUnion('kind', [
+export const ToolResultDisplaySchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('command_output'),
     exit_code: z.number(),

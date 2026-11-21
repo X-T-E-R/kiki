@@ -9,8 +9,8 @@ function mutableSelection(value: ExecutionSelection): MutableWire<ExecutionSelec
     kiki_context: overrides.kiki_context === null || overrides.kiki_context === undefined ? overrides.kiki_context : [...overrides.kiki_context] } };
 }
 
-export const executionSelectionWireSchema: z.ZodType<MutableWire<ExecutionSelection>, z.input<typeof executionSelectionSchema>> = executionSelectionSchema.transform(mutableSelection);
-export const executionBindingWireSchema: z.ZodType<MutableWire<ExecutionBinding>, z.input<typeof executionBindingSchema>> = executionBindingSchema.transform((value): MutableWire<ExecutionBinding> => ({
+export const executionSelectionWireSchema: z.ZodType<MutableWire<ExecutionSelection>, z.input<typeof executionSelectionSchema>> = /* @__PURE__ */ executionSelectionSchema.transform(mutableSelection);
+export const executionBindingWireSchema: z.ZodType<MutableWire<ExecutionBinding>, z.input<typeof executionBindingSchema>> = /* @__PURE__ */ executionBindingSchema.transform((value): MutableWire<ExecutionBinding> => ({
   ...value, selection: mutableSelection(value.selection),
   effective: { ...value.effective, kiki_context: [...value.effective.kiki_context] },
 }));

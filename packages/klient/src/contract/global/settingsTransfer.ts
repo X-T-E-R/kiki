@@ -10,11 +10,12 @@ import {
 } from '@kiki/protocol';
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 export const settingsTransferContract = {
-  catalog: { input: z.tuple([]), output: settingsTransferCatalogSchema },
-  export: { input: z.tuple([settingsTransferExportInputSchema]), output: settingsTransferPackageSchema },
-  preview: { input: z.tuple([settingsTransferPreviewInputSchema]), output: settingsTransferPreviewSchema },
-  apply: { input: z.tuple([settingsTransferApplyInputSchema]), output: settingsTransferApplyResultSchema },
-  cancel: { input: z.tuple([settingsTransferApplyInputSchema]), output: noResult },
+  catalog: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: settingsTransferCatalogSchema }), 'input', 'output'),
+  export: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([settingsTransferExportInputSchema]), output: settingsTransferPackageSchema }), 'input', 'output'),
+  preview: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([settingsTransferPreviewInputSchema]), output: settingsTransferPreviewSchema }), 'input', 'output'),
+  apply: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([settingsTransferApplyInputSchema]), output: settingsTransferApplyResultSchema }), 'input', 'output'),
+  cancel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([settingsTransferApplyInputSchema]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -1,22 +1,22 @@
 import { z } from 'zod';
 
-export const shortcutPlatformSchema = z.enum(['windows', 'macos', 'linux']);
+export const shortcutPlatformSchema = /* @__PURE__ */ z.enum(['windows', 'macos', 'linux']);
 export type ShortcutPlatform = z.infer<typeof shortcutPlatformSchema>;
-export const shortcutActionSchema = z.enum([
+export const shortcutActionSchema = /* @__PURE__ */ z.enum([
   'new-session', 'switcher', 'next-session', 'previous-session', 'settings', 'shortcuts', 'shortcuts-help',
   'find', 'find-next', 'find-previous', 'terminal-toggle', 'terminal-copy', 'terminal-paste',
   'approve', 'reject', 'composer-mode', 'composer-undo', 'composer-redo',
 ]);
 export type ShortcutAction = z.infer<typeof shortcutActionSchema>;
-export const shortcutChordSchema = z.object({
+export const shortcutChordSchema = /* @__PURE__ */ z.object({
   key: z.string().min(1).max(32).refine((key) => key.length === 1 && !/[\u0000-\u001F\u007F]/u.test(key) || /^(?:Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|F(?:[1-9]|1[0-9]|2[0-4]))$/u.test(key), 'Use a KeyboardEvent.key value'),
   modifier: z.enum(['none', 'mod', 'ctrl', 'meta', 'ctrl-meta']).default('none'),
   shift: z.boolean().default(false),
   alt: z.boolean().default(false),
 }).strict();
 export type ShortcutChord = z.infer<typeof shortcutChordSchema>;
-export const shortcutBindingsSchema = z.partialRecord(shortcutActionSchema, z.array(shortcutChordSchema).max(4));
-export const shortcutPreferencesSchema = z.object({
+export const shortcutBindingsSchema = /* @__PURE__ */ z.partialRecord(shortcutActionSchema, z.array(shortcutChordSchema).max(4));
+export const shortcutPreferencesSchema = /* @__PURE__ */ z.object({
   version: z.literal(1),
   overrides: z.object({
     windows: shortcutBindingsSchema.optional(),
@@ -127,7 +127,7 @@ export function matchesShortcut(event: ShortcutKeyEvent, binding: ShortcutChord)
   }
 }
 
-export const shortcutConflictSchema = z.object({
+export const shortcutConflictSchema = /* @__PURE__ */ z.object({
   platform: shortcutPlatformSchema,
   actions: z.array(shortcutActionSchema),
   kind: z.enum(['duplicate', 'reserved']),
@@ -179,10 +179,10 @@ export function shortcutModifierLabel(binding: ShortcutChord, platform: Shortcut
     binding.modifier === 'meta' ? platform === 'macos' ? '⌘' : 'Meta' : binding.modifier === 'ctrl' ? 'Ctrl' : binding.modifier === 'ctrl-meta' ? 'Ctrl+Meta' : '';
 }
 
-export const shortcutReadQuerySchema = z.object({ platform: shortcutPlatformSchema });
-export const shortcutWriteSchema = z.object({ preferences: shortcutPreferencesSchema }).strict();
-export const shortcutResetSchema = z.object({ platform: shortcutPlatformSchema.optional(), action: shortcutActionSchema.optional() }).strict();
-export const shortcutResponseSchema = z.object({
+export const shortcutReadQuerySchema = /* @__PURE__ */ z.object({ platform: shortcutPlatformSchema });
+export const shortcutWriteSchema = /* @__PURE__ */ z.object({ preferences: shortcutPreferencesSchema }).strict();
+export const shortcutResetSchema = /* @__PURE__ */ z.object({ platform: shortcutPlatformSchema.optional(), action: shortcutActionSchema.optional() }).strict();
+export const shortcutResponseSchema = /* @__PURE__ */ z.object({
   preferences: shortcutPreferencesSchema,
   bindings: z.record(shortcutActionSchema, z.array(shortcutChordSchema)),
   conflicts: z.array(shortcutConflictSchema),

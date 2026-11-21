@@ -174,7 +174,7 @@ describe('Markdown link menus', () => {
       expect(writeText).toHaveBeenLastCalledWith(path);
     }
     await act(async () => { link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
-    expect(document.querySelector('[data-preview-tab]')?.getAttribute('data-preview-tab')).toBe(path);
+    expect(document.querySelector('[data-preview-tab]').dataset.previewTab).toBe(path);
   });
 
   it('keeps FilePathLink preview and copy but hides local openers in SSH scope', async () => {
@@ -726,7 +726,11 @@ describe('mobile reading & containment', () => {
     const desktopProbe = makeRoot();
     await renderSettled(desktopProbe.root, <Markdown mode="static" text={`\`\`\`ts\n${lines}\n\`\`\``} />);
     expect(desktopProbe.container.querySelector('[data-plain-preview]')).toBeNull();
-    expect(desktopProbe.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+    expect(desktopProbe.container.querySelector('pre > code')?.textContent).toBe(lines);
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(desktopProbe.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+    });
 
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
@@ -756,7 +760,10 @@ describe('mobile reading & containment', () => {
         toggle.click();
       });
       expect(phoneProbe.container.querySelector('[data-plain-preview]')).toBeNull();
-      expect(phoneProbe.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+      await vi.waitFor(async () => {
+        await act(async () => {});
+        expect(phoneProbe.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+      });
       expect(phoneProbe.container.querySelector('.kiki-cb-body')?.textContent).toContain('const row_48 = 48;');
     } finally {
       Object.defineProperty(window, 'matchMedia', {

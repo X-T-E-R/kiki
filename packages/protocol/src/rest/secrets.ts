@@ -6,7 +6,7 @@ import { z } from 'zod';
  * store); `environment` is a server environment variable (or a provider's
  * declared env table); `local` is the nb-search CLI secrets file.
  */
-export const secretSourceSchema = z.enum(['kiki', 'environment', 'local', 'none']);
+export const secretSourceSchema = /* @__PURE__ */ z.enum(['kiki', 'environment', 'local', 'none']);
 export type SecretSource = z.infer<typeof secretSourceSchema>;
 
 const mcpScope = { server: z.string().min(1).max(256), cwd: z.string().min(1).optional() };
@@ -16,7 +16,7 @@ const mcpScope = { server: z.string().min(1).max(256), cwd: z.string().min(1).op
  * of URLs, query strings and access logs. OAuth tokens are sign-in state and
  * have no reference kind.
  */
-export const secretRefSchema = z.discriminatedUnion('kind', [
+export const secretRefSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('provider_api_key'), provider_id: z.string().min(1).max(256) }).strict(),
   z.object({ kind: z.literal('reviewer_api_key') }).strict(),
   z.object({ kind: z.literal('browser_endpoint'), browser_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/) }).strict(),
@@ -28,11 +28,11 @@ export const secretRefSchema = z.discriminatedUnion('kind', [
 ]);
 export type SecretRef = z.infer<typeof secretRefSchema>;
 
-export const revealSecretRequestSchema = z.object({ ref: secretRefSchema }).strict();
+export const revealSecretRequestSchema = /* @__PURE__ */ z.object({ ref: secretRefSchema }).strict();
 export type RevealSecretRequest = z.infer<typeof revealSecretRequestSchema>;
 
 /** Only returned by the explicit reveal route; bulk reads carry `source` alone. */
-export const revealedSecretSchema = z.object({
+export const revealedSecretSchema = /* @__PURE__ */ z.object({
   source: secretSourceSchema,
   env_name: z.string().min(1).optional(),
   value: z.string().optional(),

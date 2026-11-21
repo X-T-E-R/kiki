@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-export const usageGranularitySchema = z.enum(['day', 'week', 'month', 'session', 'five_hour']);
-export const usageRangePresetSchema = z.enum([
+export const usageGranularitySchema = /* @__PURE__ */ z.enum(['day', 'week', 'month', 'session', 'five_hour']);
+export const usageRangePresetSchema = /* @__PURE__ */ z.enum([
   'today',
   'last_7_days',
   'this_week',
@@ -9,11 +9,11 @@ export const usageRangePresetSchema = z.enum([
   'all',
   'custom',
 ]);
-export const usageDimensionSchema = z.enum(['agent', 'model', 'project', 'session', 'provider', 'profile']);
+export const usageDimensionSchema = /* @__PURE__ */ z.enum(['agent', 'model', 'project', 'session', 'provider', 'profile']);
 
-const repeatedStringSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional();
+const repeatedStringSchema = /* @__PURE__ */ z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional();
 
-export const usageQuerySchema = z
+export const usageQuerySchema = /* @__PURE__ */ z
   .object({
     granularity: usageGranularitySchema.optional(),
     range: usageRangePresetSchema.optional(),
@@ -55,21 +55,21 @@ export const usageQuerySchema = z
     }
   });
 
-export const usageTokensSchema = z.object({
+export const usageTokensSchema = /* @__PURE__ */ z.object({
   input_other: z.number().nonnegative(),
   output: z.number().nonnegative(),
   input_cache_read: z.number().nonnegative(),
   input_cache_creation: z.number().nonnegative(),
 });
 
-export const usageAggregateSchema = z.object({
+export const usageAggregateSchema = /* @__PURE__ */ z.object({
   tokens: usageTokensSchema,
   tokens_unknown: z.boolean().optional().describe('Some records lack token accounting or zero-record provenance; numeric tokens remain the recorded subtotal, not an inferred total.'),
   cost_usd_estimated: z.number().nonnegative(),
   cost_unknown: z.boolean(),
 });
 
-export const usageAccountingSnapshotSchema = usageAggregateSchema.extend({
+export const usageAccountingSnapshotSchema = /* @__PURE__ */ usageAggregateSchema.extend({
   version: z.literal(2),
   subject: z.object({ session_id: z.string(), agent_id: z.string().optional(), scope: z.enum(['self', 'descendants', 'session']) }),
   source_revision: z.string().optional(),
@@ -80,7 +80,7 @@ export const usageAccountingSnapshotSchema = usageAggregateSchema.extend({
 
 export type UsageAccountingSnapshot = z.infer<typeof usageAccountingSnapshotSchema>;
 
-export const usageGroupSchema = usageAggregateSchema.extend({
+export const usageGroupSchema = /* @__PURE__ */ usageAggregateSchema.extend({
   key: z.string(),
   provider: z.string().nullable(),
   model_alias: z.string().nullable(),
@@ -89,7 +89,7 @@ export const usageGroupSchema = usageAggregateSchema.extend({
   profile_name: z.string().nullable(),
 });
 
-export const usageTrendBucketSchema = z.object({
+export const usageTrendBucketSchema = /* @__PURE__ */ z.object({
   key: z.string(),
   start_at: z.number().int().nonnegative(),
   end_at: z.number().int().nonnegative(),
@@ -110,7 +110,7 @@ export const usageTrendBucketSchema = z.object({
   }),
 });
 
-export const usageSessionItemSchema = z.object({
+export const usageSessionItemSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   workspace_id: z.string(),
   title: z.string().nullable(),
@@ -124,7 +124,7 @@ export const usageSessionItemSchema = z.object({
   unknown_price_models: z.array(z.string()),
 });
 
-export const usageResponseSchema = z.object({
+export const usageResponseSchema = /* @__PURE__ */ z.object({
   query: z.object({
     granularity: usageGranularitySchema,
     range: z.object({
@@ -179,7 +179,7 @@ export type UsageQuery = z.infer<typeof usageQuerySchema>;
 export type UsageResponse = z.infer<typeof usageResponseSchema>;
 export type UsageAggregateWire = z.infer<typeof usageAggregateSchema>;
 
-export const modelPriceOverrideSchema = z.object({
+export const modelPriceOverrideSchema = /* @__PURE__ */ z.object({
   input_cost_per_token: z.number().finite().nonnegative(),
   output_cost_per_token: z.number().finite().nonnegative(),
   cache_read_input_token_cost: z.number().finite().nonnegative().optional(),
@@ -187,15 +187,15 @@ export const modelPriceOverrideSchema = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/),
 }).strict();
 
-export const usagePricingQuerySchema = z.object({
+export const usagePricingQuerySchema = /* @__PURE__ */ z.object({
   model: z.union([z.string().trim().min(1), z.array(z.string().trim().min(1)).max(500)]).optional(),
 });
 
-export const usagePricingUpdateSchema = z.object({
+export const usagePricingUpdateSchema = /* @__PURE__ */ z.object({
   overrides: z.record(z.string().trim().min(1).max(512), modelPriceOverrideSchema.nullable()),
 }).strict();
 
-export const usagePricingResponseSchema = z.object({
+export const usagePricingResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(z.object({
     model: z.string(),
     pricing_model: z.string().nullable(),
@@ -211,7 +211,7 @@ export type UsagePricingQuery = z.infer<typeof usagePricingQuerySchema>;
 export type UsagePricingUpdate = z.infer<typeof usagePricingUpdateSchema>;
 export type UsagePricingResponse = z.infer<typeof usagePricingResponseSchema>;
 
-export const usageRescanStatusSchema = z.object({
+export const usageRescanStatusSchema = /* @__PURE__ */ z.object({
   state: z.enum(['idle', 'running', 'completed', 'failed']),
   scanned_sessions: z.number().int().nonnegative(),
   total_sessions: z.number().int().nonnegative(),

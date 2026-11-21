@@ -13,7 +13,7 @@ import { fsOpenInAppIdSchema } from '../rest/fs';
 import { spaceIdSchema } from './space';
 import { isoDateTimeSchema } from '../time';
 
-export const metaCapabilitiesSchema = z.object({
+export const metaCapabilitiesSchema = /* @__PURE__ */ z.object({
   websocket: z.boolean(),
   file_upload: z.boolean(),
   fs_query: z.boolean(),
@@ -28,7 +28,7 @@ export const metaCapabilitiesSchema = z.object({
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;
 
-export const metaFeatureStateSchema = z.enum([
+export const metaFeatureStateSchema = /* @__PURE__ */ z.enum([
   'Pending',
   'Activating',
   'Active',
@@ -36,7 +36,7 @@ export const metaFeatureStateSchema = z.enum([
   'Failed',
 ]);
 
-export const metaFeatureSchema = z.object({
+export const metaFeatureSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   state: metaFeatureStateSchema,
   meta: z.record(z.string(), z.unknown()),
@@ -44,14 +44,14 @@ export const metaFeatureSchema = z.object({
 
 export type MetaFeature = z.infer<typeof metaFeatureSchema>;
 
-const externalDelegationDisabledReasonSchema = z.enum([
+const externalDelegationDisabledReasonSchema = /* @__PURE__ */ z.enum([
   'feature_disabled',
   'session_index_unavailable',
   'workspace_drift',
   'bootstrap_failed',
 ]);
 
-export const externalDelegationStateSchema = z.discriminatedUnion('state', [
+export const externalDelegationStateSchema = /* @__PURE__ */ z.discriminatedUnion('state', [
   z.object({ state: z.literal('active') }),
   z.object({
     state: z.literal('disabled'),
@@ -63,7 +63,7 @@ export const externalDelegationStateSchema = z.discriminatedUnion('state', [
 
 export type ExternalDelegationState = z.infer<typeof externalDelegationStateSchema>;
 
-export const metaResponseSchema = z.object({
+export const metaResponseSchema = /* @__PURE__ */ z.object({
   server_version: z.string().min(1),
   build_id: z.string().min(1).optional(),
   build_channel: z.string().min(1).optional(),

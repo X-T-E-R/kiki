@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const executionControlStateSchema = z.object({
+export const executionControlStateSchema = /* @__PURE__ */ z.object({
   phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']),
   pauseOperationId: z.string().optional(),
   resumeOperationId: z.string().optional(),
@@ -17,8 +18,8 @@ export const executionControlStateSchema = z.object({
 });
 
 export const executionControlContract = {
-  read: { input: z.tuple([]), output: executionControlStateSchema },
-  pause: { input: z.tuple([z.object({ operationId: z.string().min(1).max(256) })]), output: executionControlStateSchema },
-  cancelPause: { input: z.tuple([z.object({ operationId: z.string().min(1).max(256), pauseOperationId: z.string().min(1).max(256) })]), output: executionControlStateSchema },
-  resume: { input: z.tuple([z.object({ operationId: z.string().min(1).max(256), pauseOperationId: z.string().min(1).max(256) })]), output: executionControlStateSchema },
+  read: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: executionControlStateSchema }), 'input', 'output'),
+  pause: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.object({ operationId: z.string().min(1).max(256) })]), output: executionControlStateSchema }), 'input', 'output'),
+  cancelPause: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.object({ operationId: z.string().min(1).max(256), pauseOperationId: z.string().min(1).max(256) })]), output: executionControlStateSchema }), 'input', 'output'),
+  resume: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.object({ operationId: z.string().min(1).max(256), pauseOperationId: z.string().min(1).max(256) })]), output: executionControlStateSchema }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -1,18 +1,18 @@
 import { z } from 'zod';
 import { asrProviderDefinitionSchema } from '../plugin';
 
-export const pluginPreviewRequestSchema = z.object({
+export const pluginPreviewRequestSchema = /* @__PURE__ */ z.object({
   source: z.string().min(1),
   sha256: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
 });
 
-export const pluginInstallRequestSchema = pluginPreviewRequestSchema.extend({
+export const pluginInstallRequestSchema = /* @__PURE__ */ pluginPreviewRequestSchema.extend({
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   consent: z.boolean(),
   defaultEnabled: z.boolean().optional(),
 });
 
-export const pluginInstallPlanSchema = z.object({
+export const pluginInstallPlanSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   version: z.string().optional(),
   fingerprint: z.string(),
@@ -31,7 +31,7 @@ export const pluginInstallPlanSchema = z.object({
   unsupported: z.array(z.string()),
 });
 
-export const pluginSettingsResponseSchema = z.object({
+export const pluginSettingsResponseSchema = /* @__PURE__ */ z.object({
   schema: z.unknown().optional(),
   values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
   secretsConfigured: z.array(z.string()),
@@ -39,20 +39,20 @@ export const pluginSettingsResponseSchema = z.object({
 
 export { pluginModelCatalogSchema, type PluginModelCatalog } from '@kiki/plugin-sdk';
 
-export const pluginSettingsPatchSchema = z.object({
+export const pluginSettingsPatchSchema = /* @__PURE__ */ z.object({
   values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
 });
 
-export const pluginPrerequisiteInstallSchema = z.object({
+export const pluginPrerequisiteInstallSchema = /* @__PURE__ */ z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
   consent: z.literal(true),
 });
 
-export const pluginPanelSummarySchema = z.object({
+export const pluginPanelSummarySchema = /* @__PURE__ */ z.object({
   pluginId: z.string(), id: z.string(), label: z.string(), slot: z.enum(['sidebar', 'workspace', 'settings']),
 });
-export const pluginPanelDocumentSchema = z.object({ html: z.string(), url: z.string().optional(), sandbox: z.literal('allow-scripts') });
-export const pluginPanelBridgeRequestSchema = z.discriminatedUnion('method', [
+export const pluginPanelDocumentSchema = /* @__PURE__ */ z.object({ html: z.string(), url: z.string().optional(), sandbox: z.literal('allow-scripts') });
+export const pluginPanelBridgeRequestSchema = /* @__PURE__ */ z.discriminatedUnion('method', [
   z.object({ method: z.literal('session.summary'), session_id: z.string().min(1) }),
   z.object({ method: z.literal('session.sendMessage'), session_id: z.string().min(1), text: z.string().min(1).max(16_384) }),
   z.object({ method: z.literal('plugin.call'), session_id: z.string().min(1).optional(), action: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/), args: z.unknown() }),
@@ -60,7 +60,7 @@ export const pluginPanelBridgeRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('plugin.settings.patch'), values: pluginSettingsPatchSchema.shape.values }),
   z.object({ method: z.literal('plugin.models.list') }),
 ]);
-export const pluginPanelBridgeResponseSchema = z.object({ result: z.unknown() });
+export const pluginPanelBridgeResponseSchema = /* @__PURE__ */ z.object({ result: z.unknown() });
 
 export type PluginPanelSummary = z.infer<typeof pluginPanelSummarySchema>;
 export type PluginPanelDocument = z.infer<typeof pluginPanelDocumentSchema>;
@@ -73,25 +73,25 @@ export type PluginPreviewRequest = z.infer<typeof pluginPreviewRequestSchema>;
 export type PluginInstallRequest = z.infer<typeof pluginInstallRequestSchema>;
 export type PluginInstallPlan = z.infer<typeof pluginInstallPlanSchema>;
 
-export const pluginNavigationSchema = z.object({
+export const pluginNavigationSchema = /* @__PURE__ */ z.object({
   request: z.object({ id: z.number().int(), pluginId: z.string(), sessionId: z.string(), at: z.number() }).optional(),
 });
 export type PluginNavigation = z.infer<typeof pluginNavigationSchema>;
 
-export const pluginUsageTargetSchema = z.union([
+export const pluginUsageTargetSchema = /* @__PURE__ */ z.union([
   z.object({ workspace_id: z.string().min(1) }).strict(),
   z.object({ session_id: z.string().min(1) }).strict(),
 ]);
-export const pluginUsageOverrideSchema = z.enum(['inherit', 'on', 'off']);
-export const pluginUsageRequestSchema = z.object({ target: pluginUsageTargetSchema, plugin_id: z.string().min(1), override: pluginUsageOverrideSchema }).strict();
-export const pluginUsageItemSchema = z.object({
+export const pluginUsageOverrideSchema = /* @__PURE__ */ z.enum(['inherit', 'on', 'off']);
+export const pluginUsageRequestSchema = /* @__PURE__ */ z.object({ target: pluginUsageTargetSchema, plugin_id: z.string().min(1), override: pluginUsageOverrideSchema }).strict();
+export const pluginUsageItemSchema = /* @__PURE__ */ z.object({
   id: z.string(), displayName: z.string(), version: z.string().optional(), icon: z.string().optional(),
   home_enabled: z.boolean(), global_enabled: z.boolean(), state: z.enum(['ok', 'error']), override: pluginUsageOverrideSchema,
   session_override: pluginUsageOverrideSchema.optional(),
   effective: z.boolean(), reason: z.enum(['home_disabled', 'workspace_disabled', 'session_disabled', 'global_disabled', 'invalid_plugin']).optional(),
   app_service: z.boolean(), skillCount: z.number(), mcpServerCount: z.number(),
 });
-export const pluginUsageResponseSchema = z.object({
+export const pluginUsageResponseSchema = /* @__PURE__ */ z.object({
   home_id: z.string(), target: z.object({ workspace_id: z.string(), name: z.string(), root: z.string(), session_id: z.string().optional() }),
   revision: z.number().int().nonnegative(), apply_state: z.enum(['applied', 'pending', 'failed']),
   errors: z.array(z.string()), plugins: z.array(pluginUsageItemSchema),
@@ -103,7 +103,7 @@ export type PluginUsageResponse = z.infer<typeof pluginUsageResponseSchema>;
 export type PluginUsageItem = z.infer<typeof pluginUsageItemSchema>;
 
 /** GitHub provenance for github-sourced plugins (domain PluginGithubMetadata). */
-export const pluginGithubMetadataSchema = z.object({
+export const pluginGithubMetadataSchema = /* @__PURE__ */ z.object({
   owner: z.string(),
   repo: z.string(),
   ref: z.object({
@@ -113,7 +113,7 @@ export const pluginGithubMetadataSchema = z.object({
   installedSha: z.string().optional(),
 });
 
-export const pluginSummarySchema = z.object({
+export const pluginSummarySchema = /* @__PURE__ */ z.object({
   id: z.string(),
   displayName: z.string(),
   version: z.string().optional(),
@@ -143,7 +143,7 @@ export const pluginSummarySchema = z.object({
 });
 export type PluginSummaryWire = z.infer<typeof pluginSummarySchema>;
 
-export const listPluginsResponseSchema = z.object({
+export const listPluginsResponseSchema = /* @__PURE__ */ z.object({
   plugins: z.array(pluginSummarySchema),
 });
 export type ListPluginsResponse = z.infer<typeof listPluginsResponseSchema>;
@@ -151,7 +151,7 @@ export type ListPluginsResponse = z.infer<typeof listPluginsResponseSchema>;
 export const installPluginRequestSchema = pluginInstallRequestSchema;
 export type InstallPluginRequest = z.infer<typeof installPluginRequestSchema>;
 
-export const pluginMarketplaceEntrySchema = z.object({
+export const pluginMarketplaceEntrySchema = /* @__PURE__ */ z.object({
   id: z.string(),
   tier: z.enum(['official', 'curated', 'third-party']),
   displayName: z.string(),
@@ -194,14 +194,14 @@ export const pluginMarketplaceEntrySchema = z.object({
 });
 export type PluginMarketplaceEntryWire = z.infer<typeof pluginMarketplaceEntrySchema>;
 
-export const pluginMarketplaceResponseSchema = z.object({
+export const pluginMarketplaceResponseSchema = /* @__PURE__ */ z.object({
   configured: z.boolean(),
   source: z.string().optional(),
   entries: z.array(pluginMarketplaceEntrySchema),
 });
 export type PluginMarketplaceResponse = z.infer<typeof pluginMarketplaceResponseSchema>;
 
-export const pluginMcpServerInfoSchema = z.object({
+export const pluginMcpServerInfoSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   runtimeName: z.string(),
   enabled: z.boolean(),
@@ -214,12 +214,12 @@ export const pluginMcpServerInfoSchema = z.object({
   headerKeys: z.array(z.string()).optional(),
 });
 
-export const pluginDiagnosticSchema = z.object({
+export const pluginDiagnosticSchema = /* @__PURE__ */ z.object({
   severity: z.enum(['error', 'warn', 'info']),
   message: z.string(),
 });
 
-export const pluginInfoSchema = pluginSummarySchema.extend({
+export const pluginInfoSchema = /* @__PURE__ */ pluginSummarySchema.extend({
   root: z.string(),
   installedAt: z.string(),
   updatedAt: z.string().optional(),
@@ -249,12 +249,12 @@ export const pluginInfoSchema = pluginSummarySchema.extend({
 });
 export type PluginInfoWire = z.infer<typeof pluginInfoSchema>;
 
-export const pluginIdParamSchema = z.object({
+export const pluginIdParamSchema = /* @__PURE__ */ z.object({
   tail: z.string().min(1),
 });
 export type PluginIdParam = z.infer<typeof pluginIdParamSchema>;
 
-export const pluginInfoParamSchema = z.object({
+export const pluginInfoParamSchema = /* @__PURE__ */ z.object({
   plugin_id: z.string().min(1),
 });
 export type PluginInfoParam = z.infer<typeof pluginInfoParamSchema>;

@@ -4,9 +4,9 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
-import { bootPreloadPlugin } from './vite/bootPreload';
 import { localServerPlugin } from './vite/localServer';
 import { pdfAssetsPlugin } from './vite/pdfAssets';
+import { precompressAssetsPlugin } from './vite/precompressAssets';
 
 const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   version: string;
@@ -29,11 +29,12 @@ const STABLE_VENDOR_PACKAGES = new Set(['react', 'react-dom', 'scheduler', 'reac
 
 function vendorChunk(id: string): string | undefined {
   const packageName = /\/node_modules\/((?:@[^/]+\/)?[^/]+)\/(?!.*\/node_modules\/)/.exec(id)?.[1];
+  if (packageName === 'mermaid' || packageName === '@streamdown/mermaid') return 'mermaid-engine';
   return packageName !== undefined && STABLE_VENDOR_PACKAGES.has(packageName) ? 'vendor-react' : undefined;
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget }), bootPreloadPlugin()],
+  plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget }), precompressAssetsPlugin()],
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),
@@ -69,6 +70,6 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
-    rollupOptions: { output: { manualChunks: vendorChunk } },
+    rollupOptions: { output: { manualChunks: vendorChunk, onlyExplicitManualChunks: true } },
   },
 });

@@ -10,7 +10,7 @@ export const workspaceIdSchema = z
 
 export type WorkspaceId = z.infer<typeof workspaceIdSchema>;
 
-export const workspaceSchema = z.object({
+export const workspaceSchema = /* @__PURE__ */ z.object({
   id: workspaceIdSchema,
   root: z.string().min(1),
   name: z.string().min(1).max(100),
@@ -24,10 +24,10 @@ export const workspaceSchema = z.object({
 export type Workspace = z.infer<typeof workspaceSchema>;
 
 /** Persisted registration metadata; count and Git are unmeasured, not zero or false. */
-export const workspaceCatalogEntrySchema = workspaceSchema.omit({ session_count: true, isGit: true });
+export const workspaceCatalogEntrySchema = /* @__PURE__ */ workspaceSchema.omit({ session_count: true, isGit: true });
 export type WorkspaceCatalogEntry = z.infer<typeof workspaceCatalogEntrySchema>;
 
-export const workspaceCreateSchema = z.object({
+export const workspaceCreateSchema = /* @__PURE__ */ z.object({
   root: z.string().min(1),
   name: z.string().min(1).max(100).optional(),
 });
@@ -36,7 +36,7 @@ export type WorkspaceCreate = z.infer<typeof workspaceCreateSchema>;
 
 /** Both fields are optional so a client can rename, pin, or do both in one
  * PATCH; an entirely empty body is rejected rather than treated as a no-op. */
-export const workspaceUpdateSchema = z
+export const workspaceUpdateSchema = /* @__PURE__ */ z
   .object({
     name: z.string().min(1).max(100).optional(),
     pinned: z.boolean().optional(),

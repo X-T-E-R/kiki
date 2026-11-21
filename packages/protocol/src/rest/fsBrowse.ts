@@ -13,26 +13,26 @@
 
 import { z } from 'zod';
 
-export const fsBrowseQuerySchema = z.object({
+export const fsBrowseQuerySchema = /* @__PURE__ */ z.object({
   path: z.string().min(1).optional(),
 });
 export type FsBrowseQuery = z.infer<typeof fsBrowseQuerySchema>;
 
-export const fsBrowseEntrySchema = z.object({
+export const fsBrowseEntrySchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   is_dir: z.literal(true),
 });
 export type FsBrowseEntry = z.infer<typeof fsBrowseEntrySchema>;
 
-export const fsBrowseResponseSchema = z.object({
+export const fsBrowseResponseSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1),
   parent: z.string().min(1).nullable(),
   entries: z.array(fsBrowseEntrySchema),
 });
 export type FsBrowseResponse = z.infer<typeof fsBrowseResponseSchema>;
 
-export const fsHomeResponseSchema = z.object({
+export const fsHomeResponseSchema = /* @__PURE__ */ z.object({
   home: z.string().min(1),
   recent_roots: z.array(z.string().min(1)),
 });

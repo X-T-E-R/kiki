@@ -30,7 +30,7 @@ import { questionRequestSchema } from '../question';
 import { sessionSchema } from '../session';
 import { taskSchema } from '../task';
 
-export const inFlightToolCallSchema = z.object({
+export const inFlightToolCallSchema = /* @__PURE__ */ z.object({
   tool_call_id: z.string().min(1),
   name: z.string().min(1),
   args: z.unknown().optional(),
@@ -48,7 +48,7 @@ export const inFlightToolCallSchema = z.object({
 });
 export type InFlightToolCall = z.infer<typeof inFlightToolCallSchema>;
 
-export const inFlightTurnSchema = z.object({
+export const inFlightTurnSchema = /* @__PURE__ */ z.object({
   turn_id: z.number().int().nonnegative(),
   step: z.number().int().positive().optional(),
   step_id: z.string().min(1).optional(),
@@ -68,7 +68,7 @@ export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
  * task wire shape with identity metadata that otherwise only rides the
  * (non-replayed) `subagent.spawned` WS event.
  */
-export const snapshotSubagentSchema = taskSchema.extend({
+export const snapshotSubagentSchema = /* @__PURE__ */ taskSchema.extend({
   /** Immutable agent birth, not task/run start; absent for legacy identities. */
   created_at: taskSchema.shape.created_at.optional(),
   live: z.boolean().optional(),
@@ -100,7 +100,7 @@ export const snapshotSubagentSchema = taskSchema.extend({
 });
 export type SnapshotSubagent = z.infer<typeof snapshotSubagentSchema>;
 
-export const sessionAgentCountsSchema = z.object({
+export const sessionAgentCountsSchema = /* @__PURE__ */ z.object({
   total: z.number().int().nonnegative(),
   subagents: z.number().int().nonnegative(),
   completed: z.number().int().nonnegative(),
@@ -112,7 +112,7 @@ export const sessionAgentCountsSchema = z.object({
 });
 export type SessionAgentCounts = z.infer<typeof sessionAgentCountsSchema>;
 
-export const sessionSnapshotResponseSchema = z.object({
+export const sessionSnapshotResponseSchema = /* @__PURE__ */ z.object({
   /** Metadata inventory counts, independent of the returned roster/body window. Terminal and active counts exclude main; cold nonterminal registrations are unknown, not active. */
   agent_counts: sessionAgentCountsSchema.optional(),
   contentRefs: z.array(contentRefSchema).optional(),
@@ -141,7 +141,7 @@ export const sessionSnapshotResponseSchema = z.object({
 });
 export type SessionSnapshotResponse = z.infer<typeof sessionSnapshotResponseSchema>;
 
-export const sessionSubagentsQuerySchema = z.object({
+export const sessionSubagentsQuerySchema = /* @__PURE__ */ z.object({
   q: z.string().optional(),
   status: z.string().optional(),
   agent_id: z.string().min(1).optional(),
@@ -149,7 +149,7 @@ export const sessionSubagentsQuerySchema = z.object({
 });
 export type SessionSubagentsQuery = z.infer<typeof sessionSubagentsQuerySchema>;
 
-export const sessionSubagentsResponseSchema = z.object({
+export const sessionSubagentsResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(snapshotSubagentSchema),
   total: z.number().int().nonnegative(),
   matched: z.number().int().nonnegative(),

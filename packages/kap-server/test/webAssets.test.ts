@@ -1,11 +1,13 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from 'node:zlib';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { registerWebAssetRoutes } from '../src/routes/webAssets';
+import { createOriginHook } from '../src/middleware/origin';
 import { createSecurityHeadersHook } from '../src/middleware/securityHeaders';
 
 describe('web asset cache policy', () => {
@@ -22,6 +24,9 @@ describe('web asset cache policy', () => {
     await Promise.all([
       writeFile(join(assetsDir, 'index.html'), '<main>Kimi</main>'),
       writeFile(join(assetsDir, 'assets', 'index-Dy7xs5tu.js'), 'export {};'),
+      writeFile(join(assetsDir, 'assets', 'index-Dy7xs5tu.js.br'), brotliCompressSync(Buffer.from('export {};'))),
+      writeFile(join(assetsDir, 'assets', 'index-Dy7xs5tu.js.gz'), gzipSync(Buffer.from('export {};'))),
+      writeFile(join(assetsDir, 'assets', 'sample.wasm'), Buffer.from([0, 97, 115, 109])),
       writeFile(join(assetsDir, 'assets', 'application-configuration.json'), '{}'),
       writeFile(join(assetsDir, 'favicon.svg'), '<svg></svg>'),
       writeFile(join(assetsDir, 'manifest.webmanifest'), '{}'),
@@ -30,6 +35,7 @@ describe('web asset cache policy', () => {
       writeFile(join(assetsDir, 'pdfjs', 'standard_fonts', 'FoxitSerif.pfb'), Buffer.from([128, 1, 255])),
     ]);
     app = Fastify();
+    app.addHook('onRequest', createOriginHook({ allowedOrigins: ['http://example.test'] }));
     app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
     app.get('/api/fixture', async () => ({ ok: true }));
     await registerWebAssetRoutes(app, assetsDir);
@@ -84,6 +90,97 @@ describe('web asset cache policy', () => {
     expect(response.statusCode).toBe(404);
     expect(response.headers['content-type']).toBe('text/plain; charset=utf-8');
     expect(response.body).toBe('Not found');
+  });
+
+  it('serves the best available sidecar and merges Vary with Origin', async () => {
+    const brotli = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': 'br, gzip', origin: 'http://example.test' },
+    });
+
+    expect(brotli.statusCode).toBe(200);
+    expect(brotli.headers['content-encoding']).toBe('br');
+    expect(brotli.headers['content-type']).toBe('text/javascript; charset=utf-8');
+    expect(brotli.headers['content-length']).toBe(String(brotliCompressSync(Buffer.from('export {};')).byteLength));
+    expect(brotli.rawPayload).toEqual(brotliCompressSync(Buffer.from('export {};')));
+    expect(brotli.headers.vary).toContain('Origin');
+    expect(brotli.headers.vary).toContain('Accept-Encoding');
+    expect(brotli.headers.etag).toMatch(/^W\/".+-br"$/);
+
+    const gzip = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': 'br;q=0.4, gzip;q=0.9' },
+    });
+    expect(gzip.statusCode).toBe(200);
+    expect(gzip.headers['content-encoding']).toBe('gzip');
+    expect(gzip.rawPayload).toEqual(gzipSync(Buffer.from('export {};')));
+  });
+
+  it('honors q=0 and falls back to the identity representation', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': 'br;q=0, gzip;q=0' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-encoding']).toBeUndefined();
+    expect(response.body).toBe('export {};');
+    expect(response.headers.vary).toContain('Accept-Encoding');
+    expect(response.headers.etag).toMatch(/^W\/".+-identity"$/);
+  });
+
+  it('compresses on the fly when the requested sidecar is absent', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/pdfjs/pdf.worker.min.mjs',
+      headers: { 'accept-encoding': 'br' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-encoding']).toBe('br');
+    expect(response.headers['content-type']).toBe('text/javascript; charset=utf-8');
+    expect(response.headers['content-length']).toBeUndefined();
+    expect(brotliDecompressSync(response.rawPayload).toString()).toBe('export const WorkerMessageHandler = {};');
+  });
+
+  it('uses original WASM MIME while streaming an accepted compression', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/assets/sample.wasm',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('application/wasm');
+    expect(response.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(response.rawPayload)).toEqual(Buffer.from([0, 97, 115, 109]));
+  });
+
+  it('returns 304 only for the negotiated encoding-specific weak ETag', async () => {
+    const brotli = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': 'br' },
+    });
+    const matching = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': 'br', 'if-none-match': brotli.headers.etag as string },
+    });
+    const differentEncoding = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': 'gzip', 'if-none-match': brotli.headers.etag as string },
+    });
+
+    expect(matching.statusCode).toBe(304);
+    expect(matching.headers.etag).toBe(brotli.headers.etag);
+    expect(differentEncoding.statusCode).toBe(200);
+    expect(differentEncoding.headers['content-encoding']).toBe('gzip');
+    expect(differentEncoding.headers.etag).not.toBe(brotli.headers.etag);
   });
 
   it('caches content-hashed assets as immutable', async () => {

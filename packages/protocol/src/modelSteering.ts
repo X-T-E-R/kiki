@@ -1,15 +1,15 @@
 import { z } from 'zod';
 
-export const modelSteeringCadenceSchema = z.object({
+export const modelSteeringCadenceSchema = /* @__PURE__ */ z.object({
   steering_on_turn: z.boolean().optional(),
   steering_on_input: z.boolean().optional(),
   steering_interval_steps: z.number().int().nonnegative().safe().optional(),
 });
 
 export const modelSteeringSourceIds = ['thread', 'room', 'agent', 'task', 'cron', 'hook', 'automation', 'skill', 'external'] as const;
-export const modelSteeringSourceSchema = z.enum(modelSteeringSourceIds);
+export const modelSteeringSourceSchema = /* @__PURE__ */ z.enum(modelSteeringSourceIds);
 export type ModelSteeringSource = z.infer<typeof modelSteeringSourceSchema>;
-export const modelSteeringSourceModeSchema = z.enum(['off', 'inherit', 'custom']);
+export const modelSteeringSourceModeSchema = /* @__PURE__ */ z.enum(['off', 'inherit', 'custom']);
 export type ModelSteeringSourceMode = z.infer<typeof modelSteeringSourceModeSchema>;
 
 export function modelSteeringSourcesSchema<T extends z.ZodTypeAny>(body: T) {

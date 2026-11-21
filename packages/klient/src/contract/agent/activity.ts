@@ -8,22 +8,23 @@
 import { z } from 'zod';
 
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const turnPhaseSchema = z.enum(['running', 'streaming', 'tool_call', 'retrying']);
+export const turnPhaseSchema = /* @__PURE__ */ z.enum(['running', 'streaming', 'tool_call', 'retrying']);
 
-export const approvalRefSchema = z.object({
+export const approvalRefSchema = /* @__PURE__ */ z.object({
   approvalId: z.string(),
   toolCallId: z.string().optional(),
   since: z.number(),
 });
 
-export const toolCallRefSchema = z.object({
+export const toolCallRefSchema = /* @__PURE__ */ z.object({
   toolCallId: z.string(),
   name: z.string(),
   since: z.number(),
 });
 
-export const activityRetryStateSchema = z.object({
+export const activityRetryStateSchema = /* @__PURE__ */ z.object({
   failedAttempt: z.number(),
   nextAttempt: z.number(),
   maxAttempts: z.number(),
@@ -32,7 +33,7 @@ export const activityRetryStateSchema = z.object({
   statusCode: z.number().optional(),
 });
 
-export const activityTurnStateSchema = z.object({
+export const activityTurnStateSchema = /* @__PURE__ */ z.object({
   turnId: z.number(),
   origin: z.unknown(),
   phase: turnPhaseSchema,
@@ -46,24 +47,24 @@ export const activityTurnStateSchema = z.object({
   since: z.number(),
 });
 
-export const turnEndReasonSchema = z.enum(['completed', 'cancelled', 'failed', 'blocked']);
+export const turnEndReasonSchema = /* @__PURE__ */ z.enum(['completed', 'cancelled', 'failed', 'blocked']);
 
-export const activityLastTurnStateSchema = z.object({
+export const activityLastTurnStateSchema = /* @__PURE__ */ z.object({
   turnId: z.number(),
   reason: turnEndReasonSchema,
   durationMs: z.number().optional(),
   at: z.number(),
 });
 
-export const backgroundRefSchema = z.object({
+export const backgroundRefSchema = /* @__PURE__ */ z.object({
   kind: z.string(),
   id: z.string(),
   since: z.number(),
 });
 
-export const activityViewLifecycleSchema = z.enum(['ready', 'disposed']);
+export const activityViewLifecycleSchema = /* @__PURE__ */ z.enum(['ready', 'disposed']);
 
-export const agentActivityStateSchema = z.object({
+export const agentActivityStateSchema = /* @__PURE__ */ z.object({
   lifecycle: activityViewLifecycleSchema,
   turn: activityTurnStateSchema.optional(),
   lastTurn: activityLastTurnStateSchema.optional(),
@@ -71,5 +72,5 @@ export const agentActivityStateSchema = z.object({
 });
 
 export const agentActivityViewContract = {
-  state: { input: z.tuple([]), output: agentActivityStateSchema },
+  state: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: agentActivityStateSchema }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -4,14 +4,14 @@ const draft = {
   profile: z.string().trim().min(1),
 };
 
-export const agentReferenceCandidatesQuerySchema = z.union([
+export const agentReferenceCandidatesQuerySchema = /* @__PURE__ */ z.union([
   z.object({ session_id: z.string().trim().min(1), agent_id: z.string().trim().min(1) }).strict(),
   z.object({ workspace_id: z.string().trim().min(1), ...draft }).strict(),
   z.object({ cwd: z.string().trim().min(1).refine(value => /^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(value), 'cwd must be absolute'), ...draft }).strict(),
 ]);
 export type AgentReferenceCandidatesQuery = z.infer<typeof agentReferenceCandidatesQuerySchema>;
 
-export const agentReferenceCandidateSchema = z.object({
+export const agentReferenceCandidateSchema = /* @__PURE__ */ z.object({
   profile: z.string().min(1),
   label: z.string().min(1),
   executor: z.string().min(1),
@@ -27,7 +27,7 @@ export const agentReferenceCandidateSchema = z.object({
 });
 export type AgentReferenceCandidate = z.infer<typeof agentReferenceCandidateSchema>;
 
-export const agentReferenceCandidatesResponseSchema = z.object({
+export const agentReferenceCandidatesResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(agentReferenceCandidateSchema),
   delegation_available: z.boolean(),
   unavailable_reason: z.string().optional(),

@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { cronScriptExecutionSchema, cronTriggerCheckSchema, cronTriggerSchema } from '@kiki/protocol';
 
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const cronTaskSchema = z.object({
+export const cronTaskSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   cron: z.string(),
   prompt: z.string(),
@@ -21,10 +22,10 @@ export const cronTaskSchema = z.object({
 });
 
 export const sessionCronContract = {
-  list: { input: z.tuple([]), output: z.array(cronTaskSchema) },
-  getNextFireTime: { input: z.tuple([]), output: z.number().nullable() },
-  getNextFireForTask: {
-    input: z.tuple([z.string()]),
-    output: z.number().nullable(),
-  },
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(cronTaskSchema) }), 'input', 'output'),
+  getNextFireTime: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.number().nullable() }), 'input', 'output'),
+  getNextFireForTask: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string()]),
+    output: /* @__PURE__ */ z.number().nullable(),
+  }), 'input', 'output'),
 } satisfies ServiceContract;

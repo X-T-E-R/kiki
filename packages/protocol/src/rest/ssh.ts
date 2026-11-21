@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const sshHostSchema = z.object({
+export const sshHostSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   source: z.enum(['kiki', 'ssh-config', 'session']),
@@ -16,13 +16,13 @@ export type SshHost = z.infer<typeof sshHostSchema>;
 
 const SSH_ROOT_PATTERN = /^(?:\/|[A-Za-z]:[\\/])/;
 
-export const sshHostInputSchema = sshHostSchema.omit({ id: true, source: true }).extend({
+export const sshHostInputSchema = /* @__PURE__ */ sshHostSchema.omit({ id: true, source: true }).extend({
   name: z.string().trim().min(1),
   roots: z.array(z.string().regex(SSH_ROOT_PATTERN, 'SSH root must be an absolute POSIX or Windows drive path')).min(1).optional(),
 });
 export type SshHostInput = z.infer<typeof sshHostInputSchema>;
 
-export const sshHostStatusSchema = z.object({
+export const sshHostStatusSchema = /* @__PURE__ */ z.object({
   hostId: z.string(),
   workspaceId: z.string().optional(),
   state: z.enum(['idle', 'connecting', 'ready', 'disconnected', 'failed']),
@@ -30,13 +30,13 @@ export const sshHostStatusSchema = z.object({
 }).passthrough();
 export type SshHostStatus = z.infer<typeof sshHostStatusSchema>;
 
-export const sshConfigSyncSettingsSchema = z.object({
+export const sshConfigSyncSettingsSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean(),
   source: z.enum(['home', 'base', 'default']),
 });
 export type SshConfigSyncSettings = z.infer<typeof sshConfigSyncSettingsSchema>;
 
-export const sshHostKeysSchema = z.object({
+export const sshHostKeysSchema = /* @__PURE__ */ z.object({
   hostId: z.string(),
   workspaceId: z.string().optional(),
   hostname: z.string(),
@@ -61,18 +61,18 @@ export const sshHostKeysSchema = z.object({
 });
 export type SshHostKeys = z.infer<typeof sshHostKeysSchema>;
 
-export const sshHostsResponseSchema = z.object({
+export const sshHostsResponseSchema = /* @__PURE__ */ z.object({
   hosts: z.array(sshHostSchema),
   statuses: z.record(z.string(), sshHostStatusSchema).optional(),
 });
-export const sshHostResponseSchema = z.object({ host: sshHostSchema });
-export const sshSessionHostsResponseSchema = z.object({ hosts: z.array(z.object({
+export const sshHostResponseSchema = /* @__PURE__ */ z.object({ host: sshHostSchema });
+export const sshSessionHostsResponseSchema = /* @__PURE__ */ z.object({ hosts: z.array(z.object({
   host: sshHostSchema,
   status: sshHostStatusSchema,
 })) });
 export type SshSessionHostsResponse = z.infer<typeof sshSessionHostsResponseSchema>;
 
-export const sshCredentialSchema = z.object({
+export const sshCredentialSchema = /* @__PURE__ */ z.object({
   password: z.string().optional(),
   privateKeyPath: z.string().optional(),
   privateKeyContents: z.string().optional(),
@@ -82,14 +82,14 @@ export const sshCredentialSchema = z.object({
 }).strict();
 export type SshCredential = z.infer<typeof sshCredentialSchema>;
 
-export const copySharedSshCredentialsRequestSchema = z.object({
+export const copySharedSshCredentialsRequestSchema = /* @__PURE__ */ z.object({
   hosts: z.array(z.object({
     hostId: z.string().min(1).regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
     workspaceId: z.string().min(1).optional(),
   })).max(64),
 });
 export type CopySharedSshCredentialsRequest = z.infer<typeof copySharedSshCredentialsRequestSchema>;
-export const copySharedSshCredentialsResponseSchema = z.object({
+export const copySharedSshCredentialsResponseSchema = /* @__PURE__ */ z.object({
   hosts: z.array(z.object({
     hostId: z.string(),
     workspaceId: z.string().optional(),
@@ -98,7 +98,7 @@ export const copySharedSshCredentialsResponseSchema = z.object({
 });
 export type CopySharedSshCredentialsResponse = z.infer<typeof copySharedSshCredentialsResponseSchema>;
 
-export const sshApprovalSubmitSchema = z.object({
+export const sshApprovalSubmitSchema = /* @__PURE__ */ z.object({
   decision: z.enum(['approved', 'rejected', 'cancelled']),
   credential: sshCredentialSchema.optional(),
 }).strict();

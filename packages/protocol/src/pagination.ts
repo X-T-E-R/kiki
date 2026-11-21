@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { ErrorCode } from './error-codes';
 
-export const cursorQuerySchema = z
+export const cursorQuerySchema = /* @__PURE__ */ z
   .object({
     before_id: z.string().min(1).optional(),
     after_id: z.string().min(1).optional(),

@@ -13,23 +13,23 @@ import { executionSelectionWireSchema as executionSelectionSchema } from '../exe
 
 // ── prompt parts ────────────────────────────────────────────────────────────
 
-const textPartSchema = z.object({
+const textPartSchema = /* @__PURE__ */ z.object({
   type: z.literal('text'),
   text: z.string(),
 });
 
-const imageUrlPartSchema = z.object({
+const imageUrlPartSchema = /* @__PURE__ */ z.object({
   type: z.literal('image_url'),
   imageUrl: z.object({ url: z.string(), id: z.string().optional() }),
 });
 
-const videoUrlPartSchema = z.object({
+const videoUrlPartSchema = /* @__PURE__ */ z.object({
   type: z.literal('video_url'),
   videoUrl: z.object({ url: z.string(), id: z.string().optional() }),
 });
 
 /** `PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' }>`. */
-export const promptPartSchema = z.discriminatedUnion('type', [
+export const promptPartSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   textPartSchema,
   imageUrlPartSchema,
   videoUrlPartSchema,
@@ -37,9 +37,9 @@ export const promptPartSchema = z.discriminatedUnion('type', [
 
 // ── payloads / results ──────────────────────────────────────────────────────
 
-export const emptyPayloadSchema = z.object({});
+export const emptyPayloadSchema = /* @__PURE__ */ z.object({});
 
-export const promptExecutionBindingSchema = z.object({
+export const promptExecutionBindingSchema = /* @__PURE__ */ z.object({
   execution: executionSelectionSchema.optional(),
   afterModelSwitch: z.string().min(1).optional(),
   modelSwitchMode: z.enum(['direct', 'compact', 'fresh']).optional(),
@@ -54,7 +54,7 @@ export const promptExecutionBindingSchema = z.object({
   goalControl: z.enum(['pause', 'resume', 'cancel']).optional(),
 });
 
-export const promptPayloadSchema = z.object({
+export const promptPayloadSchema = /* @__PURE__ */ z.object({
   input: z.array(promptPartSchema),
   execution: promptExecutionBindingSchema.optional(),
   appendTiming: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
@@ -67,18 +67,18 @@ export const promptPayloadSchema = z.object({
 });
 
 /** Same shape as `PromptSkillActivation` in the engine. */
-export const promptSkillActivationSchema = z.object({
+export const promptSkillActivationSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   args: z.string().optional(),
 });
 
 /** Same shape as `PromptWithSkillsInput` in the engine. */
-export const promptWithSkillsPayloadSchema = promptPayloadSchema.extend({
+export const promptWithSkillsPayloadSchema = /* @__PURE__ */ promptPayloadSchema.extend({
   skills: z.array(promptSkillActivationSchema).min(1),
 });
 
 /** Same shape as `PromptWithSkillsResult` in the engine. */
-export const promptWithSkillsResultSchema = z.object({
+export const promptWithSkillsResultSchema = /* @__PURE__ */ z.object({
   turn_id: z.number().optional(),
   prompt_id: z.string(),
   created_at: z.string(),
@@ -88,22 +88,22 @@ export const promptWithSkillsResultSchema = z.object({
 });
 
 /** Same shape as `SteerPayload` in the engine. */
-export const steerPayloadSchema = z.object({
+export const steerPayloadSchema = /* @__PURE__ */ z.object({
   input: z.array(promptPartSchema),
 });
 
 /** Same shape as `SkillActivationInput`'s wire subset in the engine. */
-export const activateSkillPayloadSchema = z.object({
+export const activateSkillPayloadSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   args: z.string().optional(),
   afterModelSwitch: z.string().min(1).optional(),
 });
 
-export const promptLaunchResultSchema = z.object({
+export const promptLaunchResultSchema = /* @__PURE__ */ z.object({
   turn_id: z.number(),
 });
 
-const promptErrorSchema = z.object({
+const promptErrorSchema = /* @__PURE__ */ z.object({
   code: z.string(),
   message: z.string(),
   name: z.string().optional(),
@@ -114,7 +114,7 @@ const promptErrorSchema = z.object({
   },
 });
 
-export const promptTerminalResultSchema = z.object({
+export const promptTerminalResultSchema = /* @__PURE__ */ z.object({
   promptId: z.string(),
   turnId: z.number().optional(),
   state: z.enum(['completed', 'failed', 'cancelled', 'blocked']),
@@ -125,46 +125,46 @@ export const promptTerminalResultSchema = z.object({
   ]).optional(),
 });
 
-export const cancelPayloadSchema = z.object({
+export const cancelPayloadSchema = /* @__PURE__ */ z.object({
   turnId: z.number().optional(),
 });
 
-export const runShellCommandPayloadSchema = z.object({
+export const runShellCommandPayloadSchema = /* @__PURE__ */ z.object({
   command: z.string(),
   commandId: z.string().optional(),
 });
 
-export const shellCommandResultSchema = z.object({
+export const shellCommandResultSchema = /* @__PURE__ */ z.object({
   stdout: z.string(),
   stderr: z.string(),
   isError: z.boolean().optional(),
   backgrounded: z.boolean().optional(),
 });
 
-export const cancelShellCommandPayloadSchema = z.object({
+export const cancelShellCommandPayloadSchema = /* @__PURE__ */ z.object({
   commandId: z.string(),
 });
 
-export const setModelPayloadSchema = z.object({
+export const setModelPayloadSchema = /* @__PURE__ */ z.object({
   model: z.string(),
 });
 
-export const setModelResultSchema = z.object({
+export const setModelResultSchema = /* @__PURE__ */ z.object({
   model: z.string(),
   providerName: z.string().optional(),
 });
 
-export const setEffortPayloadSchema = z.object({
+export const setEffortPayloadSchema = /* @__PURE__ */ z.object({
   effort: z.string().min(1),
 });
 
-export const setEffortResultSchema = z.object({
+export const setEffortResultSchema = /* @__PURE__ */ z.object({
   effort: z.string(),
 });
 
-const contextRebuildSurfaceSchema = z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections']);
+const contextRebuildSurfaceSchema = /* @__PURE__ */ z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections']);
 
-const contextRebuildChangesSchema = z.object({
+const contextRebuildChangesSchema = /* @__PURE__ */ z.object({
   profile: z.boolean(),
   promptFields: z.boolean(),
   skills: z.boolean(),
@@ -174,12 +174,12 @@ const contextRebuildChangesSchema = z.object({
   injections: z.boolean(),
 });
 
-const contextRebuildUnsupportedSchema = z.object({
+const contextRebuildUnsupportedSchema = /* @__PURE__ */ z.object({
   surface: z.union([contextRebuildSurfaceSchema, z.literal('executor_session')]),
   reason: z.string(),
 });
 
-export const contextRebuildResultSchema = z.object({
+export const contextRebuildResultSchema = /* @__PURE__ */ z.object({
   rebuilt: z.array(contextRebuildSurfaceSchema),
   changed: z.boolean(),
   changes: contextRebuildChangesSchema.optional(),
@@ -199,7 +199,7 @@ export const contextRebuildResultSchema = z.object({
   }),
 });
 
-export const contextRebuildControlSchema = z.object({
+export const contextRebuildControlSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean(),
   outcome: z.enum(['applied', 'partial', 'failed']).optional(),
   trigger: z.enum([
@@ -219,20 +219,20 @@ export const contextRebuildControlSchema = z.object({
   unsupported: z.array(contextRebuildUnsupportedSchema),
 });
 
-export const contextStrategySchema = z.enum(['summarize', 'auto', 'fresh']);
+export const contextStrategySchema = /* @__PURE__ */ z.enum(['summarize', 'auto', 'fresh']);
 
-export const contextStrategyStatusSchema = z.object({
+export const contextStrategyStatusSchema = /* @__PURE__ */ z.object({
   strategy: contextStrategySchema,
   source: z.enum(['session', 'profile', 'model', 'global', 'default', 'subagent', 'executor']),
   shadow: z.boolean(),
 });
 
-export const runtimeBindingSchema = z.object({
+export const runtimeBindingSchema = /* @__PURE__ */ z.object({
   workspaceId: z.string(),
   runtimeId: z.string(),
 });
 
-export const modelCapabilitySchema = z.object({
+export const modelCapabilitySchema = /* @__PURE__ */ z.object({
   image_in: z.boolean(),
   video_in: z.boolean(),
   audio_in: z.boolean(),
@@ -243,13 +243,13 @@ export const modelCapabilitySchema = z.object({
   dynamically_loaded_tools: z.boolean().optional(),
 });
 
-export const permissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
+export const permissionModeSchema = /* @__PURE__ */ z.enum(['manual', 'auto', 'review', 'yolo']);
 
-export const setPermissionPayloadSchema = z.object({
+export const setPermissionPayloadSchema = /* @__PURE__ */ z.object({
   mode: permissionModeSchema,
 });
 
-export const agentLoopStatusSchema = z.object({
+export const agentLoopStatusSchema = /* @__PURE__ */ z.object({
   state: z.enum(['idle', 'running']),
   activeTurnId: z.number().optional(),
   lastTurnResult: z.enum(['completed', 'failed', 'cancelled']).optional(),
@@ -265,14 +265,14 @@ export const agentLoopStatusSchema = z.object({
   activeTraceId: z.string().optional(),
 });
 
-export const tokenUsageSchema = z.object({
+export const tokenUsageSchema = /* @__PURE__ */ z.object({
   inputOther: z.number(),
   output: z.number(),
   inputCacheRead: z.number(),
   inputCacheCreation: z.number(),
 });
 
-export const usageStatusSchema = z.object({
+export const usageStatusSchema = /* @__PURE__ */ z.object({
   byModel: z.record(z.string(), tokenUsageSchema).optional(),
   currentTurn: tokenUsageSchema.optional(),
   total: tokenUsageSchema.optional(),
@@ -282,26 +282,26 @@ export const usageStatusSchema = z.object({
  * `AgentContextData` — `history` items are full `ContextMessage`s (deep
  * `Message` / `Tool` / `PromptOrigin` unions); mirrored as `unknown` entries.
  */
-export const agentContextDataSchema = z.object({
+export const agentContextDataSchema = /* @__PURE__ */ z.object({
   history: z.array(z.unknown()),
   tokenCount: z.number(),
 });
 
 /** `AgentCommandInfo` (`agent-core-v2/agent/command/agentCommand.ts`). */
-export const agentCommandInfoSchema = z.object({
+export const agentCommandInfoSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   description: z.string().optional(),
   source: z.string(),
 });
 
 /** The facade's `runCommand` input shape. */
-export const runCommandPayloadSchema = z.object({
+export const runCommandPayloadSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   args: z.string().optional(),
 });
 
 /** `PlanData = null | { id, content, path }` — null is JSON-representable. */
-export const planDataSchema = z.union([
+export const planDataSchema = /* @__PURE__ */ z.union([
   z.null(),
   z.object({
     id: z.string(),
@@ -310,16 +310,16 @@ export const planDataSchema = z.union([
   }),
 ]);
 
-export const cancelPlanPayloadSchema = z.object({
+export const cancelPlanPayloadSchema = /* @__PURE__ */ z.object({
   id: z.string().optional(),
 });
 
-export const getTasksPayloadSchema = z.object({
+export const getTasksPayloadSchema = /* @__PURE__ */ z.object({
   activeOnly: z.boolean().optional(),
   limit: z.number().optional(),
 });
 
-const taskLifecycleStatusSchema = z.enum([
+const taskLifecycleStatusSchema = /* @__PURE__ */ z.enum([
   'running',
   'completed',
   'failed',
@@ -344,7 +344,7 @@ const taskInfoBaseFields = {
 } as const;
 
 /** Protocol `TaskInfo` union (`protocol/src/events.ts`). */
-export const agentTaskInfoSchema = z.discriminatedUnion('kind', [
+export const agentTaskInfoSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('process'),
     command: z.string(),
@@ -371,12 +371,12 @@ export const agentTaskInfoSchema = z.discriminatedUnion('kind', [
 
 export type AgentTaskInfo = z.infer<typeof agentTaskInfoSchema>;
 
-export const stopTaskPayloadSchema = z.object({
+export const stopTaskPayloadSchema = /* @__PURE__ */ z.object({
   taskId: z.string(),
   reason: z.string().optional(),
 });
 
-export const getTaskOutputPayloadSchema = z.object({
+export const getTaskOutputPayloadSchema = /* @__PURE__ */ z.object({
   taskId: z.string(),
   tail: z.number().optional(),
 });

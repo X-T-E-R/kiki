@@ -27,18 +27,18 @@ const providerAliases: Readonly<Record<string, string>> = {
 };
 
 const envVariablePattern = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const scalarRequestParamSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
-const requestParamsSchema = z.record(z.string(), scalarRequestParamSchema);
-const positiveIntegerSchema = z.number().int().positive().safe();
-const canonicalProviderTypeSchema = z.enum(CANONICAL_PROVIDER_TYPES);
-const providerTypeInputSchema = z.enum([
+const scalarRequestParamSchema = /* @__PURE__ */ z.union([z.string(), z.number().finite(), z.boolean()]);
+const requestParamsSchema = /* @__PURE__ */ z.record(z.string(), scalarRequestParamSchema);
+const positiveIntegerSchema = /* @__PURE__ */ z.number().int().positive().safe();
+const canonicalProviderTypeSchema = /* @__PURE__ */ z.enum(CANONICAL_PROVIDER_TYPES);
+const providerTypeInputSchema = /* @__PURE__ */ z.enum([
   ...CANONICAL_PROVIDER_TYPES,
   'openai-chat',
   'openai-legacy',
   'openai-responses',
 ]).transform((value) => providerAliases[value] ?? value).pipe(canonicalProviderTypeSchema);
-const capabilitySchema = z.enum(['image_in', 'video_in', 'audio_in', 'thinking', 'tool_use']);
-const supportEffortSchema = z.enum(DEFAULT_THINKING_EFFORTS);
+const capabilitySchema = /* @__PURE__ */ z.enum(['image_in', 'video_in', 'audio_in', 'thinking', 'tool_use']);
+const supportEffortSchema = /* @__PURE__ */ z.enum(DEFAULT_THINKING_EFFORTS);
 
 function canonicalProviderType(value: string): string {
   return providerAliases[value] ?? value;
@@ -145,11 +145,11 @@ function invalidEndpointError(): Error {
   return new Error('Invalid endpoint configuration');
 }
 
-const endpointBaseUrlSchema = z.string().trim().min(1).refine(isValidEndpointUrl, { message: 'Invalid endpoint URL' }).transform(normalizeEndpointUrl);
-const endpointModelSchema = z.string().trim().min(1);
-const endpointCapabilitiesSchema = z.array(capabilitySchema);
-const endpointSupportEffortsSchema = z.array(supportEffortSchema);
-const endpointInputObjectSchema = z.strictObject({
+const endpointBaseUrlSchema = /* @__PURE__ */ z.string().trim().min(1).refine(isValidEndpointUrl, { message: 'Invalid endpoint URL' }).transform(normalizeEndpointUrl);
+const endpointModelSchema = /* @__PURE__ */ z.string().trim().min(1);
+const endpointCapabilitiesSchema = /* @__PURE__ */ z.array(capabilitySchema);
+const endpointSupportEffortsSchema = /* @__PURE__ */ z.array(supportEffortSchema);
+const endpointInputObjectSchema = /* @__PURE__ */ z.strictObject({
   provider_type: providerTypeInputSchema.optional(),
   base_url: endpointBaseUrlSchema.optional(),
   model: endpointModelSchema.optional(),
@@ -162,7 +162,7 @@ const endpointInputObjectSchema = z.strictObject({
   request_params: requestParamsSchema.optional(),
 });
 
-export const adhocEndpointInputSchema = endpointInputObjectSchema.partial().superRefine((value, context) => {
+export const adhocEndpointInputSchema = /* @__PURE__ */ endpointInputObjectSchema.partial().superRefine((value, context) => {
   if (value.api_key !== undefined && value.api_key_env !== undefined) context.addIssue({ code: 'custom', message: 'Endpoint authentication must use one credential source' });
 });
 export type AdhocEndpointInput = z.infer<typeof adhocEndpointInputSchema>;
@@ -228,11 +228,11 @@ export function mergeEndpointInputs(base: AdhocEndpointInput | undefined, overri
   return { ...parseEndpointInput(merged) };
 }
 
-const boundCredentialSchema = z.discriminatedUnion('kind', [
+const boundCredentialSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('env'), env: z.string().regex(envVariablePattern) }),
   z.strictObject({ kind: z.literal('ephemeral'), secretRef: z.string().trim().min(1) }),
 ]);
-const boundEndpointBaseSchema = z.strictObject({
+const boundEndpointBaseSchema = /* @__PURE__ */ z.strictObject({
   provider_type: canonicalProviderTypeSchema.default(DEFAULT_PROVIDER_TYPE),
   base_url: endpointBaseUrlSchema,
   model: endpointModelSchema,
@@ -244,12 +244,12 @@ const boundEndpointBaseSchema = z.strictObject({
   credential: boundCredentialSchema,
 });
 
-export const adhocEndpointModelSchema = boundEndpointBaseSchema.omit({ credential: true }).transform((value) => {
+export const adhocEndpointModelSchema = /* @__PURE__ */ boundEndpointBaseSchema.omit({ credential: true }).transform((value) => {
   if (value.support_efforts !== undefined || !value.capabilities.includes('thinking')) return value;
   return { ...value, support_efforts: [...DEFAULT_THINKING_EFFORTS] };
 });
 
-export const boundEndpointSchema = boundEndpointBaseSchema.transform((value) => {
+export const boundEndpointSchema = /* @__PURE__ */ boundEndpointBaseSchema.transform((value) => {
   if (value.support_efforts !== undefined || !value.capabilities.includes('thinking')) return value;
   return { ...value, support_efforts: [...DEFAULT_THINKING_EFFORTS] };
 });

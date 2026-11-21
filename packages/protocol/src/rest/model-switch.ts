@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { modelSwitchModeSchema } from './config';
 
-export const modelSwitchInputSchema = z.object({
+export const modelSwitchInputSchema = /* @__PURE__ */ z.object({
   operationId: z.string().min(1),
   model: z.string().min(1),
   mode: modelSwitchModeSchema,
@@ -10,7 +10,7 @@ export const modelSwitchInputSchema = z.object({
   selectedFromModel: z.string().optional(),
 });
 
-export const modelSwitchReceiptSchema = z.object({
+export const modelSwitchReceiptSchema = /* @__PURE__ */ z.object({
   operationId: z.string(),
   agentId: z.string(),
   state: z.enum(['pending', 'preparing', 'completed', 'failed', 'cancelled']),
@@ -23,7 +23,7 @@ export const modelSwitchReceiptSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() }).optional(),
 });
 
-export const queuedModelSwitchSchema = z.object({
+export const queuedModelSwitchSchema = /* @__PURE__ */ z.object({
   input: modelSwitchInputSchema,
   receipt: modelSwitchReceiptSchema,
   revision: z.number().int().nonnegative(),
@@ -31,7 +31,7 @@ export const queuedModelSwitchSchema = z.object({
   queueIndex: z.number().int(),
 });
 
-export const modelSwitchActionSchema = z.discriminatedUnion('action', [
+export const modelSwitchActionSchema = /* @__PURE__ */ z.discriminatedUnion('action', [
   z.object({
     action: z.literal('update'),
     input: modelSwitchInputSchema.omit({ operationId: true }),

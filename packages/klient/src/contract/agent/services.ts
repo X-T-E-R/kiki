@@ -44,11 +44,12 @@ import {
   steerPayloadSchema,
   usageStatusSchema,
 } from './schemas.js';
+import { lazyContract } from '../lazyContract.js';
 
 export const agentGoalContract = {
-  getGoal: { input: z.tuple([]), output: z.object({ goal: goalSnapshotSchema.nullable() }) },
-  createGoal: {
-    input: z.tuple([z.object({
+  getGoal: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.object({ goal: goalSnapshotSchema.nullable() }) }), 'input', 'output'),
+  createGoal: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.object({
       objective: z.string(),
       completionCriterion: z.string().optional(),
       followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
@@ -56,9 +57,9 @@ export const agentGoalContract = {
       replace: z.boolean().optional(),
     })]),
     output: goalSnapshotSchema,
-  },
-  updateGoal: {
-    input: z.tuple([z.object({
+  }), 'input', 'output'),
+  updateGoal: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.object({
       goalId: z.string(),
       expectedRevision: z.number().int().nonnegative().optional(),
       objective: z.string().optional(),
@@ -67,138 +68,138 @@ export const agentGoalContract = {
       budgetLimits: goalBudgetPatchSchema.optional(),
     })]),
     output: goalSnapshotSchema,
-  },
-  pauseGoal: { input: z.tuple([]), output: goalSnapshotSchema },
-  resumeGoal: {
-    input: z.tuple([z.object({
+  }), 'input', 'output'),
+  pauseGoal: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: goalSnapshotSchema }), 'input', 'output'),
+  resumeGoal: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.object({
       reason: z.string().optional(),
       continueIfPaused: z.boolean().optional(),
       continueIfBlocked: z.boolean().optional(),
     }).optional()]),
     output: goalSnapshotSchema,
-  },
-  cancelGoal: { input: z.tuple([]), output: goalSnapshotSchema },
+  }), 'input', 'output'),
+  cancelGoal: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: goalSnapshotSchema }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentPromptContract = {
-  switchModel: { input: z.tuple([modelSwitchInputSchema]), output: modelSwitchReceiptSchema },
-  getModelSwitch: { input: z.tuple([z.string()]), output: maybe(modelSwitchReceiptSchema) },
-  listModelSwitches: { input: z.tuple([z.object({ observe: z.literal(true) }).strict().optional()]), output: z.array(queuedModelSwitchSchema) },
-  updateModelSwitch: { input: z.tuple([modelSwitchInputSchema, z.number().int().nonnegative().optional()]), output: modelSwitchReceiptSchema },
-  cancelModelSwitch: { input: z.tuple([z.string()]), output: modelSwitchReceiptSchema },
-  recoverModelSwitch: {
-    input: z.union([
+  switchModel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([modelSwitchInputSchema]), output: modelSwitchReceiptSchema }), 'input', 'output'),
+  getModelSwitch: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(modelSwitchReceiptSchema) }), 'input', 'output'),
+  listModelSwitches: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.object({ observe: z.literal(true) }).strict().optional()]), output: /* @__PURE__ */ z.array(queuedModelSwitchSchema) }), 'input', 'output'),
+  updateModelSwitch: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([modelSwitchInputSchema, z.number().int().nonnegative().optional()]), output: modelSwitchReceiptSchema }), 'input', 'output'),
+  cancelModelSwitch: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: modelSwitchReceiptSchema }), 'input', 'output'),
+  recoverModelSwitch: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.union([
       z.tuple([z.string(), z.literal('retry'), modelSwitchModeSchema.optional()]),
       z.tuple([z.string(), z.literal('keep_original')]),
     ]),
     output: modelSwitchReceiptSchema,
-  },
-  submit: {
-    input: z.tuple([promptPayloadSchema]),
-    output: maybe(promptLaunchResultSchema),
-  },
-  submitAndWait: {
-    input: z.tuple([promptPayloadSchema]),
+  }), 'input', 'output'),
+  submit: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([promptPayloadSchema]),
+    output: /* @__PURE__ */ maybe(promptLaunchResultSchema),
+  }), 'input', 'output'),
+  submitAndWait: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([promptPayloadSchema]),
     output: promptTerminalResultSchema,
-  },
-  submitSteer: {
-    input: z.tuple([steerPayloadSchema]),
-    output: maybe(promptLaunchResultSchema),
-  },
-  resumeRecoveredQueue: { input: z.tuple([]), output: noResult },
+  }), 'input', 'output'),
+  submitSteer: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([steerPayloadSchema]),
+    output: /* @__PURE__ */ maybe(promptLaunchResultSchema),
+  }), 'input', 'output'),
+  resumeRecoveredQueue: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentSkillContract = {
-  activate: { input: z.tuple([activateSkillPayloadSchema]), output: z.union([promptWithSkillsResultSchema, promptLaunchResultSchema]) },
-  promptWithSkills: {
-    input: z.tuple([promptWithSkillsPayloadSchema]),
+  activate: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([activateSkillPayloadSchema]), output: /* @__PURE__ */ z.union([promptWithSkillsResultSchema, promptLaunchResultSchema]) }), 'input', 'output'),
+  promptWithSkills: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([promptWithSkillsPayloadSchema]),
     output: promptWithSkillsResultSchema,
-  },
+  }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentContextInjectorContract = {
-  reconcileWhenIdle: { input: z.tuple([z.string()]), output: noResult },
+  reconcileWhenIdle: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentContextRebuildContract = {
-  rebuild: { input: z.tuple([]), output: contextRebuildResultSchema },
-  control: { input: z.tuple([]), output: contextRebuildControlSchema },
-  setEnabled: { input: z.tuple([z.boolean()]), output: noResult },
+  rebuild: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: contextRebuildResultSchema }), 'input', 'output'),
+  control: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: contextRebuildControlSchema }), 'input', 'output'),
+  setEnabled: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.boolean()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentConversationUndoContract = {
-  undo: {
-    input: z.tuple([z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),
-    output: z.number(),
-  },
+  undo: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),
+    output: /* @__PURE__ */ z.number(),
+  }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentPluginCommandContract = {
-  activate: {
-    input: z.tuple([z.object({
+  activate: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.object({
       pluginId: z.string(),
       commandName: z.string(),
       args: z.string().optional(),
     })]),
     output: noResult,
-  },
+  }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentPluginContract = {
-  refreshSessionStart: { input: z.tuple([]), output: noResult },
+  refreshSessionStart: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentExecutionContract = {
-  cancel: { input: z.tuple([z.string().optional()]), output: z.boolean() },
-  shutdown: { input: z.tuple([z.string().optional()]), output: noResult },
+  cancel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().optional()]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
+  shutdown: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().optional()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentLoopContract = {
-  cancelFromUser: { input: z.tuple([z.number().optional()]), output: noResult },
-  status: { input: z.tuple([]), output: agentLoopStatusSchema },
+  cancelFromUser: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.number().optional()]), output: noResult }), 'input', 'output'),
+  status: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: agentLoopStatusSchema }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentPermissionModeContract = {
-  mode: { input: z.tuple([]), output: permissionModeSchema },
-  setMode: { input: z.tuple([permissionModeSchema]), output: noResult },
-  setModeAndBroadcast: { input: z.tuple([permissionModeSchema]), output: noResult },
+  mode: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: permissionModeSchema }), 'input', 'output'),
+  setMode: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([permissionModeSchema]), output: noResult }), 'input', 'output'),
+  setModeAndBroadcast: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([permissionModeSchema]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentCommandContract = {
-  list: { input: z.tuple([]), output: z.array(agentCommandInfoSchema) },
-  run: { input: z.tuple([z.string(), z.string().optional()]), output: noResult },
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(agentCommandInfoSchema) }), 'input', 'output'),
+  run: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), z.string().optional()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentRuntimeBindingContract = {
-  get: { input: z.tuple([]), output: runtimeBindingSchema },
-  set: { input: z.tuple([runtimeBindingSchema]), output: runtimeBindingSchema },
-  switch: { input: z.tuple([z.string()]), output: runtimeBindingSchema },
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: runtimeBindingSchema }), 'input', 'output'),
+  set: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([runtimeBindingSchema]), output: runtimeBindingSchema }), 'input', 'output'),
+  switch: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: runtimeBindingSchema }), 'input', 'output'),
 } satisfies ServiceContract;
 
 /** `history` items are full `ContextMessage`s, mirrored as `unknown`. */
 export const agentContextMemoryContract = {
-  get: { input: z.tuple([]), output: z.array(z.unknown()) },
-  append: { input: z.tuple([z.unknown()]), output: noResult },
-  clear: { input: z.tuple([]), output: noResult },
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(z.unknown()) }), 'input', 'output'),
+  append: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.unknown()]), output: noResult }), 'input', 'output'),
+  clear: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentContextMutationContract = {
-  appendImported: { input: z.tuple([z.unknown()]), output: noResult },
+  appendImported: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.unknown()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentTokenCountingContract = {
-  statusSize: { input: z.tuple([]), output: z.number() },
+  statusSize: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.number() }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentShellCommandContract = {
-  run: {
-    input: z.tuple([runShellCommandPayloadSchema]),
+  run: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([runShellCommandPayloadSchema]),
     output: shellCommandResultSchema,
-  },
-  cancel: { input: z.tuple([z.string()]), output: noResult },
+  }), 'input', 'output'),
+  cancel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
-export const profileToolPolicyStatusSchema = z.object({
+export const profileToolPolicyStatusSchema = /* @__PURE__ */ z.object({
   definitionId: z.string().optional(),
   source: z.enum(['declared', 'inherited-default', 'builtin-default']).optional(),
   activeTools: z.array(z.string()).readonly().optional(),
@@ -209,35 +210,35 @@ export const profileToolPolicyStatusSchema = z.object({
 });
 
 export const agentToolPolicyContract = {
-  isToolActive: { input: z.tuple([z.string(), z.enum(['builtin', 'user', 'mcp', 'plugin']).optional()]), output: z.boolean() },
+  isToolActive: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), z.enum(['builtin', 'user', 'mcp', 'plugin']).optional()]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentProfileContract = {
-  inspectToolPolicy: { input: z.tuple([]), output: profileToolPolicyStatusSchema },
-  refreshToolPolicy: { input: z.tuple([z.string().min(1)]), output: profileToolPolicyStatusSchema },
-  getModel: { input: z.tuple([]), output: z.string() },
-  setModel: { input: z.tuple([z.string()]), output: setModelResultSchema },
-  setEffort: { input: z.tuple([z.string()]), output: setEffortResultSchema },
-  setThinking: { input: z.tuple([z.string()]), output: noResult },
-  getEffectiveThinkingLevel: { input: z.tuple([]), output: z.string() },
-  getModelCapabilities: { input: z.tuple([]), output: modelCapabilitySchema },
-  getAgentsMdWarning: { input: z.tuple([]), output: maybe(z.string()) },
+  inspectToolPolicy: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: profileToolPolicyStatusSchema }), 'input', 'output'),
+  refreshToolPolicy: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().min(1)]), output: profileToolPolicyStatusSchema }), 'input', 'output'),
+  getModel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.string() }), 'input', 'output'),
+  setModel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: setModelResultSchema }), 'input', 'output'),
+  setEffort: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: setEffortResultSchema }), 'input', 'output'),
+  setThinking: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  getEffectiveThinkingLevel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.string() }), 'input', 'output'),
+  getModelCapabilities: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: modelCapabilitySchema }), 'input', 'output'),
+  getAgentsMdWarning: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ maybe(z.string()) }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentUsageContract = {
-  status: { input: z.tuple([]), output: usageStatusSchema },
+  status: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: usageStatusSchema }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentPlanContract = {
-  status: { input: z.tuple([]), output: planDataSchema },
-  enter: { input: z.tuple([]), output: noResult },
-  exit: { input: z.tuple([]), output: noResult },
-  clear: { input: z.tuple([]), output: noResult },
-  cancel: { input: z.tuple([z.string().optional()]), output: noResult },
+  status: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: planDataSchema }), 'input', 'output'),
+  enter: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
+  exit: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
+  clear: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
+  cancel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string().optional()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 /** `McpServerEntry` from the engine's `mcpCore/connection-manager`. */
-export const mcpServerEntrySchema = z.object({
+export const mcpServerEntrySchema = /* @__PURE__ */ z.object({
   name: z.string(),
   transport: z.enum(['stdio', 'http', 'sse']),
   status: z.enum(['pending', 'connected', 'failed', 'disabled', 'needs-auth', 'removed']),
@@ -245,12 +246,12 @@ export const mcpServerEntrySchema = z.object({
   error: z.string().optional(),
 });
 
-export const mcpSessionOverrideSchema = z.object({
+export const mcpSessionOverrideSchema = /* @__PURE__ */ z.object({
   locator: mcpServerLocatorSchema,
   override: z.enum(['on', 'off', 'inherit']),
 });
 
-export const mcpSessionCapabilitySchema = z.object({
+export const mcpSessionCapabilitySchema = /* @__PURE__ */ z.object({
   locator: mcpServerLocatorSchema,
   runtimeName: z.string(),
   origin: z.enum(['global', 'plugin', 'caller']),
@@ -267,57 +268,57 @@ export const mcpSessionCapabilitySchema = z.object({
 });
 
 export const agentMcpContract = {
-  list: { input: z.tuple([]), output: z.array(mcpServerEntrySchema) },
-  waitForInitialLoad: { input: z.tuple([]), output: noResult },
-  initialLoadDurationMs: { input: z.tuple([]), output: z.number() },
-  reconnect: { input: z.tuple([z.string()]), output: noResult },
-  connect: {
-    input: z.tuple([z.string(), mcpServerConfigSchema]),
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(mcpServerEntrySchema) }), 'input', 'output'),
+  waitForInitialLoad: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
+  initialLoadDurationMs: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.number() }), 'input', 'output'),
+  reconnect: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  connect: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), mcpServerConfigSchema]),
     output: noResult,
-  },
-  listMcpSessionCapabilities: { input: z.tuple([]), output: z.array(mcpSessionCapabilitySchema) },
-  setMcpSessionOverride: {
-    input: z.tuple([mcpSessionOverrideSchema]),
+  }), 'input', 'output'),
+  listMcpSessionCapabilities: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(mcpSessionCapabilitySchema) }), 'input', 'output'),
+  setMcpSessionOverride: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpSessionOverrideSchema]),
     output: mcpSessionCapabilitySchema,
-  },
+  }), 'input', 'output'),
 } satisfies ServiceContract;
 
 /** `FullCompactionInput` from the engine's `agent/fullCompaction`. */
-export const fullCompactionInputSchema = z.object({
+export const fullCompactionInputSchema = /* @__PURE__ */ z.object({
   source: z.enum(['manual', 'auto']),
   instruction: z.string().optional(),
 });
 
 export const agentFullCompactionContract = {
-  begin: { input: z.tuple([fullCompactionInputSchema]), output: z.boolean() },
-  cancel: { input: z.tuple([]), output: noResult },
-  isCompacting: { input: z.tuple([]), output: z.boolean() },
-  getAutoCompact: { input: z.tuple([]), output: z.object({
+  begin: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([fullCompactionInputSchema]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
+  cancel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: noResult }), 'input', 'output'),
+  isCompacting: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
+  getAutoCompact: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.object({
     tokens: z.number(), source: z.enum(['session', 'profile', 'model', 'global', 'legacy']),
     effectiveMaxContextTokens: z.number(), reservedContextTokens: z.number(),
-  }) },
-  getDefaultAutoCompact: { input: z.tuple([]), output: z.object({
+  }) }), 'input', 'output'),
+  getDefaultAutoCompact: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.object({
     tokens: z.number(), source: z.enum(['session', 'profile', 'model', 'global', 'legacy']),
     effectiveMaxContextTokens: z.number(), reservedContextTokens: z.number(),
-  }) },
-  setAutoCompactOverride: { input: z.tuple([z.number().int().positive().safe().nullable()]), output: noResult },
-  getContextStrategy: { input: z.tuple([]), output: contextStrategyStatusSchema },
-  setContextStrategyOverride: { input: z.tuple([contextStrategySchema.nullable()]), output: noResult },
+  }) }), 'input', 'output'),
+  setAutoCompactOverride: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.number().int().positive().safe().nullable()]), output: noResult }), 'input', 'output'),
+  getContextStrategy: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: contextStrategyStatusSchema }), 'input', 'output'),
+  setContextStrategyOverride: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([contextStrategySchema.nullable()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export const agentTaskContract = {
-  list: {
-    input: z.tuple([z.boolean().optional(), z.number().optional()]),
-    output: z.array(agentTaskInfoSchema),
-  },
-  stopByUser: { input: z.tuple([z.string()]), output: maybe(agentTaskInfoSchema) },
-  stop: {
-    input: z.tuple([z.string(), z.string().optional()]),
-    output: maybe(agentTaskInfoSchema),
-  },
-  detach: { input: z.tuple([z.string()]), output: maybe(agentTaskInfoSchema) },
-  readOutput: {
-    input: z.tuple([z.string(), z.number().optional()]),
-    output: z.string(),
-  },
+  list: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.boolean().optional(), z.number().optional()]),
+    output: /* @__PURE__ */ z.array(agentTaskInfoSchema),
+  }), 'input', 'output'),
+  stopByUser: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(agentTaskInfoSchema) }), 'input', 'output'),
+  stop: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), z.string().optional()]),
+    output: /* @__PURE__ */ maybe(agentTaskInfoSchema),
+  }), 'input', 'output'),
+  detach: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(agentTaskInfoSchema) }), 'input', 'output'),
+  readOutput: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), z.number().optional()]),
+    output: /* @__PURE__ */ z.string(),
+  }), 'input', 'output'),
 } satisfies ServiceContract;

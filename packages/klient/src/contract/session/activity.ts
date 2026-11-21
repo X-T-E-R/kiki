@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const sessionActivityStateSchema = z.object({
+export const sessionActivityStateSchema = /* @__PURE__ */ z.object({
   busy: z.boolean(),
   executing: z.boolean().optional(),
   cleanupPending: z.boolean().optional(),
@@ -12,5 +13,5 @@ export const sessionActivityStateSchema = z.object({
 });
 
 export const sessionActivityViewContract = {
-  state: { input: z.tuple([]), output: sessionActivityStateSchema },
+  state: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: sessionActivityStateSchema }), 'input', 'output'),
 } satisfies ServiceContract;

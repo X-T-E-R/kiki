@@ -2,14 +2,14 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from './time';
 
-export const questionOptionSchema = z.object({
+export const questionOptionSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   description: z.string().optional(),
 });
 export type QuestionOption = z.infer<typeof questionOptionSchema>;
 
-export const questionItemSchema = z.object({
+export const questionItemSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   question: z.string().min(1),
   header: z.string().optional(),
@@ -22,7 +22,7 @@ export const questionItemSchema = z.object({
 });
 export type QuestionItem = z.infer<typeof questionItemSchema>;
 
-export const questionRequestSchema = z.object({
+export const questionRequestSchema = /* @__PURE__ */ z.object({
   question_id: z.string().min(1),
   session_id: z.string().min(1),
   turn_id: z.number().int().nonnegative().optional(),
@@ -32,7 +32,7 @@ export const questionRequestSchema = z.object({
 });
 export type QuestionRequest = z.infer<typeof questionRequestSchema>;
 
-export const questionAnswerSchema = z.discriminatedUnion('kind', [
+export const questionAnswerSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('single'), option_id: z.string().min(1) }),
   z.object({ kind: z.literal('multi'), option_ids: z.array(z.string().min(1)).min(1) }),
   z.object({ kind: z.literal('other'), text: z.string() }),
@@ -45,10 +45,10 @@ export const questionAnswerSchema = z.discriminatedUnion('kind', [
 ]);
 export type QuestionAnswer = z.infer<typeof questionAnswerSchema>;
 
-export const questionAnswerMethodSchema = z.enum(['enter', 'space', 'number_key', 'click']);
+export const questionAnswerMethodSchema = /* @__PURE__ */ z.enum(['enter', 'space', 'number_key', 'click']);
 export type QuestionAnswerMethod = z.infer<typeof questionAnswerMethodSchema>;
 
-export const questionResponseSchema = z.object({
+export const questionResponseSchema = /* @__PURE__ */ z.object({
   answers: z.record(z.string().min(1), questionAnswerSchema),
   method: questionAnswerMethodSchema.optional(),
   note: z.string().optional(),

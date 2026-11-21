@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const documentPreviewSourceSchema = z.discriminatedUnion('kind', [
+export const documentPreviewSourceSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('workspace'),
     path: z.string().min(1).max(4096),
@@ -15,7 +15,7 @@ export const documentPreviewSourceSchema = z.discriminatedUnion('kind', [
 ]);
 export type DocumentPreviewSource = z.infer<typeof documentPreviewSourceSchema>;
 
-export const documentPreviewRequestSchema = z.object({
+export const documentPreviewRequestSchema = /* @__PURE__ */ z.object({
   source: documentPreviewSourceSchema,
   page: z.number().int().min(1).optional(),
   sheet: z.string().min(1).max(256).optional(),
@@ -32,7 +32,7 @@ export const documentPreviewRequestSchema = z.object({
 });
 export type DocumentPreviewRequest = z.infer<typeof documentPreviewRequestSchema>;
 
-export const documentPreviewAssetSchema = z.object({
+export const documentPreviewAssetSchema = /* @__PURE__ */ z.object({
   asset_id: z.string().min(1),
   mime: z.string().min(1),
   width: z.number().int().positive().optional(),
@@ -41,14 +41,14 @@ export const documentPreviewAssetSchema = z.object({
 }).strict();
 export type DocumentPreviewAsset = z.infer<typeof documentPreviewAssetSchema>;
 
-const documentPreviewSourceInfoSchema = z.object({
+const documentPreviewSourceInfoSchema = /* @__PURE__ */ z.object({
   kind: z.enum(['workspace', 'session-media']),
   name: z.string().min(1),
   media_type: z.string().min(1),
   size: z.number().int().nonnegative(),
 }).strict();
 
-export const documentPreviewNavigationSchema = z.discriminatedUnion('kind', [
+export const documentPreviewNavigationSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('page'),
     page: z.number().int().positive(),
@@ -64,7 +64,7 @@ export const documentPreviewNavigationSchema = z.discriminatedUnion('kind', [
 ]);
 export type DocumentPreviewNavigation = z.infer<typeof documentPreviewNavigationSchema>;
 
-export const documentPreviewReadySchema = z.object({
+export const documentPreviewReadySchema = /* @__PURE__ */ z.object({
   kind: z.literal('ready'),
   format: z.enum(['pdf', 'docx', 'xlsx', 'pptx']),
   fidelity: z.literal('rendered'),
@@ -75,7 +75,7 @@ export const documentPreviewReadySchema = z.object({
   read_only: z.literal(true),
 }).strict();
 
-export const documentPreviewTextSchema = z.object({
+export const documentPreviewTextSchema = /* @__PURE__ */ z.object({
   kind: z.literal('text'),
   format: z.enum(['text', 'csv']),
   fidelity: z.literal('source'),
@@ -89,7 +89,7 @@ export const documentPreviewTextSchema = z.object({
   read_only: z.literal(true),
 }).strict();
 
-export const documentPreviewUnsupportedSchema = z.object({
+export const documentPreviewUnsupportedSchema = /* @__PURE__ */ z.object({
   kind: z.literal('unsupported'),
   format: z.string().min(1),
   source: documentPreviewSourceInfoSchema,
@@ -98,7 +98,7 @@ export const documentPreviewUnsupportedSchema = z.object({
   read_only: z.literal(true),
 }).strict();
 
-export const documentPreviewMissingDependencySchema = z.object({
+export const documentPreviewMissingDependencySchema = /* @__PURE__ */ z.object({
   kind: z.literal('missing_dependency'),
   dependency: z.literal('officecli'),
   source: documentPreviewSourceInfoSchema,
@@ -113,7 +113,7 @@ export const documentPreviewMissingDependencySchema = z.object({
   read_only: z.literal(true),
 }).strict();
 
-export const documentPreviewResponseSchema = z.discriminatedUnion('kind', [
+export const documentPreviewResponseSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   documentPreviewReadySchema,
   documentPreviewTextSchema,
   documentPreviewUnsupportedSchema,
@@ -121,7 +121,7 @@ export const documentPreviewResponseSchema = z.discriminatedUnion('kind', [
 ]);
 export type DocumentPreviewResponse = z.infer<typeof documentPreviewResponseSchema>;
 
-export const documentPreviewAssetParamsSchema = z.object({
+export const documentPreviewAssetParamsSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   asset_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
 }).strict();

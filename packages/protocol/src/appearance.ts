@@ -96,14 +96,14 @@ export function sniffBackgroundMediaType(head: Uint8Array): string | null {
   const at = (offset: number, bytes: readonly number[]): boolean =>
     bytes.every((byte, index) => head[offset + index] === byte);
   const ascii = (offset: number, text: string): boolean =>
-    at(offset, Array.from(text, (char) => char.charCodeAt(0)));
+    at(offset, Array.from(text, (char) => char.codePointAt(0)));
   if (at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
   if (at(0, [0xff, 0xd8, 0xff])) return 'image/jpeg';
   if (ascii(0, 'GIF87a') || ascii(0, 'GIF89a')) return 'image/gif';
   if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp';
   if (at(0, [0x1a, 0x45, 0xdf, 0xa3])) return 'video/webm';
   if (ascii(4, 'ftyp')) {
-    const brand = String.fromCharCode(...head.slice(8, 12));
+    const brand = String.fromCodePoint(...head.slice(8, 12));
     if (brand === 'avif' || brand === 'avis') return 'image/avif';
     return 'video/mp4';
   }
@@ -123,7 +123,7 @@ export function mediaTypeMatches(declared: string, sniffed: string | null): bool
  * The dials of one background. Ranges are clamped rather than free so every
  * value a file or a slider can produce still renders a usable window.
  */
-export const backgroundLookSchema = z
+export const backgroundLookSchema = /* @__PURE__ */ z
   .object({
     fit: z.enum(BACKGROUND_FITS).optional(),
     alignment: z.enum(BACKGROUND_ALIGNMENTS).optional(),
@@ -172,9 +172,9 @@ function isPackMediaFile(value: string): boolean {
   return PACK_FILE_PATTERN.test(value) && !value.includes('..') && backgroundMediaTypeOf(value) !== null;
 }
 
-const packFileSchema = z.string().refine(isPackMediaFile, { message: 'not an allowed pack file name' });
+const packFileSchema = /* @__PURE__ */ z.string().refine(isPackMediaFile, { message: 'not an allowed pack file name' });
 
-export const packBackgroundSchema = backgroundLookSchema
+export const packBackgroundSchema = /* @__PURE__ */ backgroundLookSchema
   .extend({
     /** One file, or several for a carousel. */
     media: z.array(packFileSchema).min(1).max(APPEARANCE_LIMITS.slides),
@@ -187,13 +187,13 @@ export const packBackgroundSchema = backgroundLookSchema
   .strict();
 export type PackBackground = z.infer<typeof packBackgroundSchema>;
 
-export const packVariantSchema = skinVariantSchema.extend({ background: packBackgroundSchema.optional() }).strict();
+export const packVariantSchema = /* @__PURE__ */ skinVariantSchema.extend({ background: packBackgroundSchema.optional() }).strict();
 export type PackVariant = z.infer<typeof packVariantSchema>;
 
 export const APPEARANCE_PACK_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const APPEARANCE_PACK_MANIFEST = 'kiki-pack.json';
 
-export const appearancePackSchema = z
+export const appearancePackSchema = /* @__PURE__ */ z
   .object({
     $schema: z.string().optional(),
     kind: z.literal('kiki-appearance-pack'),

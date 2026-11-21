@@ -48,6 +48,7 @@ const sendingNotifications = new Set<{
 
 export interface AwayNotificationsOptions {
   readonly host: HostAdapter;
+  readonly enabled?: boolean;
   readonly sessions: readonly Session[];
   /** Fetches the newest sessions while hidden; the app's list query is paused then. */
   readonly listSessions: () => Promise<readonly Session[]>;
@@ -90,7 +91,7 @@ function useFormatter(sessions: readonly Session[], scope: NavScopeIdentity): (n
   }, [t, tp, resolveTitle, scope]);
 }
 
-export function useAwayNotifications({ host, sessions, listSessions, navigate }: AwayNotificationsOptions): void {
+export function useAwayNotifications({ host, sessions, listSessions, navigate, enabled = true }: AwayNotificationsOptions): void {
   const connection = useConnection();
   const { client, scopeId, meta, spaceKey } = connection;
   const scope = useMemo<NavScopeIdentity>(() => ({
@@ -232,7 +233,7 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   const listRef = useRef(listSessions);
   listRef.current = listSessions;
   useEffect(() => {
-    if (host.notify === undefined || typeof document === 'undefined') return;
+    if (!enabled || host.notify === undefined || typeof document === 'undefined') return;
     let stopped = false;
     let timer: ReturnType<typeof setInterval> | undefined;
     const tick = () => {
@@ -254,7 +255,7 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
       document.removeEventListener('visibilitychange', sync);
       if (timer !== undefined) clearInterval(timer);
     };
-  }, [host, scopeKey]);
+  }, [enabled, host, scopeKey]);
 
   // Taskbar / dock badge: the same count as the activity entry.
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);

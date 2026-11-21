@@ -2,28 +2,29 @@ import { z } from 'zod';
 import { botSummarySchema, botStateSchema, botUpdateInputSchema, roomIdSchema, personaIdSchema, roomDocumentSchema, roomListItemSchema, createRoomInputSchema, updateRoomInputSchema, postRoomMessageInputSchema, roomMessageSchema, roomLogOptionsSchema, roomLogResultSchema, roomUsageSchema, roomMemberIdSchema, roomMemberInputSchema, createThreadRoomInputSchema, searchRoomThreadsInputSchema, searchRoomThreadsResultSchema } from '@kiki/protocol';
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 export const botContract = {
-  list: { input: z.tuple([]), output: z.array(botSummarySchema) },
-  enable: { input: z.tuple([personaIdSchema]), output: botSummarySchema },
-  ensureHomeSession: { input: z.tuple([personaIdSchema]), output: botSummarySchema },
-  update: { input: z.tuple([personaIdSchema, botUpdateInputSchema]), output: botStateSchema },
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(botSummarySchema) }), 'input', 'output'),
+  enable: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([personaIdSchema]), output: botSummarySchema }), 'input', 'output'),
+  ensureHomeSession: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([personaIdSchema]), output: botSummarySchema }), 'input', 'output'),
+  update: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([personaIdSchema, botUpdateInputSchema]), output: botStateSchema }), 'input', 'output'),
 } satisfies ServiceContract;
 export const roomContract = {
-  list: { input: z.tuple([]), output: z.array(roomDocumentSchema) },
-  listItems: { input: z.tuple([]), output: z.array(roomListItemSchema) },
-  get: { input: z.tuple([roomIdSchema]), output: maybe(roomDocumentSchema) },
-  create: { input: z.tuple([createRoomInputSchema]), output: roomDocumentSchema },
-  createFromThreads: { input: z.tuple([createThreadRoomInputSchema]), output: roomDocumentSchema },
-  searchThreads: { input: z.tuple([searchRoomThreadsInputSchema.optional()]), output: searchRoomThreadsResultSchema },
-  addMember: { input: z.tuple([roomIdSchema, roomMemberInputSchema]), output: roomDocumentSchema },
-  removeMember: { input: z.tuple([roomIdSchema, roomMemberIdSchema]), output: roomDocumentSchema },
-  update: { input: z.tuple([roomIdSchema, updateRoomInputSchema]), output: roomDocumentSchema },
-  delete: { input: z.tuple([roomIdSchema]), output: noResult },
-  postUserMessage: { input: z.tuple([roomIdSchema, postRoomMessageInputSchema]), output: roomMessageSchema },
-  pause: { input: z.tuple([roomIdSchema]), output: roomDocumentSchema },
-  continue: { input: z.tuple([roomIdSchema]), output: roomDocumentSchema },
-  stop: { input: z.tuple([roomIdSchema]), output: roomDocumentSchema },
-  log: { input: z.tuple([roomIdSchema, roomLogOptionsSchema.optional()]), output: roomLogResultSchema },
-  usage: { input: z.tuple([roomIdSchema]), output: roomUsageSchema },
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(roomDocumentSchema) }), 'input', 'output'),
+  listItems: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(roomListItemSchema) }), 'input', 'output'),
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema]), output: /* @__PURE__ */ maybe(roomDocumentSchema) }), 'input', 'output'),
+  create: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([createRoomInputSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  createFromThreads: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([createThreadRoomInputSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  searchThreads: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([searchRoomThreadsInputSchema.optional()]), output: searchRoomThreadsResultSchema }), 'input', 'output'),
+  addMember: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema, roomMemberInputSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  removeMember: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema, roomMemberIdSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  update: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema, updateRoomInputSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  delete: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema]), output: noResult }), 'input', 'output'),
+  postUserMessage: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema, postRoomMessageInputSchema]), output: roomMessageSchema }), 'input', 'output'),
+  pause: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  continue: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  stop: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema]), output: roomDocumentSchema }), 'input', 'output'),
+  log: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema, roomLogOptionsSchema.optional()]), output: roomLogResultSchema }), 'input', 'output'),
+  usage: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([roomIdSchema]), output: roomUsageSchema }), 'input', 'output'),
 } satisfies ServiceContract;

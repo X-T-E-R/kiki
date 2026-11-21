@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { mediaKindSchema, mediaProviderDefinitionSchema } from '@kiki/plugin-sdk/media';
 
-export const mediaScriptSourceSchema = z.object({
+export const mediaScriptSourceSchema = /* @__PURE__ */ z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,47}$/),
   label: z.string().min(1).max(200),
   kinds: z.array(mediaKindSchema).min(1),
@@ -14,19 +14,19 @@ export const mediaScriptSourceSchema = z.object({
   enabled: z.boolean().default(true),
   removed: z.boolean().default(false),
 }).strict();
-export const mediaScriptSourcesSchema = z.array(mediaScriptSourceSchema).max(1000).refine((items) => new Set(items.map((item) => item.id)).size === items.length, 'Duplicate script source id');
-export const mediaSourceSettingLocalizationSchema = z.object({ title: z.string().optional(), description: z.string().optional(), groupTitle: z.string().min(1).max(80).optional() }).strict();
-export const mediaSourceSettingPropertySchema = z.object({ type: z.enum(['string', 'boolean', 'number']), title: z.string().optional(), description: z.string().optional(), secret: z.boolean().optional(), default: z.union([z.string(), z.number(), z.boolean()]).optional(), hidden: z.boolean().optional(), group: z.string().min(1).max(80).optional(), groupTitle: z.string().min(1).max(80).optional(), localizations: z.record(z.string().min(2).max(35), mediaSourceSettingLocalizationSchema).optional(), enum: z.array(z.string().min(1)).max(2000).optional(), multiline: z.boolean().optional(), advanced: z.boolean().optional(), requiredUnless: z.string().min(1).optional() }).strict();
-export const mediaManagedSourceSchema = z.object({
+export const mediaScriptSourcesSchema = /* @__PURE__ */ z.array(mediaScriptSourceSchema).max(1000).refine((items) => new Set(items.map((item) => item.id)).size === items.length, 'Duplicate script source id');
+export const mediaSourceSettingLocalizationSchema = /* @__PURE__ */ z.object({ title: z.string().optional(), description: z.string().optional(), groupTitle: z.string().min(1).max(80).optional() }).strict();
+export const mediaSourceSettingPropertySchema = /* @__PURE__ */ z.object({ type: z.enum(['string', 'boolean', 'number']), title: z.string().optional(), description: z.string().optional(), secret: z.boolean().optional(), default: z.union([z.string(), z.number(), z.boolean()]).optional(), hidden: z.boolean().optional(), group: z.string().min(1).max(80).optional(), groupTitle: z.string().min(1).max(80).optional(), localizations: z.record(z.string().min(2).max(35), mediaSourceSettingLocalizationSchema).optional(), enum: z.array(z.string().min(1)).max(2000).optional(), multiline: z.boolean().optional(), advanced: z.boolean().optional(), requiredUnless: z.string().min(1).optional() }).strict();
+export const mediaManagedSourceSchema = /* @__PURE__ */ z.object({
   provider: z.string(), sourceId: z.string(), pluginId: z.string(), label: z.string(), custom: z.boolean(), enabled: z.boolean(), removed: z.boolean(),
   definitions: z.array(mediaProviderDefinitionSchema),
   schema: z.object({ schemaVersion: z.literal(1), schema: z.object({ type: z.literal('object'), properties: z.record(z.string(), mediaSourceSettingPropertySchema), required: z.array(z.string()).optional() }).strict() }).strict(),
   values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
   secretsConfigured: z.array(z.string()), missing: z.array(z.string()),
 }).strict();
-export const mediaSourceSettingsInputSchema = z.object({ provider: z.string().min(1) }).strict();
-export const mediaSourceUpdateSchema = mediaSourceSettingsInputSchema.extend({ values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(), enabled: z.boolean().optional(), removed: z.boolean().optional() });
-export const mediaScriptSourceInputSchema = mediaScriptSourceSchema.omit({ enabled: true, removed: true }).extend({ environment: z.record(z.string(), z.string()).optional() });
+export const mediaSourceSettingsInputSchema = /* @__PURE__ */ z.object({ provider: z.string().min(1) }).strict();
+export const mediaSourceUpdateSchema = /* @__PURE__ */ mediaSourceSettingsInputSchema.extend({ values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(), enabled: z.boolean().optional(), removed: z.boolean().optional() });
+export const mediaScriptSourceInputSchema = /* @__PURE__ */ mediaScriptSourceSchema.omit({ enabled: true, removed: true }).extend({ environment: z.record(z.string(), z.string()).optional() });
 export type MediaScriptSource = z.infer<typeof mediaScriptSourceSchema>;
 export type MediaScriptSourceInput = z.input<typeof mediaScriptSourceInputSchema>;
 export type MediaManagedSource = z.infer<typeof mediaManagedSourceSchema>;
