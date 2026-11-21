@@ -196,7 +196,7 @@ export const InspectorOverview = memo(function InspectorOverview({
       {renderLayout === undefined ? scopeSwitch : null}
 
       {contextUsed !== undefined ? (
-        <div data-overview-context={level} className={renderLayout !== undefined ? 'min-h-[60px] space-y-1.5' : 'space-y-1.5'}>
+        <div data-overview-context={level} className="space-y-1.5">
           <div className="flex items-baseline gap-2 text-[12.5px]">
             <span className="text-ink-soft">{t('inspector.context')}</span>
             {/* Stable hook for the rail's context figure styling. */}
@@ -238,14 +238,12 @@ export const InspectorOverview = memo(function InspectorOverview({
             ) : null}
           </p>
         </div>
-      ) : renderLayout !== undefined ? (
-        <div aria-hidden className="h-[60px]" />
       ) : null}
 
       {figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial ? (
         <div
           {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })}
-          className={`flex flex-nowrap items-baseline gap-x-4 overflow-hidden${renderLayout !== undefined ? ' min-h-[38px]' : ''}`}
+          className="flex flex-nowrap items-baseline gap-x-4 overflow-hidden"
         >
           {figureCells}
           {shown.counting === true ? (
@@ -265,8 +263,6 @@ export const InspectorOverview = memo(function InspectorOverview({
             </span>
           ) : null}
         </div>
-      ) : renderLayout !== undefined ? (
-        <div aria-hidden className="h-[38px]" />
       ) : null}
 
       {workLine.length > 0 ? (

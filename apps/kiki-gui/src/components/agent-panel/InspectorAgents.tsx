@@ -526,22 +526,30 @@ export const AgentRoster = memo(function AgentRoster({
       staticTotalHeight += row.kind === 'group' ? GROUP_HEIGHT : ROW_HEIGHT;
     }
   }
-  const stableViewport = model.displayTotal >= SEARCH_AT || model.counts.running > 0;
-  const listHeightClass = stableViewport ? 'h-[min(36dvh,288px)]' : 'max-h-[min(36dvh,288px)]';
+  const summaryBuckets = ROSTER_BUCKETS.filter((bucket) => model.counts[bucket] > 0);
+  const omitDuplicateEndedSummary =
+    activeFilter === 'all' &&
+    !doneOpen &&
+    summaryBuckets.length === 1 &&
+    summaryBuckets[0] === 'ended' &&
+    model.rows.length === 1 &&
+    model.rows[0]?.kind === 'group' &&
+    model.rows[0].bucket === 'ended';
+  const showSummary = !omitDuplicateEndedSummary && summaryBuckets.length > 0;
   return (
     <div data-agent-roster className="space-y-1.5 [contain:layout_style]">
-      <div className="flex min-w-0 items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <RosterSummary counts={model.counts} filter={activeFilter} onFilter={setFilter} />
+      {showSummary || actions !== undefined ? (
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="min-w-0 flex-1">
+            {showSummary ? <RosterSummary counts={model.counts} filter={activeFilter} onFilter={setFilter} /> : null}
+          </div>
+          {actions}
         </div>
-        {actions}
-      </div>
+      ) : null}
       {model.rows.length === 0 ? (
-        <div className={stableViewport ? listHeightClass : undefined}>
-          <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
-            {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
-          </p>
-        </div>
+        <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
+          {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
+        </p>
       ) : (
         <div
           ref={(node) => { scrollRef.current = node; listRef.current = node; }}
@@ -549,7 +557,7 @@ export const AgentRoster = memo(function AgentRoster({
           data-subagent-scroll
           aria-label={t('inspector.agentsAria')}
           role="list"
-          className={`-mx-2 ${listHeightClass} overflow-y-auto overscroll-contain pr-1`}
+          className="-mx-2 max-h-[min(36dvh,288px)] overflow-y-auto overscroll-contain pr-1"
         >
           {windowed ? (
             <div className="relative" style={{ height: virtualizer.getTotalSize() }}>

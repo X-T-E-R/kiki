@@ -187,7 +187,7 @@ export const InspectorNow = memo(function InspectorNow({
       ) : null}
 
       <div>
-        <div className="flex min-h-[21px] min-w-0 items-start">
+        <div className="flex min-w-0 items-start">
           {hasMark ? (
             <span className={RAIL_MARK}>
               <LifeMark markId="inspector-now" life={life} tone={life === 'working' ? 'bg-success' : life === 'failed' ? 'bg-ink-faint' : undefined} />

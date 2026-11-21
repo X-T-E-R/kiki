@@ -439,4 +439,40 @@ describe('10,000-subagent bounded roster & server search', () => {
     expect(heading?.textContent).not.toContain('agent-12');
     expect(container.querySelector('[data-inspect-main]')?.textContent).toBe('Main agent');
   });
+
+  it('shrink-wraps a collapsed ended-only roster without forcing fixed height or duplicating the ended summary pill', async () => {
+    const forest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        agentId: `ended-${index}`,
+        parentAgentId: 'main',
+        name: `Ended ${index}`,
+        status: 'completed' as const,
+      })),
+    ]);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <AgentRoster
+            forest={forest}
+            waitingAgentIds={new Set()}
+            onSelect={() => {}}
+            agentCounts={{ total: 540, subagents: 539, active: 0, idle: 0, unknown: 0, completed: 539, failed: 0, cancelled: 0 }}
+          />
+        </I18nProvider>,
+      );
+    });
+    const list = container.querySelector('[data-agent-tree]')!;
+    expect(list.className).toContain('max-h-[min(36dvh,288px)]');
+    expect(list.className).not.toMatch(/(?:^|\s)h-\[min\(36dvh,288px\)\]/);
+    expect(container.querySelector('[data-roster-summary]')).toBeNull();
+    const doneGroup = container.querySelector<HTMLButtonElement>('[data-roster-done-group]')!;
+    expect(doneGroup.textContent).toContain('539');
+    await act(async () => { doneGroup.click(); });
+    expect(container.querySelector('[data-roster-summary]')).not.toBeNull();
+  });
 });

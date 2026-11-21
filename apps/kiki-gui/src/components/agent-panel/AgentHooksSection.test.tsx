@@ -172,6 +172,8 @@ describe('AgentHooksSection', () => {
     const { container, render, cleanup } = await renderSection('s-observe', 'main', 'opening');
     try {
       expect(mockGetAgentHooksInspect).toHaveBeenLastCalledWith('s-observe', 'main', true);
+      expect(container.querySelector('[data-agent-hooks-state="deferred"]')).not.toBeNull();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-agent-hooks-retry]')!.click(); });
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(mockGetAgentHooksInspect).toHaveBeenLastCalledWith('s-observe', 'main', false);

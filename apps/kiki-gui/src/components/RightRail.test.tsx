@@ -1731,4 +1731,28 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     expect(overviewCockpit.getAttribute('data-panel-scope-root')).toBe('branch-281');
     expect(container.querySelector('[data-rail-section="branches"]')).not.toBeNull();
   });
+
+  it('aligns Agents header and ended group counts when session branches are excluded from agentCounts', async () => {
+    const forest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'branch-1', parentAgentId: 'main', name: 'Side branch', status: 'completed', isBranch: true, branchSealed: true },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        agentId: `worker-${index}`,
+        parentAgentId: 'main',
+        name: `Worker ${index}`,
+        status: 'completed' as const,
+      })),
+    ]);
+    const rail = await renderRail({
+      agentForest: forest,
+      stateOverrides: {
+        agentCounts: { total: 541, subagents: 540, active: 0, idle: 0, unknown: 0, completed: 540, failed: 0, cancelled: 0 },
+      },
+    });
+    const agents = rail.querySelector('[data-inspector-agents]')!;
+    expect(agents.textContent).toContain('539');
+    expect(agents.textContent).not.toContain('540');
+    expect(agents.querySelector('[data-roster-done-group]')?.textContent).toContain('539');
+    expect(agents.querySelector('[data-roster-summary]')).toBeNull();
+  });
 });

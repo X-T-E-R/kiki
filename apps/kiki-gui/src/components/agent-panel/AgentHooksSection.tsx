@@ -22,6 +22,15 @@ function isHooksUnsupportedError(error: unknown): boolean {
   return /unknown (route|service)|not found|unsupported/i.test(message);
 }
 
+/**
+ * A 40901 (`SESSION_BUSY`) on an `observe=true` read means the cold session
+ * log (>8 MiB) is not active in memory yet — offer a quiet on-demand read
+ * action instead of a scary failure alert.
+ */
+function isHooksColdDeferredError(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 40901;
+}
+
 function QuietHead() {
   const { t } = useI18n();
   return <h3 className="flex h-8 items-center gap-1.5"><span className={INSPECTOR_HEAD}>{t('agentPanel.hooks')}</span></h3>;
@@ -101,7 +110,7 @@ function RuleRow({ rule }: { readonly rule: AgentHooksInspect['rules'][number] }
  * the user has to act on renders the chapter even when no rule survived.
  */
 export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, agentId, refreshKey }: AgentHooksSectionProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { client } = useConnection();
   const [open, setOpen] = useState(false);
   const explicitRead = useRef<string | undefined>(undefined);
@@ -142,6 +151,21 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
       return <section data-agent-hooks-section data-agent-hooks-state="unavailable">
         <QuietHead />
         <p className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.hooks.unavailable')}</p>
+      </section>;
+    }
+    if (isHooksColdDeferredError(inspect.error)) {
+      return <section data-agent-hooks-section data-agent-hooks-state="deferred">
+        <div className="flex h-8 items-center justify-between gap-2">
+          <h3 className={INSPECTOR_HEAD}>{t('agentPanel.hooks')}</h3>
+          <button
+            type="button"
+            data-agent-hooks-retry
+            onClick={() => { explicitRead.current = target; void inspect.refetch(); }}
+            className="text-[12px] font-medium text-ink-soft transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+          >
+            {locale === 'zh' ? '读取' : 'Load'}
+          </button>
+        </div>
       </section>;
     }
     return <section data-agent-hooks-section data-agent-hooks-state="failed">

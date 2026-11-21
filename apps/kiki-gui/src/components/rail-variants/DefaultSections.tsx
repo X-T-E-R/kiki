@@ -264,7 +264,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
     description: profile?.description,
   });
   return (
-    <div data-rail-profile-head className="min-h-[44px] min-w-0">
+    <div data-rail-profile-head className="min-w-0">
       <div className="flex min-w-0 items-center gap-1.5">
         <Icon name={profileIcon} size={14} className="shrink-0 text-ink-soft" />
         <button
