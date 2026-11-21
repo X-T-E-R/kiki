@@ -1735,6 +1735,7 @@ export class SessionController {
           grade: currentRequested === 'off' ? undefined : currentRequested,
           read: page.read,
         }]);
+        store.setHasMoreOlder(page.has_more);
         timeline.olderCursor = page.next_cursor;
         timeline.olderTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
         timeline.globalCoverage = page.globalCoverage;
@@ -2901,12 +2902,14 @@ export class SessionController {
       if (firstTurn !== undefined && this.turnHasGap(agentId, firstTurn.turnId)) {
         return this.loadOldestTurnStructure(agentId, firstTurn.turnId, signal, obsolete);
       }
+      const current = this.viewOf(agentId);
+      if (current.olderError !== undefined || current.loadingOlder) {
+        this.publishView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
+      }
       return { kind: 'exhausted', changed: false };
     }
-    if (beforeItem === undefined && beforeTurn === undefined) {
-      const current = this.viewOf(agentId);
-      this.publishView(agentId, setOlderError(current, 'History window has no continuation cursor'));
-      return { kind: 'failed', changed: false };
+    if (beforeItem === undefined && beforeTurn === undefined && currentSnapshot.items.length > 0) {
+      beforeItem = windowItemKey(currentSnapshot.items[0]!);
     }
     const loadingView = this.viewOf(agentId);
     this.publishView(agentId, setLoadingOlder(loadingView, true));
@@ -3132,11 +3135,12 @@ export class SessionController {
       });
     const final = window.kept.length === 0 ? resetItems : placeTranscriptItems(resetItems, window.kept, (resident) => resident);
     const keptEdge = window.kept.length > 0;
-    const unsure = coverage.kind === 'unknown' && (coverage.hasMoreOlder || snapshot.hasMoreOlder === true);
+    const snapshotHasMore = snapshot.hasMoreOlder ?? coverage.hasMoreOlder;
+    const unsure = coverage.kind === 'unknown' && snapshotHasMore;
     const hasMoreOlder = keptEdge ? window.held.hasMoreOlder || unsure
       : coverage.kind === 'unknown' && snapshot.items.length === 0
-        ? window.held.hasMoreOlder || coverage.hasMoreOlder || snapshot.hasMoreOlder === true
-        : snapshot.hasMoreOlder ?? coverage.hasMoreOlder;
+        ? window.held.hasMoreOlder || snapshotHasMore
+        : snapshotHasMore;
     if (final.length !== current.length || final.some((item, index) => item !== current[index])) store.replaceItems(final, hasMoreOlder);
     else store.setHasMoreOlder(hasMoreOlder);
     if (!keptEdge) {

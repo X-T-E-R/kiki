@@ -114,6 +114,15 @@ describe('N2 reading snapshots', () => {
     fails = false;
     expect(await restoreTimelineReading(reading('old'), retryable)).toEqual({ status: 'found' });
     expect(retryable.endRestore).toHaveBeenNthCalledWith(1, { status: 'load-failed' });
+
+    let remaining = true;
+    const exhaustedCleanly = adapter({
+      hasAnchor: () => false,
+      hasMore: () => remaining,
+      hasLoadError: () => false,
+      loadOlder: async () => { remaining = false; return false; },
+    });
+    expect(await restoreTimelineReading(reading('rekeyed-top'), exhaustedCleanly)).toEqual({ status: 'not-found' });
   });
 
   it('stops a cancelled reading intent after its shared page returns, without scrolling or continuing', async () => {

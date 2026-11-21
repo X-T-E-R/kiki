@@ -33,7 +33,7 @@ import type { TranscriptService } from '../../services/transcript/transcriptServ
 import { projectPlanFrame } from '../../services/transcript/planProjection';
 import { boundedEntity, ContentChangedError, readContentSegment } from './boundedContent';
 import { contentRevision } from './contentRevision';
-import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, historyAnchorMatches, historyDigestAnchor, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
+import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, historyAnchorMatches, historyDigestAnchor, itemKey, TRANSCRIPT_WINDOW_BYTES, wireHistoryAnchor } from './boundedTranscript';
 
 const DETAIL_PAGE_BYTES = 48 * 1024;
 const HISTORY_PAGE_BYTES = 512 * 1024;
@@ -444,8 +444,9 @@ export function sessionViewSnapshotHistoryCursor(snapshot: AgentTranscriptSnapsh
   source: TranscriptRead['source'], epoch?: string): string | undefined {
   const first = snapshot.items[0];
   if (first === undefined && snapshot.hasMoreOlder === true) return encodePageCursor('tail', agentId, source, epoch);
-  if (snapshot.olderCursor === undefined || first?.kind !== 'turn' || first.origin.kind !== 'other' ||
-      first.message !== undefined || first.promptId !== undefined) return snapshot.olderCursor;
+  const cursor = snapshot.olderCursor ?? (snapshot.hasMoreOlder === true && first !== undefined ? wireHistoryAnchor(itemKey(first)) : undefined);
+  if (cursor === undefined || first?.kind !== 'turn' || first.origin.kind !== 'other' ||
+      first.message !== undefined || first.promptId !== undefined) return cursor;
   return encodePageCursor(itemKey(first), agentId, source, epoch, undefined, first.turnId, undefined, first.turnId);
 }
 
@@ -1392,7 +1393,7 @@ function pageQueryFor(input: { readonly agentId: string; readonly beforeTurn?: s
   const decode = (value: string | undefined): string | undefined => {
     const parsed = decodePageCursor(value, input.agentId);
     if (parsed === undefined) return value;
-    if (parsed.source !== source && !(parsed.source === 'live' && source === 'derived')) throw new TranscriptSourceChangedError(source);
+    if (parsed.source !== source && !(parsed.source === 'live' && source === 'derived') && !(parsed.source === 'derived' && source === 'live')) throw new TranscriptSourceChangedError(source);
     return parsed.anchor;
   };
   return { beforeTurn: input.beforeTurn, beforeItem: decode(input.beforeItem), afterTurn: input.afterTurn, afterItem: decode(input.afterItem), pageSize: input.pageSize,

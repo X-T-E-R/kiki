@@ -44,7 +44,9 @@ export async function restoreTimelineReading(
           }
         }
         if (adapter.hasLoadError()) return outcome;
-        if (!loaded && !adapter.hasAnchor(key)) return outcome;
+        if (!loaded && !adapter.hasAnchor(key)) {
+          return outcome = adapter.hasMore() ? { status: 'load-failed' } : { status: 'not-found' };
+        }
       }
     }
     if (adapter.isCancelled?.()) return outcome = { status: 'no-timeline' };

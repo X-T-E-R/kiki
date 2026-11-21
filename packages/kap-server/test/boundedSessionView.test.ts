@@ -10,7 +10,7 @@ import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp
 import { registerTranscriptRoutes } from '../src/routes/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { readColdSessionViewBaseline, readPlanInteractions, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
+import { readColdSessionViewBaseline, readPlanInteractions, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage, sessionViewSnapshotHistoryCursor } from '../src/transport/klient/sessionViewReads';
 
 function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService {
   const transcript = new AgentTranscript('main');
@@ -1765,5 +1765,70 @@ describe('bounded session-view canonical reads', () => {
     await expect(readPlanInteractions(enoentService, 'fixture-session', 'main', controller.signal)).rejects.toMatchObject({
       name: 'AbortError',
     });
+  });
+
+  it('derives continuation cursors for forced hasMoreOlder snapshots and accepts derived cursors on live boundary pages', async () => {
+    const markerItem = { kind: 'marker' as const, markerId: 'm-top', marker: 'notice' };
+    const markerCursor = sessionViewSnapshotHistoryCursor(
+      { ...empty(), items: [markerItem], hasMoreOlder: true },
+      'main',
+      'derived',
+      'live-epoch',
+    );
+    expect(markerCursor).toBe('marker:m-top');
+
+    const orphanTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'other' },
+      steps: [],
+    };
+    const orphanCursor = sessionViewSnapshotHistoryCursor(
+      { ...empty(), items: [orphanTurn], hasMoreOlder: true },
+      'main',
+      'derived',
+      'live-epoch',
+    );
+    expect(orphanCursor).toBeDefined();
+    expect(orphanCursor).not.toBe('turn:t0');
+
+    const emptyDerivedCursor = sessionViewSnapshotHistoryCursor(
+      { ...empty(), items: [], hasMoreOlder: true },
+      'main',
+      'derived',
+      'live-epoch',
+    );
+    expect(emptyDerivedCursor).toBeDefined();
+
+    const liveTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'first',
+      steps: [],
+    };
+    const liveTranscript = new AgentTranscript('main');
+    liveTranscript.apply([{ op: 'reset', agentId: 'main', snapshot: { ...empty(), items: [liveTurn], hasMoreOlder: false } }]);
+    const service = {
+      forSessionLive: () => ({ agents: () => [], getAgent: () => liveTranscript }),
+      ensureAgentHistory: async () => liveTranscript,
+      isTranscriptLiveCoverageVerified: () => false,
+      verifyTranscriptLiveCoverage: async () => false,
+      getTranscriptCursor: () => ({ seq: 1, epoch: 'live-epoch' }),
+      reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', {
+      agentId: 'main',
+      beforeItem: emptyDerivedCursor,
+      pageSize: 20,
+    });
+    expect(page?.has_more).toBe(false);
+    expect(page?.read?.stale).toBeUndefined();
+    expect(page?.items).toEqual([expect.objectContaining({ kind: 'turn', turnId: 't0' })]);
   });
 });

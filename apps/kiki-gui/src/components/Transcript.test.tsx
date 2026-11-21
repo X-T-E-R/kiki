@@ -77,6 +77,7 @@ import {
   olderTurnSnapshot,
   opsEvent,
   resetEvent,
+  emptySnapshot,
   spawnChildOps,
   userTurnSnapshot,
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
@@ -88,6 +89,7 @@ import { browserHost, HostProvider } from '../host';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
+import { clearToasts, getToasts } from '../lib/toasts';
 import { readTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { Markdown } from './Markdown';
 import { InteractionPlacementContext } from './Interactions';
@@ -9910,6 +9912,93 @@ describe('settled history folds and the unified locate entry', () => {
     } finally {
       regSpy.mockRestore();
       await act(async () => { root.render(null); });
+    }
+  });
+
+  it('does not emit load-failed toasts or readingRestoreFailed pills when already at top with unknown live coverage', async () => {
+    resetTimelineLocatorsForTests();
+    clearToasts();
+    act(() => clearNavHistory());
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const t0Reset = resetEvent('main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't0',
+        ordinal: 0,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: 'top prompt',
+        steps: [{
+          kind: 'step',
+          stepId: 't0.0',
+          turnId: 't0',
+          ordinal: 0,
+          state: 'completed',
+          frames: [{ kind: 'text', frameId: 'a0', role: 'assistant', text: 'top answer' }],
+        }],
+      }],
+      hasMoreOlder: false,
+    }), 1);
+    if (t0Reset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
+    controller.handleTranscript({
+      ...t0Reset,
+      coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: t0Reset.cursor } },
+    });
+    const probe = makeRoot();
+    const location = { key: 'top-unknown-visit', pathname: '/s/session_top_unknown', search: '', hash: '' };
+    const visit = recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action: 'PUSH' });
+    saveReadingSnapshot(visit.visitId, timelineSnapshotKey('session_top_unknown'), {
+      anchor: { key: 'rekeyed-fold-key', atEnd: false, offset: 0 },
+      openFolds: [],
+      cardForms: {},
+    });
+    const onLoadOlder = vi.fn((signal?: AbortSignal) => controller.loadOlderMessages('main', signal));
+    function Page() {
+      const loc = useLocation();
+      const action = useNavigationType();
+      useLayoutEffect(() => { recordNavigation({ location: loc, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [loc, action]);
+      return (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_top_unknown" agentId="main">
+          {virtualTranscript({ ...controller.getState(), sessionId: 'session_top_unknown', loaded: true, transcriptReady: true }, onLoadOlder)}
+        </TranscriptDetailProvider>
+      );
+    }
+    const router = createMemoryRouter([{ path: '*', element: <I18nProvider><Page /></I18nProvider> }], { initialEntries: [location] });
+    try {
+      await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+      await settleReadingFrames();
+      // 1) Reading restore at top with unknown coverage must settle quietly without error toast or retry pill.
+      expect(probe.container.querySelector('[data-reading-restore-retry]')).toBeNull();
+      expect(probe.container.querySelector('[data-top-edge="error"]')).toBeNull();
+      expect(getToasts().filter((toast) => toast.tone === 'error')).toEqual([]);
+
+      // 2) Upward scroll / Home at top must not trigger older loads or error UI.
+      const scroll = probe.container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      scroll.scrollTop = 0;
+      await act(async () => {
+        scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -240, bubbles: true }));
+        scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+      expect(onLoadOlder).not.toHaveBeenCalled();
+      expect(probe.container.querySelector('[data-top-edge="error"]')).toBeNull();
+
+      // 3) Locating a missing target when already at top with unknown coverage must return not-found, never load-failed.
+      clearToasts();
+      let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        outcome = await locateInTimeline({ kind: 'subagent', agentId: 'missing-child' }, { sessionId: 'session_top_unknown' });
+      });
+      expect(outcome).toEqual({ status: 'not-found' });
+      expect(getToasts().filter((toast) => toast.tone === 'error')).toEqual([]);
+      expect(getToasts().some((toast) => toast.text.includes('earlier messages'))).toBe(false);
+    } finally {
+      await act(async () => { probe.root.unmount(); });
+      controller.close();
+      clearToasts();
+      act(() => clearNavHistory());
     }
   });
 

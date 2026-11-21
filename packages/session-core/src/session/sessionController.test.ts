@@ -3976,6 +3976,115 @@ describe('SessionController transcript authority', () => {
     } finally { off(); controller.close(); }
   });
 
+  it('converges hasMoreHistory to false on unknown-coverage live t0 pages and resets with explicit hasMoreOlder=false', async () => {
+    const t0: import('@kiki/transcript').TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'hello top',
+      steps: [{
+        kind: 'step',
+        stepId: 't0.0',
+        turnId: 't0',
+        ordinal: 0,
+        state: 'completed',
+        frames: [{ kind: 'text', frameId: 'a0', role: 'assistant', text: 'first reply' }],
+      }],
+    };
+    const { controller, client, flushAll } = await openTranscriptController();
+    try {
+      const reset = resetEvent('main', emptySnapshot({ items: [t0], hasMoreOlder: false }), 1);
+      if (reset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
+      controller.handleTranscript({
+        ...reset,
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: reset.cursor } },
+      });
+      flushAll();
+      expect(controller.getState()).toMatchObject({
+        hasMoreHistory: false,
+        historyCoverageKind: 'unknown',
+        olderError: undefined,
+      });
+      expect(await controller.loadOlderHistory()).toEqual({ kind: 'exhausted', changed: false });
+      expect(client.getAgentTranscript).not.toHaveBeenCalled();
+
+      // A subsequent unknown reset with kept items and explicit hasMoreOlder=false must not re-enable hasMoreHistory.
+      const newerReset = resetEvent('main', emptySnapshot({ items: [historyTurn(1)], hasMoreOlder: false }), 2);
+      if (newerReset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
+      controller.handleTranscript({
+        ...newerReset,
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: newerReset.cursor } },
+      });
+      flushAll();
+      expect(controller.getState().hasMoreHistory).toBe(false);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it('keeps hasMoreHistory false when first-screen HTTP seed returns has_more=false with unknown coverage', async () => {
+    const fixture = bootstrapViewFixture();
+    const t0 = historyTurn(0);
+    fixture.channel.transcriptPage = vi.fn(async () => ({
+      session_id: 'session_test',
+      agent_id: 'child-1',
+      items: [t0],
+      has_more: false,
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+      agents: [],
+      pending_interactions: [],
+      coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'live', readiness: 'partial', reason: 'source_unverified' },
+    }) as unknown as Awaited<ReturnType<SessionViewChannel['transcriptPage']>>);
+    const controller = new SessionController({} as KikiClient, fixture.view, 'session_test');
+    try {
+      const opening = controller.open();
+      fixture.send({ type: 'snapshot', generation: 1, snapshot: snapshot() });
+      fixture.send({ type: 'ready', generation: 1, currentSessionCursor: { seq: 10, epoch: 'epoch-1' }, reconnected: false });
+      await opening;
+      controller.retainAgentView('tab', 'child-1', 'delta');
+      await waitFor(() => controller.getAgentState('child-1').blocks.length > 0);
+      expect(controller.getAgentState('child-1')).toMatchObject({
+        hasMoreHistory: false,
+        historyCoverageKind: 'unknown',
+        olderError: undefined,
+      });
+      expect(await controller.loadOlderHistory('child-1')).toEqual({ kind: 'exhausted', changed: false });
+    } finally { controller.close(); }
+  });
+
+  it('derives beforeItem for marker-only snapshots without cursor and settles cleanly without olderError', async () => {
+    const { controller, client } = await openTranscriptController();
+    try {
+      const marker = { kind: 'marker' as const, markerId: 'm0', marker: 'notice' };
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [marker], hasMoreOlder: true }), 1, true));
+      client.getAgentTranscript.mockResolvedValueOnce({
+        agent_id: 'main',
+        items: [],
+        has_more: false,
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+      });
+      expect(await controller.loadOlderHistory()).toEqual({ kind: 'exhausted', changed: true });
+      expect(controller.getState()).toMatchObject({
+        hasMoreHistory: false,
+        olderError: undefined,
+      });
+      expect(client.getAgentTranscript).toHaveBeenCalledWith(
+        'session_test',
+        'main',
+        expect.objectContaining({ beforeItem: 'marker:m0' }),
+      );
+    } finally { controller.close(); }
+  });
+
   it('does not adopt snapshot messages or in-flight text on open', async () => {
     const { controller, client, socket } = await openTranscriptController();
     expect(client.snapshot).toHaveBeenCalledWith('session_test', { transcript: true });

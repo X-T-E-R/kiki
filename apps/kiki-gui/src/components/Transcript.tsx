@@ -5915,6 +5915,7 @@ export const Transcript = memo(function Transcript({
   const [olderBatchActive, setOlderBatchActive] = useState(false);
   const requestOlderAtReadingAnchor = useCallback(async (underfill = false) => {
     if (olderInflightRef.current) return false;
+    if (!stateRef.current.hasMoreHistory && stateRef.current.olderError === undefined) return false;
     olderIntentRef.current = false;
     const carryPx = olderCarryPxRef.current;
     olderCarryPxRef.current = 0;
@@ -6896,8 +6897,8 @@ export const Transcript = memo(function Transcript({
   }, [visible, virtualizer, agentId, sessionIdForLocate, resolveSurvivingAnchor]);
 
   // ---- unified locate entry (see lib/timelineLocate.ts) ----
-  const liveRef = useRef({ loaded, loadError, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible });
-  liveRef.current = { loaded, loadError, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible };
+  const liveRef = useRef({ loaded, loadError, hasMore: state.hasMoreHistory, fetchedOlder: state.fetchedOlder, olderError: state.olderError, coverage: state.historyCoverageKind, visible });
+  liveRef.current = { loaded, loadError, hasMore: state.hasMoreHistory, fetchedOlder: state.fetchedOlder, olderError: state.olderError, coverage: state.historyCoverageKind, visible };
   const nextFrame = useCallback(() => new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); }), []);
   // Where the last explicit locate put the reader. A repeated jump to the same
   // place is recognized from this (view geometry), not from the URL, so it does
@@ -6994,11 +6995,13 @@ export const Transcript = memo(function Transcript({
       if (cancelled()) return cancelOutcome();
       if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       if (structure === undefined && !liveRef.current.hasMore) {
-        return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
+        return { status: liveRef.current.olderError !== undefined ? 'load-failed' : 'not-found' };
       }
+      let loadKind: 'advanced' | 'exhausted' | 'preparing' | 'failed' | 'cancelled' | undefined;
       const loadedMore = structure ?? (target.kind === 'turn' && controller !== undefined
         ? await (async () => {
           const result = await controller.locateTurn(agentId, normalizeTurnId(target.turnId), signal);
+          loadKind = result.kind;
           if (result.changed) return true;
           if (result.kind !== 'preparing' || cancelled()) return false;
           await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
@@ -7007,6 +7010,7 @@ export const Transcript = memo(function Transcript({
         : controller !== undefined
           ? await (async () => {
             const result = await controller.loadOlderHistory(agentId, signal);
+            loadKind = result.kind;
             if (result.changed) return true;
             if (result.kind !== 'preparing' || cancelled()) return false;
             await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
@@ -7018,12 +7022,14 @@ export const Transcript = memo(function Transcript({
           await nextFrame();
           if (cancelled()) return cancelOutcome();
         }
-      } else if (cancelled()) {
+      } else if (cancelled() || loadKind === 'cancelled') {
         return cancelOutcome();
       }
-      if (liveRef.current.loadError !== undefined || liveRef.current.olderError !== undefined) return { status: 'load-failed' };
+      if (loadKind === 'failed' || liveRef.current.loadError !== undefined || liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
-      if (!loadedMore && hit === undefined) return { status: 'load-failed' };
+      if (!loadedMore && hit === undefined) {
+        return { status: loadKind === 'exhausted' || !liveRef.current.hasMore ? 'not-found' : 'load-failed' };
+      }
     }
     if (hit.foldId !== undefined) {
       const foldId = hit.foldId;
@@ -7034,7 +7040,7 @@ export const Transcript = memo(function Transcript({
     // (a fold member or an annotation mark inside a tall row).
     if (cancelled()) return cancelOutcome();
     hit = resolve();
-    if (hit === undefined) return { status: 'load-failed' };
+    if (hit === undefined) return { status: 'not-found' };
     let requestedIndex = hit.index;
     virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
     let element: HTMLElement | null = null;
@@ -7043,7 +7049,8 @@ export const Transcript = memo(function Transcript({
       if (cancelled()) return cancelOutcome();
       hit = resolve();
       const scroll = scrollRef.current;
-      if (scroll === null || hit === undefined) return { status: 'load-failed' };
+      if (scroll === null) return cancelOutcome();
+      if (hit === undefined) return { status: 'not-found' };
       // Let the virtualizer settle its existing scroll; only a changed row
       // index needs a new request, not a reset of its reconciliation each frame.
       if (hit.index !== requestedIndex) {
@@ -7064,7 +7071,7 @@ export const Transcript = memo(function Transcript({
               (candidate) => candidate.dataset['blockId'] === blockId,
             ) ?? row);
     }
-    if (element === null) return { status: 'load-failed' };
+    if (element === null) return { status: 'not-found' };
     if (cancelled()) return cancelOutcome();
     if (turnHintKey !== undefined) turnLocateHints.delete(turnHintKey);
     if (options?.quiet === true) return { status: 'found' };
@@ -7118,11 +7125,26 @@ export const Transcript = memo(function Transcript({
   // the turn keeps streaming. The block still exists, so the anchor resolves
   // through the existing locate index (and opens that fold) instead of reading
   // as a deleted position.
-  const resolveAnchorRow = useCallback((key: string): { index: number; foldId?: string; blockId?: string } | undefined => {
+  const resolveAnchorRow = useCallback((
+    key: string,
+    fallback?: { readonly memberId?: string; readonly turnId?: string },
+  ): { index: number; foldId?: string; blockId?: string; exactKey: boolean } | undefined => {
     const rowIndex = nodeIndexesRef.current.get(key);
-    if (rowIndex !== undefined) return { index: rowIndex };
-    const hit = locateIndexFor(virtualNodesRef.current).blocks.get(key);
-    return hit === undefined ? undefined : { ...hit, blockId: key };
+    if (rowIndex !== undefined) return { index: rowIndex, exactKey: true };
+    const { blocks, turns } = locateIndexFor(virtualNodesRef.current);
+    const hit = blocks.get(key);
+    if (hit !== undefined) return { ...hit, blockId: key, exactKey: true };
+    if (fallback?.memberId !== undefined && fallback.memberId !== key) {
+      const memberIndex = nodeIndexesRef.current.get(fallback.memberId);
+      if (memberIndex !== undefined) return { index: memberIndex, exactKey: false };
+      const memberHit = blocks.get(fallback.memberId);
+      if (memberHit !== undefined) return { ...memberHit, blockId: fallback.memberId, exactKey: false };
+    }
+    if (fallback?.turnId !== undefined) {
+      const turnIndex = turns.get(fallback.turnId);
+      if (turnIndex !== undefined) return { index: turnIndex, exactKey: false };
+    }
+    return undefined;
   }, []);
   const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, restoreSignal: AbortSignal): Promise<void> => {
     setReadingRestoreFailed(null);
@@ -7135,6 +7157,7 @@ export const Transcript = memo(function Transcript({
     const signal = anySignal([request.signal, restoreSignal]);
     const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current ||
       (scrollRef.current !== null && !scrollRef.current.isConnected);
+    const anchorFallback = { memberId: snapshot.anchor.memberId, turnId: snapshot.anchor.turnId };
     const adapter: TimelineReadingAdapter = {
       applyFolds: async (value) => {
         setOpenFolds(new Set(value.openFolds));
@@ -7144,8 +7167,11 @@ export const Transcript = memo(function Transcript({
         await nextFrame();
         await nextFrame();
       },
-      hasAnchor: (key) => resolveAnchorRow(key) !== undefined,
-      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined ||
+      hasAnchor: (key) => resolveAnchorRow(key, anchorFallback) !== undefined,
+      hasMore: () =>
+        liveRef.current.hasMore ||
+        liveRef.current.olderError !== undefined ||
+        (controller === undefined && liveRef.current.coverage === 'unknown' && !liveRef.current.fetchedOlder) ||
         stateRef.current.contentRefs?.some((ref) => ref.source.kind === 'turn' && ref.path[0] === 'steps') === true,
       loadOlder: async () => {
         const structure = await readSeekStructure(signal);
@@ -7165,14 +7191,20 @@ export const Transcript = memo(function Transcript({
       restoreAnchor: async (anchor) => {
         // The saved anchor is the reader's place even while this timeline sits
         // in a hidden tab: showing it again re-applies it (visibility effect).
-        viewportAnchorRef.current = { atEnd: anchor.atEnd, key: anchor.key, offset: anchor.offset };
+        viewportAnchorRef.current = {
+          atEnd: anchor.atEnd,
+          key: anchor.key,
+          offset: anchor.offset,
+          memberId: anchor.memberId,
+          turnId: anchor.turnId,
+        };
         if (!visibleRef.current) return;
         if (anchor.atEnd) {
           landAtEnd();
           return;
         }
         stickToBottomRef.current.stopScroll();
-        const hit = anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key);
+        const hit = anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key, anchorFallback);
         if (hit === undefined) return;
         if (hit.foldId !== undefined) {
           // Same automatic reveal the locate entry performs: the reader's row
@@ -7182,11 +7214,12 @@ export const Transcript = memo(function Transcript({
           await nextFrame();
         }
         if (cancelled()) return;
-        const resolve = () => anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key);
+        const resolve = () => anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key, anchorFallback);
         const current = resolve();
+        const restoredOffset = current?.exactKey === false ? 0 : anchor.offset;
         const offset = current === undefined ? undefined : virtualizer.getOffsetForIndex(current.index, 'start')?.[0];
-        if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
-        await settleRestoredAnchor(scrollRef.current, resolve, anchor.offset, cancelled, virtualizer);
+        if (offset !== undefined) virtualizer.scrollToOffset(Math.max(0, offset + restoredOffset), { align: 'start' });
+        await settleRestoredAnchor(scrollRef.current, resolve, restoredOffset, cancelled, virtualizer);
       },
       beginRestore: () => {
         navRestorePendingRef.current = true;
@@ -7196,7 +7229,7 @@ export const Transcript = memo(function Transcript({
         }
       },
       endRestore: (outcome) => {
-        if (restoreSignal.aborted || (outcome.status !== 'found' && intent === readingIntentRef.current)) return;
+        if (restoreSignal.aborted || (outcome.status !== 'found' && outcome.status !== 'not-found' && intent === readingIntentRef.current)) return;
         navRestorePendingRef.current = false;
         navRestoredVisitRef.current = navVisitRef.current;
         initialScrollDoneRef.current = true;
@@ -7211,17 +7244,31 @@ export const Transcript = memo(function Transcript({
       // jump is gone (a removed trigger leaves focus on <body>).
       const active = document.activeElement;
       if (active === null || active === document.body) scrollRef.current?.focus({ preventScroll: true });
+      return;
     }
-    const failure = outcome.status === 'load-failed'
-      ? t('locate.failedLoad')
-      : outcome.status === 'not-found'
-        ? t('locate.notFound')
-        : undefined;
-    if (failure !== undefined) pushToast({ tone: outcome.status === 'load-failed' ? 'error' : 'info', text: failure });
-    if (outcome.status !== 'found') {
-      setReadingRestoreFailed(failure ?? t('locate.failedLoad'));
-      throw new Error(failure ?? 'Reading restore is not ready');
+    if (outcome.status === 'not-found') {
+      // History reached the beginning cleanly without a load error: settle at
+      // the top of the available timeline instead of showing a false load-error
+      // toast or a retry pill that cannot find a removed/rekeyed anchor.
+      stickToBottomRef.current.stopScroll();
+      if (virtualNodesRef.current.length > 0) {
+        virtualizer.scrollToOffset(0, { align: 'start' });
+        const scroll = scrollRef.current;
+        if (scroll !== null) virtualizer.scrollOffset = scroll.scrollTop;
+        const firstNode = virtualNodesRef.current[0];
+        viewportAnchorRef.current = {
+          atEnd: false,
+          key: virtualNodeKey(firstNode),
+          offset: 0,
+          ...anchorIdentityForNode(firstNode),
+        };
+      }
+      return;
     }
+    const failure = t('locate.failedLoad');
+    pushToast({ tone: 'error', text: failure });
+    setReadingRestoreFailed(failure);
+    throw new Error(failure);
   }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure, controller, agentId]);
   const reading = useNavSnapshotAdapter<TimelineReadingSnapshot>(readingKey, {
     // Reading a place back only makes sense once this transcript has rows: a

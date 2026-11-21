@@ -14,7 +14,13 @@ import {
 } from '../state/previewWorkspace';
 
 export interface TimelineReadingSnapshot {
-  readonly anchor: { readonly atEnd: boolean; readonly key?: string; readonly offset: number };
+  readonly anchor: {
+    readonly atEnd: boolean;
+    readonly key?: string;
+    readonly offset: number;
+    readonly memberId?: string;
+    readonly turnId?: string;
+  };
   readonly openFolds: readonly string[];
   readonly cardForms?: Readonly<Record<string, 'full' | 'compact'>>;
 }
@@ -97,8 +103,15 @@ export function readTimelineSnapshot(value: unknown): TimelineReadingSnapshot | 
   if (typeof anchor['atEnd'] !== 'boolean' || typeof anchor['offset'] !== 'number' || !Number.isFinite(anchor['offset']) ||
     (anchor['key'] !== undefined && typeof anchor['key'] !== 'string') || !value['openFolds'].every((id) => typeof id === 'string')) return undefined;
   const forms = record(value['cardForms']) ? value['cardForms'] : {};
+  const restoredAnchor: { atEnd: boolean; key?: string; offset: number; memberId?: string; turnId?: string } = {
+    atEnd: anchor['atEnd'],
+    key: anchor['key'] as string | undefined,
+    offset: anchor['offset'],
+  };
+  if (typeof anchor['memberId'] === 'string') restoredAnchor.memberId = anchor['memberId'];
+  if (typeof anchor['turnId'] === 'string') restoredAnchor.turnId = anchor['turnId'];
   return {
-    anchor: { atEnd: anchor['atEnd'], key: anchor['key'] as string | undefined, offset: anchor['offset'] },
+    anchor: restoredAnchor,
     openFolds: [...new Set(value['openFolds'] as string[])],
     cardForms: Object.fromEntries(Object.entries(forms).filter(([, form]) => form === 'full' || form === 'compact')) as Record<string, 'full' | 'compact'>,
   };
