@@ -1848,6 +1848,9 @@ ${origin}
     private void savePinnedFingerprint(String id, String origin, String fingerprint) {}
     private String resolvePinnedFingerprint(String id, String origin) { return null; }
     private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String fp) {}
+    private void closeWsTunnel() {}
+    private boolean isWithinResumeGraceNow() { return false; }
+    private String prepareWsTunnelScript(String origin, String serverId) { return null; }
     private boolean matchesStoredHostId(String id, String host) {
         return id.equals("home-a") && (host == null || host.isEmpty() || host.equals("host-a"));
     }
