@@ -9,6 +9,7 @@ import { composerZh } from './domains/zh/composer.ts';
 import { cronTasksZh } from './domains/zh/cron-tasks.ts';
 import { discoveryOnboardingZh } from './domains/zh/discovery-onboarding.ts';
 import { memoryZh } from './domains/zh/memory.ts';
+import { mobileZh } from './domains/zh/mobile.ts';
 import { personaRoomZh } from './domains/zh/persona-room.ts';
 import { previewTermZh } from './domains/zh/preview-term.ts';
 import { sidebarZh } from './domains/zh/sidebar.ts';
@@ -31,6 +32,7 @@ export const zhDomains = {
   'cron-tasks': cronTasksZh,
   'discovery-onboarding': discoveryOnboardingZh,
   'memory': memoryZh,
+  'mobile': mobileZh,
   'persona-room': personaRoomZh,
   'preview-term': previewTermZh,
   'sidebar': sidebarZh,
@@ -54,6 +56,7 @@ export const zh = {
   ...cronTasksZh,
   ...discoveryOnboardingZh,
   ...memoryZh,
+  ...mobileZh,
   ...personaRoomZh,
   ...previewTermZh,
   ...sidebarZh,

@@ -6,3 +6,4 @@ export * from './errorText';
 export * from './time';
 export * from './usage';
 export * from './plainText';
+export * from './randomUuid';

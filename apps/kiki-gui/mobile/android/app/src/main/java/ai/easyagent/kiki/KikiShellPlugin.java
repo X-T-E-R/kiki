@@ -22,6 +22,8 @@ import android.webkit.WebBackForwardList;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -104,6 +106,9 @@ public class KikiShellPlugin extends Plugin {
     private volatile boolean pendingOpenCommitted = false;
     private volatile String currentDocumentNavNonce;
     private volatile String deliveredDocumentNavNonce;
+    private volatile long lastResumeAtMs = 0;
+    static final long RESUME_UNREACHABLE_GRACE_MS = 8000;
+    static final String PAIR_DEEPLINK_EVENT_SCRIPT = "window.dispatchEvent(new CustomEvent('kiki:pair-deeplink'));";
     private WebViewListener shellWebViewListener;
 
     private static final class HandshakeResult {
@@ -347,6 +352,23 @@ public class KikiShellPlugin extends Plugin {
             result.put("status", "denied");
         }
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public void setAppearance(PluginCall call) {
+        boolean dark = Boolean.TRUE.equals(call.getBoolean("dark", false));
+        android.app.Activity activity = getActivity();
+        if (activity == null) {
+            call.resolve();
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            android.view.Window window = activity.getWindow();
+            WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
+            controller.setAppearanceLightStatusBars(!dark);
+            controller.setAppearanceLightNavigationBars(!dark);
+            call.resolve();
+        });
     }
 
     @PluginMethod
@@ -933,7 +955,8 @@ public class KikiShellPlugin extends Plugin {
                     ) {
                         return;
                     }
-                    if ("unreachable".equals(failureReason) && finalize && expectedNavNonce.equals(deliveredDocumentNavNonce)) {
+                    boolean deliveredBefore = finalize && expectedNavNonce.equals(deliveredDocumentNavNonce);
+                    if ("unreachable".equals(failureReason) && (deliveredBefore || isWithinResumeGrace(android.os.SystemClock.elapsedRealtime(), lastResumeAtMs))) {
                         clearPendingAuthIfCurrent(expectedEpoch);
                         return;
                     }
@@ -1778,7 +1801,15 @@ public class KikiShellPlugin extends Plugin {
             clearPendingAuth();
             clearActiveAuth();
             WebView webView = getBridge().getWebView();
-            webView.post(() -> webView.loadUrl(getBridge().getLocalUrl() + "/index.html#pair"));
+            String local = getBridge().getLocalUrl();
+            webView.post(() -> {
+                String current = webView.getUrl();
+                if (local != null && current != null && current.startsWith(local)) {
+                    webView.evaluateJavascript(PAIR_DEEPLINK_EVENT_SCRIPT, null);
+                } else {
+                    webView.loadUrl(local + "/index.html#pair");
+                }
+            });
             return;
         }
         if (ACTION_CHANGE_SERVER.equals(intent.getAction())) {
@@ -1803,6 +1834,16 @@ public class KikiShellPlugin extends Plugin {
         pendingPairUri = data.toString();
         intent.setData(null);
         return true;
+    }
+
+    static boolean isWithinResumeGrace(long nowMs, long resumedAtMs) {
+        return resumedAtMs > 0 && nowMs >= resumedAtMs && nowMs - resumedAtMs <= RESUME_UNREACHABLE_GRACE_MS;
+    }
+
+    @Override
+    protected void handleOnResume() {
+        super.handleOnResume();
+        lastResumeAtMs = android.os.SystemClock.elapsedRealtime();
     }
 
     @Override

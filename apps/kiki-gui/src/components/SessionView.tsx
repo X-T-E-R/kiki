@@ -5,6 +5,7 @@
  * ConversationShell composer seat across /new → /s/:id.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Popover } from '@base-ui/react/popover';
@@ -1743,7 +1744,7 @@ export function resolveControlledSkillSubmission(input: Parameters<typeof resolv
 }
 
 export function captureSkillRequest<T extends object>(request: T): T & { prompt_id: string } {
-  return { ...structuredClone(request), prompt_id: crypto.randomUUID() };
+  return { ...structuredClone(request), prompt_id: randomUuid() };
 }
 
 type SkillControlSelection = Pick<ReturnType<typeof readComposerState>, 'modelOverride' | 'effortOverride' | 'modelChoice' | 'effortChoice' | 'modelSwitchMode'> & {
@@ -3758,7 +3759,7 @@ export function SessionView({
         const retryableStatus = retryablePending?.status === 'offline';
         const submissionId = frozen?.initialPromptId ?? (retryableStatus && retryablePending.submissionKey === submissionKey
           ? retryablePending.id
-          : crypto.randomUUID());
+          : randomUuid());
         const retainedFirst = firstMessageRef.current;
         if (firstMessage === undefined && retainedFirst?.status === 'submitted' && retainedFirst.submission?.promptId === submissionId) {
           pendingSendRef.current = false;
@@ -4905,7 +4906,7 @@ boundExecution,
       const carryovers = parseSelectionCarryovers(original.text, original.presentation);
       const startingAttachments = [...initialAttachments, ...pathFileMentions];
       const edit = {
-        promptId, owner: crypto.randomUUID(), abort, loading: incomplete, loadError: false,
+        promptId, owner: randomUuid(), abort, loading: incomplete, loadError: false,
         attachments: startingAttachments,
         initialAttachments: startingAttachments,
         initialBody: carryovers.body,

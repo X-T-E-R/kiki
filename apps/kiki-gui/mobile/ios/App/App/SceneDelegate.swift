@@ -77,7 +77,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "consumePendingPair", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "probe", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "claimPair", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "forgetServer", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "forgetServer", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setAppearance", returnType: CAPPluginReturnPromise)
     ]
 
     private static let pinnedSessionDelegate = KikiPinnedSessionDelegate()
@@ -109,9 +110,32 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private var deliveredDocumentNavNonce: String?
     private var urlObservation: NSKeyValueObservation?
     private var loadingObservation: NSKeyValueObservation?
+    private var foregroundObserver: NSObjectProtocol?
+    private var lastForegroundAt: Date?
+    static let resumeUnreachableGrace: TimeInterval = 8
+    static let pairDeeplinkEventScript = "window.dispatchEvent(new CustomEvent('kiki:pair-deeplink'));"
+
+    deinit {
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+        }
+    }
+
+    static func isWithinResumeGrace(now: Date, resumedAt: Date?) -> Bool {
+        guard let resumedAt else { return false }
+        let elapsed = now.timeIntervalSince(resumedAt)
+        return elapsed >= 0 && elapsed <= resumeUnreachableGrace
+    }
 
     public override func load() {
         super.load()
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.lastForegroundAt = Date()
+        }
         urlObservation = webView?.observe(\.url, options: [.new]) { [weak self] webView, _ in
             guard let self else { return }
             if webView.isLoading {
@@ -148,8 +172,25 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             self.clearPendingAuth()
             self.clearActiveAuth()
             let base = self.bridge?.config.appStartServerURL.absoluteString ?? "capacitor://localhost"
+            if let current = self.webView?.url?.absoluteString, current.hasPrefix(base) {
+                self.webView?.evaluateJavaScript(Self.pairDeeplinkEventScript, completionHandler: nil)
+                return
+            }
             guard let pairURL = URL(string: "\(base)/index.html#pair") else { return }
             self.webView?.load(URLRequest(url: pairURL))
+        }
+    }
+
+    @objc func setAppearance(_ call: CAPPluginCall) {
+        let dark = call.getBool("dark") ?? false
+        DispatchQueue.main.async { [weak self] in
+            let style: UIUserInterfaceStyle = dark ? .dark : .light
+            if let viewController = self?.bridge?.viewController {
+                viewController.overrideUserInterfaceStyle = style
+                viewController.view.window?.overrideUserInterfaceStyle = style
+                viewController.setNeedsStatusBarAppearanceUpdate()
+            }
+            call.resolve()
         }
     }
 
@@ -706,7 +747,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     mutualInvitedVerified: mutualInvited,
                     inboundEnabled: inboundEnabled
                 ) {
-                    if failureReason == "unreachable", finalize, self.deliveredDocumentNavNonce == expectedNavNonce {
+                    let deliveredBefore = finalize && self.deliveredDocumentNavNonce == expectedNavNonce
+                    if failureReason == "unreachable", deliveredBefore || Self.isWithinResumeGrace(now: Date(), resumedAt: self.lastForegroundAt) {
                         self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                         return
                     }

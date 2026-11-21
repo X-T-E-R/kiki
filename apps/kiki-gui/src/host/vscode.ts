@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import type {
   BrowserHostAdapter,
   HostNotification,
@@ -40,7 +41,7 @@ export function isVscodeWebview(): boolean {
 export function requestVscodeHost<T>(method: string, params: unknown = {}): Promise<T> {
   const vscode = getApi();
   installResponseListener();
-  const id = crypto.randomUUID();
+  const id = randomUuid();
   return new Promise<T>((resolve, reject) => {
     pending.set(id, {
       resolve: (value) => resolve(value as T),

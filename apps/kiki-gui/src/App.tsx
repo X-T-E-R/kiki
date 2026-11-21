@@ -68,6 +68,7 @@ import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
 import { readWindowModeId, writeWindowModeId } from './lib/workModes';
 import { landingRouteFor } from './lib/workModeStartup';
 import { useHost } from './host';
+import { writeDraft } from '@kiki/session-core/composer';
 import {
   adjacentRunningSession,
   arrangePinnedFirst,
@@ -128,6 +129,8 @@ import { requestScopeNavigation } from './lib/navScope';
 import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
 import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
+import { androidBridge, subscribeAndroidHostEvents } from './lib/androidBridge';
+import { MOBILE_TODAY_PATH, mobileChatPath, normalizeDeepLinkRoute, readDesktopOverride, writeDesktopOverride } from './mobile/mobileShellRoute';
 import { SidebarContext } from './components/sidebarContext';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
@@ -955,6 +958,36 @@ function NormalApp() {
     };
   }, []);
 
+  // Consume Android host deep-link `navigate` and `share-intake` events cleanly without DOM scraping.
+  useEffect(() => subscribeAndroidHostEvents((detail) => {
+    if (detail.type === 'navigate') {
+      void navigate(normalizeDeepLinkRoute(detail.route, false));
+      return;
+    }
+    if (detail.type === 'share-intake') {
+      const applyDraft = (text: string) => {
+        const trimmed = text.trim();
+        if (trimmed === '') return;
+        const draftTarget = activeSessionId ?? 'new';
+        writeDraft(draftTarget, trimmed);
+        if (activeSessionId === undefined) {
+          void navigate('/new');
+        }
+      };
+      if (detail.draft !== undefined && detail.draft.trim() !== '') {
+        applyDraft(detail.draft);
+      } else {
+        void androidBridge.takeShareIntake(detail.id).then((items) => {
+          const text = items
+            .map((entry) => entry.text?.trim() || entry.path?.trim() || '')
+            .filter((part) => part !== '')
+            .join('\n');
+          applyDraft(text);
+        });
+      }
+    }
+  }), [activeSessionId, navigate]);
+
   // Esc on the settings route returns to the last non-settings page. Editable
   // targets, open dialogs, and the mobile sidebar consume their own Escape
   // first (dialogs stop propagation / the flags below short-circuit us).
@@ -1354,6 +1387,19 @@ function NormalApp() {
           />
         ) : null}
         <Toasts />
+        {readDesktopOverride() ? (
+          <button
+            type="button"
+            data-return-mobile-chip
+            onClick={() => {
+              writeDesktopOverride(false);
+              void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_TODAY_PATH);
+            }}
+            className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-panel"
+          >
+            <span>{t('mobile.desktop.returnMobile')}</span>
+          </button>
+        ) : null}
       </div>
       <ConfirmDialog
         stacked

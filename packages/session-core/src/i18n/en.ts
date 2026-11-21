@@ -9,6 +9,7 @@ import { composerEn } from './domains/en/composer.ts';
 import { cronTasksEn } from './domains/en/cron-tasks.ts';
 import { discoveryOnboardingEn } from './domains/en/discovery-onboarding.ts';
 import { memoryEn } from './domains/en/memory.ts';
+import { mobileEn } from './domains/en/mobile.ts';
 import { personaRoomEn } from './domains/en/persona-room.ts';
 import { previewTermEn } from './domains/en/preview-term.ts';
 import { sidebarEn } from './domains/en/sidebar.ts';
@@ -31,6 +32,7 @@ export const enDomains = {
   'cron-tasks': cronTasksEn,
   'discovery-onboarding': discoveryOnboardingEn,
   'memory': memoryEn,
+  'mobile': mobileEn,
   'persona-room': personaRoomEn,
   'preview-term': previewTermEn,
   'sidebar': sidebarEn,
@@ -54,6 +56,7 @@ export const en = {
   ...cronTasksEn,
   ...discoveryOnboardingEn,
   ...memoryEn,
+  ...mobileEn,
   ...personaRoomEn,
   ...previewTermEn,
   ...sidebarEn,

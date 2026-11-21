@@ -214,6 +214,17 @@ export function dismissToast(id: number): void {
   emit();
 }
 
+/** Dismiss sticky error toasts on route navigation while preserving success/undo feedback. */
+export function clearErrorToasts(): void {
+  const errorToasts = toasts.filter((item) => item.tone === 'error');
+  if (errorToasts.length === 0) return;
+  toasts = toasts.filter((item) => item.tone !== 'error');
+  for (const item of errorToasts) {
+    toastManager.close(String(item.id));
+  }
+  emit();
+}
+
 /** Test hook: reset the queue and id counter between cases. */
 export function clearToasts(): void {
   const previous = toasts;

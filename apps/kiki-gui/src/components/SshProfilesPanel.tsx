@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { useHost } from '../host';
@@ -68,7 +69,7 @@ export function SshProfilesPanel({
     }
     const previous = profiles.find((entry) => entry.id === editingId);
     const profile: SshProfile = {
-      id: previous?.id ?? crypto.randomUUID(),
+      id: previous?.id ?? randomUuid(),
       label: label.trim(),
       target: previous?.target.kind === 'host'
         ? { ...previous.target, hostname: alias.trim() }

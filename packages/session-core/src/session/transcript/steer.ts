@@ -9,6 +9,7 @@
  */
 import type { TranscriptItem } from '@kiki/transcript';
 import type { MediaRef } from '../../composer/media';
+import { randomUuid } from '../../util/randomUuid';
 import type { Block, SessionViewState, UserBlock } from './types';
 
 export interface PendingSteer {
@@ -23,7 +24,7 @@ export interface PendingSteer {
 
 /** Client-chosen prompt id for a "send now"; the engine keeps it end to end. */
 export function newSteerPromptId(): string {
-  return `msg_now_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
+  return `msg_now_${randomUuid().replaceAll('-', '')}`;
 }
 
 function matchesPrompt(block: UserBlock, promptId: string): boolean {

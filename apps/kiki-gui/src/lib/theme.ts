@@ -100,6 +100,20 @@ export function startThemeSync(host: HostAdapter): () => void {
     if (hasAndroidBridge() || isEmbeddedAndroidHost()) {
       void androidBridge.setAppearance({ dark: resolved === 'dark' });
     }
+    const capPlugins = (window as unknown as {
+      Capacitor?: {
+        Plugins?: {
+          KikiShell?: { setAppearance?: (opts: { readonly dark: boolean }) => Promise<void> };
+          SystemBars?: { setStyle?: (opts: { readonly style: 'DARK' | 'LIGHT' }) => Promise<void> };
+        };
+      };
+    }).Capacitor?.Plugins;
+    if (capPlugins?.KikiShell?.setAppearance !== undefined) {
+      void capPlugins.KikiShell.setAppearance({ dark: resolved === 'dark' }).catch(() => undefined);
+    }
+    if (capPlugins?.SystemBars?.setStyle !== undefined) {
+      void capPlugins.SystemBars.setStyle({ style: resolved === 'dark' ? 'DARK' : 'LIGHT' }).catch(() => undefined);
+    }
   };
   sync();
 

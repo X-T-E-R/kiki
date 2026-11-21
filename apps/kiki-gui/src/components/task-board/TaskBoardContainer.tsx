@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { LocalizedError } from '@kiki/session-core/i18n';
 import type { BoardCard, BoardPatch, BoardStatus, BoardSummary } from '@kiki/klient/contract/board/types';
@@ -90,7 +91,7 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
           const workspaceId = data.workspaceId ?? currentWorkspaceId;
           if (!workspaceId) throw new LocalizedError({ key: 'taskBoard.error.workspaceRequired' });
           if (!workspaceIds.includes(workspaceId)) throw new LocalizedError({ key: 'taskBoard.error.workspaceUnauthorized' });
-          await controller.create({ workspaceId, requestKey: data.requestKey ?? crypto.randomUUID(), title: data.title,
+          await controller.create({ workspaceId, requestKey: data.requestKey ?? randomUuid(), title: data.title,
             description: data.description, category: data.category, priority: fromPriority[data.priority],
             sessionIds: data.associatedSessionId ? [data.associatedSessionId] : [] });
         }}

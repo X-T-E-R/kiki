@@ -6,6 +6,7 @@
  *   other model_switch settings, and exposes timeline/queue notice actions.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -231,7 +232,7 @@ export function useModelSwitchFlow({
                 ? null
                 : undefined;
           const receipt = await client.switchAgentModel(sessionId, agentId, {
-            operationId: crypto.randomUUID(),
+            operationId: randomUuid(),
             model: choice.toModel,
             mode: choice.mode,
             thinking: nextThinking,
@@ -307,7 +308,7 @@ export function useModelSwitchFlow({
     async (model: string, effort: string | undefined): Promise<boolean> => {
       try {
         const receipt = await client.switchAgentModel(sessionId, agentId, {
-          operationId: crypto.randomUUID(),
+          operationId: randomUuid(),
           model,
           thinking: effort === '' ? null : effort ?? null,
           mode: 'direct',

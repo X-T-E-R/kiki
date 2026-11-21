@@ -11,6 +11,7 @@
  * textarea survives the hero → session transition.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { UNSAFE_DataRouterContext } from 'react-router-dom';
@@ -1101,7 +1102,7 @@ export function useNewSessionDraft({
     }
     if (retry?.status === 'conflict') return;
 
-    const creationId = retry?.creationId ?? crypto.randomUUID().toLowerCase();
+    const creationId = retry?.creationId ?? randomUuid().toLowerCase();
     const targetSessionId = retry?.sessionId ?? `session_${creationId}`;
     const body: SessionCreate = retry?.body ?? {
       ...bodyWithoutCreation,

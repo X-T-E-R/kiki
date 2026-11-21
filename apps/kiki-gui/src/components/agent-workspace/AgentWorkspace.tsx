@@ -14,6 +14,7 @@
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -1182,7 +1183,7 @@ function ChildAgentWorkspace({
           scope: sendScope,
           connectionScopeId: scopeId,
           payload,
-          key: crypto.randomUUID(),
+          key: randomUuid(),
           draftText: rawDraftText,
           appendTiming,
           skills,
@@ -1320,7 +1321,7 @@ function ChildAgentWorkspace({
           scope: sendScope,
           connectionScopeId: scopeId,
           payload,
-          key: crypto.randomUUID(),
+          key: randomUuid(),
           draftText: rawDraftText,
           afterModelSwitch: modelSwitches.dependency?.input.operationId,
         };
@@ -1367,7 +1368,7 @@ function ChildAgentWorkspace({
     const content = buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
     if (content === null) return;
     if (controller === null) throw new Error(t('subagent.composerUnavailable'));
-    const echoId = crypto.randomUUID();
+    const echoId = randomUuid();
     const hasNonTextAttachment = content.some((part) => part.type !== 'text');
     const keyedEcho = !externalExecutor && !hasNonTextAttachment;
     let resolveFlight!: () => void;

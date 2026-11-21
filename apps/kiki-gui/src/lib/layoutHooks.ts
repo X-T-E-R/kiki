@@ -154,6 +154,7 @@ export function useVisualViewportHeightVar(): void {
       if (viewport.scale > 1.01) return;
       const zoom = cssZoomFactor();
       const height = Math.max(0, Math.round(viewport.height / zoom));
+      const offsetTop = Math.max(0, Math.round(viewport.offsetTop / zoom));
       // On coarse pointers the app's height chain already follows
       // --kiki-visual-height (index.css), so the keyboard is accounted for
       // once there. Reporting it again as an inset would lift the composer a
@@ -163,6 +164,7 @@ export function useVisualViewportHeightVar(): void {
         ? 0
         : Math.max(0, Math.round((window.innerHeight - viewport.height - viewport.offsetTop) / zoom));
       root.style.setProperty('--kiki-visual-height', `${height}px`);
+      root.style.setProperty('--kiki-visual-offset-top', `${offsetTop}px`);
       root.style.setProperty('--kiki-ime-offset', `${imeInset}px`);
     };
     const schedule = () => {
@@ -180,6 +182,7 @@ export function useVisualViewportHeightVar(): void {
       window.removeEventListener('orientationchange', schedule);
       window.removeEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
       root.style.removeProperty('--kiki-visual-height');
+      root.style.removeProperty('--kiki-visual-offset-top');
       root.style.removeProperty('--kiki-ime-offset');
     };
   }, []);
