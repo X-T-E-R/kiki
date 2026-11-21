@@ -174,7 +174,7 @@ describe('Markdown link menus', () => {
       expect(writeText).toHaveBeenLastCalledWith(path);
     }
     await act(async () => { link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
-    expect(document.querySelector('[data-preview-tab]').dataset.previewTab).toBe(path);
+    expect(document.querySelector('[data-preview-tab]')?.getAttribute('data-preview-tab')).toBe(path);
   });
 
   it('keeps FilePathLink preview and copy but hides local openers in SSH scope', async () => {

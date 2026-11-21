@@ -1,4 +1,4 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, type Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream';
@@ -160,7 +160,7 @@ function matchesIfNoneMatch(
   });
 }
 
-async function statIfFile(filePath: string): Promise<Awaited<ReturnType<typeof stat>> | undefined> {
+async function statIfFile(filePath: string): Promise<Stats | undefined> {
   try {
     const info = await stat(filePath);
     return info.isFile() ? info : undefined;
