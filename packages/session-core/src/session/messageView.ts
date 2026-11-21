@@ -201,7 +201,131 @@ function isNativeSendMessageCall(block: Block): boolean {
     block.toolCallId !== undefined && !block.toolCallId.startsWith('external:');
 }
 
-function activity(members: readonly Block[], turn: string | undefined): ActivitySummary {
+const SUBAGENT_CARD_ABSORBED_EVENTS: ReadonlySet<string> = new Set([
+  'spawned',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+function toolDescriptionArg(tool: ToolBlock): string | undefined {
+  const args = record(tool.args) ?? record(tool.argsText);
+  const description = string(args?.['description'])?.trim();
+  return description !== undefined && description !== '' ? description : undefined;
+}
+
+/**
+ * Deduplicate subagent dispatch echoes inside message-view activity so each
+ * spawned child renders once (instead of AgentRun tool + SubagentBlock +
+ * spawned event = 3 redundant rows) and successful AgentSend/resume calls do
+ * not echo alongside their lifecycle rows. Failed dispatch calls stay visible.
+ */
+function dedupeActivityBlocks(blocks: readonly Block[]): {
+  readonly blocks: readonly Block[];
+  readonly absorbedDurationByBlockId: ReadonlyMap<string, number>;
+} {
+  const cards = new Set<string>();
+  const cardTaskIds = new Set<string>();
+  const cardCountByAgent = new Map<string, number>();
+  const dispatchCalls = new Map<string, string>();
+  const sentCalls = new Set<string>();
+  const resumedCalls = new Set<string>();
+  for (const block of blocks) {
+    if (block.kind === 'subagent-event') {
+      if (block.event === 'sent' && block.anchorToolCallId !== undefined) {
+        sentCalls.add(block.anchorToolCallId);
+      }
+      if (block.event === 'resumed' && block.anchorToolCallId !== undefined) {
+        resumedCalls.add(block.anchorToolCallId);
+      }
+      continue;
+    }
+    if (block.kind !== 'subagent') continue;
+    cards.add(block.subagentId);
+    cardCountByAgent.set(block.subagentId, (cardCountByAgent.get(block.subagentId) ?? 0) + 1);
+    if (block.taskId !== undefined && block.taskId !== '') cardTaskIds.add(block.taskId);
+    if (block.parentToolCallId !== undefined) dispatchCalls.set(block.parentToolCallId, block.id);
+  }
+  if (cards.size === 0 && sentCalls.size === 0 && resumedCalls.size === 0) {
+    return { blocks, absorbedDurationByBlockId: new Map() };
+  }
+
+  const descriptionByCardId = new Map<string, string>();
+  const descriptionByAgentId = new Map<string, string>();
+  const absorbedDurationByBlockId = new Map<string, number>();
+  const recordAbsorbedTool = (tool: ToolBlock, targetCardId: string | undefined) => {
+    const description = toolDescriptionArg(tool);
+    if (description !== undefined) {
+      if (targetCardId !== undefined && !descriptionByCardId.has(targetCardId)) {
+        descriptionByCardId.set(targetCardId, description);
+      }
+      for (const ref of tool.agentRefs ?? []) {
+        if (!descriptionByAgentId.has(ref.agentId)) descriptionByAgentId.set(ref.agentId, description);
+      }
+    }
+    if (targetCardId !== undefined && tool.durationSource === 'frame' && tool.durationMs !== undefined) {
+      absorbedDurationByBlockId.set(
+        targetCardId,
+        (absorbedDurationByBlockId.get(targetCardId) ?? 0) + tool.durationMs,
+      );
+    }
+  };
+
+  const kept: Block[] = [];
+  for (const block of blocks) {
+    if (block.kind === 'subagent-event') {
+      if (block.event === 'resumed' && block.anchorToolCallId !== undefined && dispatchCalls.has(block.anchorToolCallId)) {
+        continue;
+      }
+      if (cards.has(block.subagentId) && SUBAGENT_CARD_ABSORBED_EVENTS.has(block.event)) {
+        const prefix = `subagent-event-${block.subagentId}-${block.event}-`;
+        if (block.id.startsWith(prefix)) {
+          const eventTaskId = block.id.slice(prefix.length);
+          if (eventTaskId !== '' && cardTaskIds.size > 0 && (cardCountByAgent.get(block.subagentId) ?? 0) > 1) {
+            if (cardTaskIds.has(eventTaskId)) continue;
+          } else {
+            continue;
+          }
+        } else {
+          continue;
+        }
+      }
+      kept.push(block);
+      continue;
+    }
+    if (block.kind === 'tool' && block.status !== 'error' && block.isError !== true) {
+      const cardId = dispatchCalls.get(block.toolCallId);
+      if (cardId !== undefined) {
+        recordAbsorbedTool(block, cardId);
+        continue;
+      }
+      if (block.status === 'done' && (sentCalls.has(block.toolCallId) || resumedCalls.has(block.toolCallId))) {
+        continue;
+      }
+      const refs = block.agentRefs ?? [];
+      if (refs.length > 0 && refs.every((ref) => cards.has(ref.agentId) && (cardCountByAgent.get(ref.agentId) ?? 0) <= 1)) {
+        const matchedCard = blocks.find((candidate) => candidate.kind === 'subagent' && candidate.subagentId === refs[0]!.agentId);
+        recordAbsorbedTool(block, matchedCard?.id);
+        continue;
+      }
+    }
+    kept.push(block);
+  }
+
+  const enriched = kept.map((block) => {
+    if (block.kind !== 'subagent') return block;
+    if (block.description !== undefined && block.description.trim() !== '') return block;
+    const inherited = descriptionByCardId.get(block.id) ?? descriptionByAgentId.get(block.subagentId);
+    return inherited === undefined ? block : { ...block, description: inherited };
+  });
+  return { blocks: enriched, absorbedDurationByBlockId };
+}
+
+function activity(
+  members: readonly Block[],
+  turn: string | undefined,
+  absorbedDurationByBlockId?: ReadonlyMap<string, number>,
+): ActivitySummary {
   const counts = { tools: 0, reads: 0, commands: 0, thinking: 0, subagents: 0, memories: 0 };
   const subagents = new Set<string>();
   const sentMap = new Map<string, { subagentId: string; name: string; count: number }>();
@@ -232,6 +356,8 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
       subagents.add(block.subagentId);
       if (block.status === 'running') running = true;
       if (block.status === 'failed') failed += 1;
+      const absorbedMs = absorbedDurationByBlockId?.get(block.id);
+      if (absorbedMs !== undefined) durationMs = (durationMs ?? 0) + absorbedMs;
     } else if (block.kind === 'subagent-event') {
       subagents.add(block.subagentId);
       if (block.event === 'sent') {
@@ -242,12 +368,58 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
           sentMap.set(block.subagentId, { ...existing, count: existing.count + 1 });
         }
       }
+    } else if (block.kind === 'notice' && block.tone === 'danger') {
+      failed += 1;
     }
   }
   counts.subagents = subagents.size;
   const sentMessages = sentMap.size > 0 ? [...sentMap.values()] : undefined;
   return { kind: 'activity-summary', id: `activity-${members[0]!.id}`, turnId: turn,
     members, counts, running, failed, durationMs, sentMessages };
+}
+
+function isBackgroundTaskNotice(block: NoticeBlock): boolean {
+  return block.taskRef !== undefined || block.id.startsWith('agent-taskref-');
+}
+
+/**
+ * Only the latest unresolved compaction failure remains surfaced in message
+ * view so the user can trigger compaction recovery; historical or recovered
+ * compaction notices stay folded inside process activity.
+ */
+function latestUnresolvedCompactionFailureId(blocks: readonly Block[]): string | undefined {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block?.kind !== 'notice') continue;
+    if (
+      block.compactionPhase === 'completed' ||
+      block.i18n?.key === 'transcript.marker.compaction' ||
+      block.i18n?.key === 'transcript.marker.compactionSummarize' ||
+      block.i18n?.key === 'transcript.marker.compactionFresh'
+    ) {
+      return undefined;
+    }
+    if (
+      block.compactionPhase === 'failed' ||
+      block.compactionFailure !== undefined ||
+      block.i18n?.key === 'transcript.marker.compactionFailed'
+    ) {
+      return block.id;
+    }
+  }
+  return undefined;
+}
+
+function isVisibleNoticeInMessageView(
+  block: NoticeBlock,
+  unresolvedCompactionFailureId: string | undefined,
+): boolean {
+  if (isBackgroundTaskNotice(block)) return false;
+  if (block.compactionPhase !== undefined) {
+    return block.id === unresolvedCompactionFailureId;
+  }
+  return block.tone === 'danger'
+    || block.reasonCodes?.some((reason) => /cancel|stop|fail|delivery/.test(reason)) === true;
 }
 
 /**
@@ -266,6 +438,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
   const failed = new Set<string>(options.failedTurnIds ?? []);
   const failureShown = new Set<string>();
   const replies = new Map<string, AssistantBlock>();
+  const unresolvedCompactionFailureId = latestUnresolvedCompactionFailureId(blocks);
   for (const block of blocks) {
     const turn = turnId(block);
     const failedHere = failedTurn(block);
@@ -327,7 +500,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       reasonCodes: ['message.no_reply'] } satisfies NoticeBlock);
   };
   const flush = () => {
-    if (pending.length > 0) nodes.push(activity(pending, pendingTurn));
+    if (pending.length > 0) nodes.push(activity(pending, pendingTurn, absorbedDurationByBlockId));
     pending = [];
     pendingTurn = undefined;
   };
@@ -338,12 +511,13 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       questionCalls.add(block.request.tool_call_id);
     }
   }
-  const projected = blocks.flatMap<Block>((block) => {
+  const rawProjected = blocks.flatMap<Block>((block) => {
     if (block.kind !== 'tool') return [block];
     if (block.status !== 'error' && block.isError !== true && questionCalls.has(block.toolCallId)) return [];
     const messages = projectSendMessages(block);
     return messages.length === 0 ? [block] : messages;
   });
+  const { blocks: projected, absorbedDurationByBlockId } = dedupeActivityBlocks(rawProjected);
   for (const block of projected) {
     const turn = turnId(block);
     if (turn !== undefined && lastTurn !== undefined && turn !== lastTurn) {
@@ -354,14 +528,14 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     // The reply is speech now, not a step of the work that produced it.
     if (speechIds.has(block.id)) continue;
     const visible = block.kind === 'user' || block.kind === 'message' || block.kind === 'question'
-      || block.kind === 'approval' || (block.kind === 'notice' && (block.tone === 'danger'
-        || block.reasonCodes?.some((reason) => /cancel|stop|fail|delivery/.test(reason)) === true));
+      || block.kind === 'approval'
+      || (block.kind === 'notice' && isVisibleNoticeInMessageView(block, unresolvedCompactionFailureId));
     if (visible) {
       flush();
       nodes.push(block);
     } else {
-      if (pending.length > 0 && pendingTurn !== turn) flush();
-      pendingTurn = turn;
+      if (pending.length > 0 && turn !== undefined && pendingTurn !== undefined && pendingTurn !== turn) flush();
+      if (pendingTurn === undefined && turn !== undefined) pendingTurn = turn;
       pending.push(block);
     }
   }

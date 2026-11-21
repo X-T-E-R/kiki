@@ -366,7 +366,7 @@ function VisualAttachment({ attachment, kind }: { readonly attachment: MessageAt
   );
   if (kind === 'image') return <MediaPart item={item} />;
   return (
-    <span className="relative inline-flex">
+    <span className="relative inline-flex max-w-full">
       <MediaPart item={item} />
       <span aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
         <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink/45">
@@ -440,7 +440,7 @@ function AudioAttachment({ attachment, voice }: { readonly attachment: MessageAt
   return (
     <div ref={slot} data-message-media="audio" data-message-voice={voice ? '' : undefined} className="flex min-w-0 flex-col gap-1">
       {body}
-      <span className="text-[11.5px] text-ink-faint">{caption}</span>
+      <span title={caption} className="min-w-0 max-w-[320px] truncate text-[11.5px] text-ink-faint">{caption}</span>
     </div>
   );
 }
@@ -515,13 +515,13 @@ export const MessageRow = memo(function MessageRow({
   if (block.status === 'failed' || block.status === 'cancelled') {
     return (
       <div data-message-row={block.id} data-message-status={block.status} className="flex flex-col">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <span className={MESSAGE_FACE} />
           <button
             type="button"
             onClick={onOpenProcess}
             disabled={onOpenProcess === undefined}
-            className={`min-h-6 rounded-sm text-left text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+            className={`min-h-6 min-w-0 max-w-full break-words rounded-sm text-left text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
               block.status === 'failed' ? 'text-danger hover:underline' : 'text-ink-faint hover:text-ink-soft'
             }`}
           >
@@ -576,9 +576,9 @@ export const MessageRow = memo(function MessageRow({
             </p>
           ) : null}
           {spokenElsewhere || unconfirmed ? <DeliveryNotes block={block} onOpenProcess={onOpenProcess} /> : null}
-          <div data-message-text className={`kiki-prose min-w-0 ${spokenElsewhere || unconfirmed ? 'mt-1' : ''}`}>
+          <div data-message-text className={`kiki-prose min-w-0 [overflow-wrap:anywhere] ${spokenElsewhere || unconfirmed ? 'mt-1' : ''}`}>
             {sending ? (
-              <div className="kiki-prose-tail break-words whitespace-pre-wrap text-ink">
+              <div className="kiki-prose-tail break-words whitespace-pre-wrap [overflow-wrap:anywhere] text-ink">
                 {text}
                 <span className="stream-caret font-mono">▍</span>
               </div>

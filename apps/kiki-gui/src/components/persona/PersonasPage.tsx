@@ -136,8 +136,8 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
           />
         ) : null}
       </PageHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.split}`}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 lg:px-6">
+        <div className={`mx-auto pb-10 ${PAGE_WIDTH.split}`}>
           {listQuery.isPending ? (
             <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />

@@ -123,10 +123,16 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
       : mergePersonaConversations(conversationsQuery.data?.items, loadedConversations, personaId)),
     [conversationsQuery.data?.items, loadedConversations, personaId],
   );
-  const entry = useMemo(
-    () => (summary === undefined ? undefined : buildPersonaDirectory([summary], [], conversations, seen)[0]),
-    [conversations, seen, summary],
-  );
+  const entry = useMemo(() => {
+    if (summary !== undefined) return buildPersonaDirectory([summary], [], conversations, seen)[0];
+    if (bound === undefined) return undefined;
+    return buildPersonaDirectory(
+      [{ id: bound.id, name: bound.name, revision: '', archived: false, avatarShape: bound.avatarShape }],
+      [],
+      conversations,
+      seen,
+    )[0];
+  }, [bound, conversations, seen, summary]);
   const narrow = useMediaQuery('(max-width: 639px)');
 
   if (bound === undefined) return null;

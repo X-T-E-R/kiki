@@ -2969,7 +2969,10 @@ export function SessionView({
   // with ordinary replies has no message view to switch to, and the old
   // `isBotSession` showed it one anyway.
   const deliveryCapable = state.session?.delivery === 'message';
-  const [timelineView, setTimelineView] = useTimelineView(sessionId, state.session);
+  const [storedTimelineView, setTimelineView] = useTimelineView(sessionId, state.session);
+  // A session whose delivery is explicitly not `message` has no view switcher,
+  // so a stale stored `'message'` choice must never trap it out of process view.
+  const timelineView: TimelineView = state.session !== undefined && !deliveryCapable ? 'process' : storedTimelineView;
   useEffect(() => {
     if (!deliveryCapable) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2988,12 +2991,13 @@ export function SessionView({
     void client.updateSessionProfile(sessionId, { delivery })
       .then(() => {
         if (busyNow) setDeliveryChangedInTurn(true);
+        if (delivery === 'message') setTimelineView('message');
         void controller?.refreshSession();
       })
       .catch((error: unknown) => {
         pushToast({ tone: 'error', text: t('message.deliverySwitchFailed', { detail: error instanceof Error ? error.message : String(error) }) });
       });
-  }, [client, controller, sessionId, state.busy, state.session?.delivery, t]);
+  }, [client, controller, sessionId, setTimelineView, state.busy, state.session?.delivery, t]);
 
   // Advance this conversation's seen-mark only while its route is visible
   // and focused. Prefer semantic `attention_cursor` over raw `last_seq` so
