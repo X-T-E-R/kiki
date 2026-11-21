@@ -15,7 +15,7 @@ import type {
   UsageStatus,
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
-import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
+import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, isUndoAnchorOrigin, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import { turnGapOf } from './window';
 
 export { recoverTranscriptTurn } from './window';
@@ -252,7 +252,7 @@ function classifiedTextToBlocks(input: {
       if (classified.userInput !== undefined) {
         blocks.push(...classifiedTextToBlocks({
           ...input,
-          classified: { lane: 'you', origin: { kind: 'user' }, text: classified.userInput, reminders: [] },
+          classified: { lane: 'you', origin: classified.origin, text: classified.userInput, reminders: [] },
         }));
       }
       const skill = classified.skill ?? { source: 'skill' as const, name: 'skill', args: undefined };
@@ -3952,7 +3952,7 @@ export function agentTranscriptToBlocks(
             }
             {
               if (!assistantTextIsDisplay(frame)) break;
-              const messageId = frameMessageId(frame) ?? turnMessageId(item);
+              const messageId = frameMessageId(frame) ?? step.stepId;
               blocks.push({
                 kind: 'assistant',
                 id: `agent-frame-${frame.frameId}`,
@@ -4810,9 +4810,16 @@ export function latestFinalAssistantBlockId(
       if (block.streaming) streamingTurns.add(key);
       if (!block.streaming && !toolTurns.has(key) && !streamingTurns.has(key) &&
           !excluded.has(turnId) && (runningTurn === undefined || turnId !== runningTurn) &&
-          !(options.busy && turnId === undefined && unscopedTurn === 0)) return block.id;
+          !(options.busy && turnId === undefined && unscopedTurn === 0)) {
+        return assistantMessageIdFromBlock(block) === undefined ? undefined : block.id;
+      }
     }
-    if (block.kind === 'user' && turnId === undefined) unscopedTurn += 1;
+    if (block.kind === 'user') {
+      if (block.promptStatus === undefined && block.steerStatus === undefined && block.optimisticStatus === undefined &&
+          (block.promptOutcome === undefined || (block.promptOutcome.inHistory ?? block.promptOutcome.delivered)) &&
+          isUndoAnchorOrigin(block.sourceOrigin)) return undefined;
+      if (turnId === undefined) unscopedTurn += 1;
+    }
   }
   return undefined;
 }
@@ -4843,7 +4850,7 @@ export function settledFinalAssistantBlockIds(
           !excluded.has(turnId) && (runningTurn === undefined || turnId !== runningTurn) &&
           !(options.busy && turnId === undefined && unscopedTurn === 0)) {
         pickedTurns.add(key);
-        if (result.size === 0 || assistantMessageIdFromBlock(block) !== undefined) {
+        if (assistantMessageIdFromBlock(block) !== undefined) {
           result.add(block.id);
         }
       }

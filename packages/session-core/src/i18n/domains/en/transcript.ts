@@ -500,7 +500,7 @@ export const transcriptEn = {
   'transcript.editAttachmentsLoadFailed': 'This message\'s attachments did not load.',
   'transcript.editSubmit': 'Resend',
   'transcript.editSubmitTitle': 'Replace the original message and rerun from here',
-  'transcript.editTitle': 'Edit this message and resend it',
+  'transcript.editTitle': 'Edit and rerun from here',
   'transcript.exec.badge': '{executor} · {protocol}',
   'transcript.exec.compacted': 'The engine compacted its context',
   'transcript.exec.degraded': 'degraded',

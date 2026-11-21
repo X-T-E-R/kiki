@@ -35,6 +35,7 @@ interface MutableMessage {
   note?: string;
   origin?: ContextMessage['origin'];
   partial?: boolean;
+  inheritedSeed?: boolean;
   source?: ContextMessageSource;
   toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
 }
@@ -42,6 +43,11 @@ interface MutableMessage {
 interface MutableEntry {
   message: MutableMessage;
   time?: number;
+}
+
+/** Stable REST address for a context entry, including older logs without message IDs. */
+export function contextTranscriptMessageId(sessionId: string, index: number, message: ContextMessage): string {
+  return message.id ?? `msg_${sessionId}_${String(index).padStart(6, '0')}`;
 }
 
 export function reduceContextTranscript(records: Iterable<WireRecord>): ContextTranscript {
@@ -61,9 +67,9 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
   };
 
   const sink = {
-    openAssistant: (time: number | undefined) => {
+    openAssistant: (time: number | undefined, source?: ContextMessageSource) => {
       openEntry = {
-        message: { role: 'assistant', content: [], toolCalls: [], partial: true },
+        message: { role: 'assistant', content: [], toolCalls: [], partial: true, source },
         time,
       };
       push(openEntry);
@@ -71,8 +77,12 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
     appendOpenContent: (part: ContentPart) => {
       openEntry?.message.content.push(part);
     },
-    appendOpenToolCall: (call: ToolCall) => {
-      openEntry?.message.toolCalls.push(call);
+    appendOpenToolCall: (call: ToolCall, source?: ContextMessageSource) => {
+      if (openEntry === undefined) return;
+      openEntry.message.toolCalls.push(call);
+      if (source !== undefined) {
+        openEntry.message.toolCallSources = { ...openEntry.message.toolCallSources, [call.id]: source };
+      }
     },
     dropOpenAssistant: () => {
       const entry = openEntry;
@@ -85,8 +95,8 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       if (openEntry !== undefined) openEntry.message.partial = undefined;
       openEntry = undefined;
     },
-    pushToolMessage: (message: ContextMessage, time: number | undefined) => {
-      push(toMutableEntry(message, time));
+    pushToolMessage: (message: ContextMessage, time: number | undefined, source?: ContextMessageSource) => {
+      push(toMutableEntry(source === undefined ? message : { ...message, source }, time));
     },
     pushMessage: (message: ContextMessage, time: number | undefined) => {
       const revision = findProviderMessageRevision(logical, message, (entry) => entry.message);
@@ -227,6 +237,7 @@ function toMutableEntry(message: ContextMessage, time: number | undefined): Muta
   return {
     message: {
       id: message.id,
+      inheritedSeed: message.inheritedSeed,
       providerMessageId: message.providerMessageId,
       role: message.role,
       content: [...message.content],

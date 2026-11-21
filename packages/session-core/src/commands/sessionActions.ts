@@ -124,17 +124,40 @@ export async function exportSessionArchive(
   return true;
 }
 
+function errorReason(error: ApiError): string | undefined {
+  if (typeof error.details !== 'object' || error.details === null) return undefined;
+  const reason = (error.details as { readonly reason?: unknown }).reason;
+  return typeof reason === 'string' && reason !== '' ? reason : undefined;
+}
+
 /** Maps wire error codes to dictionary keys; null when there is no local copy. */
 export function sessionActionErrorKey(error: unknown): I18nKey | null {
   if (error instanceof ApiError) {
+    const reason = errorReason(error);
     switch (error.code) {
       case API_CODES.SESSION_UNDO_UNAVAILABLE:
+        if (reason === 'compaction_boundary') return 'error.undoCompactionBoundary';
+        if (reason === 'checkpoint_lost') return 'error.undoCheckpointLost';
         return 'error.nothingToUndo';
       case API_CODES.COMPACTION_UNABLE:
         return 'error.nothingToCompact';
       case API_CODES.SESSION_BUSY:
+        if (reason === 'pending_interaction') return 'error.sessionBusyInteraction';
+        if (reason === 'compaction') return 'error.sessionBusyCompaction';
+        if (reason === 'queued_prompt') return 'error.sessionBusyQueued';
+        if (reason === 'background_work') return 'error.sessionBusyBackground';
         return 'error.sessionBusy';
       case API_CODES.MESSAGE_ACTION_UNAVAILABLE:
+        if (reason === 'not_latest_user_input') return 'error.messageNotLatestUserInput';
+        if (reason === 'not_latest_final_assistant') return 'error.messageNotLatestAssistant';
+        if (reason === 'unsupported_origin_or_role') return 'error.messageUnsupportedOrigin';
+        if (reason === 'assistant_has_no_completed_user_turn') return 'error.messageNoUserTurn';
+        if (reason === 'not_final_assistant_boundary' || reason === 'unsupported_message_boundary') {
+          return 'error.messageUnsupportedForkBoundary';
+        }
+        if (reason === 'target_not_found' || reason?.startsWith('message_not_found_in_session:') === true) {
+          return 'error.messageNotFoundInHistory';
+        }
         return 'error.messageActionUnavailable';
       case API_CODES.SESSION_CURSOR_MISMATCH:
         return 'error.sessionCursorMismatch';
@@ -148,20 +171,9 @@ export function sessionActionErrorKey(error: unknown): I18nKey | null {
 /** Maps wire error codes to plain copy; falls back to the envelope message. */
 export function sessionActionErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    switch (error.code) {
-      case API_CODES.SESSION_UNDO_UNAVAILABLE:
-        return 'Nothing to undo — there is no earlier turn to roll back to.';
-      case API_CODES.COMPACTION_UNABLE:
-        return 'There is no safe earlier context to compact.';
-      case API_CODES.SESSION_BUSY:
-        return 'The session is busy — try again when the current turn finishes.';
-      case API_CODES.MESSAGE_ACTION_UNAVAILABLE:
-        return 'This message can no longer be edited or rerun.';
-      case API_CODES.SESSION_CURSOR_MISMATCH:
-        return 'This session was updated elsewhere — review the latest state, then try again.';
-      default:
-        return error.message;
-    }
+    const key = sessionActionErrorKey(error);
+    if (key !== null) return translate('en', key);
+    return error.message;
   }
   return error instanceof Error ? error.message : String(error);
 }

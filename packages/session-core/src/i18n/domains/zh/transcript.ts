@@ -500,7 +500,7 @@ export const transcriptZh = {
   'transcript.editAttachmentsLoadFailed': '原消息的附件没能载入。',
   'transcript.editSubmit': '重发',
   'transcript.editSubmitTitle': '替换原消息并从此处重新运行',
-  'transcript.editTitle': '编辑此消息并重新发送',
+  'transcript.editTitle': '编辑并从此处重跑',
   'transcript.exec.badge': '{executor} · {protocol}',
   'transcript.exec.compacted': '引擎已压缩上下文',
   'transcript.exec.degraded': '已降级',

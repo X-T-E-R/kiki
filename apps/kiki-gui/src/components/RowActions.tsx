@@ -792,9 +792,6 @@ export function UserMessageEditor({
           try { await onSubmit(body, media, options?.presentation); } finally { setSubmitting(false); }
         }}
       />
-      {/* Only a failed attachment load leaves a line under the editor: the
-          retry that brings the original files back. The edit itself is
-          abandoned from the X in the composer's own row. */}
       {loadError ? (
         <div className="mt-2 flex items-center px-1">
           <button

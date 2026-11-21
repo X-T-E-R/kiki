@@ -83,9 +83,7 @@ import {
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
 import { translate } from '@kiki/session-core/i18n';
-import { ConnectionProvider } from '../state/connection';
-import { writeStoredConfig } from '../state/connectionConfig';
-import { browserHost, HostProvider } from '../host';
+import { createConnectedTranscriptFixture } from '../test/connectedTranscriptFixture';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
@@ -216,60 +214,18 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
  * `await act(...)` drains React's act queue recursively until everything —
  * transitions included — has landed, so both sides are compared settled.
  */
-let editFixture: import('node:child_process').ChildProcess | undefined;
-let editFixturePort: number;
-let editFixtureStderr = '';
-let editFixtureReady: Promise<void> | undefined;
-function startEditFixture(): Promise<void> {
-  editFixtureReady ??= (async () => {
-    const { spawn } = await import('node:child_process');
-    const { resolve } = await import('node:path');
-    editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: resolve(import.meta.dirname, '../..'), stdio: ['ignore', 'pipe', 'pipe'] });
-    editFixture.stderr!.on('data', (chunk) => {
-      const text = String(chunk);
-      editFixtureStderr += text;
-      process.stderr.write(`[Transcript fixture] ${text}`);
-    });
-    await new Promise<void>((resolve, reject) => {
-      let output = '';
-      editFixture!.stdout!.on('data', (chunk) => {
-        output += String(chunk);
-        const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
-        if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
-      });
-      editFixture!.once('error', reject);
-      editFixture!.once('exit', (code) => {
-        if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}\n${editFixtureStderr}`));
-      });
-    });
-  })();
-  return editFixtureReady;
-}
+const editFixture = createConnectedTranscriptFixture();
+
 async function renderSettled(root: Root, node: ReactNode, connected = false, initialEntries?: string[]): Promise<void> {
-  if (connected) {
-    await startEditFixture();
-    writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
-  }
-  let ready = false;
-  function ConnectedSurface() {
-    useLayoutEffect(() => { ready = true; }, []);
-    return node;
-  }
-  await act(async () => {
-    flushSync(() => {
-      root.render(
-        <MemoryRouter initialEntries={initialEntries}>
-          <I18nProvider>{connected ? <HostProvider host={browserHost}><ConnectionProvider><ConnectedSurface /></ConnectionProvider></HostProvider> : node}</I18nProvider>
-        </MemoryRouter>,
-      );
+  const paint = async (content: ReactNode) => {
+    await act(async () => {
+      flushSync(() => {
+        root.render(<MemoryRouter initialEntries={initialEntries}><I18nProvider>{content}</I18nProvider></MemoryRouter>);
+      });
     });
-  });
-  if (connected) {
-    for (let attempt = 0; !ready && attempt < 100; attempt += 1) {
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
-    }
-    expect(ready).toBe(true);
-  }
+  };
+  if (connected) await editFixture.render(node, paint);
+  else await paint(node);
 }
 
 /**
@@ -430,11 +386,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (editFixture !== undefined) {
-    const exited = new Promise<void>((resolve) => { editFixture!.once('exit', () => resolve()); });
-    editFixture.kill();
-    await exited;
-  }
+  await editFixture.close();
   restoreElementProperties();
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   vi.unstubAllGlobals();
@@ -1675,7 +1627,7 @@ describe('live and event chrome', () => {
   // shared boot promise was still pending, and the next case inherited it. The
   // boot itself gets a settled-load budget: the whole suite contends for the
   // same fixture spawn, so the 10s default expires under parallel workers.
-  beforeAll(startEditFixture, 30_000);
+  beforeAll(editFixture.start, 30_000);
 
   it('shows elapsed time after three seconds and cleans up the timer', async () => {
     vi.useFakeTimers();
@@ -2969,14 +2921,14 @@ describe('explicit unknown timing', () => {
 });
 
 describe('message row actions', () => {
-  beforeAll(startEditFixture, 30_000);
+  beforeAll(editFixture.start, 30_000);
   it('shows edit/fork on settled user rows, fork on settled final replies, and regenerate on the latest final reply only', async () => {
     const container = await renderTranscript(
       [
         userBlock({ id: 'user-m1', text: 'first question', userMessageId: 'm1' }),
         assistantBlock('assistant-m2-0', 'first answer'),
         userBlock({ id: 'user-m3', text: 'second question', userMessageId: 'm3' }),
-        assistantBlock('assistant-live-1-final-end@9', 'second answer'),
+        { ...assistantBlock('assistant-live-1-final-end@9', 'second answer'), messageId: 'm4' },
       ],
       defaultRowActions(),
     );
@@ -3006,6 +2958,15 @@ describe('message row actions', () => {
     const container = await renderTranscript([userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' })], defaultRowActions());
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link']);
+  });
+
+  it('offers only copy and link for system input and assistant text without a message ID', async () => {
+    const blocks = [
+      userBlock({ id: 'auto-input', text: 'Synthetic input', userMessageId: 'auto', sourceOrigin: { kind: 'system_trigger', name: 'subagent' } }),
+      assistantBlock('assistant-live-synthetic', 'Synthetic reply'),
+    ];
+    const container = await renderTranscript(blocks, defaultRowActions());
+    for (const row of container.querySelectorAll('[data-block-id]')) expect(rowActionButtons(row)).toEqual(['copy', 'link']);
   });
 
   it('omits queued prompts until they start while keeping blocked prompts visible', async () => {
@@ -3270,7 +3231,7 @@ describe('message row actions', () => {
       flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
     });
     const shell = container.querySelector<HTMLElement>('[data-edit-editor]')!;
-    expect(shell.querySelector('[data-composer-card]')).not.toBeNull();
+    expect(shell.querySelectorAll('[data-composer-card]')).toHaveLength(1);
     expect(shell.children).toHaveLength(1);
     expect(shell.textContent).not.toContain('Cancel');
     const cancel = shell.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
@@ -3839,7 +3800,7 @@ describe('message row actions', () => {
     const container = await renderTranscript(
       [
         userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
-        assistantBlock('assistant-live-1-final-end@9', 'answer'),
+        { ...assistantBlock('assistant-live-1-final-end@9', 'answer'), messageId: 'm2' },
       ],
       rowActions,
     );
@@ -11160,7 +11121,7 @@ it('keeps a legacy SSH host block as stored text and draws no per-message host r
 
 
 describe('ordinary bounded message reading', () => {
-  beforeAll(startEditFixture);
+  beforeAll(editFixture.start);
   it('continues prompt, assistant and thinking from their exact sources, then restores full copy/edit targets', async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };
@@ -11378,8 +11339,7 @@ describe('serialized queue edit consumer', () => {
     expectedBody: string,
     expectedNotes: string[],
   ) {
-    await startEditFixture();
-    const baseUrl = `http://127.0.0.1:${editFixturePort}`;
+    const baseUrl = await editFixture.start();
     const reset = await fetch(`${baseUrl}/__control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'queue' }) });
     expect(reset.ok).toBe(true);
     const { KikiClient } = await import('../lib/client');

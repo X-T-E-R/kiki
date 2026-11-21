@@ -61,6 +61,7 @@ interface PendingSteerMedia {
 export interface PendingSteer {
   readonly promptId: string;
   readonly explicitPromptId?: string;
+  readonly ordinal: number;
   readonly text: string;
   readonly presentation?: import('../contract/presentation').TextPresentation;
   readonly media: readonly PendingSteerMedia[];
@@ -108,7 +109,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly canonicalTurns: readonly string[];
   readonly undoAnchors: readonly string[];
   readonly turnOwnedItemIds: readonly [string, readonly string[]][];
-  readonly steeredMessageIds: readonly string[];
+  readonly steeredMessages: readonly [string, number][];
   readonly pendingSteers: readonly [string, readonly PendingSteer[]][];
   readonly pendingTaskNotifications: readonly [string, readonly TranscriptWireRecord[]][];
   readonly projectedTaskNotificationIds: readonly string[];
@@ -133,6 +134,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly queueOrder?: readonly string[];
   readonly hiddenPromptIds?: readonly string[];
+  readonly promptUserMessageIds?: readonly [string, string][];
   readonly deliveries?: readonly [string, MessageDelivery][];
   readonly messageProjection?: MessageProjectionCheckpoint;
 }
@@ -157,7 +159,7 @@ export class TranscriptWireAdapter {
   readonly #canonicalTurns = new Set<string>();
   readonly #undoAnchors = new Set<string>();
   readonly #turnOwnedItemIds = new Map<string, string[]>();
-  readonly #steeredMessageIds = new Set<string>();
+  readonly #steeredMessages = new Map<string, number>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
   readonly #pendingTaskNotifications = new Map<string, TranscriptWireRecord[]>();
   readonly #projectedTaskNotificationIds = new Set<string>();
@@ -171,6 +173,7 @@ export class TranscriptWireAdapter {
   readonly #queuedModelSwitchIds = new Set<string>();
   readonly #bindingSettingIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
+  readonly #promptUserMessageIds = new Map<string, string>();
   readonly #openBlockedBatchIds = new Set<string>();
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
@@ -232,7 +235,7 @@ export class TranscriptWireAdapter {
       canonicalTurns: [...this.#canonicalTurns],
       undoAnchors: [...this.#undoAnchors],
       turnOwnedItemIds: [...this.#turnOwnedItemIds],
-      steeredMessageIds: [...this.#steeredMessageIds],
+      steeredMessages: [...this.#steeredMessages],
       pendingSteers: [...this.#pendingSteers],
       pendingTaskNotifications: [...this.#pendingTaskNotifications],
       projectedTaskNotificationIds: [...this.#projectedTaskNotificationIds],
@@ -257,6 +260,7 @@ export class TranscriptWireAdapter {
       prompts: [...this.#prompts],
       queueOrder: [...this.#queueOrder],
       hiddenPromptIds: [...this.#hiddenPromptIds],
+      promptUserMessageIds: [...this.#promptUserMessageIds],
       deliveries: [...this.#deliveries],
       messageProjection: {
         deliveries: [...this.#deliveryUndoRecords], frames: [...this.#frameRecords],
@@ -309,7 +313,7 @@ export class TranscriptWireAdapter {
     replaceSet(this.#canonicalTurns, checkpoint.canonicalTurns);
     replaceSet(this.#undoAnchors, checkpoint.undoAnchors);
     replaceMap(this.#turnOwnedItemIds, checkpoint.turnOwnedItemIds.map(([key, value]) => [key, [...value]]));
-    replaceSet(this.#steeredMessageIds, checkpoint.steeredMessageIds);
+    replaceMap(this.#steeredMessages, checkpoint.steeredMessages);
     replaceMap(this.#pendingSteers, checkpoint.pendingSteers.map(([key, value]) => [key, [...value]]));
     replaceMap(
       this.#pendingTaskNotifications,
@@ -354,6 +358,7 @@ export class TranscriptWireAdapter {
       }
     }
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
+    replaceMap(this.#promptUserMessageIds, checkpoint.promptUserMessageIds ?? []);
     this.#openBlockedBatchIds.clear();
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
     replaceMap(this.#deliveryUndoRecords, checkpoint.messageProjection?.deliveries ?? []);
@@ -629,6 +634,8 @@ export class TranscriptWireAdapter {
       const rawQueuePosition = numberOf(record['queueIndex']);
       this.insertQueueSlot(promptId, rawQueuePosition);
       const message = objectOf(record['message']);
+      const userMessageId = stringOf(record['userMessageId']) ?? stringOf(message?.['id']);
+      if (userMessageId !== undefined) this.#promptUserMessageIds.set(promptId, userMessageId);
       const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
       if (originKind !== 'user' && originKind !== 'cron_job') {
         this.#hiddenPromptIds.add(promptId);
@@ -645,7 +652,7 @@ export class TranscriptWireAdapter {
         originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',
         steerAccepted: record['steerAccepted'] === true ? true : undefined,
-        userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
+        userMessageId,
         content: projectPromptContent(message?.['content']),
         createdAt: promptRecordTime(record, ['createdAt']) ?? isoOf(record.time) ?? new Date(0).toISOString(),
         queuePosition,
@@ -1567,7 +1574,9 @@ export class TranscriptWireAdapter {
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
     const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
-    const messageId = promptId === undefined ? undefined : this.#prompts.get(promptId)?.userMessageId ?? promptId;
+    const messageId = promptId === undefined
+      ? undefined
+      : this.#prompts.get(promptId)?.userMessageId ?? this.#promptUserMessageIds.get(promptId) ?? promptId;
     const previous = this.#turnHeaders.get(turnId);
     const alreadyDelivered = messageId !== undefined && this.#deliveries.has(messageId);
     if (alreadyDelivered && previous?.message?.messageId === messageId) return [];
@@ -1661,12 +1670,16 @@ export class TranscriptWireAdapter {
     const text = input.map(textOfPart).join('');
     const media = mediaPartsOf(input);
     if (text.length === 0 && media.length === 0) return [];
-    const explicitPromptId = stringOf(record['promptId']);
+    const rawPromptId = stringOf(record['promptId']);
+    const explicitPromptId = rawPromptId === undefined
+      ? undefined
+      : this.#prompts.get(rawPromptId)?.userMessageId ?? this.#promptUserMessageIds.get(rawPromptId) ?? rawPromptId;
     const promptId = explicitPromptId ?? `${this.recordIdentity(ordinal)}:steer`;
     const pending = this.#pendingSteers.get(turnId);
     const steer: PendingSteer = {
       promptId,
       explicitPromptId,
+      ordinal,
       text,
       presentation: contentTextPresentation(input),
       media,
@@ -1694,7 +1707,20 @@ export class TranscriptWireAdapter {
     this.#pendingSteers.delete(turnId);
     const operations: TranscriptOperation[] = [];
     for (const steer of pending) {
-      if (steer.explicitPromptId !== undefined) this.#steeredMessageIds.add(steer.explicitPromptId);
+      if (steer.explicitPromptId !== undefined) this.#steeredMessages.set(steer.explicitPromptId, steer.ordinal);
+      if (isUndoAnchorOrigin(steer.origin) && !this.#deliveryUndoRecords.has(steer.promptId)) {
+        this.#deliveryUndoRecords.set(steer.promptId, { ordinal: steer.ordinal, anchor: true });
+        if (!this.#deliveries.has(steer.promptId)) {
+          this.#deliveries.set(steer.promptId, {
+            deliveryId: `legacy:steer:${steer.promptId}`,
+            messageId: steer.promptId,
+            turnId,
+            stepId,
+            deliveredAt: isoOf(this.#lastRecordTime),
+            origin: deliveryOrigin(undefined, stringOf(objectOf(steer.origin)?.['kind'])),
+          });
+        }
+      }
       const attachmentIds: string[] = [];
       for (const media of steer.media) {
         const attachmentId = `${steer.promptId}.att${attachmentIds.length + 1}`;
@@ -1738,12 +1764,14 @@ export class TranscriptWireAdapter {
   private consumeSteeredUserMessage(
     messageId: string,
     origin: Readonly<Record<string, unknown>> | undefined,
+    ordinal: number,
   ): boolean {
-    if (this.#steeredMessageIds.has(messageId)) return true;
+    if (this.#steeredMessages.has(messageId)) return true;
     const turnId = this.#currentTurnId;
     const pending = turnId === undefined ? undefined : this.#pendingSteers.get(turnId);
-    if (pending?.some((steer) => steer.explicitPromptId === messageId)) {
-      this.#steeredMessageIds.add(messageId);
+    const steer = pending?.find((item) => item.explicitPromptId === messageId);
+    if (steer !== undefined) {
+      this.#steeredMessages.set(messageId, steer.ordinal);
       return true;
     }
     if (turnId === undefined || !isVisibleLegacyTurnOrigin(this.agentId, origin)) return false;
@@ -1752,7 +1780,7 @@ export class TranscriptWireAdapter {
     const count = credits?.get(originKind) ?? 0;
     if (count === 0) return false;
     credits!.set(originKind, count - 1);
-    this.#steeredMessageIds.add(messageId);
+    this.#steeredMessages.set(messageId, ordinal);
     return true;
   }
 
@@ -1774,16 +1802,14 @@ export class TranscriptWireAdapter {
       }
       const canonicalDelivery = objectOf(record['delivery']);
       if (canonicalDelivery !== undefined) return this.deliveredMessage(record, message, ordinal, canonicalDelivery);
-      if (messageId === this.#currentPromptId || this.#deliveries.has(messageId)) return [];
-      const origin = objectOf(message['origin']);
-      if (this.consumeSteeredUserMessage(messageId, origin)) return [];
-      if (
+      if (!opensTurn && (messageId === this.#currentPromptId || this.#deliveries.has(messageId) || this.consumeSteeredUserMessage(messageId, origin, ordinal))) return [];
+      if (!opensTurn && (
         notificationId !== undefined ||
         origin?.['kind'] === 'agent_message' ||
         origin?.['kind'] === 'branch_fold' ||
         origin?.['kind'] === 'injection' ||
-        (!opensTurn && this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
-      ) return this.deliveredMessage(record, message, ordinal);
+        (this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
+      )) return this.deliveredMessage(record, message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
       if (!isVisibleLegacyTurnOrigin(this.agentId, origin)) return [];
       const turnId = `t${turnOrdinal}`;
@@ -2820,6 +2846,7 @@ export class TranscriptWireAdapter {
   }
 
   private removeDeliverySuffix(ordinal: number): TranscriptOperation[] {
+    for (const [id, source] of this.#steeredMessages) if (source >= ordinal) this.#steeredMessages.delete(id);
     const ids: string[] = [];
     for (const [messageId, record] of this.#deliveryUndoRecords) {
       if (record.ordinal < ordinal) continue;

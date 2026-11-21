@@ -44,6 +44,7 @@ export interface PromptOriginLike {
   readonly throughTurnId?: number;
   readonly done?: boolean;
   readonly messageId?: string;
+  readonly targeted?: boolean;
   readonly source?: { readonly hostId?: string; readonly workspaceId?: string; readonly sessionId?: string; readonly personaId?: string; readonly name?: string };
   readonly sourceHomeId?: string;
   readonly targetHomeId?: string;
@@ -465,7 +466,8 @@ export function classifyTranscriptText(input: {
   ) {
     return { lane: 'you', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
-  if (kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message' || kind === 'branch_fold') {
+  if (kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message' || kind === 'branch_fold' ||
+      (kind === 'room_message' && origin?.targeted === true)) {
     return { lane: 'peer', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') {
@@ -474,7 +476,9 @@ export function classifyTranscriptText(input: {
       origin,
       text: stripSkillEnvelope(split.text),
       reminders: split.reminders,
-      userInput: kind === 'skill_activation' && origin?.trigger === 'user-slash' && typeof origin.userInput === 'string' ? origin.userInput : undefined,
+      userInput: origin?.trigger !== 'user-slash' ? undefined
+        : kind === 'skill_activation' ? origin.userInput
+        : origin.commandName === undefined ? undefined : `/${origin.commandName}${origin.commandArgs ? ` ${origin.commandArgs}` : ''}`,
       skill: origin?.skillName === undefined && origin?.commandName === undefined
         ? skillFromEnvelope(split.text) ?? skillFromOrigin(origin)
         : skillFromOrigin(origin),

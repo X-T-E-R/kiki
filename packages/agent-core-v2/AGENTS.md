@@ -155,6 +155,8 @@ Message rewrites carry an optional `replacementPrompt` on the same `context.undo
 
 External `acceptSteer` shares an in-flight attempt by prompt ID. A definite refusal (`executor_deferred`) permits another explicit Send now on that same ID; ordinary recovered queue entries are not unknown deliveries. Before calling an external executor, this path durably records `prompt.external_steer_started`. `prompt.queue` folds that attempt and subsequent `executor.prompt.delivery` facts, so a restored unknown result stays under recovery hold without resending. Its `deliveryVersion` rebuilds older engine checkpoints with pending entries from the wire; older checkpoints without pending entries remain usable. Native acceptance and the existing core `steer` entry keep their delivery contracts.
 
+`contextTranscriptMessageId` supplies the stable REST address for a context entry; older records without an ID use their projected position. Native assistant action targets may also use the recorded step ID. Targeted forks validate that address against the sliced journal and stop at the selected turn's terminal fact.
+
 Live context and transcript replay revise a user message only when both its `id` and `providerMessageId` match. Native prompts that reuse an `id` remain separate undo anchors with their own prompt-owned injections.
 
 Compaction resource-release failures are logged through `ILogService.error` as `failed to release compaction resources`; they do not replace the compaction failure or invalidate an already committed result. Persistence-blocked compaction retains its resources for recovery.

@@ -341,12 +341,14 @@ describe('message-closure anchors', () => {
     kind: 'assistant',
     id,
     text: 'a',
+    messageId: `message-${id}`,
     streaming,
     createdAt: '2026-01-01T00:00:01.000Z',
   });
 
   it('latestFinalAssistantBlockId picks the last settled assistant block', () => {
     expect(latestFinalAssistantBlockId([])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([assistant('older'), { ...assistant('synthetic'), messageId: undefined }])).toBeUndefined();
     expect(
       latestFinalAssistantBlockId([user('u1'), assistant('a1'), assistant('a2')]),
     ).toBe('a2');
@@ -367,6 +369,16 @@ describe('message-closure anchors', () => {
     expect(latestFinalAssistantBlockId([previous, preamble, tool, final])).toBe('final');
     expect(latestFinalAssistantBlockId([previous, preamble, tool, final], { busy: true, liveTurnId: '2' })).toBe('previous');
     expect(latestFinalAssistantBlockId([assistant('preamble'), { ...tool, turnId: undefined }])).toBeUndefined();
+  });
+
+  it.each([undefined, 't2'])('does not regenerate an older reply past a settled input (%s)', (turnId) => {
+    const previous = { ...assistant('previous'), turnId: 't1' };
+    const input: UserBlock = { ...user('u2'), userMessageId: 'u2', turnId, sourceOrigin: { kind: 'peer_thread' } };
+    expect(latestFinalAssistantBlockId([previous, input])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([previous, input, { kind: 'tool', id: 'tool', turnId, status: 'done' } as ToolBlock])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([previous, { ...input, promptOutcome: { status: 'failed', delivered: true } }])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([previous, { ...input, promptOutcome: { status: 'failed', delivered: false } }])).toBe('previous');
+    expect(latestFinalAssistantBlockId([previous, { ...input, promptStatus: 'queued' }])).toBe('previous');
   });
 
   it('rejects preambles followed by specialized tool-call projections', () => {

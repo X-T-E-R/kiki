@@ -12,9 +12,26 @@ export function nonEmptyStringOf(value: unknown): string | undefined {
 }
 
 export function isUndoAnchorOrigin(value: unknown): boolean {
-  const origin = objectOf(value);
+  const raw = objectOf(value);
+  const payload = objectOf(raw?.['payload']);
+  const origin = payload !== undefined && typeof payload['kind'] === 'string' ? payload : raw;
   const kind = stringOf(origin?.['kind']);
-  if (kind === undefined || kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message' || kind === 'branch_fold') return true;
+  if (kind === 'merged') {
+    const origins = Array.isArray(origin?.['origins']) ? origin['origins'] : [];
+    return origins.some(isUndoAnchorOrigin);
+  }
+  if (
+    kind === undefined ||
+    kind === 'user' ||
+    kind === 'peer_thread' ||
+    kind === 'bridged_peer' ||
+    kind === 'agent_message' ||
+    kind === 'branch_fold' ||
+    kind === 'external_thread' ||
+    kind === 'unknown' ||
+    (kind === 'system_trigger' && stringOf(origin?.['name']) === 'thread_create') ||
+    (kind === 'room_message' && origin?.['targeted'] === true)
+  ) return true;
   return (kind === 'skill_activation' || kind === 'plugin_command') && origin?.['trigger'] === 'user-slash';
 }
 
@@ -25,7 +42,7 @@ export function isVisibleLegacyTurnOrigin(
   const kind = stringOf(origin?.['kind']);
   if (kind === 'system_trigger') {
     const name = stringOf(origin?.['name']);
-    if (name === 'goal_continuation') return true;
+    if (name === 'goal_continuation' || name === 'thread_create') return true;
     return name === 'subagent' && agentId !== 'main';
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') return origin?.['trigger'] === 'user-slash';

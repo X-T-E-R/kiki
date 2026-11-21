@@ -1,14 +1,9 @@
-import { parseDaemonFileUrl, type ContextMessage } from '@kiki/agent-core-v2';
+import { contextTranscriptMessageId, parseDaemonFileUrl, type ContextMessage } from '@kiki/agent-core-v2';
 import { readTextPresentation } from '@kiki/transcript';
 
 import type { Message, MessageContent, MessageRole, ToolUseContent } from '@kiki/protocol';
 
 export { projectPromptContentParts } from '@kiki/transcript-live';
-
-function deriveMessageId(sessionId: string, index: number): string {
-  const padded = String(index).padStart(6, '0');
-  return `msg_${sessionId}_${padded}`;
-}
 
 function toProtocolRole(role: ContextMessage['role']): MessageRole {
   return role as MessageRole;
@@ -107,7 +102,7 @@ export function toProtocolMessage(
   sessionCreatedAtMs: number,
   createdAtMsOverride?: number,
 ): Message {
-  const id = msg.id ?? deriveMessageId(sessionId, index);
+  const id = contextTranscriptMessageId(sessionId, index, msg);
   const role = toProtocolRole(msg.role);
   const content = buildProtocolContent(msg);
   const createdAtMs = createdAtMsOverride ?? sessionCreatedAtMs + index;

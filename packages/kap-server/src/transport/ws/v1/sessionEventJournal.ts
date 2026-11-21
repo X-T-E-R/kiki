@@ -242,7 +242,7 @@ export class SessionEventJournal {
 
   async flush(): Promise<void> {
     while (this.flushPromise !== undefined || this.pendingLines.length > 0 ||
-      (this.closing && this.retainedLines !== undefined && (this.compactPending || this.diskEventCount > this.capacity))) {
+      (this.closing && (this.headerPending || this.retainedLines !== undefined && (this.compactPending || this.diskEventCount > this.capacity)))) {
       this.scheduleFlush();
       await this.flushPromise;
       if (this.writeFailed || (this.compactFailed && this.pendingLines.length === 0 && this.flushPromise === undefined)) return;

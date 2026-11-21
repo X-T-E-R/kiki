@@ -1353,9 +1353,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     assertForkTurnIndex(opts.turnIndex);
 
     const sourceQuiescenceLeases: IDisposable[] = [];
-    const releaseSourceQuiescence = (): void => {
+    const releaseSourceQuiescence = async (): Promise<void> => {
       for (const lease of sourceQuiescenceLeases.splice(0)) {
-        lease.dispose();
+        await lease.dispose();
       }
     };
 
@@ -1410,6 +1410,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           sourceId,
           opts.turnIndex,
           opts.throughUserMessage,
+          opts.throughMessageId,
         );
       }
 
@@ -1460,6 +1461,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               sourceId,
               opts.turnIndex,
               opts.throughUserMessage,
+              opts.throughMessageId,
             );
 
       const rawRecordsByAgent = new Map<string, readonly WireRecord[]>();
@@ -1507,7 +1509,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (!anyActiveTurn && hasUnsettledForkRecords(rawRecordsByAgent, opts.throughUserMessage === true)) {
         anyActiveTurn = true;
       }
-      releaseSourceQuiescence();
+      await releaseSourceQuiescence();
 
       if (!anyActiveTurn) {
         for (const agentId of retainedAgentIds) {
@@ -1767,9 +1769,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       return target;
     } catch (error) {
       if (targetId === undefined || targetSessionDir === undefined) throw error;
-      return this.rollbackSession(targetId, target, targetSessionDir, error);
+      return await this.rollbackSession(targetId, target, targetSessionDir, error);
     } finally {
-      releaseSourceQuiescence();
+      await releaseSourceQuiescence();
     }
   }
 

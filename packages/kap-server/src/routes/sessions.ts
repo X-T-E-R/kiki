@@ -87,6 +87,7 @@ import {
   SessionCreated,
   IWorkspaceAliases,
   ISessionManager,
+  ISessionHistoryMutationService,
   IWorkspaceInstanceManager,
   IWorktreeService,
   IWorkspaceService,
@@ -175,7 +176,7 @@ import { usageRuntime } from '../usage/usageRuntime';
 import type { LeaseRegistry } from '../services/leaseRegistry';
 import { loadMessageHistoryEntries } from '../services/messages/messageHistory';
 import {
-  resolveForkMessageBoundary,
+  assertCursor, resolveForkMessageBoundary,
 } from '../services/messages/messageActions';
 import { ensureMainAgent } from '../transport/mainAgent';
 import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
@@ -1414,17 +1415,21 @@ export function registerSessionsRoutes(
               carry,
             });
           } else {
-            const entries = await loadMessageHistoryEntries(core, parsed.id);
-            const boundary = resolveForkMessageBoundary(entries, body.through_message_id);
-            handle = await core.accessor.get(ISessionManager).fork({
-              sourceSessionId: parsed.id,
-              title: body.title,
-              metadata: body.metadata,
-              seed: body.seed,
-              carry,
-              throughMessageId: body.through_message_id,
-              turnIndex: boundary.turnIndex,
-              throughUserMessage: boundary.throughUserMessage,
+            const throughMessageId = body.through_message_id;
+            handle = await withSessionOperation(core, parsed.id, async (source) => {
+              if (source === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+              const mutation = await source.accessor.get(ISessionHistoryMutationService).acquire();
+              try {
+                if (body.expected_cursor !== undefined && broadcaster !== undefined) await assertCursor(broadcaster, parsed.id, body.expected_cursor);
+                const entries = await loadMessageHistoryEntries(core, parsed.id);
+                const boundary = resolveForkMessageBoundary(entries, throughMessageId);
+                return await core.accessor.get(ISessionManager).fork({
+                  sourceSessionId: parsed.id, title: body.title, metadata: body.metadata, seed: body.seed, carry,
+                  throughMessageId, turnIndex: boundary.turnIndex, throughUserMessage: boundary.throughUserMessage,
+                });
+              } finally {
+                mutation.dispose();
+              }
             });
           }
           const meta = await handle.accessor.get(ISessionMetadata).read();
