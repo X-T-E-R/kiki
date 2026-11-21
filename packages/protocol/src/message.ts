@@ -3,17 +3,17 @@ import { textPresentationSchema } from '@kiki/transcript';
 
 import { isoDateTimeSchema } from './time';
 
-export const messageRoleSchema = z.enum(['user', 'assistant', 'tool', 'system']);
+export const messageRoleSchema = /* @__PURE__ */ z.enum(['user', 'assistant', 'tool', 'system']);
 export type MessageRole = z.infer<typeof messageRoleSchema>;
 
-export const textContentSchema = z.object({
+export const textContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('text'),
   text: z.string(),
   presentation: textPresentationSchema.optional(),
 });
 export type TextContent = z.infer<typeof textContentSchema>;
 
-export const toolUseContentSchema = z.object({
+export const toolUseContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('tool_use'),
   tool_call_id: z.string().min(1),
   tool_name: z.string().min(1),
@@ -21,7 +21,7 @@ export const toolUseContentSchema = z.object({
 });
 export type ToolUseContent = z.infer<typeof toolUseContentSchema>;
 
-export const toolResultContentSchema = z.object({
+export const toolResultContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('tool_result'),
   tool_call_id: z.string().min(1),
   output: z.unknown(),
@@ -29,7 +29,7 @@ export const toolResultContentSchema = z.object({
 });
 export type ToolResultContent = z.infer<typeof toolResultContentSchema>;
 
-export const imageSourceSchema = z.discriminatedUnion('kind', [
+export const imageSourceSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('url'),
     url: z.string().min(1),
@@ -49,7 +49,7 @@ export const imageSourceSchema = z.discriminatedUnion('kind', [
 ]);
 export type ImageSource = z.infer<typeof imageSourceSchema>;
 
-export const imageContentSchema = z.object({
+export const imageContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('image'),
   source: imageSourceSchema,
   // Original filename, when the caller (or the stored media it references) knows one.
@@ -58,21 +58,21 @@ export const imageContentSchema = z.object({
 export type ImageContent = z.infer<typeof imageContentSchema>;
 
 // Video uses the same source shape as image (url / base64 / uploaded or Session media id).
-export const videoContentSchema = z.object({
+export const videoContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('video'),
   source: imageSourceSchema,
   name: z.string().min(1).optional(),
 });
 export type VideoContent = z.infer<typeof videoContentSchema>;
 
-export const audioContentSchema = z.object({
+export const audioContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('audio'),
   source: imageSourceSchema,
   name: z.string().min(1).optional(),
 });
 export type AudioContent = z.infer<typeof audioContentSchema>;
 
-export const fileContentSchema = z.object({
+export const fileContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('file'),
   file_id: z.string().min(1),
   name: z.string(),
@@ -81,14 +81,14 @@ export const fileContentSchema = z.object({
 });
 export type FileContent = z.infer<typeof fileContentSchema>;
 
-export const thinkingContentSchema = z.object({
+export const thinkingContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('thinking'),
   thinking: z.string(),
   signature: z.string().optional(),
 });
 export type ThinkingContent = z.infer<typeof thinkingContentSchema>;
 
-export const messageContentSchema = z.discriminatedUnion('type', [
+export const messageContentSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   textContentSchema,
   toolUseContentSchema,
   toolResultContentSchema,
@@ -100,15 +100,15 @@ export const messageContentSchema = z.discriminatedUnion('type', [
 ]);
 export type MessageContent = z.infer<typeof messageContentSchema>;
 
-const streamAttachmentSchema = z.object({
+const streamAttachmentSchema = /* @__PURE__ */ z.object({
   fileId: z.string(), mimeType: z.string(), size: z.number(), name: z.string().optional(),
 });
-const streamMediaUrlSchema = z.object({
+const streamMediaUrlSchema = /* @__PURE__ */ z.object({
   url: z.string(), id: z.string().optional(), name: z.string().optional(),
   mimeType: z.string().optional(), size: z.number().optional(), attachment: streamAttachmentSchema.optional(),
 });
 
-export const assistantStreamPartSchema = z.discriminatedUnion('type', [
+export const assistantStreamPartSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   z.object({
     type: z.literal('text'), text: z.string(), presentation: z.unknown().optional(),
     attachment: streamAttachmentSchema.optional(),
@@ -129,7 +129,7 @@ export const assistantStreamPartSchema = z.discriminatedUnion('type', [
 ]);
 export type AssistantStreamPart = z.infer<typeof assistantStreamPartSchema>;
 
-export const messageSchema = z.object({
+export const messageSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   session_id: z.string().min(1),
   role: messageRoleSchema,

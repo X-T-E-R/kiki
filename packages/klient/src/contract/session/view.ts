@@ -22,9 +22,9 @@ import {
 } from '@kiki/transcript';
 import { z } from 'zod';
 
-export const sessionViewSnapshotInputSchema = z.object({});
+export const sessionViewSnapshotInputSchema = /* @__PURE__ */ z.object({});
 
-export const sessionViewTranscriptPageInputSchema = z
+export const sessionViewTranscriptPageInputSchema = /* @__PURE__ */ z
   .object({
     agentId: z.string().min(1),
     beforeTurn: z.string().min(1).optional(),
@@ -41,7 +41,7 @@ export const sessionViewTranscriptPageInputSchema = z
     path: ['agentId'],
   });
 
-export const sessionViewTranscriptCatchUpInputSchema = z
+export const sessionViewTranscriptCatchUpInputSchema = /* @__PURE__ */ z
   .object({
     agentId: z.string().min(1),
     since: transcriptCursorSchema,
@@ -52,7 +52,7 @@ export const sessionViewTranscriptCatchUpInputSchema = z
     path: ['agentId'],
   });
 
-export const sessionViewTranscriptDetailInputSchema = z
+export const sessionViewTranscriptDetailInputSchema = /* @__PURE__ */ z
   .object({
     agentId: z.string().min(1),
     kind: z.enum(['task', 'attachment', 'prompt', 'tool']),
@@ -71,7 +71,7 @@ export interface SessionViewTranscriptEntitiesInput {
   readonly limit?: number;
 }
 
-export const sessionViewTranscriptContentInputSchema = z.object({
+export const sessionViewTranscriptContentInputSchema = /* @__PURE__ */ z.object({
   agentId: z.string().min(1),
   ref: contentRefSchema,
   range: z.boolean().optional(),
@@ -79,36 +79,36 @@ export const sessionViewTranscriptContentInputSchema = z.object({
 export const sessionViewTranscriptContentOutputSchema = contentSegmentSchema;
 export type SessionViewTranscriptContentInput = z.infer<typeof sessionViewTranscriptContentInputSchema>;
 
-export const sessionViewSubscribeInputSchema = z.object({
+export const sessionViewSubscribeInputSchema = /* @__PURE__ */ z.object({
   sessionCursor: sessionCursorSchema,
   transcriptGrades: transcriptGradeSpecSchema,
   transcriptSince: z.record(z.string(), transcriptCursorSchema).optional(),
   bootstrap: z.boolean().optional(),
 });
 
-const sessionViewGenerationSchema = z.number().int().nonnegative();
+const sessionViewGenerationSchema = /* @__PURE__ */ z.number().int().nonnegative();
 
-export const sessionViewStatusSignalSchema = z.object({
+export const sessionViewStatusSignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('status'),
   status: z.enum(['connecting', 'open', 'closed']),
   generation: sessionViewGenerationSchema,
   detail: z.string().optional(),
 });
 
-export const sessionViewReadySignalSchema = z.object({
+export const sessionViewReadySignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('ready'),
   currentSessionCursor: sessionCursorSchema,
   reconnected: z.boolean(),
   generation: sessionViewGenerationSchema,
 });
 
-export const sessionViewSnapshotSignalSchema = z.object({
+export const sessionViewSnapshotSignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('snapshot'),
   snapshot: sessionSnapshotResponseSchema,
   generation: sessionViewGenerationSchema,
 });
 
-export const sessionViewCursorAdvancedSignalSchema = z.object({
+export const sessionViewCursorAdvancedSignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('sessionCursorAdvanced'),
   cursor: sessionCursorSchema,
   generation: sessionViewGenerationSchema,
@@ -116,7 +116,7 @@ export const sessionViewCursorAdvancedSignalSchema = z.object({
   title: z.string().optional(),
 });
 
-export const sessionViewHistoryRewrittenSignalSchema = z.object({
+export const sessionViewHistoryRewrittenSignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('historyRewritten'),
   reason: z.enum(['edit_resend', 'regenerate']),
   targetMessageId: z.string().min(1),
@@ -124,27 +124,27 @@ export const sessionViewHistoryRewrittenSignalSchema = z.object({
   generation: sessionViewGenerationSchema,
 });
 
-export const sessionViewTranscriptSignalSchema = z.object({
+export const sessionViewTranscriptSignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('transcript'),
   event: transcriptEventSchema,
   generation: sessionViewGenerationSchema,
 });
 
-export const sessionViewResyncRequiredSignalSchema = z.object({
+export const sessionViewResyncRequiredSignalSchema = /* @__PURE__ */ z.object({
   type: z.literal('resyncRequired'),
   reason: resyncRequiredReasonSchema,
   currentSessionCursor: sessionCursorSchema,
   generation: sessionViewGenerationSchema,
 });
 
-export const sessionViewProtocolErrorSchema = z.object({
+export const sessionViewProtocolErrorSchema = /* @__PURE__ */ z.object({
   type: z.literal('protocolError'),
   detail: z.string(),
   recoverable: z.boolean(),
   generation: sessionViewGenerationSchema,
 });
 
-export const sessionViewSignalSchema = z.discriminatedUnion('type', [
+export const sessionViewSignalSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   sessionViewProtocolErrorSchema,
   sessionViewStatusSignalSchema,
   sessionViewReadySignalSchema,

@@ -9,8 +9,9 @@ import { z } from 'zod';
 
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const approvalRequestSchema = z.object({
+export const approvalRequestSchema = /* @__PURE__ */ z.object({
   id: z.string().optional(),
   sessionId: z.string().optional(),
   agentId: z.string().optional(),
@@ -23,7 +24,7 @@ export const approvalRequestSchema = z.object({
   approvalRule: z.string().optional(),
 });
 
-export const approvalResponseSchema = z.object({
+export const approvalResponseSchema = /* @__PURE__ */ z.object({
   decision: z.enum(['approved', 'rejected', 'cancelled']),
   scope: z.literal('session').optional(),
   feedback: z.string().optional(),
@@ -32,6 +33,6 @@ export const approvalResponseSchema = z.object({
 });
 
 export const sessionApprovalContract = {
-  listPending: { input: z.tuple([]), output: z.array(approvalRequestSchema) },
-  decide: { input: z.tuple([z.string(), approvalResponseSchema]), output: noResult },
+  listPending: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(approvalRequestSchema) }), 'input', 'output'),
+  decide: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), approvalResponseSchema]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

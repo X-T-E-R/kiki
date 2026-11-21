@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const executorAuthObservationSchema = z.object({
+export const executorAuthObservationSchema = /* @__PURE__ */ z.object({
   status: z.enum(['logged_in', 'logged_out', 'required', 'unknown']),
   source: z.enum(['codex.account.updated', 'acp.authentication_required']),
   scope: z.enum(['vendor_account', 'session']),

@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
-export const credentialSyncPolicySchema = z.enum(['machine', 'keyring', 'env', 'synced']);
+export const credentialSyncPolicySchema = /* @__PURE__ */ z.enum(['machine', 'keyring', 'env', 'synced']);
 export type CredentialSyncPolicy = z.infer<typeof credentialSyncPolicySchema>;
 
-export const credentialPoolKindSchema = z.enum(['api_key', 'bearer_token', 'oauth', 'env_ref', 'keyring_ref']);
+export const credentialPoolKindSchema = /* @__PURE__ */ z.enum(['api_key', 'bearer_token', 'oauth', 'env_ref', 'keyring_ref']);
 export type CredentialPoolKind = z.infer<typeof credentialPoolKindSchema>;
 
-export const encryptedCredentialEnvelopeSchema = z.object({
+export const encryptedCredentialEnvelopeSchema = /* @__PURE__ */ z.object({
   format: z.literal('kiki.credential-envelope.v1'),
   credentialId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._-]+$/),
   revision: z.string().min(1).max(128),
@@ -16,10 +16,10 @@ export const encryptedCredentialEnvelopeSchema = z.object({
 }).strict();
 export type EncryptedCredentialEnvelope = z.infer<typeof encryptedCredentialEnvelopeSchema>;
 
-export const projectIdentitySourceSchema = z.enum(['explicit', 'git', 'path_fallback']);
+export const projectIdentitySourceSchema = /* @__PURE__ */ z.enum(['explicit', 'git', 'path_fallback']);
 export type ProjectIdentitySource = z.infer<typeof projectIdentitySourceSchema>;
 
-export const projectIdentitySchema = z.object({
+export const projectIdentitySchema = /* @__PURE__ */ z.object({
   projectId: z.string().min(1).max(128),
   source: projectIdentitySourceSchema,
   slug: z.string().min(1).max(64),
@@ -30,10 +30,10 @@ export const projectIdentitySchema = z.object({
 });
 export type ProjectIdentity = z.infer<typeof projectIdentitySchema>;
 
-export const configSyncScopeSchema = z.enum(['portable', 'machine']);
+export const configSyncScopeSchema = /* @__PURE__ */ z.enum(['portable', 'machine']);
 export type ConfigSyncScope = z.infer<typeof configSyncScopeSchema>;
 
-export const skillRootSyncPlanSchema = z.object({
+export const skillRootSyncPlanSchema = /* @__PURE__ */ z.object({
   path: z.string().min(1).max(4096),
   source: z.enum(['project', 'user', 'extra', 'builtin']),
   transport: z.enum(['git', 'file_tree']),
@@ -44,18 +44,18 @@ export const skillRootSyncPlanSchema = z.object({
 });
 export type SkillRootSyncPlan = z.infer<typeof skillRootSyncPlanSchema>;
 
-export const syncCredentialSealInputSchema = z.object({
+export const syncCredentialSealInputSchema = /* @__PURE__ */ z.object({
   recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).min(1).max(64),
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
 }).strict();
 export type SyncCredentialSealInput = z.infer<typeof syncCredentialSealInputSchema>;
 
-export const syncCredentialMergeInputSchema = z.object({
+export const syncCredentialMergeInputSchema = /* @__PURE__ */ z.object({
   envelopes: z.array(encryptedCredentialEnvelopeSchema).max(128),
 }).strict();
 export type SyncCredentialMergeInput = z.infer<typeof syncCredentialMergeInputSchema>;
 
-export const syncCredentialMergeReceiptSchema = z.object({
+export const syncCredentialMergeReceiptSchema = /* @__PURE__ */ z.object({
   appliedIds: z.array(z.string().min(1).max(128)),
   skippedIds: z.array(z.object({
     credentialId: z.string().min(1).max(128),
@@ -66,13 +66,13 @@ export const syncCredentialMergeReceiptSchema = z.object({
 }).strict();
 export type SyncCredentialMergeReceipt = z.infer<typeof syncCredentialMergeReceiptSchema>;
 
-export const syncProjectIdentityResolveInputSchema = z.object({
+export const syncProjectIdentityResolveInputSchema = /* @__PURE__ */ z.object({
   cwd: z.string().min(1).max(4096),
   bind: z.boolean().default(true),
 }).strict();
 export type SyncProjectIdentityResolveInput = z.infer<typeof syncProjectIdentityResolveInputSchema>;
 
-export const syncMemoryRecordSchema = z.object({
+export const syncMemoryRecordSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1).max(128),
   projectId: z.string().min(1).max(128),
   type: z.enum(['user', 'feedback', 'project', 'reference']),
@@ -86,14 +86,14 @@ export const syncMemoryRecordSchema = z.object({
 }).strict();
 export type SyncMemoryRecord = z.infer<typeof syncMemoryRecordSchema>;
 
-export const syncSkillFileEntrySchema = z.object({
+export const syncSkillFileEntrySchema = /* @__PURE__ */ z.object({
   skillName: z.string().min(1).max(128),
   relativePath: z.string().min(1).max(512),
   contentBase64: z.string(),
 }).strict();
 export type SyncSkillFileEntry = z.infer<typeof syncSkillFileEntrySchema>;
 
-export const syncBundleSchema = z.object({
+export const syncBundleSchema = /* @__PURE__ */ z.object({
   format: z.literal('kiki.sync-bundle.v1'),
   exportedAt: z.string().datetime({ offset: true }),
   portableConfig: z.record(z.string(), z.unknown()).optional(),
@@ -104,7 +104,7 @@ export const syncBundleSchema = z.object({
 }).strict();
 export type SyncBundle = z.infer<typeof syncBundleSchema>;
 
-export const syncBundleExportInputSchema = z.object({
+export const syncBundleExportInputSchema = /* @__PURE__ */ z.object({
   recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).max(64).optional(),
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   projectIds: z.array(z.string().min(1).max(128)).max(128).optional(),
@@ -117,7 +117,7 @@ export const syncBundleExportInputSchema = z.object({
 }).strict();
 export type SyncBundleExportInput = z.infer<typeof syncBundleExportInputSchema>;
 
-export const syncPeerTransferInputSchema = z.object({
+export const syncPeerTransferInputSchema = /* @__PURE__ */ z.object({
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   projectIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   workDir: z.string().min(1).max(4096).optional(),
@@ -128,7 +128,7 @@ export const syncPeerTransferInputSchema = z.object({
 }).strict();
 export type SyncPeerTransferInput = z.infer<typeof syncPeerTransferInputSchema>;
 
-export const syncBundleImportReceiptSchema = z.object({
+export const syncBundleImportReceiptSchema = /* @__PURE__ */ z.object({
   configDomainsApplied: z.array(z.string()),
   credentials: syncCredentialMergeReceiptSchema,
   memoriesApplied: z.number().int().nonnegative(),

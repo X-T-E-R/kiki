@@ -5,10 +5,10 @@ import {
   executorLaunchPatchSchema, executorQuotaSourceIdSchema,
 } from './rest/executor';
 
-export const executionContextSchema = z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks']);
-export const executionPermissionSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
-const executionLaunchOptionSchema = z.union([z.string(), z.number(), z.boolean()]);
-export const executionOverridesSchema = z.strictObject({
+export const executionContextSchema = /* @__PURE__ */ z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks']);
+export const executionPermissionSchema = /* @__PURE__ */ z.enum(['manual', 'auto', 'review', 'yolo']);
+const executionLaunchOptionSchema = /* @__PURE__ */ z.union([z.string(), z.number(), z.boolean()]);
+export const executionOverridesSchema = /* @__PURE__ */ z.strictObject({
   model: z.string().min(1).nullable().optional(),
   thinking: z.string().min(1).nullable().optional(),
   /** `engine-default` preserves the vendor's default agent; `null` clears the session override. */
@@ -23,7 +23,7 @@ export const executionOverridesSchema = z.strictObject({
   /** `null` clears the session launch patch. Secret values stay on this selection and are omitted from the public schedule. */
   executor_launch: executorLaunchPatchSchema.nullable().optional(),
 });
-export const executionSelectionSchema = z.strictObject({
+export const executionSelectionSchema = /* @__PURE__ */ z.strictObject({
   executor: z.string().min(1),
   profile: z.string().min(1).optional(),
   profile_file: z.string().trim().min(1).optional(),
@@ -33,7 +33,7 @@ export const executionSelectionSchema = z.strictObject({
 });
 export type ExecutionSelection = z.infer<typeof executionSelectionSchema>;
 export type ExecutionOverrides = z.infer<typeof executionOverridesSchema>;
-export const executionEffectiveSchema = z.strictObject({
+export const executionEffectiveSchema = /* @__PURE__ */ z.strictObject({
   model: z.string().optional(),
   thinking: z.string().optional(),
   native_agent: z.string().optional(),
@@ -47,9 +47,9 @@ export const executionEffectiveSchema = z.strictObject({
    */
   inject_kiki_mcp: z.boolean().optional(),
 });
-export const executionValueSourceSchema = z.enum(['session', 'profile', 'harness-settings', 'harness-default']);
+export const executionValueSourceSchema = /* @__PURE__ */ z.enum(['session', 'profile', 'harness-settings', 'harness-default']);
 export type ExecutionValueSource = z.infer<typeof executionValueSourceSchema>;
-export const executionScheduleSchema = z.strictObject({
+export const executionScheduleSchema = /* @__PURE__ */ z.strictObject({
   instance: z.union([z.literal('main'), executorInstanceIdSchema]),
   choice: executorInstanceChoiceSchema,
   source: executionValueSourceSchema,
@@ -66,7 +66,7 @@ export const executionScheduleSchema = z.strictObject({
   }).optional(),
 });
 export type ExecutionSchedule = z.infer<typeof executionScheduleSchema>;
-export const executionBindingSchema = z.strictObject({
+export const executionBindingSchema = /* @__PURE__ */ z.strictObject({
   version: z.literal(1),
   selection: executionSelectionSchema,
   effective: executionEffectiveSchema,

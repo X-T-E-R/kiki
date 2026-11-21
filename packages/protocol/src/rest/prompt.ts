@@ -43,36 +43,36 @@ import { isoDateTimeSchema } from '../time';
 // Accept any non-empty, model-declared effort string. Providers normalize
 // unrecognized efforts on the wire, so the REST layer must not reject a value
 // the catalog advertises via `support_efforts`.
-export const promptThinkingSchema = z.string().min(1).nullable();
+export const promptThinkingSchema = /* @__PURE__ */ z.string().min(1).nullable();
 export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 
-export const promptPermissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
+export const promptPermissionModeSchema = /* @__PURE__ */ z.enum(['manual', 'auto', 'review', 'yolo']);
 export type PromptPermissionMode = z.infer<typeof promptPermissionModeSchema>;
 
-export const promptPlanGateSchema = z.enum(['free', 'gated']);
+export const promptPlanGateSchema = /* @__PURE__ */ z.enum(['free', 'gated']);
 export type PromptPlanGate = z.infer<typeof promptPlanGateSchema>;
 
 // Closed set of deferred-append timings a queued prompt can wait on. A newer
 // server always reports the effective `append_timing` on every `PromptItem`;
 // older responses omit it and callers fall back to `agent_idle`.
-export const promptSkillActivationSchema = z.object({
+export const promptSkillActivationSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   args: z.string().optional(),
 });
 export type PromptSkillActivation = z.infer<typeof promptSkillActivationSchema>;
 
-export const deferredAppendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
+export const deferredAppendTimingSchema = /* @__PURE__ */ z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
 export type DeferredAppendTiming = z.infer<typeof deferredAppendTimingSchema>;
 
 // A goal's automatic continuation is at least as strict as `subagents_done`;
 // `agent_idle` and immediate appends are user-message concepts only.
-export const goalFollowUpTimingSchema = z.enum(['subagents_done', 'tasks_done']);
+export const goalFollowUpTimingSchema = /* @__PURE__ */ z.enum(['subagents_done', 'tasks_done']);
 export type GoalFollowUpTiming = z.infer<typeof goalFollowUpTimingSchema>;
 
-export const goalInitialStatusSchema = z.enum(['active', 'paused']);
+export const goalInitialStatusSchema = /* @__PURE__ */ z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
-export const inlineImagePromptContentSchema = z.object({
+export const inlineImagePromptContentSchema = /* @__PURE__ */ z.object({
   type: z.literal('image_url'),
   image_url: z.object({
     url: z.string().regex(/^data:image\/[a-zA-Z0-9.+-]+;base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/).refine(url => !url.endsWith(',')),
@@ -82,7 +82,7 @@ export const inlineImagePromptContentSchema = z.object({
   return { type: 'image' as const, source: { kind: 'base64' as const, media_type: url.slice(5, separator), data: url.slice(separator + 8) } };
 });
 
-export const promptSubmissionSchema = z.object({
+export const promptSubmissionSchema = /* @__PURE__ */ z.object({
   admission: z.literal('durable').optional(),
   delivery_mode: z.literal('steer').optional(),
   content: z.array(z.union([messageContentSchema, inlineImagePromptContentSchema])).min(1),
@@ -123,7 +123,7 @@ export type PromptSubmissionInput = z.input<typeof promptSubmissionSchema>;
 export const promptSteerSubmissionRequestSchema = promptSubmissionSchema;
 export type PromptSteerSubmissionRequest = z.input<typeof promptSteerSubmissionRequestSchema>;
 
-export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
+export const promptExecutionOverridesSchema = /* @__PURE__ */ promptSubmissionSchema.pick({
   execution: true,
   profile: true,
   model: true,
@@ -136,21 +136,21 @@ export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
 });
 export type PromptExecutionOverrides = z.infer<typeof promptExecutionOverridesSchema>;
 
-export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
+export const promptStatusSchema = /* @__PURE__ */ z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
-export const promptAdmissionStateSchema = z.enum(['restoring', 'waiting_switch', 'admitted', 'failed', 'cancelled', 'held']);
+export const promptAdmissionStateSchema = /* @__PURE__ */ z.enum(['restoring', 'waiting_switch', 'admitted', 'failed', 'cancelled', 'held']);
 export type PromptAdmissionState = z.infer<typeof promptAdmissionStateSchema>;
 
-export const promptDeliveryReasonSchema = z.enum([
+export const promptDeliveryReasonSchema = /* @__PURE__ */ z.enum([
   'target_changed', 'prompt_no_longer_pending', 'steer_rejected', 'external_retry',
   'model_switch_boundary', 'no_active_turn', 'executor_deferred',
 ]);
 export type PromptDeliveryReason = z.infer<typeof promptDeliveryReasonSchema>;
 
-export const promptDeliveryStateSchema = z.enum(['queued', 'accepted', 'steered', 'started', 'failed', 'cancelled']);
+export const promptDeliveryStateSchema = /* @__PURE__ */ z.enum(['queued', 'accepted', 'steered', 'started', 'failed', 'cancelled']);
 
-export const promptItemSchema = z.object({
+export const promptItemSchema = /* @__PURE__ */ z.object({
   admission: promptAdmissionStateSchema.optional(),
   delivery_state: promptDeliveryStateSchema.optional(),
   delivery_reason: promptDeliveryReasonSchema.optional(),
@@ -176,13 +176,13 @@ export const promptItemSchema = z.object({
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 
-export const promptQueueHoldSchema = z.object({
+export const promptQueueHoldSchema = /* @__PURE__ */ z.object({
   reason: z.literal('recovery'),
   count: z.number().int().nonnegative(),
 });
 export type PromptQueueHold = z.infer<typeof promptQueueHoldSchema>;
 
-export const promptListResponseSchema = z.object({
+export const promptListResponseSchema = /* @__PURE__ */ z.object({
   active: promptItemSchema.nullable(),
   queued: z.array(promptItemSchema),
   ingress: z.array(promptItemSchema).optional(),
@@ -194,13 +194,13 @@ export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 export const promptSubmitResultSchema = promptItemSchema;
 export type PromptSubmitResult = z.infer<typeof promptSubmitResultSchema>;
 
-export const promptSubmitReceiptSchema = promptItemSchema.omit({ content: true }).extend({
+export const promptSubmitReceiptSchema = /* @__PURE__ */ promptItemSchema.omit({ content: true }).extend({
   resolved_media: z.array(z.object({ index: z.number().int().nonnegative(), content: messageContentSchema })).optional(),
   resolved_parts: z.array(z.object({ index: z.number().int().nonnegative(), content: z.array(messageContentSchema) })).optional(),
 });
 export type PromptSubmitReceipt = z.infer<typeof promptSubmitReceiptSchema>;
 
-export const promptReplaceRequestSchema = z.object({
+export const promptReplaceRequestSchema = /* @__PURE__ */ z.object({
   content: z.array(messageContentSchema).min(1),
   replace_attachments: z.boolean().optional(),
 });
@@ -209,7 +209,7 @@ export type PromptReplaceRequest = z.infer<typeof promptReplaceRequestSchema>;
 export const promptReplaceResultSchema = promptItemSchema;
 export type PromptReplaceResult = z.infer<typeof promptReplaceResultSchema>;
 
-export const promptTimingRequestSchema = z.object({
+export const promptTimingRequestSchema = /* @__PURE__ */ z.object({
   append_timing: deferredAppendTimingSchema,
   expected_revision: z.number().int().nonnegative().optional(),
 });
@@ -221,23 +221,23 @@ export type PromptTimingResult = z.infer<typeof promptTimingResultSchema>;
 // Edit hold (`POST …/prompts/{pid}:hold`): `held: true` parks the prompt and
 // everything queued after it while a client edits it (renew to keep it; it
 // lapses after a few minutes on its own); `held: false` releases it.
-export const promptHoldRequestSchema = z.object({
+export const promptHoldRequestSchema = /* @__PURE__ */ z.object({
   held: z.boolean(),
 });
 export type PromptHoldRequest = z.infer<typeof promptHoldRequestSchema>;
 
-export const promptHoldResultSchema = z.object({
+export const promptHoldResultSchema = /* @__PURE__ */ z.object({
   prompt_id: z.string().min(1),
   held: z.boolean(),
 });
 export type PromptHoldResult = z.infer<typeof promptHoldResultSchema>;
 
-export const promptMoveRequestSchema = z.object({
+export const promptMoveRequestSchema = /* @__PURE__ */ z.object({
   target_index: z.number().int().nonnegative(),
 });
 export type PromptMoveRequest = z.infer<typeof promptMoveRequestSchema>;
 
-export const promptMoveResultSchema = z.object({
+export const promptMoveResultSchema = /* @__PURE__ */ z.object({
   moved: z.literal(true),
   prompt_id: z.string().min(1),
   target_index: z.number().int().nonnegative(),
@@ -245,12 +245,12 @@ export const promptMoveResultSchema = z.object({
 });
 export type PromptMoveResult = z.infer<typeof promptMoveResultSchema>;
 
-export const promptSteerRequestSchema = z.object({
+export const promptSteerRequestSchema = /* @__PURE__ */ z.object({
   prompt_ids: z.array(z.string().min(1)).min(1),
 });
 export type PromptSteerRequest = z.infer<typeof promptSteerRequestSchema>;
 
-export const promptSteerResultSchema = z.object({
+export const promptSteerResultSchema = /* @__PURE__ */ z.object({
   steered: z.boolean(),
   prompt_ids: z.array(z.string().min(1)).min(1),
   delivery_state: promptDeliveryStateSchema.optional(),
@@ -258,13 +258,13 @@ export const promptSteerResultSchema = z.object({
 });
 export type PromptSteerResult = z.infer<typeof promptSteerResultSchema>;
 
-export const promptAbortResponseSchema = z.object({
+export const promptAbortResponseSchema = /* @__PURE__ */ z.object({
   aborted: z.boolean(),
   at_seq: z.number().int().nonnegative().optional(),
 });
 export type PromptAbortResponse = z.infer<typeof promptAbortResponseSchema>;
 
-export const turnAbortResponseSchema = z.object({ aborted: z.boolean() });
+export const turnAbortResponseSchema = /* @__PURE__ */ z.object({ aborted: z.boolean() });
 export type TurnAbortResponse = z.infer<typeof turnAbortResponseSchema>;
 
 export interface PromptCompletedEventPayload {

@@ -5,16 +5,17 @@ import {
   importArchiveQuerySchema, importArchiveSchema, importReadInputSchema, importReadPageSchema,
 } from '@kiki/protocol';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
 export const importsContract = {
-  sources: { input: z.tuple([]), output: z.array(importSourceSchema) },
-  discover: { input: z.tuple([importDiscoveryInputSchema]), output: importDiscoveryPageSchema },
-  preview: { input: z.tuple([importPreviewInputSchema]), output: importPreviewSchema },
-  start: { input: z.tuple([importStartInputSchema]), output: importJobSchema },
-  jobs: { input: z.tuple([importListInputSchema.optional()]), output: z.object({ items: z.array(importJobSchema), cursor: z.string().nullable() }) },
-  job: { input: z.tuple([z.string()]), output: importJobSchema },
-  cancel: { input: z.tuple([z.string()]), output: importJobSchema },
-  resume: { input: z.tuple([z.string()]), output: importJobSchema },
-  archives: { input: z.tuple([importArchiveQuerySchema.optional()]), output: z.object({ items: z.array(importArchiveSchema), cursor: z.string().nullable() }) },
-  read: { input: z.tuple([importReadInputSchema]), output: importReadPageSchema },
+  sources: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(importSourceSchema) }), 'input', 'output'),
+  discover: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([importDiscoveryInputSchema]), output: importDiscoveryPageSchema }), 'input', 'output'),
+  preview: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([importPreviewInputSchema]), output: importPreviewSchema }), 'input', 'output'),
+  start: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([importStartInputSchema]), output: importJobSchema }), 'input', 'output'),
+  jobs: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([importListInputSchema.optional()]), output: /* @__PURE__ */ z.object({ items: z.array(importJobSchema), cursor: z.string().nullable() }) }), 'input', 'output'),
+  job: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: importJobSchema }), 'input', 'output'),
+  cancel: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: importJobSchema }), 'input', 'output'),
+  resume: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: importJobSchema }), 'input', 'output'),
+  archives: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([importArchiveQuerySchema.optional()]), output: /* @__PURE__ */ z.object({ items: z.array(importArchiveSchema), cursor: z.string().nullable() }) }), 'input', 'output'),
+  read: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([importReadInputSchema]), output: importReadPageSchema }), 'input', 'output'),
 } satisfies ServiceContract;

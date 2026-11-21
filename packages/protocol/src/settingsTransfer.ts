@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
 export const SETTINGS_TRANSFER_CATEGORIES = ['models', 'agents', 'permissions', 'tools', 'browser', 'notifications', 'appearance'] as const;
-export const settingsTransferCategorySchema = z.enum(SETTINGS_TRANSFER_CATEGORIES);
+export const settingsTransferCategorySchema = /* @__PURE__ */ z.enum(SETTINGS_TRANSFER_CATEGORIES);
 export type SettingsTransferCategory = z.infer<typeof settingsTransferCategorySchema>;
 export const SETTINGS_TRANSFER_MAX_BYTES = 8 * 1024 * 1024;
 
-export const settingsTransferPreferencesSchema = z.object({
+export const settingsTransferPreferencesSchema = /* @__PURE__ */ z.object({
   settings: z.object({
     sendShortcut: z.enum(['enter', 'cmd-enter']).optional(),
     draftPersistence: z.boolean().optional(),
@@ -36,8 +36,8 @@ export const settingsTransferPreferencesSchema = z.object({
 }).strict();
 export type SettingsTransferPreferences = z.infer<typeof settingsTransferPreferencesSchema>;
 
-const dataSchema = z.record(z.string().min(1).max(256), z.json());
-export const settingsTransferNbSearchCredentialSchema = z.object({
+const dataSchema = /* @__PURE__ */ z.record(z.string().min(1).max(256), z.json());
+export const settingsTransferNbSearchCredentialSchema = /* @__PURE__ */ z.object({
   kind: z.literal('nbSearchCredential'),
   key: z.string().min(1).max(256),
   binding: z.object({
@@ -48,16 +48,16 @@ export const settingsTransferNbSearchCredentialSchema = z.object({
   value: z.string().min(1).max(8192),
 }).strict();
 export type SettingsTransferNbSearchCredential = z.infer<typeof settingsTransferNbSearchCredentialSchema>;
-export const settingsTransferResourceSchema = z.discriminatedUnion('kind', [
+export const settingsTransferResourceSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('profile'), key: z.string().min(1).max(512), text: z.string().max(1_048_576), category: z.enum(['agents', 'models']).optional() }).strict(),
   z.object({ kind: z.literal('mcp'), key: z.string().min(1).max(256), value: dataSchema }).strict(),
   settingsTransferNbSearchCredentialSchema,
 ]);
 export type SettingsTransferResource = z.infer<typeof settingsTransferResourceSchema>;
 
-export const settingsTransferNoticeSchema = z.enum(['localScope', 'externalLogins', 'localPaths', 'omittedCredentials', 'omittedBrowserConnections', 'pluginCode', 'profileScope']);
+export const settingsTransferNoticeSchema = /* @__PURE__ */ z.enum(['localScope', 'externalLogins', 'localPaths', 'omittedCredentials', 'omittedBrowserConnections', 'pluginCode', 'profileScope']);
 export type SettingsTransferNotice = z.infer<typeof settingsTransferNoticeSchema>;
-export const settingsTransferPackageSchema = z.object({
+export const settingsTransferPackageSchema = /* @__PURE__ */ z.object({
   format: z.literal('kiki.settings'),
   version: z.literal(1),
   createdAt: z.iso.datetime(),
@@ -70,11 +70,11 @@ export const settingsTransferPackageSchema = z.object({
 }).strict();
 export type SettingsTransferPackage = z.infer<typeof settingsTransferPackageSchema>;
 
-export const settingsTransferExportInputSchema = z.object({ categories: z.array(settingsTransferCategorySchema).min(1).max(7), includeCredentials: z.boolean().default(false) }).strict();
+export const settingsTransferExportInputSchema = /* @__PURE__ */ z.object({ categories: z.array(settingsTransferCategorySchema).min(1).max(7), includeCredentials: z.boolean().default(false) }).strict();
 export type SettingsTransferExportInput = z.infer<typeof settingsTransferExportInputSchema>;
-export const settingsTransferModeSchema = z.enum(['append', 'overwrite']);
+export const settingsTransferModeSchema = /* @__PURE__ */ z.enum(['append', 'overwrite']);
 export type SettingsTransferMode = z.infer<typeof settingsTransferModeSchema>;
-export const settingsTransferPreviewInputSchema = z.object({
+export const settingsTransferPreviewInputSchema = /* @__PURE__ */ z.object({
   bundle: settingsTransferPackageSchema,
   categories: z.array(settingsTransferCategorySchema).max(7),
   mode: settingsTransferModeSchema.default('append'),
@@ -82,8 +82,8 @@ export const settingsTransferPreviewInputSchema = z.object({
 }).strict();
 export type SettingsTransferPreviewInput = z.infer<typeof settingsTransferPreviewInputSchema>;
 
-export const settingsTransferScopeSchema = z.object({ home: z.string(), spaceId: z.string().optional() }).strict();
-export const settingsTransferCategorySummarySchema = z.object({
+export const settingsTransferScopeSchema = /* @__PURE__ */ z.object({ home: z.string(), spaceId: z.string().optional() }).strict();
+export const settingsTransferCategorySummarySchema = /* @__PURE__ */ z.object({
   id: settingsTransferCategorySchema,
   items: z.number().int().nonnegative(),
   added: z.number().int().nonnegative(),
@@ -92,21 +92,21 @@ export const settingsTransferCategorySummarySchema = z.object({
   skipped: z.number().int().nonnegative(),
 }).strict();
 export type SettingsTransferCategorySummary = z.infer<typeof settingsTransferCategorySummarySchema>;
-export const settingsTransferCatalogSchema = z.object({
+export const settingsTransferCatalogSchema = /* @__PURE__ */ z.object({
   scope: settingsTransferScopeSchema,
   categories: z.array(settingsTransferCategorySummarySchema),
   notices: z.array(settingsTransferNoticeSchema),
 }).strict();
 export type SettingsTransferCatalog = z.infer<typeof settingsTransferCatalogSchema>;
-export const settingsTransferPreviewSchema = settingsTransferCatalogSchema.extend({
+export const settingsTransferPreviewSchema = /* @__PURE__ */ settingsTransferCatalogSchema.extend({
   previewId: z.string(),
   includesCredentials: z.boolean(),
   credentialsSelected: z.boolean(),
   mode: settingsTransferModeSchema,
 });
 export type SettingsTransferPreview = z.infer<typeof settingsTransferPreviewSchema>;
-export const settingsTransferApplyInputSchema = z.object({ previewId: z.string().min(1).max(64) }).strict();
-export const settingsTransferApplyResultSchema = z.object({
+export const settingsTransferApplyInputSchema = /* @__PURE__ */ z.object({ previewId: z.string().min(1).max(64) }).strict();
+export const settingsTransferApplyResultSchema = /* @__PURE__ */ z.object({
   status: z.enum(['complete', 'partial', 'failed']),
   scope: settingsTransferScopeSchema,
   items: z.array(z.object({ category: settingsTransferCategorySchema, key: z.string(), status: z.enum(['applied', 'unchanged', 'failed', 'unverified']) }).strict()),

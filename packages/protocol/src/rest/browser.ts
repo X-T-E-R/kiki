@@ -1,17 +1,17 @@
 import { z } from 'zod';
 
-export const browserIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+export const browserIdSchema = /* @__PURE__ */ z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const common = { name: z.string().trim().min(1).max(256), enabled: z.boolean().default(true), driverPath: z.string().min(1).optional() };
-const path = z.string().min(1);
-const endpoint = z.string().max(8192).refine((value) => {
+const path = /* @__PURE__ */ z.string().min(1);
+const endpoint = /* @__PURE__ */ z.string().max(8192).refine((value) => {
   try { return ['http:', 'https:', 'ws:', 'wss:'].includes(new URL(value).protocol) && !/[\r\n\0]/.test(value); }
   catch { return false; }
 });
-export const browserEndpointEditSchema = z.discriminatedUnion('action', [
+export const browserEndpointEditSchema = /* @__PURE__ */ z.discriminatedUnion('action', [
   z.object({ action: z.literal('keep') }).strict(),
   z.object({ action: z.literal('set'), value: endpoint }).strict(),
 ]);
-export const browserConnectionInputSchema = z.discriminatedUnion('type', [
+export const browserConnectionInputSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   z.object({ name: common.name, enabled: common.enabled, type: z.literal('codex-extension'), runtimeRoot: path, browserId: z.string().min(1).max(512) }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-profile'), profilePath: path.optional(), executablePath: path.optional(), headed: z.boolean().optional() }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpoint: browserEndpointEditSchema }).strict(),
@@ -23,7 +23,7 @@ export const browserConnectionInputSchema = z.discriminatedUnion('type', [
   }).strict(),
 ]);
 export type BrowserConnectionInput = z.infer<typeof browserConnectionInputSchema>;
-export const browserConnectionSchema = z.object({
+export const browserConnectionSchema = /* @__PURE__ */ z.object({
   id: browserIdSchema, ...common, type: z.enum(['agent-browser-profile', 'agent-browser-cdp', 'kimi-webbridge', 'codex-extension', 'ego-lite', 'webbridge-command']),
   runtimeRoot: path.optional(), browserId: z.string().optional(),
   profilePath: path.optional(), executablePath: path.optional(), headed: z.boolean().optional(),
@@ -31,9 +31,9 @@ export const browserConnectionSchema = z.object({
   cliPath: path.optional(), profileId: z.string().min(1).max(256).optional(), serverName: z.string().min(1).max(256).optional(),
 }).strict();
 export type BrowserConnection = z.infer<typeof browserConnectionSchema>;
-export const controlSettingSourceSchema = z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']);
+export const controlSettingSourceSchema = /* @__PURE__ */ z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']);
 export type ControlSettingSource = z.infer<typeof controlSettingSourceSchema>;
-export const browserSourceIdSchema = z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
+export const browserSourceIdSchema = /* @__PURE__ */ z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
 export type BrowserSourceId = z.infer<typeof browserSourceIdSchema>;
 /**
  * Stable browser-control save/read contract.
@@ -43,7 +43,7 @@ export type BrowserSourceId = z.infer<typeof browserSourceIdSchema>;
  * follow each connection's own `enabled`). An explicit empty array allows
  * list/discover only.
  */
-export const browserControlSettingsSchema = z.object({
+export const browserControlSettingsSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean(),
   enabledSource: controlSettingSourceSchema,
   allowedBrowsers: z.array(browserIdSchema),
@@ -52,23 +52,23 @@ export const browserControlSettingsSchema = z.object({
   disabledSources: z.array(browserSourceIdSchema).optional(),
 }).strict();
 export type BrowserControlSettings = z.infer<typeof browserControlSettingsSchema>;
-export const browserControlSettingsPatchSchema = z.object({
+export const browserControlSettingsPatchSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().nullable().optional(),
   allowed_browsers: z.array(browserIdSchema).nullable().optional(),
   disabled_sources: z.array(browserSourceIdSchema).nullable().optional(),
 }).strict();
 export type BrowserControlSettingsPatch = z.infer<typeof browserControlSettingsPatchSchema>;
-export const browserConnectionsSchema = z.object({ connections: z.array(browserConnectionSchema), defaultBrowser: browserIdSchema.optional() });
+export const browserConnectionsSchema = /* @__PURE__ */ z.object({ connections: z.array(browserConnectionSchema), defaultBrowser: browserIdSchema.optional() });
 export type BrowserConnections = z.infer<typeof browserConnectionsSchema>;
-export const browserConnectionResponseSchema = z.object({ connection: browserConnectionSchema });
-export const browserDefaultInputSchema = z.object({ browser: browserIdSchema.optional() }).strict();
+export const browserConnectionResponseSchema = /* @__PURE__ */ z.object({ connection: browserConnectionSchema });
+export const browserDefaultInputSchema = /* @__PURE__ */ z.object({ browser: browserIdSchema.optional() }).strict();
 
-export const browserFailureSchema = z.object({
+export const browserFailureSchema = /* @__PURE__ */ z.object({
   code: z.enum(['browser.invalid', 'browser.not_found', 'browser.disabled', 'browser.disconnected', 'browser.execution_failed', 'browser.busy', 'browser.version', 'browser.target', 'browser.requires_action', 'browser.unsupported']),
   reason: z.enum(['feature_disabled', 'connection_disabled', 'not_allowed', 'outcome_unknown']).optional(),
 }).strict();
 export type BrowserFailure = z.infer<typeof browserFailureSchema>;
-export const browserStatusSchema = z.object({
+export const browserStatusSchema = /* @__PURE__ */ z.object({
   failure: browserFailureSchema.optional(),
   browser: browserIdSchema,
   state: z.enum(['idle', 'connecting', 'ready', 'running', 'stopping', 'disconnected', 'failed', 'unconfirmed', 'requires_action', 'unsupported']),
@@ -78,19 +78,19 @@ export const browserStatusSchema = z.object({
   ownership: z.enum(['managed-profile', 'external-browser']).optional(), profilePath: z.string().optional(),
 }).strict();
 export type BrowserStatus = z.infer<typeof browserStatusSchema>;
-export const browserControlListSchema = browserControlSettingsSchema.extend({
+export const browserControlListSchema = /* @__PURE__ */ browserControlSettingsSchema.extend({
   connections: z.array(browserConnectionSchema.extend({ status: browserStatusSchema })), defaultBrowser: browserIdSchema.optional(),
 });
 export type BrowserControlList = z.infer<typeof browserControlListSchema>;
 
-export const browserTabSchema = z.object({
+export const browserTabSchema = /* @__PURE__ */ z.object({
   tabId: z.string(), targetId: z.string(), title: z.string().optional(), url: z.string().optional(), active: z.boolean().optional(), label: z.string().optional(),
 });
 export type BrowserTab = z.infer<typeof browserTabSchema>;
-export const browserTabsResponseSchema = z.object({ browser: browserIdSchema, status: browserStatusSchema, tabs: z.array(browserTabSchema) });
+export const browserTabsResponseSchema = /* @__PURE__ */ z.object({ browser: browserIdSchema, status: browserStatusSchema, tabs: z.array(browserTabSchema) });
 export type BrowserTabsResponse = z.infer<typeof browserTabsResponseSchema>;
-export const browserCatalogQuerySchema = z.object({ includeSchema: z.enum(['true', 'false']).optional() }).strict();
-export const browserCatalogResponseSchema = z.object({
+export const browserCatalogQuerySchema = /* @__PURE__ */ z.object({ includeSchema: z.enum(['true', 'false']).optional() }).strict();
+export const browserCatalogResponseSchema = /* @__PURE__ */ z.object({
   browser: browserIdSchema, status: browserStatusSchema, backendToolCount: z.number().int(),
   contextIsolation: z.enum(['opaque-context-through-window', 'official-extension-tab-ids', 'main-frame-only', 'extension-command-session']),
   capabilities: z.array(z.object({ name: z.string(), description: z.string(), group: z.string(), surface: z.enum(['operation', 'lifecycle', 'administrative']), inputSchema: z.unknown().optional() })),

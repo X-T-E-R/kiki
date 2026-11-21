@@ -91,12 +91,12 @@ const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
  * semicolons, braces, slashes, backslashes and `@` are rejected, which makes
  * `url(...)`, a second declaration, and an at-rule unrepresentable.
  */
-const FONT_STACK = /^[\p{L}\p{N}\u4e00-\u9fff '",\-_. ]{1,200}$/u;
+const FONT_STACK = /^[\p{L}\p{N}\u4E00-\u9FFF '",\-_. ]{1,200}$/u;
 
-const hexColorSchema = z.string().regex(HEX_COLOR);
-const fontStackSchema = z.string().regex(FONT_STACK);
+const hexColorSchema = /* @__PURE__ */ z.string().regex(HEX_COLOR);
+const fontStackSchema = /* @__PURE__ */ z.string().regex(FONT_STACK);
 
-export const skinColorsSchema = z
+export const skinColorsSchema = /* @__PURE__ */ z
   .object(
     Object.fromEntries(
       SKIN_COLOR_TOKENS.map((token) => [token, hexColorSchema.optional()]),
@@ -104,7 +104,7 @@ export const skinColorsSchema = z
   )
   .strict();
 
-export const skinFontsSchema = z
+export const skinFontsSchema = /* @__PURE__ */ z
   .object(
     Object.fromEntries(
       SKIN_FONT_TOKENS.map((token) => [token, fontStackSchema.optional()]),
@@ -117,7 +117,7 @@ export const skinFontsSchema = z
  * a 400px radius or a 3rem spacing unit would not be a skin, it would be a
  * broken layout.
  */
-export const skinShapeSchema = z
+export const skinShapeSchema = /* @__PURE__ */ z
   .object({
     /** Sheet corner radius, in CSS px. */
     radius: z.number().min(0).max(28).optional(),
@@ -128,7 +128,7 @@ export const skinShapeSchema = z
   })
   .strict();
 
-export const skinVariantSchema = z
+export const skinVariantSchema = /* @__PURE__ */ z
   .object({
     /** Built-in variant unset tokens inherit from. Defaults to `paper`. */
     base: z.string().min(1).max(64).optional(),
@@ -138,7 +138,7 @@ export const skinVariantSchema = z
   })
   .strict();
 
-export const skinFileSchema = z
+export const skinFileSchema = /* @__PURE__ */ z
   .object({
     /** Optional authoring aid; ignored at runtime. */
     $schema: z.string().optional(),

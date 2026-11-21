@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Optional context-attribution extensions shared by the status and snapshot wire surfaces. */
-export const contextBreakdownSchema = z.object({
+export const contextBreakdownSchema = /* @__PURE__ */ z.object({
   systemTokens: z.number().int().nonnegative(),
   toolsTokens: z.number().int().nonnegative(),
   messagesTokens: z.number().int().nonnegative(),
@@ -9,7 +9,7 @@ export const contextBreakdownSchema = z.object({
 });
 export type ContextBreakdown = z.infer<typeof contextBreakdownSchema>;
 
-export const restContextBreakdownSchema = z.object({
+export const restContextBreakdownSchema = /* @__PURE__ */ z.object({
   system_tokens: z.number().int().nonnegative(),
   tools_tokens: z.number().int().nonnegative(),
   messages_tokens: z.number().int().nonnegative(),

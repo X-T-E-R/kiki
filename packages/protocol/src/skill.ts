@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { skillSourceSchema } from './events';
 
-export const skillDescriptorSchema = z.object({
+export const skillDescriptorSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   description: z.string(),
   path: z.string(),

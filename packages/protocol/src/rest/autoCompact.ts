@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const autoCompactStatusSchema = z.object({
+export const autoCompactStatusSchema = /* @__PURE__ */ z.object({
   tokens: z.number(),
   source: z.enum(['session', 'profile', 'model', 'global', 'legacy']),
   effectiveMaxContextTokens: z.number(),
@@ -8,7 +8,7 @@ export const autoCompactStatusSchema = z.object({
 });
 export type AutoCompactStatus = z.infer<typeof autoCompactStatusSchema>;
 
-export const autoCompactWriteSchema = z.object({
+export const autoCompactWriteSchema = /* @__PURE__ */ z.object({
   tokens: z.number().int().positive().safe().nullable(),
   save: z.enum(['model', 'profile', 'global']).optional(),
 }).strict().refine((input) => input.tokens !== null || input.save === undefined, {
@@ -16,7 +16,7 @@ export const autoCompactWriteSchema = z.object({
 });
 export type AutoCompactWrite = z.infer<typeof autoCompactWriteSchema>;
 
-export const autoCompactWriteResultSchema = z.object({
+export const autoCompactWriteResultSchema = /* @__PURE__ */ z.object({
   effective: autoCompactStatusSchema,
   default: autoCompactStatusSchema,
   overrideCleared: z.boolean(),

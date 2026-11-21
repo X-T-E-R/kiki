@@ -7,9 +7,9 @@
 
 import { z } from 'zod';
 
-const stringRecordSchema = z.record(z.string(), z.string());
+const stringRecordSchema = /* @__PURE__ */ z.record(z.string(), z.string());
 
-export const mcpTimeoutMsSchema = z.number().int().min(1).max(2_147_483_647);
+export const mcpTimeoutMsSchema = /* @__PURE__ */ z.number().int().min(1).max(2_147_483_647);
 
 const mcpServerCommonFields = {
   enabled: z.boolean().optional(),
@@ -19,7 +19,7 @@ const mcpServerCommonFields = {
   disabledTools: z.array(z.string()).optional(),
 } as const;
 
-export const mcpServerStdioConfigSchema = z.object({
+export const mcpServerStdioConfigSchema = /* @__PURE__ */ z.object({
   transport: z.literal('stdio'),
   runtime_id: z.string().min(1).optional(),
   command: z.string().min(1),
@@ -30,7 +30,7 @@ export const mcpServerStdioConfigSchema = z.object({
   ...mcpServerCommonFields,
 });
 
-export const mcpServerHttpConfigSchema = z.object({
+export const mcpServerHttpConfigSchema = /* @__PURE__ */ z.object({
   transport: z.literal('http'),
   url: z.string().url(),
   headers: stringRecordSchema.optional(),
@@ -39,7 +39,7 @@ export const mcpServerHttpConfigSchema = z.object({
   ...mcpServerCommonFields,
 });
 
-export const mcpServerSseConfigSchema = z.object({
+export const mcpServerSseConfigSchema = /* @__PURE__ */ z.object({
   transport: z.literal('sse'),
   url: z.string().url(),
   headers: stringRecordSchema.optional(),
@@ -48,7 +48,7 @@ export const mcpServerSseConfigSchema = z.object({
   ...mcpServerCommonFields,
 });
 
-export const mcpServerConfigSchema = z.discriminatedUnion('transport', [
+export const mcpServerConfigSchema = /* @__PURE__ */ z.discriminatedUnion('transport', [
   mcpServerStdioConfigSchema,
   mcpServerHttpConfigSchema,
   mcpServerSseConfigSchema,

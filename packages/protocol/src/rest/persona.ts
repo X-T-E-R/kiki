@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
-export const personaIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
-const optionalPersonaTextSchema = z.string().trim().min(1).optional();
-const personaStringListSchema = z.array(z.string().trim().min(1)).optional();
+export const personaIdSchema = /* @__PURE__ */ z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+const optionalPersonaTextSchema = /* @__PURE__ */ z.string().trim().min(1).optional();
+const personaStringListSchema = /* @__PURE__ */ z.array(z.string().trim().min(1)).optional();
 
-export const personaMemorySchema = z.object({
+export const personaMemorySchema = /* @__PURE__ */ z.object({
   shared: z.array(z.enum(['global', 'workspace'])),
 });
 
-export const personaDefinitionSchema = z.object({
+export const personaDefinitionSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema,
   name: z.string().trim().min(1),
   title: optionalPersonaTextSchema,
@@ -29,7 +29,7 @@ export const personaDefinitionSchema = z.object({
 }).strict();
 export type PersonaDefinition = z.infer<typeof personaDefinitionSchema>;
 
-export const personaSnapshotSchema = z.object({
+export const personaSnapshotSchema = /* @__PURE__ */ z.object({
   definition: personaDefinitionSchema,
   revision: z.string().min(1),
   examples: z.string().optional(),
@@ -37,10 +37,10 @@ export const personaSnapshotSchema = z.object({
 export type PersonaSnapshot = z.infer<typeof personaSnapshotSchema>;
 
 /** How the face is framed; the image itself is always a square crop. */
-export const personaAvatarShapeSchema = z.enum(['circle', 'square']);
+export const personaAvatarShapeSchema = /* @__PURE__ */ z.enum(['circle', 'square']);
 export type PersonaAvatarShape = z.infer<typeof personaAvatarShapeSchema>;
 
-export const personaSummarySchema = z.object({
+export const personaSummarySchema = /* @__PURE__ */ z.object({
   id: personaIdSchema,
   name: z.string().min(1),
   title: z.string().optional(),
@@ -55,45 +55,45 @@ export const personaSummarySchema = z.object({
 }).strict();
 export type PersonaSummary = z.infer<typeof personaSummarySchema>;
 
-export const personaPutInputSchema = z.object({
+export const personaPutInputSchema = /* @__PURE__ */ z.object({
   definition: personaDefinitionSchema,
   revision: z.string().min(1).optional(),
   examples: z.string().optional(),
 }).strict();
 export type PersonaPutInput = z.infer<typeof personaPutInputSchema>;
 
-const booleanQueryParam = z.preprocess((value) => {
+const booleanQueryParam = /* @__PURE__ */ z.preprocess((value) => {
   if (value === 'true' || value === '1' || value === 1 || value === true) return true;
   if (value === 'false' || value === '0' || value === 0 || value === false) return false;
   return value;
 }, z.boolean().optional());
 
-export const personaListQuerySchema = z.object({
+export const personaListQuerySchema = /* @__PURE__ */ z.object({
   includeArchived: booleanQueryParam,
 }).strict();
 export type PersonaListQuery = z.infer<typeof personaListQuerySchema>;
 
-export const personaIdParamsSchema = z.object({ id: personaIdSchema });
+export const personaIdParamsSchema = /* @__PURE__ */ z.object({ id: personaIdSchema });
 export type PersonaIdParams = z.infer<typeof personaIdParamsSchema>;
 
-export const personaDuplicateInputSchema = z.object({
+export const personaDuplicateInputSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema.optional(),
   name: z.string().trim().min(1).optional(),
 }).strict();
 export type PersonaDuplicateInput = z.infer<typeof personaDuplicateInputSchema>;
 
-export const personaArchiveInputSchema = z.object({
+export const personaArchiveInputSchema = /* @__PURE__ */ z.object({
   archived: z.boolean(),
 }).strict();
 export type PersonaArchiveInput = z.infer<typeof personaArchiveInputSchema>;
 
-export const personaHomeInputSchema = z.object({ sessionId: z.string().min(1) }).strict();
+export const personaHomeInputSchema = /* @__PURE__ */ z.object({ sessionId: z.string().min(1) }).strict();
 export type PersonaHomeInput = z.infer<typeof personaHomeInputSchema>;
-export const personaHomeResponseSchema = z.object({ homeSessionId: z.string().min(1) }).strict();
-export const personaStateUpdateSchema = z.object({ pinned: z.boolean().optional(), hidden: z.boolean().optional() }).strict();
+export const personaHomeResponseSchema = /* @__PURE__ */ z.object({ homeSessionId: z.string().min(1) }).strict();
+export const personaStateUpdateSchema = /* @__PURE__ */ z.object({ pinned: z.boolean().optional(), hidden: z.boolean().optional() }).strict();
 export type PersonaStateUpdate = z.infer<typeof personaStateUpdateSchema>;
 
-export const personaStateSchema = z.object({
+export const personaStateSchema = /* @__PURE__ */ z.object({
   version: z.literal(1),
   archived: z.boolean(),
   homeSessionId: z.string().min(1).optional(),
@@ -103,20 +103,20 @@ export const personaStateSchema = z.object({
 }).strict();
 export type PersonaState = z.infer<typeof personaStateSchema>;
 
-export const personaMutationResponseSchema = z.object({
+export const personaMutationResponseSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema,
   revision: z.string().min(1),
 }).strict();
 export type PersonaMutationResponse = z.infer<typeof personaMutationResponseSchema>;
 
-export const personaMemoryIntegrationSchema = z.object({
+export const personaMemoryIntegrationSchema = /* @__PURE__ */ z.object({
   status: z.enum(['committed', 'pending', 'failed']),
   count: z.number().int().nonnegative().optional(),
   error: z.string().optional(),
 }).strict();
 export type PersonaMemoryIntegration = z.infer<typeof personaMemoryIntegrationSchema>;
 
-export const personaDeleteResponseSchema = z.object({
+export const personaDeleteResponseSchema = /* @__PURE__ */ z.object({
   deleted: z.literal(true),
   memory: z.object({
     status: z.enum(['committed', 'pending', 'failed']),
@@ -125,28 +125,28 @@ export const personaDeleteResponseSchema = z.object({
 }).strict();
 export type PersonaDeleteResponse = z.infer<typeof personaDeleteResponseSchema>;
 
-export const personaDeleteQuerySchema = z.object({
+export const personaDeleteQuerySchema = /* @__PURE__ */ z.object({
   expectedRevision: z.string().min(1).optional(),
 }).strict();
 export type PersonaDeleteQuery = z.infer<typeof personaDeleteQuerySchema>;
 
-export const personaCardFormatSchema = z.enum(['png', 'json', 'charx']);
+export const personaCardFormatSchema = /* @__PURE__ */ z.enum(['png', 'json', 'charx']);
 export type PersonaCardFormat = z.infer<typeof personaCardFormatSchema>;
 
-export const personaImportPayloadSchema = z.object({
+export const personaImportPayloadSchema = /* @__PURE__ */ z.object({
   data: z.string().min(1),
   format: personaCardFormatSchema,
   filename: z.string().trim().min(1).optional(),
 }).strict();
 export type PersonaImportPayload = z.infer<typeof personaImportPayloadSchema>;
 
-export const personaImportConfirmInputSchema = z.object({
+export const personaImportConfirmInputSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema.optional(),
   name: z.string().trim().min(1).optional(),
 }).strict();
 export type PersonaImportConfirmInput = z.infer<typeof personaImportConfirmInputSchema>;
 
-export const personaImportMemoryEntrySchema = z.object({
+export const personaImportMemoryEntrySchema = /* @__PURE__ */ z.object({
   title: z.string(),
   body: z.string(),
   pinned: z.boolean(),
@@ -154,7 +154,7 @@ export const personaImportMemoryEntrySchema = z.object({
 }).strict();
 export type PersonaImportMemoryEntry = z.infer<typeof personaImportMemoryEntrySchema>;
 
-export const personaImportPreviewSchema = z.object({
+export const personaImportPreviewSchema = /* @__PURE__ */ z.object({
   format: personaCardFormatSchema,
   definition: personaDefinitionSchema,
   examples: z.string().optional(),
@@ -169,7 +169,7 @@ export const personaImportPreviewSchema = z.object({
 }).strict();
 export type PersonaImportPreview = z.infer<typeof personaImportPreviewSchema>;
 
-export const personaImportResponseSchema = z.object({
+export const personaImportResponseSchema = /* @__PURE__ */ z.object({
   snapshot: personaSnapshotSchema,
   memory: z.object({
     status: z.enum(['committed', 'pending', 'failed']),
@@ -179,7 +179,7 @@ export const personaImportResponseSchema = z.object({
 }).strict();
 export type PersonaImportResponse = z.infer<typeof personaImportResponseSchema>;
 
-export const personaAvatarUploadResponseSchema = z.object({
+export const personaAvatarUploadResponseSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema,
   mimeType: z.string().min(1),
   size: z.number().int().nonnegative(),
@@ -187,13 +187,13 @@ export const personaAvatarUploadResponseSchema = z.object({
 }).strict();
 export type PersonaAvatarUploadResponse = z.infer<typeof personaAvatarUploadResponseSchema>;
 
-export const personaAvatarDeleteResponseSchema = z.object({
+export const personaAvatarDeleteResponseSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema,
   deleted: z.boolean(),
 }).strict();
 export type PersonaAvatarDeleteResponse = z.infer<typeof personaAvatarDeleteResponseSchema>;
 
-export const personaAvatarDataSchema = z.object({
+export const personaAvatarDataSchema = /* @__PURE__ */ z.object({
   id: personaIdSchema,
   name: z.string().min(1),
   avatarUrl: z.string().min(1).optional(),
@@ -202,13 +202,13 @@ export const personaAvatarDataSchema = z.object({
 export type PersonaAvatarData = z.infer<typeof personaAvatarDataSchema>;
 export type PersonaAvatar = PersonaAvatarData;
 
-export const personaExportQuerySchema = z.object({
+export const personaExportQuerySchema = /* @__PURE__ */ z.object({
   format: personaCardFormatSchema.default('json'),
   includeMemory: booleanQueryParam,
 }).strict();
 export type PersonaExportQuery = z.infer<typeof personaExportQuerySchema>;
 
-export const personaExportResponseSchema = z.object({
+export const personaExportResponseSchema = /* @__PURE__ */ z.object({
   format: personaCardFormatSchema,
   data: z.string().min(1),
   filename: z.string().min(1),

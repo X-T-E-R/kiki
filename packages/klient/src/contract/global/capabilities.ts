@@ -6,8 +6,9 @@
 import { z } from 'zod';
 
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const capabilityStepSchema = z.object({
+export const capabilityStepSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   state: z.enum(['ok', 'missing', 'failed']),
   // Additive: a server that predates `reason` still parses, and a reason this
@@ -17,7 +18,7 @@ export const capabilityStepSchema = z.object({
   optional: z.boolean().optional(),
 });
 
-export const capabilityInstallProgressSchema = z.object({
+export const capabilityInstallProgressSchema = /* @__PURE__ */ z.object({
   running: z.boolean(),
   step: z.string().optional(),
   percent: z.number().optional(),
@@ -25,7 +26,7 @@ export const capabilityInstallProgressSchema = z.object({
   note: z.string().optional(),
 });
 
-export const capabilityStatusSchema = z.object({
+export const capabilityStatusSchema = /* @__PURE__ */ z.object({
   id: z.enum(['kimi-cu', 'kimi-webbridge', 'kiki-computer', 'kiki-browser']),
   pluginId: z.string().optional(),
   displayName: z.string(),
@@ -42,8 +43,8 @@ export const capabilityStatusSchema = z.object({
 });
 
 export const capabilitiesContract = {
-  listCapabilities: { input: z.tuple([]), output: z.array(capabilityStatusSchema) },
-  getCapability: { input: z.tuple([z.string()]), output: capabilityStatusSchema },
-  installCapability: { input: z.tuple([z.string(), z.string().optional(), z.enum(['driver-only', 'managed-browser']).optional()]), output: capabilityStatusSchema },
-  cancelCapability: { input: z.tuple([z.string()]), output: capabilityStatusSchema },
+  listCapabilities: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(capabilityStatusSchema) }), 'input', 'output'),
+  getCapability: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: capabilityStatusSchema }), 'input', 'output'),
+  installCapability: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), z.string().optional(), z.enum(['driver-only', 'managed-browser']).optional()]), output: capabilityStatusSchema }), 'input', 'output'),
+  cancelCapability: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: capabilityStatusSchema }), 'input', 'output'),
 } satisfies ServiceContract;

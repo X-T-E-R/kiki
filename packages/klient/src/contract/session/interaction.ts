@@ -7,15 +7,16 @@ import { z } from 'zod';
 
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const interactionKindSchema = z.enum(['approval', 'question', 'user_tool']);
+export const interactionKindSchema = /* @__PURE__ */ z.enum(['approval', 'question', 'user_tool']);
 
-export const interactionOriginSchema = z.object({
+export const interactionOriginSchema = /* @__PURE__ */ z.object({
   agentId: z.string().optional(),
   turnId: z.number().optional(),
 });
 
-export const interactionSchema = z.object({
+export const interactionSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   kind: interactionKindSchema,
   payload: z.unknown(),
@@ -23,19 +24,19 @@ export const interactionSchema = z.object({
   createdAt: z.number(),
 });
 
-export const interactionResolutionSchema = z.object({
+export const interactionResolutionSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   response: z.unknown(),
 });
 
 export const sessionInteractionContract = {
-  listPending: {
-    input: z.tuple([interactionKindSchema.optional()]),
-    output: z.array(interactionSchema),
-  },
-  respond: { input: z.tuple([z.string(), z.unknown()]), output: noResult },
-  acquireConsumer: { input: z.tuple([z.string()]), output: noResult },
-  releaseConsumer: { input: z.tuple([z.string()]), output: noResult },
-  hasConsumer: { input: z.tuple([]), output: z.boolean() },
-  isRecentlyResolved: { input: z.tuple([z.string()]), output: z.boolean() },
+  listPending: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([interactionKindSchema.optional()]),
+    output: /* @__PURE__ */ z.array(interactionSchema),
+  }), 'input', 'output'),
+  respond: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), z.unknown()]), output: noResult }), 'input', 'output'),
+  acquireConsumer: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  releaseConsumer: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
+  hasConsumer: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
+  isRecentlyResolved: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ z.boolean() }), 'input', 'output'),
 } satisfies ServiceContract;

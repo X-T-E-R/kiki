@@ -8,7 +8,7 @@ export function questionSettingsFromToml(value: unknown): unknown {
   ]));
 }
 
-export const askUserQuestionGuardConfigSchema = z.object({
+export const askUserQuestionGuardConfigSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().optional(),
   maxPerUserRound: z.number().int().min(1).max(1000).optional(),
   maxPerWindow: z.number().int().min(1).max(1000).optional(),
@@ -16,35 +16,35 @@ export const askUserQuestionGuardConfigSchema = z.object({
 }).strict();
 export type AskUserQuestionGuardConfig = z.infer<typeof askUserQuestionGuardConfigSchema>;
 
-export const interactionConfigSchema = z.object({
+export const interactionConfigSchema = /* @__PURE__ */ z.object({
   askUserQuestion: z.enum(['background', 'blocking']).default('background'),
   askUserQuestionGuard: askUserQuestionGuardConfigSchema.optional(),
 });
-export const interactionConfigCamelPatchSchema = interactionConfigSchema.extend({
+export const interactionConfigCamelPatchSchema = /* @__PURE__ */ interactionConfigSchema.extend({
   askUserQuestion: interactionConfigSchema.shape.askUserQuestion.removeDefault().optional(),
 }).strict();
-export const modelBehaviorConfigSchema = z.object({
+export const modelBehaviorConfigSchema = /* @__PURE__ */ z.object({
   askUserQuestionGuard: askUserQuestionGuardConfigSchema.optional(),
 }).strict();
 export type ModelBehaviorConfig = z.infer<typeof modelBehaviorConfigSchema>;
 
-export const askUserQuestionGuardWireSchema = z.object({
+export const askUserQuestionGuardWireSchema = /* @__PURE__ */ z.object({
   enabled: askUserQuestionGuardConfigSchema.shape.enabled,
   max_per_user_round: askUserQuestionGuardConfigSchema.shape.maxPerUserRound,
   max_per_window: askUserQuestionGuardConfigSchema.shape.maxPerWindow,
   window_ms: askUserQuestionGuardConfigSchema.shape.windowMs,
 }).strict();
-export const modelBehaviorWireSchema = z.object({
+export const modelBehaviorWireSchema = /* @__PURE__ */ z.object({
   ask_user_question_guard: askUserQuestionGuardWireSchema.optional(),
 }).strict();
 export type ModelBehaviorWire = z.infer<typeof modelBehaviorWireSchema>;
-export const askUserQuestionGuardPatchSchema = z.object({
+export const askUserQuestionGuardPatchSchema = /* @__PURE__ */ z.object({
   enabled: askUserQuestionGuardWireSchema.shape.enabled.unwrap().nullable().optional(),
   max_per_user_round: askUserQuestionGuardWireSchema.shape.max_per_user_round.unwrap().nullable().optional(),
   max_per_window: askUserQuestionGuardWireSchema.shape.max_per_window.unwrap().nullable().optional(),
   window_ms: askUserQuestionGuardWireSchema.shape.window_ms.unwrap().nullable().optional(),
 }).strict();
-export const modelBehaviorPatchSchema = z.object({
+export const modelBehaviorPatchSchema = /* @__PURE__ */ z.object({
   ask_user_question_guard: askUserQuestionGuardPatchSchema.nullable().optional(),
 }).strict();
 export type ModelBehaviorPatch = z.infer<typeof modelBehaviorPatchSchema>;

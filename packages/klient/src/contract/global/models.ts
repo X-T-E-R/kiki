@@ -14,15 +14,16 @@ import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-const protocolSchema = z.enum([
+const protocolSchema = /* @__PURE__ */ z.enum([
   'anthropic',
   'openai',
   'openai_responses',
   'google-genai',
 ]);
 
-const modelBaseSchema = z.object({
+const modelBaseSchema = /* @__PURE__ */ z.object({
   providerId: z.string().optional(),
 
   baseUrl: z.string().optional(),
@@ -49,7 +50,7 @@ const modelBaseSchema = z.object({
   requestIdentity: RequestIdentityPolicySchema.optional(),
 });
 
-const modelOverrideSchema = modelBaseSchema
+const modelOverrideSchema = /* @__PURE__ */ modelBaseSchema
   .omit({
     providerId: true,
     baseUrl: true,
@@ -65,13 +66,13 @@ const modelOverrideSchema = modelBaseSchema
   })
   .partial();
 
-export const modelConfigSchema = modelBaseSchema
+export const modelConfigSchema = /* @__PURE__ */ modelBaseSchema
   .extend({ overrides: modelOverrideSchema.optional(), pricingModel: z.string().trim().min(1).optional() })
   .passthrough();
 
 export const modelsContract = {
-  get: { input: z.tuple([z.string()]), output: maybe(modelConfigSchema) },
-  list: { input: z.tuple([]), output: z.record(z.string(), modelConfigSchema) },
-  set: { input: z.tuple([z.string(), modelConfigSchema]), output: noResult },
-  delete: { input: z.tuple([z.string()]), output: noResult },
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(modelConfigSchema) }), 'input', 'output'),
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.record(z.string(), modelConfigSchema) }), 'input', 'output'),
+  set: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), modelConfigSchema]), output: noResult }), 'input', 'output'),
+  delete: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

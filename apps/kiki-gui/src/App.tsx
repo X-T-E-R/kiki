@@ -97,6 +97,7 @@ import { persistSidebarPanelWidth } from './lib/panelLayoutStorage';
 import { useLayerHistory } from './lib/layerHistory';
 import { setBackdropDrawerClosed } from './lib/skins/backdrop';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
+import { afterPaint } from './lib/afterPaint';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
 import { browserOwnsShortcut, isEditableTarget, isImeKeyEvent, matchesShortcutAction, shortcutRecordingActive } from './lib/shortcuts';
@@ -233,6 +234,13 @@ export function App() {
   return <NormalApp />;
 }
 
+function ShellCatalogSync() {
+  useUserSkins();
+  useAppearancePacks();
+  useShortcutPreferencesSync();
+  return null;
+}
+
 function NormalApp() {
   const host = useHost();
   const { client, socket, wsStatus, wsBannerSuppressed, recovery, nudge } = useConnection();
@@ -279,13 +287,8 @@ function NormalApp() {
         kikiNav: { ...userState.kikiNav, visitId: entry.visitId, scope: entry.scope } } }, '');
     }
   }, [location, navType, scopeId, host.kind, meta.server_home_id, connectionRef]);
-  // User skin files live on the server, so the catalog loads app-wide: a skin
-  // chosen from the themes folder must paint on every route, not only after a
-  // visit to Settings → Appearance.
-  useUserSkins();
-  useAppearancePacks();
-  // Remapped keys apply app-wide, so the saved table loads with the shell.
-  useShortcutPreferencesSync();
+  const [backgroundReady, setBackgroundReady] = useState(false);
+  useEffect(() => afterPaint(() => { setBackgroundReady(true); }), []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = useCallback(() => { setSidebarOpen(false); }, []);
   // Phone keyboard: mirror the visual viewport into the app height chain
@@ -545,6 +548,7 @@ function NormalApp() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.next_cursor ?? lastPage.items.at(-1)?.id : undefined,
     initialPageParam: undefined as string | undefined,
+    staleTime: 15_000,
     retry: retryRootReadModelQuery,
     retryDelay: retryRootReadModelDelay,
   });
@@ -663,6 +667,8 @@ function NormalApp() {
   // list refresh and pin toggle refreshes it too.
   const pinnedSessionsQuery = useQuery({
     queryKey: pinnedSessionsQueryKey(showArchived, workspaceFilter, privateFilter),
+    enabled: backgroundReady || sidebarOpen,
+    staleTime: 15_000,
     queryFn: ({ signal }) => readAllSessionPages((before_id) => client.listSessions({
       page_size: 100,
       pinned: true,
@@ -692,7 +698,7 @@ function NormalApp() {
 
   const personaHeadQuery = useQuery({
     queryKey: personaHeadKey,
-    enabled: workspaceFilter !== undefined,
+    enabled: workspaceFilter !== undefined && (backgroundReady || sidebarOpen),
     queryFn: async ({ signal }): Promise<SessionListData> => ({
       pages: [await client.listSessions({
         page_size: 100,
@@ -805,6 +811,7 @@ function NormalApp() {
     sessions: globalSessions,
     listSessions: listNewestSessions,
     unifiedInbox: inboxTriage.allSpacesInbox,
+    enabled: backgroundReady,
   });
 
   // document.title follows the route: session title, page name, or bare Kiki.
@@ -1092,6 +1099,7 @@ function NormalApp() {
 
   const stageNode = (
     <div className="app-stage">
+      {backgroundReady ? <ShellCatalogSync /> : null}
       {wsStatus !== 'open' && !isSettingsRoute ? (
         <AppConnectionBanner wsStatus={wsStatus} suppressInitialConnecting={wsBannerSuppressed} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />
       ) : null}

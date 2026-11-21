@@ -13,40 +13,40 @@ import {
  * requests actually sent. Values are shown verbatim; credentials never enter this surface.
  */
 
-export const requestIdentityTrackIdSchema = z.enum(['codex_cli', 'claude_code', 'grok_cli', 'opencode_cli']);
+export const requestIdentityTrackIdSchema = /* @__PURE__ */ z.enum(['codex_cli', 'claude_code', 'grok_cli', 'opencode_cli']);
 export type RequestIdentityTrackId = z.infer<typeof requestIdentityTrackIdSchema>;
 
-export const requestIdentityUpdateSourceSchema = z.enum(['npm', 'local_cli', 'manifest']);
+export const requestIdentityUpdateSourceSchema = /* @__PURE__ */ z.enum(['npm', 'local_cli', 'manifest']);
 export type RequestIdentityUpdateSource = z.infer<typeof requestIdentityUpdateSourceSchema>;
 
 /** Where a track's current value came from: the value shipped with Kiki, or an applied update. */
-export const requestIdentityRevisionOriginSchema = z.enum(['builtin', 'npm', 'local_cli', 'manifest', 'manual']);
+export const requestIdentityRevisionOriginSchema = /* @__PURE__ */ z.enum(['builtin', 'npm', 'local_cli', 'manifest', 'manual']);
 export type RequestIdentityRevisionOrigin = z.infer<typeof requestIdentityRevisionOriginSchema>;
 
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/u;
 const NO_CONTROL = /^[^\u0000-\u001F\u007F]*$/u;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/u;
 
-export const requestIdentityVersionSchema = z.string().regex(VERSION);
+export const requestIdentityVersionSchema = /* @__PURE__ */ z.string().regex(VERSION);
 
-export const requestIdentityTemplateSchema = z.string().max(1024).regex(NO_CONTROL);
+export const requestIdentityTemplateSchema = /* @__PURE__ */ z.string().max(1024).regex(NO_CONTROL);
 
 /** A header template. An empty value removes a header the base identity would otherwise send. */
-export const requestIdentityHeaderSchema = z.object({
+export const requestIdentityHeaderSchema = /* @__PURE__ */ z.object({
   name: z.string().regex(HEADER_NAME),
   value: requestIdentityTemplateSchema,
 }).strict();
 export type RequestIdentityHeader = z.infer<typeof requestIdentityHeaderSchema>;
 
 /** A top-level request-body field; string values are templates. */
-export const requestIdentityParamSchema = z.object({
+export const requestIdentityParamSchema = /* @__PURE__ */ z.object({
   name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/u),
   value: z.union([requestIdentityTemplateSchema, z.number().finite(), z.boolean()]),
 }).strict();
 export type RequestIdentityParam = z.infer<typeof requestIdentityParamSchema>;
 
 /** Version the profile renders into `{version}`. */
-export const requestIdentityVersionModeSchema = z.discriminatedUnion('mode', [
+export const requestIdentityVersionModeSchema = /* @__PURE__ */ z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('kiki') }).strict(),
   z.object({ mode: z.literal('track') }).strict(),
   z.object({ mode: z.literal('fixed'), value: requestIdentityVersionSchema }).strict(),
@@ -54,7 +54,7 @@ export const requestIdentityVersionModeSchema = z.discriminatedUnion('mode', [
 export type RequestIdentityVersionMode = z.infer<typeof requestIdentityVersionModeSchema>;
 
 /** The editable part of a profile; also the create/update body for custom profiles. */
-export const requestIdentityProfileDraftSchema = z.object({
+export const requestIdentityProfileDraftSchema = /* @__PURE__ */ z.object({
   label: z.string().trim().min(1).max(64),
   description: z.string().max(280).optional(),
   base_preset: requestIdentityPresetSchema,
@@ -68,7 +68,7 @@ export const requestIdentityProfileDraftSchema = z.object({
 }).strict();
 export type RequestIdentityProfileDraft = z.infer<typeof requestIdentityProfileDraftSchema>;
 
-export const requestIdentityProfileSchema = requestIdentityProfileDraftSchema.extend({
+export const requestIdentityProfileSchema = /* @__PURE__ */ requestIdentityProfileDraftSchema.extend({
   id: requestIdentityProfileIdSchema,
   builtin: z.boolean(),
   /** Custom profiles only: the profile it was duplicated from. */
@@ -79,7 +79,7 @@ export const requestIdentityProfileSchema = requestIdentityProfileDraftSchema.ex
 export type RequestIdentityProfile = z.infer<typeof requestIdentityProfileSchema>;
 
 /** One value a track can carry: the client version plus optional template replacements. */
-export const requestIdentityTrackRevisionSchema = z.object({
+export const requestIdentityTrackRevisionSchema = /* @__PURE__ */ z.object({
   version: requestIdentityVersionSchema,
   user_agent: requestIdentityTemplateSchema.optional(),
   headers: z.array(requestIdentityHeaderSchema).max(64).optional(),
@@ -90,7 +90,7 @@ export const requestIdentityTrackRevisionSchema = z.object({
 }).strict();
 export type RequestIdentityTrackRevision = z.infer<typeof requestIdentityTrackRevisionSchema>;
 
-export const requestIdentityTrackCheckSchema = z.object({
+export const requestIdentityTrackCheckSchema = /* @__PURE__ */ z.object({
   source: requestIdentityUpdateSourceSchema,
   at: z.string(),
   ok: z.boolean(),
@@ -99,7 +99,7 @@ export const requestIdentityTrackCheckSchema = z.object({
 }).strict();
 export type RequestIdentityTrackCheck = z.infer<typeof requestIdentityTrackCheckSchema>;
 
-export const requestIdentityTrackSchema = z.object({
+export const requestIdentityTrackSchema = /* @__PURE__ */ z.object({
   id: requestIdentityTrackIdSchema,
   /** Upstream client this track follows, e.g. `@openai/codex`. */
   npm_package: z.string(),
@@ -116,7 +116,7 @@ export const requestIdentityTrackSchema = z.object({
 export type RequestIdentityTrack = z.infer<typeof requestIdentityTrackSchema>;
 
 /** Where one layer of the identity chain points; `inherit` when the layer is unset. */
-export const requestIdentityUsageSchema = z.object({
+export const requestIdentityUsageSchema = /* @__PURE__ */ z.object({
   scope: z.enum(['global', 'provider', 'model']),
   provider_id: z.string().optional(),
   model_id: z.string().optional(),
@@ -129,7 +129,7 @@ export const requestIdentityUsageSchema = z.object({
 }).strict();
 export type RequestIdentityUsage = z.infer<typeof requestIdentityUsageSchema>;
 
-export const requestIdentityObservationSchema = z.object({
+export const requestIdentityObservationSchema = /* @__PURE__ */ z.object({
   at: z.string(),
   provider_id: z.string(),
   model: z.string(),
@@ -145,7 +145,7 @@ export const requestIdentityObservationSchema = z.object({
 }).strict();
 export type RequestIdentityObservation = z.infer<typeof requestIdentityObservationSchema>;
 
-export const requestIdentityCatalogSchema = z.object({
+export const requestIdentityCatalogSchema = /* @__PURE__ */ z.object({
   profiles: z.array(requestIdentityProfileSchema),
   tracks: z.array(requestIdentityTrackSchema),
   manifest_url: z.string().nullable(),
@@ -154,7 +154,7 @@ export const requestIdentityCatalogSchema = z.object({
 }).strict();
 export type RequestIdentityCatalog = z.infer<typeof requestIdentityCatalogSchema>;
 
-export const requestIdentityPreviewRequestSchema = z.object({
+export const requestIdentityPreviewRequestSchema = /* @__PURE__ */ z.object({
   profile: requestIdentityProfileIdSchema.optional(),
   /** Render an unsaved draft instead of a stored profile. */
   draft: requestIdentityProfileDraftSchema.optional(),
@@ -165,7 +165,7 @@ export const requestIdentityPreviewRequestSchema = z.object({
 });
 export type RequestIdentityPreviewRequest = z.input<typeof requestIdentityPreviewRequestSchema>;
 
-export const requestIdentityPreviewSchema = z.object({
+export const requestIdentityPreviewSchema = /* @__PURE__ */ z.object({
   headers: z.array(z.object({
     name: z.string(),
     value: z.string(),
@@ -181,28 +181,28 @@ export const requestIdentityPreviewSchema = z.object({
 }).strict();
 export type RequestIdentityPreview = z.infer<typeof requestIdentityPreviewSchema>;
 
-export const requestIdentityCreateProfileSchema = z.object({
+export const requestIdentityCreateProfileSchema = /* @__PURE__ */ z.object({
   from: requestIdentityProfileIdSchema,
   label: z.string().trim().min(1).max(64).optional(),
 }).strict();
 
-export const requestIdentityTrackCheckRequestSchema = z.object({
+export const requestIdentityTrackCheckRequestSchema = /* @__PURE__ */ z.object({
   source: requestIdentityUpdateSourceSchema,
 }).strict();
 
-export const requestIdentityTrackApplyRequestSchema = z.object({
+export const requestIdentityTrackApplyRequestSchema = /* @__PURE__ */ z.object({
   /** Must equal the candidate version, so a stale page cannot apply a newer check. */
   version: requestIdentityVersionSchema,
 }).strict();
 
-export const requestIdentityTrackPinRequestSchema = z.object({ pinned: z.boolean() }).strict();
+export const requestIdentityTrackPinRequestSchema = /* @__PURE__ */ z.object({ pinned: z.boolean() }).strict();
 
-export const requestIdentityManifestRequestSchema = z.object({
+export const requestIdentityManifestRequestSchema = /* @__PURE__ */ z.object({
   url: z.string().url().max(2048).refine((url) => url.startsWith('https://'), { message: 'manifest URL must use https' }).nullable(),
 }).strict();
 
 /** Remote manifest document shape; unknown fields are rejected. */
-export const requestIdentityManifestSchema = z.object({
+export const requestIdentityManifestSchema = /* @__PURE__ */ z.object({
   schema: z.literal(1),
   tracks: z.partialRecord(requestIdentityTrackIdSchema, z.object({
     version: requestIdentityVersionSchema,

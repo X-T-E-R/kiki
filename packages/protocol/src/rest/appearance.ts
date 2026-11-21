@@ -19,7 +19,7 @@ import { z } from 'zod';
 
 import { APPEARANCE_PACK_ID_PATTERN, PACK_FILE_PATTERN, appearancePackSchema } from '../appearance';
 
-export const appearancePackSummarySchema = z.object({
+export const appearancePackSummarySchema = /* @__PURE__ */ z.object({
   id: z.string(),
   name: z.string(),
   description: z.string().optional(),
@@ -35,7 +35,7 @@ export const appearancePackSummarySchema = z.object({
 });
 export type AppearancePackSummary = z.infer<typeof appearancePackSummarySchema>;
 
-export const listAppearancePacksResponseSchema = z.object({
+export const listAppearancePacksResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(appearancePackSummarySchema),
   /** Absolute packs directory on the server host. */
   directory: z.string(),
@@ -43,29 +43,29 @@ export const listAppearancePacksResponseSchema = z.object({
 });
 export type ListAppearancePacksResponse = z.infer<typeof listAppearancePacksResponseSchema>;
 
-export const getAppearancePackResponseSchema = z.object({
+export const getAppearancePackResponseSchema = /* @__PURE__ */ z.object({
   pack: appearancePackSchema,
   bytes: z.number().int().nonnegative(),
 });
 export type GetAppearancePackResponse = z.infer<typeof getAppearancePackResponseSchema>;
 
-export const installAppearancePackResponseSchema = z.object({
+export const installAppearancePackResponseSchema = /* @__PURE__ */ z.object({
   pack: appearancePackSummarySchema,
   /** True when an installed pack with the same id was replaced. */
   replaced: z.boolean(),
 });
 export type InstallAppearancePackResponse = z.infer<typeof installAppearancePackResponseSchema>;
 
-export const appearancePackIdParamSchema = z.object({
+export const appearancePackIdParamSchema = /* @__PURE__ */ z.object({
   pack_id: z.string().regex(APPEARANCE_PACK_ID_PATTERN),
 });
 
-export const appearancePackFileParamSchema = z.object({
+export const appearancePackFileParamSchema = /* @__PURE__ */ z.object({
   pack_id: z.string().regex(APPEARANCE_PACK_ID_PATTERN),
   file: z.string().regex(PACK_FILE_PATTERN),
 });
 
-export const installAppearancePackQuerySchema = z.object({
+export const installAppearancePackQuerySchema = /* @__PURE__ */ z.object({
   /** `true` replaces an installed pack with the same id instead of refusing. */
   replace: z.enum(['true', 'false']).optional(),
 });
@@ -76,6 +76,6 @@ export const installAppearancePackQuerySchema = z.object({
  * keeps them on the device. A remote picture is copied once, never hot-linked,
  * so it cannot track launches and still shows offline.
  */
-export const fetchAppearanceMediaBodySchema = z.object({
+export const fetchAppearanceMediaBodySchema = /* @__PURE__ */ z.object({
   url: z.string().url().max(2048),
 });

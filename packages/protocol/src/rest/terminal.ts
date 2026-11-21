@@ -7,10 +7,10 @@ const relativeCwdSchema = z
   .min(1)
   .refine((value) => !isAbsolutePath(value), 'cwd must be relative to the session workspace');
 
-export const terminalStatusSchema = z.enum(['running', 'exited']);
+export const terminalStatusSchema = /* @__PURE__ */ z.enum(['running', 'exited']);
 export type TerminalStatus = z.infer<typeof terminalStatusSchema>;
 
-export const terminalSchema = z.object({
+export const terminalSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   session_id: z.string().min(1),
   cwd: z.string().min(1),
@@ -24,7 +24,7 @@ export const terminalSchema = z.object({
 });
 export type Terminal = z.infer<typeof terminalSchema>;
 
-export const createTerminalRequestSchema = z.object({
+export const createTerminalRequestSchema = /* @__PURE__ */ z.object({
   cwd: relativeCwdSchema.optional(),
   shell: z.string().min(1).optional(),
   cols: z.number().int().positive().optional(),
@@ -32,7 +32,7 @@ export const createTerminalRequestSchema = z.object({
 });
 export type CreateTerminalRequest = z.infer<typeof createTerminalRequestSchema>;
 
-export const listTerminalsResponseSchema = z.object({
+export const listTerminalsResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(terminalSchema),
 });
 export type ListTerminalsResponse = z.infer<typeof listTerminalsResponseSchema>;
@@ -40,7 +40,7 @@ export type ListTerminalsResponse = z.infer<typeof listTerminalsResponseSchema>;
 export const getTerminalResponseSchema = terminalSchema;
 export type GetTerminalResponse = z.infer<typeof getTerminalResponseSchema>;
 
-export const closeTerminalResponseSchema = z.object({
+export const closeTerminalResponseSchema = /* @__PURE__ */ z.object({
   closed: z.literal(true),
 });
 export type CloseTerminalResponse = z.infer<typeof closeTerminalResponseSchema>;

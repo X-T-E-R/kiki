@@ -450,7 +450,7 @@ it('renders all 700 sections across separate commits without reparsing the resid
     parseCounts.blockLexes = 0;
     const container = await render(text, '/work/docs');
     expect(parseCounts.documents).toBe(1);
-    expect(tasks.pending.size).toBe(1);
+    expect(tasks.pending.size).toBeGreaterThan(0);
     const first = container.querySelector('h1');
     expect(first?.textContent).toBe('Beginning of complete document');
     expect(container.textContent).not.toContain('Final paragraph:');
@@ -460,6 +460,7 @@ it('renders all 700 sections across separate commits without reparsing the resid
       expect(parseCounts.documents - before).toBe(1);
       expect(container.querySelector('h1')).toBe(first);
     }
+    for (let frame = 0; frame < 3; frame += 1) await tasks.step();
     expect(tasks.pending.size).toBe(0);
     expect(parseCounts.documents).toBe(segments.length);
     expect(parseCounts.blockLexes).toBe(0);
@@ -489,7 +490,7 @@ it('cancels a pending segment when closed and restarts from the current text aft
     expect(container.querySelector('h1')?.textContent).toBe('Edited beginning');
     expect(container.textContent).not.toContain('Final paragraph:');
     expect(parseCounts.documents - before).toBe(1);
-    expect(tasks.pending.size).toBe(1);
+    expect(tasks.pending.size).toBeGreaterThan(0);
     parseCounts.documents = 0;
     await act(async () => { root.render(null); });
     expect(tasks.pending.size).toBe(0);

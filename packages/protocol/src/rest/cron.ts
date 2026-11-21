@@ -9,7 +9,7 @@ import {
 } from '../cron';
 import { cronDeliveryModeSchema } from '../events';
 
-export const cronTaskSchema = z.object({
+export const cronTaskSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   session_id: z.string().nullable(),
   workspace_id: z.string(),
@@ -29,19 +29,19 @@ export const cronTaskSchema = z.object({
   last_trigger_check: cronTriggerCheckSchema.optional(),
 });
 
-export const cronTaskDetailSchema = cronTaskSchema.extend({ prompt: z.string() });
+export const cronTaskDetailSchema = /* @__PURE__ */ cronTaskSchema.extend({ prompt: z.string() });
 
-export const cronTaskDetailResponseSchema = z.object({ task: cronTaskDetailSchema });
+export const cronTaskDetailResponseSchema = /* @__PURE__ */ z.object({ task: cronTaskDetailSchema });
 
-export const cronScriptPreviewQuerySchema = z.object({
+export const cronScriptPreviewQuerySchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   script: cronTriggerScriptIdSchema,
 });
-export const cronScriptPreviewResponseSchema = z.object({
+export const cronScriptPreviewResponseSchema = /* @__PURE__ */ z.object({
   execution: cronScriptExecutionSchema.nullable(),
 });
 
-export const createCronTaskRequestSchema = z.object({
+export const createCronTaskRequestSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   cron: z.string().trim().min(1),
   prompt: z.string().refine((value) => value.trim().length > 0, 'prompt must not be blank'),
@@ -52,33 +52,33 @@ export const createCronTaskRequestSchema = z.object({
   paused: z.boolean().optional(),
 }).strict();
 
-export const updateCronTaskRequestSchema = createCronTaskRequestSchema
+export const updateCronTaskRequestSchema = /* @__PURE__ */ createCronTaskRequestSchema
   .omit({ paused: true })
   .partial()
   .extend({ trigger: cronTriggerSchema.nullish() })
   .refine((value) => Object.keys(value).length > 0, 'at least one editable field is required');
 
-export const listCronTasksQuerySchema = z.object({
+export const listCronTasksQuerySchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1).optional(),
   page_size: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
 });
 
-export const listCronTasksResponseSchema = z.object({
+export const listCronTasksResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(cronTaskSchema),
   has_more: z.boolean(),
   next_offset: z.number().int().nonnegative().optional(),
 });
 
-export const cronTaskActionQuerySchema = z.object({
+export const cronTaskActionQuerySchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1).optional(),
 });
 
-export const cronTaskActionResponseSchema = z.object({
+export const cronTaskActionResponseSchema = /* @__PURE__ */ z.object({
   task: cronTaskSchema,
 });
 
-export const deleteCronTaskResponseSchema = z.object({
+export const deleteCronTaskResponseSchema = /* @__PURE__ */ z.object({
   deleted: z.literal(true),
 });
 

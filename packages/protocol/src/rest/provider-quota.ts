@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const providerQuotaMeterSchema = z.object({
+export const providerQuotaMeterSchema = /* @__PURE__ */ z.object({
   id: z.string(), label: z.string(),
   unit: z.enum(['percent', 'money', 'tokens', 'requests', 'credits', 'count']),
   unit_label: z.string(), currency: z.string().optional(),
@@ -9,7 +9,7 @@ export const providerQuotaMeterSchema = z.object({
   status: z.enum(['ready', 'unknown', 'error', 'auth_required', 'stale']).optional(), message: z.string().optional(), data_as_of: z.string().datetime({ offset: true }).optional(),
   window: z.object({ label: z.string().optional(), duration_seconds: z.number().positive().optional(), reset_at: z.string().datetime({ offset: true }).optional(), reset_timezone: z.string().optional() }).strict().optional(),
 }).strict();
-export const providerQuotaSourceSchema = z.object({
+export const providerQuotaSourceSchema = /* @__PURE__ */ z.object({
   id: z.string(), label: z.string(), kind: z.enum(['provider', 'external_service', 'executor']),
   provider_id: z.string(), account_label: z.string(), enabled: z.boolean(), supported: z.boolean(),
   status: z.enum(['unknown', 'ready', 'stale', 'error', 'auth_required', 'off', 'unsupported']),
@@ -21,9 +21,9 @@ export const providerQuotaSourceSchema = z.object({
   source: z.object({ label: z.string(), url: z.string().url().optional() }).strict(),
   meters: z.array(providerQuotaMeterSchema),
 }).strict();
-export const providerQuotaSnapshotSchema = z.object({ schema_version: z.literal('1'), sources: z.array(providerQuotaSourceSchema), generated_at: z.string().datetime() }).strict();
-export const providerQuotaSelectSchema = z.object({ source_id: z.string().min(1).max(512) }).strict();
-export const providerQuotaEnableSchema = providerQuotaSelectSchema.extend({ enabled: z.boolean() }).strict();
+export const providerQuotaSnapshotSchema = /* @__PURE__ */ z.object({ schema_version: z.literal('1'), sources: z.array(providerQuotaSourceSchema), generated_at: z.string().datetime() }).strict();
+export const providerQuotaSelectSchema = /* @__PURE__ */ z.object({ source_id: z.string().min(1).max(512) }).strict();
+export const providerQuotaEnableSchema = /* @__PURE__ */ providerQuotaSelectSchema.extend({ enabled: z.boolean() }).strict();
 export type ProviderQuotaMeter = z.infer<typeof providerQuotaMeterSchema>;
 export type ProviderQuotaSource = z.infer<typeof providerQuotaSourceSchema>;
 export type ProviderQuotaSnapshot = z.infer<typeof providerQuotaSnapshotSchema>;

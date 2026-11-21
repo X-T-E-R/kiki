@@ -7,24 +7,24 @@ import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGua
 export * from './questionGuard';
 
 /** API payload and transport protocol, independent of request identity. */
-export const modelProtocolSchema = z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']);
+export const modelProtocolSchema = /* @__PURE__ */ z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']);
 export type ModelProtocol = z.infer<typeof modelProtocolSchema>;
 
-export const modelProtocolSourceSchema = z.enum(['model', 'provider', 'vendor']);
+export const modelProtocolSourceSchema = /* @__PURE__ */ z.enum(['model', 'provider', 'vendor']);
 export type ModelProtocolSource = z.infer<typeof modelProtocolSourceSchema>;
 
 /** Where an effective endpoint or credential came from. Values are names, never the URL or the key. */
-export const bindingOriginSchema = z.enum(['model', 'provider', 'env', 'vendor', 'none']);
+export const bindingOriginSchema = /* @__PURE__ */ z.enum(['model', 'provider', 'env', 'vendor', 'none']);
 export type BindingOrigin = z.infer<typeof bindingOriginSchema>;
 
-export const providerCatalogStatusSchema = z.enum([
+export const providerCatalogStatusSchema = /* @__PURE__ */ z.enum([
   'connected',
   'error',
   'unconfigured',
 ]);
 export type ProviderCatalogStatus = z.infer<typeof providerCatalogStatusSchema>;
 
-export const requestIdentityOverridesSchema = z
+export const requestIdentityOverridesSchema = /* @__PURE__ */ z
   .object({
     lineage: z
       .object({
@@ -71,7 +71,7 @@ export const requestIdentityOverridesSchema = z
   .strict()
   .refine(hasDefinedLeaf, { message: 'request identity overrides must contain a leaf value' });
 
-export const requestIdentityPresetSchema = z.enum([
+export const requestIdentityPresetSchema = /* @__PURE__ */ z.enum([
   'codex_compatible',
   'claude_code_compatible',
   'grok_build_compatible',
@@ -86,7 +86,7 @@ export const requestIdentityProfileIdSchema = z
   .string()
   .regex(/^(?:[a-z][a-z0-9_]{0,31}|custom:[a-z0-9][a-z0-9_-]{0,47})$/u);
 
-export const requestIdentityPolicySchema = z
+export const requestIdentityPolicySchema = /* @__PURE__ */ z
   .object({
     preset: requestIdentityPresetSchema.optional(),
     profile: requestIdentityProfileIdSchema.optional(),
@@ -101,14 +101,14 @@ export const requestIdentityPolicySchema = z
   });
 export type RequestIdentityPolicyWire = z.infer<typeof requestIdentityPolicySchema>;
 
-const transportTargetSchema = z.url().refine((value) => {
+const transportTargetSchema = /* @__PURE__ */ z.url().refine((value) => {
   const url = new URL(value);
   return (url.protocol === 'https:' || url.protocol === 'http:') &&
     url.username === '' && url.password === '' && url.search === '' && url.hash === '';
 }, 'Use an HTTP(S) API base URL without credentials, query, or fragment');
-const transportTargetsSchema = z.array(transportTargetSchema).min(1);
+const transportTargetsSchema = /* @__PURE__ */ z.array(transportTargetSchema).min(1);
 
-export const requestCompressionWireSchema = z.object({
+export const requestCompressionWireSchema = /* @__PURE__ */ z.object({
   encoding: z.enum(['off', 'gzip', 'zstd']).optional(),
   targets: transportTargetsSchema.optional(),
   min_bytes: z.number().int().nonnegative().safe().optional(),
@@ -128,7 +128,7 @@ export const requestCompressionWireSchema = z.object({
 });
 export type RequestCompressionWire = z.infer<typeof requestCompressionWireSchema>;
 
-export const responsesWebSocketWireSchema = z.object({
+export const responsesWebSocketWireSchema = /* @__PURE__ */ z.object({
   off: z.literal(true).optional(),
   targets: transportTargetsSchema.optional(),
 }).strict().superRefine((value, ctx) => {
@@ -142,16 +142,16 @@ export const responsesWebSocketWireSchema = z.object({
 });
 export type ResponsesWebSocketWire = z.infer<typeof responsesWebSocketWireSchema>;
 
-export const anthropicMessageThreadsWireSchema = z.object({
+export const anthropicMessageThreadsWireSchema = /* @__PURE__ */ z.object({
   mode: z.enum(['auto', 'off']),
 }).strict();
 export type AnthropicMessageThreadsWire = z.infer<typeof anthropicMessageThreadsWireSchema>;
 
-export const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
+export const serviceTierSchema = /* @__PURE__ */ z.enum(['auto', 'default', 'flex', 'priority']);
 export type ServiceTierWire = z.infer<typeof serviceTierSchema>;
 
-export const apiDefaultParameterSchema = z.object({ kind: z.literal('api_default') }).strict();
-export const generationParametersSchema = z.object({
+export const apiDefaultParameterSchema = /* @__PURE__ */ z.object({ kind: z.literal('api_default') }).strict();
+export const generationParametersSchema = /* @__PURE__ */ z.object({
   temperature: z.union([z.number().finite().min(0), apiDefaultParameterSchema]).optional(),
   top_p: z.union([z.number().finite().min(0).max(1), apiDefaultParameterSchema]).optional(),
   max_completion_tokens: z.number().int().positive().finite().optional(),
@@ -159,7 +159,7 @@ export const generationParametersSchema = z.object({
   service_tier: z.union([serviceTierSchema, apiDefaultParameterSchema]).optional(),
 }).strict();
 export type GenerationParametersWire = z.infer<typeof generationParametersSchema>;
-export const generationParametersPatchSchema = z.object({
+export const generationParametersPatchSchema = /* @__PURE__ */ z.object({
   temperature: generationParametersSchema.shape.temperature.unwrap().nullable().optional(),
   top_p: generationParametersSchema.shape.top_p.unwrap().nullable().optional(),
   max_completion_tokens: generationParametersSchema.shape.max_completion_tokens.unwrap().nullable().optional(),
@@ -168,41 +168,41 @@ export const generationParametersPatchSchema = z.object({
 }).strict();
 export type GenerationParametersPatch = z.infer<typeof generationParametersPatchSchema>;
 
-export const modelUsageParametersSchema = generationParametersSchema.pick({
+export const modelUsageParametersSchema = /* @__PURE__ */ generationParametersSchema.pick({
   thinking_effort: true, service_tier: true, max_completion_tokens: true,
 }).extend({
   auto_compact: z.number().int().positive().safe().optional(),
   context_budget: z.number().int().positive().safe().optional(),
 }).strict();
 export type ModelUsageParametersWire = z.infer<typeof modelUsageParametersSchema>;
-export const modelUsagePolicySchema = z.object({
+export const modelUsagePolicySchema = /* @__PURE__ */ z.object({
   main: modelUsageParametersSchema.optional(),
   independent: modelUsageParametersSchema.optional(),
 }).strict();
 export type ModelUsagePolicyWire = z.infer<typeof modelUsagePolicySchema>;
-export const modelUsageParametersPatchSchema = generationParametersPatchSchema.pick({
+export const modelUsageParametersPatchSchema = /* @__PURE__ */ generationParametersPatchSchema.pick({
   thinking_effort: true, service_tier: true, max_completion_tokens: true,
 }).extend({
   auto_compact: modelUsageParametersSchema.shape.auto_compact.unwrap().nullable().optional(),
   context_budget: modelUsageParametersSchema.shape.context_budget.unwrap().nullable().optional(),
 }).strict();
-export const modelUsagePolicyPatchSchema = z.object({
+export const modelUsagePolicyPatchSchema = /* @__PURE__ */ z.object({
   main: modelUsageParametersPatchSchema.nullable().optional(),
   independent: modelUsageParametersPatchSchema.nullable().optional(),
 }).strict();
 export type ModelUsagePolicyPatch = z.infer<typeof modelUsagePolicyPatchSchema>;
-export const modelUsageEffectiveSchema = z.object({
+export const modelUsageEffectiveSchema = /* @__PURE__ */ z.object({
   main: modelUsageParametersSchema,
   sub: modelUsageParametersSchema,
   independent: modelUsageParametersSchema,
 });
-export const modelUsageSourcesSchema = z.object({
+export const modelUsageSourcesSchema = /* @__PURE__ */ z.object({
   main: z.record(z.string(), z.string()),
   sub: z.record(z.string(), z.string()),
   independent: z.record(z.string(), z.string()),
 });
 
-export const imageMimeSchema = z.preprocess(
+export const imageMimeSchema = /* @__PURE__ */ z.preprocess(
   (value) => {
     if (typeof value !== 'string') return value;
     const normalized = value.trim().toLowerCase();
@@ -221,8 +221,8 @@ export const imageMimeSchema = z.preprocess(
     'image/x-icon',
   ]),
 );
-export const imageConversionModeSchema = z.enum(['off', 'auto', 'png', 'jpeg']);
-export const imagePolicySchema = z
+export const imageConversionModeSchema = /* @__PURE__ */ z.enum(['off', 'auto', 'png', 'jpeg']);
+export const imagePolicySchema = /* @__PURE__ */ z
   .object({
     accepted_types: z.array(imageMimeSchema).min(1).optional(),
     convert_unsupported: imageConversionModeSchema.optional(),
@@ -230,7 +230,7 @@ export const imagePolicySchema = z
   .strict();
 export type ImagePolicyWire = z.infer<typeof imagePolicySchema>;
 
-export const imagePolicyPatchSchema = z
+export const imagePolicyPatchSchema = /* @__PURE__ */ z
   .object({
     accepted_types: z.array(imageMimeSchema).min(1).nullable().optional(),
     convert_unsupported: imageConversionModeSchema.nullable().optional(),
@@ -245,7 +245,7 @@ export type ImagePolicyPatch = z.infer<typeof imagePolicyPatchSchema>;
  * They are independent: a local alias never encodes the remote id, and the
  * remote id is never recovered by stripping a provider prefix from `id`.
  */
-export const modelCatalogItemSchema = z.object({
+export const modelCatalogItemSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   provider_id: z.string(),
   enabled: z.boolean().optional(),
@@ -276,33 +276,33 @@ export const modelCatalogItemSchema = z.object({
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
-export const decisionCapabilityWireSchema = z.object({
+export const decisionCapabilityWireSchema = /* @__PURE__ */ z.object({
   model: z.string().trim().min(1).optional(),
   endpoint: z.string().trim().min(1).optional(),
 }).strict();
 export type DecisionCapabilityWire = z.infer<typeof decisionCapabilityWireSchema>;
 
-export const decisionCapabilitiesWireSchema = z.object({
+export const decisionCapabilitiesWireSchema = /* @__PURE__ */ z.object({
   system_one: decisionCapabilityWireSchema.optional(),
   pair_score: decisionCapabilityWireSchema.optional(),
   openai_decisions: decisionCapabilityWireSchema.optional(),
 }).strict();
 export type DecisionCapabilitiesWire = z.infer<typeof decisionCapabilitiesWireSchema>;
 
-export const decisionCapabilityPatchSchema = z.object({
+export const decisionCapabilityPatchSchema = /* @__PURE__ */ z.object({
   model: z.string().trim().min(1).nullable().optional(),
   endpoint: z.string().trim().min(1).nullable().optional(),
 }).strict();
 export type DecisionCapabilityPatch = z.infer<typeof decisionCapabilityPatchSchema>;
 
-export const decisionCapabilitiesPatchSchema = z.object({
+export const decisionCapabilitiesPatchSchema = /* @__PURE__ */ z.object({
   system_one: decisionCapabilityPatchSchema.nullable().optional(),
   pair_score: decisionCapabilityPatchSchema.nullable().optional(),
   openai_decisions: decisionCapabilityPatchSchema.nullable().optional(),
 }).strict();
 export type DecisionCapabilitiesPatch = z.infer<typeof decisionCapabilitiesPatchSchema>;
 
-export const providerCatalogItemSchema = z.object({
+export const providerCatalogItemSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   enabled: z.boolean().optional(),
   type: z.string().min(1),
@@ -332,7 +332,7 @@ export const providerCatalogItemSchema = z.object({
 });
 export type ProviderCatalogItem = z.infer<typeof providerCatalogItemSchema>;
 
-export const providerRefreshChangeSchema = z.object({
+export const providerRefreshChangeSchema = /* @__PURE__ */ z.object({
   provider_id: z.string().min(1),
   provider_name: z.string().min(1),
   added: z.number().int().min(0),
@@ -340,14 +340,14 @@ export const providerRefreshChangeSchema = z.object({
 });
 export type ProviderRefreshChange = z.infer<typeof providerRefreshChangeSchema>;
 
-export const providerRefreshFailureSchema = z.object({
+export const providerRefreshFailureSchema = /* @__PURE__ */ z.object({
   provider: z.string().min(1),
   reason: z.string().min(1),
 });
 export type ProviderRefreshFailure = z.infer<typeof providerRefreshFailureSchema>;
 
 /** Remote suggestions are not configured model entities and cannot be used until saved. */
-export const discoveredModelSchema = z.object({
+export const discoveredModelSchema = /* @__PURE__ */ z.object({
   remote_id: z.string().min(1),
   display_name: z.string().optional(),
   max_context_size: z.number().int().min(1).optional(),
@@ -357,7 +357,7 @@ export const discoveredModelSchema = z.object({
 export type DiscoveredModel = z.infer<typeof discoveredModelSchema>;
 
 /** Process-local results of explicit fetches; timestamps are epoch milliseconds. */
-export const discoveredProviderModelsSchema = z.object({
+export const discoveredProviderModelsSchema = /* @__PURE__ */ z.object({
   provider_id: z.string().min(1),
   fetched_at: z.number().int().min(0).nullable(),
   attempted_at: z.number().int().min(0),
@@ -366,7 +366,7 @@ export const discoveredProviderModelsSchema = z.object({
 });
 export type DiscoveredProviderModels = z.infer<typeof discoveredProviderModelsSchema>;
 
-export const listDiscoveredModelsResponseSchema = z.object({
+export const listDiscoveredModelsResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(discoveredProviderModelsSchema),
 });
 export type ListDiscoveredModelsResponse = z.infer<typeof listDiscoveredModelsResponseSchema>;
@@ -376,7 +376,7 @@ export type ListDiscoveredModelsResponse = z.infer<typeof listDiscoveredModelsRe
  * its own `base_url` and no provider reference; the reported `provider_id` is
  * then the synthesized origin, not a configured provider.
  */
-export const modelProviderSourceSchema = z.enum([
+export const modelProviderSourceSchema = /* @__PURE__ */ z.enum([
   'provider',
   'provider_id',
   'default_provider',
@@ -390,7 +390,7 @@ export type ModelProviderSource = z.infer<typeof modelProviderSourceSchema>;
  * `error` issue means the model cannot currently be built into a requester, a
  * `warning` means it is usable but incomplete.
  */
-export const modelIssueSchema = z.object({
+export const modelIssueSchema = /* @__PURE__ */ z.object({
   code: z.string().min(1),
   severity: z.enum(['error', 'warning']),
   path: z.string(),
@@ -402,8 +402,8 @@ export type ModelIssue = z.infer<typeof modelIssueSchema>;
  * Advanced per-model fields that already exist in `[models.<alias>]`. The wire
  * uses snake_case; `overrides` keys are the same snake_case model fields.
  */
-export const cognitionInlineTextSchema = z.object({ text: z.string().max(2_097_152) }).strict();
-const cognitionPathSchema = z.string().min(1).refine((ref) => {
+export const cognitionInlineTextSchema = /* @__PURE__ */ z.object({ text: z.string().max(2_097_152) }).strict();
+const cognitionPathSchema = /* @__PURE__ */ z.string().min(1).refine((ref) => {
   const path = ref.trim().replaceAll('\\', '/');
   if (path.length === 0 || path.includes('\0') || path.startsWith('/') || /^[a-z]:/iu.test(path)) return false;
   let depth = 0;
@@ -414,15 +414,15 @@ const cognitionPathSchema = z.string().min(1).refine((ref) => {
   }
   return true;
 }, { message: 'Cognition paths must stay inside the Kiki home directory' });
-export const cognitionSlotSchema = z.union([cognitionInlineTextSchema, cognitionPathSchema, z.array(cognitionPathSchema).min(1)]);
+export const cognitionSlotSchema = /* @__PURE__ */ z.union([cognitionInlineTextSchema, cognitionPathSchema, z.array(cognitionPathSchema).min(1)]);
 const cognitionPathRefSchema = cognitionSlotSchema;
-export const modelSteeringSourcesWireSchema = modelSteeringSourcesSchema(cognitionSlotSchema);
-export const modelSteeringSourcesPatchSchema = z.object({
+export const modelSteeringSourcesWireSchema = /* @__PURE__ */ modelSteeringSourcesSchema(cognitionSlotSchema);
+export const modelSteeringSourcesPatchSchema = /* @__PURE__ */ z.object({
   common: modelSteeringSourcesWireSchema.nullable().optional(),
   main: modelSteeringSourcesWireSchema.nullable().optional(),
   independent: modelSteeringSourcesWireSchema.nullable().optional(),
 }).strict();
-const modelCognitionContentSchema = z
+const modelCognitionContentSchema = /* @__PURE__ */ z
   .object({
     overlay: cognitionPathRefSchema.optional(),
     steering: cognitionPathRefSchema.optional(),
@@ -434,13 +434,13 @@ const modelCognitionContentSchema = z
     steering_sources: modelSteeringSourcesWireSchema.optional(),
   })
   .strict();
-const modelCognitionBranchSchema = z.union([
+const modelCognitionBranchSchema = /* @__PURE__ */ z.union([
   z.enum(['same', 'off']),
   modelCognitionContentSchema.refine((value) => Object.values(value).some((field) => field !== undefined), {
     message: 'Set at least one cognition field or use off',
   }),
 ]);
-export const modelCognitionSchema = modelCognitionContentSchema.extend({
+export const modelCognitionSchema = /* @__PURE__ */ modelCognitionContentSchema.extend({
   main: modelCognitionBranchSchema.optional(),
   independent: modelCognitionBranchSchema.optional(),
 }).superRefine((value, ctx) => {
@@ -452,7 +452,7 @@ export const modelCognitionSchema = modelCognitionContentSchema.extend({
   }
 });
 export type ModelCognitionWire = z.infer<typeof modelCognitionSchema>;
-const modelCognitionBodySchema = z.object({
+const modelCognitionBodySchema = /* @__PURE__ */ z.object({
   channel: z.enum(['cognition_overlay', 'cognition_steering', 'cognition_anchor']),
   source: z.enum(['inline', 'files', 'unset']),
   text: z.string().optional(),
@@ -461,28 +461,28 @@ const modelCognitionBodySchema = z.object({
   source_read_only: z.boolean(),
   error: z.string().optional(),
 });
-const modelCognitionBodyBranchSchema = z.object({
+const modelCognitionBodyBranchSchema = /* @__PURE__ */ z.object({
   selection: z.enum(['common', 'custom', 'off']),
   source_scope: z.enum(['common', 'main', 'independent']),
   slots: z.object({ overlay: modelCognitionBodySchema, steering: modelCognitionBodySchema, anchor: modelCognitionBodySchema }),
   steering_sources: z.record(z.string(), modelCognitionBodySchema).optional(),
 });
-export const modelCognitionBodiesSchema = z.object({
+export const modelCognitionBodiesSchema = /* @__PURE__ */ z.object({
   revision: z.string().min(1),
   branches: z.object({ common: modelCognitionBodyBranchSchema, main: modelCognitionBodyBranchSchema, independent: modelCognitionBodyBranchSchema }),
 });
 export type ModelCognitionBodies = z.infer<typeof modelCognitionBodiesSchema>;
-const modelPromptOverrideContentSchema = z.object({
+const modelPromptOverrideContentSchema = /* @__PURE__ */ z.object({
   files: z.array(z.string().trim().min(1)).optional(),
   fields: z.record(z.string(), z.string()).optional(),
 }).strict();
 const hasOverrideContent = (value: z.infer<typeof modelPromptOverrideContentSchema>): boolean =>
   (value.files?.length ?? 0) > 0 || Object.keys(value.fields ?? {}).length > 0;
-const modelPromptOverrideBranchSchema = z.union([
+const modelPromptOverrideBranchSchema = /* @__PURE__ */ z.union([
   z.enum(['same', 'off']),
   modelPromptOverrideContentSchema.refine(hasOverrideContent, { message: 'Set files or fields, or use off' }),
 ]);
-export const modelPromptOverridesSchema = modelPromptOverrideContentSchema.extend({
+export const modelPromptOverridesSchema = /* @__PURE__ */ modelPromptOverrideContentSchema.extend({
   main: modelPromptOverrideBranchSchema.optional(),
   independent: modelPromptOverrideBranchSchema.optional(),
 }).superRefine((value, ctx) => {
@@ -490,8 +490,8 @@ export const modelPromptOverridesSchema = modelPromptOverrideContentSchema.exten
     if (value[position] === 'same' && !hasOverrideContent(value)) ctx.addIssue({ code: 'custom', path: [position], message: 'same requires common files or fields' });
   }
 });
-export const modelRequestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
-export const modelOverridesSchema = z.record(z.string(), z.unknown());
+export const modelRequestParamsSchema = /* @__PURE__ */ z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+export const modelOverridesSchema = /* @__PURE__ */ z.record(z.string(), z.unknown());
 
 /**
  * The single-model read/write projection (`GET`/`PATCH /models/{id}`). The
@@ -502,7 +502,7 @@ export const modelOverridesSchema = z.record(z.string(), z.unknown());
  * resolves model > provider > provider environment > vendor default and is
  * absent when no endpoint resolves. PATCH never accepts effective fields.
  */
-export const modelEntitySchema = z.object({
+export const modelEntitySchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   provider_id: z.string().min(1),
   enabled: z.boolean().optional(),
@@ -563,7 +563,7 @@ export type ModelEntity = z.infer<typeof modelEntitySchema>;
  * identity, not a value to clear. Writing or clearing `cognition` or
  * `prompt_overrides` requires `base_revision` from the model read.
  */
-export const patchModelRequestSchema = z
+export const patchModelRequestSchema = /* @__PURE__ */ z
   .object({
     base_revision: z.string().min(1).optional(),
     remote_id: z.string().min(1).optional(),
@@ -609,7 +609,7 @@ export type PatchModelRequest = z.infer<typeof patchModelRequestSchema>;
  * server suggests `provider_id/remote_id` — a creation-time naming
  * suggestion, never a rule for reading an existing id back.
  */
-export const createModelRequestSchema = z
+export const createModelRequestSchema = /* @__PURE__ */ z
   .object({
     id: z.string().min(1).optional(),
     provider_id: z.string().min(1),
@@ -644,7 +644,7 @@ export type CreateModelRequest = z.infer<typeof createModelRequestSchema>;
  * `null` to clear; `api_key` stays tri-state (absent keeps the stored key,
  * `""` clears, any other value replaces).
  */
-export const patchProviderRequestSchema = z
+export const patchProviderRequestSchema = /* @__PURE__ */ z
   .object({
     base_revision: z.string().min(1).optional(),
     enabled: z.boolean().nullable().optional(),
@@ -677,7 +677,7 @@ export type GetModelResponse = z.infer<typeof getModelResponseSchema>;
  * matches the stored entity, so nothing was written. `current` is the current
  * entity projection the caller must merge against.
  */
-export const revisionConflictDetailsSchema = z.object({
+export const revisionConflictDetailsSchema = /* @__PURE__ */ z.object({
   entity: z.enum(['model', 'provider']),
   id: z.string().min(1),
   expected_revision: z.string().min(1).optional(),
@@ -686,7 +686,7 @@ export const revisionConflictDetailsSchema = z.object({
 });
 export type RevisionConflictDetails = z.infer<typeof revisionConflictDetailsSchema>;
 
-const modelDraftSchema = z.object({
+const modelDraftSchema = /* @__PURE__ */ z.object({
   remote_id: z.string().min(1),
   max_context_size: z.number().int().min(1).optional(),
   display_name: z.string().min(1).optional(),
@@ -697,7 +697,7 @@ const modelDraftSchema = z.object({
   images: imagePolicySchema.optional(),
 });
 
-export const createProviderModelSchema = modelDraftSchema.extend({
+export const createProviderModelSchema = /* @__PURE__ */ modelDraftSchema.extend({
   protocol: modelProtocolSchema.optional(),
   auto_compact: createModelRequestSchema.shape.auto_compact,
   context_strategy: createModelRequestSchema.shape.context_strategy,
@@ -755,7 +755,7 @@ export const providerIdSchema = z
  * `provider_id/default_model`. Decision connections contain no chat models;
  * their `default_model` is an arbitrary remote name.
  */
-export const createProviderRequestSchema = z
+export const createProviderRequestSchema = /* @__PURE__ */ z
   .object({
     id: providerIdSchema,
     type: z.string().min(1),
@@ -798,7 +798,7 @@ export const createProviderRequestSchema = z
 export type CreateProviderRequest = z.infer<typeof createProviderRequestSchema>;
 
 /** Pruned catalog model shape — enough for the import preview, nothing more. */
-export const catalogModelItemSchema = z.object({
+export const catalogModelItemSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   name: z.string().optional(),
   max_context_size: z.number().int().min(1),
@@ -808,7 +808,7 @@ export const catalogModelItemSchema = z.object({
 });
 export type CatalogModelItem = z.infer<typeof catalogModelItemSchema>;
 
-export const providerWireTypeSchema = z.enum([
+export const providerWireTypeSchema = /* @__PURE__ */ z.enum([
   'kimi',
   'openai',
   'openai_responses',
@@ -822,7 +822,7 @@ export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
  * Why this client version cannot import a models.dev entry. Codes are stable;
  * clients render their own wording from them.
  */
-export const modelsDevRejectCodeSchema = z.enum([
+export const modelsDevRejectCodeSchema = /* @__PURE__ */ z.enum([
   'unknown-explicit-type',
   'proprietary-sdk',
   'empty-base-url',
@@ -837,7 +837,7 @@ export type ModelsDevRejectCode = z.infer<typeof modelsDevRejectCodeSchema>;
  * upstream wording for tooltips and clients that only read text.
  * `needs_base_url: true` means the import form must collect a base URL.
  */
-export const catalogProviderItemSchema = z.object({
+export const catalogProviderItemSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   wire_type: providerWireTypeSchema.nullable(),
@@ -866,7 +866,7 @@ export type CatalogProviderItem = z.infer<typeof catalogProviderItemSchema>;
  * the TUI). The global default_provider/default_model pointers are never
  * modified.
  */
-export const providerCollectionActionBodySchema = z.object({
+export const providerCollectionActionBodySchema = /* @__PURE__ */ z.object({
   catalog_id: z.string().min(1).optional(),
   api_key: z.string().optional(),
   base_url: z.string().optional(),
@@ -875,12 +875,12 @@ export const providerCollectionActionBodySchema = z.object({
 });
 export type ProviderCollectionActionBody = z.infer<typeof providerCollectionActionBodySchema>;
 
-export const refreshProviderRequestSchema = z.object({
+export const refreshProviderRequestSchema = /* @__PURE__ */ z.object({
   api_key: z.string().min(1).optional(),
 }).strict();
 export type RefreshProviderRequest = z.infer<typeof refreshProviderRequestSchema>;
 
-export const listCatalogProvidersResponseSchema = z.object({
+export const listCatalogProvidersResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(catalogProviderItemSchema),
 });
 export type ListCatalogProvidersResponse = z.infer<typeof listCatalogProvidersResponseSchema>;
@@ -888,13 +888,13 @@ export type ListCatalogProvidersResponse = z.infer<typeof listCatalogProvidersRe
 export const getCatalogProviderResponseSchema = catalogProviderItemSchema;
 export type GetCatalogProviderResponse = z.infer<typeof getCatalogProviderResponseSchema>;
 
-export const importCatalogProviderResponseSchema = z.object({
+export const importCatalogProviderResponseSchema = /* @__PURE__ */ z.object({
   provider: providerCatalogItemSchema,
   models_imported: z.number().int().min(0),
 });
 export type ImportCatalogProviderResponse = z.infer<typeof importCatalogProviderResponseSchema>;
 
-export const importCustomRegistryResponseSchema = z.object({
+export const importCustomRegistryResponseSchema = /* @__PURE__ */ z.object({
   providers: z.array(providerCatalogItemSchema),
   models_imported: z.number().int().min(0),
 });

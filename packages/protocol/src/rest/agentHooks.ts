@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const agentHooksInspectSchema = z.object({
+export const agentHooksInspectSchema = /* @__PURE__ */ z.object({
   revision: z.string(),
   binding: z.object({
     executorId: z.string(), modelId: z.string().optional(), remoteModelId: z.string().optional(),

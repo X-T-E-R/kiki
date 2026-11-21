@@ -9,8 +9,9 @@ import {
 
 import { maybe } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-const personaStorePutInputSchema = z.object({
+const personaStorePutInputSchema = /* @__PURE__ */ z.object({
   definition: personaDefinitionSchema.optional(),
   id: z.string().optional(),
   name: z.string().optional(),
@@ -34,7 +35,7 @@ const personaStorePutInputSchema = z.object({
   expectedRevision: z.string().optional(),
 }).strict();
 
-const personaDeleteResultSchema = z.object({
+const personaDeleteResultSchema = /* @__PURE__ */ z.object({
   memory: z.object({
     status: z.enum(['committed', 'pending', 'failed']),
     error: z.string().optional(),
@@ -42,15 +43,15 @@ const personaDeleteResultSchema = z.object({
 }).strict();
 
 export const personaStoreContract = {
-  list: { input: z.tuple([personaListQuerySchema.optional()]), output: z.array(personaSummarySchema) },
-  get: { input: z.tuple([z.string()]), output: maybe(personaSnapshotSchema) },
-  put: { input: z.tuple([personaStorePutInputSchema]), output: personaSnapshotSchema },
-  duplicate: {
-    input: z.tuple([z.string(), z.object({ id: z.string().optional(), name: z.string().optional() }).optional()]),
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([personaListQuerySchema.optional()]), output: /* @__PURE__ */ z.array(personaSummarySchema) }), 'input', 'output'),
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(personaSnapshotSchema) }), 'input', 'output'),
+  put: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([personaStorePutInputSchema]), output: personaSnapshotSchema }), 'input', 'output'),
+  duplicate: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string(), z.object({ id: z.string().optional(), name: z.string().optional() }).optional()]),
     output: personaSnapshotSchema,
-  },
-  archive: { input: z.tuple([z.string(), z.boolean().optional()]), output: personaStateSchema },
-  delete: { input: z.tuple([z.string(), z.string().optional()]), output: personaDeleteResultSchema },
+  }), 'input', 'output'),
+  archive: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), z.boolean().optional()]), output: personaStateSchema }), 'input', 'output'),
+  delete: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), z.string().optional()]), output: personaDeleteResultSchema }), 'input', 'output'),
 } satisfies ServiceContract;
 
 export type PersonaStoreContract = typeof personaStoreContract;

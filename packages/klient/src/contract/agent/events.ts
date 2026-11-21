@@ -29,30 +29,30 @@ type AgentEventRegistration = EventRegistration | StreamEventRegistration;
 
 // ── payload schemas ─────────────────────────────────────────────────────────
 
-export const turnStepStartedEventSchema = z.object({
+export const turnStepStartedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('turn.step.started'), time: z.number().optional(),
   turnId: z.number(), step: z.number(), stepId: z.string().optional(),
 });
 
-export const turnStepInterruptedEventSchema = z.object({
+export const turnStepInterruptedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('turn.step.interrupted'), time: z.number().optional(),
   turnId: z.number(), step: z.number(), stepId: z.string().optional(),
   reason: z.string(), message: z.string().optional(),
 });
 
-export const turnStepRetryingEventSchema = z.object({
+export const turnStepRetryingEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('turn.step.retrying'), time: z.number().optional(),
   turnId: z.number(), step: z.number(), stepId: z.string().optional(),
   failedAttempt: z.number(), nextAttempt: z.number(), maxAttempts: z.number(), delayMs: z.number(),
   errorName: z.string(), errorMessage: z.string(), statusCode: z.number().optional(),
 });
 
-export const hookResultEventSchema = z.object({
+export const hookResultEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('hook.result'), time: z.number().optional(),
   turnId: z.number().optional(), hookEvent: z.string(), content: z.string(), blocked: z.boolean().optional(),
 });
 
-export const goalSnapshotSchema = z.object({
+export const goalSnapshotSchema = /* @__PURE__ */ z.object({
   goalId: z.string(), objective: z.string(), completionCriterion: z.string().optional(),
   status: z.enum(['active', 'paused', 'blocked', 'complete']),
   followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
@@ -66,7 +66,7 @@ export const goalSnapshotSchema = z.object({
   }),
 });
 
-export const goalUpdatedEventSchema = z.object({
+export const goalUpdatedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('goal.updated'), time: z.number().optional(),
   snapshot: goalSnapshotSchema.nullable(),
   change: z.object({
@@ -76,7 +76,7 @@ export const goalUpdatedEventSchema = z.object({
   }).optional(),
 });
 
-export const turnStartedEventSchema = z.object({
+export const turnStartedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('turn.started'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -88,7 +88,7 @@ export const turnStartedEventSchema = z.object({
   promptId: z.string().optional(),
 });
 
-export const turnEndedEventSchema = z.object({
+export const turnEndedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('turn.ended'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -102,7 +102,7 @@ export const turnEndedEventSchema = z.object({
     .optional(),
 });
 
-export const assistantDeltaEventSchema = z.object({
+export const assistantDeltaEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('assistant.delta'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -113,14 +113,14 @@ export const assistantDeltaEventSchema = z.object({
   part: assistantStreamPartSchema.optional(),
 });
 
-export const thinkingDeltaEventSchema = z.object({
+export const thinkingDeltaEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('thinking.delta'),
   time: z.number().optional(),
   turnId: z.number(),
   delta: z.string(),
 });
 
-export const toolCallStartedEventSchema = z.object({
+export const toolCallStartedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('tool.call.started'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -132,7 +132,7 @@ export const toolCallStartedEventSchema = z.object({
   display: z.unknown().optional(),
 });
 
-export const toolCallDeltaEventSchema = z.object({
+export const toolCallDeltaEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('tool.call.delta'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -141,7 +141,7 @@ export const toolCallDeltaEventSchema = z.object({
   argumentsPart: z.string().optional(),
 });
 
-export const toolProgressEventSchema = z.object({
+export const toolProgressEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('tool.progress'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -157,7 +157,7 @@ export const toolProgressEventSchema = z.object({
   }),
 });
 
-export const toolResultEventSchema = z.object({
+export const toolResultEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('tool.result'),
   time: z.number().optional(),
   turnId: z.number(),
@@ -167,10 +167,10 @@ export const toolResultEventSchema = z.object({
   synthetic: z.boolean().optional(),
 });
 
-const promptContentPartSchema = z.unknown();
-const promptAppendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
+const promptContentPartSchema = /* @__PURE__ */ z.unknown();
+const promptAppendTimingSchema = /* @__PURE__ */ z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
 
-export const promptSubmittedEventSchema = z.object({
+export const promptSubmittedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.submitted'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -182,7 +182,7 @@ export const promptSubmittedEventSchema = z.object({
   revision: z.number().int().nonnegative().optional(),
 });
 
-export const promptQueuedEventSchema = z.object({
+export const promptQueuedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.queued'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -192,13 +192,13 @@ export const promptQueuedEventSchema = z.object({
   revision: z.number().int().nonnegative().optional(),
 });
 
-export const promptStartedEventSchema = z.object({
+export const promptStartedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.started'),
   time: z.number().optional(),
   promptId: z.string(),
 });
 
-export const promptReplacedEventSchema = z.object({
+export const promptReplacedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.replaced'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -208,7 +208,7 @@ export const promptReplacedEventSchema = z.object({
   revision: z.number().int().nonnegative().optional(),
 });
 
-export const promptTimingChangedEventSchema = z.object({
+export const promptTimingChangedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.timing_changed'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -217,7 +217,7 @@ export const promptTimingChangedEventSchema = z.object({
   changedAt: z.string(),
 });
 
-export const promptSteeredEventSchema = z.object({
+export const promptSteeredEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.steered'),
   time: z.number().optional(),
   activePromptId: z.string(),
@@ -226,7 +226,7 @@ export const promptSteeredEventSchema = z.object({
   steeredAt: z.string(),
 });
 
-export const promptCompletedEventSchema = z.object({
+export const promptCompletedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.completed'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -235,7 +235,7 @@ export const promptCompletedEventSchema = z.object({
   reason: z.enum(['completed', 'failed', 'blocked']).optional(),
 });
 
-export const promptAbortedEventSchema = z.object({
+export const promptAbortedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.aborted'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -244,7 +244,7 @@ export const promptAbortedEventSchema = z.object({
   beforeStart: z.boolean().optional(),
 });
 
-export const promptMovedEventSchema = z.object({
+export const promptMovedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('prompt.moved'),
   time: z.number().optional(),
   promptId: z.string(),
@@ -253,7 +253,7 @@ export const promptMovedEventSchema = z.object({
   movedAt: z.string(),
 });
 
-export const compactionStartedEventSchema = z.object({
+export const compactionStartedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('compaction.started'),
   time: z.number().optional(),
   trigger: z.enum(['manual', 'auto']),
@@ -261,13 +261,13 @@ export const compactionStartedEventSchema = z.object({
   phase: z.enum(['queued', 'running']).optional(),
 });
 
-export const compactionBlockedEventSchema = z.object({
+export const compactionBlockedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('compaction.blocked'),
   time: z.number().optional(),
   turnId: z.number().optional(),
 });
 
-export const compactionCancelledEventSchema = z.object({
+export const compactionCancelledEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('compaction.cancelled'),
   time: z.number().optional(),
   trigger: z.enum(['manual', 'auto']).optional(),
@@ -280,7 +280,7 @@ export const compactionCancelledEventSchema = z.object({
  * strips it before publishing (`fullCompactionService.ts`), so it never
  * reaches the wire.
  */
-export const compactionCompletedEventSchema = z.object({
+export const compactionCompletedEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('compaction.completed'),
   time: z.number().optional(),
   trigger: z.enum(['manual', 'auto']).optional(),
@@ -300,7 +300,7 @@ export const compactionCompletedEventSchema = z.object({
 });
 
 /** Engine `permission.approval.requested` — not in the protocol union; loose. */
-export const permissionApprovalRequestedEventSchema = z.looseObject({
+export const permissionApprovalRequestedEventSchema = /* @__PURE__ */ z.looseObject({
   time: z.number().optional(),
   turnId: z.number(),
   toolCallId: z.string(),
@@ -309,19 +309,19 @@ export const permissionApprovalRequestedEventSchema = z.looseObject({
 });
 
 /** Engine `permission.approval.resolved` — not in the protocol union; loose. */
-export const permissionApprovalResolvedEventSchema = z.looseObject({
+export const permissionApprovalResolvedEventSchema = /* @__PURE__ */ z.looseObject({
   time: z.number().optional(),
   turnId: z.number(),
   toolCallId: z.string(),
 });
 
 /** `error` payloads carry the full `KimiErrorPayload`; kept loose. */
-export const errorEventSchema = z.looseObject({
+export const errorEventSchema = /* @__PURE__ */ z.looseObject({
   time: z.number().optional(),
   message: z.string(),
 });
 
-export const warningEventSchema = z.object({
+export const warningEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('warning'),
   time: z.number().optional(),
   message: z.string(),
@@ -329,7 +329,7 @@ export const warningEventSchema = z.object({
 });
 
 /** `agent.status.updated` carries a wide optional status bag; kept loose. */
-export const agentStatusUpdatedEventSchema = z.looseObject({
+export const agentStatusUpdatedEventSchema = /* @__PURE__ */ z.looseObject({
   time: z.number().optional(),
   phase: z.string().optional(),
   autoCompactTokens: z.number().optional(),

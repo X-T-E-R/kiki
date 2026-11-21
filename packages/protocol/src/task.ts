@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { isoDateTimeSchema } from './time';
 import { agentRunSourceSchema } from './agentReference';
 
-export const taskKindSchema = z.enum(['subagent', 'bash', 'tool']);
+export const taskKindSchema = /* @__PURE__ */ z.enum(['subagent', 'bash', 'tool']);
 export type TaskKind = z.infer<typeof taskKindSchema>;
 
-export const taskStatusSchema = z.enum([
+export const taskStatusSchema = /* @__PURE__ */ z.enum([
   'running',
   'completed',
   'failed',
@@ -14,7 +14,7 @@ export const taskStatusSchema = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
-export const taskReceiptSchema = z.object({
+export const taskReceiptSchema = /* @__PURE__ */ z.object({
   schemaVersion: z.literal(1),
   path: z.string(),
   mediaType: z.string(),
@@ -26,7 +26,7 @@ export const taskReceiptSchema = z.object({
 });
 export type TaskReceipt = z.infer<typeof taskReceiptSchema>;
 
-export const taskSchema = z.object({
+export const taskSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   session_id: z.string().min(1),
   kind: taskKindSchema,

@@ -12,7 +12,7 @@ import { isoDateTimeSchema } from './time';
 import { workspaceIdSchema } from './workspace';
 import { usageAccountingSnapshotSchema } from './rest/usage';
 
-export const sessionUsageSchema = z.object({
+export const sessionUsageSchema = /* @__PURE__ */ z.object({
   input_tokens: z.number().int().nonnegative(),
   output_tokens: z.number().int().nonnegative(),
   cache_read_tokens: z.number().int().nonnegative(),
@@ -34,7 +34,7 @@ export type SessionUsage = z.infer<typeof sessionUsageSchema>;
  * read threw and `usage` is the zero placeholder; `agent-read-failed` means a
  * sub-agent's usage was skipped, so the totals understate.
  */
-export const sessionUsageErrorSchema = z.enum(['read-failed', 'agent-read-failed']);
+export const sessionUsageErrorSchema = /* @__PURE__ */ z.enum(['read-failed', 'agent-read-failed']);
 export type SessionUsageError = z.infer<typeof sessionUsageErrorSchema>;
 
 export function emptySessionUsage(): SessionUsage {
@@ -50,12 +50,12 @@ export function emptySessionUsage(): SessionUsage {
   };
 }
 
-export const permissionRuleMatcherSchema = z.object({
+export const permissionRuleMatcherSchema = /* @__PURE__ */ z.object({
   kind: z.enum(['command_prefix', 'path_glob', 'exact_input', 'always']),
   value: z.string().optional(),
 });
 
-export const permissionRuleSchema = z.object({
+export const permissionRuleSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   tool_name: z.string().min(1),
   matcher: permissionRuleMatcherSchema.optional(),
@@ -73,7 +73,7 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
  * main agent. List placeholders carry only `model`/`profile`, so the flags stay
  * Write-only controls (thinking, goals) belong to the patch schemas.
  */
-export const sessionAgentConfigSchema = z.object({
+export const sessionAgentConfigSchema = /* @__PURE__ */ z.object({
   model: z.string(),
   execution: executionBindingSchema.optional(),
   profile: z.string().min(1).optional(),
@@ -90,7 +90,7 @@ export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
  * is applied by the server. Unknown keys (`system_prompt`, `tools`,
  * `mcp_servers`) are validation errors.
  */
-export const sessionAgentConfigPartialSchema = z.strictObject({
+export const sessionAgentConfigPartialSchema = /* @__PURE__ */ z.strictObject({
   execution: executionSelectionSchema.optional(),
   model: z.string().optional(),
   profile: z.string().min(1).optional(),
@@ -108,13 +108,13 @@ export type SessionAgentConfigPartial = z.infer<typeof sessionAgentConfigPartial
  * created has no goal to resume or cancel, and creating one is a distinct
  * operation with its own route.
  */
-export const sessionAgentConfigCreateSchema = sessionAgentConfigPartialSchema.omit({
+export const sessionAgentConfigCreateSchema = /* @__PURE__ */ sessionAgentConfigPartialSchema.omit({
   goal_objective: true,
   goal_control: true,
 });
 export type SessionAgentConfigCreate = z.infer<typeof sessionAgentConfigCreateSchema>;
 
-export const sessionMetadataSchema = z
+export const sessionMetadataSchema = /* @__PURE__ */ z
   .object({
     cwd: z.string().min(1),
   })
@@ -122,30 +122,30 @@ export const sessionMetadataSchema = z
 
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 
-export const sessionPendingInteractionSchema = z.enum(['none', 'approval', 'question']);
+export const sessionPendingInteractionSchema = /* @__PURE__ */ z.enum(['none', 'approval', 'question']);
 export type SessionPendingInteraction = z.infer<typeof sessionPendingInteractionSchema>;
 
-export const sessionWorktreeSchema = z.object({
+export const sessionWorktreeSchema = /* @__PURE__ */ z.object({
   worktree_id: z.string(),
   branch: z.string(),
   source_root: z.string(),
   base_ref: z.string(),
 });
 
-export const worktreeIsolationSchema = z.object({
+export const worktreeIsolationSchema = /* @__PURE__ */ z.object({
   kind: z.literal('worktree'),
   branch: z.string().optional(),
   base: z.union([z.enum(['head', 'fresh']), z.object({ ref: z.string().min(1) })]).optional(),
 });
 
-export const sessionDeliverySchema = z.enum(['reply', 'message']);
+export const sessionDeliverySchema = /* @__PURE__ */ z.enum(['reply', 'message']);
 export type SessionDelivery = z.infer<typeof sessionDeliverySchema>;
 
-export const sessionSeedModeSchema = z.enum(['fresh', 'compact', 'verbatim']);
+export const sessionSeedModeSchema = /* @__PURE__ */ z.enum(['fresh', 'compact', 'verbatim']);
 export type SessionSeedMode = z.infer<typeof sessionSeedModeSchema>;
 
 /** Where a promoted thread came from: the subagent whose conversation seeded it. */
-export const sessionPromotedFromSchema = z.object({
+export const sessionPromotedFromSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   agent_id: z.string().min(1),
   agent_name: z.string().optional(),
@@ -155,7 +155,7 @@ export const sessionPromotedFromSchema = z.object({
 export type SessionPromotedFrom = z.infer<typeof sessionPromotedFromSchema>;
 
 /** Where a forked session came from: the source session and turn/message boundary it split off from. */
-export const sessionForkedFromSchema = z.object({
+export const sessionForkedFromSchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1),
   title: z.string().optional(),
   through_message_id: z.string().min(1).optional(),
@@ -166,14 +166,14 @@ export const sessionForkedFromSchema = z.object({
 });
 export type SessionForkedFrom = z.infer<typeof sessionForkedFromSchema>;
 
-export const sessionAttentionCursorSchema = z.object({
+export const sessionAttentionCursorSchema = /* @__PURE__ */ z.object({
   epoch: z.string().min(1),
   seq: z.number().int().nonnegative(),
 });
 
 export type SessionAttentionCursor = z.infer<typeof sessionAttentionCursorSchema>;
 
-export const sessionSchema = z.object({
+export const sessionSchema = /* @__PURE__ */ z.object({
   executor_id: z.string().optional(),
   negotiated: executorCapabilitiesSchema.shape.negotiated,
   allow_kiki_subagents: z.boolean().optional(),
@@ -237,7 +237,7 @@ export const sessionSchema = z.object({
 
 export type Session = z.infer<typeof sessionSchema>;
 
-export const sessionCreateSchema = z.object({
+export const sessionCreateSchema = /* @__PURE__ */ z.object({
   creation_id: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   title: z.string().min(1).optional(),
   delivery: sessionDeliverySchema.optional(),
@@ -262,7 +262,7 @@ export const sessionCreateSchema = z.object({
 
 export type SessionCreate = z.infer<typeof sessionCreateSchema>;
 
-export const sessionUpdateSchema = z.object({
+export const sessionUpdateSchema = /* @__PURE__ */ z.object({
   title: z.string().min(1).optional(),
   delivery: sessionDeliverySchema.optional(),
   private: z.boolean().optional(),
@@ -273,19 +273,19 @@ export const sessionUpdateSchema = z.object({
 
 export type SessionUpdate = z.infer<typeof sessionUpdateSchema>;
 
-export const expectedSessionCursorSchema = z.object({
+export const expectedSessionCursorSchema = /* @__PURE__ */ z.object({
   seq: z.number().int().nonnegative(),
   epoch: z.string().min(1),
 });
 export type ExpectedSessionCursor = z.infer<typeof expectedSessionCursorSchema>;
 
-export const sessionSeedCarrySchema = z.union([
+export const sessionSeedCarrySchema = /* @__PURE__ */ z.union([
   z.object({ last: z.number().int().nonnegative() }).strict(),
   z.object({ fromMessageId: z.string().min(1) }).strict(),
 ]);
 export type SessionSeedCarry = z.infer<typeof sessionSeedCarrySchema>;
 
-export const sessionBranchCreateSchema = z.object({
+export const sessionBranchCreateSchema = /* @__PURE__ */ z.object({
   parent_agent_id: z.string().min(1).optional(),
   task: z.string().optional(),
   prompt: z.string().optional(),
@@ -300,7 +300,7 @@ export const sessionBranchCreateSchema = z.object({
 }).strict();
 export type SessionBranchCreate = z.infer<typeof sessionBranchCreateSchema>;
 
-export const sessionBranchFoldSchema = z.object({
+export const sessionBranchFoldSchema = /* @__PURE__ */ z.object({
   branch_id: z.string().min(1),
   summary: z.string().optional(),
   context: z.string().optional(),
@@ -309,18 +309,18 @@ export const sessionBranchFoldSchema = z.object({
 }).strict();
 export type SessionBranchFold = z.infer<typeof sessionBranchFoldSchema>;
 
-export const sessionBranchDiscardSchema = z.object({
+export const sessionBranchDiscardSchema = /* @__PURE__ */ z.object({
   branch_id: z.string().min(1),
 }).strict();
 export type SessionBranchDiscard = z.infer<typeof sessionBranchDiscardSchema>;
 
-export const sessionBranchToolsLockSchema = z.object({
+export const sessionBranchToolsLockSchema = /* @__PURE__ */ z.object({
   branch_id: z.string().min(1),
   locked: z.boolean(),
 }).strict();
 export type SessionBranchToolsLock = z.infer<typeof sessionBranchToolsLockSchema>;
 
-export const sessionForkSchema = z.object({
+export const sessionForkSchema = /* @__PURE__ */ z.object({
   title: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   seed: sessionSeedModeSchema.optional(),
@@ -332,14 +332,14 @@ export const sessionForkSchema = z.object({
 export type SessionFork = z.infer<typeof sessionForkSchema>;
 
 /** Body of `POST /sessions/{id}/agents/{agent_id}:promote`. */
-export const sessionAgentPromoteSchema = z.object({
+export const sessionAgentPromoteSchema = /* @__PURE__ */ z.object({
   title: z.string().trim().min(1).optional(),
   profile: z.string().trim().min(1).optional(),
 });
 
 export type SessionAgentPromote = z.infer<typeof sessionAgentPromoteSchema>;
 
-export const sessionChildCreateSchema = z.object({
+export const sessionChildCreateSchema = /* @__PURE__ */ z.object({
   title: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });

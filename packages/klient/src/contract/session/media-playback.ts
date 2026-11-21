@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const sessionMediaPlaybackSchema = z.object({
+export const sessionMediaPlaybackSchema = /* @__PURE__ */ z.object({
   preview_id: z.string().regex(/^[a-f0-9]{64}$/u),
   url: z.string().min(1),
   mime: z.string().min(1),

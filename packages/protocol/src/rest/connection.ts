@@ -12,7 +12,7 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from '../time';
 
-export const connectionSchema = z.object({
+export const connectionSchema = /* @__PURE__ */ z.object({
   /** Server-assigned connection id (`conn_<ulid>`). */
   id: z.string().min(1),
   /** ISO 8601 UTC timestamp the socket was accepted at. */
@@ -29,7 +29,7 @@ export const connectionSchema = z.object({
 
 export type Connection = z.infer<typeof connectionSchema>;
 
-export const connectionsListResponseSchema = z.object({
+export const connectionsListResponseSchema = /* @__PURE__ */ z.object({
   connections: z.array(connectionSchema),
 });
 

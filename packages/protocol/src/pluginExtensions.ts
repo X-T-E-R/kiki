@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Localized display text map keyed by locale tag (`en`, `zh`, etc.). */
-export const pluginLocalizedTextSchema = z.object({
+export const pluginLocalizedTextSchema = /* @__PURE__ */ z.object({
   default: z.string().min(1).max(240),
   zh: z.string().min(1).max(240).optional(),
   en: z.string().min(1).max(240).optional(),
@@ -9,7 +9,7 @@ export const pluginLocalizedTextSchema = z.object({
 export type PluginLocalizedText = z.infer<typeof pluginLocalizedTextSchema>;
 
 /** Declarative action executed when a user interacts with a plugin GUI slot item. */
-export const pluginSlotActionSchema = z.discriminatedUnion('kind', [
+export const pluginSlotActionSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('insert_prompt'),
     text: z.string().min(1).max(16_384),
@@ -33,7 +33,7 @@ export const pluginSlotActionSchema = z.discriminatedUnion('kind', [
 export type PluginSlotAction = z.infer<typeof pluginSlotActionSchema>;
 
 /** Slot 1: Composer toolbar badge or compact action button. */
-export const pluginComposerToolbarSlotSchema = z.object({
+export const pluginComposerToolbarSlotSchema = /* @__PURE__ */ z.object({
   slot: z.literal('composer-toolbar'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -47,7 +47,7 @@ export const pluginComposerToolbarSlotSchema = z.object({
 }).strict();
 
 /** Slot 2: Status-bar capsule displaying concise live plugin telemetry or mode state. */
-export const pluginStatusCapsuleSlotSchema = z.object({
+export const pluginStatusCapsuleSlotSchema = /* @__PURE__ */ z.object({
   slot: z.literal('status-capsule'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -60,7 +60,7 @@ export const pluginStatusCapsuleSlotSchema = z.object({
 }).strict();
 
 /** Slot 3: Message hover/context action menu entry. */
-export const pluginMessageActionSlotSchema = z.object({
+export const pluginMessageActionSlotSchema = /* @__PURE__ */ z.object({
   slot: z.literal('message-action'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -72,7 +72,7 @@ export const pluginMessageActionSlotSchema = z.object({
 }).strict();
 
 /** Slot 4: Slash command palette declarative item contributed by a plugin. */
-export const pluginSlashCommandSlotSchema = z.object({
+export const pluginSlashCommandSlotSchema = /* @__PURE__ */ z.object({
   slot: z.literal('slash-command'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -85,7 +85,7 @@ export const pluginSlashCommandSlotSchema = z.object({
 }).strict();
 
 /** Slot 5: Native Settings page declarative section descriptor. */
-export const pluginSettingsSectionSlotSchema = z.object({
+export const pluginSettingsSectionSlotSchema = /* @__PURE__ */ z.object({
   slot: z.literal('settings-section'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -96,14 +96,14 @@ export const pluginSettingsSectionSlotSchema = z.object({
 }).strict();
 
 /** Declarative field mapping for custom tool card semantic rendering (Slot 6). */
-export const pluginToolCardFieldSpecSchema = z.object({
+export const pluginToolCardFieldSpecSchema = /* @__PURE__ */ z.object({
   label: pluginLocalizedTextSchema,
   sourcePath: z.string().min(1).max(120),
   format: z.enum(['inline-text', 'code', 'file-path', 'badge', 'key-value', 'diff']).default('inline-text'),
 }).strict();
 
 /** Slot 6: Declarative custom tool-card renderer avoiding untrusted JSX execution in the main renderer. */
-export const pluginToolCardRendererSlotSchema = z.object({
+export const pluginToolCardRendererSlotSchema = /* @__PURE__ */ z.object({
   slot: z.literal('tool-card-renderer'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
@@ -116,7 +116,7 @@ export const pluginToolCardRendererSlotSchema = z.object({
 }).strict();
 
 /** Slot 7 & 8: Declarative sidebar panel or inspector tab mounted over the sandboxed `kiki.panel.v1` bridge. */
-export const pluginSandboxedPanelSlotSchema = z.object({
+export const pluginSandboxedPanelSlotSchema = /* @__PURE__ */ z.object({
   slot: z.enum(['sidebar-panel', 'inspector-tab']),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9:-]{0,63}$/),
@@ -128,7 +128,7 @@ export const pluginSandboxedPanelSlotSchema = z.object({
 }).strict();
 
 /** Discriminated union of all declarative GUI extension slots (E12). */
-export const pluginGuiSlotContributionSchema = z.discriminatedUnion('slot', [
+export const pluginGuiSlotContributionSchema = /* @__PURE__ */ z.discriminatedUnion('slot', [
   pluginComposerToolbarSlotSchema,
   pluginStatusCapsuleSlotSchema,
   pluginMessageActionSlotSchema,
@@ -140,7 +140,7 @@ export const pluginGuiSlotContributionSchema = z.discriminatedUnion('slot', [
 export type PluginGuiSlotContribution = z.infer<typeof pluginGuiSlotContributionSchema>;
 
 /** Manifest/runtime GUI slot declaration allowing `pluginId` to be omitted and stamped by the host. */
-export const pluginGuiSlotDeclarationSchema = z.discriminatedUnion('slot', [
+export const pluginGuiSlotDeclarationSchema = /* @__PURE__ */ z.discriminatedUnion('slot', [
   pluginComposerToolbarSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
   pluginStatusCapsuleSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
   pluginMessageActionSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
@@ -152,7 +152,7 @@ export const pluginGuiSlotDeclarationSchema = z.discriminatedUnion('slot', [
 export type PluginGuiSlotDeclaration = z.infer<typeof pluginGuiSlotDeclarationSchema>;
 
 /** Descriptor for an authenticated `/api/plugins/:pluginId/*` HTTP route (E12). */
-export const pluginHttpRouteDescriptorSchema = z.object({
+export const pluginHttpRouteDescriptorSchema = /* @__PURE__ */ z.object({
   pluginId: z.string().min(1),
   method: z.enum(['GET', 'POST', 'PUT', 'DELETE']),
   subpath: z.string().regex(/^\/[a-zA-Z0-9/_:-]{1,120}$/),
@@ -162,13 +162,13 @@ export const pluginHttpRouteDescriptorSchema = z.object({
 export type PluginHttpRouteDescriptor = z.infer<typeof pluginHttpRouteDescriptorSchema>;
 
 /** Manifest/runtime HTTP route declaration allowing `pluginId` to be omitted and stamped by the host. */
-export const pluginHttpRouteDeclarationSchema = pluginHttpRouteDescriptorSchema
+export const pluginHttpRouteDeclarationSchema = /* @__PURE__ */ pluginHttpRouteDescriptorSchema
   .extend({ pluginId: z.string().min(1).optional() })
   .strict();
 export type PluginHttpRouteDeclaration = z.infer<typeof pluginHttpRouteDeclarationSchema>;
 
 /** Descriptor for an authenticated WebSocket topic broadcast under `event.plugin.topic` (E12). */
-export const pluginWsTopicDescriptorSchema = z.object({
+export const pluginWsTopicDescriptorSchema = /* @__PURE__ */ z.object({
   pluginId: z.string().min(1),
   topic: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
   scopeAcl: z.enum(['global', 'space', 'session']).default('session'),
@@ -176,13 +176,13 @@ export const pluginWsTopicDescriptorSchema = z.object({
 export type PluginWsTopicDescriptor = z.infer<typeof pluginWsTopicDescriptorSchema>;
 
 /** Runtime WebSocket topic declaration allowing `pluginId` to be omitted and stamped by the host. */
-export const pluginWsTopicDeclarationSchema = pluginWsTopicDescriptorSchema
+export const pluginWsTopicDeclarationSchema = /* @__PURE__ */ pluginWsTopicDescriptorSchema
   .extend({ pluginId: z.string().min(1).optional() })
   .strict();
 export type PluginWsTopicDeclaration = z.infer<typeof pluginWsTopicDeclarationSchema>;
 
 /** Wire event pushed over `/api/ws` for subscribed plugin topics. */
-export const pluginWsTopicEventSchema = z.object({
+export const pluginWsTopicEventSchema = /* @__PURE__ */ z.object({
   type: z.literal('event.plugin.topic'),
   plugin_id: z.string().min(1),
   topic: z.string().min(1),
@@ -193,7 +193,7 @@ export const pluginWsTopicEventSchema = z.object({
 export type PluginWsTopicEvent = z.infer<typeof pluginWsTopicEventSchema>;
 
 /** REST response schema for `GET /api/plugins/gui-slots`. */
-export const listPluginGuiSlotsResponseSchema = z.object({
+export const listPluginGuiSlotsResponseSchema = /* @__PURE__ */ z.object({
   slots: z.array(pluginGuiSlotContributionSchema),
 }).strict();
 export type ListPluginGuiSlotsResponse = z.infer<typeof listPluginGuiSlotsResponseSchema>;

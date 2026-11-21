@@ -3,7 +3,7 @@ import { z } from 'zod';
 const ISO_8601_REGEX =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)$/;
 
-export const isoDateTimeSchema = z
+export const isoDateTimeSchema = /* @__PURE__ */ z
   .string()
   .refine((value) => ISO_8601_REGEX.test(value), {
     message: 'must be an ISO 8601 datetime string',

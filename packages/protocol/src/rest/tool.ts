@@ -17,22 +17,22 @@ import { z } from 'zod';
 
 import { mcpServerSchema, toolDescriptorSchema } from '../tool';
 
-export const listToolsQuerySchema = z.object({
+export const listToolsQuerySchema = /* @__PURE__ */ z.object({
   session_id: z.string().min(1).optional(),
 });
 export type ListToolsQuery = z.infer<typeof listToolsQuerySchema>;
 
-export const listToolsResponseSchema = z.object({
+export const listToolsResponseSchema = /* @__PURE__ */ z.object({
   tools: z.array(toolDescriptorSchema),
 });
 export type ListToolsResponse = z.infer<typeof listToolsResponseSchema>;
 
-export const listMcpServersResponseSchema = z.object({
+export const listMcpServersResponseSchema = /* @__PURE__ */ z.object({
   servers: z.array(mcpServerSchema),
 });
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>;
 
-export const restartMcpServerResultSchema = z.object({
+export const restartMcpServerResultSchema = /* @__PURE__ */ z.object({
   restarting: z.literal(true),
 });
 export type RestartMcpServerResult = z.infer<typeof restartMcpServerResultSchema>;

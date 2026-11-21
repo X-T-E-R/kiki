@@ -2,13 +2,13 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from './time';
 
-export const approvalDecisionSchema = z.enum(['approved', 'rejected', 'cancelled']);
+export const approvalDecisionSchema = /* @__PURE__ */ z.enum(['approved', 'rejected', 'cancelled']);
 export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>;
 
-export const approvalScopeSchema = z.enum(['session']);
+export const approvalScopeSchema = /* @__PURE__ */ z.enum(['session']);
 export type ApprovalScope = z.infer<typeof approvalScopeSchema>;
 
-export const approvalRequestSchema = z.object({
+export const approvalRequestSchema = /* @__PURE__ */ z.object({
   approval_id: z.string().min(1),
   session_id: z.string().min(1),
   agent_id: z.string().min(1).optional(),
@@ -31,7 +31,7 @@ export const approvalRequestSchema = z.object({
 });
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
 
-export const approvalResponseSchema = z.object({
+export const approvalResponseSchema = /* @__PURE__ */ z.object({
   decision: approvalDecisionSchema,
   scope: approvalScopeSchema.optional(),
   feedback: z.string().optional(),

@@ -9,8 +9,9 @@
 import { z } from 'zod';
 
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const skillSummarySchema = z.object({
+export const skillSummarySchema = /* @__PURE__ */ z.object({
   name: z.string(),
   description: z.string(),
   path: z.string(),
@@ -21,5 +22,5 @@ export const skillSummarySchema = z.object({
 });
 
 export const sessionSkillCatalogContract = {
-  list: { input: z.tuple([]), output: z.array(skillSummarySchema) },
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(skillSummarySchema) }), 'input', 'output'),
 } satisfies ServiceContract;

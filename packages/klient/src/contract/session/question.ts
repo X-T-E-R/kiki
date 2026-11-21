@@ -8,13 +8,14 @@ import { z } from 'zod';
 
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const questionOptionSchema = z.object({
+export const questionOptionSchema = /* @__PURE__ */ z.object({
   label: z.string(),
   description: z.string().optional(),
 });
 
-export const questionItemSchema = z.object({
+export const questionItemSchema = /* @__PURE__ */ z.object({
   question: z.string(),
   header: z.string().optional(),
   body: z.string().optional(),
@@ -25,24 +26,24 @@ export const questionItemSchema = z.object({
 });
 
 /** `QuestionAnswers = Record<string, string | true>`. */
-export const questionAnswersSchema = z.record(
+export const questionAnswersSchema = /* @__PURE__ */ z.record(
   z.string(),
   z.union([z.string(), z.literal(true)]),
 );
 
-export const questionResponseSchema = z.object({
+export const questionResponseSchema = /* @__PURE__ */ z.object({
   answers: questionAnswersSchema,
   method: z.enum(['enter', 'space', 'number_key']).optional(),
 });
 
 /** `QuestionResult = null | QuestionAnswers | QuestionResponse`. */
-export const questionResultSchema = z.union([
+export const questionResultSchema = /* @__PURE__ */ z.union([
   z.null(),
   questionAnswersSchema,
   questionResponseSchema,
 ]);
 
-export const questionRequestSchema = z.object({
+export const questionRequestSchema = /* @__PURE__ */ z.object({
   id: z.string().optional(),
   turnId: z.number().optional(),
   toolCallId: z.string().optional(),
@@ -50,7 +51,7 @@ export const questionRequestSchema = z.object({
 });
 
 export const sessionQuestionContract = {
-  listPending: { input: z.tuple([]), output: z.array(questionRequestSchema) },
-  answer: { input: z.tuple([z.string(), questionResultSchema]), output: noResult },
-  dismiss: { input: z.tuple([z.string()]), output: noResult },
+  listPending: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(questionRequestSchema) }), 'input', 'output'),
+  answer: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), questionResultSchema]), output: noResult }), 'input', 'output'),
+  dismiss: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

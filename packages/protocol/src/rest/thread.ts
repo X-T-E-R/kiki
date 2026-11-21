@@ -14,20 +14,20 @@ import {
   threadTurnSchema,
 } from '../thread';
 
-export const listThreadsQuerySchema = z.object({
+export const listThreadsQuerySchema = /* @__PURE__ */ z.object({
   workspace_id: z.string().trim().min(1).optional(),
   cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 export type ListThreadsQuery = z.infer<typeof listThreadsQuerySchema>;
 
-export const listThreadsResponseSchema = z.object({
+export const listThreadsResponseSchema = /* @__PURE__ */ z.object({
   threads: z.array(threadSummarySchema),
   next_cursor: z.string().optional(),
 });
 export type ListThreadsResponse = z.infer<typeof listThreadsResponseSchema>;
 
-export const readThreadRequestSchema = z.object({
+export const readThreadRequestSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   content_ref: contentRefSchema.optional(),
   cursor: z.string().min(1).optional(),
@@ -35,7 +35,7 @@ export const readThreadRequestSchema = z.object({
 });
 export type ReadThreadRequest = z.infer<typeof readThreadRequestSchema>;
 
-export const readThreadResponseSchema = z.object({
+export const readThreadResponseSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   next_cursor: z.string().optional(),
@@ -44,7 +44,7 @@ export const readThreadResponseSchema = z.object({
 });
 export type ReadThreadResponse = z.infer<typeof readThreadResponseSchema>;
 
-export const sendThreadMessageRequestSchema = z
+export const sendThreadMessageRequestSchema = /* @__PURE__ */ z
   .object({
     target: threadRefSchema,
     content: z.string().min(1).max(100_000),
@@ -53,7 +53,7 @@ export const sendThreadMessageRequestSchema = z
   .strict();
 export type SendThreadMessageRequest = z.infer<typeof sendThreadMessageRequestSchema>;
 
-export const sendThreadMessageResponseSchema = z.object({
+export const sendThreadMessageResponseSchema = /* @__PURE__ */ z.object({
   message_id: z.string().min(1),
   target_seq: z.number().int().nonnegative(),
   accepted_at: z.number().int().nonnegative(),
@@ -62,12 +62,12 @@ export const sendThreadMessageResponseSchema = z.object({
 });
 export type SendThreadMessageResponse = z.infer<typeof sendThreadMessageResponseSchema>;
 
-export const waitThreadInputSchema = z.object({
+export const waitThreadInputSchema = /* @__PURE__ */ z.object({
   thread: threadRefSchema,
   cursor: z.string().min(1).optional(),
 });
 
-export const waitThreadsRequestSchema = z
+export const waitThreadsRequestSchema = /* @__PURE__ */ z
   .object({
     threads: z.array(waitThreadInputSchema).min(1).max(8),
     timeout_ms: z.number().int().min(0).max(60_000).optional(),
@@ -88,7 +88,7 @@ export const waitThreadsRequestSchema = z
   });
 export type WaitThreadsRequest = z.infer<typeof waitThreadsRequestSchema>;
 
-export const waitThreadsResponseSchema = z.object({
+export const waitThreadsResponseSchema = /* @__PURE__ */ z.object({
   threads: z.array(
     z.object({
       thread: threadRefSchema,
@@ -100,13 +100,13 @@ export const waitThreadsResponseSchema = z.object({
 });
 export type WaitThreadsResponse = z.infer<typeof waitThreadsResponseSchema>;
 
-export const threadWorkspaceParamSchema = z.object({
+export const threadWorkspaceParamSchema = /* @__PURE__ */ z.object({
   workspace_id: z.string().trim().min(1),
 });
 
-export const setThreadWorkspaceOverrideRequestSchema = z.object({ enabled: z.boolean() });
+export const setThreadWorkspaceOverrideRequestSchema = /* @__PURE__ */ z.object({ enabled: z.boolean() });
 
-export const threadWorkspaceOverrideResponseSchema = z.object({
+export const threadWorkspaceOverrideResponseSchema = /* @__PURE__ */ z.object({
   override: z.boolean().nullable(),
   effective_enabled: z.boolean(),
 });
@@ -114,20 +114,20 @@ export type ThreadWorkspaceOverrideResponse = z.infer<
   typeof threadWorkspaceOverrideResponseSchema
 >;
 
-export const threadMessageEndpointSchema = z.object({
+export const threadMessageEndpointSchema = /* @__PURE__ */ z.object({
   ref: threadRefSchema,
   title: z.string().optional(),
   deleted: z.boolean(),
   archived: z.boolean(),
 });
 
-export const threadDeliveryReasonCodeSchema = z.enum([
+export const threadDeliveryReasonCodeSchema = /* @__PURE__ */ z.enum([
   'thread_not_found', 'thread_archived', 'communication_disabled', 'cross_host',
   'prompt_rejected', 'session_unavailable', 'workspace_unavailable', 'executor_unavailable',
   'cancelled', 'delivery_failed',
 ]);
 
-export const threadCommunicationMessageSchema = z.object({
+export const threadCommunicationMessageSchema = /* @__PURE__ */ z.object({
   message_id: z.string().describe('Stable recipient main-agent prompt id and user-message id, including steered delivery and retries; navigate only delivered records.'),
   source: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('thread'), thread: threadMessageEndpointSchema }),
@@ -143,7 +143,7 @@ export const threadCommunicationMessageSchema = z.object({
   reason: z.string().optional(),
 });
 
-export const listThreadMessagesQuerySchema = z.object({
+export const listThreadMessagesQuerySchema = /* @__PURE__ */ z.object({
   workspace_id: z.string().trim().min(1).optional(),
   session_id: z.string().trim().min(1).optional(),
   peer_session_id: z.string().trim().min(1).optional(),
@@ -154,7 +154,7 @@ export const listThreadMessagesQuerySchema = z.object({
 });
 export type ListThreadMessagesQuery = z.infer<typeof listThreadMessagesQuerySchema>;
 
-export const listThreadMessagesResponseSchema = z.object({
+export const listThreadMessagesResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(threadCommunicationMessageSchema),
   next_cursor: z.string().optional(),
   incomplete: z.enum(['scan_budget', 'history_preparing']).optional(),

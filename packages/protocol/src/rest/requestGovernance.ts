@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const requestConcurrencyRuleSchema = z.object({
+export const requestConcurrencyRuleSchema = /* @__PURE__ */ z.object({
   id: z.string(), resource: z.enum(['model_request', 'agent_execution']), scope: z.enum(['global', 'each_session']),
   executors: z.array(z.string()).optional(), profiles: z.array(z.string()).optional(),
   roles: z.array(z.enum(['main', 'subagent', 'independent'])).optional(),
@@ -9,7 +9,7 @@ export const requestConcurrencyRuleSchema = z.object({
   overflow: z.enum(['queue', 'reject']), maxWaitMs: z.number().positive().optional(),
   enabled: z.boolean(),
 });
-export const requestGovernanceSnapshotSchema = z.object({
+export const requestGovernanceSnapshotSchema = /* @__PURE__ */ z.object({
   domainId: z.string(), runtimeEpoch: z.string(), seq: z.number().int(), asOf: z.string(),
   coverage: z.object({ native: z.literal('managed'), external: z.literal('unmanaged') }),
   active: z.number().int().nonnegative(), queued: z.number().int().nonnegative(),
@@ -26,7 +26,7 @@ export type RequestGovernanceSnapshot = z.infer<typeof requestGovernanceSnapshot
  * Keys are the config-file snake_case shape; the server converts to the
  * engine's camelCase section before validating it against the section schema.
  */
-export const requestConcurrencyRulePatchSchema = z.object({
+export const requestConcurrencyRulePatchSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   resource: z.enum(['model_request', 'agent_execution']).optional(),
   executors: z.array(z.string().min(1)).min(1).optional(),
@@ -42,7 +42,7 @@ export const requestConcurrencyRulePatchSchema = z.object({
   enabled: z.boolean().optional(),
 }).strict();
 
-export const requestGovernanceConfigPatchSchema = z.object({
+export const requestGovernanceConfigPatchSchema = /* @__PURE__ */ z.object({
   schema_version: z.literal(1).optional(),
   max_wait_ms: z.number().int().positive().optional(),
   max_queue_size: z.number().int().positive().optional(),

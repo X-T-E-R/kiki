@@ -6,34 +6,34 @@ import { modelPromptOverridesSchema } from '../modelCatalog';
 import { recipeModelBindingSchema, recipeOptionValuesSchema } from '../recipe';
 import { executorAuthObservationSchema } from '../executor-auth';
 
-const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
-const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
-const profileStringListSchema = z.array(z.string().trim().min(1)).nullable().optional();
-const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
-const promptModeSchema = z.enum(['prepend', 'append', 'wrap']);
-const requestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
-const namedExecutorInstanceSchema = z.union([
+const modelAliasSchema = /* @__PURE__ */ z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
+const optionalProfileStringSchema = /* @__PURE__ */ z.string().trim().min(1).nullable().optional();
+const profileStringListSchema = /* @__PURE__ */ z.array(z.string().trim().min(1)).nullable().optional();
+const serviceTierSchema = /* @__PURE__ */ z.enum(['auto', 'default', 'flex', 'priority']);
+const promptModeSchema = /* @__PURE__ */ z.enum(['prepend', 'append', 'wrap']);
+const requestParamsSchema = /* @__PURE__ */ z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+const namedExecutorInstanceSchema = /* @__PURE__ */ z.union([
   z.enum(['main', 'auto']),
   z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/),
   z.strictObject({ account_id: z.string().min(1).max(1024).regex(/^[^\s\u0000]+$/) }),
 ]);
-const namedExecutorLaunchSchema = z.strictObject({
+const namedExecutorLaunchSchema = /* @__PURE__ */ z.strictObject({
   bin_path: z.string().trim().min(1).nullable().optional(),
   home_dir: z.string().trim().min(1).nullable().optional(),
   env: z.record(z.string(), z.string().nullable()).nullable().optional(),
   args: z.array(z.string()).nullable().optional(),
 });
 
-export const agentModelPromptContentSchema = z.object({
+export const agentModelPromptContentSchema = /* @__PURE__ */ z.object({
   prompt_mode: promptModeSchema,
   prompt: z.string().trim().min(1),
 }).strict().superRefine((value, ctx) => {
   const slots = value.prompt.split('${parent_prompt}').length - 1 + value.prompt.split('${base_prompt}').length - 1;
   if (value.prompt_mode === 'wrap' ? slots !== 1 : slots !== 0) ctx.addIssue({ code: 'custom', path: ['prompt'], message: value.prompt_mode === 'wrap' ? 'wrap requires parent_prompt or base_prompt exactly once' : 'append/prepend cannot reference parent_prompt or base_prompt' });
 });
-export const agentModelPromptBranchSchema = z.union([z.enum(['same', 'off']), agentModelPromptContentSchema]);
+export const agentModelPromptBranchSchema = /* @__PURE__ */ z.union([z.enum(['same', 'off']), agentModelPromptContentSchema]);
 
-export const namedAgentModelProfileSchema = z.object({
+export const namedAgentModelProfileSchema = /* @__PURE__ */ z.object({
   alias: z.string(),
   when: z.string().optional(),
   context_budget: z.number().int().min(1).optional(),
@@ -58,7 +58,7 @@ export const namedAgentModelProfileSchema = z.object({
 });
 export type NamedAgentModelProfile = z.infer<typeof namedAgentModelProfileSchema>;
 
-export const namedAgentSpawnConstraintsSchema = z.object({
+export const namedAgentSpawnConstraintsSchema = /* @__PURE__ */ z.object({
   allowed_models: z.array(z.string()).optional(),
   deny_models: z.array(z.string()).optional(),
   allowed_efforts: z.array(z.string()).optional(),
@@ -69,7 +69,7 @@ export const namedAgentSpawnConstraintsSchema = z.object({
 });
 export type NamedAgentSpawnConstraints = z.infer<typeof namedAgentSpawnConstraintsSchema>;
 
-export const agentProfileSourceDiagnosticCodeSchema = z.enum([
+export const agentProfileSourceDiagnosticCodeSchema = /* @__PURE__ */ z.enum([
   'agent_profile_source.invalid_path',
   'agent_profile_source.path_escape',
   'agent_profile_source.symlink_escape',
@@ -81,7 +81,7 @@ export const agentProfileSourceDiagnosticCodeSchema = z.enum([
 ]);
 export type AgentProfileSourceDiagnosticCode = z.infer<typeof agentProfileSourceDiagnosticCodeSchema>;
 
-export const namedAgentSubagentLeaseSchema = z.object({
+export const namedAgentSubagentLeaseSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   source: z.string().optional(),
   scope: z.literal('private').optional(),
@@ -114,7 +114,7 @@ export const namedAgentSubagentLeaseSchema = z.object({
 });
 export type NamedAgentSubagentLease = z.infer<typeof namedAgentSubagentLeaseSchema>;
 
-export const namedAgentRouteSchema = z.object({
+export const namedAgentRouteSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   description: z.string().optional(),
   model_alias: z.string().optional(),
@@ -122,28 +122,28 @@ export const namedAgentRouteSchema = z.object({
 });
 export type NamedAgentRoute = z.infer<typeof namedAgentRouteSchema>;
 
-export const namedAgentExecutorFieldStateSchema = z.enum(['applied', 'mapped', 'ignored']);
+export const namedAgentExecutorFieldStateSchema = /* @__PURE__ */ z.enum(['applied', 'mapped', 'ignored']);
 export type NamedAgentExecutorFieldState = z.infer<typeof namedAgentExecutorFieldStateSchema>;
-export const namedAgentExecutorFieldSchema = z.object({
+export const namedAgentExecutorFieldSchema = /* @__PURE__ */ z.object({
   state: namedAgentExecutorFieldStateSchema,
   reason: z.string().optional(),
 });
 export type NamedAgentExecutorField = z.infer<typeof namedAgentExecutorFieldSchema>;
 
-export const declaredAgentModelMenuSchema = z.object({
+export const declaredAgentModelMenuSchema = /* @__PURE__ */ z.object({
   aliases: z.array(z.string()),
   default_alias: z.string().optional(),
   identities: z.array(z.string()),
 });
 export type DeclaredAgentModelMenu = z.infer<typeof declaredAgentModelMenuSchema>;
 
-export const executorCapabilityStateSchema = z.enum(['unknown', 'loading', 'ready', 'partial', 'unavailable']);
-export const executorCapabilityDimensionSchema = z.object({
+export const executorCapabilityStateSchema = /* @__PURE__ */ z.enum(['unknown', 'loading', 'ready', 'partial', 'unavailable']);
+export const executorCapabilityDimensionSchema = /* @__PURE__ */ z.object({
   state: executorCapabilityStateSchema,
   values: z.array(z.string()).optional(),
   diagnostic: z.string().optional(),
 });
-export const executorCapabilityProjectionSchema = z.object({
+export const executorCapabilityProjectionSchema = /* @__PURE__ */ z.object({
   source: z.enum(['negotiated', 'cli_probe']),
   version: z.string().optional(),
   observed_at: z.number().int().nonnegative(),
@@ -152,7 +152,7 @@ export const executorCapabilityProjectionSchema = z.object({
 });
 export type ExecutorCapabilityProjection = z.infer<typeof executorCapabilityProjectionSchema>;
 
-export const agentModelMenuProjectionSchema = z.object({
+export const agentModelMenuProjectionSchema = /* @__PURE__ */ z.object({
   restrict_models_to_menu: z.boolean(),
   declared_model_menu: declaredAgentModelMenuSchema,
   effective_model_aliases: z.array(z.string()),
@@ -161,7 +161,7 @@ export const agentModelMenuProjectionSchema = z.object({
 });
 export type AgentModelMenuProjection = z.infer<typeof agentModelMenuProjectionSchema>;
 
-export const namedAgentProfileSchema = z.object({
+export const namedAgentProfileSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   description: z.string().optional(),
   when_to_use: z.string().optional(),
@@ -219,7 +219,7 @@ export const namedAgentProfileSchema = z.object({
 });
 export type NamedAgentProfile = z.infer<typeof namedAgentProfileSchema>;
 
-const booleanQueryParam = z.preprocess(
+const booleanQueryParam = /* @__PURE__ */ z.preprocess(
   (value) => {
     if (value === 'true' || value === '1' || value === 1 || value === true) return true;
     if (value === 'false' || value === '0' || value === 0 || value === false) return false;
@@ -228,12 +228,12 @@ const booleanQueryParam = z.preprocess(
   z.boolean().optional(),
 );
 
-const absoluteCwdSchema = z.string().trim().min(1).refine(
+const absoluteCwdSchema = /* @__PURE__ */ z.string().trim().min(1).refine(
   (value) => /^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(value),
   'cwd must be an absolute path',
 );
 
-export const listNamedAgentProfilesQuerySchema = z.object({
+export const listNamedAgentProfilesQuerySchema = /* @__PURE__ */ z.object({
   expand: booleanQueryParam,
   effective: booleanQueryParam,
   unscoped: booleanQueryParam,
@@ -254,7 +254,7 @@ export const listNamedAgentProfilesQuerySchema = z.object({
   }
 });
 
-export const previewAgentProfileFileRequestSchema = z.strictObject({
+export const previewAgentProfileFileRequestSchema = /* @__PURE__ */ z.strictObject({
   path: z.string().trim().min(1),
   workspace_id: z.string().trim().min(1).optional(),
   cwd: absoluteCwdSchema.optional(),
@@ -266,11 +266,11 @@ export const previewAgentProfileFileRequestSchema = z.strictObject({
     context.addIssue({ code: 'custom', message: 'A relative profile path requires cwd or workspace_id' });
   }
 });
-export const previewAgentProfileFileResponseSchema = z.object({ profile: namedAgentProfileSchema });
+export const previewAgentProfileFileResponseSchema = /* @__PURE__ */ z.object({ profile: namedAgentProfileSchema });
 export type PreviewAgentProfileFileRequest = z.infer<typeof previewAgentProfileFileRequestSchema>;
 export type PreviewAgentProfileFileResponse = z.infer<typeof previewAgentProfileFileResponseSchema>;
 
-export const agentCapabilitiesQuerySchema = z.union([
+export const agentCapabilitiesQuerySchema = /* @__PURE__ */ z.union([
   z.object({
     session_id: z.string().trim().min(1),
     agent_id: z.string().trim().min(1),
@@ -295,7 +295,7 @@ export const agentCapabilitiesQuerySchema = z.union([
 ]);
 export type AgentCapabilitiesQuery = z.infer<typeof agentCapabilitiesQuerySchema>;
 
-export const agentCapabilityReasonCodeSchema = z.enum([
+export const agentCapabilityReasonCodeSchema = /* @__PURE__ */ z.enum([
   'skill_tool_inactive',
   'skill_model_invocation_disabled',
   'snapshot_inventory_only',
@@ -327,14 +327,14 @@ export const agentCapabilityReasonCodeSchema = z.enum([
   'native_executor_required',
 ]);
 export type AgentCapabilityReasonCode = z.infer<typeof agentCapabilityReasonCodeSchema>;
-export const agentCapabilityReasonCodeWireSchema = z.string().min(1);
+export const agentCapabilityReasonCodeWireSchema = /* @__PURE__ */ z.string().min(1);
 
-export const agentCapabilityModelSourceSchema = z.enum(['caller-lease', 'route', 'profile']);
-export const agentCapabilityEffortSourceSchema = z.enum([
+export const agentCapabilityModelSourceSchema = /* @__PURE__ */ z.enum(['caller-lease', 'route', 'profile']);
+export const agentCapabilityEffortSourceSchema = /* @__PURE__ */ z.enum([
   'caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor',
 ]);
 
-export const agentBindingAdvisorySchema = z.object({
+export const agentBindingAdvisorySchema = /* @__PURE__ */ z.object({
   version: z.literal(1),
   code: z.enum([
     'model_not_preferred',
@@ -370,7 +370,7 @@ export const agentBindingAdvisorySchema = z.object({
 });
 export type AgentBindingAdvisory = z.infer<typeof agentBindingAdvisorySchema>;
 
-export const agentCapabilityTargetSchema = z.object({
+export const agentCapabilityTargetSchema = /* @__PURE__ */ z.object({
   profile: z.string(),
   caller_profile: z.string().optional(),
   source: z.string().optional(),
@@ -397,11 +397,11 @@ export const agentCapabilityTargetSchema = z.object({
 });
 export type AgentCapabilityTarget = z.infer<typeof agentCapabilityTargetSchema>;
 
-export const agentPanelCapabilityStateSchema = z.enum([
+export const agentPanelCapabilityStateSchema = /* @__PURE__ */ z.enum([
   'enabled', 'disabled', 'approval-required', 'disconnected', 'unknown',
 ]);
 
-export const agentPanelToolSchema = z.object({
+export const agentPanelToolSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   description: z.string().optional(),
   source: z.string(),
@@ -416,7 +416,7 @@ export const agentPanelToolSchema = z.object({
   read_only: z.boolean().optional(),
 });
 
-export const agentPanelSkillSchema = z.object({
+export const agentPanelSkillSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   description: z.string(),
   source: z.string(),
@@ -433,7 +433,7 @@ export const agentPanelSkillSchema = z.object({
   argument_hint: z.string().optional(),
 });
 
-export const agentPanelProfileSchema = z.object({
+export const agentPanelProfileSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   description: z.string().optional(),
   source: z.string().optional(),
@@ -470,7 +470,7 @@ export const agentPanelProfileSchema = z.object({
 });
 export type AgentPanelProfile = z.infer<typeof agentPanelProfileSchema>;
 
-export const agentPanelMetricsSchema = z.object({
+export const agentPanelMetricsSchema = /* @__PURE__ */ z.object({
   inputTokens: z.number().nonnegative().nullable(),
   outputTokens: z.number().nonnegative().nullable(),
   cacheReadTokens: z.number().nonnegative().nullable(),
@@ -487,14 +487,14 @@ export const agentPanelMetricsSchema = z.object({
 });
 export type AgentPanelMetrics = z.infer<typeof agentPanelMetricsSchema>;
 
-export const agentPromptSourceSchema = z.object({
+export const agentPromptSourceSchema = /* @__PURE__ */ z.object({
   surface: z.string(),
   kind: z.enum(['file', 'inline']),
   path: z.string().optional(),
   line: z.number().int().optional(),
   order: z.number().int().optional(),
 });
-export const agentPromptChannelSchema = z.object({
+export const agentPromptChannelSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   channel: z.enum(['system', 'tool', 'delegation', 'model_profile', 'cognition_overlay', 'cognition_steering', 'cognition_parent_steering', 'cognition_anchor']),
   state: z.enum(['effective', 'inactive', 'shadowed', 'unsupported']),
@@ -506,7 +506,7 @@ export const agentPromptChannelSchema = z.object({
   anchor_steps: z.number().int().positive().optional(),
   anchor_scope: z.enum(['session', 'turn']).optional(),
 });
-export const agentPromptRequestSchema = z.object({
+export const agentPromptRequestSchema = /* @__PURE__ */ z.object({
   system_prompt_hash: z.string(),
   tools_hash: z.string(),
   model_alias: z.string().optional(),
@@ -519,7 +519,7 @@ export const agentPromptRequestSchema = z.object({
   anchor_steps: z.number().int().positive().optional(),
   anchor_scope: z.enum(['session', 'turn']).optional(),
 });
-export const agentPromptDiagnosticsSchema = z.object({
+export const agentPromptDiagnosticsSchema = /* @__PURE__ */ z.object({
   identity: z.object({
     delegation_position: z.enum(['main', 'sub', 'independent']),
     profile: z.string().optional(),
@@ -549,7 +549,7 @@ export type AgentPromptDiagnostics = z.infer<typeof agentPromptDiagnosticsSchema
 export type AgentPromptChannel = z.infer<typeof agentPromptChannelSchema>;
 export type AgentPromptRequest = z.infer<typeof agentPromptRequestSchema>;
 
-export const agentCapabilitiesResponseSchema = z.object({
+export const agentCapabilitiesResponseSchema = /* @__PURE__ */ z.object({
   context: z.enum(['live', 'draft']),
   live: z.boolean().optional(),
   owner: z.object({
@@ -575,17 +575,17 @@ export const agentCapabilitiesResponseSchema = z.object({
 });
 export type AgentCapabilitiesResponse = z.infer<typeof agentCapabilitiesResponseSchema>;
 
-export const agentCapabilityTargetProducerSchema = agentCapabilityTargetSchema.extend({
+export const agentCapabilityTargetProducerSchema = /* @__PURE__ */ agentCapabilityTargetSchema.extend({
   unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   launch_unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
 });
-export const agentPanelToolProducerSchema = agentPanelToolSchema.extend({
+export const agentPanelToolProducerSchema = /* @__PURE__ */ agentPanelToolSchema.extend({
   unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
 });
-export const agentPanelSkillProducerSchema = agentPanelSkillSchema.extend({
+export const agentPanelSkillProducerSchema = /* @__PURE__ */ agentPanelSkillSchema.extend({
   unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
 });
-export const agentCapabilitiesProducerResponseSchema = agentCapabilitiesResponseSchema.extend({
+export const agentCapabilitiesProducerResponseSchema = /* @__PURE__ */ agentCapabilitiesResponseSchema.extend({
   unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   targets: z.array(agentCapabilityTargetProducerSchema),
   tools: z.array(agentPanelToolProducerSchema).optional(),
@@ -597,7 +597,7 @@ export type ListNamedAgentProfilesQuery = z.infer<
   typeof listNamedAgentProfilesQuerySchema
 >;
 
-export const listNamedAgentProfilesResponseSchema = z.object({
+export const listNamedAgentProfilesResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(namedAgentProfileSchema),
   complete: z.boolean(),
 });
@@ -605,11 +605,11 @@ export type ListNamedAgentProfilesResponse = z.infer<
   typeof listNamedAgentProfilesResponseSchema
 >;
 
-export const namedAgentProfileNameParamsSchema = z.object({
+export const namedAgentProfileNameParamsSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
 });
 
-export const updateNamedAgentRouteSchema = z.object({
+export const updateNamedAgentRouteSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   description: z.string().trim().min(1).optional(),
   model_alias: modelAliasSchema.nullable().optional(),
@@ -618,7 +618,7 @@ export const updateNamedAgentRouteSchema = z.object({
   { message: 'route update must include description or model_alias' },
 );
 
-export const createNamedAgentProfileRequestSchema = z.object({
+export const createNamedAgentProfileRequestSchema = /* @__PURE__ */ z.object({
   workspace_id: z.string().min(1),
   name: z.string().regex(AGENT_NAME_PATTERN, 'name must use lowercase letters and digits separated by hyphens or underscores'),
   scope: z.enum(['user', 'project']),
@@ -647,7 +647,7 @@ export const createNamedAgentProfileRequestSchema = z.object({
 });
 export type CreateNamedAgentProfileRequest = z.infer<typeof createNamedAgentProfileRequestSchema>;
 
-export const updateNamedAgentSubagentEntrySchema = z.union([
+export const updateNamedAgentSubagentEntrySchema = /* @__PURE__ */ z.union([
   z.string().trim().min(1),
   namedAgentSubagentLeaseSchema.omit({ scope: true, status: true, diagnostic: true, diagnostic_code: true }).extend({
     name: z.string().trim().min(1),
@@ -663,7 +663,7 @@ export const updateNamedAgentSubagentEntrySchema = z.union([
 ]);
 export type UpdateNamedAgentSubagentEntry = z.infer<typeof updateNamedAgentSubagentEntrySchema>;
 
-export const updateNamedAgentModelProfileEntrySchema = namedAgentModelProfileSchema.extend({
+export const updateNamedAgentModelProfileEntrySchema = /* @__PURE__ */ namedAgentModelProfileSchema.extend({
   alias: modelAliasSchema,
   when: optionalProfileStringSchema,
   thinking_effort: optionalProfileStringSchema,
@@ -683,7 +683,7 @@ export const updateNamedAgentModelProfileEntrySchema = namedAgentModelProfileSch
 });
 export type UpdateNamedAgentModelProfileEntry = z.infer<typeof updateNamedAgentModelProfileEntrySchema>;
 
-export const agentModelMenuDraftSchema = z.object({
+export const agentModelMenuDraftSchema = /* @__PURE__ */ z.object({
   pinned_model_alias: modelAliasSchema.nullable().optional(),
   restrict_models_to_menu: z.boolean().optional(),
   model_profiles: z.array(updateNamedAgentModelProfileEntrySchema).nullable().optional(),
@@ -699,20 +699,20 @@ export const agentModelMenuDraftSchema = z.object({
 });
 export type AgentModelMenuDraft = z.infer<typeof agentModelMenuDraftSchema>;
 
-export const agentModelMenuPreviewRequestSchema = z.object({
+export const agentModelMenuPreviewRequestSchema = /* @__PURE__ */ z.object({
   workspace_id: z.string().trim().min(1),
   source_file: z.string().trim().min(1).optional(),
   draft: agentModelMenuDraftSchema,
 }).strict();
 export type AgentModelMenuPreviewRequest = z.infer<typeof agentModelMenuPreviewRequestSchema>;
 
-export const agentModelMenuPreviewResponseSchema = agentModelMenuProjectionSchema.extend({
+export const agentModelMenuPreviewResponseSchema = /* @__PURE__ */ agentModelMenuProjectionSchema.extend({
   added_model_identities: z.array(z.string()),
   removed_model_identities: z.array(z.string()),
 });
 export type AgentModelMenuPreviewResponse = z.infer<typeof agentModelMenuPreviewResponseSchema>;
 
-export const updateNamedAgentProfileRequestSchema = z.object({
+export const updateNamedAgentProfileRequestSchema = /* @__PURE__ */ z.object({
   scope: z.enum(['user', 'project', 'extra']),
   workspace_id: z.string().min(1),
   source_file: z.string().min(1).optional(),
@@ -810,7 +810,7 @@ export type UpdateNamedAgentProfileRequest = z.infer<
   typeof updateNamedAgentProfileRequestSchema
 >;
 
-export const shippedAgentProfileStatusSchema = z.enum([
+export const shippedAgentProfileStatusSchema = /* @__PURE__ */ z.enum([
   'clean',
   'custom',
   'update-available',
@@ -822,7 +822,7 @@ export const shippedAgentProfileStatusSchema = z.enum([
 ]);
 export type ShippedAgentProfileStatus = z.infer<typeof shippedAgentProfileStatusSchema>;
 
-export const shippedAgentProfileSchema = z.object({
+export const shippedAgentProfileSchema = /* @__PURE__ */ z.object({
   template_id: z.string(),
   status: shippedAgentProfileStatusSchema,
   managed: z.boolean(),
@@ -835,7 +835,7 @@ export const shippedAgentProfileSchema = z.object({
 });
 export type ShippedAgentProfile = z.infer<typeof shippedAgentProfileSchema>;
 
-export const listShippedAgentProfilesResponseSchema = z.object({
+export const listShippedAgentProfilesResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(shippedAgentProfileSchema),
 });
 export type ListShippedAgentProfilesResponse = z.infer<

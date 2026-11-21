@@ -26,7 +26,7 @@ export const SKIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const PLUGIN_SKIN_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** Provenance of a skin the server did not read from the themes directory. */
-export const skinPluginOriginSchema = z.object({
+export const skinPluginOriginSchema = /* @__PURE__ */ z.object({
   /** Installed plugin id, e.g. `kiki-office`. */
   id: z.string(),
   /** Manifest version of that plugin, when it declares one. */
@@ -34,7 +34,7 @@ export const skinPluginOriginSchema = z.object({
 });
 export type SkinPluginOrigin = z.infer<typeof skinPluginOriginSchema>;
 
-export const skinSummarySchema = z.object({
+export const skinSummarySchema = /* @__PURE__ */ z.object({
   /** Filename stem, or `<plugin id>:<theme id>` for a plugin skin. */
   id: z.string(),
   name: z.string(),
@@ -47,7 +47,7 @@ export const skinSummarySchema = z.object({
 });
 export type SkinSummary = z.infer<typeof skinSummarySchema>;
 
-export const listSkinsResponseSchema = z.object({
+export const listSkinsResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(skinSummarySchema),
   /** Absolute themes directory, shown in settings so users can find it. */
   directory: z.string(),
@@ -56,7 +56,7 @@ export const listSkinsResponseSchema = z.object({
 });
 export type ListSkinsResponse = z.infer<typeof listSkinsResponseSchema>;
 
-export const getSkinResponseSchema = z.object({
+export const getSkinResponseSchema = /* @__PURE__ */ z.object({
   skin: skinFileSchema,
   /** Tokens dropped while parsing; the rest of the file still applied. */
   warnings: z.array(z.string()),
@@ -65,7 +65,7 @@ export const getSkinResponseSchema = z.object({
 });
 export type GetSkinResponse = z.infer<typeof getSkinResponseSchema>;
 
-export const skinIdParamSchema = z.object({
+export const skinIdParamSchema = /* @__PURE__ */ z.object({
   skin_id: z.string().regex(
     /^[a-z0-9][a-z0-9-]{0,63}$|^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9-]{0,63}$/,
   ),

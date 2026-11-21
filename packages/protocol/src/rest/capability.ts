@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const capabilityStepSchema = z.object({
+export const capabilityStepSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   state: z.enum(['ok', 'missing', 'failed']),
   detail: z.string().optional(),
@@ -8,7 +8,7 @@ export const capabilityStepSchema = z.object({
 });
 export type CapabilityStepWire = z.infer<typeof capabilityStepSchema>;
 
-export const capabilityInstallProgressSchema = z.object({
+export const capabilityInstallProgressSchema = /* @__PURE__ */ z.object({
   running: z.boolean(),
   step: z.string().optional(),
   percent: z.number().min(0).max(100).optional(),
@@ -17,7 +17,7 @@ export const capabilityInstallProgressSchema = z.object({
 });
 export type CapabilityInstallProgressWire = z.infer<typeof capabilityInstallProgressSchema>;
 
-export const capabilityStatusSchema = z.object({
+export const capabilityStatusSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   pluginId: z.string().optional(),
   displayName: z.string(),
@@ -42,12 +42,12 @@ export const capabilityStatusSchema = z.object({
 });
 export type CapabilityStatusWire = z.infer<typeof capabilityStatusSchema>;
 
-export const listCapabilitiesResponseSchema = z.object({
+export const listCapabilitiesResponseSchema = /* @__PURE__ */ z.object({
   capabilities: z.array(capabilityStatusSchema),
 });
 export type ListCapabilitiesResponse = z.infer<typeof listCapabilitiesResponseSchema>;
 
-export const capabilityIdParamSchema = z.object({
+export const capabilityIdParamSchema = /* @__PURE__ */ z.object({
   capability_id: z.string().min(1),
 });
 export type CapabilityIdParam = z.infer<typeof capabilityIdParamSchema>;

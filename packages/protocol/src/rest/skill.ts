@@ -15,12 +15,12 @@ import { z } from 'zod';
 import { fileContentSchema, imageContentSchema, videoContentSchema } from '../message';
 import { skillDescriptorSchema } from '../skill';
 
-export const listSkillsResponseSchema = z.object({
+export const listSkillsResponseSchema = /* @__PURE__ */ z.object({
   skills: z.array(skillDescriptorSchema),
 });
 export type ListSkillsResponse = z.infer<typeof listSkillsResponseSchema>;
 
-export const builtinSkillContentResponseSchema = z.object({
+export const builtinSkillContentResponseSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   content: z.string(),
 });
@@ -30,14 +30,14 @@ export type BuiltinSkillContentResponse = z.infer<typeof builtinSkillContentResp
  * Attachment parts accepted on skill activation — the media/file subset of
  * the prompt submission's `MessageContent` (text stays in `args`).
  */
-export const activateSkillAttachmentSchema = z.discriminatedUnion('type', [
+export const activateSkillAttachmentSchema = /* @__PURE__ */ z.discriminatedUnion('type', [
   imageContentSchema,
   videoContentSchema,
   fileContentSchema,
 ]);
 export type ActivateSkillAttachment = z.infer<typeof activateSkillAttachmentSchema>;
 
-export const activateSkillRequestSchema = z.object({
+export const activateSkillRequestSchema = /* @__PURE__ */ z.object({
   prompt_id: z.string().min(1).optional(),
   /** Target agent; omission and `main` preserve the historical main-agent behavior. */
   agent_id: z.string().min(1).optional(),
@@ -56,7 +56,7 @@ export const activateSkillRequestSchema = z.object({
 });
 export type ActivateSkillRequest = z.infer<typeof activateSkillRequestSchema>;
 
-export const activateSkillResultSchema = z.object({
+export const activateSkillResultSchema = /* @__PURE__ */ z.object({
   activated: z.literal(true),
   skill_name: z.string().min(1),
   prompt_id: z.string().min(1).optional(),

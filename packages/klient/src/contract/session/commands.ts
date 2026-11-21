@@ -18,12 +18,12 @@ import {
   startBtwSessionResponseSchema,
 } from '@kiki/protocol';
 
-const target = z.string().min(1);
+const target = /* @__PURE__ */ z.string().min(1);
 const bodyInput = <T extends z.ZodType>(body: T) => z.object({ body });
-const targetInput = z.object({ target });
+const targetInput = /* @__PURE__ */ z.object({ target });
 const targetBodyInput = <T extends z.ZodType>(body: T) => z.object({ target, body });
 // Prompt actions that address a child agent's own queue carry its id as a query.
-const agentTargetInput = z.object({ target, query: z.object({ agent_id: z.string().min(1).optional() }).optional() });
+const agentTargetInput = /* @__PURE__ */ z.object({ target, query: z.object({ agent_id: z.string().min(1).optional() }).optional() });
 
 export const sessionCommandContract = {
   read: { method: 'GET', suffix: '', input: z.object({}), output: sessionSchema, okCodes: [0] },

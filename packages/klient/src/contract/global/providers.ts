@@ -17,16 +17,17 @@ import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-const providerTypeSchema = z.string();
+const providerTypeSchema = /* @__PURE__ */ z.string();
 
-const stringRecordSchema = z.record(z.string(), z.string());
+const stringRecordSchema = /* @__PURE__ */ z.record(z.string(), z.string());
 
-const modelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
+const modelSourceSchema = /* @__PURE__ */ z.enum(['static', 'discover', 'oauth-catalog']);
 
 export const requestIdentityPolicySchema = RequestIdentityPolicySchema;
 
-const providerConfigObjectSchema = z.object({
+const providerConfigObjectSchema = /* @__PURE__ */ z.object({
   modelSource: modelSourceSchema.optional(),
   enabled: z.boolean().optional(),
 
@@ -46,7 +47,7 @@ const providerConfigObjectSchema = z.object({
   source: z.record(z.string(), z.unknown()).optional(),
 });
 
-export const providerConfigSchema = z.preprocess((value, ctx) => {
+export const providerConfigSchema = /* @__PURE__ */ z.preprocess((value, ctx) => {
   if (value !== null && typeof value === 'object') {
     for (const removed of ['requestAttribution', 'requestOriginator'] as const) {
       if (removed in value) {
@@ -62,8 +63,8 @@ export const providerConfigSchema = z.preprocess((value, ctx) => {
 }, providerConfigObjectSchema);
 
 export const providersContract = {
-  get: { input: z.tuple([z.string()]), output: maybe(providerConfigSchema) },
-  list: { input: z.tuple([]), output: z.record(z.string(), providerConfigSchema) },
-  set: { input: z.tuple([z.string(), providerConfigSchema]), output: noResult },
-  delete: { input: z.tuple([z.string()]), output: noResult },
+  get: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: /* @__PURE__ */ maybe(providerConfigSchema) }), 'input', 'output'),
+  list: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.record(z.string(), providerConfigSchema) }), 'input', 'output'),
+  set: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string(), providerConfigSchema]), output: noResult }), 'input', 'output'),
+  delete: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.string()]), output: noResult }), 'input', 'output'),
 } satisfies ServiceContract;

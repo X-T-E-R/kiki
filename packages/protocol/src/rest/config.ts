@@ -15,13 +15,13 @@ import { requestGovernanceConfigPatchSchema } from './requestGovernance';
 import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
 import { executorInstancesPatchSchema, executorInstancesResponseSchema } from './executor';
 
-export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
+export const computerUsagePreferenceSchema = /* @__PURE__ */ z.enum(['avoid', 'prefer']);
 export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
 export const CUA_COMPUTER_CONNECTION = 'kiki-computer';
 export const WINDOWS_MCP_COMPUTER_CONNECTION = 'kiki-windows-mcp';
-export const computerExecutorKindSchema = z.enum(['cua', 'windows-mcp']);
+export const computerExecutorKindSchema = /* @__PURE__ */ z.enum(['cua', 'windows-mcp']);
 export type ComputerExecutorKind = z.infer<typeof computerExecutorKindSchema>;
-export const computerControlConfigResponseSchema = z.object({
+export const computerControlConfigResponseSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().optional(),
   enabledSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
   usagePreference: computerUsagePreferenceSchema,
@@ -31,15 +31,15 @@ export const computerControlConfigResponseSchema = z.object({
   connection: z.string().trim().min(1).optional(),
   connectionSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
 }).strict();
-export const computerControlConfigPatchSchema = z.object({
+export const computerControlConfigPatchSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().nullable().optional(),
   usage_preference: computerUsagePreferenceSchema.nullable().optional(),
   connection: z.string().trim().min(1).nullable().optional(),
 }).strict();
 
-export const branchUsagePreferenceSchema = z.enum(['conservative', 'balanced', 'proactive']);
+export const branchUsagePreferenceSchema = /* @__PURE__ */ z.enum(['conservative', 'balanced', 'proactive']);
 export type BranchUsagePreference = z.infer<typeof branchUsagePreferenceSchema>;
-export const branchConfigResponseSchema = z.object({
+export const branchConfigResponseSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().optional(),
   enabledSource: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory']).optional(),
   usagePreference: branchUsagePreferenceSchema.optional(),
@@ -48,19 +48,19 @@ export const branchConfigResponseSchema = z.object({
   toolsApplyOn: z.literal('next-step').optional(),
 }).strict();
 export type BranchConfigResponse = z.infer<typeof branchConfigResponseSchema>;
-export const branchConfigPatchSchema = z.object({
+export const branchConfigPatchSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().nullable().optional(),
   usage_preference: branchUsagePreferenceSchema.nullable().optional(),
 }).strict();
 export type BranchConfigPatch = z.infer<typeof branchConfigPatchSchema>;
 
-export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
+export const modelSwitchModeSchema = /* @__PURE__ */ z.enum(['direct', 'compact', 'fresh']);
 
-const modelSwitchPatternSchema = z.string().min(1).refine((value) => value.trim().length > 0, {
+const modelSwitchPatternSchema = /* @__PURE__ */ z.string().min(1).refine((value) => value.trim().length > 0, {
   message: 'Model pattern must not be blank',
 });
 
-export const modelSwitchRuleSchema = z.object({
+export const modelSwitchRuleSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1).refine((value) => value.trim().length > 0),
   enabled: z.boolean().default(true),
   from_models: z.array(modelSwitchPatternSchema).min(1).optional(),
@@ -69,12 +69,12 @@ export const modelSwitchRuleSchema = z.object({
   confirm: z.boolean().optional(),
 }).strict();
 
-export const modelSwitchRulesSchema = z.array(modelSwitchRuleSchema).refine(
+export const modelSwitchRulesSchema = /* @__PURE__ */ z.array(modelSwitchRuleSchema).refine(
   (rules) => new Set(rules.map((rule) => rule.id)).size === rules.length,
   { message: 'Model switch rule IDs must be unique' },
 );
 
-export const modelSwitchConfigSchema = z.object({
+export const modelSwitchConfigSchema = /* @__PURE__ */ z.object({
   default_mode: modelSwitchModeSchema.default('direct'),
   confirm: z.boolean().default(true),
   rules: modelSwitchRulesSchema.default([]),
@@ -83,13 +83,13 @@ export type ModelSwitchConfig = z.infer<typeof modelSwitchConfigSchema>;
 export type ModelSwitchRule = z.infer<typeof modelSwitchRuleSchema>;
 export type ModelSwitchMode = z.infer<typeof modelSwitchModeSchema>;
 
-export const modelSwitchConfigPatchSchema = z.object({
+export const modelSwitchConfigPatchSchema = /* @__PURE__ */ z.object({
   default_mode: modelSwitchModeSchema.optional(),
   confirm: z.boolean().optional(),
   rules: modelSwitchRulesSchema.optional(),
 }).strict();
 
-export const taskBoardStorageConfigSchema = z.object({
+export const taskBoardStorageConfigSchema = /* @__PURE__ */ z.object({
   storage: z.discriminatedUnion('mode', [
     z.object({ mode: z.literal('auto') }).strict(),
     z.object({ mode: z.literal('global') }).strict(),
@@ -97,14 +97,14 @@ export const taskBoardStorageConfigSchema = z.object({
   ]),
 }).strict();
 
-export const promptConfigSchema = z.object({
+export const promptConfigSchema = /* @__PURE__ */ z.object({
   shared: z.string().optional(),
   variables: z.record(z.string(), z.string()).optional(),
   tools: z.record(z.string(), z.string()).optional(),
 }).strict();
 export type PromptConfig = z.infer<typeof promptConfigSchema>;
 
-export const retryPolicySchema = z.object({
+export const retryPolicySchema = /* @__PURE__ */ z.object({
   match: z.string().min(1),
   models: z.array(z.string().min(1)).min(1).optional(),
   providers: z.array(z.string().min(1)).min(1).optional(),
@@ -114,14 +114,14 @@ export const retryPolicySchema = z.object({
 }).strict();
 export type RetryPolicy = z.infer<typeof retryPolicySchema>;
 
-export const retryConfigSchema = z.object({
+export const retryConfigSchema = /* @__PURE__ */ z.object({
   max_attempts: z.number().int().min(1).optional(),
   retry_partial_responses: z.boolean().optional(),
   policies: z.array(retryPolicySchema).optional(),
 }).strict();
 export type RetryConfig = z.infer<typeof retryConfigSchema>;
 
-export const retryPolicyResponseSchema = z.object({
+export const retryPolicyResponseSchema = /* @__PURE__ */ z.object({
   match: z.string().min(1),
   models: z.array(z.string().min(1)).min(1).optional(),
   providers: z.array(z.string().min(1)).min(1).optional(),
@@ -129,14 +129,14 @@ export const retryPolicyResponseSchema = z.object({
   backoff: z.number().int().min(0).optional(),
   retry: z.boolean(),
 }).strict();
-export const retryConfigResponseSchema = z.object({
+export const retryConfigResponseSchema = /* @__PURE__ */ z.object({
   maxAttempts: z.number().int().min(1).optional(),
   retryPartialResponses: z.boolean().optional(),
   policies: z.array(retryPolicyResponseSchema).optional(),
 }).strict();
 export type RetryConfigResponse = z.infer<typeof retryConfigResponseSchema>;
 
-export const providerConfigResponseSchema = z.object({
+export const providerConfigResponseSchema = /* @__PURE__ */ z.object({
   type: z.string(),
   base_url: z.string().optional(),
   default_model: z.string().optional(),
@@ -162,10 +162,10 @@ export const DEFAULT_AGENT_LIST_TELEMETRY_FIELDS = [
   'tool_call_count',
 ] as const;
 
-export const agentListFieldSchema = z.enum(AGENT_LIST_TELEMETRY_FIELDS);
+export const agentListFieldSchema = /* @__PURE__ */ z.enum(AGENT_LIST_TELEMETRY_FIELDS);
 export type AgentListTelemetryField = z.infer<typeof agentListFieldSchema>;
 
-export const subagentConfigResponseSchema = z.object({
+export const subagentConfigResponseSchema = /* @__PURE__ */ z.object({
   timeoutMs: z.number().int().nonnegative().optional(),
   defaultModel: z.string().optional(),
   maxDirectChildren: z.number().int().nonnegative().optional(),
@@ -175,23 +175,23 @@ export const subagentConfigResponseSchema = z.object({
   agentListFields: z.array(agentListFieldSchema).optional(),
 });
 
-export const agentsDelegationConfigSchema = z.object({
+export const agentsDelegationConfigSchema = /* @__PURE__ */ z.object({
   sub: z.boolean().optional(),
   independent: z.boolean().optional(),
 }).strict();
 
-export const agentsConfigResponseSchema = z.object({
+export const agentsConfigResponseSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().optional(),
   notify_parent: z.boolean().optional(),
   delegation: agentsDelegationConfigSchema.optional(),
 });
 
-export const sessionTitleTriggerSchema = z.enum([
+export const sessionTitleTriggerSchema = /* @__PURE__ */ z.enum([
   'first_user_message', 'first_turn_completed', 'context_compacted',
 ]);
 export type SessionTitleTrigger = z.infer<typeof sessionTitleTriggerSchema>;
 
-export const sessionTitleConfigResponseSchema = z.object({
+export const sessionTitleConfigResponseSchema = /* @__PURE__ */ z.object({
   model: z.string().optional(),
   triggers: z.array(sessionTitleTriggerSchema).optional(),
   prompt: z.string().optional(),
@@ -199,24 +199,24 @@ export const sessionTitleConfigResponseSchema = z.object({
   prompt_source: z.enum(['default', 'custom']).optional(),
 });
 
-export const sessionTitleConfigPatchSchema = sessionTitleConfigResponseSchema
+export const sessionTitleConfigPatchSchema = /* @__PURE__ */ sessionTitleConfigResponseSchema
   .omit({ default_prompt: true, prompt_source: true })
   .extend({ model: z.string().nullable().optional(), prompt: z.string().nullable().optional() })
   .strict();
 
-export const planConfigResponseSchema = z.object({
+export const planConfigResponseSchema = /* @__PURE__ */ z.object({
   gate: z.enum(['free', 'gated']),
   enterApprovalTimeoutMs: z.number().int().min(5000),
 });
 
-export const planConfigRequestSchema = z
+export const planConfigRequestSchema = /* @__PURE__ */ z
   .object({
     gate: z.enum(['free', 'gated']).optional(),
     enter_approval_timeout_ms: z.number().int().min(5000).optional(),
   })
   .strict();
 
-export const permissionRuleConfigSchema = z.object({
+export const permissionRuleConfigSchema = /* @__PURE__ */ z.object({
   decision: z.enum(['allow', 'deny', 'ask']),
   scope: z.enum(['turn-override', 'session-runtime', 'project', 'user']).default('user'),
   pattern: z.string().min(1).refine((pattern) => {
@@ -228,9 +228,9 @@ export const permissionRuleConfigSchema = z.object({
   reason: z.string().optional(),
 });
 
-export const dangerousBashGuardSchema = z.enum(['on', 'off', 'default']);
+export const dangerousBashGuardSchema = /* @__PURE__ */ z.enum(['on', 'off', 'default']);
 
-export const permissionReviewerResponseSchema = z.object({
+export const permissionReviewerResponseSchema = /* @__PURE__ */ z.object({
   source: decisionSourceSchema.optional(),
   source_status: decisionSourceStatusSchema.optional(),
   backend: z.enum(['model', 'jev']),
@@ -244,13 +244,13 @@ export const permissionReviewerResponseSchema = z.object({
   apiKeyEnv: z.string().optional(),
 });
 
-export const permissionConfigResponseSchema = z.object({
+export const permissionConfigResponseSchema = /* @__PURE__ */ z.object({
   rules: z.array(permissionRuleConfigSchema).optional(),
   dangerousBash: dangerousBashGuardSchema.optional(),
   reviewer: permissionReviewerResponseSchema.optional(),
 }).passthrough();
 
-export const permissionConfigPatchSchema = z.object({
+export const permissionConfigPatchSchema = /* @__PURE__ */ z.object({
   rules: z.array(permissionRuleConfigSchema).optional(),
   dangerous_bash: dangerousBashGuardSchema.optional(),
   reviewer: z.object({
@@ -266,7 +266,7 @@ export const permissionConfigPatchSchema = z.object({
   }).optional(),
 }).passthrough();
 
-export const worktreeConfigResponseSchema = z.object({
+export const worktreeConfigResponseSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean(),
   root: z.string(),
   branchPrefix: z.string(),
@@ -279,7 +279,7 @@ export const worktreeConfigResponseSchema = z.object({
   }),
 });
 
-export const worktreeConfigPatchSchema = z.object({
+export const worktreeConfigPatchSchema = /* @__PURE__ */ z.object({
   enabled: z.boolean().optional(),
   root: z.string().optional(),
   branch_prefix: z.string().regex(/^[a-z0-9][a-z0-9/-]*\/$/).optional(),
@@ -292,7 +292,7 @@ export const worktreeConfigPatchSchema = z.object({
   }).strict().optional(),
 }).strict();
 
-export const sessionResidencyConfigResponseSchema = z.object({
+export const sessionResidencyConfigResponseSchema = /* @__PURE__ */ z.object({
   idleTtlMs: z.number().int().optional(),
   maxLiveSessions: z.number().int().optional(),
   minIdleMs: z.number().int().optional(),
@@ -302,7 +302,7 @@ export const sessionResidencyConfigResponseSchema = z.object({
   maxResidentHeapBytes: z.number().int().optional(),
 });
 
-export const sessionResidencyConfigPatchSchema = z.object({
+export const sessionResidencyConfigPatchSchema = /* @__PURE__ */ z.object({
   idle_ttl_ms: z.number().int().min(0).max(86_400_000).optional(),
   max_live_sessions: z.number().int().min(1).max(64).optional(),
   min_idle_ms: z.number().int().min(0).max(86_400_000).optional(),
@@ -314,29 +314,29 @@ export const sessionResidencyConfigPatchSchema = z.object({
 
 export const interactionConfigResponseSchema = interactionConfigSchema;
 
-export const interactionConfigPatchSchema = z.object({
+export const interactionConfigPatchSchema = /* @__PURE__ */ z.object({
   ask_user_question: z.enum(['background', 'blocking']).optional(),
   ask_user_question_guard: askUserQuestionGuardWireSchema.optional(),
 }).strict();
 
-export const agentExecutorDisplayConfigSchema = z.object({
+export const agentExecutorDisplayConfigSchema = /* @__PURE__ */ z.object({
   externalsVisible: z.boolean().optional(),
   discoveryInitialized: z.boolean().optional(),
 }).strict();
 
-export const agentExecutorDisplayConfigPatchSchema = z.object({
+export const agentExecutorDisplayConfigPatchSchema = /* @__PURE__ */ z.object({
   externals_visible: z.boolean().nullable().optional(),
   discovery_initialized: z.boolean().nullable().optional(),
 }).strict();
 
-export const optionalCapabilityStateSchema = z.object({
+export const optionalCapabilityStateSchema = /* @__PURE__ */ z.object({
   allowed: z.boolean(),
   host_locked: z.boolean(),
   default_on: z.boolean(),
   origin: z.enum(['default', 'preset', 'base', 'home', 'local', 'env', 'memory', 'unreadable']),
   unresolved: z.boolean(),
 }).strict();
-export const optionalCapabilitiesResponseSchema = z.object({
+export const optionalCapabilitiesResponseSchema = /* @__PURE__ */ z.object({
   browser: optionalCapabilityStateSchema,
   computer: optionalCapabilityStateSchema,
   memory: optionalCapabilityStateSchema,
@@ -345,7 +345,7 @@ export const optionalCapabilitiesResponseSchema = z.object({
   web: optionalCapabilityStateSchema,
   send_message: optionalCapabilityStateSchema,
 }).strict();
-export const optionalCapabilitiesPatchSchema = z.object({
+export const optionalCapabilitiesPatchSchema = /* @__PURE__ */ z.object({
   defaults: z.object({
     browser: z.boolean().nullable().optional(),
     computer: z.boolean().nullable().optional(),
@@ -357,8 +357,8 @@ export const optionalCapabilitiesPatchSchema = z.object({
   }).strict().optional(),
   web_allowed: z.boolean().nullable().optional(),
 }).strict();
-export const optionalCapabilityChoiceSchema = z.enum(['on', 'off', 'inherit']);
-export const optionalCapabilitySessionRowSchema = z.object({
+export const optionalCapabilityChoiceSchema = /* @__PURE__ */ z.enum(['on', 'off', 'inherit']);
+export const optionalCapabilitySessionRowSchema = /* @__PURE__ */ z.object({
   id: z.enum(['browser', 'computer', 'memory', 'thread', 'branch', 'web', 'send_message']),
   choice: optionalCapabilityChoiceSchema,
   effective: z.boolean(),
@@ -370,22 +370,22 @@ export const optionalCapabilitySessionRowSchema = z.object({
   unresolved: z.boolean(),
   applies: z.enum(['next-model-request', 'next-step']),
 }).strict();
-export const optionalCapabilitySessionResponseSchema = z.object({
+export const optionalCapabilitySessionResponseSchema = /* @__PURE__ */ z.object({
   revision: z.number().int().nonnegative(),
   host_id: z.string().min(1),
   rows: z.array(optionalCapabilitySessionRowSchema),
 }).strict();
 export type OptionalCapabilitySessionResponse = z.infer<typeof optionalCapabilitySessionResponseSchema>;
-export const optionalCapabilitySessionRequestSchema = z.object({
+export const optionalCapabilitySessionRequestSchema = /* @__PURE__ */ z.object({
   id: z.enum(['browser', 'computer', 'memory', 'thread', 'branch', 'web', 'send_message']),
   choice: optionalCapabilityChoiceSchema,
 }).strict();
 export type OptionalCapabilitySessionRequest = z.infer<typeof optionalCapabilitySessionRequestSchema>;
 
-export const sendMessageVoiceModeSchema = z.enum(['none', 'append', 'only']);
+export const sendMessageVoiceModeSchema = /* @__PURE__ */ z.enum(['none', 'append', 'only']);
 export type SendMessageVoiceMode = z.infer<typeof sendMessageVoiceModeSchema>;
 
-export const sendMessageConfigResponseSchema = z.object({
+export const sendMessageConfigResponseSchema = /* @__PURE__ */ z.object({
   voiceMode: sendMessageVoiceModeSchema.default('none'),
   ttsProvider: z.string().min(1).optional(),
   ttsModel: z.string().min(1).optional(),
@@ -398,7 +398,7 @@ export const sendMessageConfigResponseSchema = z.object({
 }).strict();
 export type SendMessageConfigResponse = z.infer<typeof sendMessageConfigResponseSchema>;
 
-export const sendMessageConfigPatchSchema = z.object({
+export const sendMessageConfigPatchSchema = /* @__PURE__ */ z.object({
   voice_mode: sendMessageVoiceModeSchema.nullable().optional(),
   tts_provider: z.string().min(1).nullable().optional(),
   tts_model: z.string().min(1).nullable().optional(),
@@ -411,7 +411,7 @@ export const sendMessageConfigPatchSchema = z.object({
 }).strict();
 export type SendMessageConfigPatch = z.infer<typeof sendMessageConfigPatchSchema>;
 
-export const configResponseSchema = z.object({
+export const configResponseSchema = /* @__PURE__ */ z.object({
   browser_control: browserControlSettingsSchema.optional(),
   optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   send_message: sendMessageConfigResponseSchema.optional(),
@@ -469,7 +469,7 @@ export const configResponseSchema = z.object({
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
-export const patchConfigRequestSchema = z.object({
+export const patchConfigRequestSchema = /* @__PURE__ */ z.object({
   browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
   branch: branchConfigPatchSchema.optional(),

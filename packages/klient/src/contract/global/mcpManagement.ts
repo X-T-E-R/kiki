@@ -15,26 +15,27 @@ import {
   mcpServerStdioConfigSchema,
 } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const mcpServerSourceSchema = z.enum(['global', 'plugin', 'caller']);
+export const mcpServerSourceSchema = /* @__PURE__ */ z.enum(['global', 'plugin', 'caller']);
 
-export const mcpRegistryPluginOriginSchema = z.object({
+export const mcpRegistryPluginOriginSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   /** Manifest-local server name (without the runtime prefix). */
   name: z.string(),
 });
 
-export const mcpRegistryQuerySchema = z.object({
+export const mcpRegistryQuerySchema = /* @__PURE__ */ z.object({
   cwd: z.string().min(1).optional(),
 });
 
-export const mcpAuthStatusQuerySchema = z.object({
+export const mcpAuthStatusQuerySchema = /* @__PURE__ */ z.object({
   cwd: z.string().min(1).optional(),
   verify: z.boolean().optional(),
 });
 
 /** `GlobalMcpServerConfig` — a named full config (add/update, inline test target). */
-export const globalMcpServerConfigSchema = z.discriminatedUnion('transport', [
+export const globalMcpServerConfigSchema = /* @__PURE__ */ z.discriminatedUnion('transport', [
   mcpServerStdioConfigSchema.extend({ name: z.string().min(1) }),
   mcpServerHttpConfigSchema.extend({ name: z.string().min(1) }),
   mcpServerSseConfigSchema.extend({ name: z.string().min(1) }),
@@ -47,7 +48,7 @@ export const globalMcpServerConfigSchema = z.discriminatedUnion('transport', [
  * One schema covers both shapes, mirroring the engine's
  * `McpServerConfig | McpServerConfigView` union.
  */
-export const mcpServerConfigDataSchema = z.discriminatedUnion('transport', [
+export const mcpServerConfigDataSchema = /* @__PURE__ */ z.discriminatedUnion('transport', [
   mcpServerStdioConfigSchema.extend({
     envKeys: z.array(z.string()).optional(),
     computerServeReady: z.boolean().optional(),
@@ -56,7 +57,7 @@ export const mcpServerConfigDataSchema = z.discriminatedUnion('transport', [
   mcpServerSseConfigSchema.extend({ headerKeys: z.array(z.string()).optional() }),
 ]);
 
-export const mcpManagedServerSchema = z.object({
+export const mcpManagedServerSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   config: mcpServerConfigDataSchema,
   source: mcpServerSourceSchema,
@@ -65,21 +66,21 @@ export const mcpManagedServerSchema = z.object({
   plugin: mcpRegistryPluginOriginSchema.optional(),
 });
 
-export const mcpServerTestTargetSchema = z.object({
+export const mcpServerTestTargetSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1).optional(),
   server: globalMcpServerConfigSchema.optional(),
   cwd: z.string().min(1).optional(),
 });
 
-export const mcpServerTestResultSchema = z.object({
+export const mcpServerTestResultSchema = /* @__PURE__ */ z.object({
   success: z.boolean(),
   output: z.string(),
 });
 
-export const mcpServerStopTargetSchema = z.object({ name: z.string().min(1), cwd: z.string().min(1).optional() });
-export const mcpServerStopResultSchema = z.object({ state: z.enum(['idle', 'stopped', 'unconfirmed']), output: z.string() });
+export const mcpServerStopTargetSchema = /* @__PURE__ */ z.object({ name: z.string().min(1), cwd: z.string().min(1).optional() });
+export const mcpServerStopResultSchema = /* @__PURE__ */ z.object({ state: z.enum(['idle', 'stopped', 'unconfirmed']), output: z.string() });
 
-export const mcpServerLocatorSchema = z.discriminatedUnion('source', [
+export const mcpServerLocatorSchema = /* @__PURE__ */ z.discriminatedUnion('source', [
   z.object({ source: z.literal('global'), name: z.string().min(1) }),
   z.object({
     source: z.literal('plugin'),
@@ -88,7 +89,7 @@ export const mcpServerLocatorSchema = z.discriminatedUnion('source', [
   }),
 ]);
 
-export const mcpServerAuthStateSchema = z.enum([
+export const mcpServerAuthStateSchema = /* @__PURE__ */ z.enum([
   'not-applicable',
   'bearer-token',
   'oauth-required',
@@ -97,7 +98,7 @@ export const mcpServerAuthStateSchema = z.enum([
   'unavailable',
 ]);
 
-export const mcpServerDescriptorSchema = z.object({
+export const mcpServerDescriptorSchema = /* @__PURE__ */ z.object({
   /** `global:<name>` / `plugin:<pluginId>:<serverName>`, URL-encoded. */
   serverId: z.string(),
   locator: mcpServerLocatorSchema,
@@ -109,30 +110,30 @@ export const mcpServerDescriptorSchema = z.object({
   editable: z.boolean(),
 });
 
-export const mcpServerInspectionSchema = mcpServerDescriptorSchema.extend({
+export const mcpServerInspectionSchema = /* @__PURE__ */ mcpServerDescriptorSchema.extend({
   authStatus: mcpServerAuthStateSchema,
   checkedAt: z.number().optional(),
   error: z.string().optional(),
 });
 
-export const mcpServerAuthStatusSchema = z.object({
+export const mcpServerAuthStatusSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   authStatus: mcpServerAuthStateSchema,
 });
 
-export const mcpStoredOAuthIdentitySchema = z.object({
+export const mcpStoredOAuthIdentitySchema = /* @__PURE__ */ z.object({
   credentialId: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
-export const mcpStoredOAuthCredentialSchema = mcpStoredOAuthIdentitySchema.extend({
+export const mcpStoredOAuthCredentialSchema = /* @__PURE__ */ mcpStoredOAuthIdentitySchema.extend({
   serverName: z.string().min(1),
   displayUrl: z.string().min(1),
   origin: z.literal('unknown'),
 });
 
-export const mcpRevealedOAuthCredentialSchema = z.object({ canonicalUrl: z.url() });
+export const mcpRevealedOAuthCredentialSchema = /* @__PURE__ */ z.object({ canonicalUrl: z.url() });
 
-export const mcpServerAuthBeginResultSchema = z.discriminatedUnion('status', [
+export const mcpServerAuthBeginResultSchema = /* @__PURE__ */ z.discriminatedUnion('status', [
   z.object({
     status: z.literal('authorization-required'),
     flowId: z.string(),
@@ -141,7 +142,7 @@ export const mcpServerAuthBeginResultSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('already-authorized') }),
 ]);
 
-export const mcpServerAuthFlowHandleSchema = z.object({
+export const mcpServerAuthFlowHandleSchema = /* @__PURE__ */ z.object({
   flowId: z.string().min(1),
   // Node overflows setTimeout delays above 2^31-1 into ~1ms; the REST schema
   // and the engine reject the same range.
@@ -149,72 +150,72 @@ export const mcpServerAuthFlowHandleSchema = z.object({
 });
 
 export const mcpManagementContract = {
-  listServers: {
-    input: z.tuple([mcpRegistryQuerySchema.optional()]),
-    output: z.array(mcpManagedServerSchema),
-  },
-  getServer: {
-    input: z.tuple([z.string().min(1), mcpRegistryQuerySchema.optional()]),
+  listServers: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpRegistryQuerySchema.optional()]),
+    output: /* @__PURE__ */ z.array(mcpManagedServerSchema),
+  }), 'input', 'output'),
+  getServer: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().min(1), mcpRegistryQuerySchema.optional()]),
     output: mcpManagedServerSchema,
-  },
-  addServer: {
-    input: z.tuple([globalMcpServerConfigSchema, mcpRegistryQuerySchema.optional()]),
-    output: z.array(mcpManagedServerSchema),
-  },
-  updateServer: {
-    input: z.tuple([globalMcpServerConfigSchema, mcpRegistryQuerySchema.optional()]),
-    output: z.array(mcpManagedServerSchema),
-  },
-  removeServer: {
-    input: z.tuple([z.string().min(1), mcpRegistryQuerySchema.optional()]),
-    output: z.array(mcpManagedServerSchema),
-  },
-  testServer: {
-    input: z.tuple([mcpServerTestTargetSchema]),
+  }), 'input', 'output'),
+  addServer: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([globalMcpServerConfigSchema, mcpRegistryQuerySchema.optional()]),
+    output: /* @__PURE__ */ z.array(mcpManagedServerSchema),
+  }), 'input', 'output'),
+  updateServer: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([globalMcpServerConfigSchema, mcpRegistryQuerySchema.optional()]),
+    output: /* @__PURE__ */ z.array(mcpManagedServerSchema),
+  }), 'input', 'output'),
+  removeServer: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().min(1), mcpRegistryQuerySchema.optional()]),
+    output: /* @__PURE__ */ z.array(mcpManagedServerSchema),
+  }), 'input', 'output'),
+  testServer: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpServerTestTargetSchema]),
     output: mcpServerTestResultSchema,
-  },
-  stopServer: { input: z.tuple([mcpServerStopTargetSchema]), output: mcpServerStopResultSchema },
-  listAuthStatuses: {
-    input: z.tuple([mcpAuthStatusQuerySchema.optional()]),
-    output: z.array(mcpServerAuthStatusSchema),
-  },
-  inspectServers: {
-    input: z.tuple([
+  }), 'input', 'output'),
+  stopServer: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([mcpServerStopTargetSchema]), output: mcpServerStopResultSchema }), 'input', 'output'),
+  listAuthStatuses: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpAuthStatusQuerySchema.optional()]),
+    output: /* @__PURE__ */ z.array(mcpServerAuthStatusSchema),
+  }), 'input', 'output'),
+  inspectServers: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([
       z.array(mcpServerLocatorSchema).optional(),
       mcpRegistryQuerySchema.optional(),
     ]),
-    output: z.array(mcpServerInspectionSchema),
-  },
-  resolveServerByName: {
-    input: z.tuple([z.string().min(1), mcpRegistryQuerySchema.optional()]),
+    output: /* @__PURE__ */ z.array(mcpServerInspectionSchema),
+  }), 'input', 'output'),
+  resolveServerByName: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.string().min(1), mcpRegistryQuerySchema.optional()]),
     output: mcpServerLocatorSchema,
-  },
-  beginServerAuth: {
-    input: z.tuple([mcpServerLocatorSchema, mcpRegistryQuerySchema.optional()]),
+  }), 'input', 'output'),
+  beginServerAuth: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpServerLocatorSchema, mcpRegistryQuerySchema.optional()]),
     output: mcpServerAuthBeginResultSchema,
-  },
-  completeServerAuth: {
-    input: z.tuple([mcpServerAuthFlowHandleSchema]),
+  }), 'input', 'output'),
+  completeServerAuth: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpServerAuthFlowHandleSchema]),
     output: noResult,
-  },
-  cancelServerAuth: {
-    input: z.tuple([z.object({ flowId: z.string().min(1) })]),
+  }), 'input', 'output'),
+  cancelServerAuth: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([z.object({ flowId: z.string().min(1) })]),
     output: noResult,
-  },
-  resetServerAuth: {
-    input: z.tuple([mcpServerLocatorSchema, mcpRegistryQuerySchema.optional(), z.url().optional()]),
+  }), 'input', 'output'),
+  resetServerAuth: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpServerLocatorSchema, mcpRegistryQuerySchema.optional(), z.url().optional()]),
     output: noResult,
-  },
-  listStoredOAuthCredentials: {
-    input: z.tuple([]),
-    output: z.array(mcpStoredOAuthCredentialSchema),
-  },
-  revealStoredOAuthCredential: {
-    input: z.tuple([mcpStoredOAuthIdentitySchema]),
+  }), 'input', 'output'),
+  listStoredOAuthCredentials: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([]),
+    output: /* @__PURE__ */ z.array(mcpStoredOAuthCredentialSchema),
+  }), 'input', 'output'),
+  revealStoredOAuthCredential: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpStoredOAuthIdentitySchema]),
     output: mcpRevealedOAuthCredentialSchema,
-  },
-  revokeStoredOAuthCredential: {
-    input: z.tuple([mcpStoredOAuthIdentitySchema]),
+  }), 'input', 'output'),
+  revokeStoredOAuthCredential: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([mcpStoredOAuthIdentitySchema]),
     output: noResult,
-  },
+  }), 'input', 'output'),
 } satisfies ServiceContract;

@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
-export const desktopLifecycleRequestSchema = z.object({
+export const desktopLifecycleRequestSchema = /* @__PURE__ */ z.object({
   action: z.enum(['restart', 'update', 'quit', 'prepare-update', 'cancel-update']),
   server_id: z.string().min(1),
   consent: z.literal(true),
   interrupt_work: z.boolean().default(false),
 }).strict();
-export const desktopLifecycleStateSchema = z.object({
+export const desktopLifecycleStateSchema = /* @__PURE__ */ z.object({
   server_id: z.string().min(1),
   home_id: z.string().min(1),
   managed: z.boolean(),

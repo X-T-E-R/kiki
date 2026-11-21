@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const cloudflareSettingsPatchSchema = z.object({
+export const cloudflareSettingsPatchSchema = /* @__PURE__ */ z.object({
   cloudflaredPath: z.string().nullable().optional(),
   mode: z.enum(['token', 'local']).nullable().optional(),
   tunnelToken: z.string().nullable().optional(),
@@ -15,7 +15,7 @@ export const cloudflareSettingsPatchSchema = z.object({
   autoStart: z.boolean().nullable().optional(),
 }).strict();
 
-export const cloudflareStatusSchema = z.object({
+export const cloudflareStatusSchema = /* @__PURE__ */ z.object({
   schemaVersion: z.literal(1),
   dependency: z.object({ state: z.enum(['ready', 'missing', 'error']), path: z.string(), version: z.string().optional(), installable: z.boolean().optional() }),
   account: z.object({ certificate: z.boolean(), apiToken: z.boolean() }),
@@ -35,9 +35,9 @@ export const cloudflareStatusSchema = z.object({
   login: z.object({ state: z.enum(['idle', 'pending', 'complete', 'error']), url: z.string().optional(), error: z.string().optional() }),
 });
 
-export const cloudflareTunnelsSchema = z.object({ items: z.array(z.object({ id: z.string(), name: z.string(), status: z.string().optional() })) });
-export const cloudflareAccountsSchema = z.object({ items: z.array(z.object({ id: z.string(), name: z.string() })) });
-export const cloudflareSetupSchema = z.object({ url: z.string().url(), docsUrl: z.string().url(), managedExternally: z.literal(true) });
+export const cloudflareTunnelsSchema = /* @__PURE__ */ z.object({ items: z.array(z.object({ id: z.string(), name: z.string(), status: z.string().optional() })) });
+export const cloudflareAccountsSchema = /* @__PURE__ */ z.object({ items: z.array(z.object({ id: z.string(), name: z.string() })) });
+export const cloudflareSetupSchema = /* @__PURE__ */ z.object({ url: z.string().url(), docsUrl: z.string().url(), managedExternally: z.literal(true) });
 
 export type CloudflareSettingsPatch = z.infer<typeof cloudflareSettingsPatchSchema>;
 export type CloudflareStatus = z.infer<typeof cloudflareStatusSchema>;

@@ -2,12 +2,12 @@ import { z } from 'zod';
 
 import { WINDOWS_MCP_COMPUTER_CONNECTION } from './config';
 
-export const windowsMcpLicenseSchema = z.object({
+export const windowsMcpLicenseSchema = /* @__PURE__ */ z.object({
   name: z.string().min(1),
   license: z.string().min(1),
 }).strict();
 
-export const windowsMcpEnvironmentResponseSchema = z.object({
+export const windowsMcpEnvironmentResponseSchema = /* @__PURE__ */ z.object({
   id: z.literal('windows-mcp'),
   version: z.literal('0.8.8'),
   commit: z.string().length(40),
@@ -25,14 +25,14 @@ export const windowsMcpEnvironmentResponseSchema = z.object({
 }).strict();
 export type WindowsMcpEnvironmentResponse = z.infer<typeof windowsMcpEnvironmentResponseSchema>;
 
-export const windowsMcpRegisterRequestSchema = z.object({
+export const windowsMcpRegisterRequestSchema = /* @__PURE__ */ z.object({
   python: z.string().min(1),
   configPath: z.string().min(1),
   version: z.literal('0.8.8'),
 }).strict();
 export type WindowsMcpRegisterRequest = z.infer<typeof windowsMcpRegisterRequestSchema>;
 
-export const windowsMcpRegisterResponseSchema = z.object({
+export const windowsMcpRegisterResponseSchema = /* @__PURE__ */ z.object({
   result: z.enum(['mcp-configured', 'existing-mcp-config-reused']),
   name: z.literal(WINDOWS_MCP_COMPUTER_CONNECTION),
   connection: z.literal(WINDOWS_MCP_COMPUTER_CONNECTION),

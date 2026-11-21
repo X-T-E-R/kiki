@@ -14,22 +14,23 @@ import { asrProviderDefinitionSchema, pluginInstallPlanSchema, pluginPreviewRequ
 import { noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
+import { lazyContract } from '../lazyContract.js';
 
-export const pluginDiagnosticSchema = z.object({
+export const pluginDiagnosticSchema = /* @__PURE__ */ z.object({
   severity: z.enum(['error', 'warn', 'info']),
   message: z.string(),
 });
 
-const pluginAuthorSchema = z.object({
+const pluginAuthorSchema = /* @__PURE__ */ z.object({
   name: z.string().optional(),
   email: z.string().optional(),
 });
 
-const pluginSessionStartSchema = z.object({
+const pluginSessionStartSchema = /* @__PURE__ */ z.object({
   skill: z.string(),
 });
 
-const pluginInterfaceSchema = z.object({
+const pluginInterfaceSchema = /* @__PURE__ */ z.object({
   displayName: z.string().optional(),
   shortDescription: z.string().optional(),
   longDescription: z.string().optional(),
@@ -37,7 +38,7 @@ const pluginInterfaceSchema = z.object({
   websiteURL: z.string().optional(),
 });
 
-const hookDefSchema = z.object({
+const hookDefSchema = /* @__PURE__ */ z.object({
   event: z.enum([
     'PreToolUse',
     'PostToolUse',
@@ -65,23 +66,23 @@ const hookDefSchema = z.object({
   timeout: z.number().int().min(1).max(600).optional(),
 });
 
-const pluginCommandEntrySchema = z.object({
+const pluginCommandEntrySchema = /* @__PURE__ */ z.object({
   path: z.string(),
   name: z.string(),
 });
 
-const pluginManifestKindSchema = z.enum(['kimi-plugin-root', 'kimi-plugin-dir', 'claude-code']);
+const pluginManifestKindSchema = /* @__PURE__ */ z.enum(['kimi-plugin-root', 'kimi-plugin-dir', 'claude-code']);
 
-const pluginSourceSchema = z.enum(['local-path', 'zip-url', 'github']);
+const pluginSourceSchema = /* @__PURE__ */ z.enum(['local-path', 'zip-url', 'github']);
 
-const pluginStateSchema = z.enum(['ok', 'error']);
+const pluginStateSchema = /* @__PURE__ */ z.enum(['ok', 'error']);
 
-const pluginGithubRefSchema = z.object({
+const pluginGithubRefSchema = /* @__PURE__ */ z.object({
   kind: z.enum(['branch', 'tag', 'sha']),
   value: z.string(),
 });
 
-export const pluginManifestSchema = z.object({
+export const pluginManifestSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   version: z.string().optional(),
   description: z.string().optional(),
@@ -102,7 +103,7 @@ export const pluginManifestSchema = z.object({
   unsupportedComponents: z.array(z.string()).optional(),
 });
 
-export const pluginMcpServerInfoSchema = z.object({
+export const pluginMcpServerInfoSchema = /* @__PURE__ */ z.object({
   name: z.string(),
   runtimeName: z.string(),
   enabled: z.boolean(),
@@ -115,14 +116,14 @@ export const pluginMcpServerInfoSchema = z.object({
   headerKeys: z.array(z.string()).optional(),
 });
 
-export const pluginGithubMetadataSchema = z.object({
+export const pluginGithubMetadataSchema = /* @__PURE__ */ z.object({
   owner: z.string(),
   repo: z.string(),
   ref: pluginGithubRefSchema,
   installedSha: z.string().optional(),
 });
 
-export const pluginSummarySchema = z.object({
+export const pluginSummarySchema = /* @__PURE__ */ z.object({
   id: z.string(),
   displayName: z.string(),
   version: z.string().optional(),
@@ -151,7 +152,7 @@ export const pluginSummarySchema = z.object({
   }).optional(),
 });
 
-export const pluginInfoSchema = pluginSummarySchema.extend({
+export const pluginInfoSchema = /* @__PURE__ */ pluginSummarySchema.extend({
   root: z.string(),
   installedAt: z.string(),
   updatedAt: z.string().optional(),
@@ -164,13 +165,13 @@ export const pluginInfoSchema = pluginSummarySchema.extend({
 });
 
 /** Same shape as `reloadSummarySchema` in `./events.js` — keep in sync. */
-export const reloadSummarySchema = z.object({
+export const reloadSummarySchema = /* @__PURE__ */ z.object({
   added: z.array(z.string()),
   removed: z.array(z.string()),
   errors: z.array(z.object({ id: z.string(), message: z.string() })),
 });
 
-export const pluginUpdateStatusSchema = z.object({
+export const pluginUpdateStatusSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   source: pluginSourceSchema,
   current: pluginGithubRefSchema.optional(),
@@ -179,7 +180,7 @@ export const pluginUpdateStatusSchema = z.object({
   updateAvailable: z.boolean(),
 });
 
-export const pluginCommandDefSchema = z.object({
+export const pluginCommandDefSchema = /* @__PURE__ */ z.object({
   pluginId: z.string(),
   name: z.string(),
   description: z.string(),
@@ -187,46 +188,46 @@ export const pluginCommandDefSchema = z.object({
   path: z.string(),
 });
 
-export const installPluginInputSchema = pluginPreviewRequestSchema.extend({
+export const installPluginInputSchema = /* @__PURE__ */ pluginPreviewRequestSchema.extend({
   fingerprint: z.string().optional(),
   consent: z.boolean().optional(),
   defaultEnabled: z.boolean().optional(),
 });
 
-export const setPluginEnabledInputSchema = z.object({
+export const setPluginEnabledInputSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   enabled: z.boolean(),
   defaultEnabled: z.boolean().optional(),
 });
 
-export const setPluginMcpServerEnabledInputSchema = z.object({
+export const setPluginMcpServerEnabledInputSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   server: z.string(),
   enabled: z.boolean(),
 });
 
-export const removePluginInputSchema = z.object({
+export const removePluginInputSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   deleteData: z.boolean().optional(),
 });
 
-export const getPluginInfoInputSchema = z.object({
+export const getPluginInfoInputSchema = /* @__PURE__ */ z.object({
   id: z.string(),
 });
 
 export const pluginsContract = {
-  listPlugins: { input: z.tuple([]), output: z.array(pluginSummarySchema) },
-  previewPlugin: { input: z.tuple([pluginPreviewRequestSchema]), output: pluginInstallPlanSchema },
-  installPlugin: { input: z.tuple([installPluginInputSchema]), output: pluginSummarySchema },
-  rollbackPlugin: { input: z.tuple([z.object({ id: z.string() })]), output: pluginSummarySchema },
-  setPluginEnabled: { input: z.tuple([setPluginEnabledInputSchema]), output: noResult },
-  setPluginMcpServerEnabled: {
-    input: z.tuple([setPluginMcpServerEnabledInputSchema]),
+  listPlugins: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(pluginSummarySchema) }), 'input', 'output'),
+  previewPlugin: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([pluginPreviewRequestSchema]), output: pluginInstallPlanSchema }), 'input', 'output'),
+  installPlugin: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([installPluginInputSchema]), output: pluginSummarySchema }), 'input', 'output'),
+  rollbackPlugin: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([z.object({ id: z.string() })]), output: pluginSummarySchema }), 'input', 'output'),
+  setPluginEnabled: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([setPluginEnabledInputSchema]), output: noResult }), 'input', 'output'),
+  setPluginMcpServerEnabled: /* @__PURE__ */ lazyContract(() => ({
+    input: /* @__PURE__ */ z.tuple([setPluginMcpServerEnabledInputSchema]),
     output: noResult,
-  },
-  removePlugin: { input: z.tuple([removePluginInputSchema]), output: noResult },
-  reloadPlugins: { input: z.tuple([]), output: reloadSummarySchema },
-  getPluginInfo: { input: z.tuple([getPluginInfoInputSchema]), output: pluginInfoSchema },
-  listPluginCommands: { input: z.tuple([]), output: z.array(pluginCommandDefSchema) },
-  checkUpdates: { input: z.tuple([]), output: z.array(pluginUpdateStatusSchema) },
+  }), 'input', 'output'),
+  removePlugin: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([removePluginInputSchema]), output: noResult }), 'input', 'output'),
+  reloadPlugins: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: reloadSummarySchema }), 'input', 'output'),
+  getPluginInfo: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([getPluginInfoInputSchema]), output: pluginInfoSchema }), 'input', 'output'),
+  listPluginCommands: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(pluginCommandDefSchema) }), 'input', 'output'),
+  checkUpdates: /* @__PURE__ */ lazyContract(() => ({ input: /* @__PURE__ */ z.tuple([]), output: /* @__PURE__ */ z.array(pluginUpdateStatusSchema) }), 'input', 'output'),
 } satisfies ServiceContract;

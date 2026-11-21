@@ -2,19 +2,19 @@ import { z } from 'zod';
 import { taskSchema } from '../task';
 import { isoDateTimeSchema } from '../time';
 
-export const listAgentTasksQuerySchema = z.object({
+export const listAgentTasksQuerySchema = /* @__PURE__ */ z.object({
   page_size: z.coerce.number().int().min(1).max(100).optional(),
   page_token: z.string().min(1).optional(),
 });
 export type ListAgentTasksQuery = z.infer<typeof listAgentTasksQuerySchema>;
 
-export const agentTaskSummarySchema = taskSchema.extend({
+export const agentTaskSummarySchema = /* @__PURE__ */ taskSchema.extend({
   owner_agent_id: z.string().min(1),
   source: z.enum(['live', 'persisted']),
 });
 export type AgentTaskSummary = z.infer<typeof agentTaskSummarySchema>;
 
-export const agentTasksFailureSchema = z.object({
+export const agentTasksFailureSchema = /* @__PURE__ */ z.object({
   owner_agent_id: z.string().optional(),
   task_id: z.string().optional(),
   stage: z.enum(['inventory', 'owner', 'task_metadata']),
@@ -33,7 +33,7 @@ export type AgentTasksFailure = z.infer<typeof agentTasksFailureSchema>;
  * Persisted running states are historical registrations, not proof of live execution;
  * persisted receipt bytes are metadata and their contents are not re-verified here.
  */
-export const listAgentTasksResponseSchema = z.object({
+export const listAgentTasksResponseSchema = /* @__PURE__ */ z.object({
   items: z.array(agentTaskSummarySchema),
   owners: z.array(z.object({
     owner_agent_id: z.string().min(1),
