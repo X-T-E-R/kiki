@@ -14,6 +14,7 @@
  *   shell with no boundary can pass `navigate` for a plain one instead.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router-dom';
 
@@ -250,7 +251,7 @@ export function useAwayNotifications({ host, sessions, listSessions, unifiedInbo
       isViewingSession,
       scopeKey,
       notify: async (notification) => {
-        const deliveryId = crypto.randomUUID();
+        const deliveryId = randomUuid();
         const sending = { scopeKey, sessionIds: notification.sessionIds ?? [], viewed: new Set<string>() };
         sendingNotifications.add(sending);
         try {

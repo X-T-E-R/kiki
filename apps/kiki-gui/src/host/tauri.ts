@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
@@ -236,7 +237,7 @@ export const tauriHost: TauriHostAdapter = {
     const target = await save({ defaultPath: filename });
     if (target === null) return null;
     await mkdir('kiki-media-saves', { baseDir: BaseDirectory.AppLocalData, recursive: true });
-    const temporary = `kiki-media-saves/${crypto.randomUUID()}.part`;
+    const temporary = `kiki-media-saves/${randomUuid()}.part`;
     const file = await open(temporary, { baseDir: BaseDirectory.AppLocalData, write: true, createNew: true });
     let phase: 'writing' | 'committing' | 'closed' = 'writing';
     return {

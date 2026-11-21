@@ -245,6 +245,8 @@ body {
   --focus-ring-width: 2px;
   --kiki-safe-top-inset: max(var(--kiki-safe-top, 0px), env(safe-area-inset-top, 0px));
   --kiki-safe-bottom-inset: max(var(--kiki-safe-bottom, 0px), env(safe-area-inset-bottom, 0px));
+  --kiki-safe-left-inset: env(safe-area-inset-left, 0px);
+  --kiki-safe-right-inset: env(safe-area-inset-right, 0px);
   --kiki-pane-duration: 180ms;
   --kiki-pane-ease: cubic-bezier(0.2, 0, 0, 1);
 }
@@ -527,12 +529,17 @@ body {
   box-shadow: none;
 }
 
+/* Edge-to-edge safe-area insets apply on every width (portrait phones,
+ * landscape phones >= 768px, and iPads); desktop environments report 0px. */
+.app-stage {
+  padding-top: max(var(--kiki-stage-gap), var(--kiki-safe-top-inset));
+  padding-right: max(var(--kiki-stage-gap), var(--kiki-safe-right-inset));
+  padding-left: var(--kiki-safe-left-inset);
+}
+
 @media (max-width: 767px) {
-  /* Edge-to-edge (viewport-fit=cover: an installed web app or the phone app
-   * shell): the stage keeps the page header out from under the status bar
-   * and a landscape notch. The seat already pads the bottom home strip. */
   .app-stage {
-    padding: var(--kiki-safe-top-inset) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    padding: var(--kiki-safe-top-inset) var(--kiki-safe-right-inset) 0 var(--kiki-safe-left-inset);
     gap: 0;
     background-color: var(--color-paper);
   }
@@ -1767,12 +1774,10 @@ input[data-add-search]:focus-visible {
   z-index: 20;
 }
 
-/* Phone: the seat's solid paper extends into the home-indicator strip so the
- * composer card never docks against it. */
-@media (max-width: 767px) {
-  .conversation-shell[data-phase='active'] .conversation-seat {
-    padding-bottom: max(var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
-  }
+/* Touch & notched displays (portrait phones, landscape phones, iPad): the seat
+ * extends into the home-indicator strip without gating on max-width: 767px. */
+.conversation-shell[data-phase='active'] .conversation-seat {
+  padding-bottom: max(var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
 }
 
 /* Settling (cold /s/:id load, transcript still opening): keep the seat
@@ -2194,7 +2199,7 @@ input[data-add-search]:focus-visible {
  * collapses that through the motion tokens. */
 .kiki-action-sheet-layer {
   position: fixed;
-  top: 0;
+  top: var(--kiki-visual-offset-top, 0px);
   right: 0;
   left: 0;
   height: var(--kiki-visual-height, 100%);
@@ -2240,4 +2245,85 @@ input[data-add-search]:focus-visible {
   flex-direction: column;
   overflow: hidden;
   padding-top: 0;
+}
+
+/* ============================================================================
+ * Mobile-Native Personal Assistant Shell (/m/*)
+ * Follows Kiki ink-on-paper semantic tokens across portrait, landscape & iPad.
+ * ============================================================================ */
+.kiki-mobile-shell {
+  position: fixed;
+  top: var(--kiki-visual-offset-top, 0px);
+  right: 0;
+  left: 0;
+  height: var(--kiki-visual-height, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  padding-top: var(--kiki-safe-top-inset);
+  padding-left: var(--kiki-safe-left-inset);
+  padding-right: var(--kiki-safe-right-inset);
+}
+
+.kiki-mobile-glass-pill {
+  background-color: color-mix(in srgb, var(--color-panel) 84%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid color-mix(in srgb, var(--color-hairline) 85%, transparent);
+  box-shadow:
+    0 2px 10px -2px rgb(var(--kiki-shadow-ink) / 0.1),
+    0 12px 28px -12px rgb(var(--kiki-shadow-ink) / 0.18);
+}
+
+[data-theme='dark'] .kiki-mobile-glass-pill {
+  background-color: color-mix(in srgb, var(--color-panel) 86%, transparent);
+  border-color: color-mix(in srgb, var(--color-hairline-strong) 55%, transparent);
+  box-shadow:
+    0 0 0 1px rgb(238 234 226 / 0.06),
+    0 12px 32px -10px rgb(0 0 0 / 0.65);
+}
+
+@keyframes kiki-mobile-push-in {
+  from {
+    opacity: 0.92;
+    transform: translate3d(28px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.kiki-mobile-push-screen {
+  animation: kiki-mobile-push-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kiki-mobile-push-screen {
+    animation: none;
+  }
+}
+
+.kiki-mobile-tabbar-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  pointer-events: none;
+  padding: 0 max(16px, var(--kiki-safe-right-inset)) calc(12px + var(--kiki-safe-bottom-inset)) max(16px, var(--kiki-safe-left-inset));
+  display: flex;
+  justify-content: center;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease;
+}
+
+.kiki-mobile-sheet-grabber {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-ink-faint) 35%, transparent);
+  margin: 8px auto 6px;
+  flex-shrink: 0;
 }

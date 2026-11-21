@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import { useId, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { executorInstancePatchSchema, sameExecutorProxyAddress, supportsExecutorPluginAccount, type ExecutorCatalogItem, type ExecutorInstanceConfiguration, type ExecutorInstanceResponse } from '@kiki/protocol';
@@ -105,7 +106,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
     setSaving(true);
     setFeedback(null);
     try {
-      const instanceId = item?.id ?? `instance-${globalThis.crypto.randomUUID()}`;
+      const instanceId = item?.id ?? `instance-${randomUuid()}`;
       const echoed = await client.patchConfig({ agent_executor_instances: { [instanceId]: parsed.data } });
       const saved = echoed.agent_executor_instances?.[instanceId];
       if (saved !== undefined) {

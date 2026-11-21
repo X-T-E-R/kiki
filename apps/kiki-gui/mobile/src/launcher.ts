@@ -1925,6 +1925,10 @@ function bootstrapLauncherUi(): void {
     return readSavedServers(window.localStorage).length > 0 ? 'computers' : 'connect';
   }
 
+  window.addEventListener('kiki:pair-deeplink', () => {
+    void consumePendingPairIfAny();
+  });
+
   window.addEventListener('hashchange', () => {
     if (window.location.hash === '#unreachable') {
       showUnreachable('unreachable');

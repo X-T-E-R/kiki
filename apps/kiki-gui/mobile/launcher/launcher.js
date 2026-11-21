@@ -14602,6 +14602,9 @@
 		function landingTab() {
 			return readSavedServers(window.localStorage).length > 0 ? "computers" : "connect";
 		}
+		window.addEventListener("kiki:pair-deeplink", () => {
+			consumePendingPairIfAny();
+		});
 		window.addEventListener("hashchange", () => {
 			if (window.location.hash === "#unreachable") showUnreachable("unreachable");
 			else if (window.location.hash === "#unverified_handshake_proof") showUnreachable("unverified_handshake_proof");

@@ -120,6 +120,7 @@ import {
   resolveFloatingOwners,
   subscribeFloatingGroup,
 } from '../lib/uiBusy';
+import { useLayerHistory } from '../lib/layerHistory';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { useSeatFileDrop } from './seatFileDrop';
 import { isCoarsePointer, useCoarsePointer } from '../lib/layoutHooks';
@@ -4617,6 +4618,7 @@ function CompactModelSheet({
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  useLayerHistory('compact-model-sheet', open, () => { setOpen(false); });
   useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'compact-model-sheet', () => {
     setOpen(false);
   }), []);

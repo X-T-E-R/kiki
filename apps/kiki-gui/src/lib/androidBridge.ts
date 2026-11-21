@@ -48,7 +48,7 @@ export const ANDROID_HOST_EVENT = 'kiki:android';
 export type AndroidHostEventDetail =
   | { readonly type: 'permissions'; readonly permissions: Partial<AndroidPermissionStatus> }
   | { readonly type: 'navigate'; readonly route: string }
-  | { readonly type: 'share-intake'; readonly id: string };
+  | { readonly type: 'share-intake'; readonly id: string; readonly draft?: string };
 
 interface WebMessageBridgeGlobal {
   postMessage?(message: string): void;
@@ -321,7 +321,8 @@ export function subscribeAndroidHostEvents(
     } else if (record['type'] === 'navigate' && typeof payload['route'] === 'string') {
       listener({ type: 'navigate', route: payload['route'] });
     } else if (record['type'] === 'share-intake' && typeof payload['id'] === 'string') {
-      listener({ type: 'share-intake', id: payload['id'] });
+      const draft = typeof payload['draft'] === 'string' ? payload['draft'] : undefined;
+      listener({ type: 'share-intake', id: payload['id'], ...(draft !== undefined ? { draft } : {}) });
     }
   };
   win.addEventListener(ANDROID_HOST_EVENT, handler);

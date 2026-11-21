@@ -11,6 +11,7 @@
  * matching with * and ?) lives in @kiki/session-core/settings, not here.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -185,7 +186,7 @@ export function ModelSwitchCard() {
     setRules((current) => current.map((rule) => (rule.id === next.id ? ruleOf(next) : rule)));
   };
   const addRule = () => {
-    const id = `rule-${crypto.randomUUID().slice(0, 8)}`;
+    const id = `rule-${randomUuid().slice(0, 8)}`;
     const rule = ruleOf({ id, from: '', to: '', mode: serverPrefs.defaultMode, ask: 'inherit', enabled: true });
     setRules((current) => [...current, rule]);
     setSelectedId(id);

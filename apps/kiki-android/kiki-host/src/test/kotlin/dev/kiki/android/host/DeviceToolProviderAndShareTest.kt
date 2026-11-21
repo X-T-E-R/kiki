@@ -388,13 +388,15 @@ class DeviceToolProviderAndShareTest {
             assertEquals(2, bridgeOut.size)
             assertEquals("invoice_2026.pdf", bridgeOut[1].jsonObject["name"]?.jsonPrimitive?.contentOrNull)
 
-            // Composer draft formatting includes both text and staged file path, and injection script targets [data-composer]
+            // Composer draft formatting includes both text and staged file path, and bridge event carries id + draft without DOM scraping
             val draft = ShareIntakeStore.formatComposerDraft(batch)
             assertTrue(draft.contains("https://example.com/receipt"))
             assertTrue(draft.contains(fileItem.path!!))
-            val script = KikiWebActivity.buildShareDraftInjectionScript(draft)
-            assertTrue(script.contains("[data-composer-input]"))
-            assertTrue(script.contains("/new"))
+            val eventPayload = KikiWebActivity.buildShareIntakeEventPayload(batch.id, draft)
+            assertEquals(batch.id, eventPayload["id"]?.jsonPrimitive?.contentOrNull)
+            assertEquals(draft, eventPayload["draft"]?.jsonPrimitive?.contentOrNull)
+            assertEquals("/m/c/local/sess_42", KikiWebActivity.normalizeInitialSessionRoute("/sessions/sess_42"))
+            assertEquals("/m/c/local/sess_42", KikiWebActivity.normalizeInitialSessionRoute("/m/c/local/sess_42"))
         } finally {
             dir.deleteRecursively()
         }

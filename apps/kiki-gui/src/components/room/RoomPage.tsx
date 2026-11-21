@@ -20,7 +20,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useSearchParams } from 'react-router-dom';
 
 import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMemberInput, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
-import { formatTokens } from '@kiki/session-core/util';
+import { formatTokens, randomUuid } from '@kiki/session-core/util';
 import { ApiError, API_CODES } from '@kiki/session-core/transport';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -266,7 +266,7 @@ function RoomView({
     onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) }); },
   });
   const send = useMutation({
-    mutationFn: (text: string) => api.postRoomMessage(room.id, { text, idempotencyKey: crypto.randomUUID() }),
+    mutationFn: (text: string) => api.postRoomMessage(room.id, { text, idempotencyKey: randomUuid() }),
     onSuccess: refreshAll,
   });
   const remove = useMutation({

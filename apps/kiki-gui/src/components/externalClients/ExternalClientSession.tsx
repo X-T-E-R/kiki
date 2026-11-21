@@ -15,6 +15,7 @@
  * person who started them.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -152,7 +153,7 @@ export function ExternalNoteComposer({ sessionId, disabled = false }: {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [receipt, setReceipt] = useState<ExternalClientTextReceipt | undefined>();
   // One key per draft: a retry reuses it, a new note gets a new one.
-  const [draftKey, setDraftKey] = useState(() => crypto.randomUUID());
+  const [draftKey, setDraftKey] = useState(() => randomUuid());
 
   const save = useCallback(async () => {
     const body = text.trim();
@@ -176,7 +177,7 @@ export function ExternalNoteComposer({ sessionId, disabled = false }: {
       setReceipt(result);
       setText('');
       setTitle('');
-      setDraftKey(crypto.randomUUID());
+      setDraftKey(randomUuid());
       setFeedback({
         tone: 'success',
         text: result.duplicate ? t('st.xs.noteDuplicate', { id: result.recordId }) : t('st.xs.noteSaved'),

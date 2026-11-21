@@ -247,7 +247,7 @@ class KikiRuntimeService : Service() {
         val openIntent = Intent(this, KikiWebActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             if (attention.sessionId.isNotEmpty()) {
-                putExtra(EXTRA_SESSION_ROUTE, "/sessions/${attention.sessionId}")
+                putExtra(EXTRA_SESSION_ROUTE, "/m/c/local/${attention.sessionId}")
             }
         }
         val pi = PendingIntent.getActivity(

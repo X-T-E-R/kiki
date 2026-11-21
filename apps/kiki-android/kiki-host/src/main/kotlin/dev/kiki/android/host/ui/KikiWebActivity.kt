@@ -167,15 +167,19 @@ class KikiWebActivity : ComponentActivity() {
 
     private fun flushPendingShareBatches() {
         if (!pageReadyForEvents) return
-        val wv = webView ?: return
         val bh = bridgeHandler ?: return
         while (pendingShareBatches.isNotEmpty()) {
             val batch = pendingShareBatches.removeFirst()
-            bh.pushEvent("share-intake", buildJsonObject { put("id", batch.id) })
             val draftText = ShareIntakeStore.formatComposerDraft(batch)
-            if (draftText.isNotEmpty()) {
-                wv.evaluateJavascript(buildShareDraftInjectionScript(draftText), null)
-            }
+            bh.pushEvent(
+                "share-intake",
+                buildJsonObject {
+                    put("id", batch.id)
+                    if (draftText.isNotEmpty()) {
+                        put("draft", draftText)
+                    }
+                },
+            )
         }
     }
 
@@ -468,10 +472,11 @@ class KikiWebActivity : ComponentActivity() {
                     bridgeHandler?.bindToOrigin(state.origin)
                     installDocumentStartCredential(wv, state.origin, state.localOwnerToken)
                     val route = intent?.getStringExtra(KikiRuntimeService.EXTRA_SESSION_ROUTE)
-                    val initialUrl = if (!route.isNullOrBlank() && route.startsWith("/")) {
-                        "${state.origin}$route"
+                    val normalizedRoute = normalizeInitialSessionRoute(route)
+                    val initialUrl = if (normalizedRoute != null) {
+                        "${state.origin}$normalizedRoute"
                     } else {
-                        state.guiUrl
+                        "${state.origin}/m/today"
                     }
                     wv.loadUrl(initialUrl)
                 }
@@ -632,73 +637,29 @@ class KikiWebActivity : ComponentActivity() {
         }
 
         /**
-         * Inserts shared text/file paths into the active Kiki session composer (`[data-composer]`),
-         * or navigates to `/new` and populates the new-session draft without auto-sending.
+         * Normalizes incoming notification/deep-link routes so legacy `/sessions/<id>`
+         * links resolve into the mobile native conversation route `/m/c/local/<id>`.
          */
-        fun buildShareDraftInjectionScript(draftText: String): String {
-            val payloadJson = JsonPrimitive(draftText).toString()
-            return """
-                (function() {
-                  var incoming = $payloadJson;
-                  if (!incoming) return;
-                  var attempts = 0;
-                  var navigated = false;
-                  function findComposer() {
-                    return document.querySelector('[data-composer-input][contenteditable="true"]:not([aria-disabled="true"])')
-                      || document.querySelector('textarea[data-composer]:not(:disabled)');
-                  }
-                  function insertIntoComposer(el) {
-                    el.focus();
-                    if (el.tagName === 'TEXTAREA') {
-                      var cur = el.value || '';
-                      var next = cur && !cur.endsWith('\n') ? cur + '\n' + incoming : cur + incoming;
-                      var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                      if (setter && setter.set) setter.set.call(el, next);
-                      else el.value = next;
-                      el.dispatchEvent(new Event('input', { bubbles: true }));
-                      return true;
-                    }
-                    var existing = (el.textContent || '').trim();
-                    var toInsert = existing.length > 0 ? '\n' + incoming : incoming;
-                    var sel = window.getSelection && window.getSelection();
-                    if (sel) {
-                      sel.selectAllChildren(el);
-                      sel.collapseToEnd();
-                    }
-                    var ok = false;
-                    try {
-                      ok = document.execCommand('insertText', false, toInsert);
-                    } catch (_) {}
-                    if (!ok) {
-                      try {
-                        var dt = new DataTransfer();
-                        dt.setData('text/plain', toInsert);
-                        el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-                        ok = true;
-                      } catch (_) {}
-                    }
-                    return ok;
-                  }
-                  function step() {
-                    var composer = findComposer();
-                    if (composer) {
-                      insertIntoComposer(composer);
-                      return;
-                    }
-                    if (!navigated && attempts >= 3 && window.location.pathname !== '/new') {
-                      navigated = true;
-                      try {
-                        window.history.pushState({}, '', '/new');
-                        window.dispatchEvent(new PopStateEvent('popstate'));
-                      } catch (_) {}
-                    }
-                    if (++attempts < 40) {
-                      setTimeout(step, 150);
-                    }
-                  }
-                  step();
-                })();
-            """.trimIndent()
+        fun normalizeInitialSessionRoute(rawRoute: String?): String? {
+            if (rawRoute.isNullOrBlank()) return null
+            val trimmed = rawRoute.trim()
+            if (trimmed.startsWith("/sessions/")) {
+                val id = trimmed.removePrefix("/sessions/").substringBefore('?').substringBefore('#')
+                if (id.isNotEmpty()) return "/m/c/local/$id"
+            }
+            return if (trimmed.startsWith("/")) trimmed else "/$trimmed"
         }
+
+        /**
+         * Builds the `share-intake` bridge event payload delivered via `kiki:android`
+         * so the GUI consumes shared text/files through session-core drafts without DOM scraping.
+         */
+        fun buildShareIntakeEventPayload(batchId: String, draftText: String): kotlinx.serialization.json.JsonObject =
+            buildJsonObject {
+                put("id", batchId)
+                if (draftText.isNotEmpty()) {
+                    put("draft", draftText)
+                }
+            }
     }
 }

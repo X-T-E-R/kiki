@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import {
   OUTPUT_LAYER_DEFAULT_SETTINGS,
   type OutputLayerConfiguration,
@@ -133,7 +134,7 @@ export class OutputLayerClient {
       if (controller.signal.aborted) { result.status = abortedStatus(); onUpdate({ ...result }); return result; }
       const cycleKey = JSON.stringify([snapshot.source.sessionId, snapshot.preset, snapshot.settings.historyTokens]);
       let cycle = this.cycles.get(cycleKey);
-      if (!cycle) { cycle = { id: crypto.randomUUID(), pairs: [] }; this.cycles.set(cycleKey, cycle); }
+      if (!cycle) { cycle = { id: randomUuid(), pairs: [] }; this.cycles.set(cycleKey, cycle); }
       let context = structuredClone(cycle.pairs);
       try {
         await this.api.stream({

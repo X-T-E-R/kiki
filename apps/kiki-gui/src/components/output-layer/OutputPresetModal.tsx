@@ -5,6 +5,7 @@
  * credential duplication.
  */
 
+import { randomUuid } from '@kiki/session-core/util';
 import { useState, useId, useMemo, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptionalConnection } from '../../state/connection';
@@ -137,7 +138,7 @@ export function OutputPresetModal({
       return;
     }
     const nextPreset: OutputLayerPreset = {
-      id: preset?.id ?? crypto.randomUUID(),
+      id: preset?.id ?? randomUuid(),
       label: label.trim(),
       instruction: instruction.trim(),
       modelId: modelMode === 'catalog' ? modelId.trim() || undefined : undefined,

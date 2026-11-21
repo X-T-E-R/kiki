@@ -94,7 +94,7 @@ async function start(): Promise<void> {
   const connectionDeepLink = new URLSearchParams(window.location.search).has('server') || new URLSearchParams(window.location.search).has('url');
   if (!controlled && !explicit && !connectionDeepLink) restoreSpaceViewAtBoot(hostAdapter);
   const [
-    { App },
+    { ShellEntry },
     { AppErrorBoundary },
     { I18nProvider },
     { ConnectionProvider },
@@ -103,7 +103,7 @@ async function start(): Promise<void> {
     { startZoomSync },
     { NavScopeBoundary },
   ] = await Promise.all([
-    import('./App'),
+    import('./ShellEntry'),
     import('./components/AppErrorBoundary'),
     import('./i18n'),
     import('./state/connection'),
@@ -129,7 +129,7 @@ async function start(): Promise<void> {
   let router: ReturnType<typeof createBrowserRouter> | undefined;
   function ConnectedRouter() {
     router ??= createBrowserRouter([
-      { path: '*', element: <AppErrorBoundary><NavScopeBoundary><App /></NavScopeBoundary></AppErrorBoundary> },
+      { path: '*', element: <AppErrorBoundary><NavScopeBoundary><ShellEntry /></NavScopeBoundary></AppErrorBoundary> },
     ]);
     return <RouterProvider router={router} />;
   }

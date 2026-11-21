@@ -1,3 +1,4 @@
+import { randomUuid } from '@kiki/session-core/util';
 import { memo, useRef, useState } from 'react';
 import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
@@ -43,7 +44,7 @@ export const NewTaskModal = memo(function NewTaskModal({
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? '');
   const [associatedSessionId, setAssociatedSessionId] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [requestKey] = useState(() => crypto.randomUUID());
+  const [requestKey] = useState(() => randomUuid());
   const [pending, setPending] = useState(false);
   const submitting = useRef(false);
   const close = () => { if (!submitting.current) onClose(); };
