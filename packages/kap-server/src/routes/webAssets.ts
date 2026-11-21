@@ -1,8 +1,8 @@
 import { createReadStream, type Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { extname, join, normalize, relative, resolve, sep } from 'node:path';
+import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream';
-import { createBrotliCompress, createGzip } from 'node:zlib';
+import { constants as zlibConstants, createBrotliCompress, createGzip } from 'node:zlib';
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
@@ -61,18 +61,18 @@ async function serveWebAsset(
     return reply.code(404).type('text/plain; charset=utf-8').send('Not found');
   }
 
-  reply.type(mimeType(filePath)).header('Cache-Control', cacheControl(assetsDir, filePath));
-  if (!isPrecompressible(filePath)) {
-    return reply.header('Content-Length', String(fileInfo.size)).send(createReadStream(filePath));
-  }
-
-  mergeVaryHeader(reply, 'Accept-Encoding');
-  const encoding = negotiateAssetEncoding(req.headers['accept-encoding']);
+  const compressible = isPrecompressible(filePath);
+  if (compressible) mergeVaryHeader(reply, 'Accept-Encoding');
+  const encoding = compressible ? negotiateAssetEncoding(req.headers['accept-encoding']) : 'identity';
   if (encoding === undefined) return reply.code(406).send();
-  const etag = assetEtag(fileInfo, encoding);
-  reply.header('ETag', etag);
-  if (encoding !== 'identity') reply.header('Content-Encoding', encoding);
-  if (matchesIfNoneMatch(req.headers['if-none-match'], etag)) return reply.code(304).send();
+
+  reply.type(mimeType(filePath)).header('Cache-Control', cacheControl(assetsDir, filePath));
+  if (compressible) {
+    const etag = assetEtag(fileInfo, encoding);
+    reply.header('ETag', etag);
+    if (encoding !== 'identity') reply.header('Content-Encoding', encoding);
+    if (matchesIfNoneMatch(req.headers['if-none-match'], etag)) return reply.code(304).send();
+  }
 
   if (encoding === 'identity') {
     reply.header('Content-Length', String(fileInfo.size));
@@ -86,7 +86,9 @@ async function serveWebAsset(
     return reply.send(createReadStream(sidecarPath));
   }
 
-  const compressor = encoding === 'br' ? createBrotliCompress() : createGzip();
+  const compressor = encoding === 'br'
+    ? createBrotliCompress({ params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } })
+    : createGzip();
   const source = createReadStream(filePath);
   pipeline(source, compressor, (error) => {
     if (error !== null && !reply.raw.destroyed) req.log.debug({ err: error }, 'Asset compression stream closed');
@@ -160,14 +162,20 @@ function matchesIfNoneMatch(
   });
 }
 
-async function statIfFile(filePath: string): Promise<Stats | undefined> {
+async function statAssetPath(filePath: string): Promise<Stats | null | undefined> {
   try {
-    const info = await stat(filePath);
-    return info.isFile() ? info : undefined;
+    return await stat(filePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return undefined;
+    if (code === 'ENOTDIR' || code === 'ENAMETOOLONG' || code === 'ERR_INVALID_ARG_VALUE' || code === 'EINVAL') return null;
     throw error;
   }
+}
+
+async function statIfFile(filePath: string): Promise<Stats | undefined> {
+  const info = await statAssetPath(filePath);
+  return info?.isFile() ? info : undefined;
 }
 
 function mergeVaryHeader(reply: FastifyReply, token: string): void {
@@ -202,6 +210,8 @@ async function resolveStaticFile(
     return undefined;
   }
 
+  if (decoded.includes('\0')) return undefined;
+
   const normalized = normalize(decoded).replace(/^(\.\.(?:[/\\]|$))+/, '');
   const relative = normalized === sep ? 'index.html' : normalized.replace(/^[/\\]/, '');
   const root = resolve(assetsDir);
@@ -213,12 +223,20 @@ async function resolveStaticFile(
     return undefined;
   }
 
-  const info = await statIfFile(candidate);
-  if (info !== undefined) {
-    return candidate;
-  }
-  if (extname(pathname) !== '') {
-    return undefined;
+  const info = await statAssetPath(candidate);
+  if (info?.isFile()) return candidate;
+  if (info === null || extname(decoded) !== '') return undefined;
+
+  if (info === undefined) {
+    let parent = candidate;
+    while (parent !== root) {
+      parent = dirname(parent);
+      if (parent === root) break;
+      const ancestor = await statAssetPath(parent);
+      if (ancestor === undefined) continue;
+      if (!ancestor?.isDirectory()) return undefined;
+      break;
+    }
   }
   return join(root, 'index.html');
 }

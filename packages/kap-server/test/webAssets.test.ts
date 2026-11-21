@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants, gunzipSync, gzipSync } from 'node:zlib';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -92,6 +92,15 @@ describe('web asset cache policy', () => {
     expect(response.body).toBe('Not found');
   });
 
+  it.each(['/%00', '/assets/a%00.js', '/index.html/subpath', `/assets/${'a'.repeat(300)}.js`])(
+    'returns a path-free 404 for invalid asset path %s', async (url) => {
+      const response = await app.inject(url);
+      expect(response.statusCode).toBe(404);
+      expect(response.headers['content-type']).toBe('text/plain; charset=utf-8');
+      expect(response.body).toBe('Not found');
+    },
+  );
+
   it('serves the best available sidecar and merges Vary with Origin', async () => {
     const brotli = await app.inject({
       method: 'GET',
@@ -132,6 +141,22 @@ describe('web asset cache policy', () => {
     expect(response.headers.etag).toMatch(/^W\/".+-identity"$/);
   });
 
+  it('does not give an unacceptable encoding response asset representation headers', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/assets/index-Dy7xs5tu.js',
+      headers: { 'accept-encoding': '*;q=0', origin: 'http://example.test' },
+    });
+
+    expect(response.statusCode).toBe(406);
+    expect(response.headers.vary).toContain('Accept-Encoding');
+    expect(response.headers.vary).toContain('Origin');
+    expect(response.headers['cache-control']).toBeUndefined();
+    expect(response.headers['content-type']).toBeUndefined();
+    expect(response.headers['content-encoding']).toBeUndefined();
+    expect(response.headers.etag).toBeUndefined();
+  });
+
   it('compresses on the fly when the requested sidecar is absent', async () => {
     const response = await app.inject({
       method: 'GET',
@@ -143,7 +168,11 @@ describe('web asset cache policy', () => {
     expect(response.headers['content-encoding']).toBe('br');
     expect(response.headers['content-type']).toBe('text/javascript; charset=utf-8');
     expect(response.headers['content-length']).toBeUndefined();
-    expect(brotliDecompressSync(response.rawPayload).toString()).toBe('export const WorkerMessageHandler = {};');
+    const worker = 'export const WorkerMessageHandler = {};';
+    expect(brotliDecompressSync(response.rawPayload).toString()).toBe(worker);
+    expect(response.rawPayload).toEqual(brotliCompressSync(worker, {
+      params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 },
+    }));
   });
 
   it('uses original WASM MIME while streaming an accepted compression', async () => {
