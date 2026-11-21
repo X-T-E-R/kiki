@@ -2,6 +2,12 @@
 
 > The sole agent engine, built on DI scopes and explicit runtime ownership.
 
+## Module map & structural invariants
+
+- **Map**: `src/_base/di/` & `src/_base/lifecycle/` (DI kernel, Ledger, cascade), `src/app/` (App-scope managers, `cpuWorker/`, `sessionIndex/`, `usageFacts/`, `mcpConfig/`, `cron/`), `src/workspace/` & `src/program/` (leased `WorkspaceInstance` / `Program`), `src/session/` (Session-scope lifecycle, snapshots, cron), `src/agent/` (Agent-scope loop, prompt, profile, task, command), `src/features/` (retractable Feature units), `src/persistence/` (stores & wire readers), `src/wire/` (durable Event2 vocabulary).
+- **Storage & replay discipline**: Persist solely via `IAtomicDocumentStore`, `IAppendLogStore`, `IBlobStore`, or dedicated SQLite single-writer stores (zero raw `node:fs` in business code); stream/tail-index `wire.jsonl` via `ICpuWorkerService` and replay checkpoints without full main-thread replays.
+- **Boundary & ratchet discipline**: Enforce real input boundaries without speculative `failClosed` flags or empty `catch {}`. Frozen monoliths (`src/agent/profile/profileService.ts`, `src/agent/prompt/promptService.ts`, `src/agent/task/taskService.ts`, `src/agent/loop/loopService.ts`, `src/workspace/sessionLifecycle/sessionLifecycleService.ts`) are gated by `pnpm run check:meta` (`scripts/check-code-health.mjs`); extract new behavior into focused sibling modules (`<= 600` lines) and test real DI/Scope wiring without relative `vi.mock` shortcuts.
+
 ## Scopes
 
 Three `LifecycleScope` tiers (`App` / `Session` / `Agent`) are declared in `src/app/scopes.ts`. The DI kernel only knows opaque `ScopeKind` strings and the topology installed by `setScopeTopology`.

@@ -51,6 +51,9 @@ When you add or remove a workspace package, update all three, then run
 
 `pnpm run check:meta` runs `node scripts/check-repo-meta.mjs` (workspace parity,
 package dependency boundaries, meta-doc links, retired scopes, word budgets, and
-scratch hygiene) and `node scripts/check-docs-governance.mjs` (`docs/en/` and
-`docs/zh/` structural parity and link resolution). Neither check assesses prose
+scratch hygiene), `node scripts/check-docs-governance.mjs` (`docs/en/` and
+`docs/zh/` structural parity and link resolution), and
+`node scripts/check-code-health.mjs` (one-way monolith line ratchet, repo-wide
+relative internal `vi.mock` ratchet, GUI hygiene/anti-defensive-copy/emoji gate,
+and `AGENTS.md` catalog path integrity). None of these checks assesses prose
 accuracy — verify behavior from source and tests.

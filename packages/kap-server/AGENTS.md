@@ -6,6 +6,12 @@ The Kiki server, backed by the DI × Scope agent engine (`@kiki/agent-core-v2`, 
 
 No comments — no file headers, no section banners, no statement-level narration; the code is the source of truth. The only exception is JSDoc attached to exported symbols (it flows into the generated `.d.ts` and IDE hover). Lint-suppression directives (`oxlint-disable` / `eslint-disable`) are allowed where they suppress an active rule for a deliberate pattern; other tooling directives (`@ts-expect-error`, `@ts-ignore`, …) stay banned — fix the underlying type problem instead. Enforced by `scripts/check-no-comments.mjs` (part of `pnpm lint`).
 
+## Module map & structural invariants
+
+- **Map**: `src/routes/` (REST endpoints + `src/routes/v2/`), `src/services/transcript/` (projection/op-batch sequencing), `src/services/history/` (navigation worker & sorted search), `src/search/` (SQLite single-writer global search), `src/transport/ws/v1/` (WS broadcaster/subscriptions), `src/usage/` (read model runtime).
+- **Storage & replay discipline**: Keep SQLite single-writer leases and worker isolation intact; stream/tail-index `wire.jsonl` in bounded slices — never replay full wires on the main server thread.
+- **Boundary & ratchet discipline**: Keep Zod/route validation lightweight at real ingress boundaries without speculative `failClosed` flags or empty `catch {}`. `src/services/transcript/transcriptService.ts`, `src/routes/sessions.ts`, and `src/transport/ws/v1/sessionEventBroadcaster.ts` are frozen under `pnpm run check:meta` (`scripts/check-code-health.mjs`); extract new logic into cohesive sibling modules (`<= 600` lines) and test real DI/HTTP seams without new relative `vi.mock` shortcuts.
+
 ## Routes
 
 - Prompt and edit/regenerate authentication uses `lib/promptAuth.ts` to check the requested model, a newly selected profile's model, or the current agent's bound model. An unbound first-message agent checks the effective default profile before falling back to the global model; the core binds that profile at prompt launch, not session creation or auth preflight. The global default is only a fallback for an unbound agent or an unpinned new profile; an unrelated default provider must not block a bound session. Keep this preflight non-mutating so rejected or queued requests do not change the active model.

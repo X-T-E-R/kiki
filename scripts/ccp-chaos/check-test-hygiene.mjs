@@ -168,7 +168,7 @@ function isExemptMockCall(callExpr) {
   return false;
 }
 
-function findIntraMonorepoMocks(text, lineNumberAtOffset) {
+export function findIntraMonorepoMocks(text, lineNumberAtOffset) {
   const hits = [];
   INTRA_MONOREPO_MOCK_GLOBAL_RE.lastIndex = 0;
   let match;
@@ -179,7 +179,7 @@ function findIntraMonorepoMocks(text, lineNumberAtOffset) {
     hits.push({
       line: lineNumberAtOffset(match.index),
       target: match[1],
-      text: match[0].replace(/\s+/gu, ' ').trim(),
+      text: match[0].replaceAll(/\s+/gu, ' ').trim(),
     });
   }
   return hits;
