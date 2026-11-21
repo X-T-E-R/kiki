@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { validatePromptRuntimeControls } from '#/agent/prompt/runtimeControls';
 import { LifecycleScope } from '#/app/scopes';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
@@ -44,6 +44,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
+import { ISessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooks';
 
 interface SkillActivationDelivery {
   readonly turn?: Turn;
@@ -100,6 +101,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IAgentStateService agentState: IAgentStateService,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
+    @ref(ISessionExternalHooksService) private readonly sessionHooks?: LiveRef<ISessionExternalHooksService>,
   ) {
     super();
     agentState.contributeState(skillKey);
@@ -160,6 +162,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       this.sessionContext.sessionId,
     );
 
+    this.registerSkillHooks(skill);
     const skillArgs = input.args ?? '';
     const skillContent = this.renderSkillPrompt(skill, skillArgs);
     const content: ContentPart[] = [
@@ -248,6 +251,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       );
     }
     for (const activation of prepared) {
+      this.registerSkillHooks(activation.skill);
       void this.recordActivation(activation.origin);
     }
     const handle = await reservation.submit({
@@ -288,6 +292,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
   }
 
   private prepareBundled(input: PromptSkillActivation): {
+    readonly skill: SkillDefinition;
     readonly origin: SkillActivationOrigin;
     readonly part: ContentPart;
     readonly entry: BundledSkillActivation;
@@ -316,6 +321,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       skillArgs: input.args,
     };
     return {
+      skill,
       origin,
       part: {
         type: 'text',
@@ -392,6 +398,17 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       createdAt: handle?.createdAt ?? new Date().toISOString(),
       appendTiming: handle?.appendTiming ?? 'agent_idle',
       revision: handle?.revision ?? 0,
+    });
+  }
+
+  private registerSkillHooks(skill: SkillDefinition): void {
+    if (skill.hooks === undefined || skill.hooks.length === 0) return;
+    this.sessionHooks?.current?.registerSkillHooks({
+      skillName: skill.name,
+      skillPath: skill.path,
+      source: skill.source,
+      pluginId: skill.plugin?.id,
+      hooks: skill.hooks,
     });
   }
 

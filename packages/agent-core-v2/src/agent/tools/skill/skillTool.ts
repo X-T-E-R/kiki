@@ -22,6 +22,7 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import { isInlineSkillType } from '#/app/skillCatalog/types';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooks';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesGlobRuleSubject, matchesStringRuleSubject } from '#/tool/rule-match';
 
@@ -53,6 +54,7 @@ export class SkillTool implements ISkillTool {
     @IPluginService private readonly plugins?: IPluginService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
     @ref(IAgentContextMemoryService) private readonly contextMemory?: LiveRef<IAgentContextMemoryService>,
+    @ref(ISessionExternalHooksService) private readonly sessionHooks?: LiveRef<ISessionExternalHooksService>,
   ) {}
 
   async resolveExecution(args: SkillToolInput): Promise<ToolExecution> {
@@ -126,7 +128,7 @@ export class SkillTool implements ISkillTool {
           if (this.catalog.catalog.isSkillDisabled?.(definition.name) === true) {
             return errorResult(`Skill "${definition.name}" is disabled.`);
           }
-          return await executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, definition);
+          return await executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, definition, this.sessionHooks?.current);
         } finally {
           lease.dispose();
         }
@@ -135,7 +137,7 @@ export class SkillTool implements ISkillTool {
   }
 
   withInitialQueryDepth(initialQueryDepth: number): SkillTool {
-    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.runtime, this.workspace, this.plugins, this.usage, this.contextMemory);
+    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.runtime, this.workspace, this.plugins, this.usage, this.contextMemory, this.sessionHooks);
     clone.queryDepth = initialQueryDepth;
     return clone;
   }
@@ -159,7 +161,7 @@ export class SkillTool implements ISkillTool {
       }
       catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
     }
-    return executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId);
+    return executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, undefined, this.sessionHooks?.current);
   }
 }
 
@@ -233,6 +235,7 @@ export async function executeModelSkill(
   queryDepth: number,
   sessionId: string,
   explicitDefinition?: SkillDefinition,
+  sessionHooks?: ISessionExternalHooksService,
 ): Promise<ExecutableToolResult> {
   const currentDepth = queryDepth;
   if (currentDepth >= MAX_SKILL_QUERY_DEPTH) {
@@ -287,6 +290,15 @@ export async function executeModelSkill(
     toolCalls: [],
     origin,
   };
+  if (skill.hooks !== undefined && skill.hooks.length > 0) {
+    sessionHooks?.registerSkillHooks({
+      skillName: skill.name,
+      skillPath: skill.path,
+      source: skill.source,
+      pluginId: skill.plugin?.id,
+      hooks: skill.hooks,
+    });
+  }
   skillService.recordModelToolActivation(origin);
   return {
     output: `Skill "${skill.name}" loaded.`,

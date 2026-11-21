@@ -1,4 +1,5 @@
 import { Event } from '#/_base/event';
+import type { ILogService } from '#/_base/log/log';
 import { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
 import { HOOKS_SECTION, type HooksV2Config } from '#/features/externalHooks/configSection';
 import type { HookDef } from '#/features/externalHooks/internal/types';
@@ -27,6 +28,7 @@ export function makeHookRunner(
     inspectHooks?: IPluginService['inspectHooks'];
     usage?: IPluginUsageService;
     sessions?: ISessionIndex;
+    log?: ILogService;
     onTriggered?: (event: string, target: string, count: number) => void;
     onResolved?: (
       event: string,
@@ -80,6 +82,7 @@ export function makeHookRunner(
     new HostProcessService(),
     options.usage,
     options.sessions,
+    options.log === undefined ? undefined : { current: options.log, onDidChange: Event.None as Event<void> },
     { onTriggered: options.onTriggered, onResolved: options.onResolved },
   );
 }

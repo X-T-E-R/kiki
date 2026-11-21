@@ -1,8 +1,11 @@
 import path from 'pathe';
+import { z } from 'zod';
 
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '@kiki/agent-profiles/frontmatter';
 import { sliceUtf16 } from '#/_base/text/utf16';
+import { HookDefSchema } from '#/features/externalHooks/configSection';
+import type { HookDef } from '#/features/externalHooks/internal/types';
 
 import { SkillErrors } from './errors';
 import type { SkillDefinition, SkillMetadata, SkillSource } from './types';
@@ -106,18 +109,110 @@ export function parseSkillText(options: ParseSkillTextOptions): SkillDefinition 
   }
 
   const skillPath = path.resolve(options.skillMdPath);
+  const skillDir = path.dirname(skillPath);
+  const hooks = parseSkillHooks(frontmatter['hooks'], skillDir, options.skillMdPath);
   const content = parsed.body.trim();
   return {
     name: name ?? options.skillDirName,
     description: description ?? descriptionFromBody(content),
     path: skillPath,
-    dir: path.dirname(skillPath),
+    dir: skillDir,
     content,
     metadata,
     source: options.source,
     mermaid: parseMermaidFlowchart(content),
     d2: parseD2Flowchart(content),
+    hooks,
   };
+}
+
+const SkillHooksSchema = z.array(HookDefSchema);
+const SAFE_UNQUOTED_PATH = /^[A-Za-z0-9_./:@%+=,-]+$/;
+
+export function resolveSkillHookCommand(command: string, skillDir: string): string {
+  if (!command.includes('./')) return command;
+  const dirPrefix = `${skillDir.replace(/\/+$/, '')}/`;
+  let out = '';
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i]!;
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      let j = i + 1;
+      while (j < command.length) {
+        if (quote === '"' && command[j] === '\\' && j + 1 < command.length) {
+          j += 2;
+          continue;
+        }
+        if (command[j] === quote) break;
+        j += 1;
+      }
+      if (j < command.length) {
+        const inner = command.slice(i + 1, j);
+        if (inner.startsWith('./')) {
+          const rest = inner.slice(2);
+          const prefix = quote === '"' ? escapeForDoubleQuotes(dirPrefix) : escapeForSingleQuotes(dirPrefix);
+          out += `${quote}${prefix}${rest}${quote}`;
+        } else {
+          out += command.slice(i, j + 1);
+        }
+        i = j + 1;
+        continue;
+      }
+    }
+    if (ch === '.' && command[i + 1] === '/' && isTokenBoundary(i === 0 ? undefined : command[i - 1])) {
+      let j = i;
+      while (j < command.length && !isTokenDelimiter(command[j]!)) j += 1;
+      const token = command.slice(i, j);
+      const resolved = path.resolve(skillDir, token);
+      out += quoteShellPath(resolved);
+      i = j;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+function parseSkillHooks(raw: unknown, skillDir: string, skillMdPath: string): readonly HookDef[] | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = SkillHooksSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const detail = issue === undefined ? 'invalid format' : `${issue.path.join('.')}: ${issue.message}`;
+    throw new SkillParseError(`Invalid frontmatter field "hooks" in ${skillMdPath}: ${detail}`, parsed.error);
+  }
+  if (parsed.data.length === 0) return undefined;
+  return parsed.data.map((hook) => ({
+    ...hook,
+    command: resolveSkillHookCommand(hook.command, skillDir),
+    env: { KIKI_SKILL_DIR: skillDir },
+  }));
+}
+
+function quoteShellPath(resolved: string): string {
+  if (SAFE_UNQUOTED_PATH.test(resolved)) return resolved;
+  if (process.platform === 'win32') {
+    return `"${resolved.replaceAll('"', '\\"')}"`;
+  }
+  return `'${resolved.replaceAll("'", "'\\''")}'`;
+}
+
+function escapeForDoubleQuotes(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$').replaceAll('`', '\\`');
+}
+
+function escapeForSingleQuotes(value: string): string {
+  return value.replaceAll("'", "'\\''");
+}
+
+function isTokenBoundary(ch: string | undefined): boolean {
+  return ch === undefined || /\s|[;|&><(=]/.test(ch);
+}
+
+function isTokenDelimiter(ch: string): boolean {
+  return /\s|[;|&><)'"]/.test(ch);
 }
 
 export function parseMermaidFlowchart(markdown: string): string | undefined {

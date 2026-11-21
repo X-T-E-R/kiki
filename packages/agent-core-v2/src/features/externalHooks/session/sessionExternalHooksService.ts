@@ -1,12 +1,19 @@
 import { Service } from '#/_base/di/service';
-import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IHookRulesSession, ISessionHookWorkspace } from './hookRules';
 import { matchesHook } from '../internal/rules';
 import { IntervalTimer } from '#/_base/utils/timer';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IModelService } from '#/kosong/model/model';
 import { effectiveModelConfig, resolveModelProviderId } from '#/kosong/model/modelAuth';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import {
   ISessionAgentProfileCatalog,
 } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -17,13 +24,17 @@ import {
   type AgentTaskStopHookContext,
   ISessionSubagentService,
 } from '#/session/subagent/subagent';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   type SessionCloseReason,
   type SessionCreateSource,
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
+import { HookResult } from '../agent/agentExternalHooksService';
 import { IExternalHooksRunnerService } from '../app/externalHooksRunner';
-import { ISessionExternalHooksService } from './sessionExternalHooks';
+import type { HookDef } from '../internal/types';
+import { renderHookContextResult, type RenderedHookResult } from '../internal/userPrompt';
+import { ISessionExternalHooksService, type SkillHookRegistration } from './sessionExternalHooks';
 
 type SessionStartHookSource = Exclude<SessionCreateSource, 'fork'>;
 
@@ -37,6 +48,9 @@ export class SessionExternalHooksService
 
   private sessionTitle: string | undefined;
   private readonly createdAt = Date.now();
+  private readonly activeSkillHooks = new Map<string, { readonly hooks: readonly HookDef[]; readonly requiresWorkspaceTrust: boolean }>();
+  private readonly lifecycleSubscriptions = this._register(new DisposableStore());
+  private pendingSessionStartHook: RenderedHookResult | undefined;
 
   constructor(
     @ISessionContext private readonly context: ISessionContext,
@@ -49,6 +63,7 @@ export class SessionExternalHooksService
     @ref(IHookRulesSession) private readonly hookRules: LiveRef<IHookRulesSession>,
     @ref(ISessionHookWorkspace) private readonly workspaceRef: LiveRef<ISessionHookWorkspace>,
     @ref(IProviderService) private readonly providerRef: LiveRef<IProviderService>,
+    @ref(IAgentLifecycleService) private readonly agentLifecycleRef?: LiveRef<IAgentLifecycleService>,
   ) {
     super();
     void this.metadata
@@ -100,13 +115,97 @@ export class SessionExternalHooksService
       .then(() => this.syncHeartbeat())
       .catch(() => undefined);
     this._register(this.runner.onDidReload(() => this.syncHeartbeat()));
+    this.bindAgentLifecycle();
+    if (this.agentLifecycleRef !== undefined) {
+      this._register(this.agentLifecycleRef.onDidChange(() => { this.bindAgentLifecycle(); }));
+    }
   }
 
   private readonly heartbeat = this._register(new IntervalTimer({ unref: true }));
 
+  registerSkillHooks(registration: SkillHookRegistration): void {
+    if (registration.hooks.length === 0) return;
+    const requiresWorkspaceTrust =
+      registration.source === 'project' ||
+      (registration.source === 'extra' && registration.pluginId === undefined);
+    this.activeSkillHooks.set(registration.skillPath, {
+      hooks: registration.hooks,
+      requiresWorkspaceTrust,
+    });
+    if (registration.hooks.some((hook) => hook.event === 'SessionHeartbeat')) {
+      this.syncHeartbeat();
+    }
+  }
+
+  async getSkillHooks(): Promise<readonly HookDef[]> {
+    if (this.activeSkillHooks.size === 0) return [];
+    let workspaceTrusted: boolean | undefined;
+    const hooks: HookDef[] = [];
+    for (const entry of this.activeSkillHooks.values()) {
+      if (entry.requiresWorkspaceTrust) {
+        if (workspaceTrusted === undefined) {
+          const workspace = this.workspaceRef.current;
+          if (workspace === undefined) {
+            workspaceTrusted = false;
+          } else {
+            await workspace.trust.ready;
+            workspaceTrusted = workspace.trust.isTrusted();
+          }
+        }
+        if (!workspaceTrusted) continue;
+      }
+      hooks.push(...entry.hooks);
+    }
+    return hooks;
+  }
+
+  private hasActiveSkillHooksFor(event: string): boolean {
+    for (const entry of this.activeSkillHooks.values()) {
+      if (entry.hooks.some((hook) => hook.event === event)) return true;
+    }
+    return false;
+  }
+
+  private bindAgentLifecycle(): void {
+    void this.lifecycleSubscriptions.clear();
+    const lifecycle = this.agentLifecycleRef?.current;
+    if (lifecycle === undefined) return;
+    if (this.pendingSessionStartHook !== undefined) {
+      const main = lifecycle.get(MAIN_AGENT_ID);
+      if (main !== undefined) {
+        const pending = this.pendingSessionStartHook;
+        this.pendingSessionStartHook = undefined;
+        this.deliverContextToAgent(main, pending);
+      }
+    }
+    this.lifecycleSubscriptions.add(
+      lifecycle.onDidCreate((handle) => {
+        if (handle.id !== MAIN_AGENT_ID || this.pendingSessionStartHook === undefined) return;
+        const pending = this.pendingSessionStartHook;
+        this.pendingSessionStartHook = undefined;
+        this.deliverContextToAgent(handle, pending);
+      }),
+    );
+  }
+
+  private deliverContextToAgent(handle: IAgentScopeHandle, rendered: RenderedHookResult): void {
+    const context = optionalFromHandle(handle, IAgentContextMemoryService);
+    if (context === undefined) return;
+    const message: ContextMessage = {
+      role: 'user',
+      content: [{ type: 'text', text: rendered.text }],
+      toolCalls: [],
+      origin: { kind: 'hook_result', event: rendered.event },
+    };
+    context.appendObservable(message);
+    void optionalFromHandle(handle, IEventDispatcher)?.dispatch(
+      new HookResult({ hookEvent: rendered.event, content: rendered.message }),
+    );
+  }
+
   private syncHeartbeat(): void {
     try {
-      if (this.runner.hasHooksFor('SessionHeartbeat')) {
+      if (this.runner.hasHooksFor('SessionHeartbeat') || this.hasActiveSkillHooksFor('SessionHeartbeat')) {
         this.heartbeat.cancelAndSet(() => this.tickHeartbeat(), HEARTBEAT_INTERVAL_MS);
       } else {
         this.heartbeat.cancel();
@@ -167,10 +266,11 @@ export class SessionExternalHooksService
         if (rule.rule.action.type === 'observe' && matchesHook(rule, event)) rules.observe(event, rule.id);
       }
     }
-    await this.runner.trigger('SessionStart', {
+    const results = await this.runner.trigger('SessionStart', {
       matcherValue: source,
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
+      additionalHooks: () => this.getSkillHooks(),
       inputData: {
         ...this.sessionFacts(),
         source,
@@ -184,6 +284,15 @@ export class SessionExternalHooksService
         profileName,
       },
     });
+    const rendered = renderHookContextResult('SessionStart', results);
+    if (rendered !== undefined) {
+      const main = this.agentLifecycleRef?.current?.get(MAIN_AGENT_ID);
+      if (main !== undefined) {
+        this.deliverContextToAgent(main, rendered);
+      } else {
+        this.pendingSessionStartHook = rendered;
+      }
+    }
   }
 
   private async defaultProfileName(): Promise<string | undefined> {
@@ -200,16 +309,18 @@ export class SessionExternalHooksService
       matcherValue: reason,
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
+      additionalHooks: () => this.getSkillHooks(),
       inputData: { ...this.sessionFacts(), reason },
     });
   }
 
   private tickHeartbeat(): void {
     try {
-      if (!this.runner.hasHooksFor('SessionHeartbeat')) return;
+      if (!this.runner.hasHooksFor('SessionHeartbeat') && !this.hasActiveSkillHooksFor('SessionHeartbeat')) return;
       void this.runner.fireAndForgetTrigger('SessionHeartbeat', {
         cwd: this.context.cwd,
         sessionId: this.context.sessionId,
+        additionalHooks: () => this.getSkillHooks(),
         inputData: {
           ...this.sessionFacts(),
           uptimeMs: Date.now() - this.createdAt,
@@ -220,18 +331,48 @@ export class SessionExternalHooksService
 
   private async runSubagentStart(ctx: AgentTaskStartHookContext): Promise<void> {
     ctx.signal.throwIfAborted();
-    await this.runner.trigger('SubagentStart', {
+    const childHandle = ctx.agentId === undefined ? undefined : this.agentLifecycleRef?.current?.get(ctx.agentId);
+    const childScope = childHandle === undefined ? undefined : optionalFromHandle(childHandle, IAgentScopeContext);
+    const childProfile = childHandle === undefined ? undefined : optionalFromHandle(childHandle, IAgentProfileService)?.data?.();
+    const agentId = ctx.agentId ?? childScope?.agentId;
+    const parentAgentId = ctx.parentAgentId ?? childScope?.parentAgentId;
+    const profileName = ctx.profileName ?? childProfile?.profileName ?? ctx.agentName;
+    const agentRole = ctx.agentRole ?? (parentAgentId !== undefined ? 'subagent' : undefined);
+    const results = await this.runner.trigger('SubagentStart', {
       matcherValue: ctx.agentName,
       signal: ctx.signal,
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
+      additionalHooks: () => this.getSkillHooks(),
       inputData: {
         ...this.sessionFacts(),
         agentName: ctx.agentName,
+        agentId,
+        parentAgentId,
+        agentRole,
+        profileName,
         prompt: ctx.prompt,
       },
     });
     ctx.signal.throwIfAborted();
+    const rendered = renderHookContextResult('SubagentStart', results);
+    if (rendered !== undefined) {
+      if (ctx.appendContext !== undefined) {
+        ctx.appendContext({
+          role: 'user',
+          content: [{ type: 'text', text: rendered.text }],
+          toolCalls: [],
+          origin: { kind: 'hook_result', event: rendered.event },
+        });
+        if (childHandle !== undefined) {
+          void optionalFromHandle(childHandle, IEventDispatcher)?.dispatch(
+            new HookResult({ hookEvent: rendered.event, content: rendered.message }),
+          );
+        }
+      } else if (childHandle !== undefined) {
+        this.deliverContextToAgent(childHandle, rendered);
+      }
+    }
   }
 
   private notifySubagentStop(ctx: AgentTaskStopHookContext): void {
@@ -239,11 +380,20 @@ export class SessionExternalHooksService
       matcherValue: ctx.agentName,
       cwd: this.context.cwd,
       sessionId: this.context.sessionId,
+      additionalHooks: () => this.getSkillHooks(),
       inputData: {
         ...this.sessionFacts(),
         agentName: ctx.agentName,
         response: ctx.response,
       },
     });
+  }
+}
+
+function optionalFromHandle<T>(handle: IAgentScopeHandle, id: ServiceIdentifier<T>): T | undefined {
+  try {
+    return handle.accessor.get(id);
+  } catch {
+    return undefined;
   }
 }

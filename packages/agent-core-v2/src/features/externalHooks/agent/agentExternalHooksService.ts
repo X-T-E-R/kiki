@@ -51,10 +51,12 @@ import {
 } from '../app/externalHooksRunner';
 import { resolveHookBinding } from '../internal/bindingContext';
 import { extractHookPromptText, extractHookTextParts, extractOriginChannel } from '../internal/rules';
-import type { HookMatcherValue } from '../internal/types';
+import type { HookDef, HookMatcherValue } from '../internal/types';
 import { failureHookInput, permitsFailureContinuation, MAX_FAILURE_RECOVERIES_PER_STREAK } from '../internal/failureRecovery';
 import { ISessionHookWorkspace } from '../session/hookRules';
+import { ISessionExternalHooksService } from '../session/sessionExternalHooks';
 import {
+  renderHookContextResult,
   renderUserPromptHookBlockResult,
   renderUserPromptHookResult,
 } from '../internal/userPrompt';
@@ -95,6 +97,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     @ref(IAgentPermissionModeService) private readonly permissionModeRef: LiveRef<IAgentPermissionModeService>,
     @ref(ISessionHookWorkspace) private readonly workspaceRef: LiveRef<ISessionHookWorkspace>,
     @IAgentProfileService private readonly profile?: IAgentProfileService,
+    @ref(ISessionExternalHooksService) private readonly sessionHooksRef?: LiveRef<ISessionExternalHooksService>,
   ) {
     super();
     this.states.contributeState(externalHooksStopHookContinuationUsedKey);
@@ -167,6 +170,16 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     this.states.set(externalHooksStopHookContinuationUsedKey, value);
   }
 
+  private async getAdditionalHooks(): Promise<readonly HookDef[]> {
+    const [recipeHooks, skillHooks] = await Promise.all([
+      this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+      this.sessionHooksRef?.current?.getSkillHooks() ?? Promise.resolve([]),
+    ]);
+    if (recipeHooks.length === 0) return skillHooks;
+    if (skillHooks.length === 0) return recipeHooks;
+    return [...recipeHooks, ...skillHooks];
+  }
+
   private fireAndForget(
     event: string,
     inputData: Record<string, unknown>,
@@ -179,7 +192,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         signal,
         cwd: this.sessionContext.cwd,
         sessionId: this.sessionContext.sessionId,
-        additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+        additionalHooks: () => this.getAdditionalHooks(),
         inputData: this.withSessionFacts(inputData),
       });
     } catch {}
@@ -351,15 +364,26 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   }
 
   private registerFullCompactionHooks(fullCompaction: IAgentFullCompactionService): void {
+    const hasCommitHook = fullCompaction.hooks.onDidCommit !== undefined;
     this._register(
       fullCompaction.hooks.onWillCompact.register('externalHooks', async (ctx, next) => {
         await this.runPreCompact(ctx);
-        void ctx.promise
-          .then((result) => this.notifyPostCompact(ctx, result))
-          .catch(() => undefined);
+        if (!hasCommitHook) {
+          void ctx.promise
+            .then((result) => this.runPostCompact(ctx, result))
+            .catch(() => undefined);
+        }
         await next();
       }),
     );
+    if (hasCommitHook) {
+      this._register(
+        fullCompaction.hooks.onDidCommit.register('externalHooks', async (ctx, next) => {
+          await this.runPostCompact(ctx, ctx.committedResult);
+          await next();
+        }),
+      );
+    }
   }
 
   private registerTaskHooks(_tasks: IAgentTaskService): void {
@@ -397,7 +421,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       signal: ctx.signal,
       cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
-      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+      additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
         turnId: ctx.turnId ?? this.activeTurnId,
         toolName: ctx.toolCall.name,
@@ -444,7 +468,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       signal,
       cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
-      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+      additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
         promptId,
         userMessageId,
@@ -535,7 +559,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         signal,
         cwd: this.sessionContext.cwd,
         sessionId: this.sessionContext.sessionId,
-        additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+        additionalHooks: () => this.getAdditionalHooks(),
         inputData: this.withSessionFacts({
           ...failureHookInput(payload, hasPartialOutput),
           modelAlias: this.profile?.data?.()?.modelAlias,
@@ -582,7 +606,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       signal: ctx.signal,
       cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
-      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+      additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
         turnId: ctx.turnId,
         step: ctx.step,
@@ -601,7 +625,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       signal,
       cwd: this.sessionContext.cwd,
       sessionId: this.sessionContext.sessionId,
-      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
+      additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
         trigger: ctx.trigger,
         tokenCount: ctx.tokenCount,
@@ -610,15 +634,33 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     signal.throwIfAborted();
   }
 
-  private notifyPostCompact(ctx: FullCompactionTask, result: CompactionResult): void {
-    this.fireAndForget(
-      'PostCompact',
-      {
+  private async runPostCompact(ctx: FullCompactionTask, result?: CompactionResult): Promise<void> {
+    const results = await this.runner.trigger('PostCompact', {
+      matcherValue: ctx.trigger,
+      cwd: this.sessionContext.cwd,
+      sessionId: this.sessionContext.sessionId,
+      additionalHooks: () => this.getAdditionalHooks(),
+      inputData: this.withSessionFacts({
         trigger: ctx.trigger,
-        estimatedTokenCount: result.tokensAfter,
-      },
-      ctx.trigger,
-    );
+        estimatedTokenCount: result?.tokensAfter,
+      }),
+    });
+    const append = renderHookContextResult('PostCompact', results);
+    if (append !== undefined) {
+      const message: ContextMessage = {
+        role: 'user',
+        content: [{ type: 'text', text: append.text }],
+        toolCalls: [],
+        origin: { kind: 'hook_result', event: append.event },
+      };
+      this.context.appendObservable(message);
+      void this.dispatcher.dispatch(
+        new HookResult({
+          hookEvent: append.event,
+          content: append.message,
+        }),
+      );
+    }
   }
 
   private notifyTaskNotification(ctx: AgentTaskNotificationContext): void {

@@ -1,6 +1,8 @@
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { Emitter, type Event } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -15,7 +17,13 @@ import {
   type ExternalHooksRunnerFailureMode,
   type ExternalHooksRunnerTriggerArgs,
 } from './externalHooksRunner';
-import { blockDecision, indexHooks, runMatchedHooks } from '../internal/matchHooks';
+import {
+  blockDecision,
+  indexHooks,
+  isExplicitHookBlock,
+  isFailOpenBlockEvent,
+  runMatchedHooks,
+} from '../internal/matchHooks';
 import type { HookRunCallbacks, IndexedHookDef } from '../internal/matchHooks';
 import type { HookBlockDecision, HookResult } from '../internal/types';
 
@@ -39,6 +47,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     @IHostProcessService private readonly hostProcess: IHostProcessService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
     @ISessionIndex private readonly sessions?: ISessionIndex,
+    @ref(ILogService) private readonly logRef?: LiveRef<ILogService>,
     private readonly callbacks: HookRunCallbacks = {},
   ) {
     super();
@@ -66,9 +75,16 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     try {
       return await this.triggerInner(event, args);
     } catch (error) {
-      return failureMode === 'block'
-        ? [{ action: 'block', reason: `Failed to evaluate ${event} hooks: ${toErrorMessage(error)}` }]
-        : [];
+      if (failureMode === 'block') {
+        return [{ action: 'block', reason: `Failed to evaluate ${event} hooks: ${toErrorMessage(error)}` }];
+      }
+      if (isFailOpenBlockEvent(event)) {
+        this.logRef?.current?.warn(`${event} hook evaluation failed; failing open`, {
+          event,
+          error: toErrorMessage(error),
+        });
+      }
+      return [];
     }
   }
 
@@ -76,7 +92,21 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
   ): Promise<HookBlockDecision | undefined> {
-    return blockDecision(event, await this.trigger(event, args, 'block'));
+    const failOpen = isFailOpenBlockEvent(event);
+    const results = await this.trigger(event, args, failOpen ? 'empty' : 'block');
+    if (failOpen && args.signal?.aborted !== true) {
+      for (const result of results) {
+        if (result.action === 'block' && !isExplicitHookBlock(result)) {
+          this.logRef?.current?.warn(`${event} hook failed; failing open`, {
+            event,
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            reason: result.reason,
+          });
+        }
+      }
+    }
+    return blockDecision(event, results);
   }
 
   fireAndForgetTrigger(
@@ -132,8 +162,11 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
       }
     }
     if (args.additionalHooks !== undefined) {
-      const additional = indexHooks(await args.additionalHooks());
-      byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
+      const extra = await args.additionalHooks();
+      if (extra.length > 0) {
+        const additional = indexHooks(extra);
+        byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
+      }
     }
     return runMatchedHooks(
       this.hostProcess,

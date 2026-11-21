@@ -695,7 +695,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (active.committedResult === undefined || active.committedBoundaryRan === true) return;
     active.committedBoundaryRan = true;
     try {
-      await this.hooks.onDidCommit.run({ ...active, committedStrategy: active.committedResult.strategy });
+      await this.hooks.onDidCommit.run({
+        ...active,
+        committedStrategy: active.committedResult.strategy,
+        committedResult: active.committedResult,
+      });
     } catch (error) {
       this.log.error('failed to run the committed compaction boundary', { error, committed: true });
     }
@@ -1381,7 +1385,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const extracted = candidate.split(/^## Pending directive review[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
     const budget = extracted && extracted !== '(none)' ? compactionDirectivesBudget(input.notes, extracted) : undefined;
     const notice = extracted ? `Summary candidates have not changed current notes. Reconcile them with original human sources before an explicit TodoList update.${budget?.exceeded ? ` Automatic promotion skipped: budget. Required directives ${budget.sectionChars}/1500 characters, notes total ${budget.totalChars}/7500; notes revision ${input.meta?.rev ?? 0} is unchanged. The complete candidate remains above.` : ''}` : '';
-    return [candidate, notice ? `## Directive review status\n${notice}` : '', todos.length ? renderTodoList(todos, '## TODO List') : '',
+    return [candidate, notice ? `## Directive review status\n${notice}` : '', todos.length > 0 ? renderTodoList(todos, '## TODO List') : '',
       notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), renderLinkedBoardCards(input),
       renderMemoryHandoffReferences(input.history.slice(0, input.compactCount)), receipts,
       renderFileReads(relayFileReads(input))].filter(Boolean).join('\n\n');

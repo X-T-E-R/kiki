@@ -240,6 +240,15 @@ export interface WorkspaceStateSnapshot {
         };
         readonly mermaid?: string;
         readonly d2?: string;
+        readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+          readonly pluginId?: string;
+          readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+          readonly matcher?: string;
+          readonly command: string;
+          readonly timeout?: number;
+          readonly cwd?: string;
+          readonly env?: Record<string, string>;
+        }[];
         readonly productSpecific?: boolean;
         readonly experimentalFlag?: string;
       }[];
@@ -282,6 +291,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }) => void;
@@ -312,6 +330,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }, options?: {
@@ -350,6 +377,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     } | undefined;
@@ -380,6 +416,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     } | undefined;
@@ -410,6 +455,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }, rawArgs: string, context?: {
@@ -442,6 +496,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }[];
@@ -472,6 +535,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }[];
@@ -502,6 +574,15 @@ export interface WorkspaceStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }[];
@@ -923,6 +1004,15 @@ export interface SessionStateSnapshot {
         };
         readonly mermaid?: string;
         readonly d2?: string;
+        readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+          readonly pluginId?: string;
+          readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+          readonly matcher?: string;
+          readonly command: string;
+          readonly timeout?: number;
+          readonly cwd?: string;
+          readonly env?: Record<string, string>;
+        }[];
         readonly productSpecific?: boolean;
         readonly experimentalFlag?: string;
       }[];
@@ -965,6 +1055,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }) => void;
@@ -995,6 +1094,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }, options?: {
@@ -1033,6 +1141,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     } | undefined;
@@ -1063,6 +1180,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     } | undefined;
@@ -1093,6 +1219,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }, rawArgs: string, context?: {
@@ -1125,6 +1260,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }[];
@@ -1155,6 +1299,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }[];
@@ -1185,6 +1338,15 @@ export interface SessionStateSnapshot {
       };
       readonly mermaid?: string;
       readonly d2?: string;
+      readonly hooks?: readonly /* HookDef — packages/agent-core-v2/src/features/externalHooks/internal/types.ts */ {
+        readonly pluginId?: string;
+        readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'PermissionResult' | 'UserPromptSubmit' | 'UserPromptQueued' | 'TurnStarted' | 'Stop' | 'StopFailure' | 'Interrupt' | 'SessionStart' | 'SessionEnd' | 'SessionHeartbeat' | 'SubagentStart' | 'SubagentStop' | 'TaskStarted' | 'PreCompact' | 'PostCompact' | 'Notification';
+        readonly matcher?: string;
+        readonly command: string;
+        readonly timeout?: number;
+        readonly cwd?: string;
+        readonly env?: Record<string, string>;
+      }[];
       readonly productSpecific?: boolean;
       readonly experimentalFlag?: string;
     }[];

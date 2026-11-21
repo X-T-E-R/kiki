@@ -21,6 +21,8 @@ export interface FullCompactionTask {
   requestedStrategy?: 'summarize' | 'relay';
   /** Strategy recorded on the durable result. Absent until that result is committed. */
   readonly committedStrategy?: 'summarize' | 'relay';
+  /** Committed compaction result. Absent until that result is committed. */
+  readonly committedResult?: CompactionResult;
 }
 
 export interface IAgentFullCompactionService {

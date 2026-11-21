@@ -104,11 +104,23 @@ export async function runMatchedHooks(
   return results;
 }
 
+export function isFailOpenBlockEvent(event: string): boolean {
+  return event === 'Stop' || event === 'SubagentStop';
+}
+
+export function isExplicitHookBlock(result: HookResult): boolean {
+  if (result.action !== 'block') return false;
+  if (result.timedOut === true) return false;
+  return result.exitCode === 2 || (result.exitCode === 0 && result.structuredOutput === true);
+}
+
 export function blockDecision(
   event: string,
   results: readonly HookResult[],
 ): HookBlockDecision | undefined {
-  const block = results.find((result) => result.action === 'block');
+  const block = isFailOpenBlockEvent(event)
+    ? results.find(isExplicitHookBlock)
+    : results.find((result) => result.action === 'block');
   if (block === undefined) return undefined;
   const reason = block.reason?.trim();
   return {
