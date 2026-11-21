@@ -241,7 +241,14 @@ export function stageSessionAgentTree(srcSessionDir, dstSessionDir, stats, optio
     const dstAgentDir = path.join(dstSessionDir, 'agents', entry.name);
     fs.mkdirSync(dstAgentDir, { recursive: true });
     const isPrimary = primarySet.has(entry.name);
-    if (fullWires && !isPrimary && secondaryCopiedCount >= maxSecondaryAgents) continue;
+    if (fullWires && !isPrimary && secondaryCopiedCount >= maxSecondaryAgents) {
+      if (stats) {
+        stats.truncatedAgents = (stats.truncatedAgents ?? 0) + 1;
+        stats.truncatedReasons = stats.truncatedReasons ?? [];
+        if (stats.truncatedReasons.length < 20) stats.truncatedReasons.push(`secondary_agent_cap:${entry.name}`);
+      }
+      continue;
+    }
     if (!isPrimary) secondaryCopiedCount += 1;
     for (const sidecar of ['wire.jsonl.generation', 'wire.transcript-receipt.json']) {
       copySidecarIfBounded(path.join(srcAgentDir, sidecar), path.join(dstAgentDir, sidecar), MAX_SIDECAR_BYTES, stats, tracker, scope);
@@ -289,6 +296,15 @@ export function stageSessionAgentTree(srcSessionDir, dstSessionDir, stats, optio
         }
       }
     } else {
+      if (fullWires && wireSig.exists && wireSig.size > 0) {
+        if (stats) {
+          stats.truncatedWires = (stats.truncatedWires ?? 0) + 1;
+          stats.truncatedReasons = stats.truncatedReasons ?? [];
+          if (stats.truncatedReasons.length < 20) {
+            stats.truncatedReasons.push(`wire_cap:${entry.name}:${wireSig.size}B`);
+          }
+        }
+      }
       writeMinimalWireMetadata(path.join(dstAgentDir, 'wire.jsonl'));
     }
     if (fullWires) {
@@ -523,7 +539,7 @@ export function stageCorpusSandbox({
   }
 
   const tracker = createSourceImmutabilityTracker({ locksDir: corpusHome ? path.join(corpusHome, 'session-locks') : undefined });
-  const copyStats = { copiedFiles: 0, copiedBytes: 0 };
+  const copyStats = { copiedFiles: 0, copiedBytes: 0, truncatedAgents: 0, truncatedWires: 0, truncatedReasons: [] };
   if (corpusHome) {
     if (extremeFullSize && fs.existsSync(path.join(corpusHome, 'agents'))) {
       copyDirectoryBounded(path.join(corpusHome, 'agents'), path.join(homeDir, 'agents'), copyStats, {
@@ -587,6 +603,8 @@ export function stageCorpusSandbox({
     sandboxRoot, homeDir, osHomeDir, env, workspaceRoot, workspaceId, samples,
     stageMs: Number((performance.now() - startedAt).toFixed(2)),
     hardlinkedFiles: 0, copiedFiles: copyStats.copiedFiles, copiedBytes: copyStats.copiedBytes, junctionCount: 0,
+    truncationCount: (copyStats.truncatedAgents ?? 0) + (copyStats.truncatedWires ?? 0),
+    truncatedReasons: copyStats.truncatedReasons ?? [],
     verifyImmutability, cleanup,
   };
 }

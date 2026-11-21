@@ -18,7 +18,8 @@ import {
 } from './fixtures/empirical-manifest.mjs';
 import { MeshNodeStateMachine } from './twin/chained-workload.mjs';
 import { extractSenderThreadSendResultPreview } from './scenarios/s11-mesh-256-1024.mjs';
-import { resolveTerminatingTimeoutStatus } from './scenarios/s13-chaos-faults.mjs';
+import { extractWireLoopEvent, resolveTerminatingTimeoutStatus } from './scenarios/s13-chaos-faults.mjs';
+import { generateSyntheticMp4 } from './scenario-soak-and-media-weaknet.mjs';
 import { isKnownInternalKikiHelper } from './telemetry/process-tree.mjs';
 import {
   computeScopedHmac,
@@ -1040,7 +1041,53 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(goodAssets.passed, true);
 
-    // F3 & F4: P01 rejects failed browserGuiCheck (never ignored!)
+    // Item 5: compressed JS bloat (32 MiB gzipped) MUST still fail
+    const bloatedCompressedAssets = evaluateWebAssetsBudget({
+      servedByKapServer: true,
+      jsAssetsCount: 8,
+      jsTotalTransferBytes: 32 * 1024 * 1024,
+      jsCompressedCount: 8,
+      jsUncompressedCount: 0,
+      allJsCompressed: true,
+      contentEncodings: ['gzip'],
+      failedAssets: [],
+      jsWrongContentType: [],
+    });
+    assert.equal(bloatedCompressedAssets.passed, false);
+    assert.ok(bloatedCompressedAssets.failures.some((f) => /compressed ceiling/i.test(f)));
+
+    // F3 & F4 + Item 2: P01 rejects missing browserGuiCheck when required AND rejects newConsoleErrors
+    const p01MissingBrowser = evaluateP01ColdChildGate({
+      wasColdBeforeOpen: true,
+      checkpoints: [],
+      httpTranscriptMs: 90,
+      wsFirstResetMs: 110,
+      wireReadyMs: 120,
+      controlBarSettleMs: 180,
+      responses: [
+        { path: '/api/sessions/s/transcript?agent_id=c', status: 200, code: 0 },
+        { path: '/api/agents/capabilities?session_id=s&agent_id=c&metrics_settle=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/model-switches', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/hooks?observe=true', status: 200, code: 40901 },
+        { path: '/api/sessions/s/agents/c/auto-compact?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/agents/c/context-strategy?observe=true', status: 200, code: 0 },
+        { path: '/api/sessions/s/status', status: 200, code: 0 },
+        { path: '/api/sessions/s/transcript/plan?agent_id=c', status: 200, code: 0 },
+      ],
+      rawPassCount: 1,
+      wireBytes: 20 * 1024 * 1024,
+      aggregateWireReadBytes: 20 * 1024 * 1024,
+      legacyScanBytesPerSec: 3_000_000_000,
+      aggregateParseInputBytes: 256 * 1024,
+      ioTraceSource: 'server_product_trace',
+      fullReplayMatches: true,
+      browserGuiRequired: true,
+      browserGuiCheck: null,
+    });
+    assert.equal(p01MissingBrowser.passed, false);
+    assert.equal(p01MissingBrowser.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(p01MissingBrowser.harnessFailures.some((f) => /browserGuiCheck/i.test(f)));
+
     const p01FailBrowser = evaluateP01ColdChildGate({
       wasColdBeforeOpen: true,
       checkpoints: [],
@@ -1065,9 +1112,11 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
       aggregateParseInputBytes: 256 * 1024,
       ioTraceSource: 'server_product_trace',
       fullReplayMatches: true,
+      browserGuiRequired: true,
       browserGuiCheck: {
         ok: false,
         firstMessagePaintMs: 4200,
+        newConsoleErrors: 2,
         pageErrors: ['ReferenceError: x'],
         mobileCheck: { ok: false, firstMessagePaintMs: 5500, error: 'mobile slow paint' },
       },
@@ -1075,6 +1124,7 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(p01FailBrowser.passed, false);
     assert.equal(p01FailBrowser.exitCode, EXIT_PRODUCT_FAIL);
     assert.ok(p01FailBrowser.productFailures.some((f) => /browser GUI/i.test(f)));
+    assert.ok(p01FailBrowser.productFailures.some((f) => /console error/i.test(f)));
     assert.ok(p01FailBrowser.productFailures.some((f) => /mobile Chromium/i.test(f)));
 
     const mobileEmulation = {
@@ -1103,7 +1153,7 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
         httpRpcTransferBytes: 162_700,
         errorToastsOnOpen: 0,
       },
-      touchScroll: { frameP95Ms: 66.7, maxLongTaskMs: 101 },
+      touchScroll: { frameCount: 28, frameP95Ms: 66.7, maxLongTaskMs: 101 },
       rapidSwitch: { count: 5, latencyMs: { p95: 420 }, stickyUnreadCount: 0 },
       pageErrors: [],
       consoleErrorCount: 0,
@@ -1131,13 +1181,44 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
         httpRpcTransferBytes: 48_000,
         errorToastsOnOpen: 0,
       },
-      touchScroll: { frameP95Ms: 22, maxLongTaskMs: 40 },
+      touchScroll: { frameCount: 30, frameP95Ms: 22, maxLongTaskMs: 40 },
       rapidSwitch: { count: 5, latencyMs: { p95: 380 }, stickyUnreadCount: 0 },
       pageErrors: [],
       consoleErrorCount: 0,
     });
     assert.equal(s16Fast.passed, true);
     assert.equal(s16Fast.exitCode, EXIT_PASS);
+
+    // Item 5: vacuous S16 report (0 jsChunks, 0 scroll frames, missing TBT/LongTask, missing rapidSwitch p95) fails harness
+    const s16Vacuous = evaluateS16MobileVerdict({
+      emulation: mobileEmulation,
+      coldBoot: { coldBootToShellMs: 1000 },
+      webAssetsAudit: { servedByKapServer: true, jsChunkCount: 0, compressedJsChunkCount: 0, jsTotalEncodedMiB: 0 },
+      heavyOpen: { firstMessagePaintMs: 400 },
+      touchScroll: { frameCount: 0, frameP95Ms: 16 },
+      rapidSwitch: { count: 5, latencyMs: {} },
+      pageErrors: [],
+    });
+    assert.equal(s16Vacuous.passed, false);
+    assert.equal(s16Vacuous.exitCode, EXIT_HARNESS_FAIL);
+    assert.ok(s16Vacuous.harnessFailures.length >= 5);
+
+    // Item 3: S13 extractWireLoopEvent unwraps native context.append_loop_event.event
+    const unwrappedCall = extractWireLoopEvent({
+      time: 1_760_000_001_000,
+      type: 'context.append_loop_event',
+      payload: { event: { type: 'tool.call', payload: { id: 'call_1', name: 'Bash' } } },
+    });
+    assert.equal(unwrappedCall?.type, 'tool.call');
+    assert.equal(unwrappedCall?.payload?.name, 'Bash');
+    assert.equal(unwrappedCall?.time, 1_760_000_001_000);
+
+    // Item 6: S8 synthetic MP4 is genuinely decodable (ftyp+moov+trak+mdat), not mdat-only filler
+    const mp4Info = inspectMp4Structure(generateSyntheticMp4(64 * 1024));
+    assert.equal(mp4Info.hasFtyp, true);
+    assert.equal(mp4Info.hasMoov, true);
+    assert.equal(mp4Info.hasTrak, true);
+    assert.equal(mp4Info.hasMdat, true);
 
     // S16 meta-gate: unthrottled CPU fails with EXIT_HARNESS_FAIL
     const s16Cheated = evaluateS16MobileVerdict({

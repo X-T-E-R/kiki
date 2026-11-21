@@ -1081,8 +1081,9 @@ export async function runScenarioS6TenKSubagents({
       backend.agentListToolTurn?.boundedUnder50Rows,
   );
 
-  const frontendPassed = !runBrowser
-    ? true
+  const frontendSkipped = !runBrowser;
+  const frontendPassed = frontendSkipped
+    ? false
     : Boolean(
         frontend &&
           !frontend.error &&
@@ -1107,9 +1108,11 @@ export async function runScenarioS6TenKSubagents({
       );
 
   return {
-    passed: backendPassed && frontendPassed,
+    passed: backendPassed && frontendPassed && !frontendSkipped,
+    exitCode: frontendSkipped ? 2 : backendPassed && frontendPassed ? 0 : 1,
     backendPassed,
     frontendPassed,
+    frontendSkipped,
     stepTimeoutMs,
     wallMs: roundMs(performance.now() - startedAt),
     corpusSummary: {

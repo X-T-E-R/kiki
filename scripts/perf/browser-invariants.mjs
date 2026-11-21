@@ -547,19 +547,37 @@ export async function verifyScrollUpNoSnapBack(page, { settleMs = 700 } = {}) {
 
 /**
  * F13 regression gate: opening/viewing a session must clear any sticky unread dot
- * on that session's sidebar row.
+ * on that session's sidebar row (matches Sidebar.tsx `data-session-row` & `data-session-row-state`).
+ * Fails closed when the viewed session row is absent instead of passing vacuously.
  */
 export async function verifyViewedSessionClearsUnreadDot(page, sessionId) {
   return page.evaluate((sid) => {
-    const row = document.querySelector(`[data-session-id="${CSS.escape(sid)}"], a[href*="/s/${CSS.escape(sid)}"]`);
-    if (!row) return { applicable: false, ok: true, reason: 'session_row_not_rendered', hasUnreadDot: false };
-    const unreadEl = row.querySelector('[data-unread-dot], [data-session-unread="true"], .bg-attention');
-    const hasUnreadAttr = row.dataset.unread === 'true' || row.dataset.sessionUnread === 'true';
-    const hasUnreadDot = Boolean(unreadEl || hasUnreadAttr);
+    const escaped = CSS.escape(sid);
+    const row = document.querySelector(`[data-session-row="${escaped}"]`);
+    if (!row) {
+      return {
+        applicable: true,
+        ok: false,
+        reason: `target_session_row_not_rendered:${sid}`,
+        matchedRows: 0,
+        hasUnreadDot: false,
+      };
+    }
+    const rowState = row.dataset.sessionRowState ?? '';
+    const lifeEl = row.querySelector('[data-life]');
+    const life = lifeEl.dataset.life ?? '';
+    const unreadEl = row.querySelector('[data-life="unread"], [data-unread-dot], [data-session-unread="true"]');
+    const hasUnreadDot =
+      rowState === 'unread' ||
+      life === 'unread' ||
+      row.dataset.sessionUnread === 'true' ||
+      Boolean(unreadEl);
     return {
       applicable: true,
       ok: !hasUnreadDot,
-      reason: hasUnreadDot ? 'sticky_unread_dot_on_viewed_session' : null,
+      reason: hasUnreadDot ? `sticky_unread_dot_on_viewed_session(state=${rowState},life=${life})` : null,
+      matchedRows: 1,
+      rowState,
       hasUnreadDot,
     };
   }, sessionId);
@@ -582,7 +600,9 @@ export async function verifyPersonaSubagentSingleRowNoErrorPileup(page) {
       seen.set(aid, count);
       if (count === 2) duplicateAgentIds.push(aid);
     }
-    const bottomErrors = [...document.querySelectorAll('[data-transcript-scroll] [role="alert"], [data-persona-error]')];
+    const bottomErrors = [
+      ...document.querySelectorAll('[data-transcript-scroll] [role="alert"], [data-persona-error], [data-toast="error"]'),
+    ];
     const normalizedErrs = bottomErrors.map((e) => (e.textContent ?? '').trim()).filter(Boolean);
     const uniqueErrs = new Set(normalizedErrs);
     const duplicateErrorPileup = normalizedErrs.length - uniqueErrs.size;
@@ -603,17 +623,18 @@ export async function verifyPersonaSubagentSingleRowNoErrorPileup(page) {
 
 /**
  * F13 regression gate: cold open / top-of-scroll at t0 must never emit spurious
- * error toasts (e.g. "Failed to load older messages" when cursor is exhausted).
+ * error toasts (matches Toasts.tsx `[data-toast="error"][role="status"]`).
  */
 export async function verifyZeroFalseTopScrollErrorToast(page) {
   return page.evaluate(() => {
-    const toasts = [...document.querySelectorAll('[data-toast-tone="error"], [data-toast][role="alert"], [role="status"][data-toast-kind="error"]')];
-    const texts = toasts.map((t) => (t.textContent ?? '').trim()).filter(Boolean);
+    const toasts = [...document.querySelectorAll('[data-toast="error"][role="status"], [data-toast="error"], [data-toast][role="alert"]')];
+    const uniqueNodes = [...new Set(toasts)];
+    const texts = uniqueNodes.map((t) => (t.textContent ?? '').trim()).filter(Boolean);
     return {
       applicable: true,
-      ok: texts.length === 0,
-      reason: texts.length > 0 ? `false_error_toast:${texts[0].slice(0, 120)}` : null,
-      errorToastCount: texts.length,
+      ok: uniqueNodes.length === 0,
+      reason: uniqueNodes.length > 0 ? `false_error_toast:${(texts[0] ?? 'empty').slice(0, 120)}` : null,
+      errorToastCount: uniqueNodes.length,
       samples: texts.slice(0, 5),
     };
   });

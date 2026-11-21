@@ -97,12 +97,24 @@ function centerDistance(a, b) {
  */
 export function evaluateTouchTargets(controls, {
   coarsePointer = true,
+  requireCoarsePointer = true,
   wcagMinimumPx = TOUCH_STANDARDS.wcagMinimumPx,
   appleHigPrimaryPx = TOUCH_STANDARDS.appleHigPrimaryPx,
   maxOverlapPx2 = TOUCH_STANDARDS.maxOverlapPx2,
 } = {}) {
   const findings = [];
-  if (!coarsePointer) return findings;
+  if (!coarsePointer) {
+    if (requireCoarsePointer) {
+      findings.push({
+        ruleId: 'COARSE_POINTER_NOT_ACTIVE',
+        severity: 'error',
+        standard: 'Mobile touch checks require active coarse pointer emulation (matchMedia("(pointer: coarse)") === true)',
+        actual: { coarsePointer: Boolean(coarsePointer) },
+        expected: { coarsePointer: true },
+      });
+    }
+    return findings;
+  }
 
   const visible = controls.filter((c) => c && c.rect && c.rect.width > 0 && c.rect.height > 0);
   for (const ctrl of visible) {
@@ -120,7 +132,7 @@ export function evaluateTouchTargets(controls, {
     } else if (ctrl.primary && (width < appleHigPrimaryPx - 0.5 || height < appleHigPrimaryPx - 0.5)) {
       findings.push({
         ruleId: 'PRIMARY_TOUCH_TARGET_BELOW_HIG_44',
-        severity: 'warning',
+        severity: 'error',
         standard: 'Apple HIG / WCAG 2.2 SC 2.5.5 (>= 44x44 CSS px for primary controls)',
         selector: ctrl.selector,
         label: ctrl.label,
@@ -191,8 +203,38 @@ export function evaluateSafeAreaGeometry({
   tabbarRect,
   stagePadding,
   horizontalOverflowPx = 0,
+  requireHeader = false,
+  requireComposer = false,
+  requireBottomSurface = false,
 }) {
   const findings = [];
+  if (requireHeader && !headerRect) {
+    findings.push({
+      ruleId: 'REQUIRED_HEADER_MISSING',
+      severity: 'error',
+      standard: 'Session/mobile route must render a visible top header for safe-area verification',
+      actual: { headerRect: null },
+      expected: { headerPresent: true },
+    });
+  }
+  if (requireComposer && !composerRect) {
+    findings.push({
+      ruleId: 'REQUIRED_COMPOSER_MISSING',
+      severity: 'error',
+      standard: 'Chat/session route must render a visible composer card for bottom safe-area verification',
+      actual: { composerRect: null },
+      expected: { composerPresent: true },
+    });
+  }
+  if (requireBottomSurface && !composerRect && !tabbarRect) {
+    findings.push({
+      ruleId: 'REQUIRED_BOTTOM_SURFACE_MISSING',
+      severity: 'error',
+      standard: 'Mobile route must render a visible composer or bottom tabbar for Home Indicator clearance verification',
+      actual: { composerRect: null, tabbarRect: null },
+      expected: { bottomSurfacePresent: true },
+    });
+  }
   if (horizontalOverflowPx > 1) {
     findings.push({
       ruleId: 'HORIZONTAL_OVERFLOW',
@@ -305,10 +347,31 @@ export function evaluateSoftKeyboardGeometry({
   safeArea = { top: 0, bottom: 0, left: 0, right: 0 },
   rootVisualHeightVar = '',
   rootOffsetTopVar = '',
+  requireHeader = true,
+  requireComposer = true,
 }) {
   const findings = [];
   const vvTop = visualViewport.offsetTop ?? 0;
   const vvBottom = vvTop + visualViewport.height;
+
+  if (requireHeader && !headerRect) {
+    findings.push({
+      ruleId: 'REQUIRED_HEADER_MISSING',
+      severity: 'error',
+      standard: 'Soft-keyboard geometry check requires a visible header element',
+      actual: { headerRect: null },
+      expected: { headerPresent: true },
+    });
+  }
+  if (requireComposer && !composerRect) {
+    findings.push({
+      ruleId: 'REQUIRED_COMPOSER_MISSING',
+      severity: 'error',
+      standard: 'Soft-keyboard geometry check requires a visible composer element',
+      actual: { composerRect: null },
+      expected: { composerPresent: true },
+    });
+  }
 
   if (headerRect) {
     if (headerRect.top < vvTop - 1) {

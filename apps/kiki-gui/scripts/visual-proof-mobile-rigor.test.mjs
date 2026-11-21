@@ -57,8 +57,37 @@ test('evaluateTouchTargets enforces WCAG 2.2 SC 2.5.8 24px floor, Apple HIG 44px
   const ids = new Set(findings.map((f) => f.ruleId));
   assert.ok(ids.has('TOUCH_TARGET_BELOW_WCAG_24'));
   assert.ok(ids.has('PRIMARY_TOUCH_TARGET_BELOW_HIG_44'));
+  assert.equal(findings.find((f) => f.ruleId === 'PRIMARY_TOUCH_TARGET_BELOW_HIG_44')?.severity, 'error');
   assert.ok(ids.has('CONTROL_CLIPPED_BY_OVERFLOW'));
   assert.ok(ids.has('TOUCH_TARGETS_OVERLAPPING'));
+
+  // Coarse pointer false must emit a hard error instead of vacuous pass
+  const noCoarse = evaluateTouchTargets([], { coarsePointer: false });
+  assert.equal(noCoarse.length, 1);
+  assert.equal(noCoarse[0].ruleId, 'COARSE_POINTER_NOT_ACTIVE');
+  assert.equal(noCoarse[0].severity, 'error');
+
+  // Missing header/composer on required routes must emit hard errors instead of vacuous pass
+  const missingSafeArea = evaluateSafeAreaGeometry({
+    viewport: { width: 393, height: 852 },
+    safeArea: { top: 59, right: 0, bottom: 34, left: 0 },
+    headerRect: null,
+    composerRect: null,
+    requireHeader: true,
+    requireComposer: true,
+  });
+  const missingIds = new Set(missingSafeArea.map((f) => f.ruleId));
+  assert.ok(missingIds.has('REQUIRED_HEADER_MISSING'));
+  assert.ok(missingIds.has('REQUIRED_COMPOSER_MISSING'));
+
+  const missingKeyboard = evaluateSoftKeyboardGeometry({
+    headerRect: null,
+    composerRect: null,
+    visualViewport: { width: 393, height: 480, offsetTop: 180 },
+  });
+  const missingKbIds = new Set(missingKeyboard.map((f) => f.ruleId));
+  assert.ok(missingKbIds.has('REQUIRED_HEADER_MISSING'));
+  assert.ok(missingKbIds.has('REQUIRED_COMPOSER_MISSING'));
 });
 
 test('evaluateUnintendedBlankVoids catches forced min-h-[280px] blank voids', () => {

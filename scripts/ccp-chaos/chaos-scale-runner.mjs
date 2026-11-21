@@ -2256,7 +2256,7 @@ export async function runChaosScaleSuite(options = {}) {
 
     if (runS6) {
       if (tenKCorpus) {
-        report.scenarios.S6_tenKSubagentsScale = await runScenarioS6TenKSubagents({
+        const s6Res = await runScenarioS6TenKSubagents({
           server: mainServer,
           twin,
           target: tenKCorpus,
@@ -2266,6 +2266,14 @@ export async function runChaosScaleSuite(options = {}) {
           stepTimeoutMs: s6StepTimeoutMs,
           progress,
         });
+        report.scenarios.S6_tenKSubagentsScale = s6Res;
+        if (s6Res.frontendSkipped) {
+          report.skipped += 1;
+          report.skippedScenarios.push({
+            scenario: 'S6_tenKSubagentsScale.frontend',
+            reason: 'skipped by --no-browser flag',
+          });
+        }
       } else {
         recordSkipped('S6_tenKSubagentsScale', 'missing 10k subagent corpus');
       }

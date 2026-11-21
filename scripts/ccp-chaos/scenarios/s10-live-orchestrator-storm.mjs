@@ -466,16 +466,51 @@ async function startLiveGuiBrowserDriver({ server, sessionId }) {
     async openChildView(targetSessionId, childAgentId) {
       const t0 = performance.now();
       const beforeErrors = consoleErrors.length;
-      await page.goto(
-        deepLink(`/s/${encodeURIComponent(targetSessionId)}/a/${encodeURIComponent(childAgentId)}`),
-        { waitUntil: 'domcontentloaded', timeout: 20_000 },
-      );
-      await page.locator('[data-transcript-scroll-root], [data-composer-input], main').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
-      await sleep(250);
-      return {
-        navigatedMs: roundMs(performance.now() - t0),
-        newConsoleErrors: consoleErrors.length - beforeErrors,
-      };
+      const childPageErrors = [];
+      const onChildPageError = (err) => childPageErrors.push(String(err?.message ?? err).slice(0, 300));
+      page.on('pageerror', onChildPageError);
+      try {
+        await page.goto(
+          deepLink(`/s/${encodeURIComponent(targetSessionId)}/agent/${encodeURIComponent(childAgentId)}`),
+          { waitUntil: 'domcontentloaded', timeout: 20_000 },
+        );
+        await page.waitForFunction(
+          () => {
+            const items = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]');
+            for (const el of items) {
+              if ((el.textContent ?? '').trim().length > 0) return true;
+            }
+            return false;
+          },
+          null,
+          { timeout: 10_000 },
+        );
+        const firstMessagePaintMs = roundMs(performance.now() - t0);
+        const newConsoleErrors = consoleErrors.length - beforeErrors;
+        return {
+          ok: newConsoleErrors === 0 && childPageErrors.length === 0,
+          firstMessagePaintMs,
+          navigatedMs: firstMessagePaintMs,
+          transcriptVisible: true,
+          newConsoleErrors,
+          pageErrors: childPageErrors,
+          error: newConsoleErrors > 0 ? `${newConsoleErrors} console error(s)` : childPageErrors[0] ?? null,
+        };
+      } catch (error) {
+        const elapsedMs = roundMs(performance.now() - t0);
+        const newConsoleErrors = consoleErrors.length - beforeErrors;
+        return {
+          ok: false,
+          firstMessagePaintMs: elapsedMs,
+          navigatedMs: elapsedMs,
+          transcriptVisible: false,
+          newConsoleErrors,
+          pageErrors: childPageErrors,
+          error: String(error?.message ?? error).slice(0, 300),
+        };
+      } finally {
+        page.off('pageerror', onChildPageError);
+      }
     },
     async stopFlightRecorder() {
       return Boolean(await page.evaluate(() => (typeof window.__KIKI_STOP_FLIGHT__ === 'function' ? window.__KIKI_STOP_FLIGHT__() : false)).catch(() => false));

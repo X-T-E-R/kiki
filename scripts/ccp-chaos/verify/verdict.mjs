@@ -396,25 +396,43 @@ export function evaluateP01ColdChildGate(trial) {
   if (typeof wireReadyMs !== 'number' || !Number.isFinite(wireReadyMs) || wireReadyMs >= wireReadyLimit) {
     productFailures.push(`P0-1 wire-ready (HTTP+WS bootstrap) ${wireReadyMs}ms >= ${wireReadyLimit}ms`);
   }
-  if (trial.browserGuiCheck !== undefined && trial.browserGuiCheck !== null) {
+  if (trial.browserGuiRequired === true && (!trial.browserGuiCheck || typeof trial.browserGuiCheck !== 'object')) {
+    harnessFailures.push('P0-1 expected browserGuiCheck receipt is missing');
+  } else if (trial.browserGuiCheck !== undefined && trial.browserGuiCheck !== null) {
     const bg = trial.browserGuiCheck;
     if (bg.ok !== true) {
       productFailures.push(`P0-1 browser GUI child open failed: ${bg.error ?? JSON.stringify(bg)}`);
     }
+    if (typeof bg.newConsoleErrors === 'number' && bg.newConsoleErrors > 0) {
+      productFailures.push(`P0-1 browser GUI emitted ${bg.newConsoleErrors} console error(s)`);
+    }
     if (Array.isArray(bg.pageErrors) && bg.pageErrors.length > 0) {
       productFailures.push(`P0-1 browser GUI emitted ${bg.pageErrors.length} pageerror(s): ${bg.pageErrors[0]}`);
     }
-    if (typeof bg.firstMessagePaintMs === 'number' && bg.firstMessagePaintMs >= T.browserFirstMessagePaintMaxMs) {
-      productFailures.push(`P0-1 browser GUI firstMessagePaintMs ${bg.firstMessagePaintMs}ms >= ${T.browserFirstMessagePaintMaxMs}ms`);
+    const guiPaintMs =
+      typeof bg.firstMessagePaintMs === 'number'
+        ? bg.firstMessagePaintMs
+        : typeof bg.navigatedMs === 'number'
+          ? bg.navigatedMs
+          : null;
+    if (guiPaintMs === null || !Number.isFinite(guiPaintMs)) {
+      harnessFailures.push('P0-1 browser GUI check missing firstMessagePaintMs / navigatedMs');
+    } else if (guiPaintMs >= T.browserFirstMessagePaintMaxMs) {
+      productFailures.push(`P0-1 browser GUI firstMessagePaintMs ${guiPaintMs}ms >= ${T.browserFirstMessagePaintMaxMs}ms`);
     }
     if (bg.mobileCheck) {
       if (bg.mobileCheck.ok !== true) {
         productFailures.push(`P0-1 mobile Chromium child open failed: ${bg.mobileCheck.error ?? 'not ok'}`);
       }
+      if (typeof bg.mobileCheck.newConsoleErrors === 'number' && bg.mobileCheck.newConsoleErrors > 0) {
+        productFailures.push(`P0-1 mobile Chromium emitted ${bg.mobileCheck.newConsoleErrors} console error(s)`);
+      }
       if (
-        typeof bg.mobileCheck.firstMessagePaintMs === 'number'
-        && bg.mobileCheck.firstMessagePaintMs >= T.mobileFirstMessagePaintMaxMs
+        typeof bg.mobileCheck.firstMessagePaintMs !== 'number'
+        || !Number.isFinite(bg.mobileCheck.firstMessagePaintMs)
       ) {
+        harnessFailures.push('P0-1 mobile Chromium check missing firstMessagePaintMs');
+      } else if (bg.mobileCheck.firstMessagePaintMs >= T.mobileFirstMessagePaintMaxMs) {
         productFailures.push(
           `P0-1 mobile Chromium firstMessagePaintMs ${bg.mobileCheck.firstMessagePaintMs}ms >= ${T.mobileFirstMessagePaintMaxMs}ms`,
         );
@@ -935,7 +953,7 @@ export function evaluateCcpRunVerdict({
         chaosReport.tier === 'v23-full';
 
       if (enforceV23Set) {
-        for (const key of ['p01', 's10', 's11', 's12', 's13', 's14']) {
+        for (const key of ['p01', 's10', 's11', 's12', 's13', 's14', 's16']) {
           if (!sc[key] || typeof sc[key] !== 'object') {
             harnessFailures.push(`Missing required v2.3 scenario "${key}" in chaos report`);
           }
@@ -1054,6 +1072,12 @@ export function evaluateCcpRunVerdict({
           productFailures.push(...idle.productFailures);
           harnessFailures.push(...idle.harnessFailures);
         }
+      }
+
+      if (sc.s16) {
+        const s16Eval = evaluateS16MobileVerdict(sc.s16);
+        productFailures.push(...s16Eval.productFailures);
+        harnessFailures.push(...s16Eval.harnessFailures);
       }
     }
   }
@@ -1286,13 +1310,19 @@ export function evaluateS16MobileVerdict(report) {
   }
 
   const web = report.webAssetsAudit;
-  if (web) {
-    if (web.jsChunkCount > 0 && web.compressedJsChunkCount < web.jsChunkCount) {
+  if (!web || typeof web !== 'object') {
+    harnessFailures.push('S16 missing webAssetsAudit telemetry');
+  } else {
+    if (typeof web.jsChunkCount !== 'number' || web.jsChunkCount <= 0) {
+      harnessFailures.push(`S16 webAssetsAudit observed ${web.jsChunkCount ?? 0} JS chunks (must be > 0)`);
+    } else if (web.compressedJsChunkCount < web.jsChunkCount) {
       productFailures.push(
         `S16 kap-server webAssets served uncompressed JS (${web.compressedJsChunkCount}/${web.jsChunkCount} compressed, ${web.jsTotalEncodedMiB} MiB wire)`,
       );
     }
-    if (typeof web.jsTotalEncodedMiB === 'number' && web.jsTotalEncodedMiB > T.maxJsWireMiB) {
+    if (typeof web.jsTotalEncodedMiB !== 'number' || !Number.isFinite(web.jsTotalEncodedMiB) || web.jsTotalEncodedMiB <= 0) {
+      harnessFailures.push(`S16 webAssetsAudit missing positive jsTotalEncodedMiB (got ${web.jsTotalEncodedMiB})`);
+    } else if (web.jsTotalEncodedMiB > T.maxJsWireMiB) {
       productFailures.push(`S16 JS wire transfer ${web.jsTotalEncodedMiB} MiB > ${T.maxJsWireMiB} MiB budget`);
     }
   }
@@ -1308,13 +1338,19 @@ export function evaluateS16MobileVerdict(report) {
   if (!heavy) {
     harnessFailures.push('S16 missing heavyOpen measurements');
   } else {
-    if (typeof heavy.firstMessagePaintMs !== 'number' || heavy.firstMessagePaintMs > T.heavyFirstMessagePaintMaxMs) {
+    if (typeof heavy.firstMessagePaintMs !== 'number' || !Number.isFinite(heavy.firstMessagePaintMs)) {
+      harnessFailures.push('S16 missing heavyOpen.firstMessagePaintMs');
+    } else if (heavy.firstMessagePaintMs > T.heavyFirstMessagePaintMaxMs) {
       productFailures.push(`S16 heavy session TTFM ${heavy.firstMessagePaintMs}ms > ${T.heavyFirstMessagePaintMaxMs}ms`);
     }
-    if (typeof heavy.totalBlockingTimeMs === 'number' && heavy.totalBlockingTimeMs > T.heavyTbtMaxMs) {
+    if (typeof heavy.totalBlockingTimeMs !== 'number' || !Number.isFinite(heavy.totalBlockingTimeMs)) {
+      harnessFailures.push('S16 missing heavyOpen.totalBlockingTimeMs');
+    } else if (heavy.totalBlockingTimeMs > T.heavyTbtMaxMs) {
       productFailures.push(`S16 heavy session TBT ${heavy.totalBlockingTimeMs}ms > ${T.heavyTbtMaxMs}ms`);
     }
-    if (typeof heavy.maxLongTaskMs === 'number' && heavy.maxLongTaskMs > T.heavyMaxLongTaskMs) {
+    if (typeof heavy.maxLongTaskMs !== 'number' || !Number.isFinite(heavy.maxLongTaskMs)) {
+      harnessFailures.push('S16 missing heavyOpen.maxLongTaskMs');
+    } else if (heavy.maxLongTaskMs > T.heavyMaxLongTaskMs) {
       productFailures.push(`S16 heavy session max LongTask ${heavy.maxLongTaskMs}ms > ${T.heavyMaxLongTaskMs}ms`);
     }
     if (Array.isArray(heavy.errorToastsOnOpen) && heavy.errorToastsOnOpen.length > 0) {
@@ -1323,16 +1359,29 @@ export function evaluateS16MobileVerdict(report) {
   }
 
   const scroll = report.touchScroll;
-  if (scroll && typeof scroll.frameP95Ms === 'number' && scroll.frameP95Ms > T.scrollFrameP95MaxMs) {
-    productFailures.push(`S16 mobile touch-scroll frame P95 ${scroll.frameP95Ms}ms > ${T.scrollFrameP95MaxMs}ms`);
+  if (!scroll || typeof scroll !== 'object') {
+    harnessFailures.push('S16 missing touchScroll measurements');
+  } else {
+    if (typeof scroll.frameCount !== 'number' || scroll.frameCount <= 0) {
+      harnessFailures.push(`S16 touchScroll observed ${scroll.frameCount ?? 0} frames (must be > 0)`);
+    }
+    if (typeof scroll.frameP95Ms !== 'number' || !Number.isFinite(scroll.frameP95Ms)) {
+      harnessFailures.push('S16 missing touchScroll.frameP95Ms');
+    } else if (scroll.frameP95Ms > T.scrollFrameP95MaxMs) {
+      productFailures.push(`S16 mobile touch-scroll frame P95 ${scroll.frameP95Ms}ms > ${T.scrollFrameP95MaxMs}ms`);
+    }
   }
 
   const sw = report.rapidSwitch;
-  if (sw) {
+  if (!sw || typeof sw !== 'object') {
+    harnessFailures.push('S16 missing rapidSwitch measurements');
+  } else {
     if ((sw.count ?? 0) < 5) {
       harnessFailures.push(`S16 rapid switch ran only ${sw.count ?? 0}/5 sessions`);
     }
-    if (typeof sw.latencyMs?.p95 === 'number' && sw.latencyMs.p95 > T.switchFirstMessagePaintP95MaxMs) {
+    if (typeof sw.latencyMs?.p95 !== 'number' || !Number.isFinite(sw.latencyMs.p95)) {
+      harnessFailures.push('S16 rapid switch missing latencyMs.p95');
+    } else if (sw.latencyMs.p95 > T.switchFirstMessagePaintP95MaxMs) {
       productFailures.push(`S16 rapid switch TTFM P95 ${sw.latencyMs.p95}ms > ${T.switchFirstMessagePaintP95MaxMs}ms`);
     }
     if ((sw.stickyUnreadCount ?? 0) > 0) {

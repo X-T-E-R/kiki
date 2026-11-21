@@ -231,6 +231,11 @@ function evaluateSlos(report) {
   if (report.immutability && report.immutability.mutations > 0) {
     breaches.push(`immutability.mutations=${report.immutability.mutations} > 0`);
   }
+  if ((report.sandbox?.truncationCount ?? 0) > 0) {
+    breaches.push(
+      `sandbox.truncationCount=${report.sandbox.truncationCount} (${(report.sandbox.truncatedReasons ?? []).slice(0, 5).join(', ')})`,
+    );
+  }
   return { passed: breaches.length === 0, thresholds: ENFORCED_SLOS, breaches };
 }
 
@@ -367,6 +372,8 @@ export async function runRealCorpusBenchmark(rawOptions = {}) {
       hardlinkedFiles: sandbox.hardlinkedFiles,
       copiedFiles: sandbox.copiedFiles,
       junctionCount: sandbox.junctionCount,
+      truncationCount: sandbox.truncationCount ?? 0,
+      truncatedReasons: sandbox.truncatedReasons ?? [],
     },
     immutability,
     serverBootMs: serverHandle.bootMs,

@@ -194,6 +194,45 @@ function writeEarlyExitSpinnerScripts(dir, cellName) {
  *   6. WS mid-turn disconnect + transcript_since catchup
  *   7. slow chunk stall + turn abort
  */
+export function extractWireLoopEvent(record) {
+  if (!record || typeof record !== 'object') return null;
+  if (record.type === 'context.append_loop_event' && record.payload?.event && typeof record.payload.event === 'object') {
+    const ev = record.payload.event;
+    return {
+      time: typeof record.time === 'number' ? record.time : typeof ev.time === 'number' ? ev.time : null,
+      type: ev.type ?? null,
+      payload: ev.payload && typeof ev.payload === 'object' ? ev.payload : ev,
+    };
+  }
+  return {
+    time: typeof record.time === 'number' ? record.time : null,
+    type: record.type ?? null,
+    payload: record.payload && typeof record.payload === 'object' ? record.payload : record,
+  };
+}
+
+function findWireToolCall(wireRecords, toolName) {
+  for (const raw of wireRecords) {
+    const ev = extractWireLoopEvent(raw);
+    if (!ev) continue;
+    if ((ev.type === 'tool.call' || ev.type === 'tool_call') && (ev.payload?.name === toolName || ev.payload?.toolName === toolName)) {
+      return ev;
+    }
+  }
+  return null;
+}
+
+function findWireToolResult(wireRecords, callId) {
+  for (const raw of wireRecords) {
+    const ev = extractWireLoopEvent(raw);
+    if (!ev) continue;
+    if (ev.type !== 'tool.result' && ev.type !== 'tool_result') continue;
+    const recCallId = ev.payload?.toolCallId ?? ev.payload?.callId ?? ev.payload?.id ?? null;
+    if (!callId || recCallId === callId) return ev;
+  }
+  return null;
+}
+
 export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, workRoot, progress = () => {} }) {
   const runId = `s13_${randomUUID().slice(0, 8)}`;
   const dir = path.join(workRoot || corpus?.rootDir || os.tmpdir(), `kiki-s13-faults-${runId}`);
@@ -302,12 +341,10 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         wireRecords,
         dead,
       });
-      const bashCallRec1 = wireRecords.find(
-        (r) => (r?.type === 'tool.call' || r?.type === 'tool_call') && (r?.payload?.name === 'Bash' || r?.name === 'Bash'),
-      );
-      const wireTermRec1 = wireRecords.find(
-        (r) => r?.type === 'task.terminated' || r?.type === 'background.task.terminated',
-      );
+      const bashCallRec1 = findWireToolCall(wireRecords, 'Bash');
+      const wireTermRec1 = wireRecords
+        .map(extractWireLoopEvent)
+        .find((ev) => ev && (ev.type === 'task.terminated' || ev.type === 'background.task.terminated'));
       const taskStartEpoch1 =
         (typeof taskRow?.startedAt === 'number' ? taskRow.startedAt : null) ??
         (typeof bashCallRec1?.time === 'number' ? bashCallRec1.time : null);
@@ -320,7 +357,7 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
           ? roundMs(wireTermRec1.time - wallT0)
           : typeof taskRow?.endedAt === 'number'
             ? roundMs(taskRow.endedAt - wallT0)
-            : scheduledDeadlineMs;
+            : null;
       cells.push({
         kind: 'terminating_timeout',
         earlyExitVariant: true,
@@ -398,18 +435,10 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         tasksAfter2[0] ??
         null;
 
-      const bashCallRec2 = wireRecords2.find(
-        (r) => (r?.type === 'tool.call' || r?.type === 'tool_call') && (r?.payload?.name === 'Bash' || r?.name === 'Bash'),
-      );
-      const bashCallId2 = bashCallRec2?.payload?.id ?? bashCallRec2?.payload?.callId ?? bashCallRec2?.callId ?? null;
-      const bashResultRec2 = wireRecords2.find(
-        (r) =>
-          (r?.type === 'tool.result' || r?.type === 'tool_result') &&
-          (bashCallId2 ? (r?.payload?.toolCallId ?? r?.payload?.callId ?? r?.callId) === bashCallId2 : true),
-      );
-      const taskStopCallRec2 = wireRecords2.find(
-        (r) => (r?.type === 'tool.call' || r?.type === 'tool_call') && (r?.payload?.name === 'TaskStop' || r?.name === 'TaskStop'),
-      );
+      const bashCallRec2 = findWireToolCall(wireRecords2, 'Bash');
+      const bashCallId2 = bashCallRec2?.payload?.id ?? bashCallRec2?.payload?.callId ?? bashCallRec2?.payload?.toolCallId ?? null;
+      const bashResultRec2 = findWireToolResult(wireRecords2, bashCallId2);
+      const taskStopCallRec2 = findWireToolCall(wireRecords2, 'TaskStop');
 
       const bashResultText2 = JSON.stringify(bashResultRec2?.payload ?? bashResultRec2 ?? '');
       const observedDetachReason = /foreground[_\s-]?detach|moved to background|detached to background|background task/iu.test(

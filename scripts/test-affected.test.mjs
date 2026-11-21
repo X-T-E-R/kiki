@@ -258,7 +258,8 @@ void test('promote entry keeps its full command contract (including visual smoke
   assert.equal(code, 1);
   assert.equal(launches.length, PROMOTE_TEST_COMMANDS.length);
   assert.ok(launches.some((l) => l.args.includes('scripts/visual-proof-headless-smoke.mjs')));
-  assert.ok(launches.some((l) => l.args.includes('proof:mobile-rigor')));
+  assert.ok(launches.some((l) => l.args.includes('scripts/visual-proof-mobile-rigor.mjs') && l.args.includes('--strict')));
+  assert.ok(launches.some((l) => l.args.includes('scripts/ccp-chaos/scenarios/s16-mobile-heavy-session.mjs')));
   assert.deepEqual(launches[0].args, ['/fixture/pnpm.cjs', ...PROMOTE_TEST_COMMANDS[0].args]);
   assert.ok(launches.every(launch => Array.isArray(launch.args)));
 });

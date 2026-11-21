@@ -494,9 +494,34 @@ export async function runP01ColdChildFanoutProbe({
         ? Math.round((fanout.ioTrace.wireReadBytes / fanout.ioTrace.wireScanMs) * 1000)
         : null;
 
+    const browserGuiRequired = Boolean(browserHandle && si === sizes.length - 1);
     let browserGuiCheck = null;
-    if (browserHandle?.openChildView && si === sizes.length - 1) {
-      browserGuiCheck = await browserHandle.openChildView(sessionId, childAgentId);
+    if (browserGuiRequired) {
+      if (typeof browserHandle.openChildView === 'function') {
+        try {
+          browserGuiCheck = await browserHandle.openChildView(sessionId, childAgentId);
+        } catch (error) {
+          browserGuiCheck = {
+            ok: false,
+            firstMessagePaintMs: null,
+            navigatedMs: null,
+            transcriptVisible: false,
+            newConsoleErrors: 0,
+            pageErrors: [],
+            error: String(error?.message ?? error).slice(0, 300),
+          };
+        }
+      } else {
+        browserGuiCheck = {
+          ok: false,
+          firstMessagePaintMs: null,
+          navigatedMs: null,
+          transcriptVisible: false,
+          newConsoleErrors: 0,
+          pageErrors: [],
+          error: 'browserHandle missing openChildView()',
+        };
+      }
     }
 
     const legacyTrial = {
@@ -526,6 +551,7 @@ export async function runP01ColdChildFanoutProbe({
       legacyScanBytesPerSec: measuredScanBytesPerSec,
       fullReplayMatches: independent.fullReplayMatches,
       fullReplayProof: independent.fullReplayProof,
+      browserGuiRequired,
       browserGuiCheck,
       eldP99Ms: fanout.postMetrics.eldP99Ms,
       eldMaxMs: fanout.postMetrics.eldMaxMs,

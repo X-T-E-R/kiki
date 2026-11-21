@@ -10,6 +10,9 @@ const MiB = 1024 * 1024;
 /** Raw (uncompressed) cold-boot JavaScript budget accepted only when assets ship without br/gzip/zstd. */
 export const WEB_ASSETS_RAW_JS_BUDGET_BYTES = 2 * MiB;
 
+/** Maximum total transferred JS wire bytes allowed even when every JS asset is br/gzip/zstd compressed. */
+export const WEB_ASSETS_COMPRESSED_JS_BUDGET_BYTES = Math.round(1.5 * MiB);
+
 /**
  * Verifies that `kap-server` at `endpoint` serves the real built GUI shell through
  * its native `webAssets` route (HTTP 200 HTML containing the React root).
@@ -130,19 +133,32 @@ export function summarizeWebAssets(origin, assets) {
 }
 
 /**
- * Gate: assets must come from kap-server with valid headers and either be fully
- * br/gzip/zstd compressed or stay under the raw JS byte budget.
+ * Gate: assets must come from kap-server with valid headers, stay under the compressed
+ * total JS wire ceiling even when br/gzip/zstd compressed, and stay under the raw byte
+ * budget whenever any JS asset ships uncompressed.
  */
-export function evaluateWebAssetsBudget(audit, { rawJsBudgetBytes = WEB_ASSETS_RAW_JS_BUDGET_BYTES } = {}) {
+export function evaluateWebAssetsBudget(
+  audit,
+  {
+    rawJsBudgetBytes = WEB_ASSETS_RAW_JS_BUDGET_BYTES,
+    compressedJsBudgetBytes = WEB_ASSETS_COMPRESSED_JS_BUDGET_BYTES,
+  } = {},
+) {
   const failures = [];
   if (!audit || audit.servedByKapServer !== true) failures.push('assets were not served by kap-server webAssets');
   if (!audit || audit.jsAssetsCount === 0) failures.push('no /assets/*.js responses observed from kap-server');
   if (audit?.failedAssets?.length > 0) failures.push(`${audit.failedAssets.length} asset responses returned HTTP >= 400`);
   if (audit?.jsWrongContentType?.length > 0) failures.push(`${audit.jsWrongContentType.length} JS assets lack a javascript content-type`);
-  if (audit && audit.jsAssetsCount > 0 && !audit.allJsCompressed && audit.jsTotalTransferBytes > rawJsBudgetBytes) {
-    failures.push(
-      `${audit.jsUncompressedCount}/${audit.jsAssetsCount} JS assets uncompressed (encodings=${audit.contentEncodings.join(',')}) and ${audit.jsTotalTransferBytes} raw bytes exceed the ${rawJsBudgetBytes}-byte budget`,
-    );
+  if (audit && audit.jsAssetsCount > 0) {
+    if (!audit.allJsCompressed && audit.jsTotalTransferBytes > rawJsBudgetBytes) {
+      failures.push(
+        `${audit.jsUncompressedCount}/${audit.jsAssetsCount} JS assets uncompressed (encodings=${audit.contentEncodings.join(',')}) and ${audit.jsTotalTransferBytes} raw bytes exceed the ${rawJsBudgetBytes}-byte budget`,
+      );
+    } else if (audit.allJsCompressed && audit.jsTotalTransferBytes > compressedJsBudgetBytes) {
+      failures.push(
+        `compressed JS wire transfer ${audit.jsTotalTransferBytes} bytes exceeds the ${compressedJsBudgetBytes}-byte compressed ceiling`,
+      );
+    }
   }
-  return { passed: failures.length === 0, failures, rawJsBudgetBytes };
+  return { passed: failures.length === 0, failures, rawJsBudgetBytes, compressedJsBudgetBytes };
 }

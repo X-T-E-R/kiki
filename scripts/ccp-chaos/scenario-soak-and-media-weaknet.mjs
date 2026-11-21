@@ -6,6 +6,7 @@ import { performance } from 'node:perf_hooks';
 import { deflateSync } from 'node:zlib';
 
 import { computeChaosWorkDirKey } from './corpus-generator.mjs';
+import { buildDecodableMp4 } from './fixtures/media.mjs';
 import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -117,20 +118,13 @@ export function generateSyntheticPng(width, height, { deflateLevel = 1, smoothBa
 }
 
 export function generateSyntheticMp4(totalBytes = 192 * 1024) {
-  const ftyp = Buffer.from([
-    0x00, 0x00, 0x00, 0x18,
-    0x66, 0x74, 0x79, 0x70, // 'ftyp'
-    0x69, 0x73, 0x6f, 0x6d, // 'isom'
-    0x00, 0x00, 0x02, 0x00,
-    0x69, 0x73, 0x6f, 0x6d, // 'isom'
-    0x6d, 0x70, 0x34, 0x31, // 'mp41'
-  ]);
-  const mdatSize = Math.max(64, totalBytes - ftyp.length);
-  const mdatHeader = Buffer.alloc(8);
-  mdatHeader.writeUInt32BE(mdatSize, 0);
-  mdatHeader.write('mdat', 4, 'ascii');
-  const payload = Buffer.alloc(mdatSize - 8, 0x2a);
-  return Buffer.concat([ftyp, mdatHeader, payload]);
+  const base = buildDecodableMp4();
+  const padBytes = Math.max(0, totalBytes - base.length);
+  if (padBytes < 8) return base;
+  const freeBox = Buffer.alloc(padBytes);
+  freeBox.writeUInt32BE(padBytes, 0);
+  freeBox.write('free', 4, 'ascii');
+  return Buffer.concat([base, freeBox]);
 }
 
 export function generateSyntheticWav(totalBytes = 192 * 1024) {
@@ -1376,15 +1370,19 @@ export async function runScenarioS8MediaWeakNetStorm({
         const auth = { authorization: `Bearer ${token}` };
         const rpcT0 = performance.now();
         let rpcStatus = 0;
+        let rpcError = null;
         try {
           const r = await fetch(`${endpoint}/api/sessions/${encodeURIComponent(probeSid)}/status`, { headers: auth });
           rpcStatus = r.status;
           await r.text();
-        } catch {}
+        } catch (error) {
+          rpcError = String(error?.message ?? error).slice(0, 200);
+        }
         const rpcMs = Number((performance.now() - rpcT0).toFixed(2));
 
         const pT0 = performance.now();
         let promptStatus = 0;
+        let promptError = null;
         try {
           const p = await fetch(`${endpoint}/api/sessions/${encodeURIComponent(probeSid)}/prompts`, {
             method: 'POST',
@@ -1396,9 +1394,18 @@ export async function runScenarioS8MediaWeakNetStorm({
           });
           promptStatus = p.status;
           await p.text();
-        } catch {}
+        } catch (error) {
+          promptError = String(error?.message ?? error).slice(0, 200);
+        }
         const promptMs = Number((performance.now() - pT0).toFixed(2));
-        return { rpcUnderMediaStormMs: rpcMs, rpcStatus, promptUnderMediaStormMs: promptMs, promptStatus };
+        return {
+          rpcUnderMediaStormMs: rpcMs,
+          rpcStatus,
+          rpcError,
+          promptUnderMediaStormMs: promptMs,
+          promptStatus,
+          promptError,
+        };
       },
       { endpoint: server.endpoint, token: server.token, probeSid: promptProbeSid },
     );
@@ -1490,11 +1497,17 @@ export async function runScenarioS8MediaWeakNetStorm({
   if (!((weakNetBrowser?.promptUnderMediaStormMs ?? 99999) < B.promptUnderMediaStormMs)) {
     s8Failures.push(`promptUnderMediaStormMs=${weakNetBrowser?.promptUnderMediaStormMs} >= ${B.promptUnderMediaStormMs}`);
   }
+  if (!(typeof weakNetBrowser?.promptStatus === 'number' && weakNetBrowser.promptStatus >= 200 && weakNetBrowser.promptStatus < 300)) {
+    s8Failures.push(`promptStatus=${weakNetBrowser?.promptStatus ?? 0} (error=${weakNetBrowser?.promptError ?? 'non-2xx'})`);
+  }
   if (!((weakNetBrowser?.rpcUnderMediaStormMs ?? 99999) < B.rpcUnderMediaStormMs)) {
     s8Failures.push(`rpcUnderMediaStormMs=${weakNetBrowser?.rpcUnderMediaStormMs} >= ${B.rpcUnderMediaStormMs}`);
   }
-  if (!concurrent32Storm || concurrent32Storm.uploadsSucceeded !== 12) {
-    s8Failures.push(`uploadsSucceeded=${concurrent32Storm?.uploadsSucceeded ?? 0} !== 12`);
+  if (!(typeof weakNetBrowser?.rpcStatus === 'number' && weakNetBrowser.rpcStatus >= 200 && weakNetBrowser.rpcStatus < 300)) {
+    s8Failures.push(`rpcStatus=${weakNetBrowser?.rpcStatus ?? 0} (error=${weakNetBrowser?.rpcError ?? 'non-2xx'})`);
+  }
+  if (!concurrent32Storm || concurrent32Storm.uploadsSucceeded !== 12 || (concurrent32Storm.uploadsFailed ?? 0) > 0) {
+    s8Failures.push(`uploadsSucceeded=${concurrent32Storm?.uploadsSucceeded ?? 0} !== 12 (failed=${concurrent32Storm?.uploadsFailed ?? 0})`);
   }
   if (!concurrent32Storm || concurrent32Storm.abortedUploadsHandledCleanly !== 4) {
     s8Failures.push(`abortedUploadsHandledCleanly=${concurrent32Storm?.abortedUploadsHandledCleanly ?? 0} !== 4`);

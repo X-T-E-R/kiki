@@ -295,7 +295,7 @@ const SCENARIOS = [
         const drawerSnap = await page.evaluate(collectMobileDomSnapshot);
 
         const findings = [
-          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea }),
+          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
           ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
           ...evaluateUnintendedBlankVoids([...snap.blankVoidBlocks, ...drawerSnap.blankVoidBlocks]),
           ...evaluateContradictoryUiState({ toasts: snap.toasts, atT0Top: true, hasRedLoadError: snap.toasts.some((t) => t.tone === 'error') }),
@@ -323,7 +323,7 @@ const SCENARIOS = [
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'iphone-landscape-safe-area')];
         const findings = [
-          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea }),
+          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
           ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
           ...evaluateUnintendedBlankVoids(snap.blankVoidBlocks),
         ];
@@ -350,7 +350,7 @@ const SCENARIOS = [
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'ipad-portrait-safe-area')];
         const findings = [
-          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea }),
+          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
           ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
           ...evaluateUnintendedBlankVoids(snap.blankVoidBlocks),
         ];
@@ -377,7 +377,7 @@ const SCENARIOS = [
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'android-narrow-360')];
         const findings = [
-          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea }),
+          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
           ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
           ...evaluateUnintendedBlankVoids(snap.blankVoidBlocks),
         ];
@@ -481,6 +481,34 @@ const SCENARIOS = [
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'app-shell-spaces-sheet')];
 
+        // Inspect both registered spaces from fixtures/spaces.scenario.mjs and drive a real space switch.
+        const spaceCheck = await page.evaluate(() => {
+          const menu = document.querySelector('[data-space-switcher-menu]');
+          const items = menu ? [...menu.querySelectorAll('[data-space-item], button[role="menuitem"], button')] : [];
+          const labels = items.map((el) => (el.textContent ?? '').trim()).filter(Boolean);
+          return {
+            hasAcme: labels.some((t) => t.includes('ACME confidential')),
+            hasThesis: labels.some((t) => t.includes('Thesis writing')),
+            labels: labels.slice(0, 12),
+          };
+        });
+
+        let spaceSwitchAttempted = false;
+        let spaceSwitchSucceeded = false;
+        const targetSpaceBtn = page.locator('[data-space-switcher-menu] button', { hasText: 'ACME confidential' }).first();
+        if (await targetSpaceBtn.isVisible().catch(() => false)) {
+          spaceSwitchAttempted = true;
+          await targetSpaceBtn.click();
+          await page.waitForTimeout(350);
+          spaceSwitchSucceeded = await page
+            .evaluate(() => {
+              const switcherText = (document.querySelector('[data-space-switcher], [data-space-remote]')?.textContent ?? '').trim();
+              const menuClosed = document.querySelector('[data-space-switcher-menu]') === null;
+              return menuClosed && switcherText.includes('ACME confidential');
+            })
+            .catch(() => false);
+        }
+
         const findings = [
           ...evaluateContradictoryUiState({
             connectionSource: 'app-shell',
@@ -488,9 +516,27 @@ const SCENARIOS = [
             spaceSwitcherOpen: snap.spaceSwitcherOpen,
             hasBackToLocal: snap.hasBackToLocal,
             spaceItemCount: snap.spaceItemCount,
-            expectedMinSpaces: 1,
+            expectedMinSpaces: 2,
             toasts: snap.toasts,
           }),
+          ...(!spaceCheck.hasAcme || !spaceCheck.hasThesis
+            ? [{
+                ruleId: 'APP_SHELL_MISSING_REGISTERED_SPACES',
+                severity: 'error',
+                standard: 'app-shell SpaceSwitcher must expose both registered fixture spaces (ACME confidential & Thesis writing)',
+                actual: spaceCheck,
+                expected: { hasAcme: true, hasThesis: true },
+              }]
+            : []),
+          ...(!spaceSwitchSucceeded
+            ? [{
+                ruleId: 'APP_SHELL_SPACE_SWITCH_FAILED',
+                severity: 'error',
+                standard: 'Clicking a registered space in app-shell SpaceSwitcher must switch active space cleanly',
+                actual: { spaceSwitchAttempted, spaceSwitchSucceeded, spaceItemCount: snap.spaceItemCount },
+                expected: { spaceSwitchAttempted: true, spaceSwitchSucceeded: true },
+              }]
+            : []),
           ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
           ...evaluateUnintendedBlankVoids(snap.blankVoidBlocks),
         ];
@@ -503,6 +549,64 @@ const SCENARIOS = [
             spaceSwitcherOpen: snap.spaceSwitcherOpen,
             spaceItemCount: snap.spaceItemCount,
             hasBackToLocal: snap.hasBackToLocal,
+            spaceCheck,
+            spaceSwitchAttempted,
+            spaceSwitchSucceeded,
+          },
+        };
+      } finally {
+        await context.close().catch(() => undefined);
+        await new Promise((r) => proxy.close(r));
+        await fixture.stop().catch(() => undefined);
+      }
+    },
+  },
+  {
+    id: 'extreme-dirty-transcript-mobile',
+    profileId: 'iphone-16-portrait',
+    fixture: 'extreme-dirty-transcript',
+    async run({ browser, distDir, outDir }) {
+      const profile = MOBILE_DEVICE_PROFILES[this.profileId];
+      const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
+      const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
+      const origin = `http://127.0.0.1:${proxy.address().port}`;
+      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      try {
+        await openFixtureSession(page, origin, 'session_fixture_extreme_dirty', { useDeepLink: false });
+        await page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 20_000 });
+        await page.waitForTimeout(300);
+        const snap = await page.evaluate(collectMobileDomSnapshot);
+        const shots = [await captureShot(page, outDir, 'extreme-dirty-transcript-mobile')];
+        const renderedCount = await page.locator('[data-transcript-scroll] [data-transcript-virtual-item]').count();
+        const findings = [
+          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
+          ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
+          ...evaluateUnintendedBlankVoids(snap.blankVoidBlocks),
+          ...evaluateContradictoryUiState({
+            toasts: snap.toasts,
+            atT0Top: true,
+            hasRedLoadError: snap.toasts.some((t) => t.tone === 'error'),
+          }),
+          ...(renderedCount === 0
+            ? [{
+                ruleId: 'DIRTY_TRANSCRIPT_EMPTY',
+                severity: 'error',
+                standard: 'Extreme 220-turn CJK/code/error/attachment transcript must mount visible virtualized items on mobile',
+                actual: { renderedCount },
+                expected: { minRenderedItems: 1 },
+              }]
+            : []),
+        ];
+        return {
+          profile: profile.standard,
+          pageErrors,
+          shots,
+          findings,
+          metrics: {
+            renderedCount,
+            horizontalOverflowPx: snap.horizontalOverflowPx,
+            headerRect: snap.headerRect,
+            composerRect: snap.composerRect,
           },
         };
       } finally {
