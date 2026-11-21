@@ -864,8 +864,12 @@ export class SessionManager implements ISessionManager {
 
   private async evictOne(): Promise<void> {
     if (!this.evictionEnabled()) return;
+    const config = this.residencyConfig();
+    const capacityPressure = this.sessions.size > config.maxLiveSessions;
+    const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
+    const now = Date.now();
     const candidates = [...this.residency.entries()]
-      .filter(([, entry]) => entry.pins === 0 && entry.idleSince !== undefined)
+      .filter(([, entry]) => entry.pins === 0 && entry.idleSince !== undefined && now - entry.idleSince >= minimum)
       .sort((left, right) => left[1].lastAccess - right[1].lastAccess);
     for (const [sessionId] of candidates) {
       if (await this.evictIfIdle(sessionId)) return;

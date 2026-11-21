@@ -937,10 +937,10 @@ export async function runScenarioS10LiveStorm({
   };
 
   for (let round = 0; round < cfg.promptRounds; round += 1) {
-    // In full tier, ramp up waves (12 -> 24 -> 32 -> 64) across rounds!
+    // In full tier, overlap waves (12 -> 24 -> 32 -> 64) before the prior wave drains below active floor!
     if (isFull && round > 0 && round < cfg.waves.length) {
       await dispatchWave(cfg.waves[round], round);
-      await sleep(600);
+      await sleep(300);
     }
 
     const twinSnap = twin.getStats();
@@ -1062,7 +1062,8 @@ export async function runScenarioS10LiveStorm({
         failedSends += 1;
       }
     }
-    await sleep(isFull ? 900 : 500);
+    const interRoundPauseMs = isFull ? (round + 1 < cfg.waves.length ? 250 : 900) : 500;
+    await sleep(interRoundPauseMs);
   }
 
   // Wait for children & session to settle
@@ -1157,18 +1158,38 @@ export async function runScenarioS10LiveStorm({
       }
     }
     const minActiveFloor = Math.ceil(0.9 * requiredStreaming);
-    const firstQualIdx = candidateWindows.findIndex((w) => w.productiveChildren4s >= minActiveFloor);
-    let lastQualIdx = -1;
-    for (let i = candidateWindows.length - 1; i >= 0; i -= 1) {
+    const minRequiredWindows = isFull ? 6 : 1;
+    let bestStart = -1;
+    let bestLen = 0;
+    let curStart = -1;
+    for (let i = 0; i < candidateWindows.length; i += 1) {
       if (candidateWindows[i].productiveChildren4s >= minActiveFloor) {
-        lastQualIdx = i;
-        break;
+        if (curStart < 0) curStart = i;
+        const curLen = i - curStart + 1;
+        if (curLen > bestLen) {
+          bestStart = curStart;
+          bestLen = curLen;
+        }
+      } else {
+        curStart = -1;
       }
     }
-    if (firstQualIdx >= 0 && lastQualIdx >= firstQualIdx) {
-      rolling5sWindows.push(...candidateWindows.slice(firstQualIdx, lastQualIdx + 1));
+    if (bestStart >= 0 && bestLen >= minRequiredWindows) {
+      rolling5sWindows.push(...candidateWindows.slice(bestStart, bestStart + bestLen));
     } else {
-      rolling5sWindows.push(...candidateWindows);
+      const firstQualIdx = candidateWindows.findIndex((w) => w.productiveChildren4s >= minActiveFloor);
+      let lastQualIdx = -1;
+      for (let i = candidateWindows.length - 1; i >= 0; i -= 1) {
+        if (candidateWindows[i].productiveChildren4s >= minActiveFloor) {
+          lastQualIdx = i;
+          break;
+        }
+      }
+      if (firstQualIdx >= 0 && lastQualIdx >= firstQualIdx) {
+        rolling5sWindows.push(...candidateWindows.slice(firstQualIdx, lastQualIdx + 1));
+      } else {
+        rolling5sWindows.push(...candidateWindows);
+      }
     }
   }
 

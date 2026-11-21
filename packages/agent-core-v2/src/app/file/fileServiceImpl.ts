@@ -124,7 +124,35 @@ export class FileServiceImpl extends Disposable implements IFileService {
           : bufferedChunks.length === 1
             ? bufferedChunks[0]!
             : Buffer.concat(bufferedChunks, size);
-        await this.blobs.put(BLOB_SCOPE, id, payload);
+        saveOptions = typeof options === 'function' ? options() : options;
+        const now = Date.now();
+        const meta: FileMeta = {
+          id,
+          name: saveOptions.name ?? filename,
+          media_type: saveOptions.mimeType ?? 'application/octet-stream',
+          size,
+          created_at: new Date(now).toISOString(),
+          expires_at:
+            saveOptions.expiresInSec === undefined
+              ? undefined
+              : new Date(now + saveOptions.expiresInSec * 1000).toISOString(),
+          session_id: saveOptions.sessionId,
+        };
+        this.setMeta(meta);
+        try {
+          await Promise.all([
+            this.blobs.put(BLOB_SCOPE, id, payload),
+            this.writeIndex(),
+          ]);
+        } catch (error) {
+          if (this.indexCache?.get(id) === meta) {
+            this.deleteMeta(id);
+            await this.writeIndex().catch(() => undefined);
+          }
+          await this.blobs.delete(BLOB_SCOPE, id).catch(() => undefined);
+          throw error;
+        }
+        return meta;
       }
       saveOptions = typeof options === 'function' ? options() : options;
     } catch (error) {

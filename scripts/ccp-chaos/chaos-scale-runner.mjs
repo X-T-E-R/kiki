@@ -203,6 +203,8 @@ if (isServerWorker) {
       state.opens.push(openRecord);
       let handleBytes = 0;
       let handleReadMs = 0;
+      let inFlightReads = 0;
+      let activeReadStart = 0;
       let fileSize = 0;
       try {
         fileSize = (await handle.stat()).size;
@@ -210,23 +212,41 @@ if (isServerWorker) {
       const origRead = handle.read.bind(handle);
       handle.read = async (...args) => {
         const t0 = performance.now();
-        const res = await origRead(...args);
-        const dt = performance.now() - t0;
-        const n = typeof res?.bytesRead === 'number' ? res.bytesRead : 0;
-        state.wireReadBytes += n;
-        state.wireScanMs += dt;
-        handleBytes += n;
-        handleReadMs += dt;
-        openRecord.bytes = handleBytes;
-        openRecord.readMs = roundMs(handleReadMs);
-        if (fileSize > 0 && handleBytes >= fileSize * 0.95 && handleBytes - n < fileSize * 0.95) {
-          state.fullPassCount += 1;
+        if (inFlightReads === 0) activeReadStart = t0;
+        inFlightReads += 1;
+        try {
+          const res = await origRead(...args);
+          const now = performance.now();
+          inFlightReads -= 1;
+          if (inFlightReads === 0) {
+            const windowDt = now - activeReadStart;
+            handleReadMs += windowDt;
+            state.wireScanMs += windowDt;
+          }
+          const n = typeof res?.bytesRead === 'number' ? res.bytesRead : 0;
+          state.wireReadBytes += n;
+          handleBytes += n;
+          const elapsedReadMs = inFlightReads === 0 ? handleReadMs : handleReadMs + (now - activeReadStart);
+          openRecord.bytes = handleBytes;
+          openRecord.readMs = roundMs(elapsedReadMs);
+          if (fileSize > 0 && handleBytes >= fileSize * 0.95 && handleBytes - n < fileSize * 0.95) {
+            state.fullPassCount += 1;
+          }
+          if (fileSize > 0 && handleBytes >= fileSize * 0.95) {
+            state.fullPassScanMs = Math.max(state.fullPassScanMs, elapsedReadMs);
+            state.fullPassBytes = Math.max(state.fullPassBytes, handleBytes);
+          }
+          return res;
+        } catch (err) {
+          const now = performance.now();
+          inFlightReads -= 1;
+          if (inFlightReads === 0) {
+            const windowDt = now - activeReadStart;
+            handleReadMs += windowDt;
+            state.wireScanMs += windowDt;
+          }
+          throw err;
         }
-        if (fileSize > 0 && handleBytes >= fileSize * 0.95) {
-          state.fullPassScanMs = Math.max(state.fullPassScanMs, handleReadMs);
-          state.fullPassBytes = Math.max(state.fullPassBytes, handleBytes);
-        }
-        return res;
       };
     }
     return handle;
@@ -2488,6 +2508,7 @@ if (isCliMain && !isServerWorker) {
     s6StepTimeoutMs: 45_000,
     outPath: '/tmp/kiki-chaos-results.json',
   };
+  let explicitOut = false;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--dir' && args[i + 1]) opts.dir = args[++i];
     else if (args[i] === '--tier' && args[i + 1]) opts.tier = args[++i];
@@ -2550,10 +2571,22 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--reuse-10k-session') opts.reuse10kSession = true;
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
     else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);
-    else if (args[i] === '--out' && args[i + 1]) opts.outPath = args[++i];
+    else if (args[i] === '--out' && args[i + 1]) { opts.outPath = args[++i]; explicitOut = true; }
   }
   const report = await runChaosScaleSuite(opts);
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (explicitOut) {
+    process.stdout.write(
+      `${JSON.stringify({
+        runId: report.runId,
+        buildId: report.buildId,
+        overallPassed: report.overallPassed,
+        exitCode: report.exitCode,
+        outPath: opts.outPath,
+      })}\n`,
+    );
+  } else {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  }
   if (!report.overallPassed) {
     process.exitCode = report.exitCode || 1;
   }

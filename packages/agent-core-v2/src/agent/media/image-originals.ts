@@ -43,10 +43,10 @@ export async function persistOriginalImage(
     await mkdir(dir, { recursive: true });
 
     const existing = await stat(path).catch(() => null);
-    if (existing === null || existing.size !== bytes.length) {
-      await writeFile(path, bytes);
+    if (existing !== null && existing.size === bytes.length) {
+      return path;
     }
-
+    await writeFile(path, bytes);
     await sweepCache(dir, maxTotalBytes);
     const persisted = await stat(path).catch(() => null);
     return persisted === null ? null : path;

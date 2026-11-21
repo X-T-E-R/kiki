@@ -741,12 +741,15 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
 
         if (!isPlainTextOnly) {
           const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
+          let cpuWorker: ICpuWorkerService | undefined;
+          try { cpuWorker = core.accessor.get(ICpuWorkerService); } catch { cpuWorker = undefined; }
           preparedMedia = await subphase('media_files', () => resolvePromptMediaFiles(
             submittedContent,
             files!,
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry,
+              cpuWorker,
               sessionMedia: sessionMedia!,
               providerType: resolved.profile.getModelProviderType(req.body.model),
               resolveOriginalsDir: async () =>
