@@ -1,4 +1,6 @@
+import type { IncomingMessage } from 'node:http';
 import { okEnvelope } from '../envelope';
+import { peerAudience } from '../services/connections/audience';
 import { defineRoute } from '../middleware/defineRoute';
 import { metaResponseSchema, type ExternalDelegationState, type MetaFeature, type MetaResponse } from '@kiki/protocol';
 
@@ -7,7 +9,7 @@ interface RouteHost {
     path: string,
     options: { schema?: Record<string, unknown> },
     handler: (
-      req: { id: string },
+      req: { id: string; raw: IncomingMessage },
       reply: { send(payload: unknown): void },
     ) => Promise<void> | void,
   ): unknown;
@@ -24,6 +26,7 @@ export interface MetaRouteOptions {
   readonly startedAt: string;
   /** Whether terminal REST and WebSocket controls are exposed on this bind. */
   readonly enableTerminals: boolean;
+  readonly terminalTransportAllowed: (request: IncomingMessage) => boolean;
   /**
    * Whether the server was started with `--dangerous-bypass-auth`. Surfaced so
    * the web UI can skip the token prompt and connect without a credential.
@@ -52,21 +55,19 @@ export interface MetaRouteOptions {
 }
 
 export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void {
-  const capabilities = {
+  const capabilities = Object.freeze({
     websocket: true as const,
     file_upload: true as const,
     fs_query: true as const,
     mcp: true as const,
     tasks: true as const,
-    terminal: opts.enableTerminals ? (true as const) : undefined,
     thread_communication: true as const,
     transcript: true as const,
-  };
+  });
   const staticData = Object.freeze({
     server_version: opts.serverVersion,
     build_id: opts.buildId,
     build_channel: opts.buildChannel,
-    capabilities: Object.freeze(capabilities),
     server_id: opts.serverId,
     desktop_managed: opts.desktopManaged,
     server_home_id: opts.serverHomeId,
@@ -90,13 +91,20 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
       tags: ['meta'],
     },
     async (req, reply) => {
+      const experimentalFlags = await opts.getExperimentalFlags();
+      const features = await opts.getFeatures();
+      const peer = peerAudience(req);
+      const { raw } = req as typeof req & { raw: IncomingMessage };
+      const terminal = opts.enableTerminals && opts.terminalTransportAllowed(raw) &&
+        (peer === undefined || peer.meshCapabilities?.includes('execute') === true);
       const data: MetaResponse = {
         ...staticData,
-        experimental_flags: await opts.getExperimentalFlags(),
-        features: await opts.getFeatures(),
+        capabilities: terminal ? { ...capabilities, terminal: true } : capabilities,
+        experimental_flags: experimentalFlags,
+        features,
       };
       reply.send(okEnvelope(data, req.id));
     },
   );
-  app.get(route.path, route.options, route.handler as Parameters<RouteHost['get']>[2]);
+  app.get(route.path, route.options, route.handler as unknown as Parameters<RouteHost['get']>[2]);
 }

@@ -1,3 +1,5 @@
+import { IncomingMessage } from 'node:http';
+import { Socket } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { registerMetaRoute } from '../src/routes/meta';
 import { metaResponseSchema } from '@kiki/protocol';
@@ -7,6 +9,7 @@ const base = {
   serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed',
   startedAt: '2026-06-04T10:30:00.000Z', enableTerminals: false,
   dangerousBypassAuth: false, externalDelegation: { state: 'active' as const },
+  terminalTransportAllowed: () => true,
   getExperimentalFlags: () => ({}), getFeatures: () => [],
 };
 
@@ -17,7 +20,7 @@ describe('meta current registry space identity', () => {
     const [path, , handler] = get.mock.calls[0]!;
     expect(path).toBe('/meta');
     const send = vi.fn();
-    await handler({ id: 'request-1' }, { send });
+    await handler({ id: 'request-1', raw: new IncomingMessage(new Socket()) }, { send });
     const payload = send.mock.calls[0]![0] as { data: unknown };
     expect(metaResponseSchema.parse(payload.data)).toMatchObject({
       server_id: 'server-a', server_home_id: base.serverHomeId,

@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http';
 import { IBootstrapService, IConfigService, type Scope } from '@kiki/agent-core-v2';
 import { FiberState } from '@kiki/agent-core-v2/_base/di/fiber';
 import { IFeatureManager } from '@kiki/agent-core-v2/app/feature/featureManager';
@@ -91,7 +92,7 @@ interface ApiV1RouteHost {
   get(
     path: string,
     options: { schema?: Record<string, unknown> },
-    handler: (req: { id: string }, reply: { send(payload: unknown): unknown }) => unknown,
+    handler: (req: { id: string; raw: IncomingMessage }, reply: { send(payload: unknown): unknown }) => unknown,
   ): unknown;
 }
 
@@ -106,6 +107,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly debugEndpoints?: boolean;
   readonly enableShutdown?: boolean;
   readonly enableTerminals?: boolean;
+  readonly terminalTransportAllowed: (request: IncomingMessage) => boolean;
   readonly allowExternalHostDocumentPaths?: boolean;
   readonly guiStore: IGuiStoreService;
   readonly notifications: NotificationService;
@@ -178,6 +180,7 @@ export async function registerApiV1Routes(
         currentSpaceId: core.accessor.get(IBootstrapService).spaceId ?? 'main',
         startedAt: opts.startedAt,
         enableTerminals: opts.enableTerminals !== false,
+        terminalTransportAllowed: opts.terminalTransportAllowed,
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
         externalDelegation: opts.externalDelegation,
         webTitle: opts.webTitle,

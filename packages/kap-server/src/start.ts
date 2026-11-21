@@ -1235,6 +1235,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     debugEndpoints,
     enableShutdown,
     enableTerminals,
+    terminalTransportAllowed,
     allowExternalHostDocumentPaths: opts.sshManaged !== true && opts.disableAuth !== true,
     guiStore,
     notifications,

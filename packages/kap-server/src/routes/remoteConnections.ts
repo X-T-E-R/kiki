@@ -9,6 +9,7 @@ import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame, parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
 import { RPCError } from '@kiki/klient';
+import type { MetaResponse } from '@kiki/protocol';
 import { okEnvelope, errEnvelope } from '../envelope';
 import { AdmissionError, ConnectionAdmission, sameIdentity } from '../services/connections/admission';
 import { isPeerFrameAllowed, isPeerProcedureAllowed, peerAudience, TERMINAL_CONNECTION_OPERATIONS } from '../services/connections/audience';
@@ -178,7 +179,8 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   app.post('/api/remote-connections/:connectionId/call', { bodyLimit: BROKER_BODY_BYTES }, async (req, reply) => {
     const id = (req.params as { connectionId: string }).connectionId;
     const input = connectionBrokerInputSchema.parse(req.body);
-    if (webPrincipal(req) !== undefined && TERMINAL_CONNECTION_OPERATIONS.has(input.operation)) return reply.code(403).send(errEnvelope(40301, 'local_owner_required', req.id));
+    const browser = webPrincipal(req) !== undefined;
+    if (browser && TERMINAL_CONNECTION_OPERATIONS.has(input.operation)) return reply.code(403).send(errEnvelope(40301, 'local_owner_required', req.id));
     if (['media', 'file', 'fileUpload', 'appearanceAsset', 'personaAvatar', 'mediaPreview', 'htmlPreviewResource', 'documentPreviewAsset'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'use_explicit_attachment_stream', req.id));
     const controller = new AbortController();
     let batchReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -286,6 +288,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const response = await manager.forward(id, input, lease.signal);
       const cap = reading ? SESSION_READ_BODY_BYTES : input.operation === 'fsRead' ? BROKER_FS_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap, lease.signal);
+      if (browser && input.operation === 'meta' && response.ok) {
+        const meta = body as { data?: Partial<Pick<MetaResponse, 'capabilities'>> } | null;
+        delete meta?.data?.capabilities?.terminal;
+      }
       if (input.operation === 'pluginPanelDocument' && mintPanelDocument !== undefined && response.ok) {
         const envelope = z.object({ code: z.literal(0), data: pluginPanelDocumentSchema }).safeParse(body);
         if (envelope.success) {
