@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
+import { Emitter } from '@kiki/agent-core-v2/_base/event';
 import {
   DEFAULT_RESTRICTED_PEER_CAPABILITIES,
   DEFAULT_TRUSTED_PERSONAL_CAPABILITIES,
@@ -52,6 +53,8 @@ export class ConnectionAdmission {
   private tail: Promise<unknown> = Promise.resolve();
   private connectionWriteScheduled = false;
   private readonly path: string;
+  private readonly persistedChange = new Emitter<void>();
+  readonly onDidPersistChange = this.persistedChange.event;
   private readonly changeListeners = new Set<(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>>();
   onDidChange(listener: (change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>): { dispose(): void } {
     this.changeListeners.add(listener); return { dispose: () => { this.changeListeners.delete(listener); } };
@@ -299,6 +302,7 @@ export class ConnectionAdmission {
       entry.trustTier = validatedTier;
       entry.meshCapabilities = resolvedCaps;
       entry.revision += 1;
+      this.closeGrant(id);
       const { digest: _, ...pub } = entry;
       return { ...pub, activeLeases: this.leases.get(entry.id)?.size ?? 0 };
     });
@@ -374,7 +378,12 @@ export class ConnectionAdmission {
     return result;
   }
   private change<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(async () => { const value = await fn(); await this.persistState(); return value; });
+    const result = this.tail.then(async () => {
+      const value = await fn();
+      await this.persistState();
+      this.persistedChange.fire();
+      return value;
+    });
     this.tail = result.catch(() => undefined); return result;
   }
   private async persistState(): Promise<void> {

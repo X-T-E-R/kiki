@@ -185,6 +185,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         existing.peerConnectionId = input.connectionId;
         await this.connections.secrets.write({ connectionId: existing.grant.id, purpose: 'bridge' }, { credential });
       });
+      this.emitChange();
       return { grant: { ...existing.grant }, credential };
     }
     const label = input.label.trim().slice(0, 128) || 'Kiki';
@@ -207,6 +208,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       await this.connections.secrets.write({ connectionId: grant.id, purpose: 'bridge' }, { credential });
       this.state.inbound.push({ grant, digest: hash(credential), peerConnectionId: input.connectionId });
     });
+    this.emitChange();
     return { grant, credential };
   }
   async revokeReversePeerBridges(connectionId: string): Promise<string[]> {
@@ -219,6 +221,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       }
       for (const id of revokedIds) await this.connections.secrets.remove({ connectionId: id, purpose: 'bridge' }).catch(() => undefined);
     });
+    if (revokedIds.length > 0) this.emitChange();
     return revokedIds;
   }
   revokedPairingBridges(source: ConnectionIdentity): string[] {
@@ -238,7 +241,6 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   async retirePairing(connectionId: string, grantId: string): Promise<void> {
     await this.revokeForConnectionGrant(grantId);
     await this.revokeReversePeerBridges(connectionId);
-    this.emitChange();
   }
   async revokeForConnectionGrant(connectionGrantId: string): Promise<void> {
     let changed = false;
@@ -255,6 +257,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       for (const id of removedOutbound) await this.connections.secrets.remove({ connectionId: id, purpose: 'bridge' });
     });
     if (!changed) return;
+    this.emitChange();
     await this.retryFlight;
     await this.retry();
   }
@@ -286,6 +289,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       if (this.state.inbound.length >= 1000) throw new AdmissionError(429, 'bridge_grant_limit');
       this.state.inbound.push({ grant, digest: hash(credential), connectionGrantId });
     });
+    this.emitChange();
     return { grant, credential };
   }
   async install(input: ReturnType<typeof bridgeInstallSchema.parse>, connectionGrantId?: string, borrowTools?: boolean): Promise<BridgeLink> {
@@ -412,6 +416,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
           this.cancelIncoming(entry.grant.id);
         }
       });
+      this.emitChange();
     }
     const bridge = await this.issuePairingBridges({
       grantId: peer.id,

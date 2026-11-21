@@ -9,7 +9,7 @@ import { matchesLocalOwner } from '../auth/localOwner';
 import type { CredentialValidator } from '../auth/credentials';
 import { AdmissionError, ConnectionAdmission } from './admission';
 
-export interface PeerAudience { grantId: string; revision: number; meshCapabilities?: readonly MeshCapability[] }
+export interface PeerAudience { grantId: string; revision: number; meshCapabilities?: readonly MeshCapability[]; signal?: AbortSignal }
 const peers = new WeakMap<object, PeerAudience>();
 export function peerAudience(request: object): PeerAudience | undefined { return peers.get(request); }
 export function peerGrant(headers: IncomingMessage['headers']): string | undefined {
@@ -75,6 +75,7 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['agentPluginMediaService', new Set(['cancel', 'resume'])],
 ]);
 const PEER_FRAME_TYPES = ['ping', 'pong', 'view_attach', 'view_detach', 'bridge_attach', 'bridge_detach', 'bridge_response', 'bridge_response_chunk', 'unsubscribe', 'stream_cancel'] as const;
+const PEER_TERMINAL_FRAMES = new Set(['terminal_attach', 'terminal_detach', 'terminal_input', 'terminal_resize']);
 const PEER_EVENT_SERVICES = ['roomService', 'configService', 'sessionMetadata', 'sessionSkillCatalog'] as const;
 const peerEventServices = new Set<string>(PEER_EVENT_SERVICES);
 const PEER_NO_SERVICE_SUBSCRIBE_EVENTS = ['session', 'agent', 'workspace', 'config', 'sessions', 'workspaces'] as const;
@@ -98,7 +99,9 @@ const PEER_SCOPED_EMITTER_RULES: readonly (PeerSubscriptionScopeRule & { service
 ];
 const WEB_RUNTIME_SWITCH_PATH = '/api/runtime-switch';
 const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)/;
+export const TERMINAL_CONNECTION_OPERATIONS = new Set(['terminals', 'terminalCreate', 'terminal', 'terminalClose']);
 const PEER_EXECUTE_OPERATIONS = new Set([
+  ...TERMINAL_CONNECTION_OPERATIONS,
   'prompt',
   'promptResume',
   'promptReplace',
@@ -200,7 +203,8 @@ export function isPeerProcedureAllowed(
  * listener, so it is keyed to the emitters the remote surface watches rather
  * than to the call grants above; a `subscribe` frame is not a procedure.
  */
-export function isPeerFrameAllowed(frame: KlientFrame): boolean {
+export function isPeerFrameAllowed(frame: KlientFrame, meshCapabilities?: readonly MeshCapability[]): boolean {
+  if (PEER_TERMINAL_FRAMES.has(frame.type)) return meshCapabilities?.includes('execute') === true;
   if ((PEER_FRAME_TYPES as readonly string[]).includes(frame.type)) return true;
   if (frame.type === 'subscribe') {
     if (frame.service === undefined && frame.event === PEER_BUS_SUBSCRIPTION_EVENT) {
@@ -210,7 +214,7 @@ export function isPeerFrameAllowed(frame: KlientFrame): boolean {
       ? (PEER_NO_SERVICE_SUBSCRIBE_EVENTS as readonly string[]).includes(frame.event)
       : peerEventServices.has(frame.service) || isPeerScopedEmitterAllowed(frame));
   }
-  return frame.type === 'stream' && typeof frame.service === 'string' && typeof frame.method === 'string' && isPeerProcedureAllowed({ service: frame.service, method: frame.method });
+  return frame.type === 'stream' && typeof frame.service === 'string' && typeof frame.method === 'string' && isPeerProcedureAllowed({ service: frame.service, method: frame.method }, meshCapabilities);
 }
 /**
  * Projects a peer's existing `events` subscription before WebSocket serialization.
@@ -254,6 +258,7 @@ export function listPeerReachableSurface(): readonly string[] {
     for (const method of methods) surface.push(`PROCEDURE ${service}.${method}`);
   }
   for (const type of PEER_FRAME_TYPES) surface.push(`FRAME ${type}`);
+  for (const type of PEER_TERMINAL_FRAMES) surface.push(`FRAME ${type}; requires execute`);
   surface.push('FRAME stream; requires an allowed service.method procedure');
   surface.push('FRAME subscribe');
   for (const rule of PEER_BUS_SUBSCRIPTION_SCOPES) {
@@ -321,33 +326,39 @@ export class ConnectionAudience {
     const path = request.url.split('?', 1)[0]!;
     const operation = matchConnectionOperation(request.method, path);
     if (operation === undefined || (operation.params['spaceId'] !== undefined && operation.params['spaceId'] !== this.currentSpaceId())) throw new AdmissionError(403, 'local_owner_required');
-    const trust = this.admission.getGrantTrust?.(peer.id);
-    if (trust !== undefined) {
-      if (PEER_EXECUTE_OPERATIONS.has(operation.operation) && !trust.meshCapabilities.includes('execute')) {
-        throw new AdmissionError(403, 'mesh_capability_denied');
-      }
-      if (PEER_SYNC_OPERATIONS.has(operation.operation) && !trust.meshCapabilities.includes('file_sync')) {
-        throw new AdmissionError(403, 'mesh_capability_denied');
-      }
+    const audience = this.peerContext(peer);
+    if ((PEER_EXECUTE_OPERATIONS.has(operation.operation) && audience.meshCapabilities?.includes('execute') !== true) ||
+      (PEER_SYNC_OPERATIONS.has(operation.operation) && audience.meshCapabilities?.includes('file_sync') !== true)) {
+      throw new AdmissionError(403, 'mesh_capability_denied');
     }
-    const audience: PeerAudience = { grantId: peer.id, revision: peer.revision, ...(trust === undefined ? {} : { meshCapabilities: trust.meshCapabilities }) };
+    const terminalOperation = TERMINAL_CONNECTION_OPERATIONS.has(operation.operation);
+    const controller = terminalOperation ? new AbortController() : undefined;
+    audience.signal = controller?.signal;
     peers.set(request, audience); peers.set(request.raw, audience);
-    const detach = this.admission.attach(peer.id, () => { request.raw.destroy(); reply.raw.destroy(); });
-    reply.raw.once('close', detach);
+    const detach = this.admission.attach(peer.id, () => {
+      controller?.abort();
+      request.raw.destroy(); reply.raw.destroy();
+    });
+    reply.raw.once('close', () => {
+      detach();
+      if (!reply.raw.writableEnded) controller?.abort();
+    });
     return true;
   }
   async authorizeSocket(token: string | null, request: IncomingMessage): Promise<PeerAudience | 'local'> {
     if (token !== null && matchesLocalOwner(token, this.localOwnerToken)) return 'local';
-    if (token !== null) {
-      const bearer = this.admission.matchBearer(token);
-      if (bearer !== undefined) {
-        if (!isPeerSocketPath(request.url?.split('?', 1)[0])) throw new AdmissionError(403, 'local_owner_required');
-        const audience = { grantId: bearer.id, revision: bearer.revision }; peers.set(request, audience); return audience;
-      }
+    if (token === null) throw new AdmissionError(401, 'invalid_owner_credential');
+    let peer: { id: string; revision: number } | undefined = this.admission.matchBearer(token);
+    if (peer === undefined) {
+      if (!(await this.validateOwner(token))) throw new AdmissionError(401, 'invalid_owner_credential');
+      peer = this.admission.authorize(peerGrant(request.headers));
     }
-    if (token === null || !(await this.validateOwner(token))) throw new AdmissionError(401, 'invalid_owner_credential');
-    const peer = this.admission.authorize(peerGrant(request.headers));
     if (!isPeerSocketPath(request.url?.split('?', 1)[0])) throw new AdmissionError(403, 'local_owner_required');
-    const audience = { grantId: peer.id, revision: peer.revision }; peers.set(request, audience); return audience;
+    const audience = this.peerContext(peer);
+    peers.set(request, audience);
+    return audience;
+  }
+  private peerContext(peer: { id: string; revision: number }): PeerAudience {
+    return { grantId: peer.id, revision: peer.revision, meshCapabilities: this.admission.getGrantTrust?.(peer.id)?.meshCapabilities };
   }
 }

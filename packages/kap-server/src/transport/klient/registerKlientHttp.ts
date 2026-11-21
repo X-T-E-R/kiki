@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import { getLiveSessionById, ISessionApprovalService, ISessionInteractionService, type Scope } from '@kiki/agent-core-v2';
 import { HTTP_REQUEST_BODY_LIMIT_BYTES } from '@kiki/klient/http';
 import {
@@ -24,8 +25,9 @@ import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { resolveWsPerMessageDeflate } from '../../middleware/wireCompression';
 import { TerminalHttpConnection } from './terminalHttp';
 import { PeerBridgeConnection, type PeerBridgeRegistry } from './peerBridgeSocket';
-import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent } from '../../services/connections/audience';
+import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent, type PeerAudience } from '../../services/connections/audience';
 import { webPrincipal } from '../../services/webAccess';
+import { RemoteConnectionsChanged } from '../../services/connections/events';
 import { BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES } from '../../services/connections/manager';
 import { okEnvelope } from '@kiki/protocol';
 import { selectWsBearerProtocol } from '../ws/bearerProtocol';
@@ -43,6 +45,7 @@ export { DEFAULT_KLIENT_BATCH_MAX, resolveKlientBatchMax };
 export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxPayloadBytes?: number;
   readonly enableTerminals?: boolean;
+  readonly terminalTransportAllowed?: (request: IncomingMessage) => boolean;
   readonly peerBridgeRegistry?: PeerBridgeRegistry;
   readonly heartbeatIntervalMs?: number;
   readonly silenceTimeoutMs?: number;
@@ -238,8 +241,8 @@ export function registerKlientHttp(
   });
   const connections = new Set<KlientHttpConnection>();
   for (const server of [wss, peerServer]) server.on('connection', (socket, request) => {
-    const audience = peerAudience(request);
-    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope, audience !== undefined, webPrincipal(request) !== undefined, audience?.grantId);
+    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope, peerAudience(request), webPrincipal(request) !== undefined,
+      opts.terminalTransportAllowed?.(request) !== false);
     connections.add(connection);
     const dispose = (): void => {
       connection.dispose();
@@ -272,16 +275,16 @@ class KlientHttpConnection {
     private readonly app: Pick<FastifyInstance, 'log'>,
     opts: RegisterKlientHttpOptions,
     scope: Scope,
-    private readonly peer = false,
-    private readonly browser = false,
-    peerGrantId?: string,
+    private readonly peer: PeerAudience | undefined,
+    private readonly browser: boolean,
+    terminalTransportAllowed: boolean,
   ) {
-    this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true && !peer, (frame) => this.send(frame));
+    this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true && terminalTransportAllowed && (peer === undefined || peer.meshCapabilities?.includes('execute') === true), (frame) => this.send(frame), peer?.signal);
     this.sessionViews = new SessionViewHttpConnection(opts.sessionViewBroadcaster,
       (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error),
       { core: scope, service: opts.sessionViewTranscriptService, logger: app.log });
     this.peerBridge = new PeerBridgeConnection(
-      peer ? peerGrantId : undefined,
+      peer?.grantId,
       opts.peerBridgeRegistry,
       (frame) => this.sendChecked(frame),
       { env: opts.env },
@@ -308,7 +311,7 @@ class KlientHttpConnection {
     this.lastInboundAt = Date.now();
     const frame = decodeJsonFrame(rawDataToString(data));
     if (frame === undefined) return;
-    if ((this.peer && !isPeerFrameAllowed(frame)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
+    if ((this.peer !== undefined && !isPeerFrameAllowed(frame, this.peer.meshCapabilities)) || (this.browser && typeof frame.service === 'string' && !isWebProcedureAllowed({ service: frame.service, method: typeof frame.method === 'string' ? frame.method : '' }))) { this.socket.close(1008, 'local_owner_required'); this.dispose(); return; }
     if (this.sessionViews.receive(frame) || this.terminals.receive(frame) || this.peerBridge.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {
@@ -353,6 +356,8 @@ class KlientHttpConnection {
             if (projected !== undefined) this.send({ type: 'event', id, data: projected });
             return;
           }
+          if (this.browser && source.kind === 'stream' && source.name === 'events' &&
+            (data as { type?: string } | null)?.type === RemoteConnectionsChanged.type) return;
           this.send({ type: 'event', id, data });
         },
         (error) => {

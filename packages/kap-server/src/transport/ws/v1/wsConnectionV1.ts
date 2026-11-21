@@ -30,6 +30,7 @@ import { ulid } from 'ulid';
 import type { RawData, WebSocket } from 'ws';
 
 import { withSessionOperation } from '../../../lib/sessionOperationLease';
+import { RemoteConnectionsChanged } from '../../../services/connections/events';
 import type { CredentialValidator } from '../../../services/auth/credentials';
 import type { IConnectionRegistry } from '../connectionRegistry';
 import {
@@ -93,6 +94,7 @@ export interface WsConnectionV1Options {
    */
   readonly validateCredential?: CredentialValidator;
   readonly sessionAccessId?: string;
+  readonly browser?: boolean;
   readonly remoteAddress: string | null;
   readonly userAgent: string | null;
   readonly logger?: JournalLogger;
@@ -124,6 +126,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly enableTerminals: boolean;
   private readonly validateCredential?: CredentialValidator;
   private readonly sessionAccessId?: string;
+  private readonly browser: boolean;
   private readonly maxBufferSize: number;
   private readonly flushIntervalMs: number;
   private readonly maxBatchSize: number;
@@ -180,6 +183,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.enableTerminals = opts.enableTerminals === true && opts.terminalCore !== undefined;
     this.validateCredential = opts.validateCredential;
     this.sessionAccessId = opts.sessionAccessId;
+    this.browser = opts.browser === true;
     this.logger = opts.logger;
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
@@ -237,6 +241,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   /** BroadcastTarget — buffer subscription traffic; public traffic is a FIFO barrier. */
   send(envelope: EventEnvelope, delivery: BroadcastDelivery = 'subscription'): void {
     const sessionId = envelope.session_id;
+    if (this.browser && envelope.type === RemoteConnectionsChanged.type) return;
     if (this.sessionAccessId !== undefined && (sessionId !== this.sessionAccessId ||
       envelope.type === 'event.plugin.topic' || envelope.type.startsWith('event.room.') ||
       (delivery === 'immediate' || isGlobalEvent(envelope.type)) && !/^(?:event\.session\.(?:work_changed|history_rewritten)|session\.meta\.updated|event\.(?:approval|question)\.[^.]+)$/.test(envelope.type))) return;

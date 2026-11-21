@@ -4,15 +4,16 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { connect, createServer, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { createConnectionKlient, createKlient } from '@kiki/klient/http';
 import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
-import { IConfigService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
+import { IConfigService, IEventService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
 import { SEND_PEER_THREAD_MESSAGE, type IThreadPeerSendCapability } from '@kiki/agent-core-v2/app/threadCommunication/peerThreadCapability';
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
+import { ModelCatalogChanged } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
 import { startServer, type RunningServer } from '../src/start';
 import { rotateServerToken } from '../src/services/auth/persistentToken';
 import { isPeerFrameAllowed } from '../src/services/connections/audience';
@@ -38,6 +39,132 @@ async function claim(server: RunningServer, body: unknown, token?: string) {
 }
 
 describe('short-code pairing on two real servers', () => {
+  it('brokers a real shell and enforces execute at the target for REST and socket frames', async () => {
+    const source = await boot(); const target = await boot();
+    const owner = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
+    const local = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
+    const pair = async (trust?: { trustTier: 'trusted_personal'; meshCapabilities: ['read', 'send', 'execute'] }) => {
+      const issued = await owner.rest!.connections.createPairCode({ allowBridge: false, ...trust });
+      return local.rest!.connections.pair({ endpoint: issued.suggestedEndpoints[0]!, code: issued.code, requestBridge: false, backgroundSummary: false });
+    };
+    try {
+      const sessionId = 'remote-pty';
+      await owner.global.sessions.create({ sessionId, workDir: join(homes[1]!, 'workspace') });
+      const record = await pair({ trustTier: 'trusted_personal', meshCapabilities: ['read', 'send', 'execute'] });
+      const options = { endpoint: endpoint(source), token: source.localOwnerToken, connectionId: record.id };
+      let disconnected = false;
+      const remote = createConnectionKlient({ ...options, onSocketDiagnostic: (event) => { if (event.kind === 'close') disconnected = true; } });
+      try {
+        const terminal = remote.terminal;
+        const subscription = remote.events.on('kosong.changed', () => {});
+        await subscription.ready;
+        expect(await terminal.listTerminals(sessionId)).toEqual({ items: [] });
+        const windows = process.platform === 'win32';
+        const created = await terminal.createTerminal(sessionId, { shell: windows ? 'cmd.exe' : '/bin/sh' });
+        expect((await terminal.listTerminals(sessionId)).items.map(({ id }) => id)).toEqual([created.id]);
+        expect(await terminal.getTerminal(sessionId, created.id)).toMatchObject({ status: 'running' });
+        let output = '';
+        let exited = false;
+        terminal.onTerminalSignal((signal) => {
+          if (signal.terminalId !== created.id) return;
+          if (signal.kind === 'output') output += signal.data;
+          if (signal.kind === 'exit') exited = true;
+        });
+        await terminal.terminalAttach(sessionId, created.id);
+        terminal.terminalResize(sessionId, created.id, 93, 27);
+        await vi.waitFor(async () => expect(await terminal.getTerminal(sessionId, created.id)).toMatchObject({ cols: 93, rows: 27 }));
+        terminal.terminalDetach(sessionId, created.id);
+        await terminal.terminalAttach(sessionId, created.id);
+        terminal.terminalInput(sessionId, created.id, windows ? 'set /a 19437+361\r' : 'echo $((19437+361))\r');
+        await vi.waitFor(() => expect(output).toContain('19798'), { timeout: 10_000 });
+        expect(await terminal.closeTerminal(sessionId, created.id)).toEqual({ closed: true });
+        await vi.waitFor(() => expect(exited).toBe(true));
+        const approved = (await owner.rest!.connections.inbound()).grants.find(({ status }) => status === 'approved')!;
+        const { ownerToken } = await source.remoteConnections.secrets.read<{ ownerToken: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
+        const plain = await fetch(`${record.endpoint.replace(/^https:/, 'http:')}/api/sessions/${sessionId}/terminals`, { headers: { authorization: `Bearer ${ownerToken}` } });
+        expect(plain.status).toBe(403);
+        await owner.rest!.connections.setGrantTrust(approved.id, { trustTier: 'restricted_peer' });
+        await vi.waitFor(() => expect(disconnected).toBe(true));
+        await expect(terminal.createTerminal(sessionId)).rejects.toThrow('mesh_capability_denied');
+      } finally { await remote.close(); }
+
+      const restricted = await pair();
+      expect(restricted.id).toBe(record.id);
+      let socketRefusal: { code?: number; reason?: string } | undefined;
+      const restrictedClient = createConnectionKlient({ ...options, onSocketDiagnostic: (event) => { if (event.kind === 'close') socketRefusal = event; } });
+      try {
+        await restrictedClient.events.on('kosong.changed', () => {}).ready;
+        const terminalPath = `/api/remote-connections/${restricted.id}/call`;
+        const denied = await fetch(endpoint(source) + terminalPath, {
+          method: 'POST', headers: { authorization: `Bearer ${source.localOwnerToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ operation: 'terminalCreate', params: { sessionId }, body: {} }),
+        });
+        expect(denied.status).toBe(403);
+        expect(await denied.json()).toMatchObject({ msg: 'mesh_capability_denied' });
+        await expect(restrictedClient.terminal.createTerminal(sessionId)).rejects.toThrow('mesh_capability_denied');
+        const live = await owner.terminal.createTerminal(sessionId, { shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh' });
+        try {
+          await expect(restrictedClient.terminal.terminalAttach(sessionId, live.id)).rejects.toThrow('http event socket disconnected');
+          expect(socketRefusal).toMatchObject({ code: 1008, reason: 'local_owner_required' });
+        } finally { await owner.terminal.closeTerminal(sessionId, live.id); }
+      } finally { await restrictedClient.close(); }
+    } finally { await local.close(); await owner.close(); }
+  }, 120_000);
+
+  it('invalidates local connection and bridge views without forwarding the private event to peers', async () => {
+    const source = await boot(); const target = await boot();
+    const local = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
+    const owner = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
+    const localEvents: { revision: number; at: number }[] = [];
+    const targetEvents: { revision: number; at: number }[] = [];
+    const localSub = local.events.on('connections.changed', (event) => localEvents.push(event));
+    const targetSub = owner.events.on('connections.changed', (event) => targetEvents.push(event));
+    const legacy = new WebSocket(`${endpoint(target).replace(/^http:/, 'ws:')}/api/ws`, `${WS_BEARER_PROTOCOL_PREFIX}${target.localOwnerToken}`);
+    const legacyEvents: unknown[] = [];
+    legacy.on('message', (raw) => {
+      const event = JSON.parse(raw.toString());
+      if (event.type === 'event.remote_connections.changed') legacyEvents.push(event.payload);
+    });
+    try {
+      await Promise.all([localSub.ready, targetSub.ready, once(legacy, 'open')]);
+      const code = await owner.rest!.connections.createPairCode({ allowBridge: false });
+      await vi.waitFor(() => {
+        expect(targetEvents).toHaveLength(1);
+        expect(legacyEvents).toEqual([expect.objectContaining(targetEvents[0]!)]);
+      });
+      const record = await local.rest!.connections.pair({ endpoint: code.suggestedEndpoints[0]!, code: code.code, requestBridge: false, backgroundSummary: false });
+      await vi.waitFor(() => { expect(localEvents).toHaveLength(1); expect(targetEvents).toHaveLength(2); });
+      const remote = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: record.id });
+      const leaked: unknown[] = [];
+      const peerSub = remote.events.on('connections.changed', (event) => leaked.push(event));
+      const catalogReceived = Promise.withResolvers<void>();
+      const catalogSub = remote.events.on('kosong.changed', () => catalogReceived.resolve());
+      try {
+        await Promise.all([peerSub.ready, catalogSub.ready]);
+        const bridge = await owner.rest!.threadBridges.approve({
+          label: 'Manual bridge', source: source.admission.identity, target: target.admission.identity,
+          sourceScope: { workspaceId: '*' }, targetScope: { workspaceId: '*' },
+          operations: ['read'], expiresAt: Date.now() + 60_000, pendingLimit: 10, messagesPerMinute: 10, location: 'network',
+        });
+        await vi.waitFor(() => expect(targetEvents).toHaveLength(3));
+        await owner.rest!.threadBridges.setOperations(bridge.grant.id, ['read', 'send']);
+        await vi.waitFor(() => expect(targetEvents).toHaveLength(4));
+        await owner.rest!.threadBridges.revoke('inbound', bridge.grant.id);
+        await vi.waitFor(() => expect(targetEvents).toHaveLength(5));
+        target.core.accessor.get(IEventService).publish(new ModelCatalogChanged({ payload: { changed: [], unchanged: [], failed: [] } }));
+        await catalogReceived.promise;
+        expect(leaked).toEqual([]);
+      } finally { catalogSub.dispose(); peerSub.dispose(); await remote.close(); }
+      await local.rest!.connections.setEnabled(record.id, false);
+      await vi.waitFor(() => expect(localEvents).toHaveLength(2));
+      await local.rest!.connections.remove(record.id);
+      await vi.waitFor(() => expect(localEvents).toHaveLength(3));
+      for (const events of [localEvents, targetEvents]) {
+        expect(events).toEqual(events.map((_, index) => ({ revision: index + 1, at: expect.any(Number) })));
+      }
+    } finally { legacy.terminate(); localSub.dispose(); targetSub.dispose(); await local.close(); await owner.close(); }
+  }, 120_000);
+
   it('encrypts pairing, hello, broker HTTP and WS on the LAN wire and rotates the grant in place', async () => {
     const source = await boot(); const target = await boot();
     const client = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });

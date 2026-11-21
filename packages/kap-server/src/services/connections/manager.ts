@@ -106,6 +106,7 @@ export class RemoteConnectionManager {
     this.changeListeners.add(listener);
     return { dispose: () => { this.changeListeners.delete(listener); } };
   }
+  private emitChange(): void { for (const listener of this.changeListeners) listener(); }
   private stopSummary(id: string): void { const lease = this.summaryLeases.get(id); this.summaryLeases.delete(id); lease?.release(); }
   start(): void {
     const poll = (): void => {
@@ -273,7 +274,7 @@ export class RemoteConnectionManager {
           catch { throw new PairingBridgeRetirementError(); }
         }
       } finally { this.replacing.delete(saved.id); }
-      for (const listener of this.changeListeners) listener();
+      this.emitChange();
       return { ...saved };
     });
   }
@@ -301,7 +302,10 @@ export class RemoteConnectionManager {
   async retry(id: string): Promise<RemoteConnection> {
     const record = this.get(id); if (!record.enabled) throw new AdmissionError(403, 'connection_disabled');
     if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
-    this.stop(id, 'gui'); record.state = 'offline'; delete record.lastError;
+    this.stop(id, 'gui');
+    const changed = record.state !== 'offline' || record.lastError !== undefined;
+    record.state = 'offline'; delete record.lastError;
+    if (changed) this.emitChange();
     const lease = this.lease(id, AbortSignal.timeout(15000));
     try { await this.connect(id, lease.signal); await this.change(async () => undefined); return { ...record }; }
     finally { lease.release(); }
@@ -498,7 +502,9 @@ export class RemoteConnectionManager {
       });
       this.failureStrikes.delete(id);
       if (measuredRttMs !== undefined) record.rttMs = measuredRttMs;
+      const changed = record.state !== 'online';
       record.state = 'online'; record.lastConnectedAt = Date.now(); delete record.lastError;
+      if (changed) this.emitChange();
       return { record, credential, transport, fromCache: false };
     } catch (error) {
       if (!signal.aborted) {
@@ -657,7 +663,7 @@ export class RemoteConnectionManager {
     }
     return readBoundedJsonBody(response, bytes);
   }
-  private change<T>(work: () => Promise<T>): Promise<T> { return this.serialize(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.records)); for (const listener of this.changeListeners) listener(); return value; }); }
+  private change<T>(work: () => Promise<T>): Promise<T> { return this.serialize(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.records)); this.emitChange(); return value; }); }
   private serialize<T>(work: () => Promise<T>): Promise<T> { const result = this.tail.then(work); this.tail = result.catch(() => undefined); return result; }
 }
 function descriptorEndpoint(transport: NonNullable<RemoteConnection['transport']>): string {

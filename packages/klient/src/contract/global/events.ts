@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { roomChangeEventSchema, type RoomChangeEvent, type SessionWorkChangedEvent } from '@kiki/protocol';
+import { remoteConnectionsChangedPayloadSchema, roomChangeEventSchema, type RoomChangeEvent, type SessionWorkChangedEvent } from '@kiki/protocol';
 
 import type { ConfigChangedEvent } from '@kiki/agent-core-v2/app/config/config';
 import type { ModelsChangedEvent } from '@kiki/agent-core-v2/kosong/model/model';
@@ -66,6 +66,7 @@ export interface KlientEventPayloads {
   'session.workChanged': SessionWorkChangedPayload;
   'usage.settled': { readonly sessionId?: string; readonly agentId?: string };
   'kosong.changed': CatalogChangedPayload;
+  'connections.changed': z.infer<typeof remoteConnectionsChangedPayloadSchema>;
   'search.indexStateChanged': z.infer<typeof searchIndexStateSchema>;
   'executors.antigravityInstallProgress': z.infer<typeof antigravityInstallProgressSchema>;
 }
@@ -149,6 +150,10 @@ export const globalEvents = {
   },
   'room.changed': {
     kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
+  },
+  'connections.changed': {
+    kind: 'bus', type: 'event.remote_connections.changed',
+    schema: remoteConnectionsChangedPayloadSchema,
   },
   'search.indexStateChanged': {
     kind: 'bus', type: 'event.search.index_state_changed',

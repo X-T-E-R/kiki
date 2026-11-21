@@ -10,6 +10,7 @@ import {
   type Workspace,
   type PluginWsTopicEvent,
   type RoomChangedEvent,
+  type RemoteConnectionsChangedEvent,
 } from '@kiki/protocol';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
@@ -282,6 +283,7 @@ export type AgentEvent =
   | PersonaChangedEvent
   | PluginWsTopicEvent
   | ModelCatalogChangedEvent
+  | RemoteConnectionsChangedEvent
   | CapabilityChangedEvent
   | PromptSubmittedEvent
   | BackgroundTaskStartedEvent
@@ -306,6 +308,7 @@ export const VOLATILE_EVENT_TYPES = [
   'shell.completed',
   'agent.status.updated',
   'event.capability.changed',
+  'event.remote_connections.changed',
   'event.plugin.topic',
   'session.meta.updated',
 ] as const;

@@ -50,7 +50,7 @@ import type {
   Event,
 } from './events';
 import { isVolatileEventType } from './events';
-import { type SessionCursor, type InFlightTurn, type SnapshotSubagent } from '@kiki/protocol';
+import { remoteConnectionsChangedPayloadSchema, type SessionCursor, type InFlightTurn, type SnapshotSubagent } from '@kiki/protocol';
 import {
   detachGrades,
   filterOpsForGrade,
@@ -1764,6 +1764,17 @@ export class SessionEventBroadcaster {
       );
       return;
     }
+    if (event.type === 'event.remote_connections.changed') {
+      const parsed = remoteConnectionsChangedPayloadSchema.safeParse(corePayload);
+      if (!parsed.success) return;
+      void this.dispatchGlobal({
+        type: 'event.remote_connections.changed',
+        ...parsed.data,
+        agentId: 'main',
+        sessionId: GLOBAL_SESSION_ID,
+      }).catch((error: unknown) => this.logDispatchError(GLOBAL_SESSION_ID, 'event.remote_connections.changed', error));
+      return;
+    }
     if (event.type === 'event.model_catalog.changed') {
       const payload = modelCatalogChangedPayload(corePayload);
       if (payload === undefined) return;
@@ -2351,7 +2362,8 @@ export function isGlobalEvent(type: string): boolean {
     (type.startsWith('event.plugin.') && type !== 'event.plugin.topic') ||
     type.startsWith('event.persona.') ||
     type.startsWith('event.capability.') ||
-    type.startsWith('event.model_catalog.')
+    type.startsWith('event.model_catalog.') ||
+    type === 'event.remote_connections.changed'
   );
 }
 

@@ -86,6 +86,7 @@ describe('Event public types', () => {
         case 'event.workspace.deleted':
         case 'event.config.changed':
         case 'event.model_catalog.changed':
+        case 'event.remote_connections.changed':
         case 'event.plugin.changed':
         case 'event.capability.changed':
         case 'goal.updated':

@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { peerAudience } from '../services/connections/audience';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '@kiki/protocol';
@@ -61,11 +62,12 @@ const sessionAndTailParamSchema = z.object({
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
-async function withTerminal<T>(core: Scope, sessionId: string, work: (service: ISessionTerminalService) => Promise<T>): Promise<T> {
+async function withTerminal<T>(core: Scope, sessionId: string, signal: AbortSignal | undefined, work: (service: ISessionTerminalService) => Promise<T>): Promise<T> {
   return withSessionOperation(core, sessionId, async (session) => {
+    signal?.throwIfAborted();
     if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     return work(session.accessor.get(ISessionTerminalService));
-  });
+  }, signal);
 }
 
 export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): void {
@@ -130,8 +132,13 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        await withTerminal(core, session_id, async (service) => {
+        const signal = peerAudience(req)?.signal;
+        await withTerminal(core, session_id, signal, async (service) => {
           const terminal = await service.create({ ...req.body, runtime_id: req.body.runtime_id ?? 'local' });
+          if (signal?.aborted) {
+            await service.close(terminal.id);
+            return;
+          }
           requestLog(req)?.info({ session_id, terminal_id: terminal.id }, 'terminal created');
           reply.send(okEnvelope(terminal, req.id));
         });
@@ -163,7 +170,7 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
     async (req, reply) => {
       try {
         const { session_id, terminal_id } = req.params;
-        await withTerminal(core, session_id, async (service) => {
+        await withTerminal(core, session_id, peerAudience(req)?.signal, async (service) => {
           const terminal = await service.get(terminal_id);
           reply.send(okEnvelope(terminal, req.id));
         });
@@ -207,7 +214,7 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
           return;
         }
-        await withTerminal(core, session_id, async (service) => {
+        await withTerminal(core, session_id, peerAudience(req)?.signal, async (service) => {
           const result = await service.close(parsed.id);
           requestLog(req)?.info({ session_id, terminal_id: parsed.id }, 'terminal closed');
           reply.send(okEnvelope(result, req.id));

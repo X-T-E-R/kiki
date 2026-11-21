@@ -716,6 +716,12 @@ export interface ConfigWarningEvent {
   readonly warnings: readonly { readonly domain?: string; readonly message: string }[];
 }
 
+export interface RemoteConnectionsChangedEvent {
+  readonly type: 'event.remote_connections.changed';
+  readonly revision: number;
+  readonly at: number;
+}
+
 export interface PersonaChangedEvent {
   readonly type: 'event.persona.changed';
 }
@@ -1301,6 +1307,7 @@ export type AgentEvent =
   | ConfigChangedEvent
   | ConfigWarningEvent
   | ModelCatalogChangedEvent
+  | RemoteConnectionsChangedEvent
   | PluginChangedEvent
   | PersonaChangedEvent
   | CapabilityChangedEvent
@@ -2003,6 +2010,15 @@ export const modelCatalogChangedEventSchema = z.object({
   failed: z.array(providerRefreshFailureSchema),
 }) satisfies z.ZodType<ModelCatalogChangedEvent>;
 
+export const remoteConnectionsChangedPayloadSchema = z.object({
+  revision: z.number().int().positive(),
+  at: z.number().int().nonnegative(),
+});
+
+export const remoteConnectionsChangedEventSchema = remoteConnectionsChangedPayloadSchema.extend({
+  type: z.literal('event.remote_connections.changed'),
+}) satisfies z.ZodType<RemoteConnectionsChangedEvent>;
+
 export const pluginChangedEventSchema = z.object({
   type: z.literal('event.plugin.changed'),
 }) satisfies z.ZodType<PluginChangedEvent>;
@@ -2510,6 +2526,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   configChangedEventSchema,
   configWarningEventSchema,
   modelCatalogChangedEventSchema,
+  remoteConnectionsChangedEventSchema,
   pluginChangedEventSchema,
   personaChangedEventSchema,
   capabilityChangedEventSchema,

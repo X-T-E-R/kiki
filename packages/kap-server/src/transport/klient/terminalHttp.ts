@@ -15,7 +15,7 @@ export class TerminalHttpConnection {
   private readonly attachments = new Map<string, ISessionTerminalService>();
   private queue: Promise<void> = Promise.resolve();
   private closed = false;
-  constructor(private readonly core: Scope, private readonly enabled: boolean, private readonly send: (frame: KlientFrame) => void) {}
+  constructor(private readonly core: Scope, private readonly enabled: boolean, private readonly send: (frame: KlientFrame) => void, private readonly signal?: AbortSignal) {}
 
   receive(frame: KlientFrame): boolean {
     if (!['terminal_attach', 'terminal_detach', 'terminal_input', 'terminal_resize'].includes(frame.type)) return false;
@@ -25,9 +25,10 @@ export class TerminalHttpConnection {
 
   private async withTerminal<T>(sessionId: string, work: (service: ISessionTerminalService) => Promise<T>): Promise<T> {
     return withSessionOperation(this.core, sessionId, async (session) => {
+      this.signal?.throwIfAborted();
       if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
       return work(session.accessor.get(ISessionTerminalService));
-    });
+    }, this.signal);
   }
 
   private ack(frame: KlientFrame, code: number, msg: string, data: unknown = {}): void {
@@ -35,7 +36,7 @@ export class TerminalHttpConnection {
   }
 
   private async control(frame: KlientFrame): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.signal?.aborted) return;
     if (!this.enabled) {
       this.ack(frame, ErrorCode.TERMINAL_NOT_FOUND, 'terminal unavailable');
       return;

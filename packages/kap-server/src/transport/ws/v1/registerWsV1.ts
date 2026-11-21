@@ -11,6 +11,7 @@ import type { JournalLogger } from './sessionEventJournal';
 import { WsConnectionV1 } from './wsConnectionV1';
 import { selectWsBearerProtocol } from '../bearerProtocol';
 import { resolveWsPerMessageDeflate } from '../../../middleware/wireCompression';
+import { webPrincipal } from '../../../services/webAccess';
 
 export const WS_PATH = '/api/ws';
 /** Bound parse work and memory for one inbound message; `ws` closes excess with 1009. */
@@ -56,6 +57,7 @@ const wss = new WebSocketServer({
       enableTerminals: opts.enableTerminals,
       connectionRegistry: registry,
       sessionAccessId: scoped?.session_id,
+      browser: webPrincipal(req) !== undefined,
       validateCredential: scoped === undefined ? opts.validateCredential : async (token) => digest(token) === scoped.digest,
       remoteAddress: req.socket.remoteAddress ?? null,
       userAgent: req.headers['user-agent'] ?? null,

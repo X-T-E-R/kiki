@@ -90,6 +90,7 @@ import { constants as osConstants, setPriority } from 'node:os';
 import { join } from 'node:path';
 import type { Socket } from 'node:net';
 import type { IncomingMessage } from 'node:http';
+import { TLSSocket } from 'node:tls';
 import type { Duplex } from 'node:stream';
 
 import {
@@ -119,7 +120,8 @@ import { createWireCompressionHook } from './middleware/wireCompression';
 import { createKimiDeviceId } from '@kiki/oauth';
 import { loadOrCreateLocalOwnerToken } from './services/auth/localOwner';
 import { ConnectionAdmission, AdmissionError } from './services/connections/admission';
-import { ConnectionAudience, peerGrant, isWebPathAllowed } from './services/connections/audience';
+import { ConnectionAudience, peerAudience, peerGrant, isWebPathAllowed } from './services/connections/audience';
+import { RemoteConnectionsChanged } from './services/connections/events';
 import { WebAccess, webPrincipal, setWebPrincipal, type WebPrincipal } from './services/webAccess';
 import { startWebListener } from './webListener';
 import { registerWebAccessRoutes } from './routes/webAccess';
@@ -698,6 +700,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('preClose', () => usageExport.close());
   const webRequests = new WeakSet<IncomingMessage>();
   const peerRequests = new WeakSet<IncomingMessage>();
+  const terminalTransportAllowed = (request: IncomingMessage) => !peerRequests.has(request) ||
+    (request.socket instanceof TLSSocket && request.socket.encrypted && peerAudience(request) !== undefined);
   const sessionAccess = new SessionAccessStore(core, opts.sessionAccessClock);
   const sessionAccessHandoff = new SessionAccessHandoff(core, sessionAccess, opts.sessionAccessPresenceGraceMs);
   registerSessionAccessAdmission(app, sessionAccess, localOwnerToken, webRequests, peerRequests);
@@ -771,7 +775,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       if (isPeerRequestBridgeRequest(request)) {
         return authorizePeerRequestBridgeRequest(admission, validateCredential, token, request, reply);
       }
-      return audience.authorize(token, request, reply);
+      const authorized = await audience.authorize(token, request, reply);
+      if (authorized && /^\/api\/sessions\/[^/]+\/terminals(?:\/|$)/.test(path) && !terminalTransportAllowed(request.raw)) {
+        await reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+        return false;
+      }
+      return authorized;
     },
   });
   app.addHook('onRequest', async (request, reply) => {
@@ -804,7 +813,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && !peerRequests.has(request.raw) && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
     if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|mesh|sync)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|shutdown|sessions\/[^/]+\/terminals)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+    if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|shutdown)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
     const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|session-access|storage|mesh|sync)(?:\/|$)/.test(path);
     if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined || peerRequests.has(request.raw)) return authHook(request, reply);
   });
@@ -1302,6 +1311,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const peerBridgeRegistry = new PeerBridgeRegistry();
   const wssKlient = registerKlientHttp(app, core, {
     enableTerminals,
+    terminalTransportAllowed,
     sessionViewBroadcaster: broadcaster,
     sessionViewTranscriptService: transcriptService,
     peerBridgeRegistry,
@@ -1533,6 +1543,15 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
   const pairedBridge = threadBridge;
+  const connectionEvents = core.accessor.get(IEventService);
+  let connectionsRevision = 0;
+  const publishConnectionsChanged = () => connectionEvents.publish(new RemoteConnectionsChanged({ payload: { revision: ++connectionsRevision, at: Date.now() } }));
+  const connectionChangeSubscriptions = [
+    remoteConnections.onDidChange(publishConnectionsChanged),
+    admission.onDidPersistChange(publishConnectionsChanged),
+    pairedBridge.onDidChange(publishConnectionsChanged),
+  ];
+  app.addHook('preClose', () => { for (const subscription of connectionChangeSubscriptions) subscription.dispose(); });
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));
   pairingHooks.current = {
     workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
@@ -1655,6 +1674,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
           }
         } else admitted = await audience.authorizeSocket(candidate, req);
         if (isBroker && admitted !== 'local') throw new AdmissionError(403, 'local_owner_required');
+        if (peerRequests.has(req) && admitted === 'local' && (isKlient || isV1)) throw new AdmissionError(403, 'connection_not_approved');
         if (admittedGeneration !== undefined && admittedGeneration !== managedTokenStore?.generation()) throw new AdmissionError(401, 'authentication_changed');
       } catch (error) {
         const status = error instanceof AdmissionError ? error.status : 401;
@@ -1675,7 +1695,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         if (ws.readyState !== 1) return;
       }
       if (admitted !== 'local') {
-        const detach = admission.attach(admitted.grantId, () => { ws.terminate(); });
+        const controller = new AbortController();
+        admitted.signal = controller.signal;
+        const detach = admission.attach(admitted.grantId, () => { controller.abort(); ws.terminate(); });
         ws.once('close', detach);
         try {
           const authorized = admission.authorize(peerGrant(req.headers) ?? candidate ?? undefined);

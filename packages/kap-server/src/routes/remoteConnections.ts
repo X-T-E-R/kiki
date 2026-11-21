@@ -11,7 +11,7 @@ import { decodeJsonFrame, parseKlientBatchEnvelope, parseKlientCallRequest, reso
 import { RPCError } from '@kiki/klient';
 import { okEnvelope, errEnvelope } from '../envelope';
 import { AdmissionError, ConnectionAdmission, sameIdentity } from '../services/connections/admission';
-import { isPeerFrameAllowed, isPeerProcedureAllowed, peerAudience } from '../services/connections/audience';
+import { isPeerFrameAllowed, isPeerProcedureAllowed, peerAudience, TERMINAL_CONNECTION_OPERATIONS } from '../services/connections/audience';
 import { BROKER_BODY_BYTES, BROKER_FS_READ_BODY_BYTES, BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, RemoteConnectionManager } from '../services/connections/manager';
 import { currentSpacePlatform, directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
@@ -178,6 +178,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   app.post('/api/remote-connections/:connectionId/call', { bodyLimit: BROKER_BODY_BYTES }, async (req, reply) => {
     const id = (req.params as { connectionId: string }).connectionId;
     const input = connectionBrokerInputSchema.parse(req.body);
+    if (webPrincipal(req) !== undefined && TERMINAL_CONNECTION_OPERATIONS.has(input.operation)) return reply.code(403).send(errEnvelope(40301, 'local_owner_required', req.id));
     if (['media', 'file', 'fileUpload', 'appearanceAsset', 'personaAvatar', 'mediaPreview', 'htmlPreviewResource', 'documentPreviewAsset'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'use_explicit_attachment_stream', req.id));
     const controller = new AbortController();
     let batchReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -384,7 +385,8 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
 }
 async function brokerSocket(local: WebSocket, request: IncomingMessage, manager: RemoteConnectionManager, web?: WebAccess): Promise<void> {
   const id = CONNECTION_BROKER_WS.exec(request.url ?? '')?.[1]; if (id === undefined) { local.close(1008); return; }
-  if (webPrincipal(request) !== undefined) {
+  const browser = webPrincipal(request) !== undefined;
+  if (browser) {
     let record: ReturnType<RemoteConnectionManager['get']> | undefined;
     try { record = manager.get(id); } catch { record = undefined; }
     if (record === undefined || !isWebSharedRecord(record, web)) { local.close(1008, 'connection not shared'); return; }
@@ -408,7 +410,7 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     lease.release();
   };
   const stop = () => { remote?.terminate(); local.close(4001, 'connection stopped'); cleanup(); };
-  if (webPrincipal(request) !== undefined) detachWeb = web!.attachConnection(id, stop);
+  if (browser) detachWeb = web!.attachConnection(id, stop);
   lease.signal.addEventListener('abort', stop, { once: true });
   local.once('close', (code, reason) => { localClosed = true; if (remote !== undefined) forwardSocketClose(remote, code, reason); cleanup(); });
   local.once('error', () => { localClosed = true; stop(); });
@@ -454,7 +456,7 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     });
     local.on('message', (data) => {
       const frame = decodeJsonFrame((Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString());
-      if (frame === undefined || !isPeerFrameAllowed(frame)) { localClosed = true; local.close(1008, 'operation not allowed'); target.terminate(); cleanup(); return; }
+      if (frame === undefined || !isPeerFrameAllowed(frame, browser ? undefined : ['execute'])) { localClosed = true; local.close(1008, 'operation not allowed'); target.terminate(); cleanup(); return; }
       send(target, data);
     });
     let pendingResponses = 0;
@@ -479,7 +481,7 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     });
     target.on('close', (code, reason) => {
       if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved'), epoch);
-      else if (!localClosed && code !== 1000 && code !== 1001) manager.recordTransportStrike(id, new AdmissionError(502, 'event_transport_closed'), epoch);
+      else if (!localClosed && code !== 1000 && code !== 1001 && code !== 1008) manager.recordTransportStrike(id, new AdmissionError(502, 'event_transport_closed'), epoch);
       forwardSocketClose(local, code, reason);
       cleanup();
     });
@@ -494,6 +496,6 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
 }
 
 function forwardSocketClose(socket: WebSocket, code: number, reason: Buffer): void {
-  if (code === 1000 || code >= 3000 && code <= 4999) socket.close(code, reason.toString().slice(0, 30));
+  if (code === 1000 || code === 1008 || code >= 3000 && code <= 4999) socket.close(code, reason.toString().slice(0, 30));
   else socket.close();
 }
