@@ -14,6 +14,7 @@ import type {
   PortableSpaceSourcesListResponse,
 } from '@kiki/protocol';
 
+import { HostProvider, type HostAdapter } from '../../../host';
 import { I18nProvider } from '../../../i18n';
 import * as clipboard from '../../../lib/clipboard';
 import { KikiClient } from '../../../lib/client';
@@ -178,8 +179,6 @@ const hostMock = {
   pickDirectory: vi.fn<() => Promise<string | null>>(async () => null),
 };
 
-vi.mock('../../../host', () => ({ useHost: () => hostMock }));
-
 const apiMocks: Record<keyof PortableSpacesApi, ReturnType<typeof vi.fn>> = {
   listSources: vi.fn(),
   registerSource: vi.fn(),
@@ -302,9 +301,11 @@ async function renderNode(node: React.ReactNode, entries: string[] = ['/settings
   await act(async () => {
     root.render(
       <MemoryRouter initialEntries={entries}>
-        <QueryClientProvider client={queryClient}>
-          <I18nProvider>{node}</I18nProvider>
-        </QueryClientProvider>
+        <HostProvider host={hostMock as unknown as HostAdapter}>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>{node}</I18nProvider>
+          </QueryClientProvider>
+        </HostProvider>
       </MemoryRouter>,
     );
   });
