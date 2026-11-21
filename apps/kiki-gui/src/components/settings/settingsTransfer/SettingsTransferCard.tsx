@@ -1,40 +1,30 @@
-import { useState } from 'react';
-
-import { SETTINGS_TRANSFER_CATEGORIES, type SettingsTransferCategory } from '@kiki/protocol';
+import { useNavigate } from 'react-router-dom';
 
 import { useI18n } from '../../../i18n';
-import { SectionCard } from '../SectionCard';
+import { Icon } from '../../icons';
 import { SECONDARY_BUTTON } from '../../ui';
+import { SectionCard } from '../SectionCard';
 import { SettingField, SettingsBox } from '../fields';
-import { SettingsTransferPanel } from './SettingsTransferPanel';
 
 export function SettingsTransferCard() {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const categories: readonly SettingsTransferCategory[] = SETTINGS_TRANSFER_CATEGORIES;
+  const navigate = useNavigate();
 
   return (
-    <>
-      <SectionCard id="st-card-settings-transfer" title={t('st.settingsTransfer.title')} scope="app">
-        <SettingsBox>
-          <SettingField label={t('st.settingsTransfer.open')} help={t('st.settingsTransfer.description')}>
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              data-settings-transfer-open
-              onClick={() => { setOpen(true); }}
-            >
-              {t('st.settingsTransfer.open')}
-            </button>
-          </SettingField>
-        </SettingsBox>
-      </SectionCard>
-      {open ? (
-        <SettingsTransferPanel
-          categories={categories}
-          onClose={() => { setOpen(false); }}
-        />
-      ) : null}
-    </>
+    <SectionCard id="st-card-settings-transfer" title={t('st.settingsTransfer.title')} scope="app">
+      <SettingsBox>
+        <SettingField label={t('st.portable.title')} help={t('st.settingsTransfer.description')}>
+          <button
+            type="button"
+            className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+            data-settings-transfer-open
+            onClick={() => { void navigate('/settings/spaces#st-card-portable-spaces'); }}
+          >
+            <span>{t('st.settingsTransfer.openSpaces')}</span>
+            <Icon name="arrowRight" size={12} />
+          </button>
+        </SettingField>
+      </SettingsBox>
+    </SectionCard>
   );
 }

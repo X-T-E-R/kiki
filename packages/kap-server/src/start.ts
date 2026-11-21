@@ -64,7 +64,7 @@ import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
 } from '@kiki/oauth';
-import { createAsyncApiDocument, CONNECTION_PROTOCOL, peerBridgeAttachPayloadSchema, type ExternalDelegationState } from '@kiki/protocol';
+import { createAsyncApiDocument, CONNECTION_PROTOCOL, MAX_PAIR_SOURCE_WORKSPACES, peerBridgeAttachPayloadSchema, type ExternalDelegationState } from '@kiki/protocol';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -132,6 +132,11 @@ import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { registerMeshRoutes } from './routes/mesh';
 import { registerSyncRoutes } from './routes/sync';
+import { registerPortableSpaceRoutes } from './routes/portableSpaces';
+import { SpaceEndpoints } from './services/portableSpace/endpoints';
+import { PortableSpaceService } from './services/portableSpace/portableSpaceService';
+import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
+import { IMemoryPersistence } from '@kiki/agent-core-v2/persistence/interface/memoryPersistence';
 import {
   createPeerTcpDialer,
   MeshApprovalRejectedError,
@@ -1528,6 +1533,19 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   meshServiceRef = meshService;
   registerMeshRoutes(app, meshService);
   registerSyncRoutes(app, syncService);
+  registerPortableSpaceRoutes(app, new PortableSpaceService(new SpaceEndpoints({
+    bootstrap: bootstrapInfo,
+    config: core.accessor.get(IConfigService),
+    registry: core.accessor.get(IConfigRegistry),
+    mcp: core.accessor.get(IMcpConfigStore),
+    memory: core.accessor.get(IMemoryStore),
+    memoryPersistence: core.accessor.get(IMemoryPersistence),
+    scopes: core.accessor.get(IMemoryScopes),
+    plugins: pluginService,
+    sessions: core.accessor.get(ISessionManager),
+    index: core.accessor.get(ISessionIndex),
+    logs: core.accessor.get(IAppendLogStore),
+  }, syncService)), localOwnerToken);
   app.addHook('preClose', async () => { await meshService.close(); });
   const pairingHooks: { current?: PairingHooks } = {};
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
@@ -1535,7 +1553,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const pairedBridge = threadBridge;
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));
   pairingHooks.current = {
-    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
+    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).slice(0, MAX_PAIR_SOURCE_WORKSPACES).map((workspace) => workspace.id),
     issueBridges: (input) => pairedBridge.issuePairingBridges(input),
     installBridge: async (connectionId, grant, credential, connectionGrantId, borrowTools) => { await pairedBridge.install({ connectionId, grant, credential }, connectionGrantId, borrowTools); },
     revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),

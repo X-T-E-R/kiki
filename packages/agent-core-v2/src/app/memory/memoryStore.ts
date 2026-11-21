@@ -63,6 +63,7 @@ export interface MemoryMutation {
   readonly reason: string;
   readonly source: MemorySource;
   readonly id?: string;
+  readonly importedId?: string;
   readonly expectedRevision?: string;
   readonly operationId?: string;
   readonly pinned?: boolean;
@@ -159,6 +160,14 @@ export interface IMemoryStore {
 }
 export const IMemoryStore = createDecorator<IMemoryStore>('memoryStore');
 export const ILegacyMemoryStore = createDecorator<IMemoryStore>('legacyMemoryStore');
+
+export function importedMemoryId(input: MemoryMutation): string | undefined {
+  if (input.importedId === undefined) return;
+  if (input.action !== 'create' || input.pending || input.source.writer !== 'import' || !/^m_[a-zA-Z0-9_]+$/.test(input.importedId)) {
+    throw new MemoryDomainError('invalid_input', 'Invalid imported memory ID', 'Supply an exported Memory ID for a new import.');
+  }
+  return input.importedId;
+}
 
 function assertPersonaId(personaId: string): void {
   if (!MEMORY_PERSONA_ID_PATTERN.test(personaId)) throw new Error('Invalid persona id');
@@ -412,7 +421,9 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       };
       await checkDependency();
       const covered_by = dependency === undefined ? archive ? preserved?.covered_by : undefined : { id: dependency.id, revision: dependency.expected_revision };
-      const id = isCreate || isProposal ? `m_${new Date().toISOString().slice(0, 10).replaceAll('-', '')}_${randomBytes(5).toString('hex')}` : input.id!;
+      const importedId = importedMemoryId(input);
+      if (importedId !== undefined && await this.raw(base, importedId) !== undefined) throw new MemoryDomainError('invalid_input', 'Imported memory ID already exists', 'Update the existing Memory with its current revision.');
+      const id = isCreate || isProposal ? importedId ?? `m_${new Date().toISOString().slice(0, 10).replaceAll('-', '')}_${randomBytes(5).toString('hex')}` : input.id!;
       const now = new Date().toISOString();
       const superseded = input.action === 'supersede' ? target : old?.status === 'pending' && old.supersedes !== undefined && !input.pending ? await this.raw(base, old.supersedes) : undefined;
       if (old?.status === 'pending' && old.supersedes !== undefined && !input.pending && (superseded === undefined || revision(superseded.text) !== old.supersedes_revision)) throw new MemoryDomainError('revision_conflict', 'Memory revision conflict', 'Read the predecessor before approving the proposal.');

@@ -123,4 +123,5 @@ export * from './rest/runtime';
 export * from './rest/search';
 export * from './rest/mesh';
 export * from './rest/sync';
+export * from './rest/portable-space';
 export * from './pluginExtensions';

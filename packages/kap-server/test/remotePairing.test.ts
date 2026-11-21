@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { once } from 'node:events';
+import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer as createHttpsServer } from 'node:https';
 import { X509Certificate } from 'node:crypto';
@@ -11,8 +12,9 @@ import { createServer as createNetServer, createConnection, type Socket } from '
 import type { FastifyInstance } from 'fastify';
 import { evictPinnedAgent, peerFetch } from '../src/services/connections/peerTls';
 import { loadPeerTlsIdentity, spkiFingerprint } from '../src/services/connections/tlsIdentity';
-import { pairOutbound, PeerListeners } from '../src/services/connections/pairing';
-import { formatPairingUri, matchConnectionOperation, parsePairingUri } from '@kiki/protocol';
+import { pairOutbound, PeerListeners, type PairingHooks } from '../src/services/connections/pairing';
+import { formatPairingUri, matchConnectionOperation, MAX_PAIR_SOURCE_WORKSPACES, parsePairingUri } from '@kiki/protocol';
+import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
 import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { ConnectionAudience, isPeerProcedureAllowed } from '../src/services/connections/audience';
 import { RemoteConnectionManager, validateEndpoint } from '../src/services/connections/manager';
@@ -165,6 +167,66 @@ describe('pairing codes', () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-pair-danger-')); homes.push(home);
     const target = new ConnectionAdmission(home, identity('target'), 'dangerous_auth_bypass');
     await expect(target.createPairCode()).rejects.toMatchObject({ status: 403, reason: 'dangerous_auth_bypass' });
+  });
+});
+
+describe('pairing workspace limits', () => {
+  it('caps larger outbound claims before the real claim route', async () => {
+    const sourceHome = await mkdtemp(join(tmpdir(), 'kiki-pair-workspace-source-')); homes.push(sourceHome);
+    const targetHome = await mkdtemp(join(tmpdir(), 'kiki-pair-workspace-target-')); homes.push(targetHome);
+    const sourceIdentity = identity('source');
+    const targetIdentity = identity('target');
+    const sourceManager = new RemoteConnectionManager(sourceHome, sourceIdentity);
+    const targetManager = new RemoteConnectionManager(targetHome, targetIdentity);
+    const targetAdmission = new ConnectionAdmission(targetHome, targetIdentity);
+    const received: string[][] = [];
+    const hooks: PairingHooks = {
+      workspaces: async () => [],
+      issueBridges: async (input) => { received.push([...input.sourceWorkspaces]); return []; },
+      installBridge: async () => {},
+      revokeBridge: async () => {},
+      enableThreads: async () => {},
+      endpoints: async () => [],
+    };
+    const app = Fastify({ forceCloseConnections: true });
+    registerRemoteConnectionRoutes(app, targetAdmission, targetManager, randomUUID(), () => 'owner-token', undefined, { current: hooks });
+    const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const allWorkspaces = Array.from({ length: MAX_PAIR_SOURCE_WORKSPACES + 1 }, (_, index) => `recent-${index}`);
+      const code = await targetAdmission.createPairCode();
+      await pairOutbound(sourceManager, { endpoint, code: code.code, backgroundSummary: false, requestBridge: true }, { ...hooks, workspaces: async () => allWorkspaces });
+      expect(received[0]).toEqual(allWorkspaces.slice(0, MAX_PAIR_SOURCE_WORKSPACES));
+      expect(received[0]).toHaveLength(MAX_PAIR_SOURCE_WORKSPACES);
+    } finally {
+      await app.close();
+      await sourceManager.close();
+      await targetManager.close();
+      await targetAdmission.close();
+    }
+  });
+
+  it('accepts 120 source workspaces through the real pair claim route', async () => {
+    const targetHome = await mkdtemp(join(tmpdir(), 'kiki-pair-workspace-route-')); homes.push(targetHome);
+    const targetIdentity = identity('target');
+    const targetAdmission = new ConnectionAdmission(targetHome, targetIdentity);
+    const targetManager = new RemoteConnectionManager(targetHome, targetIdentity);
+    const app = Fastify({ forceCloseConnections: true });
+    registerRemoteConnectionRoutes(app, targetAdmission, targetManager, randomUUID(), () => 'owner-token');
+    const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const code = await targetAdmission.createPairCode({ allowBridge: false });
+      const response = await fetch(`${endpoint}/api/remote-connections/pair/claim`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: code.code, source: identity('source'), sourceLabel: 'Source', requestBridge: false, sourceWorkspaces: Array.from({ length: 120 }, (_, index) => `workspace-${index}`) }),
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { code: number }).code).toBe(0);
+    } finally {
+      await app.close();
+      await targetManager.close();
+      await targetAdmission.close();
+    }
   });
 });
 

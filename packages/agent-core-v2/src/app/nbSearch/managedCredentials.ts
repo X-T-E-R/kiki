@@ -10,7 +10,7 @@ const SCOPE = 'secrets/nb-search';
 const KEY = 'gui-credentials.json';
 const MAX_BYTES = 256 * 1024;
 const recordSchema = z.object({ provider_id: z.string(), env: z.string(), binding: z.string(), value: z.string() }).strict();
-const documentSchema = z.object({ schema_version: z.literal('1'), slots: z.record(z.string(), recordSchema) }).strict();
+export const nbSearchManagedCredentialsSchema = z.object({ schema_version: z.literal('1'), slots: z.record(z.string(), recordSchema) }).strict();
 type RecordEntry = z.infer<typeof recordSchema>;
 
 /** The Kiki-owned credential document. CLI secrets and process env are never read by this store. */
@@ -65,14 +65,14 @@ export class NbSearchManagedCredentials {
     }
   }
 
-  private async readDocument(): Promise<z.infer<typeof documentSchema>> {
+  private async readDocument(): Promise<z.infer<typeof nbSearchManagedCredentialsSchema>> {
     const size = await this.storage.size(SCOPE, KEY);
     if (size === undefined) return { schema_version: '1', slots: {} };
     if (size > MAX_BYTES) throw new ManagedCredentialError('unreadable');
     const bytes = await this.storage.read(SCOPE, KEY);
     if (bytes === undefined || bytes.length > MAX_BYTES) throw new ManagedCredentialError('unreadable');
     try {
-      return documentSchema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+      return nbSearchManagedCredentialsSchema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
     } catch {
       throw new ManagedCredentialError('unreadable');
     }

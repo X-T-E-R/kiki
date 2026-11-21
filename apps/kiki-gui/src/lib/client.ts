@@ -2983,10 +2983,19 @@ export class KikiClient {
     });
   }
 
+  /** Authenticated `/api` JSON request over this client's active HTTP connection. */
+  requestApiJson<T = unknown>(
+    method: 'GET' | 'PUT' | 'PATCH' | 'POST' | 'DELETE',
+    path: string,
+    options: { readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number; readonly signal?: AbortSignal; readonly token?: string } = {},
+  ): Promise<T> {
+    return this.memoryRequest<T>(method, path, options);
+  }
+
   private async memoryRequest<T>(
     method: 'GET' | 'PUT' | 'PATCH' | 'POST' | 'DELETE',
     path: string,
-    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number; readonly signal?: AbortSignal } = {},
+    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number; readonly signal?: AbortSignal; readonly token?: string } = {},
   ): Promise<T> {
     const connection = this.connection;
     const root = connection.baseUrl.replace(/\/+$/u, '');
@@ -3001,7 +3010,8 @@ export class KikiClient {
       if (value !== undefined) url.searchParams.set(key, value);
     }
     const headers: Record<string, string> = { accept: 'application/json' };
-    if (connection.token !== undefined) headers['authorization'] = `Bearer ${connection.token}`;
+    const bearer = connection.token ?? (options.token?.trim() || undefined);
+    if (bearer !== undefined) headers['authorization'] = `Bearer ${bearer}`;
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     const deadline = options.timeoutMs === 0 ? undefined : AbortSignal.timeout(options.timeoutMs ?? 30_000);
     const signal = anySignal([connection.signal.signal, ...[options.signal, deadline].filter((entry): entry is AbortSignal => entry !== undefined)]);

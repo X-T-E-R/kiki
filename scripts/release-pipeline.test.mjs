@@ -88,6 +88,14 @@ void test('desktop release freezes one catalog and keeps native to desktop order
   assert.ok(signatureVerify >= 0 && signatureVerify < manifest);
   assert.match(publish, /--public-key "\$KIKI_UPDATER_PUBLIC_KEY"/);
   assert.match(publish, /stage-npm/);
+  const validateStep = extractBashStep(release, 'Validate and assemble exact target candidates');
+  assert.match(validateStep, /tr -d '\\r' < scripts\/install\.sh > cli-native\/install\.sh/);
+  assert.match(validateStep, /chmod 0755 cli-native\/install\.sh/);
+  assert.match(validateStep, /sh -n cli-native\/install\.sh/);
+  assert.match(validateStep, /sha256sum install\.sh > install\.sh\.sha256 && sha256sum -c install\.sh\.sha256/);
+  const validateDraftStep = extractBashStep(release, 'Validate draft assets');
+  assert.match(validateDraftStep, /for name in 'install\.sh' 'install\.sh\.sha256';/);
+  assert.match(validateDraftStep, /sha256sum -c install\.sh\.sha256/);
 });
 
 void test('release push and dispatch resolve the same product tag independently of workflow HEAD', async (t) => {
@@ -487,9 +495,11 @@ void test('release upload reuses exact draft assets and refuses unsafe public mu
   const fakeBin = join(scratch, 'fake-bin');
   const candidate = join(scratch, 'release-candidate');
   const notices = join(scratch, 'apps/kiki-gui');
+  const cliNative = join(scratch, 'cli-native');
   await mkdir(fakeBin, { recursive: true });
   await mkdir(candidate, { recursive: true });
   await mkdir(notices, { recursive: true });
+  await mkdir(cliNative, { recursive: true });
 
   const installer = 'Kiki-1.2.3-setup.exe';
   const localAssets = {
@@ -498,9 +508,16 @@ void test('release upload reuses exact draft assets and refuses unsafe public mu
     [`${installer}.sha256`]: 'checksum bytes\n',
     'latest.json': '{"version":"1.2.3"}\n',
     'THIRD_PARTY_NOTICES.md': 'third-party notices\n',
+    'install.sh': '#!/bin/sh\necho ok\n',
+    'install.sh.sha256': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  install.sh\n',
   };
   for (const [name, contents] of Object.entries(localAssets)) {
-    const destination = name === 'THIRD_PARTY_NOTICES.md' ? join(notices, name) : join(candidate, name);
+    const destination =
+      name === 'THIRD_PARTY_NOTICES.md'
+        ? join(notices, name)
+        : name === 'install.sh' || name === 'install.sh.sha256'
+          ? join(cliNative, name)
+          : join(candidate, name);
     await writeFile(destination, contents);
   }
 
@@ -611,12 +628,13 @@ esac
 
   const draftMissingAssets = { ...localAssets };
   delete draftMissingAssets['latest.json'];
+  delete draftMissingAssets['install.sh'];
   const draftMissing = await execute({
     label: 'draft-missing', draft: 'true', remoteAssets: draftMissingAssets,
   });
   assert.equal(draftMissing.result.status, 0, draftMissing.output);
-  assert.deepEqual(draftMissing.downloads, [installer, `${installer}.sig`, `${installer}.sha256`, 'THIRD_PARTY_NOTICES.md']);
-  assert.deepEqual(draftMissing.uploads, ['latest.json']);
+  assert.deepEqual(draftMissing.downloads, [installer, `${installer}.sig`, `${installer}.sha256`, 'THIRD_PARTY_NOTICES.md', 'install.sh.sha256']);
+  assert.deepEqual(draftMissing.uploads, ['latest.json', 'install.sh']);
 
   const differentAssets = { ...localAssets, [`${installer}.sig`]: 'different signature bytes\n' };
   const different = await execute({
