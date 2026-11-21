@@ -853,6 +853,7 @@ public class KikiShellPlugin extends Plugin {
         deliveredDocumentNavNonce = null;
         activeAuthOrigin = null;
         activeAuthServerId = null;
+        closeWsTunnel();
     }
 
     private void invalidateCurrentDocumentNavigation() {
@@ -956,7 +957,7 @@ public class KikiShellPlugin extends Plugin {
                         return;
                     }
                     boolean deliveredBefore = finalize && expectedNavNonce.equals(deliveredDocumentNavNonce);
-                    if ("unreachable".equals(failureReason) && (deliveredBefore || isWithinResumeGrace(android.os.SystemClock.elapsedRealtime(), lastResumeAtMs))) {
+                    if ("unreachable".equals(failureReason) && (deliveredBefore || isWithinResumeGraceNow())) {
                         clearPendingAuthIfCurrent(expectedEpoch);
                         return;
                     }
@@ -969,6 +970,7 @@ public class KikiShellPlugin extends Plugin {
                 return;
             }
             String token = readPeerToken(targetServerId, targetOrigin);
+            final String wsTunnelScript = token == null || token.isEmpty() ? null : prepareWsTunnelScript(targetOrigin, targetServerId);
             if (token == null || token.isEmpty()) {
                 if (finalize) {
                     view.post(() -> {
@@ -1003,6 +1005,9 @@ public class KikiShellPlugin extends Plugin {
                     return;
                 }
                 deliveredDocumentNavNonce = expectedNavNonce;
+                if (wsTunnelScript != null) {
+                    view.evaluateJavascript(wsTunnelScript, null);
+                }
                 view.evaluateJavascript(buildCredentialDeliveryScript(targetOrigin, token, expectedNavNonce), null);
             });
         }).start();
@@ -1577,30 +1582,7 @@ public class KikiShellPlugin extends Plugin {
         if (expected == null) return;
         final String pinnedFp = expected;
         try {
-            X509TrustManager tm = new X509TrustManager() {
-                @Override
-                public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-                    throw new CertificateException("Client certificates are not supported");
-                }
-
-                @Override
-                public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-                    if (chain == null || chain.length == 0) {
-                        throw new CertificateException("Empty server certificate chain");
-                    }
-                    String actual = certificateSpkiSha256Hex(chain[0]);
-                    if (!constantTimeEquals(actual, pinnedFp)) {
-                        throw new CertificateException("SPKI fingerprint mismatch");
-                    }
-                }
-
-                @Override
-                public X509Certificate[] getAcceptedIssuers() {
-                    return new X509Certificate[0];
-                }
-            };
-            SSLContext ctx = SSLContext.getInstance("TLS");
-            ctx.init(null, new TrustManager[] { tm }, null);
+            SSLContext ctx = pinnedSslContext(pinnedFp);
             HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
             httpsConn.setSSLSocketFactory(ctx.getSocketFactory());
             httpsConn.setHostnameVerifier((hostname, session) -> {
@@ -1615,6 +1597,102 @@ public class KikiShellPlugin extends Plugin {
         } catch (Exception ignored) {
             /* keep default TLS context on failure */
         }
+    }
+
+    /** TLS context that trusts exactly the server whose leaf SPKI SHA-256 equals {@code pinnedFp}. */
+    static SSLContext pinnedSslContext(final String pinnedFp) throws Exception {
+        X509TrustManager tm = new X509TrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                throw new CertificateException("Client certificates are not supported");
+            }
+
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                if (chain == null || chain.length == 0) {
+                    throw new CertificateException("Empty server certificate chain");
+                }
+                String actual = certificateSpkiSha256Hex(chain[0]);
+                if (!constantTimeEquals(actual, pinnedFp)) {
+                    throw new CertificateException("SPKI fingerprint mismatch");
+                }
+            }
+
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+                return new X509Certificate[0];
+            }
+        };
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, new TrustManager[] { tm }, null);
+        return ctx;
+    }
+
+    private PinnedWsTunnel wsTunnel;
+
+    private synchronized void closeWsTunnel() {
+        if (wsTunnel != null) {
+            wsTunnel.close();
+            wsTunnel = null;
+        }
+    }
+
+    /**
+     * WebView never routes {@code wss://} handshakes through {@code onReceivedSslError}, so a self-signed
+     * pinned origin gets a loopback {@link PinnedWsTunnel} plus a page script that redirects its sockets.
+     */
+    private String prepareWsTunnelScript(String origin, String serverId) {
+        PinnedWsTunnel tunnel = ensureWsTunnel(origin, serverId);
+        return tunnel == null ? null : buildWsTunnelScript(origin, tunnel.localUrl());
+    }
+
+    private synchronized PinnedWsTunnel ensureWsTunnel(String origin, String serverId) {
+        Uri uri = origin == null ? null : Uri.parse(origin);
+        if (uri == null || !"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getHost().isEmpty()) {
+            closeWsTunnel();
+            return null;
+        }
+        final String fp = resolvePinnedFingerprint(serverId, origin);
+        if (fp == null) {
+            closeWsTunnel();
+            return null;
+        }
+        String key = origin + "|" + fp;
+        if (wsTunnel != null && wsTunnel.matches(key)) return wsTunnel;
+        closeWsTunnel();
+        try {
+            int port = uri.getPort() > 0 ? uri.getPort() : 443;
+            wsTunnel = PinnedWsTunnel.start(
+                uri.getHost(),
+                port,
+                key,
+                pinnedSslContext(fp).getSocketFactory(),
+                cert -> constantTimeEquals(certificateSpkiSha256Hex(cert), fp)
+            );
+        } catch (Exception e) {
+            wsTunnel = null;
+        }
+        return wsTunnel;
+    }
+
+    static String buildWsTunnelScript(String expectedOrigin, String localBase) {
+        if (expectedOrigin == null || !expectedOrigin.startsWith("https://") || localBase == null) return null;
+        String originJson = JSONObject.quote(expectedOrigin);
+        String fromJson = JSONObject.quote("wss://" + expectedOrigin.substring("https://".length()));
+        String toJson = JSONObject.quote(localBase);
+        return (
+            "(function(){try{if(window.location.origin!==" +
+            originJson +
+            ")return false;window.__kikiWsTunnel={from:" +
+            fromJson +
+            ",to:" +
+            toJson +
+            "};if(window.__kikiWsTunnelInstalled)return true;var N=window.WebSocket;if(typeof N!==\"function\")return false;" +
+            "var W=function(u,p){var s=String(u);try{var m=window.__kikiWsTunnel;var r=new URL(s,window.location.href);if(m&&r.protocol===\"wss:\"&&(\"wss://\"+r.host)===m.from){s=m.to+r.pathname+r.search;}}catch(e){}return arguments.length>1?new N(s,p):new N(s);};" +
+            "W.prototype=N.prototype;W.CONNECTING=0;W.OPEN=1;W.CLOSING=2;W.CLOSED=3;" +
+            "try{Object.defineProperty(window,\"WebSocket\",{configurable:true,writable:true,value:W});}catch(e){window.WebSocket=W;}" +
+            "window.__kikiWsTunnelInstalled=true;return true;}catch(e){return false;}})();"
+        );
     }
 
     private static X509Certificate extractX509Certificate(SslCertificate sslCert) {
@@ -1836,6 +1914,10 @@ public class KikiShellPlugin extends Plugin {
         return true;
     }
 
+    private boolean isWithinResumeGraceNow() {
+        return isWithinResumeGrace(android.os.SystemClock.elapsedRealtime(), lastResumeAtMs);
+    }
+
     static boolean isWithinResumeGrace(long nowMs, long resumedAtMs) {
         return resumedAtMs > 0 && nowMs >= resumedAtMs && nowMs - resumedAtMs <= RESUME_UNREACHABLE_GRACE_MS;
     }
@@ -1850,6 +1932,12 @@ public class KikiShellPlugin extends Plugin {
     protected void handleOnPause() {
         super.handleOnPause();
         CookieManager.getInstance().flush();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        closeWsTunnel();
+        super.handleOnDestroy();
     }
 
     private SharedPreferences prefs() {
