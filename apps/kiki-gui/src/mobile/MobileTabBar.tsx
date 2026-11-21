@@ -3,9 +3,9 @@ import { Mic } from 'lucide-react';
 
 import { Icon, type IconName } from '../components/icons';
 import { useI18n } from '../i18n';
-import { MOBILE_CHATS_PATH, MOBILE_SPACES_PATH, MOBILE_TODAY_PATH } from './mobileShellRoute';
+import { MOBILE_ASSISTANT_PATH, MOBILE_CHATS_PATH, MOBILE_SPACES_PATH } from './mobileShellRoute';
 
-export type MobileRootTab = 'today' | 'chats' | 'spaces';
+export type MobileRootTab = 'assistant' | 'chats' | 'spaces';
 
 interface MobileTabBarProps {
   readonly activeTab: MobileRootTab;
@@ -21,9 +21,9 @@ const TAB_ITEMS: readonly {
   readonly id: MobileRootTab;
   readonly path: string;
   readonly icon: IconName;
-  readonly labelKey: 'mobile.tab.today' | 'mobile.tab.chats' | 'mobile.tab.spaces';
+  readonly labelKey: 'mobile.tab.assistant' | 'mobile.tab.chats' | 'mobile.tab.spaces';
 }[] = [
-  { id: 'today', path: MOBILE_TODAY_PATH, icon: 'profileMain', labelKey: 'mobile.tab.today' },
+  { id: 'assistant', path: MOBILE_ASSISTANT_PATH, icon: 'profileMain', labelKey: 'mobile.tab.assistant' },
   { id: 'chats', path: MOBILE_CHATS_PATH, icon: 'ask', labelKey: 'mobile.tab.chats' },
   { id: 'spaces', path: MOBILE_SPACES_PATH, icon: 'web', labelKey: 'mobile.tab.spaces' },
 ];
@@ -50,7 +50,7 @@ export function MobileTabBar({
 
   return (
     <nav
-      aria-label={t('mobile.tab.today')}
+      aria-label={t('mobile.tab.nav')}
       data-mobile-tabbar
       aria-hidden={hidden}
       className={`kiki-mobile-tabbar-dock ${hidden ? 'translate-y-24 opacity-0' : 'translate-y-0 opacity-100'}`}
@@ -59,8 +59,8 @@ export function MobileTabBar({
         <div className="kiki-mobile-glass-pill pointer-events-auto grid h-14 flex-1 grid-cols-3 items-center rounded-full p-1">
           {TAB_ITEMS.map((item) => {
             const active = activeTab === item.id;
-            const showCount = item.id === 'today' && needsYouCount > 0;
-            const showQuietDot = item.id === 'today' && needsYouCount === 0 && unreadCount > 0;
+            const showCount = item.id === 'assistant' && needsYouCount > 0;
+            const showQuietDot = item.id === 'assistant' && needsYouCount === 0 && unreadCount > 0;
             return (
               <button
                 key={item.id}
@@ -102,6 +102,7 @@ export function MobileTabBar({
           })}
         </div>
 
+        {activeTab === 'assistant' ? null : (
         <button
           type="button"
           data-mobile-quick-trigger
@@ -129,6 +130,7 @@ export function MobileTabBar({
         >
           <Mic className="h-5 w-5" strokeWidth={1.85} aria-hidden="true" />
         </button>
+        )}
       </div>
     </nav>
   );

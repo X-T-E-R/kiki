@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { Block, ToolBlock } from '@kiki/session-core/session';
@@ -74,8 +74,11 @@ function formatToolOutput(output: unknown): string {
 interface LiftTheHoodSheetProps {
   readonly open: boolean;
   readonly initialTab: HoodTab;
+  /** Opens the Changes tab on this file instead of the first one. */
+  readonly initialChangeId?: string;
   readonly onClose: () => void;
   readonly client: KikiClient;
+  readonly spaceKey: string;
   readonly spaceName: string;
   readonly sessionTitle: string;
   readonly currentModel?: string;
@@ -89,8 +92,10 @@ interface LiftTheHoodSheetProps {
 export function LiftTheHoodSheet({
   open,
   initialTab,
+  initialChangeId,
   onClose,
   client,
+  spaceKey,
   spaceName,
   sessionTitle,
   currentModel,
@@ -106,6 +111,25 @@ export function LiftTheHoodSheet({
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
 
+  // Every open starts from the caller's tab and file; nothing lingers from the last visit.
+  useEffect(() => {
+    if (!open) return;
+    setTab(initialTab);
+    setSelectedChangeId(initialChangeId ?? null);
+    setModelPickerOpen(false);
+    setExpandedToolId(null);
+  }, [open, initialTab, initialChangeId]);
+
+  useEffect(() => {
+    if (!open || tab !== 'diff' || selectedChangeId === null) return;
+    const frame = requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-mobile-hood-change="${CSS.escape(selectedChangeId)}"]`)
+        ?.scrollIntoView({ block: 'nearest', inline: 'center' });
+    });
+    return () => { cancelAnimationFrame(frame); };
+  }, [open, tab, selectedChangeId]);
+
   const tools = useMemo(
     () => blocks.filter((block): block is ToolBlock => block.kind === 'tool'),
     [blocks],
@@ -113,7 +137,7 @@ export function LiftTheHoodSheet({
   const changes = useMemo(() => extractFileChanges(blocks), [blocks]);
 
   const modelsQuery = useQuery({
-    queryKey: ['mobile-models', client.baseUrl],
+    queryKey: ['mobile-models', spaceKey, client.baseUrl],
     enabled: open && modelPickerOpen,
     staleTime: 60_000,
     queryFn: async () => {
@@ -142,13 +166,13 @@ export function LiftTheHoodSheet({
       sheetClassName="kiki-space-switch-sheet max-h-[82dvh]! rounded-t-[24px]!"
     >
       <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
-      <div className="flex items-center justify-between gap-2 px-4 pb-2 pt-1">
+      <div className="flex items-center justify-between gap-2 pb-1 pl-4 pr-2">
         <h2 className="min-w-0 truncate text-[16px] font-semibold text-ink">{t('mobile.chat.hoodTitle')}</h2>
         <button
           type="button"
           aria-label={t('mobile.voice.cancel')}
           onClick={onClose}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-ink/[0.06]"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-ink/[0.06]"
         >
           <Icon name="close" size={14} />
         </button>
@@ -161,7 +185,8 @@ export function LiftTheHoodSheet({
             type="button"
             data-mobile-hood-tab={entry.id}
             onClick={() => { setTab(entry.id); }}
-            className={`h-8 rounded-full px-3.5 text-[13px] font-medium transition-colors ${
+            aria-pressed={tab === entry.id}
+            className={`h-11 rounded-full px-4 text-[13.5px] font-medium transition-colors ${
               tab === entry.id ? 'bg-ink text-paper' : 'bg-canvas text-ink-soft'
             }`}
           >
@@ -187,7 +212,7 @@ export function LiftTheHoodSheet({
               <button
                 type="button"
                 onClick={() => { setModelPickerOpen((prev) => !prev); }}
-                className="flex w-full items-center justify-between gap-3 px-3.5 py-3 text-left"
+                className="flex min-h-12 w-full items-center justify-between gap-3 px-3.5 py-3 text-left"
               >
                 <span className="text-[13px] text-ink-faint">{t('mobile.chat.modelLabel')}</span>
                 <span className="inline-flex min-w-0 items-center gap-1.5 text-[14px] font-medium text-ink">
@@ -209,7 +234,7 @@ export function LiftTheHoodSheet({
                         onSelectModel(undefined);
                         setModelPickerOpen(false);
                       }}
-                      className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[13.5px] text-ink hover:bg-ink/[0.04]"
+                      className="flex min-h-11 w-full items-center justify-between rounded-xl px-3 text-left text-[14px] text-ink hover:bg-ink/[0.04]"
                     >
                       <span>{t('mobile.chat.defaultModel')}</span>
                       {selectedModel === undefined ? <Icon name="check" size={14} /> : null}
@@ -222,7 +247,7 @@ export function LiftTheHoodSheet({
                           onSelectModel(model.id);
                           setModelPickerOpen(false);
                         }}
-                        className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[13.5px] text-ink hover:bg-ink/[0.04]"
+                        className="flex min-h-11 w-full items-center justify-between rounded-xl px-3 text-left text-[14px] text-ink hover:bg-ink/[0.04]"
                       >
                         <span className="min-w-0 truncate">{model.display_name || model.id}</span>
                         {selectedModel === model.id ? <Icon name="check" size={14} className="shrink-0" /> : null}
@@ -313,8 +338,10 @@ export function LiftTheHoodSheet({
                     <button
                       key={entry.id}
                       type="button"
+                      data-mobile-hood-change={entry.id}
+                      aria-pressed={active}
                       onClick={() => { setSelectedChangeId(entry.id); }}
-                      className={`shrink-0 rounded-full px-3 py-1.5 font-mono text-[12px] ${
+                      className={`inline-flex h-11 shrink-0 items-center rounded-full px-3.5 font-mono text-[12.5px] ${
                         active ? 'bg-ink text-paper' : 'border border-hairline bg-paper text-ink-soft'
                       }`}
                     >

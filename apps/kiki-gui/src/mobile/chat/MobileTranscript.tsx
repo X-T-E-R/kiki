@@ -1,30 +1,38 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ApprovalDecision } from '@kiki/protocol';
-import type { Block, ToolBlock } from '@kiki/session-core/session';
+import type { ActivitySummary, ApprovalBlock, Block, MessageBlock, ToolBlock } from '@kiki/session-core/session';
 
 import { Icon } from '../../components/icons';
+import { buildMessageNodes } from '../../components/message/messageTimeline';
 import { useI18n } from '../../i18n';
 import { isInlineDecidable, summarizeApproval } from '../approvalSummary';
+import { ApprovalHeadline, RejectReasonSheet } from '../components/ApprovalParts';
 import { MobileMarkdown } from '../mobileMarkdown';
 import { extractFileChanges, type HoodTab } from './LiftTheHoodSheet';
 
 interface MobileTranscriptProps {
   readonly blocks: readonly Block[];
   readonly loaded: boolean;
+  readonly busy: boolean;
   readonly hasMoreHistory: boolean;
   readonly loadingOlder: boolean;
+  /** Persona sessions that deliver through `send_message`: only sent messages read as replies. */
+  readonly messageMode: boolean;
+  readonly personaName?: string;
+  /** A local persona greeting shown before the first turn; never part of model history. */
+  readonly greeting?: MessageBlock;
   readonly onLoadOlder: () => void;
-  readonly onOpenHood: (tab: HoodTab) => void;
-  readonly onResolveApproval: (approvalId: string, decision: ApprovalDecision) => void;
+  readonly onOpenHood: (tab: HoodTab, changeId?: string) => void;
+  readonly onResolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => void;
   readonly onOpenWorkbench: () => void;
 }
 
 type RenderEntry =
   | { readonly kind: 'block'; readonly block: Block }
-  | { readonly kind: 'step-group'; readonly id: string; readonly tools: readonly ToolBlock[]; readonly thinkingCount: number };
+  | { readonly kind: 'steps'; readonly id: string; readonly count: number; readonly running?: ToolBlock; readonly single?: ToolBlock };
 
-function groupMobileBlocks(blocks: readonly Block[]): readonly RenderEntry[] {
+function groupReplyBlocks(blocks: readonly Block[]): readonly RenderEntry[] {
   const entries: RenderEntry[] = [];
   let pendingTools: ToolBlock[] = [];
   let pendingThinking = 0;
@@ -33,10 +41,11 @@ function groupMobileBlocks(blocks: readonly Block[]): readonly RenderEntry[] {
     if (pendingTools.length === 0 && pendingThinking === 0) return;
     const firstId = pendingTools[0]?.id ?? `think-${entries.length}`;
     entries.push({
-      kind: 'step-group',
+      kind: 'steps',
       id: `grp-${firstId}`,
-      tools: pendingTools,
-      thinkingCount: pendingThinking,
+      count: pendingTools.length + pendingThinking,
+      running: pendingTools.find((tool) => tool.status === 'running'),
+      single: pendingTools.length === 1 && pendingThinking === 0 ? pendingTools[0] : undefined,
     });
     pendingTools = [];
     pendingThinking = 0;
@@ -61,11 +70,112 @@ function groupMobileBlocks(blocks: readonly Block[]): readonly RenderEntry[] {
   return entries;
 }
 
+function messageModeEntries(blocks: readonly Block[], busy: boolean, personaName: string | undefined): readonly RenderEntry[] {
+  const entries: RenderEntry[] = [];
+  for (const node of buildMessageNodes(blocks, { busy, personaName })) {
+    if (node.kind === 'activity-summary') {
+      const summary = node as ActivitySummary;
+      const tools = summary.members.filter((member): member is ToolBlock => member.kind === 'tool');
+      entries.push({
+        kind: 'steps',
+        id: `act-${summary.id}`,
+        count: Math.max(1, summary.members.length),
+        running: busy ? tools.find((tool) => tool.status === 'running') : undefined,
+        single: tools.length === 1 && summary.members.length === 1 ? tools[0] : undefined,
+      });
+      continue;
+    }
+    entries.push({ kind: 'block', block: node as Block });
+  }
+  return entries;
+}
+
+function toolLabel(tool: ToolBlock): string {
+  return tool.description ? `${tool.name} · ${tool.description}` : tool.name;
+}
+
+function InlineApprovalCard({
+  block,
+  onResolve,
+  onOpenWorkbench,
+}: {
+  readonly block: ApprovalBlock;
+  readonly onResolve: (approvalId: string, decision: ApprovalDecision, reason?: string) => void;
+  readonly onOpenWorkbench: () => void;
+}) {
+  const { t } = useI18n();
+  const [rejecting, setRejecting] = useState(false);
+  const approvalId = block.request.approval_id;
+  const summary = summarizeApproval(block.request);
+  return (
+    <div data-mobile-inline-approval={approvalId} className="rounded-2xl border border-hairline bg-panel p-3.5 shadow-xs">
+      <ApprovalHeadline summary={summary} />
+      <div className="mt-3 flex items-center gap-2">
+        {isInlineDecidable(block.request) ? (
+          <>
+            <button
+              type="button"
+              data-mobile-approve-btn={approvalId}
+              onClick={() => { onResolve(approvalId, 'approved'); }}
+              className="inline-flex h-11 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep"
+            >
+              <Icon name="check" size={14} />
+              <span>{t('mobile.approval.approve')}</span>
+            </button>
+            <button
+              type="button"
+              data-mobile-reject-btn={approvalId}
+              onClick={() => { setRejecting(true); }}
+              className="inline-flex h-11 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[14px] font-medium text-ink-soft transition-colors hover:text-ink"
+            >
+              <Icon name="cross" size={14} />
+              <span>{t('mobile.approval.reject')}</span>
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onOpenWorkbench}
+            className="inline-flex h-11 items-center gap-1 rounded-full border border-hairline bg-paper px-4 text-[14px] font-medium text-ink-soft transition-colors hover:text-ink"
+          >
+            <span>{t('mobile.approval.details')}</span>
+            <Icon name="chevron" size={12} />
+          </button>
+        )}
+      </div>
+      {rejecting ? (
+        <RejectReasonSheet
+          overlayId={`mobile-inline-reject-${approvalId}`}
+          headline={summary.snippet ?? summary.headline}
+          submitting={false}
+          onCancel={() => { setRejecting(false); }}
+          onSubmit={(reason) => {
+            setRejecting(false);
+            onResolve(approvalId, 'rejected', reason);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AssistantBubble({ text }: { readonly text: string }) {
+  return (
+    <div data-mobile-msg="assistant" className="w-full">
+      <MobileMarkdown content={text} />
+    </div>
+  );
+}
+
 export function MobileTranscript({
   blocks,
   loaded,
+  busy,
   hasMoreHistory,
   loadingOlder,
+  messageMode,
+  personaName,
+  greeting,
   onLoadOlder,
   onOpenHood,
   onResolveApproval,
@@ -75,8 +185,13 @@ export function MobileTranscript({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottomRef = useRef(true);
 
-  const entries = useMemo(() => groupMobileBlocks(blocks), [blocks]);
+  const entries = useMemo(
+    () => (messageMode ? messageModeEntries(blocks, busy, personaName) : groupReplyBlocks(blocks)),
+    [blocks, busy, messageMode, personaName],
+  );
   const fileChanges = useMemo(() => extractFileChanges(blocks), [blocks]);
+  const hasUserTurn = useMemo(() => blocks.some((block) => block.kind === 'user'), [blocks]);
+  const showGreeting = loaded && greeting !== undefined && !hasUserTurn && !hasMoreHistory;
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -84,10 +199,52 @@ export function MobileTranscript({
     el.scrollTop = el.scrollHeight;
   }, [entries.length, blocks]);
 
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    // The soft keyboard shrinks the list from below; keep the latest turn in view.
+    const observer = new ResizeObserver(() => {
+      if (pinnedBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => { observer.disconnect(); };
+  }, []);
+
+  const renderBlock = (block: Block) => {
+    if (block.kind === 'user') {
+      return (
+        <div key={block.id} data-mobile-msg="user" className="flex justify-end">
+          <div className="max-w-[84%] rounded-[20px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 text-[15px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+            {block.text}
+          </div>
+        </div>
+      );
+    }
+    if (block.kind === 'assistant') {
+      return <AssistantBubble key={block.id} text={block.text} />;
+    }
+    if (block.kind === 'message') {
+      if (block.text.trim() === '' || block.handoff !== undefined) return null;
+      return <AssistantBubble key={block.id} text={block.text} />;
+    }
+    if (block.kind === 'approval' && block.resolution === undefined) {
+      return (
+        <InlineApprovalCard
+          key={block.id}
+          block={block}
+          onResolve={onResolveApproval}
+          onOpenWorkbench={onOpenWorkbench}
+        />
+      );
+    }
+    return null;
+  };
+
   return (
     <div
       ref={scrollRef}
       data-mobile-transcript
+      data-mobile-transcript-mode={messageMode ? 'message' : 'reply'}
       onScroll={(event) => {
         const el = event.currentTarget;
         pinnedBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72;
@@ -101,166 +258,103 @@ export function MobileTranscript({
               type="button"
               disabled={loadingOlder}
               onClick={onLoadOlder}
-              className="rounded-full border border-hairline bg-panel px-4 py-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong disabled:opacity-55"
+              className="h-11 rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong disabled:opacity-55"
             >
               {loadingOlder ? t('mobile.chat.loading') : t('mobile.chat.loadOlder')}
             </button>
           </div>
         ) : null}
 
+        {showGreeting ? (
+          <div data-mobile-msg="greeting" className="w-full">
+            <MobileMarkdown content={greeting.text} />
+          </div>
+        ) : null}
+
         {!loaded ? (
           <p className="py-12 text-center text-[13.5px] text-ink-faint">{t('mobile.chat.loading')}</p>
-        ) : entries.length === 0 ? (
+        ) : entries.length === 0 && !showGreeting ? (
           <div className="py-16 text-center">
             <p className="font-display text-[20px] text-ink-soft">{t('mobile.chat.emptyHint')}</p>
           </div>
         ) : (
           entries.map((entry) => {
-            if (entry.kind === 'step-group') {
-              const stepCount = entry.tools.length + entry.thinkingCount;
-              const runningTool = entry.tools.find((tool) => tool.status === 'running');
+            if (entry.kind === 'steps') {
               const label =
-                runningTool !== undefined
-                  ? `${runningTool.name}${runningTool.description ? ` · ${runningTool.description}` : ''}`
-                  : stepCount === 1
-                    ? entry.tools[0] !== undefined
-                      ? `${entry.tools[0].name}${entry.tools[0].description ? ` · ${entry.tools[0].description}` : ''}`
-                      : t('mobile.chat.thinking')
-                    : t('mobile.chat.toolSteps', { count: stepCount });
-
+                entry.running !== undefined
+                  ? toolLabel(entry.running)
+                  : entry.single !== undefined
+                    ? toolLabel(entry.single)
+                    : entry.count === 1
+                      ? t('mobile.chat.thinking')
+                      : t('mobile.chat.toolSteps', { count: entry.count });
               return (
                 <button
                   key={entry.id}
                   type="button"
                   data-mobile-step-pill
                   onClick={() => { onOpenHood('tools'); }}
-                  className="inline-flex max-w-full items-center gap-2 self-start py-1 text-left text-[13px] text-ink-faint transition-colors hover:text-ink-soft"
+                  className="inline-flex min-h-11 max-w-full items-center gap-2 self-start text-left text-[13px] text-ink-faint transition-colors hover:text-ink-soft"
                 >
                   <Icon
-                    name={runningTool !== undefined ? 'task' : 'tool'}
+                    name={entry.running !== undefined ? 'task' : 'tool'}
                     size={12}
-                    className={runningTool !== undefined ? 'text-accent' : 'text-ink-faint'}
+                    className={entry.running !== undefined ? 'text-accent' : 'text-ink-faint'}
                   />
                   <span className="min-w-0 truncate">{label}</span>
                   <Icon name="chevron" size={12} className="shrink-0 opacity-75" />
                 </button>
               );
             }
-
-            const block = entry.block;
-            if (block.kind === 'user') {
-              return (
-                <div key={block.id} data-mobile-msg="user" className="flex justify-end">
-                  <div className="max-w-[84%] rounded-[20px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 text-[15px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
-                    {block.text}
-                  </div>
-                </div>
-              );
-            }
-
-            if (block.kind === 'assistant') {
-              return (
-                <div key={block.id} data-mobile-msg="assistant" className="w-full">
-                  <MobileMarkdown content={block.text} />
-                </div>
-              );
-            }
-
-            if (block.kind === 'message') {
-              return (
-                <div key={block.id} data-mobile-msg="assistant" className="w-full">
-                  <MobileMarkdown content={block.text} />
-                </div>
-              );
-            }
-
-            if (block.kind === 'approval' && block.resolution === undefined) {
-              const approvalId = block.request.approval_id;
-              const summary = summarizeApproval(block.request);
-              return (
-                <div
-                  key={block.id}
-                  data-mobile-inline-approval={approvalId}
-                  className="rounded-2xl border border-hairline bg-panel p-3.5 shadow-xs"
-                >
-                  <p className="line-clamp-2 text-[14px] font-medium leading-[1.4] text-ink">{summary.headline}</p>
-                  {summary.snippet !== undefined ? (
-                    <pre className="mt-2 max-h-16 overflow-hidden whitespace-pre-wrap break-all rounded-xl bg-canvas/90 px-3 py-2 font-mono text-[12px] leading-[1.45] text-ink-soft">
-                      {summary.snippet}
-                    </pre>
-                  ) : null}
-                  <div className="mt-2.5 flex items-center gap-2">
-                    {isInlineDecidable(block.request) ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => { onResolveApproval(approvalId, 'approved'); }}
-                          className="inline-flex h-10 items-center gap-1.5 rounded-full bg-accent px-4 text-[13.5px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep"
-                        >
-                          <Icon name="check" size={14} />
-                          <span>{t('mobile.approval.approve')}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { onResolveApproval(approvalId, 'rejected'); }}
-                          className="inline-flex h-10 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13.5px] font-medium text-ink-soft transition-colors hover:text-ink"
-                        >
-                          <Icon name="cross" size={14} />
-                          <span>{t('mobile.approval.reject')}</span>
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={onOpenWorkbench}
-                        className="inline-flex h-10 items-center gap-1 rounded-full border border-hairline bg-paper px-4 text-[13.5px] font-medium text-ink-soft transition-colors hover:text-ink"
-                      >
-                        <span>{t('mobile.approval.details')}</span>
-                        <Icon name="chevron" size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            }
-
-            return null;
+            return renderBlock(entry.block);
           })
         )}
 
         {fileChanges.length > 0 ? (
-          <button
-            type="button"
+          <div
             data-mobile-changes-card
-            onClick={() => { onOpenHood('diff'); }}
-            className="w-full overflow-hidden rounded-2xl border border-hairline/90 bg-panel text-left shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.04)] transition-colors hover:border-hairline-strong"
+            className="w-full overflow-hidden rounded-2xl border border-hairline/90 bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.04)]"
           >
-            <div className="flex items-center justify-between border-b border-hairline/65 px-3.5 py-2.5">
+            <button
+              type="button"
+              onClick={() => { onOpenHood('diff'); }}
+              className="flex min-h-11 w-full items-center justify-between border-b border-hairline/65 px-3.5 text-left transition-colors hover:bg-ink/[0.02]"
+            >
               <span className="text-[13.5px] font-semibold text-ink">
                 {t('mobile.chat.changes', { count: fileChanges.length })}
               </span>
               <Icon name="chevron" size={12} className="text-ink-faint" />
-            </div>
+            </button>
             <div className="divide-y divide-hairline/50">
               {fileChanges.slice(0, 4).map((change) => {
                 const filename = change.path.split(/[\\/]/).pop() ?? change.path;
                 return (
-                  <div key={change.id} className="flex items-center justify-between gap-2 px-3.5 py-2 text-[13px]">
+                  <button
+                    key={change.id}
+                    type="button"
+                    data-mobile-change-file={change.id}
+                    onClick={() => { onOpenHood('diff', change.id); }}
+                    className="flex min-h-11 w-full items-center justify-between gap-2 px-3.5 text-left text-[13px] transition-colors hover:bg-ink/[0.02]"
+                  >
                     <span className="min-w-0 truncate font-mono text-ink">{filename}</span>
                     <span className="shrink-0 font-mono text-[12px] tabular-nums">
                       <span className="text-success">+{change.added}</span>{' '}
                       <span className="text-danger">-{change.removed}</span>
                     </span>
-                  </div>
+                  </button>
                 );
               })}
               {fileChanges.length > 4 ? (
-                <div className="px-3.5 py-2 text-[12.5px] text-ink-faint">
+                <button
+                  type="button"
+                  onClick={() => { onOpenHood('diff'); }}
+                  className="flex min-h-11 w-full items-center px-3.5 text-left text-[12.5px] text-ink-faint"
+                >
                   {t('mobile.chat.changesMore', { count: fileChanges.length - 4 })}
-                </div>
+                </button>
               ) : null}
             </div>
-          </button>
+          </div>
         ) : null}
       </div>
     </div>

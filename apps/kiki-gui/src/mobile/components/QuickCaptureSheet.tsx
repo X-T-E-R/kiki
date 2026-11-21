@@ -88,7 +88,7 @@ export function QuickCaptureSheet({
           <button
             type="button"
             onClick={onOpenSpacePicker}
-            className="inline-flex h-8 max-w-[220px] items-center gap-1.5 rounded-full border border-hairline bg-paper px-3 text-[12.5px] font-medium text-ink"
+            className="inline-flex h-11 max-w-[240px] items-center gap-1.5 rounded-full border border-hairline bg-paper px-3 text-[12.5px] font-medium text-ink"
           >
             <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-success" aria-hidden="true" />
             <span className="min-w-0 truncate">{targetSpaceName}</span>
@@ -97,7 +97,7 @@ export function QuickCaptureSheet({
             type="button"
             aria-label={t('mobile.voice.cancel')}
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-ink-faint hover:bg-ink/[0.06] hover:text-ink"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-ink-faint hover:bg-ink/[0.06] hover:text-ink"
           >
             <Icon name="close" size={14} />
           </button>
@@ -127,7 +127,7 @@ export function QuickCaptureSheet({
               onClose();
               onOpenVoice();
             }}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-ink/[0.06] text-ink-soft transition-colors hover:bg-ink/[0.1] hover:text-ink"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-ink/[0.06] text-ink-soft transition-colors hover:bg-ink/[0.1] hover:text-ink"
           >
             <Mic className="h-4 w-4" strokeWidth={1.85} aria-hidden="true" />
           </button>
@@ -137,7 +137,7 @@ export function QuickCaptureSheet({
             data-mobile-quick-send
             disabled={!canSend}
             onClick={() => { void submit(); }}
-            className="inline-flex h-10 items-center gap-1.5 rounded-full bg-accent px-5 text-[14px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-45"
+            className="inline-flex h-11 items-center gap-1.5 rounded-full bg-accent px-5 text-[14px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-45"
           >
             <span>{t('mobile.quick.send')}</span>
             <Icon name="arrowUp" size={14} />

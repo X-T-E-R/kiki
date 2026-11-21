@@ -209,6 +209,17 @@ export const GLOBAL_STORAGE_KEYS = [
   // Which settings navigation layout (`lib/settingsIaPrototype.ts`) this device
   // shows. It selects UI over generic buckets, never a home's own ids.
   'kiki.settingsIaPrototype',
+  // Device-level conversation read cursors and triage marks
+  // (`@kiki/session-core/settings` sessionReadState.ts / sessionTriage.ts);
+  // their keys inside the value are already space-qualified conversation refs.
+  'kiki.conversationSeen.v2',
+  'kiki.conversationTriage.v1',
+  // Resizable panel widths (`lib/panelLayoutStorage.ts`): a device layout over
+  // generic panel group ids, never a home's own ids.
+  'kiki.panels.',
+  // Sidebar persona order (`components/persona/SidebarPersonaSection.tsx`);
+  // device-level UI ordering, stored globally like the rest of the sidebar.
+  'kiki.sidebar.personaOrder',
 ] as const;
 
 /** `kiki.*` names that are deliberately neither of the above. */
@@ -234,4 +245,16 @@ export const EXCLUDED_STORAGE_KEYS = [
   // and neither may travel in a settings export — the second is a credential.
   'kiki.shell.managed',
   'kiki.peer.token',
+  // One-shot reload guard (`main.tsx`) in session storage for a stale Vite
+  // preload; it lives for one tab and is not a preference.
+  'kiki.vite-preload-reloaded',
+  // The `kiki.space.` namespace prefix itself, matched while scanning for a
+  // skin background stored by an older space (`lib/skins/background.ts`).
+  'kiki.space.',
+  // Phone view: this tab chose the desktop workbench over the mobile shell
+  // (`mobile/mobileShellRoute.ts`, session storage), a per-tab view choice.
+  'kiki.mobile.preferDesktop',
+  // Phone view: the device's last bound assistant chat per space
+  // (`mobile/mobileAssistantStore.ts`); its value is keyed by space inside.
+  'kiki.mobile.assistant.v1',
 ] as const;

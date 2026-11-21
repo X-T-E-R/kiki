@@ -130,7 +130,7 @@ import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
 import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
 import { androidBridge, subscribeAndroidHostEvents } from './lib/androidBridge';
-import { MOBILE_TODAY_PATH, mobileChatPath, normalizeDeepLinkRoute, readDesktopOverride, writeDesktopOverride } from './mobile/mobileShellRoute';
+import { MOBILE_ASSISTANT_PATH, mobileChatPath, normalizeDeepLinkRoute, readDesktopOverride, writeDesktopOverride } from './mobile/mobileShellRoute';
 import { SidebarContext } from './components/sidebarContext';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
@@ -1393,7 +1393,7 @@ function NormalApp() {
             data-return-mobile-chip
             onClick={() => {
               writeDesktopOverride(false);
-              void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_TODAY_PATH);
+              void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_ASSISTANT_PATH);
             }}
             className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-panel"
           >

@@ -3288,6 +3288,11 @@ export class KikiClient {
     return this.run(() => this.rest.personas.duplicate(id, options));
   }
 
+  /** Opens (or creates) the persona's home session and returns its id. */
+  ensurePersonaHome(id: string): Promise<{ readonly homeSessionId: string }> {
+    return this.run(() => this.rest.personas.ensureHome(id));
+  }
+
   archivePersona(id: string, archived: boolean): Promise<{ readonly version: 1; readonly archived: boolean }> {
     return this.run(() => this.rest.personas.archive(id, archived));
   }

@@ -168,7 +168,7 @@ export function SpacesTab({
           type="button"
           data-mobile-scan-qr
           onClick={() => { void handleScanQr(); }}
-          className="inline-flex h-9 items-center gap-1.5 rounded-full bg-ink px-3.5 text-[13px] font-medium text-paper"
+          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13.5px] font-medium text-paper"
         >
           <Icon name="plus" size={14} />
           <span>{t('mobile.spaces.pairAction')}</span>
@@ -228,7 +228,7 @@ export function SpacesTab({
                 <button
                   type="button"
                   onClick={() => { void handlePasteLink(); }}
-                  className="flex h-10 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[13px] font-medium text-ink-soft"
+                  className="flex h-11 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[13.5px] font-medium text-ink-soft"
                 >
                   {t('mobile.onboarding.pasteLink')}
                 </button>
@@ -236,7 +236,7 @@ export function SpacesTab({
                   type="button"
                   disabled={pairing || endpointInput.trim() === '' || codeInput.trim() === ''}
                   onClick={() => { void submitPair(); }}
-                  className="flex h-10 flex-1 items-center justify-center rounded-full bg-accent text-[13.5px] font-medium text-primary-foreground disabled:opacity-45"
+                  className="flex h-11 flex-1 items-center justify-center rounded-full bg-accent text-[13.5px] font-medium text-primary-foreground disabled:opacity-45"
                 >
                   {t('mobile.onboarding.connect')}
                 </button>
@@ -322,7 +322,7 @@ export function SpacesTab({
                           <button
                             type="button"
                             onClick={() => { void onRefreshRemotes(); }}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-ink px-3.5 text-[12px] font-medium text-paper"
+                            className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13px] font-medium text-paper"
                           >
                             <Icon name="refresh" size={12} />
                             <span>{t('mobile.space.retry')}</span>
@@ -333,9 +333,9 @@ export function SpacesTab({
                               setEndpointInput(record.endpoint);
                               setPairOpen(true);
                             }}
-                            className="inline-flex h-8 items-center rounded-full border border-hairline bg-panel px-3.5 text-[12px] font-medium text-ink-soft"
+                            className="inline-flex h-11 items-center rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft"
                           >
-                            {t('mobile.space.pairNew')}
+                            {t('mobile.space.repair')}
                           </button>
                         </div>
                       </div>
@@ -351,7 +351,7 @@ export function SpacesTab({
               {t('mobile.spaces.preferences')}
             </h2>
             <div className="divide-y divide-hairline/70 overflow-hidden rounded-2xl border border-hairline/90 bg-panel">
-              <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="flex items-center justify-between gap-3 py-1.5 pl-4 pr-1.5">
                 <span className="text-[14.5px] font-medium text-ink">{t('mobile.spaces.appearance')}</span>
                 <div className="flex items-center rounded-full bg-canvas p-0.5">
                   {(['system', 'light', 'dark'] as const).map((mode) => (
@@ -359,7 +359,7 @@ export function SpacesTab({
                       key={mode}
                       type="button"
                       onClick={() => { changeTheme(mode); }}
-                      className={`h-7 rounded-full px-2.5 text-[12px] font-medium transition-colors ${
+                      className={`h-11 min-w-11 rounded-full px-3 text-[13px] font-medium transition-colors ${
                         themePref === mode ? 'bg-panel text-ink shadow-xs' : 'text-ink-faint'
                       }`}
                     >
@@ -375,7 +375,7 @@ export function SpacesTab({
                 </div>
               </div>
 
-              <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="flex items-center justify-between gap-3 py-1.5 pl-4 pr-1.5">
                 <span className="text-[14.5px] font-medium text-ink">{t('mobile.spaces.language')}</span>
                 <div className="flex items-center rounded-full bg-canvas p-0.5">
                   {(['zh', 'en'] as const).map((lang) => (
@@ -383,7 +383,7 @@ export function SpacesTab({
                       key={lang}
                       type="button"
                       onClick={() => { setLocale(lang); }}
-                      className={`h-7 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                      className={`h-11 min-w-11 rounded-full px-3.5 text-[13px] font-medium transition-colors ${
                         locale === lang ? 'bg-panel text-ink shadow-xs' : 'text-ink-faint'
                       }`}
                     >

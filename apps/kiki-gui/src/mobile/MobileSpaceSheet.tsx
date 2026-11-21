@@ -84,19 +84,8 @@ export function MobileSpaceSheet({
       sheetClassName="kiki-space-switch-sheet rounded-t-[24px]!"
     >
       <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
-      <div className="flex items-center justify-between px-4 pb-3 pt-1">
+      <div className="flex h-11 items-center px-4 pb-1">
         <h2 className="text-[16px] font-semibold text-ink">{t('mobile.space.switchTitle')}</h2>
-        <button
-          type="button"
-          onClick={() => {
-            onClose();
-            onPairNew();
-          }}
-          className="inline-flex h-8 items-center gap-1 rounded-full bg-ink/[0.06] px-3 text-[12.5px] font-medium text-ink transition-colors hover:bg-ink/[0.1]"
-        >
-          <Icon name="plus" size={12} />
-          <span>{t('mobile.spaces.pairAction')}</span>
-        </button>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4">
@@ -173,7 +162,7 @@ export function MobileSpaceSheet({
                   ? running > 0
                     ? t('mobile.space.runningCount', { count: running })
                     : t('mobile.space.idle')
-                  : t('mobile.space.offline'),
+                  : undefined,
               ].filter((part): part is string => part !== undefined && part !== '');
 
               return (
@@ -203,7 +192,9 @@ export function MobileSpaceSheet({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[15px] font-medium text-ink">{record.label}</span>
-                      <span className="block truncate text-[12px] text-ink-faint">{subParts.join(' · ')}</span>
+                      {subParts.length > 0 ? (
+                        <span className="block truncate text-[12px] text-ink-faint">{subParts.join(' · ')}</span>
+                      ) : null}
                     </span>
                     {netTag !== null ? (
                       <span className="shrink-0 rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-soft">
@@ -224,7 +215,7 @@ export function MobileSpaceSheet({
                           setRetryingId(record.id);
                           void onRetryRemotes().finally(() => { setRetryingId(null); });
                         }}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-ink px-3 text-[12px] font-medium text-paper disabled:opacity-55"
+                        className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13px] font-medium text-paper disabled:opacity-55"
                       >
                         <Icon name="refresh" size={12} />
                         <span>{t('mobile.space.retry')}</span>
@@ -235,31 +226,34 @@ export function MobileSpaceSheet({
                           onClose();
                           onPairNew();
                         }}
-                        className="inline-flex h-8 items-center rounded-full border border-hairline bg-panel px-3 text-[12px] font-medium text-ink-soft"
+                        className="inline-flex h-11 items-center rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft"
                       >
-                        {t('mobile.space.pairNew')}
+                        {t('mobile.space.repair')}
                       </button>
                     </div>
                   ) : null}
                 </div>
               );
             })}
+
+            <button
+              type="button"
+              data-mobile-pair-new
+              onClick={() => {
+                onClose();
+                onPairNew();
+              }}
+              className="flex min-h-[56px] w-full items-center gap-3 px-3.5 py-2.5 text-left text-ink-soft transition-colors hover:bg-ink/[0.03] hover:text-ink"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-ink-soft">
+                <Icon name="plus" size={16} />
+              </span>
+              <span className="text-[15px] font-medium">{t('mobile.space.pairNew')}</span>
+            </button>
           </div>
         </div>
 
         <div className="flex flex-col gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              onPairNew();
-            }}
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-hairline bg-paper text-[14px] font-medium text-ink transition-colors hover:bg-ink/[0.03]"
-          >
-            <Icon name="plus" size={16} />
-            <span>{t('mobile.space.pairNew')}</span>
-          </button>
-
           <button
             type="button"
             data-mobile-open-workbench

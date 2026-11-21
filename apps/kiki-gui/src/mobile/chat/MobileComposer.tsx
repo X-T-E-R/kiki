@@ -45,7 +45,7 @@ export function MobileComposer({
     const el = textareaRef.current;
     if (el === null) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(132, Math.max(36, el.scrollHeight))}px`;
+    el.style.height = `${Math.min(132, Math.max(44, el.scrollHeight))}px`;
   }, [text]);
 
   const hasText = text.trim() !== '';
@@ -99,15 +99,15 @@ export function MobileComposer({
   return (
     <div
       data-mobile-composer
-      className="shrink-0 bg-paper px-3 pb-[max(10px,var(--kiki-safe-bottom-inset),var(--kiki-ime-offset,0px))] pt-2"
+      className="shrink-0 bg-paper px-3 pb-[max(10px,var(--kiki-safe-bottom-inset))] pt-2"
     >
-      <div className="mx-auto flex w-full max-w-[640px] items-end gap-1.5 rounded-[26px] border border-hairline bg-panel px-2 py-1.5 shadow-[0_2px_12px_-4px_rgb(var(--kiki-shadow-ink)/0.1)]">
+      <div className="mx-auto flex w-full max-w-[640px] items-end gap-1.5 rounded-[28px] border border-hairline bg-panel px-1.5 py-1.5 shadow-[0_2px_12px_-4px_rgb(var(--kiki-shadow-ink)/0.1)]">
         <button
           type="button"
           data-mobile-composer-plus
           aria-label={t('mobile.chat.options')}
           onClick={() => { setOptionsOpen(true); }}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink/[0.06] text-ink-soft transition-colors hover:bg-ink/[0.1] hover:text-ink"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-ink/[0.06] text-ink-soft transition-colors hover:bg-ink/[0.1] hover:text-ink"
         >
           <Icon name="plus" size={16} />
         </button>
@@ -125,7 +125,7 @@ export function MobileComposer({
             }
           }}
           placeholder={t('mobile.chat.composerPlaceholder', { space: spaceName })}
-          className="min-h-[36px] max-h-[132px] min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1.5 text-[16px] leading-[1.4] text-ink placeholder:text-ink-faint focus:outline-none"
+          className="min-h-[44px] max-h-[132px] min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[11px] text-[16px] leading-[1.4] text-ink placeholder:text-ink-faint focus:outline-none"
         />
 
         {hasText ? null : (
@@ -133,7 +133,7 @@ export function MobileComposer({
             type="button"
             aria-label={t('mobile.chat.dictate')}
             onClick={onOpenVoice}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
           >
             <Mic className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
           </button>
@@ -145,7 +145,7 @@ export function MobileComposer({
           aria-label={primaryLabel}
           disabled={sending}
           onClick={() => { void handlePrimaryAction(); }}
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50 ${
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50 ${
             primaryState === 'send' || primaryState === 'steer'
               ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
               : 'bg-ink text-paper'

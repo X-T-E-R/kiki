@@ -5,12 +5,12 @@ import type { ApprovalDecision, ApprovalRequest, QuestionRequest } from '@kiki/p
 import type { UnifiedInboxItem } from '@kiki/session-core/sessions';
 
 import { Icon } from '../../components/icons';
-import { ActionSheet } from '../../components/overlays/ActionSheet';
 import { RelativeTime } from '../../components/RelativeTime';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { pushToast } from '../../lib/toasts';
 import { isInlineDecidable, summarizeApproval } from '../approvalSummary';
+import { ApprovalHeadline, RejectReasonSheet } from './ApprovalParts';
 
 interface NeedsYouCardProps {
   readonly item: UnifiedInboxItem;
@@ -25,7 +25,6 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
   const [submitting, setSubmitting] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState('');
 
   const detailQuery = useQuery({
     queryKey: ['mobile-needs-you', item.spaceKey, item.sessionId, item.reason, item.lastSeq],
@@ -91,15 +90,11 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
           <RelativeTime at={item.at} className="shrink-0 tabular-nums" />
         </div>
 
-        <h3 className="line-clamp-2 text-[15px] font-medium leading-[1.4] text-ink">
-          {headline}
-        </h3>
-
-        {approvalSummary?.snippet !== undefined ? (
-          <pre className="mt-2 max-h-16 overflow-hidden text-ellipsis whitespace-pre-wrap break-all rounded-xl bg-canvas/90 px-3 py-2 font-mono text-[12px] leading-[1.45] text-ink-soft">
-            {approvalSummary.snippet}
-          </pre>
-        ) : null}
+        {approvalSummary !== undefined ? (
+          <ApprovalHeadline summary={approvalSummary} />
+        ) : (
+          <h3 className="line-clamp-2 text-[15px] font-medium leading-[1.4] text-ink">{headline}</h3>
+        )}
 
         <div className="mt-3 flex items-center gap-2">
           {firstApproval !== undefined && canDecideInline ? (
@@ -109,7 +104,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
                 data-mobile-approve-btn={firstApproval.approval_id}
                 disabled={submitting}
                 onClick={() => { void submitApproval('approved'); }}
-                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 text-[13.5px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-55"
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 text-[13.5px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-55"
               >
                 <Icon name="check" size={14} />
                 <span>{t('mobile.approval.approve')}</span>
@@ -119,7 +114,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
                 data-mobile-reject-btn={firstApproval.approval_id}
                 disabled={submitting}
                 onClick={() => { setRejectSheetOpen(true); }}
-                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
               >
                 <Icon name="cross" size={14} />
                 <span>{t('mobile.approval.reject')}</span>
@@ -130,7 +125,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
           <button
             type="button"
             onClick={onOpenThread}
-            className="ml-auto inline-flex h-10 shrink-0 items-center gap-1 rounded-full px-3 text-[13px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+            className="ml-auto inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-[13px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
           >
             <span>{t('mobile.approval.details')}</span>
             <Icon name="chevron" size={12} />
@@ -139,43 +134,13 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
       </article>
 
       {rejectSheetOpen && firstApproval !== undefined ? (
-        <ActionSheet
-          role="dialog"
-          ariaLabel={t('mobile.approval.rejectTitle')}
+        <RejectReasonSheet
           overlayId={`mobile-reject-${firstApproval.approval_id}`}
-          onClose={() => { setRejectSheetOpen(false); }}
-          sheetClassName="rounded-t-[24px]!"
-        >
-          <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
-          <div className="space-y-3 px-4 pb-4 pt-1">
-            <h3 className="text-[16px] font-semibold text-ink">{t('mobile.approval.rejectTitle')}</h3>
-            <p className="text-[13.5px] text-ink-soft">{headline}</p>
-            <textarea
-              rows={3}
-              value={rejectReason}
-              onChange={(event) => { setRejectReason(event.target.value); }}
-              placeholder={t('mobile.approval.rejectPlaceholder')}
-              className="w-full resize-none rounded-xl border border-hairline bg-paper px-3 py-2.5 text-[16px] text-ink placeholder:text-ink-faint focus:border-selected-ink focus:outline-none"
-            />
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => { setRejectSheetOpen(false); }}
-                className="flex h-11 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[14px] font-medium text-ink-soft"
-              >
-                {t('mobile.voice.cancel')}
-              </button>
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => { void submitApproval('rejected', rejectReason); }}
-                className="flex h-11 flex-1 items-center justify-center rounded-full bg-danger text-[14px] font-medium text-primary-foreground disabled:opacity-55"
-              >
-                {t('mobile.approval.rejectSubmit')}
-              </button>
-            </div>
-          </div>
-        </ActionSheet>
+          headline={approvalSummary?.snippet ?? headline}
+          submitting={submitting}
+          onCancel={() => { setRejectSheetOpen(false); }}
+          onSubmit={(reason) => { void submitApproval('rejected', reason); }}
+        />
       ) : null}
     </>
   );
