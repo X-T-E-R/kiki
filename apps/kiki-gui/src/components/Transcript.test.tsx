@@ -10002,6 +10002,117 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
+  it('handles same-microtask exhaustion from initial hasMoreHistory=true without false load-failed toast or retry pill', async () => {
+    resetTimelineLocatorsForTests();
+    clearToasts();
+    act(() => clearNavHistory());
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller, client } = await openLiveTranscript();
+    // Simulate an unverified live WS reset at t0 where hasMoreOlder starts true,
+    // then the older page returns empty + has_more: false ({ kind: 'exhausted', changed: false })
+    // in the same microtask before React commits the updated state prop.
+    const t0Reset = resetEvent('main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't0',
+        ordinal: 0,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: 'top prompt',
+        steps: [{
+          kind: 'step',
+          stepId: 't0.0',
+          turnId: 't0',
+          ordinal: 0,
+          state: 'completed',
+          frames: [{ kind: 'text', frameId: 'a0', role: 'assistant', text: 'top answer' }],
+        }],
+      }],
+      hasMoreOlder: true,
+    }), 1, true);
+    if (t0Reset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
+    controller.handleTranscript({
+      ...t0Reset,
+      coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: t0Reset.cursor } },
+    });
+    expect(controller.getState().hasMoreHistory).toBe(true);
+    client.getAgentTranscript.mockResolvedValue({
+      agent_id: 'main',
+      items: [],
+      has_more: false,
+      coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'live', readiness: 'partial', reason: 'source_unverified' },
+    });
+    const probe = makeRoot();
+    const location = { key: 'top-exhaust-race', pathname: '/s/session_top_exhaust_race', search: '', hash: '' };
+    const visit = recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action: 'PUSH' });
+    saveReadingSnapshot(visit.visitId, timelineSnapshotKey('session_top_exhaust_race'), {
+      anchor: { key: 'rekeyed-fold-key', atEnd: false, offset: 0 },
+      openFolds: [],
+      cardForms: {},
+    });
+    // Intentionally keep the rendered state snapshot frozen at the pre-exhaustion
+    // hasMoreHistory=true (plus a stale olderError on locate) to verify the
+    // synchronous controller read wins before React re-renders.
+    const initialRenderState = { ...controller.getState(), sessionId: 'session_top_exhaust_race', loaded: true, transcriptReady: true };
+    function Page() {
+      const loc = useLocation();
+      const action = useNavigationType();
+      useLayoutEffect(() => { recordNavigation({ location: loc, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [loc, action]);
+      return (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_top_exhaust_race" agentId="main">
+          {virtualTranscript(initialRenderState, (signal) => controller.loadOlderMessages('main', signal))}
+        </TranscriptDetailProvider>
+      );
+    }
+    const router = createMemoryRouter([{ path: '*', element: <I18nProvider><Page /></I18nProvider> }], { initialEntries: [location] });
+    try {
+      await act(async () => { probe.root.render(<RouterProvider router={router} />); });
+      await settleReadingFrames();
+      expect(controller.getState().hasMoreHistory).toBe(false);
+      expect(probe.container.querySelector('[data-reading-restore-retry]')).toBeNull();
+      expect(getToasts().filter((toast) => toast.tone === 'error')).toEqual([]);
+
+      // F2: locate() with initial hasMoreHistory=true + stale pre-render olderError settles as not-found when loadOlderHistory exhausts in the same microtask.
+      clearToasts();
+      controller.handleTranscript({
+        ...t0Reset,
+        cursor: { ...t0Reset.cursor, seq: 2 },
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: { ...t0Reset.cursor, seq: 2 } } },
+      });
+      expect(controller.getState().hasMoreHistory).toBe(true);
+      const staleErrorState = { ...controller.getState(), sessionId: 'session_top_exhaust_f2', loaded: true, transcriptReady: true, olderError: 'stale error before exhaust' };
+      function PageWithStaleError() {
+        const loc = useLocation();
+        const action = useNavigationType();
+        useLayoutEffect(() => { recordNavigation({ location: loc, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [loc, action]);
+        return (
+          <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_top_exhaust_f2" agentId="main">
+            {virtualTranscript(staleErrorState, (signal) => controller.loadOlderMessages('main', signal))}
+          </TranscriptDetailProvider>
+        );
+      }
+      const router2 = createMemoryRouter([{ path: '*', element: <I18nProvider><PageWithStaleError /></I18nProvider> }], { initialEntries: [{ key: 'top-exhaust-f2', pathname: '/s/session_top_exhaust_f2', search: '', hash: '' }] });
+      await act(async () => { probe.root.render(<RouterProvider router={router2} />); });
+      await settleReadingFrames();
+      const callsBeforeLocate = client.getAgentTranscript.mock.calls.length;
+      let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+      await act(async () => {
+        outcome = await locateInTimeline({ kind: 'subagent', agentId: 'missing-child' }, { sessionId: 'session_top_exhaust_f2' });
+      });
+      expect(client.getAgentTranscript.mock.calls.length).toBe(callsBeforeLocate + 1);
+      expect(outcome).toEqual({ status: 'not-found' });
+      expect(getToasts().filter((toast) => toast.tone === 'error')).toEqual([]);
+    } finally {
+      await act(async () => { probe.root.unmount(); });
+      controller.close();
+      clearToasts();
+      act(() => clearNavHistory());
+    }
+  });
+
   it('completes a deep-link locate across a slow initial load (>4s) and slow 15s/30s history pages without error rows, and stops on unmount or hard backend failure', async () => {
     resetTimelineLocatorsForTests();
     const { TranscriptDetailProvider } = await import('./transcriptDetail');

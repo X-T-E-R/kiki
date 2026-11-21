@@ -6994,8 +6994,11 @@ export const Transcript = memo(function Transcript({
       const structure = target.kind === 'turn' ? undefined : await readSeekStructure(signal);
       if (cancelled()) return cancelOutcome();
       if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
-      if (structure === undefined && !liveRef.current.hasMore) {
-        return { status: liveRef.current.olderError !== undefined ? 'load-failed' : 'not-found' };
+      const currentCtrlState = typeof controller?.getAgentState === 'function' ? controller.getAgentState(agentId) : undefined;
+      const currentHasMore = currentCtrlState?.hasMoreHistory ?? liveRef.current.hasMore;
+      const currentOlderError = currentCtrlState !== undefined ? currentCtrlState.olderError : liveRef.current.olderError;
+      if (structure === undefined && !currentHasMore) {
+        return { status: currentOlderError !== undefined ? 'load-failed' : 'not-found' };
       }
       let loadKind: 'advanced' | 'exhausted' | 'preparing' | 'failed' | 'cancelled' | undefined;
       const loadedMore = structure ?? (target.kind === 'turn' && controller !== undefined
@@ -7025,10 +7028,15 @@ export const Transcript = memo(function Transcript({
       } else if (cancelled() || loadKind === 'cancelled') {
         return cancelOutcome();
       }
-      if (loadKind === 'failed' || liveRef.current.loadError !== undefined || liveRef.current.olderError !== undefined) return { status: 'load-failed' };
+      const postCtrlState = typeof controller?.getAgentState === 'function' ? controller.getAgentState(agentId) : undefined;
+      const postHasMore = postCtrlState?.hasMoreHistory ?? liveRef.current.hasMore;
+      const postOlderError = postCtrlState !== undefined ? postCtrlState.olderError : liveRef.current.olderError;
+      if (loadKind === 'failed' || liveRef.current.loadError !== undefined || (loadKind !== 'exhausted' && postOlderError !== undefined)) {
+        return { status: 'load-failed' };
+      }
       hit = resolve();
       if (!loadedMore && hit === undefined) {
-        return { status: loadKind === 'exhausted' || !liveRef.current.hasMore ? 'not-found' : 'load-failed' };
+        return { status: loadKind === 'exhausted' || !postHasMore ? 'not-found' : 'load-failed' };
       }
     }
     if (hit.foldId !== undefined) {
@@ -7155,8 +7163,17 @@ export const Transcript = memo(function Transcript({
     const request = new AbortController();
     seekRequestRef.current = request;
     const signal = anySignal([request.signal, restoreSignal]);
-    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current ||
+    let lastLoadKind: 'advanced' | 'exhausted' | 'preparing' | 'failed' | 'cancelled' | undefined;
+    const cancelled = () => lastLoadKind === 'cancelled' || signal.aborted || intent !== readingIntentRef.current || !visibleRef.current ||
       (scrollRef.current !== null && !scrollRef.current.isConnected);
+    const liveOlderState = () => {
+      const ctrlState = typeof controller?.getAgentState === 'function' ? controller.getAgentState(agentId) : undefined;
+      return {
+        hasMore: ctrlState?.hasMoreHistory ?? liveRef.current.hasMore,
+        olderError: ctrlState !== undefined ? ctrlState.olderError : liveRef.current.olderError,
+        contentRefs: ctrlState?.contentRefs ?? stateRef.current.contentRefs,
+      };
+    };
     const anchorFallback = { memberId: snapshot.anchor.memberId, turnId: snapshot.anchor.turnId };
     const adapter: TimelineReadingAdapter = {
       applyFolds: async (value) => {
@@ -7168,17 +7185,24 @@ export const Transcript = memo(function Transcript({
         await nextFrame();
       },
       hasAnchor: (key) => resolveAnchorRow(key, anchorFallback) !== undefined,
-      hasMore: () =>
-        liveRef.current.hasMore ||
-        liveRef.current.olderError !== undefined ||
-        (controller === undefined && liveRef.current.coverage === 'unknown' && !liveRef.current.fetchedOlder) ||
-        stateRef.current.contentRefs?.some((ref) => ref.source.kind === 'turn' && ref.path[0] === 'steps') === true,
+      hasMore: () => {
+        if (lastLoadKind === 'exhausted') return false;
+        const current = liveOlderState();
+        return (
+          current.hasMore ||
+          current.olderError !== undefined ||
+          (controller === undefined && liveRef.current.coverage === 'unknown' && !liveRef.current.fetchedOlder) ||
+          current.contentRefs?.some((ref) => ref.source.kind === 'turn' && ref.path[0] === 'steps') === true
+        );
+      },
       loadOlder: async () => {
+        lastLoadKind = undefined;
         const structure = await readSeekStructure(signal);
         if (cancelled()) return false;
         if (structure !== undefined) return structure;
         if (controller !== undefined) {
           const result = await controller.loadOlderHistory(agentId, signal);
+          lastLoadKind = result.kind;
           if (result.changed || cancelled()) return result.changed;
           if (result.kind !== 'preparing') return false;
           await new Promise<void>((resolve) => { setTimeout(resolve, 80); });
@@ -7186,7 +7210,7 @@ export const Transcript = memo(function Transcript({
         }
         return loadOlderRef.current(signal);
       },
-      hasLoadError: () => liveRef.current.olderError !== undefined,
+      hasLoadError: () => lastLoadKind === 'failed' || (lastLoadKind !== 'exhausted' && liveOlderState().olderError !== undefined),
       nextFrame,
       restoreAnchor: async (anchor) => {
         // The saved anchor is the reader's place even while this timeline sits
