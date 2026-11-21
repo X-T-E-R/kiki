@@ -476,7 +476,7 @@ class KikiWebActivity : ComponentActivity() {
                     val initialUrl = if (normalizedRoute != null) {
                         "${state.origin}$normalizedRoute"
                     } else {
-                        "${state.origin}/m/today"
+                        "${state.origin}/m/assistant"
                     }
                     wv.loadUrl(initialUrl)
                 }
