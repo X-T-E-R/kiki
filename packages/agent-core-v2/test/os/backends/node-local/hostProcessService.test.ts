@@ -1,12 +1,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:net';
+import { constants as osConstants, getPriority, tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import type { IHostProcess } from '#/os/interface/hostProcess';
+import { connectWindowsHelperPipe } from '#/os/backends/node-local/windowsProcessTree';
 
 import { EventEmitter } from 'node:events';
 import { PassThrough, Readable } from 'node:stream';
@@ -1206,5 +1209,38 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     expect(await nodeProc.wait()).toBe(0);
     await nodeProc.dispose();
     expect(chunks.join('')).toBe(hugeLine);
+  });
+
+  it('keeps helper supervisor above-normal priority while spawning root command at normal priority, and connects across event-loop stalls', async () => {
+    const proc = await spawnOwned(
+      process.execPath,
+      ['-e', 'process.stdout.write("ready\\n");setTimeout(()=>{},15000)'],
+      { ownedProcessLifetime: 'owner' },
+    );
+    proc.stdin.end();
+    const helperPid = (proc as unknown as { child: { pid: number } }).child.pid;
+    expect(getPriority(helperPid)).toBe(osConstants.priority.PRIORITY_ABOVE_NORMAL);
+    expect(getPriority(proc.pid)).toBe(osConstants.priority.PRIORITY_NORMAL);
+    await proc.kill();
+    await proc.dispose();
+
+    const pipeName = `kiki-stall-test-${randomUUID()}`;
+    const server = createServer((conn) => { conn.destroy(); });
+    let clock = 1_000;
+    let reads = 0;
+    const now = (): number => {
+      reads += 1;
+      if (reads === 3) {
+        server.listen(`\\\\.\\pipe\\${pipeName}`);
+        clock = 6_500;
+      }
+      return clock;
+    };
+    try {
+      const socket = await connectWindowsHelperPipe(pipeName, { pid: process.pid, exitCode: null, signalCode: null }, 5_000, now);
+      socket.destroy();
+    } finally {
+      await new Promise<void>((resolveClose) => { server.close(() => { resolveClose(); }); });
+    }
   });
 });

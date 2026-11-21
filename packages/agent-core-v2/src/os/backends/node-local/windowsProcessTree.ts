@@ -5,6 +5,7 @@ import { constants as osConstants, setPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { connect, type Socket } from 'node:net';
 import { resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { Writable, type Readable } from 'node:stream';
 
 import { BufferedReadable } from '@kiki/kaos/exec-env';
@@ -12,11 +13,19 @@ import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/
 
 import { quoteWindowsArgument } from './windowsCommandLine';
 
+const LAUNCH_TIMEOUT_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 const STREAM_EOF_IDLE_MS = 250;
 const STREAM_EOF_MAX_MS = 2_000;
 const RELEASE_EXIT_CAPABILITY = 'release-exit-v2';
 const UNRELEASED_EXIT_CODE = 6;
+
+class HelperPipeTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HelperPipeTimeoutError';
+  }
+}
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -26,12 +35,22 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   return { promise, resolve, reject };
 }
 
-async function connectControl(name: string, child: ChildProcess): Promise<Socket> {
-  const deadline = Date.now() + CONTROL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+export async function connectWindowsHelperPipe(
+  name: string,
+  child: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode'>,
+  timeoutMs = LAUNCH_TIMEOUT_MS,
+  now: () => number = () => performance.now(),
+): Promise<Socket> {
+  const startedAt = now();
+  const deadline = startedAt + timeoutMs;
+  let finalCheckAfterWake = false;
+  let attempts = 0;
+  let lastCode: string | undefined;
+  for (;;) {
     if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
       throw new Error(`Windows process helper exited before connecting (code ${String(child.exitCode)}).`);
     }
+    attempts += 1;
     const socket = connect({ path: `\\\\.\\pipe\\${name}`, allowHalfOpen: true });
     const result = await new Promise<Socket | NodeJS.ErrnoException>((done) => {
       socket.once('connect', () => done(socket));
@@ -40,10 +59,16 @@ async function connectControl(name: string, child: ChildProcess): Promise<Socket
     if (result === socket) return socket;
     socket.destroy();
     const error = result as NodeJS.ErrnoException;
+    lastCode = error.code;
     if (error.code !== 'ENOENT' && error.code !== 'ECONNREFUSED') throw error;
+    if (finalCheckAfterWake || now() >= deadline) break;
     await new Promise<void>((done) => { setTimeout(done, 20); });
+    if (now() >= deadline) finalCheckAfterWake = true;
   }
-  throw new Error('Windows process helper connection timed out. Check that .NET Framework 4 is enabled.');
+  const elapsedMs = Math.max(0, Math.round(now() - startedAt));
+  throw new HelperPipeTimeoutError(
+    `Windows process helper connection timed out after ${String(elapsedMs)}ms (${String(attempts)} attempts, last=${String(lastCode ?? 'none')}).`,
+  );
 }
 
 class WindowsProcessTree implements IHostProcess {
@@ -135,7 +160,7 @@ class WindowsProcessTree implements IHostProcess {
   get exitCode(): number | null { return this.code; }
 
   async initialize(): Promise<void> {
-    this.rootPid = await this.withDeadline(this.ready.promise, 'launch');
+    this.rootPid = await this.withDeadline(this.ready.promise, 'launch', LAUNCH_TIMEOUT_MS);
     if (this.rootPid > 0) {
       try {
         setPriority(this.rootPid, osConstants.priority.PRIORITY_NORMAL);
@@ -359,38 +384,32 @@ class WindowsProcessTree implements IHostProcess {
     });
   }
 
-  private async withDeadline<T>(promise: Promise<T>, phase: string): Promise<T> {
+  private async withDeadline<T>(promise: Promise<T>, phase: string, timeoutMs = CONTROL_TIMEOUT_MS): Promise<T> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         promise,
         new Promise<never>((_done, fail) => {
-          timeout = setTimeout(() => { fail(this.killError(phase, 'Windows process helper did not confirm cleanup before its deadline.')); }, CONTROL_TIMEOUT_MS);
+          timeout = setTimeout(() => { fail(this.killError(phase, 'Windows process helper did not confirm cleanup before its deadline.')); }, timeoutMs);
         }),
       ]);
     } finally { clearTimeout(timeout); }
   }
 }
 
-export async function spawnWindowsProcessTree(command: string, args: readonly string[], options: SpawnOptions, mergeStderr: boolean, ownerLifetime = false): Promise<WindowsProcessTree> {
-  const helper = process.env['KIKI_WINDOWS_PROCESS_HELPER'] ?? [
-    './windows-process-helper.exe',
-    './native/windows-process-helper.exe',
-    '../../../../dist/windows-process-helper.exe',
-  ].map((path) => fileURLToPath(new URL(path, import.meta.url))).find(existsSync);
-  if (!helper) {
-    throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Windows Bash process helper is missing. Rebuild or reinstall Kiki with its native assets.', {
-      details: { command, phase: 'helper', helperMissing: true },
-    });
-  }
-  const commandLine = [quoteWindowsArgument(command), ...args.map((arg) => options.windowsVerbatimArguments ? arg : quoteWindowsArgument(arg))].join(' ');
+async function launchWindowsProcessTreeOnce(
+  helper: string,
+  command: string,
+  encoded: readonly string[],
+  options: SpawnOptions,
+  mergeStderr: boolean,
+  ownerLifetime: boolean,
+): Promise<WindowsProcessTree> {
   const name = `kiki-owned-${randomUUID()}`;
-  const encoded = [command, commandLine, resolve(options.cwd?.toString() ?? process.cwd())]
-    .map((value) => Buffer.from(value).toString('base64'));
   const child = spawn(helper, [name], { ...options, stdio: 'ignore', shell: false });
   if (child.pid !== undefined) {
     try {
-      setPriority(child.pid, osConstants.priority.PRIORITY_NORMAL);
+      setPriority(child.pid, osConstants.priority.PRIORITY_ABOVE_NORMAL);
     } catch {
     }
   }
@@ -400,10 +419,10 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
   const onError = (error: Error): void => { spawnError.reject(error); };
   child.once('error', onError);
   try {
-    const control = await Promise.race([connectControl(name, child), spawnError.promise]);
+    const control = await Promise.race([connectWindowsHelperPipe(name, child), spawnError.promise]);
     sockets.push(control);
     const [input, output, error] = await Promise.all(['in', 'out', 'err'].map(async (suffix) => {
-      const socket = await connectControl(`${name}-${suffix}`, child);
+      const socket = await connectWindowsHelperPipe(`${name}-${suffix}`, child);
       sockets.push(socket);
       return socket;
     }));
@@ -419,10 +438,36 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
     if (processTree !== undefined) {
       try { await processTree.dispose(); } catch { }
     }
+    throw error;
+  } finally { child.off('error', onError); }
+}
+
+export async function spawnWindowsProcessTree(command: string, args: readonly string[], options: SpawnOptions, mergeStderr: boolean, ownerLifetime = false): Promise<WindowsProcessTree> {
+  const helper = process.env['KIKI_WINDOWS_PROCESS_HELPER'] ?? [
+    './windows-process-helper.exe',
+    './native/windows-process-helper.exe',
+    '../../../../dist/windows-process-helper.exe',
+  ].map((path) => fileURLToPath(new URL(path, import.meta.url))).find(existsSync);
+  if (!helper) {
+    throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Windows Bash process helper is missing. Rebuild or reinstall Kiki with its native assets.', {
+      details: { command, phase: 'helper', helperMissing: true },
+    });
+  }
+  const commandLine = [quoteWindowsArgument(command), ...args.map((arg) => options.windowsVerbatimArguments ? arg : quoteWindowsArgument(arg))].join(' ');
+  const encoded = [command, commandLine, resolve(options.cwd?.toString() ?? process.cwd())]
+    .map((value) => Buffer.from(value).toString('base64'));
+  try {
+    try {
+      return await launchWindowsProcessTreeOnce(helper, command, encoded, options, mergeStderr, ownerLifetime);
+    } catch (firstError) {
+      if (!(firstError instanceof HelperPipeTimeoutError)) throw firstError;
+      return await launchWindowsProcessTreeOnce(helper, command, encoded, options, mergeStderr, ownerLifetime);
+    }
+  } catch (error) {
     throw new HostProcessError(HostProcessErrorCode.SpawnFailed, `Failed to start Windows Bash process helper: ${error instanceof Error ? error.message : String(error)}`, {
       details: { command, helper, phase: 'launch' }, cause: error,
     });
-  } finally { child.off('error', onError); }
+  }
 }
 
 function waitSocketEndWithIdleGrace(socket: Socket): Promise<void> {

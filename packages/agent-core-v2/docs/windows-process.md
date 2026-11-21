@@ -8,7 +8,7 @@ Local Windows Bash opts into `HostProcessOptions.ownedProcessTree` with `ownedPr
 
 ## Launch and cleanup
 
-The precompiled helper starts the root suspended, assigns it to the Job, then resumes it. Launch arguments travel over a private named pipe rather than the helper command line. Separate pipes preserve stdin EOF and binary stdout/stderr. Pipe access is limited to the current Windows identity.
+The precompiled helper runs at `PRIORITY_ABOVE_NORMAL` so CPU-bound server workers cannot starve Job supervision, starts the root suspended at `NORMAL_PRIORITY_CLASS`, assigns it to the Job, then resumes it. Launch arguments travel over a private named pipe rather than the helper command line, with a 30-second pipe/launch handshake budget, a post-wake connection check across event-loop stalls, and one side-effect-free retry if pipe connection times out before the launch request is written. Separate pipes preserve stdin EOF and binary stdout/stderr. Pipe access is limited to the current Windows identity.
 
 Cancellation and timeout terminate the Job even if its root already exited. Cleanup requires an `active:0` acknowledgement or the exited-helper kill-on-close evidence described below. Normal completion depends on the selected lifetime:
 

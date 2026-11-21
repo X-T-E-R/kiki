@@ -448,7 +448,7 @@ public static class WindowsProcessHelper
             using (var pipe = new NamedPipeServerStream(args[0], PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, security))
             {
                 var connection = pipe.BeginWaitForConnection(null, null);
-                if (!connection.AsyncWaitHandle.WaitOne(10000)) return 3;
+                if (!connection.AsyncWaitHandle.WaitOne(30000)) return 3;
                 pipe.EndWaitForConnection(connection);
                 connection.AsyncWaitHandle.Close();
                 input.WaitForConnection();
@@ -474,7 +474,7 @@ public static class WindowsProcessHelper
                         startup.input = input.SafePipeHandle.DangerousGetHandle();
                         startup.output = output.SafePipeHandle.DangerousGetHandle();
                         startup.error = launch[3] == "merge" ? startup.output : errorPipe.SafePipeHandle.DangerousGetHandle();
-                        Check(CreateProcess(Encoding.UTF8.GetString(Convert.FromBase64String(launch[0])), Encoding.UTF8.GetString(Convert.FromBase64String(launch[1])), IntPtr.Zero, IntPtr.Zero, true, 0x08000004, IntPtr.Zero, Encoding.UTF8.GetString(Convert.FromBase64String(launch[2])), ref startup, out child), "CreateProcess");
+                        Check(CreateProcess(Encoding.UTF8.GetString(Convert.FromBase64String(launch[0])), Encoding.UTF8.GetString(Convert.FromBase64String(launch[1])), IntPtr.Zero, IntPtr.Zero, true, 0x08000024, IntPtr.Zero, Encoding.UTF8.GetString(Convert.FromBase64String(launch[2])), ref startup, out child), "CreateProcess");
                         Check(AssignProcessToJobObject(job, child.process), "AssignProcessToJobObject");
                         input.Dispose();
                         output.Dispose();
