@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "kiki-desktop"
-version = "0.6.0-beta.2"
+version = "0.6.0-beta.3"
 dependencies = [
  "block2",
  "dirs",
