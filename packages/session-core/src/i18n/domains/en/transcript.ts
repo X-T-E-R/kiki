@@ -498,6 +498,8 @@ export const transcriptEn = {
   'transcript.durationUnknown': 'duration unknown',
   'transcript.edit': 'edit',
   'transcript.editAttachmentsLoadFailed': 'This message\'s attachments did not load.',
+  'transcript.editCommandEffect': 'This sends a plain message instead of the command and replaces the conversation from here.',
+  'transcript.editEffect': 'Resending replaces the conversation from this message onward. Fork to keep the original.',
   'transcript.editSubmit': 'Resend',
   'transcript.editSubmitTitle': 'Replace the original message and rerun from here',
   'transcript.editTitle': 'Edit this message and resend it',

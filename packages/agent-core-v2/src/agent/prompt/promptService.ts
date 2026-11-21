@@ -1601,12 +1601,10 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async enqueueNow(input: PromptInput): Promise<PromptHandle> {
-    const mailboxMessageId =
-      input.message.origin?.kind === 'peer_thread' || input.message.origin?.kind === 'bridged_peer' || input.message.origin?.kind === 'room_message'
-        ? input.message.origin.messageId
-        : undefined;
-    if (mailboxMessageId !== undefined) {
-      const existing = this.findMailboxOriginHandle(mailboxMessageId);
+    const origin = input.message.origin;
+    if (input.alreadyMaterialized !== true &&
+        (origin?.kind === 'peer_thread' || origin?.kind === 'bridged_peer' || origin?.kind === 'room_message')) {
+      const existing = this.findMailboxOriginHandle(origin.messageId);
       if (existing !== undefined) return existing;
     }
     const id = input.id ?? input.message.id ?? newMessageId();

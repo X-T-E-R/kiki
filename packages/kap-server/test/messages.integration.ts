@@ -22,6 +22,12 @@ import {
   IModelCatalog,
   ISessionInteractionService,
   ISessionManager,
+  ISessionContext,
+  ISessionActivityView,
+  IThreadCommunicationService,
+  IThreadCreateTool,
+  peerSendCapability,
+  SEND_PEER_THREAD_MESSAGE,
   IWorkspaceInstanceManager,
   closeSessionById,
   resumeSessionById,
@@ -35,6 +41,9 @@ import { createKlient } from '@kiki/klient/http';
 import { WebSocket } from 'ws';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { createSessionTransport } from '../../session-core/src/session/klientTransport';
+import { agentTranscriptToBlocks, assistantMessageIdFromBlock } from '../../session-core/src/session/transcript';
+import { projectMessageView } from '../../session-core/src/session/messageView';
+import type { TranscriptResponse } from '@kiki/transcript';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
@@ -85,11 +94,13 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
   let modelRequestCount = 0;
   let modelRequestMode: 'complete' | 'pending' = 'complete';
   let modelRequestStarted: (() => void) | undefined;
+  let modelRequestGate: Promise<void> | undefined;
 
   beforeEach(async () => {
     modelRequestCount = 0;
     modelRequestMode = 'complete';
     modelRequestStarted = undefined;
+    modelRequestGate = undefined;
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-messages-'));
     const fixtureModel = {
       id: 'stub',
@@ -120,6 +131,12 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
         model: fixtureModel,
         request: async function* (_input, signal) {
           modelRequestCount += 1;
+          if (modelRequestGate !== undefined) {
+            const gate = modelRequestGate;
+            modelRequestGate = undefined;
+            modelRequestStarted?.();
+            await gate;
+          }
           if (modelRequestMode === 'pending') {
             modelRequestStarted?.();
             yield { type: 'part' as const, part: { type: 'text' as const, text: 'partial answer' } };
@@ -964,6 +981,26 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     }
   });
 
+  it('refuses regeneration when its reply belongs to another turn or a newer input is present', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'prior_input', role: 'user', content: [{ type: 'text', text: 'Earlier input' }], toolCalls: [], source: { turnId: 0 } },
+      { id: 'system_reply', role: 'assistant', content: [{ type: 'text', text: 'Independent reply' }], toolCalls: [], source: { turnId: 1 } },
+    ]);
+    const path = `/api/sessions/${id}/messages/system_reply:regenerate`;
+    const orphan = await postJson(path, { expected_cursor: await stableCursor(id) });
+    expect(orphan).toMatchObject({ code: 40936, details: { reason: 'assistant_has_no_completed_user_turn' } });
+    const stale = await stableCursor(id);
+    await seedMainAgentMessages(id, [
+      { id: 'failed_input', role: 'user', content: [{ type: 'text', text: 'New input with no reply' }], toolCalls: [], source: { turnId: 2 } },
+    ]);
+    const fork = await postJson(`/api/sessions/${id}:fork`, { through_message_id: 'prior_input', expected_cursor: { ...stale, epoch: 'earlier-epoch' } });
+    expect(fork.code).toBe(40937);
+    const superseded = await postJson(path, { expected_cursor: await stableCursor(id) });
+    expect(superseded).toMatchObject({ code: 40936, details: { reason: 'not_latest_final_assistant' } });
+    expect((await getJson<PageWire>(`/api/sessions/${id}/messages`)).body.data.items.map((item) => item.id)).toEqual(['failed_input', 'system_reply', 'prior_input']);
+  });
+
   it('rejects unsupported message roles with MESSAGE_ACTION_UNAVAILABLE', async () => {
     const id = await createSession();
     await seedMainAgentMessages(id, [
@@ -1044,6 +1081,38 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       expected_cursor: await cursor(id),
     });
     expect(result.code).toBe(40911);
+    expect(result.details).toMatchObject({ reason: 'compaction_boundary' });
+  });
+
+  it('edits and reruns a slash-origin prompt after compaction, preserving its voice part on rerun', async () => {
+    const { id, main } = await createTerminalPrompt('compact this prefix');
+    const context = main.accessor.get(IAgentContextMemoryService);
+    const compactedCount = context.get().length;
+    context.applyCompaction({ summary: 'Compacted prefix', compactedCount, tokensBefore: 20, tokensAfter: 5, keptUserMessageCount: 0, droppedCount: compactedCount });
+    await main.accessor.get(IWireService).flush();
+    const voice = { type: 'audio_url', audioUrl: { url: 'data:audio/ogg;base64,T2dnUw==', name: 'voice.ogg' } } as const;
+    const prompt = await main.accessor.get(IAgentPromptService).enqueue({
+      id: 'slash-input', message: { role: 'user', content: [{ type: 'text', text: 'Slash input' }, voice], toolCalls: [],
+        origin: { kind: 'plugin_command', trigger: 'user-slash', activationId: 'fixture-activation', pluginId: 'fixture', commandName: 'say' } },
+    });
+    await prompt.completion;
+    await waitForTerminal(main);
+    const blocks = await readActionBlocks(id);
+    expect(blocks.find(block => block.kind === 'user' && block.userMessageId === 'slash-input')).toMatchObject({ text: '/say' });
+    const reply = blocks.findLast(block => block.kind === 'assistant')!;
+    const regenerated = await postJson<PromptWire>(`/api/sessions/${id}/messages/${assistantMessageIdFromBlock(reply)}:regenerate`, {
+      expected_cursor: await stableCursor(id),
+    });
+    expect(regenerated.code, JSON.stringify(regenerated)).toBe(0);
+    await waitForTerminal(main);
+    expect(context.get().find(message => message.id === 'slash-input')?.content).toEqual([{ type: 'text', text: 'Slash input' }, voice]);
+    const edited = await postJson<PromptWire>(`/api/sessions/${id}/messages/slash-input:edit`, {
+      content: [{ type: 'text', text: 'Plain replacement' }], expected_cursor: await stableCursor(id),
+    });
+    expect(edited.code, JSON.stringify(edited)).toBe(0);
+    await waitForTerminal(main);
+    expect(context.get().find(message => message.id === 'slash-input')).toMatchObject({ origin: { kind: 'user' }, content: [{ type: 'text', text: 'Plain replacement' }] });
+    expect(context.get().some(message => message.origin?.kind === 'compaction_summary')).toBe(true);
   });
 
   it('returns 40403 for a message id not present in the session', async () => {
@@ -1400,6 +1469,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
         });
         expect(edited.content).toEqual([
           { type: 'text', text: `edited via ${source.kind}` },
+          expect.objectContaining({ type: 'text', presentation: { spans: [expect.objectContaining({ kind: 'attachment' })] } }),
           { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'sent.png' },
         ]);
         await waitForTerminal(main);
@@ -1433,6 +1503,161 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(result.code).toBe(40407);
     const after = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     expect(after.body.data.items).toEqual(before.body.data.items);
+  });
+
+  async function readActionBlocks(id: string) {
+    const { body } = await getJson<TranscriptResponse>(`/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`);
+    expect(body.code, JSON.stringify(body)).toBe(0);
+    return agentTranscriptToBlocks(body.data);
+  }
+
+  it('forks, edits and regenerates the initial prompt from ThreadCreate across a server restart', async () => {
+    const source = await createSession();
+    const caller = await ensureMainAgent(getLiveSessionById(server!.core.accessor, source)!);
+    const execution = await caller.accessor.get(IThreadCreateTool).resolveExecution({ prompt: 'Created thread task', model_alias: 'stub', effort: 'high' });
+    if (!('execute' in execution)) throw new Error(JSON.stringify(execution.output));
+    const created = await execution.execute({ turnId: 0, toolCallId: 'create-thread', signal: new AbortController().signal });
+    if (created.isError === true || typeof created.output !== 'string') throw new Error(JSON.stringify(created.output));
+    const { id } = JSON.parse(created.output) as { id: string };
+    const main = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
+    await waitForTerminal(main);
+    expect(await readMainWireRecords(main)).toContainEqual(expect.objectContaining({ type: 'turn.prompt', turnId: 0, origin: { kind: 'system_trigger', name: 'thread_create' } }));
+
+    const blocks = await readActionBlocks(id);
+    const input = blocks.filter((block) => block.kind === 'user').find((block) => block.text === 'Created thread task');
+    if (input?.userMessageId === undefined) throw new Error('ThreadCreate input has no user message ID');
+    const userMessageId = input.userMessageId;
+    const reply = blocks.findLast((block) => block.kind === 'assistant')!;
+    const replyId = assistantMessageIdFromBlock(reply)!;
+    expect(replyId).toBeTruthy();
+    expect(projectMessageView(blocks, { completedTurnIds: ['t0'] })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'message', origin: 'ordinary_final', messageId: replyId }),
+    ]));
+
+    const fork = await postJson<{ id: string; forked_from: unknown }>(`/api/sessions/${id}:fork`, {
+      through_message_id: replyId, expected_cursor: await stableCursor(id), seed: 'verbatim',
+    });
+    expect(fork.code, JSON.stringify(fork)).toBe(0);
+    expect(fork.data.forked_from).toMatchObject({ turn_index: 0, through_user_message: false });
+    expect((await readActionBlocks(fork.data.id)).some((block) => block.kind === 'assistant' && block.text === 'fixture answer')).toBe(true);
+
+    await server!.close();
+    await boot();
+    expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    const regeneratePath = `/api/sessions/${id}/messages/${replyId}:regenerate`;
+    let regenerated = await postJson<PromptWire>(regeneratePath, { expected_cursor: await stableCursor(id) });
+    if (regenerated.code === 40901) {
+      expect(regenerated.details).toMatchObject({ reason: 'background_work' });
+      const activity = getLiveSessionById(server!.core.accessor, id)!.accessor.get(ISessionActivityView);
+      await vi.waitFor(() => expect(activity.state().busy).toBe(false));
+      regenerated = await postJson<PromptWire>(regeneratePath, { expected_cursor: await stableCursor(id) });
+    }
+    expect(regenerated.code, JSON.stringify(regenerated)).toBe(0);
+    expect(regenerated.data.user_message_id).toBe(userMessageId);
+    const restored = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
+    await waitForTerminal(restored);
+
+    const edited = await postJson<PromptWire>(`/api/sessions/${id}/messages/${userMessageId}:edit`, {
+      content: [{ type: 'text', text: 'Edited thread task' }], expected_cursor: await stableCursor(id),
+    });
+    expect(edited.code, JSON.stringify(edited)).toBe(0);
+    expect(edited.data.user_message_id).toBe(userMessageId);
+    await waitForTerminal(restored);
+    expect(modelRequestCount).toBe(3);
+    const checkEdited = async () => expect((await readActionBlocks(id)).filter((block) => block.kind === 'user')).toMatchObject([
+      { userMessageId, text: 'Edited thread task', sourceOrigin: { kind: 'system_trigger', name: 'thread_create' } },
+    ]);
+    await checkEdited();
+    await closeSessionById(server!.core.accessor, id);
+    await checkEdited();
+  });
+
+  it.each([['ThreadSend', 0], ['ThreadSend', 1], ['targeted room message', 0]] as const)('edits, forks and reruns a %s input at turn %i', async (producer, turn) => {
+    const source = await createSession();
+    const target = turn === 0 ? { id: await createSession() } : await createTerminalPrompt('Earlier turn');
+    const core = server!.core.accessor;
+    const session = getLiveSessionById(core, target.id)!;
+    const main = await ensureMainAgent(session);
+    if (turn === 0) await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const service = core.get(IThreadCommunicationService);
+    const thread = { hostId: 'local', workspaceId, sessionId: target.id };
+    const delivery = producer === 'ThreadSend'
+      ? await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+        source: { ...thread, sessionId: source }, target: thread,
+        content: 'Inbound task', idempotencyKey: 'send-thread-task', allowWhenDisabled: true,
+      })
+      : await service.sendRoomMessage({ target: thread, roomId: 'fixture-room', targeted: true,
+        content: 'Inbound task', idempotencyKey: 'send-room-task' });
+    const kind = producer === 'ThreadSend' ? 'peer_thread' : 'room_message';
+    await vi.waitFor(() => expect(modelRequestCount).toBe(turn + 1));
+    await waitForTerminal(main);
+    const blocks = await readActionBlocks(target.id);
+    expect(blocks.findLast((block) => block.kind === 'user')).toMatchObject({ userMessageId: delivery.messageId, sourceOrigin: { kind } });
+    const reply = blocks.findLast((block) => block.kind === 'assistant')!;
+    const fork = await postJson<{ forked_from: unknown }>(`/api/sessions/${target.id}:fork`, {
+      through_message_id: delivery.messageId, expected_cursor: await stableCursor(target.id), seed: 'verbatim',
+    });
+    expect(fork.code, JSON.stringify(fork)).toBe(0);
+    expect(fork.data.forked_from).toMatchObject({ turn_index: turn, through_user_message: true });
+    const regenerated = await postJson<PromptWire>(`/api/sessions/${target.id}/messages/${assistantMessageIdFromBlock(reply)}:regenerate`, {
+      expected_cursor: await stableCursor(target.id),
+    });
+    expect(regenerated.code, JSON.stringify(regenerated)).toBe(0);
+    expect(regenerated.data.user_message_id).toBe(delivery.messageId);
+    await waitForTerminal(main);
+    const edited = await postJson<PromptWire>(`/api/sessions/${target.id}/messages/${delivery.messageId}:edit`, {
+      content: [{ type: 'text', text: 'Edited inbound task' }], expected_cursor: await stableCursor(target.id),
+    });
+    expect(edited.code, JSON.stringify(edited)).toBe(0);
+    await waitForTerminal(main);
+    expect((await readActionBlocks(target.id)).findLast((block) => block.kind === 'user')).toMatchObject({
+      userMessageId: delivery.messageId, text: 'Edited inbound task', sourceOrigin: { kind },
+    });
+    expect(modelRequestCount).toBe(turn + 3);
+  });
+
+  it('regenerates and edits a Send now input without cutting the prompt that opened the turn', async () => {
+    const id = await createSession();
+    const main = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const { promise: ready, resolve: started } = Promise.withResolvers<void>();
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    modelRequestGate = gate;
+    modelRequestStarted = started;
+    const initial = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, { content: [{ type: 'text', text: 'Opening prompt' }] });
+    expect(initial.code, JSON.stringify(initial)).toBe(0);
+    await ready;
+    const queued = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, { content: [{ type: 'text', text: 'Steered prompt' }] });
+    let steer;
+    try {
+      expect(queued.data.status).toBe('queued');
+      steer = await postJson<{ steered: boolean }>(`/api/sessions/${id}/prompts/${queued.data.prompt_id}:steer`, {});
+    } finally {
+      release();
+    }
+    expect(steer.code, JSON.stringify(steer)).toBe(0);
+    await waitForTerminal(main);
+    expect(await readMainWireRecords(main)).toContainEqual(expect.objectContaining({ type: 'turn.steer', turnId: 0 }));
+    const blocks = await readActionBlocks(id);
+    expect(blocks.filter((block) => block.kind === 'user').map((block) => [block.userMessageId, block.text])).toEqual([
+      [initial.data.user_message_id, 'Opening prompt'], [queued.data.user_message_id, 'Steered prompt'],
+    ]);
+    const reply = blocks.findLast((block) => block.kind === 'assistant')!;
+    const regenerate = await postJson<PromptWire>(`/api/sessions/${id}/messages/${assistantMessageIdFromBlock(reply)}:regenerate`, {
+      expected_cursor: await stableCursor(id),
+    });
+    expect(regenerate.code, JSON.stringify(regenerate)).toBe(0);
+    expect(regenerate.data.user_message_id).toBe(queued.data.user_message_id);
+    await waitForTerminal(main);
+    const edit = await postJson<PromptWire>(`/api/sessions/${id}/messages/${queued.data.user_message_id}:edit`, {
+      content: [{ type: 'text', text: 'Edited steer' }], expected_cursor: await stableCursor(id),
+    });
+    expect(edit.code, JSON.stringify(edit)).toBe(0);
+    await waitForTerminal(main);
+    expect((await readActionBlocks(id)).filter((block) => block.kind === 'user').map((block) => [block.userMessageId, block.text])).toEqual([
+      [initial.data.user_message_id, 'Opening prompt'], [queued.data.user_message_id, 'Edited steer'],
+    ]);
   });
 
   it('edits a real prompt with a new run id and replays the same operation receipt', async () => {
@@ -1898,7 +2123,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     } finally {
       await blocker.dispose();
       controller.close();
-      client.close();
+      await client.close();
     }
   });
 });

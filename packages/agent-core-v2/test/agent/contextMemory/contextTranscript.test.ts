@@ -86,6 +86,7 @@ describe('reduceContextTranscript', () => {
     ]);
     expect(texts(result)).toEqual(['u1', 'a1']);
     expect(result.entries.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(result.entries[1]?.source?.stepId).toBe('s1');
     expect(result.foldedLength).toBe(2);
   });
 

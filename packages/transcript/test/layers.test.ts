@@ -4090,6 +4090,18 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts).toEqual(full.snapshot().prompts);
   });
 
+  it('restores a hidden inbound prompt’s logical user identity across a checkpoint', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    const origin = { kind: 'system_trigger', name: 'thread_create' };
+    const input = [{ type: 'text', text: 'Edited thread task' }];
+    expect(adapter.add({ type: 'prompt.enqueued', promptId: 'run-new', userMessageId: 'input-stable',
+      message: { id: 'input-stable', role: 'user', origin, content: input }, queueIndex: 0 })).toEqual([]);
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    const operations = restored.add({ type: 'turn.prompt', turnId: 0, promptId: 'run-new', origin, input }).flatMap((fact) => fact.operations);
+    expect(operations.find((op) => op.op === 'turn.upsert')).toMatchObject({ turn: { message: { messageId: 'input-stable' } } });
+  });
+
   it('preserves scheduled queue content and origin across moves and checkpoint restore', () => {
     const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
     const adapter = new TranscriptWireAdapter('main');

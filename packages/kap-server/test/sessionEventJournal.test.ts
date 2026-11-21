@@ -65,6 +65,12 @@ describe('SessionEventJournal', () => {
     await j2.close();
   });
 
+  it('persists the published epoch on close even when it has no events', async () => {
+    const journal = await SessionEventJournal.open(filePath);
+    await journal.close();
+    expect(await SessionEventJournal.peekWatermark(filePath)).toEqual({ seq: 0, epoch: journal.epoch });
+  });
+
   it('recovers a large monotonic journal using bounded edge reads', async () => {
     const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_large', created_at: 1 });
     const first = JSON.stringify({ kind: 'event', seq: 1, envelope: envelope(1) });

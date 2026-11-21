@@ -33,7 +33,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
+import { isUndoAnchorOrigin, shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
 import { defaultRangeExtractor, elementScroll, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
@@ -70,6 +70,7 @@ import {
 import {
   agentChildren,
   agentRefsOfBlock,
+  assistantMessageIdFromBlock,
   foldHistory,
   groupBlocks,
   groupHasError,
@@ -519,7 +520,9 @@ const UserMessage = memo(function UserMessage({
   const anyRange = continuation.pending.some((ref) => reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
   const incomplete = block.contentPending === true || continuation.pending.length > 0;
   const inConversationHistory = block.promptOutcome === undefined || (block.promptOutcome.inHistory ?? block.promptOutcome.delivered);
-  const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && inConversationHistory && !incomplete;
+  const origin = block.sourceOrigin as { readonly kind?: string } | undefined;
+  const editableOrigin = isUndoAnchorOrigin(block.sourceOrigin);
+  const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && inConversationHistory && !incomplete && editableOrigin;
   const canLoadIncomplete = continuation.pending.length > 0 && continuation.canRequest === true && !anyRange;
   const anyContinuationFailed = continuation.pending.some((ref) => continuation.statusOf(ref)?.status === 'error');
   const errorSignature = continuation.pending
@@ -806,6 +809,7 @@ const UserMessage = memo(function UserMessage({
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={editInitialText}
+          replacesCommand={origin?.kind === 'skill_activation' || origin?.kind === 'plugin_command'}
           initialAttachments={initialEditAttachments}
           loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : (signal) => rowActions.loadEditAttachments!(block, signal)}
           onSubmit={async (text, attachments, editedPresentation) => {
@@ -3495,6 +3499,9 @@ const MessageViewRow = memo(function MessageViewRow({
   onOpenAgent,
   onOpenProcess,
   blockOrder,
+  rowActions,
+  latestFinalAssistantId,
+  forkableAssistantIds,
 }: {
   node: MessageBlock | ActivitySummary | NoticeBlock | UserBlock;
   previous: MessageTimelineNode | undefined;
@@ -3505,12 +3512,19 @@ const MessageViewRow = memo(function MessageViewRow({
   onOpenProcess: (turnId: string | undefined, blockId?: string) => void;
   /** blockId → index in `state.blocks`: a row's real place in the gallery. */
   blockOrder: ReadonlyMap<string, number>;
+  rowActions?: TranscriptRowActions;
+  latestFinalAssistantId?: string;
+  forkableAssistantIds: ReadonlySet<string>;
 }) {
   const { t } = useI18n();
   const context = useMessageViewContext();
   const preview = useMediaPreview();
+  const tap = useMessageRowTapActions<HTMLDivElement>();
+  const messageLink = useMessageLink();
   const agentLabel = t('agentMessage.agent');
   const turnId = displayNodeTurnId(node);
+  const reply = node.kind === 'message' ? node.sourceBlock : undefined;
+  const mutateReply = rowActions !== undefined && reply !== undefined && assistantMessageIdFromBlock(reply) !== undefined;
   let body: ReactNode;
   if (node.kind === 'message') {
     const speaker = speakerOf(node, context.persona, agentLabel);
@@ -3541,6 +3555,8 @@ const MessageViewRow = memo(function MessageViewRow({
         />
       );
     }
+  } else if (node.kind === 'user' && rowActions !== undefined && node.userMessageId !== undefined && isUndoAnchorOrigin(node.sourceOrigin)) {
+    body = <UserMessage block={node} rowActions={rowActions} onOpenAgent={onOpenAgent} />;
   } else if (node.kind === 'user') {
     const sender = node.peerThread?.senderName ?? node.peerThread?.personaId ?? agentLabel;
     const receiver = context.persona?.name ?? agentLabel;
@@ -3599,8 +3615,14 @@ const MessageViewRow = memo(function MessageViewRow({
   // above and the summary itself has no index to hand over.
   const galleryId = node.kind === 'message' ? node.sourceTool?.id ?? node.sourceBlock?.id ?? node.id : node.id;
   return (
-    <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}>
+    <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}
+      ref={mutateReply ? tap.rowRef : undefined} onClick={mutateReply ? tap.onClick : undefined}
+      data-actions-open={mutateReply && tap.open ? 'true' : undefined} className={mutateReply ? 'group/msg relative' : undefined}>
       {withGalleryOrder(galleryId, agentId, blockOrder, body)}
+      {mutateReply ? <MessageRowActions role="assistant" messageId={reply.id} copyText={reply.text} linkHref={messageLink?.(reply.id)}
+        canRegenerate={reply.id === latestFinalAssistantId} canFork={rowActions.canFork !== false && forkableAssistantIds.has(reply.id)}
+        disabled={rowActions.disabled} forkBusy={rowActions.forkBusy}
+        onRegenerate={() => { rowActions.onRegenerate(reply); }} onFork={(seed) => rowActions.onFork(reply, seed)} /> : null}
     </div>
   );
 });
@@ -5712,7 +5734,7 @@ export const Transcript = memo(function Transcript({
   const onResumeStopped = readOnly ? undefined : rowActions?.onResumeStopped;
   const resumeStopped = useMemo(
     () =>
-      stoppedAssistant === undefined || onResumeStopped === undefined
+      stoppedAssistant === undefined || assistantMessageIdFromBlock(stoppedAssistant) === undefined || onResumeStopped === undefined
         ? undefined
         : () => { onResumeStopped(stoppedAssistant); },
     [stoppedAssistant, onResumeStopped],
@@ -7737,6 +7759,9 @@ export const Transcript = memo(function Transcript({
                         onOpenAgent={onOpenAgent}
                         onOpenProcess={openProcessAt}
                         blockOrder={blockOrder}
+                        rowActions={readOnly ? undefined : rowActions}
+                        latestFinalAssistantId={latestFinalAssistantId}
+                        forkableAssistantIds={forkableAssistantIds}
                       />
                     </div>
                   ) : (

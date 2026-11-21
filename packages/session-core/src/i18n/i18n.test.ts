@@ -262,6 +262,15 @@ describe('LocalizedError / errorText', () => {
     const undoUnavailable = new ApiError({ code: 40911, msg: 'undo unavailable', data: null });
     expect(sessionActionErrorText('en', undoUnavailable)).toBe(translate('en', 'error.nothingToUndo'));
     expect(sessionActionErrorText('zh', undoUnavailable)).toBe(translate('zh', 'error.nothingToUndo'));
+    for (const [code, reason, key] of [
+      [40911, 'compaction_boundary', 'error.undoCompactionBoundary'],
+      [40901, 'pending_interaction', 'error.sessionBusyInteraction'],
+      [40936, 'not_latest_final_assistant', 'error.messageNotLatestAssistant'],
+    ] as const) {
+      const error = new ApiError({ code, msg: 'Action refused', data: null, details: { reason } });
+      expect(sessionActionErrorText('en', error)).toBe(translate('en', key));
+      expect(sessionActionErrorText('zh', error)).toBe(translate('zh', key));
+    }
     const refusal = new ApiError({ code: 40001, msg: 'Archive refused: drafts remain', data: null });
     expect(sessionActionErrorText('en', refusal)).toBe(refusal.message);
   });

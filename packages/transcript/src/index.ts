@@ -22,6 +22,7 @@ export * from './facts/goalProjection';
 export * from './facts/errorProjection';
 export * from './facts/externalToolDisplay';
 export * from './facts/wireAdapter';
+export { isUndoAnchorOrigin } from './facts/wireIdentity';
 export * from './granularity/grade';
 export * from './granularity/filterOps';
 export * from './view/registry';

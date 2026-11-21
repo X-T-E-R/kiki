@@ -23,7 +23,7 @@ import { I18nProvider } from '../i18n';
 import { TranscriptDetailProvider } from './transcriptDetail';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { readTimelineView, type TimelineView } from './message/messageViewMode';
-import { Transcript } from './Transcript';
+import { Transcript, type TranscriptRowActions } from './Transcript';
 import { outputLayerStore } from './output-layer';
 import { OutputLayerClient } from '../lib/outputLayerClient';
 import { setActiveOutputLayerClient } from './output-layer/useOutputLayerClient';
@@ -110,12 +110,13 @@ async function render(node: ReactNode): Promise<{ container: HTMLDivElement; rer
   return { container, rerender: paint };
 }
 
-function timeline(blocks: Block[], view: TimelineView, overrides: Partial<SessionViewState> = {}, context = BOT_CONTEXT): ReactNode {
+function timeline(blocks: Block[], view: TimelineView, overrides: Partial<SessionViewState> = {}, context = BOT_CONTEXT, rowActions?: TranscriptRowActions): ReactNode {
   return (
     <MessageViewContext.Provider value={context}>
       <Transcript
         state={state(blocks, overrides)}
         view={view}
+        rowActions={rowActions}
         onLoadOlder={() => Promise.resolve(false)}
         onResolveApproval={() => Promise.resolve()}
         onAnswerQuestion={() => Promise.resolve()}
@@ -172,6 +173,22 @@ describe('message view (Bot mode)', () => {
     // and does not repeat the reply line as internal prose.
     expect(container.querySelector('[data-activity-summary]')?.textContent).not.toContain('内部笔记');
     expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+  });
+
+  it('passes the committed reply to Regenerate and Fork in Message View', async () => {
+    const reply = assistant('assistant-reply', 'Done.', 't1', { messageId: 'committed-step' });
+    const onRegenerate = vi.fn();
+    const onFork = vi.fn();
+    const { container } = await render(timeline([user('u1', 'Question', 't1'), reply], 'message', {}, BOT_CONTEXT, {
+      disabled: false, onEditMessage: vi.fn(), onRegenerate, onFork,
+    }));
+    const row = container.querySelector('[data-message-view-row="message"]')!;
+    await act(async () => {
+      row.querySelector<HTMLButtonElement>('[data-row-action="regenerate"]')!.click();
+      row.querySelector<HTMLButtonElement>('[data-row-action="fork"]')!.click();
+    });
+    expect(onRegenerate).toHaveBeenCalledWith(reply);
+    expect(onFork).toHaveBeenCalledWith(reply, undefined);
   });
 
   it('keeps both turns when two turns end on the same short line', async () => {

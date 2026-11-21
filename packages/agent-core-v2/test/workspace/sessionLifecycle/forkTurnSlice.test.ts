@@ -52,6 +52,18 @@ describe('sliceMainRecordsAtTurn message boundaries', () => {
     assistant('a2', 'reply two', 7),
   ];
 
+  it('cuts a reply-targeted fork before facts from a following automatic turn', () => {
+    const prefix: WireRecord[] = [
+      user('u1', 'seed', 1),
+      { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 'reply-step', turnId: '0' }, time: 2 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', stepUuid: 'reply-step', part: { type: 'text', text: 'reply' } }, time: 3 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', uuid: 'reply-step' }, time: 4 },
+      { type: 'turn.ended', turnId: 0, time: 5 },
+    ];
+    const later = { type: 'turn.prompt', turnId: 1, origin: { kind: 'system_trigger', name: 'goal_continuation' }, time: 6 };
+    expect(sliceMainRecordsAtTurn([...prefix, later], 'source', 0, false, 'reply-step').records).toEqual(prefix);
+  });
+
   it('addresses surviving turns after undo without copying a discarded prompt into an earlier turn', () => {
     const rewritten = [...records, { type: 'context.undo', count: 1, time: 8 }, user('u3', 'three', 9)];
     const earlier = sliceMainRecordsAtTurn(rewritten, 'session_test', 0);

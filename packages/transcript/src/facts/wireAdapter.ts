@@ -61,6 +61,7 @@ interface PendingSteerMedia {
 export interface PendingSteer {
   readonly promptId: string;
   readonly explicitPromptId?: string;
+  readonly ordinal?: number;
   readonly text: string;
   readonly presentation?: import('../contract/presentation').TextPresentation;
   readonly media: readonly PendingSteerMedia[];
@@ -133,6 +134,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly queueOrder?: readonly string[];
   readonly hiddenPromptIds?: readonly string[];
+  readonly promptUserMessageIds?: readonly [string, string][];
   readonly deliveries?: readonly [string, MessageDelivery][];
   readonly messageProjection?: MessageProjectionCheckpoint;
 }
@@ -171,6 +173,7 @@ export class TranscriptWireAdapter {
   readonly #queuedModelSwitchIds = new Set<string>();
   readonly #bindingSettingIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
+  readonly #promptUserMessageIds = new Map<string, string>();
   readonly #openBlockedBatchIds = new Set<string>();
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
@@ -257,6 +260,7 @@ export class TranscriptWireAdapter {
       prompts: [...this.#prompts],
       queueOrder: [...this.#queueOrder],
       hiddenPromptIds: [...this.#hiddenPromptIds],
+      promptUserMessageIds: [...this.#promptUserMessageIds],
       deliveries: [...this.#deliveries],
       messageProjection: {
         deliveries: [...this.#deliveryUndoRecords], frames: [...this.#frameRecords],
@@ -354,6 +358,7 @@ export class TranscriptWireAdapter {
       }
     }
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
+    replaceMap(this.#promptUserMessageIds, checkpoint.promptUserMessageIds ?? []);
     this.#openBlockedBatchIds.clear();
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
     replaceMap(this.#deliveryUndoRecords, checkpoint.messageProjection?.deliveries ?? []);
@@ -629,6 +634,8 @@ export class TranscriptWireAdapter {
       const rawQueuePosition = numberOf(record['queueIndex']);
       this.insertQueueSlot(promptId, rawQueuePosition);
       const message = objectOf(record['message']);
+      const userMessageId = stringOf(record['userMessageId']) ?? stringOf(message?.['id']);
+      if (userMessageId !== undefined) this.#promptUserMessageIds.set(promptId, userMessageId);
       const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
       if (originKind !== 'user' && originKind !== 'cron_job') {
         this.#hiddenPromptIds.add(promptId);
@@ -645,7 +652,7 @@ export class TranscriptWireAdapter {
         originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',
         steerAccepted: record['steerAccepted'] === true ? true : undefined,
-        userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
+        userMessageId,
         content: projectPromptContent(message?.['content']),
         createdAt: promptRecordTime(record, ['createdAt']) ?? isoOf(record.time) ?? new Date(0).toISOString(),
         queuePosition,
@@ -1567,7 +1574,9 @@ export class TranscriptWireAdapter {
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
     const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
-    const messageId = promptId === undefined ? undefined : this.#prompts.get(promptId)?.userMessageId ?? promptId;
+    const messageId = promptId === undefined
+      ? undefined
+      : this.#prompts.get(promptId)?.userMessageId ?? this.#promptUserMessageIds.get(promptId) ?? promptId;
     const previous = this.#turnHeaders.get(turnId);
     const alreadyDelivered = messageId !== undefined && this.#deliveries.has(messageId);
     if (alreadyDelivered && previous?.message?.messageId === messageId) return [];
@@ -1661,12 +1670,16 @@ export class TranscriptWireAdapter {
     const text = input.map(textOfPart).join('');
     const media = mediaPartsOf(input);
     if (text.length === 0 && media.length === 0) return [];
-    const explicitPromptId = stringOf(record['promptId']);
+    const rawPromptId = stringOf(record['promptId']);
+    const explicitPromptId = rawPromptId === undefined
+      ? undefined
+      : this.#prompts.get(rawPromptId)?.userMessageId ?? this.#promptUserMessageIds.get(rawPromptId) ?? rawPromptId;
     const promptId = explicitPromptId ?? `${this.recordIdentity(ordinal)}:steer`;
     const pending = this.#pendingSteers.get(turnId);
     const steer: PendingSteer = {
       promptId,
       explicitPromptId,
+      ordinal,
       text,
       presentation: contentTextPresentation(input),
       media,
@@ -1695,6 +1708,19 @@ export class TranscriptWireAdapter {
     const operations: TranscriptOperation[] = [];
     for (const steer of pending) {
       if (steer.explicitPromptId !== undefined) this.#steeredMessageIds.add(steer.explicitPromptId);
+      if (isUndoAnchorOrigin(steer.origin) && !this.#deliveryUndoRecords.has(steer.promptId)) {
+        this.#deliveryUndoRecords.set(steer.promptId, { ordinal: steer.ordinal ?? this.#recordOrdinal, anchor: true });
+        if (!this.#deliveries.has(steer.promptId)) {
+          this.#deliveries.set(steer.promptId, {
+            deliveryId: `legacy:steer:${steer.promptId}`,
+            messageId: steer.promptId,
+            turnId,
+            stepId,
+            deliveredAt: isoOf(this.#lastRecordTime),
+            origin: deliveryOrigin(undefined, stringOf(objectOf(steer.origin)?.['kind'])),
+          });
+        }
+      }
       const attachmentIds: string[] = [];
       for (const media of steer.media) {
         const attachmentId = `${steer.promptId}.att${attachmentIds.length + 1}`;

@@ -5,7 +5,9 @@ import {
   promptMetadataTextFromText,
 } from '#/agent/prompt/promptMetadataText';
 import type { WireRecord } from '#/wire/record';
-import { createContextTranscriptReducer } from '#/agent/contextMemory/contextTranscript';
+import { contextTranscriptMessageId, createContextTranscriptReducer } from '#/agent/contextMemory/contextTranscript';
+import { isUndoAnchorOrigin } from '#/agent/contextMemory/conversationTime';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 
 export interface MainTurnSlice {
   readonly records: readonly WireRecord[];
@@ -28,6 +30,7 @@ export function sliceMainRecordsAtTurn(
   sourceSessionId: string,
   turnIndex: number,
   throughUserMessage = false,
+  throughMessageId?: string,
 ): MainTurnSlice {
   const reducer = createContextTranscriptReducer();
   for (let index = 0; index < records.length; index += 1) {
@@ -60,6 +63,31 @@ export function sliceMainRecordsAtTurn(
       record.type === 'context.undo' || (record.type === 'agent.model_switch' && Array.isArray(record['context']))
     ));
     if (reset !== -1) end = reset;
+  }
+  if (throughMessageId !== undefined) {
+    const index = transcript.entries.findLastIndex((message, index) =>
+      contextTranscriptMessageId(sourceSessionId, index, message) === throughMessageId ||
+      message.role === 'assistant' && message.source?.stepId === throughMessageId,
+    );
+    const ordinal = transcript.times[index];
+    const message = transcript.entries[index];
+    if (ordinal === undefined || message === undefined || (throughUserMessage
+      ? ordinal !== start || message.role !== 'user'
+      : ordinal < start || ordinal >= end || message.role !== 'assistant' || message.partial === true)) {
+      throw new Error2(ErrorCodes.MESSAGE_ACTION_UNAVAILABLE, 'The selected fork boundary is unavailable', {
+        details: { reason: 'unsupported_message_boundary', target_message_id: throughMessageId },
+      });
+    }
+    if (!throughUserMessage) {
+      const turnId = message.source?.turnId;
+      if (turnId !== undefined) {
+        const terminal = records.findIndex((record, index) => index >= ordinal && index < end &&
+          record.type === 'turn.ended' && record['turnId'] === turnId);
+        if (terminal !== -1) end = terminal + 1;
+      } else if (records[ordinal]?.type === 'context.append_message') {
+        end = ordinal + 1;
+      }
+    }
   }
   const retainedTurnInputs = turnInputIndicesThrough(records, start);
   const retained = records
@@ -114,39 +142,24 @@ function turnRecord(record: WireRecord): WireRecord {
   return { type: 'context.append_message', message: prompt?.['message'] };
 }
 
+function isUserVisibleTurnOrigin(origin: unknown): boolean {
+  const record = asRecord(origin);
+  if (record?.['kind'] === 'shell_command') return record['phase'] === 'input';
+  return isUndoAnchorOrigin(record as ContextMessage['origin']);
+}
+
 function isUserVisibleTurnRecord(record: WireRecord): boolean {
   if (record.type !== 'context.append_message') return false;
   const message = asRecord(record['message']);
-  if (message === undefined || message['role'] !== 'user') return false;
-  const origin = asRecord(message['origin']);
-  switch (origin?.['kind']) {
-    case undefined:
-    case 'user':
-      return true;
-    case 'skill_activation':
-    case 'plugin_command':
-      return origin?.['trigger'] === 'user-slash';
-    case 'shell_command':
-      return origin?.['phase'] === 'input';
-    default:
-      return false;
-  }
+  if (message === undefined || message['role'] !== 'user' || message['inheritedSeed'] === true) return false;
+  return isUserVisibleTurnOrigin(message['origin']);
 }
 
 function isUserVisibleTurnInputRecord(record: WireRecord): boolean {
   if (record.type !== 'turn.prompt' && record.type !== 'turn.steer') return false;
   const origin = asRecord(record['origin']);
-  switch (origin?.['kind']) {
-    case 'user':
-      return true;
-    case 'skill_activation':
-    case 'plugin_command':
-      return origin?.['trigger'] === 'user-slash';
-    case 'shell_command':
-      return origin?.['phase'] === 'input';
-    default:
-      return false;
-  }
+  if (origin === undefined) return false;
+  return isUserVisibleTurnOrigin(origin);
 }
 
 function turnInputIndicesThrough(

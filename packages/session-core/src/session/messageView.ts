@@ -180,7 +180,8 @@ function failedTurn(block: Block): string | undefined {
 function replySpeech(block: AssistantBlock, turn: string): MessageBlock {
   const at = block.createdAt === undefined ? Number.NaN : Date.parse(block.createdAt);
   return {
-    kind: 'message', id: `ordinary-final-${block.id}`, origin: 'ordinary_final', status: 'sent',
+    kind: 'message', id: `ordinary-final-${block.id}`, messageId: block.messageId,
+    origin: 'ordinary_final', status: 'sent',
     text: block.text, attachments: [], deliveredTo: [],
     startedAt: Number.isNaN(at) ? undefined : at,
     turnId: turn, sourceBlock: block,

@@ -2974,7 +2974,7 @@ describe('message row actions', () => {
         userBlock({ id: 'user-m1', text: 'first question', userMessageId: 'm1' }),
         assistantBlock('assistant-m2-0', 'first answer'),
         userBlock({ id: 'user-m3', text: 'second question', userMessageId: 'm3' }),
-        assistantBlock('assistant-live-1-final-end@9', 'second answer'),
+        { ...assistantBlock('assistant-live-1-final-end@9', 'second answer'), messageId: 'm4' },
       ],
       defaultRowActions(),
     );
@@ -3004,6 +3004,15 @@ describe('message row actions', () => {
     const container = await renderTranscript([userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' })], defaultRowActions());
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link']);
+  });
+
+  it('offers only copy and link for system input and assistant text without a message ID', async () => {
+    const blocks = [
+      userBlock({ id: 'auto-input', text: 'Synthetic input', userMessageId: 'auto', sourceOrigin: { kind: 'system_trigger', name: 'subagent' } }),
+      assistantBlock('assistant-live-synthetic', 'Synthetic reply'),
+    ];
+    const container = await renderTranscript(blocks, defaultRowActions());
+    for (const row of container.querySelectorAll('[data-block-id]')) expect(rowActionButtons(row)).toEqual(['copy', 'link']);
   });
 
   it('omits queued prompts until they start while keeping blocked prompts visible', async () => {
@@ -3268,8 +3277,8 @@ describe('message row actions', () => {
       flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
     });
     const shell = container.querySelector<HTMLElement>('[data-edit-editor]')!;
-    expect(shell.querySelector('[data-composer-card]')).not.toBeNull();
-    expect(shell.children).toHaveLength(1);
+    expect(shell.querySelectorAll('[data-composer-card]')).toHaveLength(1);
+    expect(shell.textContent).toContain('Resending replaces the conversation');
     expect(shell.textContent).not.toContain('Cancel');
     const cancel = shell.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
     const send = shell.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
@@ -3837,7 +3846,7 @@ describe('message row actions', () => {
     const container = await renderTranscript(
       [
         userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
-        assistantBlock('assistant-live-1-final-end@9', 'answer'),
+        { ...assistantBlock('assistant-live-1-final-end@9', 'answer'), messageId: 'm2' },
       ],
       rowActions,
     );

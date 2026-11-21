@@ -252,7 +252,7 @@ function classifiedTextToBlocks(input: {
       if (classified.userInput !== undefined) {
         blocks.push(...classifiedTextToBlocks({
           ...input,
-          classified: { lane: 'you', origin: { kind: 'user' }, text: classified.userInput, reminders: [] },
+          classified: { lane: 'you', origin: classified.origin, text: classified.userInput, reminders: [] },
         }));
       }
       const skill = classified.skill ?? { source: 'skill' as const, name: 'skill', args: undefined };
@@ -552,15 +552,6 @@ function recordString(record: Record<string, unknown>, ...keys: readonly string[
   return undefined;
 }
 
-function recordNumber(record: Record<string, unknown>, ...keys: readonly string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
-  }
-  return undefined;
-}
-
 function turnNumberOf(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -845,7 +836,7 @@ function noticeFrameErrorDetails(detail: unknown): string | undefined {
       return undefined;
     }
   }
-  return String(detail);
+  return typeof detail === 'number' || typeof detail === 'boolean' ? String(detail) : undefined;
 }
 
 function markerToBlock(item: {
@@ -1307,8 +1298,8 @@ interface PreviousPositionIndex {
 function buildPreviousPositionIndex(previous: readonly Block[], existingSlots: ReadonlyMap<string, number>): PreviousPositionIndex | undefined {
   if (previous.length === 0) return undefined;
   const indexById = new Map<string, number>();
-  const prevExisting = new Array<number>(previous.length);
-  const nextExisting = new Array<number>(previous.length);
+  const prevExisting: number[] = [];
+  const nextExisting: number[] = [];
   let lastSeen = -1;
   for (let index = 0; index < previous.length; index += 1) {
     prevExisting[index] = lastSeen;
@@ -2801,10 +2792,6 @@ function stampPromptIdentity(
   return next;
 }
 
-function stampRunningPromptIdentity(blocks: readonly Block[], prompt: TranscriptPrompt): Block[] {
-  return stampPromptIdentity(blocks, prompt, 'running');
-}
-
 function keepPreviousUser(
   next: readonly Block[],
   previousUser: UserBlock | undefined,
@@ -3052,19 +3039,6 @@ function promptOutcomeContext(
     }
   }
   return { windowStartMs, turns, historyIds };
-}
-
-/** A newer prompt for the same message already settled it (retry, regenerate, repeat failure). */
-function supersededByLaterPrompt(prompt: TranscriptPrompt, prompts: readonly TranscriptPrompt[]): boolean {
-  if (prompt.userMessageId === undefined) return false;
-  const settledAt = timestampMs(prompt.finishedAt ?? prompt.createdAt) ?? 0;
-  return prompts.some(
-    (other) =>
-      other !== prompt &&
-      other.userMessageId === prompt.userMessageId &&
-      !(other.status === 'aborted' && other.abortedBeforeStart === true) &&
-      (timestampMs(other.finishedAt ?? other.createdAt) ?? 0) > settledAt,
-  );
 }
 
 function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, user?: UserBlock): PromptOutcome {
@@ -3985,7 +3959,7 @@ export function agentTranscriptToBlocks(
             }
             {
               if (!assistantTextIsDisplay(frame)) break;
-              const messageId = frameMessageId(frame) ?? turnMessageId(item);
+              const messageId = frameMessageId(frame) ?? step.stepId;
               blocks.push({
                 kind: 'assistant',
                 id: `agent-frame-${frame.frameId}`,
@@ -4255,7 +4229,7 @@ export function agentTranscriptToBlocks(
         ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
       return sourceTimes.get(block);
     };
-    const baseSourceTimes = new Array<number | undefined>(baseDeliveries.length);
+    const baseSourceTimes: (number | undefined)[] = [];
     const sourceTimestamps = new Set<number>();
     const turnStartIndex = new Map<string, number>();
     const turnEndIndex = new Map<string, number>();
@@ -4803,7 +4777,9 @@ export function latestFinalAssistantBlockId(
       if (block.streaming) streamingTurns.add(key);
       if (!block.streaming && !toolTurns.has(key) && !streamingTurns.has(key) &&
           !excluded.has(turnId) && (runningTurn === undefined || turnId !== runningTurn) &&
-          !(options.busy && turnId === undefined && unscopedTurn === 0)) return block.id;
+          !(options.busy && turnId === undefined && unscopedTurn === 0)) {
+        return assistantMessageIdFromBlock(block) === undefined ? undefined : block.id;
+      }
     }
     if (block.kind === 'user' && turnId === undefined) unscopedTurn += 1;
   }
@@ -4836,7 +4812,7 @@ export function settledFinalAssistantBlockIds(
           !excluded.has(turnId) && (runningTurn === undefined || turnId !== runningTurn) &&
           !(options.busy && turnId === undefined && unscopedTurn === 0)) {
         pickedTurns.add(key);
-        if (result.size === 0 || assistantMessageIdFromBlock(block) !== undefined) {
+        if (assistantMessageIdFromBlock(block) !== undefined) {
           result.add(block.id);
         }
       }

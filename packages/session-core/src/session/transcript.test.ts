@@ -341,12 +341,14 @@ describe('message-closure anchors', () => {
     kind: 'assistant',
     id,
     text: 'a',
+    messageId: `message-${id}`,
     streaming,
     createdAt: '2026-01-01T00:00:01.000Z',
   });
 
   it('latestFinalAssistantBlockId picks the last settled assistant block', () => {
     expect(latestFinalAssistantBlockId([])).toBeUndefined();
+    expect(latestFinalAssistantBlockId([assistant('older'), { ...assistant('synthetic'), messageId: undefined }])).toBeUndefined();
     expect(
       latestFinalAssistantBlockId([user('u1'), assistant('a1'), assistant('a2')]),
     ).toBe('a2');

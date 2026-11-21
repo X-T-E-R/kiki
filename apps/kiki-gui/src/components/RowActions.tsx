@@ -723,12 +723,14 @@ export function mergeLoadedAttachments(
 /** Inline edit-resend with the same attachment pipeline as the main composer. */
 export function UserMessageEditor({
   initialText,
+  replacesCommand = false,
   initialAttachments = [],
   loadAttachments,
   onSubmit,
   onCancel,
 }: {
   initialText: string;
+  replacesCommand?: boolean;
   initialAttachments?: readonly ComposerAttachment[];
   loadAttachments?: (signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onSubmit: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<void>;
@@ -772,6 +774,7 @@ export function UserMessageEditor({
     // the X beside its send button is where this edit ends, so an outer border,
     // background and padding only drew a second frame around both.
     <div data-edit-editor className="w-full max-w-[85%]">
+      <p className="mb-1.5 px-1 text-xs text-ink-soft">{t(replacesCommand ? 'transcript.editCommandEffect' : 'transcript.editEffect')}</p>
       <Composer
         busy={false}
         disabled={submitting}
@@ -792,9 +795,6 @@ export function UserMessageEditor({
           try { await onSubmit(body, media, options?.presentation); } finally { setSubmitting(false); }
         }}
       />
-      {/* Only a failed attachment load leaves a line under the editor: the
-          retry that brings the original files back. The edit itself is
-          abandoned from the X in the composer's own row. */}
       {loadError ? (
         <div className="mt-2 flex items-center px-1">
           <button
