@@ -86,6 +86,7 @@ const MATRIX = {
   'question-reconnect': ['width'],
   'question-dismiss': ['width'],
   'sidebar-workspace-activity': ['width'],
+  'sidebar-inbox': ['theme', 'width'],
   'external-main': ['theme'],
   'settings-ia': ['theme', 'width'],
   'settings-engines': ['theme', 'width'],
@@ -3767,6 +3768,121 @@ async function scenarioSidebarWorkspaceActivity() {
   await pickViewOption('[data-group-by="time"]');
   await closeViewMenu();
   await location.waitFor({ timeout: 10_000 });
+}
+
+async function scenarioSidebarInbox() {
+  const narrow = (page.viewportSize()?.width ?? 1440) < 768;
+  const openDrawerIfNarrow = async () => {
+    if (!narrow) return;
+    const sidebar = page.locator('[data-session-sidebar]');
+    const visible = await sidebar.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return box.x >= -2 && box.width > 0;
+    }).catch(() => false);
+    if (!visible) {
+      await page.locator(`button[aria-label="${S.openMenuAria}"]`).first().click();
+      await page.waitForTimeout(300);
+    }
+  };
+
+  await openDrawerIfNarrow();
+  await page.locator('[data-sidebar-mode="inbox"][aria-selected="true"]').waitFor({ timeout: 10_000 });
+  await page.locator('[data-sidebar-inbox]').waitFor({ timeout: 10_000 });
+  // Wait for multi-space remote row fetched over real /remote-connections/:id/call broker.
+  await page.locator('[data-inbox-row="session_remote_done"]').waitFor({ timeout: 12_000 });
+
+  // Single two-tier badge on Inbox tab, zero duplicate badge on Activity bell.
+  const badges = await page.locator('[data-activity-badge]').count();
+  const bellBadges = await page.locator('[data-nav-activity] [data-activity-badge]').count();
+  if (badges !== 1 || bellBadges !== 0) {
+    throw new Error(`sidebar-inbox: expected single Inbox badge (got total=${badges}, bell=${bellBadges})`);
+  }
+
+  // Verify 18px Zone 1 keyline alignment on desktop.
+  if (!narrow) {
+    const keyline = await page.evaluate(() => {
+      const aside = document.querySelector('[data-session-sidebar]');
+      const scope = document.querySelector('[data-space-scope-pill]');
+      const newBtn = document.querySelector('[data-new-session]');
+      const modeSwitch = document.querySelector('[data-sidebar-mode-switch]');
+      if (!aside || !scope || !newBtn || !modeSwitch) return null;
+      const base = aside.getBoundingClientRect().left;
+      return {
+        scopeLeft: Math.round(scope.getBoundingClientRect().left - base),
+        newBtnLeft: Math.round(newBtn.getBoundingClientRect().left - base),
+        modeSwitchLeft: Math.round(modeSwitch.getBoundingClientRect().left - base),
+      };
+    });
+    console.log(`[check] sidebar-inbox keyline: ${JSON.stringify(keyline)}`);
+  }
+
+  // 1. Populated multi-space Inbox (local + online remote + bottom Working drawer).
+  await shot('sidebar-inbox-populated');
+
+  // 2. Hover + @base-ui/react snooze popover on a done row (desktop only so touch drawer stays clean).
+  if (!narrow) {
+    const doneRow = page.locator('[data-inbox-row="session_inbox_done"]');
+    await doneRow.hover();
+    await doneRow.locator('[data-inbox-action="snooze"]').click();
+    await page.locator('[data-snooze-preset="1h"]').waitFor({ state: 'visible', timeout: 5_000 });
+    await shot('sidebar-inbox-snooze-popover');
+    await page.locator('[data-snooze-preset="1h"]').click();
+    await page.locator('[data-inbox-drawer="snoozed"]').waitFor({ timeout: 5_000 });
+  }
+
+  // 3. SpaceScopeControl popover showing All spaces + local + online/offline remote spaces.
+  await page.locator('[data-space-scope-pill="all"]').click();
+  await page.locator('[data-space-scope-all]').waitFor({ state: 'visible', timeout: 5_000 });
+  await shot('sidebar-inbox-space-popover');
+
+  // 4. Focus local space (single-space pill with × clear button), then return to All spaces.
+  const firstLocal = page.locator('[data-space-switch-item]').first();
+  if (await firstLocal.count() > 0 && await firstLocal.isEnabled()) {
+    await firstLocal.click();
+    await page.locator('[data-space-scope-clear]').waitFor({ timeout: 5_000 });
+    await shot('sidebar-inbox-space-focused');
+    await page.locator('[data-space-scope-clear]').click();
+    await page.locator('[data-space-scope-pill="all"]').waitFor({ timeout: 5_000 });
+  } else {
+    await page.keyboard.press('Escape');
+  }
+
+  // 5. Switch to Sessions view -> verify 72h cold fold ("Older · 2" / "更早 · 2").
+  await page.locator('[data-sidebar-mode="sessions"]').click();
+  await page.locator('[data-sidebar-cold-fold="collapsed"]').waitFor({ timeout: 8_000 });
+  await shot('sidebar-sessions-cold-fold');
+
+  // 6. Switch back to Inbox, clear remaining active items to verify Inbox-Zero empty state + bottom drawers.
+  await page.locator('[data-sidebar-mode="inbox"]').click();
+  await page.locator('[data-sidebar-inbox]').waitFor({ timeout: 5_000 });
+  for (let i = 0; i < 6; i += 1) {
+    const activeRows = page.locator('[data-inbox-active-list] [data-inbox-row]');
+    if (await activeRows.count() === 0) break;
+    const firstRow = activeRows.first();
+    await firstRow.hover().catch(() => undefined);
+    const settleBtn = firstRow.locator('[data-inbox-action="settle"]');
+    if (await settleBtn.count() > 0) {
+      await settleBtn.click({ force: true });
+    } else {
+      await firstRow.locator('[data-inbox-action="snooze"]').click({ force: true });
+      await page.locator('[data-snooze-preset="1h"]').click();
+    }
+    await page.waitForTimeout(120);
+  }
+  await page.locator('[data-inbox-all-clear]').waitFor({ timeout: 8_000 });
+  await shot('sidebar-inbox-all-clear');
+
+  // 7. NewSessionPage target space chip (when >1 writable space exists in All spaces).
+  if (!narrow) {
+    await page.locator('[data-new-session]').click();
+    await page.waitForURL(/\/new/, { timeout: 10_000 });
+    const spaceChip = page.locator('[data-hero-target-space]');
+    await spaceChip.waitFor({ timeout: 8_000 });
+    await spaceChip.click();
+    await page.locator('[data-hero-space-menu]').waitFor({ state: 'visible', timeout: 5_000 });
+    await shot('new-session-space-chip');
+    await page.keyboard.press('Escape');
+  }
 }
 
 async function scenarioResponsive() {
@@ -8795,6 +8911,7 @@ const ENTRY_EXTRA = {
   cockpit: { fixture: 'rail-scale' },
   'composer-caret': { fixture: 'thread-links' },
   'sidebar-workspace-activity': { fixture: 'sidebar-workspace-groups' },
+  'sidebar-inbox': { fixture: 'sidebar-inbox' },
   'question-reconnect': { fixture: 'question-card' },
   'question-dismiss': { fixture: 'question-dismiss' },
   'models-billing': { fixture: 'models-page' },
@@ -8844,6 +8961,7 @@ const BODIES = [
   ['session-pages', scenarioSessionPages],
   ['sidebar-organize', scenarioSidebarOrganize],
   ['sidebar-workspace-activity', scenarioSidebarWorkspaceActivity],
+  ['sidebar-inbox', scenarioSidebarInbox],
   ['workspace-history', scenarioWorkspaceHistory],
   ['empty-states', scenarioEmptyStates],
   ['new-no-workspace', scenarioNewNoWorkspace],

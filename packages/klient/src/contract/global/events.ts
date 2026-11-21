@@ -7,7 +7,14 @@
  */
 
 import { z } from 'zod';
-import { remoteConnectionsChangedPayloadSchema, roomChangeEventSchema, type RoomChangeEvent, type SessionWorkChangedEvent } from '@kiki/protocol';
+import {
+  remoteConnectionsChangedPayloadSchema,
+  roomChangeEventSchema,
+  sessionAttentionCursorSchema,
+  type RemoteConnectionsChangedEvent,
+  type RoomChangeEvent,
+  type SessionWorkChangedEvent,
+} from '@kiki/protocol';
 
 import type { ConfigChangedEvent } from '@kiki/agent-core-v2/app/config/config';
 import type { ModelsChangedEvent } from '@kiki/agent-core-v2/kosong/model/model';
@@ -50,9 +57,13 @@ export type CatalogChangedPayload = Awaited<
   ReturnType<IOAuthService['refreshOAuthProviderModels']>
 >;
 
+/** Payload of `event.remote_connections.changed` on the global bus. */
+export type RemoteConnectionsChangedPayload = Omit<RemoteConnectionsChangedEvent, 'type'>;
+
 /** Public event name → payload type. Keys must stay in sync with `globalEvents`. */
 export interface KlientEventPayloads {
   'room.changed': RoomChangeEvent;
+  'remoteConnections.changed': RemoteConnectionsChangedPayload;
   'config.changed': ConfigChangedEvent;
   'config.sectionChanged': ConfigChangedEvent;
   'kosong.providers.changed': ProvidersChangedEvent;
@@ -94,6 +105,7 @@ const sessionWorkChangedSchema = z.object({
   main_turn_active: z.boolean().optional(),
   pending_interaction: z.enum(['none', 'approval', 'question']).optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  attention_cursor: sessionAttentionCursorSchema.optional(),
 }) satisfies z.ZodType<SessionWorkChangedPayload>;
 
 const sessionMetaUpdatedSchema = z.object({
@@ -152,6 +164,10 @@ export const globalEvents = {
     kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
   },
   'connections.changed': {
+    kind: 'bus', type: 'event.remote_connections.changed',
+    schema: remoteConnectionsChangedPayloadSchema,
+  },
+  'remoteConnections.changed': {
     kind: 'bus', type: 'event.remote_connections.changed',
     schema: remoteConnectionsChangedPayloadSchema,
   },

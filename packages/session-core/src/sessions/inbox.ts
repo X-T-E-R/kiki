@@ -15,9 +15,23 @@
  * badges count only actionable / unread items, never active background work.
  */
 
-import type { Session } from '@kiki/protocol';
+import type { RoomListItem, Session } from '@kiki/protocol';
 
-import type { SessionSeenMap } from '../settings/sessionReadState';
+import { roomSeenKey } from '../settings/roomReadState';
+import {
+  encodeConversationRef,
+  type AttentionCursor,
+  type ConversationRef,
+  type ConversationSeenMap,
+  type SeenRecord,
+  type SessionSeenMap,
+} from '../settings/sessionReadState';
+import {
+  classifyConversationTriage,
+  isAttentionCursorSame,
+  type ConversationTriageMap,
+  type TriageClass,
+} from '../settings/sessionTriage';
 
 import { pendingKindOf } from './activity';
 import { sessionIsExecuting } from './sessionList';
@@ -39,7 +53,7 @@ export type InboxSource = Pick<
   | 'last_turn_reason'
   | 'last_prompt'
 > &
-  Partial<Pick<Session, 'agent_config' | 'metadata' | 'usage'>> & {
+  Partial<Pick<Session, 'agent_config' | 'metadata' | 'usage' | 'attention_cursor'>> & {
     readonly roomId?: string;
     readonly needsYouReason?: 'budget';
   };
@@ -99,11 +113,50 @@ export interface FilteredInboxModel extends InboxModel {
 
 export const EMPTY_INBOX: InboxModel = { needsYou: [], unread: [], running: [], total: 0 };
 
-/** True when the session has events the user has not opened yet. */
+/** Effective attention cursor for a session: semantic `attention_cursor` when available, else `last_seq`. */
+export function sessionAttentionCursor(
+  session: Pick<Session, 'last_seq' | 'attention_cursor'>,
+): AttentionCursor {
+  if (session.attention_cursor !== undefined) {
+    return {
+      epoch: session.attention_cursor.epoch,
+      seq: Math.max(0, Math.trunc(session.attention_cursor.seq)),
+    };
+  }
+  return { seq: Math.max(0, Math.trunc(session.last_seq)) };
+}
+
+/** True when the server provided a semantic `attention_cursor` for this session. */
+export function hasSemanticAttentionCursor(
+  session: Pick<Session, 'attention_cursor'>,
+): boolean {
+  return session.attention_cursor !== undefined;
+}
+
+/**
+ * True when a conversation's attention cursor is ahead of its persisted seen mark.
+ * A zero cursor is never unread (immune to non-attention metadata/heartbeat writes);
+ * differing non-empty epochs always flag unread across journal resets.
+ */
+export function isConversationUnread(
+  cursor: AttentionCursor,
+  seenRecord: SeenRecord | undefined,
+  _hasSemanticCursor?: boolean,
+): boolean {
+  if (!Number.isFinite(cursor.seq) || cursor.seq <= 0) return false;
+  if (seenRecord === undefined) return true;
+  if (cursor.epoch !== undefined && seenRecord.epoch !== undefined && cursor.epoch !== seenRecord.epoch) {
+    return true;
+  }
+  return seenRecord.seq < Math.trunc(cursor.seq);
+}
+
+/** True when the session has attention-worthy events the user has not opened yet. */
 export function isSessionUnread(session: InboxSource, seen: SessionSeenMap): boolean {
-  if (session.last_seq <= 0) return false;
+  const effectiveSeq = session.attention_cursor?.seq ?? session.last_seq;
+  if (effectiveSeq <= 0) return false;
   const mark = seen[session.id];
-  return mark === undefined || mark < session.last_seq;
+  return mark === undefined || mark < effectiveSeq;
 }
 
 function finishedReason(session: InboxSource): InboxReason | undefined {
@@ -146,8 +199,13 @@ function isActivelyRunning(session: InboxSource): boolean {
   return session.busy === true;
 }
 
+function parseTimestamp(at: string): number {
+  const ms = Date.parse(at);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 function ascending(left: InboxItem, right: InboxItem): number {
-  return Date.parse(left.at) - Date.parse(right.at);
+  return parseTimestamp(left.at) - parseTimestamp(right.at);
 }
 
 /**
@@ -299,4 +357,316 @@ export function sessionRowState(session: InboxSource, seen: SessionSeenMap): Ses
   if (session.cleanup_pending === true) return 'cleanup-pending';
   if (sessionIsExecuting(session) === true) return 'running';
   return isSessionUnread(session, seen) ? 'unread' : 'read';
+}
+
+// ---- unified multi-space inbox with triage ----
+
+export interface UnifiedInboxEntryBase {
+  readonly spaceKey: string;
+  readonly spaceName: string;
+  readonly isRemote: boolean;
+  readonly workspaceName?: string;
+}
+
+export interface UnifiedInboxSessionEntry extends UnifiedInboxEntryBase {
+  readonly kind: 'session';
+  readonly session: InboxSource;
+}
+
+export interface UnifiedInboxRoomEntry extends UnifiedInboxEntryBase {
+  readonly kind: 'room';
+  readonly room: RoomListItem;
+  /** Resolved workspace id when mapped against the space's workspace catalog. */
+  readonly workspaceId?: string;
+}
+
+export type UnifiedInboxEntry = UnifiedInboxSessionEntry | UnifiedInboxRoomEntry;
+
+export interface UnifiedInboxItem {
+  readonly ref: ConversationRef;
+  readonly encodedKey: string;
+  readonly spaceKey: string;
+  readonly spaceName: string;
+  readonly isRemote: boolean;
+  readonly workspaceId: string;
+  readonly workspaceName?: string;
+  readonly sessionId: string;
+  readonly roomId?: string;
+  readonly title: string;
+  readonly reason: InboxReason;
+  readonly at: string;
+  readonly busy: boolean;
+  readonly attentionCursor: AttentionCursor;
+  readonly lastSeq: number;
+  readonly snoozedUntil?: number;
+  readonly triageClass: TriageClass;
+  readonly unread: boolean;
+  readonly needsYou: boolean;
+  readonly preview?: string;
+  readonly personaId?: string;
+  readonly personaName?: string;
+  readonly model?: string;
+  readonly turnCount?: number;
+}
+
+export interface UnifiedInboxModel {
+  /** Actionable items: `needsYou` oldest-first, then `failed`/`cancelled` newest-first, then `completed`/woken newest-first. */
+  readonly active: readonly UnifiedInboxItem[];
+  /** Actively running conversations without a blocking prompt, newest-updated first. */
+  readonly working: readonly UnifiedInboxItem[];
+  /** Snoozed conversations, soonest wake-up first. */
+  readonly snoozed: readonly UnifiedInboxItem[];
+  /** Reversible inbox-archived conversations, newest-updated first. */
+  readonly archived: readonly UnifiedInboxItem[];
+  /** Count of active `needsYou` items. */
+  readonly needsYouCount: number;
+  /** Count of active non-`needsYou` actionable items (unread or woken snooze; excludes read viewing-pinned rows). */
+  readonly unreadCount: number;
+  /** `needsYouCount + unreadCount`. */
+  readonly total: number;
+}
+
+export interface UnifiedInboxOptions {
+  /**
+   * Encoded conversation key currently being viewed from the inbox. Keeps a
+   * clicked-and-read row pinned in `active` until it is triaged (`settled` /
+   * `snoozed` / `archived`), resumes work, or the user navigates away.
+   */
+  readonly pinnedViewingKey?: string;
+}
+
+export const EMPTY_UNIFIED_INBOX: UnifiedInboxModel = {
+  active: [],
+  working: [],
+  snoozed: [],
+  archived: [],
+  needsYouCount: 0,
+  unreadCount: 0,
+  total: 0,
+};
+
+function activePriorityTier(item: UnifiedInboxItem): number {
+  if (item.needsYou) return 0;
+  if (item.reason === 'failed' || item.reason === 'cancelled') return 1;
+  return 2;
+}
+
+function compareActiveItems(left: UnifiedInboxItem, right: UnifiedInboxItem): number {
+  const leftTier = activePriorityTier(left);
+  const rightTier = activePriorityTier(right);
+  if (leftTier !== rightTier) return leftTier - rightTier;
+  if (leftTier === 0) {
+    return parseTimestamp(left.at) - parseTimestamp(right.at) || left.encodedKey.localeCompare(right.encodedKey);
+  }
+  return parseTimestamp(right.at) - parseTimestamp(left.at) || left.encodedKey.localeCompare(right.encodedKey);
+}
+
+function compareNewestFirst(left: UnifiedInboxItem, right: UnifiedInboxItem): number {
+  return parseTimestamp(right.at) - parseTimestamp(left.at) || left.encodedKey.localeCompare(right.encodedKey);
+}
+
+function compareSnoozed(left: UnifiedInboxItem, right: UnifiedInboxItem): number {
+  const leftUntil = left.snoozedUntil ?? Number.POSITIVE_INFINITY;
+  const rightUntil = right.snoozedUntil ?? Number.POSITIVE_INFINITY;
+  if (leftUntil !== rightUntil) return leftUntil - rightUntil;
+  return compareNewestFirst(left, right);
+}
+
+function normalizePreview(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return raw.replace(/\s+/gu, ' ').trim();
+}
+
+function activeSnoozeUntil(
+  cursor: AttentionCursor,
+  record: ConversationTriageMap[string] | undefined,
+  nowMs: number,
+): number | undefined {
+  if (record === undefined || record.s !== 'snoozed' || record.u === undefined) return undefined;
+  if (nowMs >= record.u) return undefined;
+  return isAttentionCursorSame(cursor, record) ? record.u : undefined;
+}
+
+/**
+ * Assemble the unified multi-space inbox across local/remote sessions and rooms,
+ * applying semantic `attention_cursor` unread checks and reversible triage rules.
+ */
+export function buildUnifiedInbox(
+  entries: readonly UnifiedInboxEntry[],
+  seenMap: ConversationSeenMap,
+  triageMap: ConversationTriageMap,
+  nowMs: number = Date.now(),
+  options: UnifiedInboxOptions = {},
+): UnifiedInboxModel {
+  const active: UnifiedInboxItem[] = [];
+  const working: UnifiedInboxItem[] = [];
+  const snoozed: UnifiedInboxItem[] = [];
+  const archived: UnifiedInboxItem[] = [];
+  const seenKeys = new Set<string>();
+  const pinnedViewingKey = options.pinnedViewingKey;
+
+  const routeItem = (item: UnifiedInboxItem): void => {
+    switch (item.triageClass) {
+      case 'active':
+        active.push(item);
+        break;
+      case 'working':
+        working.push(item);
+        break;
+      case 'snoozed':
+        snoozed.push(item);
+        break;
+      case 'archived':
+        archived.push(item);
+        break;
+      case 'hidden':
+        if (pinnedViewingKey !== undefined && item.encodedKey === pinnedViewingKey) {
+          active.push(item);
+        }
+        break;
+      case 'settled':
+        break;
+    }
+  };
+
+  for (const entry of entries) {
+    if (entry.kind === 'session') {
+      const { session } = entry;
+      if (session.archived === true || session.private === true) continue;
+      const ref: ConversationRef = {
+        spaceKey: entry.spaceKey,
+        kind: 'session',
+        id: session.id,
+      };
+      const encodedKey = encodeConversationRef(ref);
+      if (seenKeys.has(encodedKey)) continue;
+      seenKeys.add(encodedKey);
+
+      const attentionCursor = sessionAttentionCursor(session);
+      const semantic = hasSemanticAttentionCursor(session);
+      const pending = pendingKindOf(session);
+      const needsYouReason: InboxReason | undefined = pending !== 'none' ? pending : session.needsYouReason;
+      const needsYou = needsYouReason !== undefined;
+      const activelyRunning = !needsYou && isActivelyRunning(session);
+      const unread = !session.busy && isConversationUnread(attentionCursor, seenMap[encodedKey], semantic);
+      const reason: InboxReason = needsYouReason ?? (activelyRunning ? 'running' : (finishedReason(session) ?? 'completed'));
+
+      const record = triageMap[encodedKey];
+      const triageClass = classifyConversationTriage(
+        { needsYou, busy: activelyRunning, unread, cursor: attentionCursor, reason },
+        record,
+        nowMs,
+      );
+      const snoozedUntil = activeSnoozeUntil(attentionCursor, record, nowMs);
+
+      const { personaId, personaName } = extractPersonaIdentity(session);
+      const rawModel = session.agent_config?.model;
+      const model = typeof rawModel === 'string' && rawModel.trim() !== '' ? rawModel.trim() : undefined;
+      const rawTurns = session.usage?.turn_count;
+      const turnCount = typeof rawTurns === 'number' && rawTurns > 0 ? rawTurns : undefined;
+
+      routeItem({
+        ref,
+        encodedKey,
+        spaceKey: entry.spaceKey,
+        spaceName: entry.spaceName,
+        isRemote: entry.isRemote,
+        workspaceId: session.workspace_id,
+        workspaceName: entry.workspaceName,
+        sessionId: session.id,
+        roomId: session.roomId,
+        title: session.title,
+        reason,
+        at: session.updated_at,
+        busy: session.busy,
+        attentionCursor,
+        lastSeq: session.last_seq,
+        snoozedUntil,
+        triageClass,
+        unread,
+        needsYou,
+        preview: normalizePreview(session.last_prompt),
+        personaId,
+        personaName,
+        model,
+        turnCount,
+      });
+      continue;
+    }
+
+    const { room } = entry;
+    if (room.archived === true) continue;
+    const ref: ConversationRef = {
+      spaceKey: entry.spaceKey,
+      kind: 'room',
+      id: room.id,
+    };
+    const encodedKey = encodeConversationRef(ref);
+    if (seenKeys.has(encodedKey)) continue;
+    seenKeys.add(encodedKey);
+
+    const attentionCursor: AttentionCursor = { seq: Math.max(0, Math.trunc(room.lastSeq)) };
+    const needsYouReason: InboxReason | undefined =
+      room.pendingInteraction !== 'none'
+        ? room.pendingInteraction
+        : room.needsYou
+          ? 'budget'
+          : undefined;
+    const needsYou = needsYouReason !== undefined;
+    const activelyRunning = !needsYou && room.busy;
+    const unread = !room.busy && isConversationUnread(attentionCursor, seenMap[encodedKey], false);
+    const reason: InboxReason = needsYouReason ?? (activelyRunning ? 'running' : room.failed ? 'failed' : 'completed');
+
+    const record = triageMap[encodedKey];
+    const triageClass = classifyConversationTriage(
+      { needsYou, busy: activelyRunning, unread, cursor: attentionCursor, reason },
+      record,
+      nowMs,
+    );
+    const snoozedUntil = activeSnoozeUntil(attentionCursor, record, nowMs);
+
+    routeItem({
+      ref,
+      encodedKey,
+      spaceKey: entry.spaceKey,
+      spaceName: entry.spaceName,
+      isRemote: entry.isRemote,
+      workspaceId: entry.workspaceId ?? room.workspace,
+      workspaceName: entry.workspaceName,
+      sessionId: roomSeenKey(room.id),
+      roomId: room.id,
+      title: room.title,
+      reason,
+      at: room.updatedAt,
+      busy: room.busy,
+      attentionCursor,
+      lastSeq: room.lastSeq,
+      snoozedUntil,
+      triageClass,
+      unread,
+      needsYou,
+    });
+  }
+
+  active.sort(compareActiveItems);
+  working.sort(compareNewestFirst);
+  snoozed.sort(compareSnoozed);
+  archived.sort(compareNewestFirst);
+
+  let needsYouCount = 0;
+  let unreadCount = 0;
+  for (const item of active) {
+    if (item.needsYou) needsYouCount += 1;
+    else if (item.triageClass === 'active') unreadCount += 1;
+  }
+
+  return {
+    active,
+    working,
+    snoozed,
+    archived,
+    needsYouCount,
+    unreadCount,
+    total: needsYouCount + unreadCount,
+  };
 }

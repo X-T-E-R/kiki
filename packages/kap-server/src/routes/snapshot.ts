@@ -54,6 +54,7 @@ import {
 import { readColdSessionMeta, readColdSessionMetaBySessionId } from '../services/snapshot/coldSessionMeta';
 import { readColdMainWireProjection } from '../services/snapshot/coldSnapshotSource';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
+import { toAttentionCursor } from '../transport/ws/v1/sessionEventJournal';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionBindingFacts, resolveSessionFacts, toWireSession } from './sessions';
 import { boundedEntity, ContentChangedError, readContentSegment } from '../transport/klient/boundedContent';
@@ -237,7 +238,7 @@ export async function assembleBrowseSnapshotSource(
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
-      facts, cursor.seq),
+      facts, cursor.seq, false, toAttentionCursor(cursor)),
     context_tokens: facts.usage === undefined || (facts.usage.context_tokens === 0 && facts.usage.turn_count > 0)
       ? undefined
       : facts.usage.context_tokens,
@@ -494,6 +495,8 @@ async function assembleColdSnapshot(
     workspace?.root ?? meta.cwd ?? '',
     facts,
     cursor.seq,
+    false,
+    toAttentionCursor(cursor),
   );
   const coldRoster = coldBrowseRoster(sessionId, meta);
   const subagentIds = coldRoster.subagents.map((subagent) => subagent.id);
@@ -636,7 +639,12 @@ async function prepareSnapshotFromLease(
     response: {
       as_of_seq: snapState.seq,
       epoch: snapState.epoch,
-      session: { ...session, last_seq: snapState.seq, message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length },
+      session: {
+        ...session,
+        last_seq: snapState.seq,
+        attention_cursor: toAttentionCursor(snapState),
+        message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length,
+      },
       messages: immediateMessages,
       in_flight_turn: inFlightTurn,
       subagents,
@@ -877,7 +885,7 @@ export async function readBrowseSnapshotContent(
       const workspace = await timeSessionViewPhase('snapshot_workspace', fields, () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
       timing.signal?.throwIfAborted();
       const session = toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
-        await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false, sessionMetadata: meta }), cursor.seq);
+        await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false, sessionMetadata: meta }), cursor.seq, false, toAttentionCursor(cursor));
       if (ref.source.id !== 'legacy') return readContentSegment({ session }, ref);
       const projection = await timeSessionViewPhase('snapshot_content_controls', fields,
         () => readColdMainWireProjection(core, summary.workspaceId, sessionId, timing.signal), timing);
@@ -963,7 +971,14 @@ export async function readBrowseSnapshotContent(
       let source: object;
       if (field === 'session') {
         if (state.captured?.session === undefined) return undefined;
-        source = { session: { ...state.captured.session, last_seq: state.seq, message_count: state.captured.session.message_count ?? state.contextMessageCount } };
+        source = {
+          session: {
+            ...state.captured.session,
+            last_seq: state.seq,
+            attention_cursor: toAttentionCursor(state),
+            message_count: state.captured.session.message_count ?? state.contextMessageCount,
+          },
+        };
       } else if (field === 'subagents') {
         if (state.captured === undefined) return undefined;
         const candidates = sessionAgentRoster(sessionId, state.captured.meta, state.subagents, state.captured.runtime);

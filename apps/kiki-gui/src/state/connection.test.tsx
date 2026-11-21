@@ -534,6 +534,12 @@ describe('ConnectionProvider Klient ownership', () => {
         expect(other.getQueryState(key)?.isInvalidated).toBe(false);
       }
       expect(active.getQueryState(['config'])?.isInvalidated).toBe(false);
+
+      active.setQueryData(['remote-connections', 'list'], []);
+      active.setQueryData(['thread-bridges', 'list'], []);
+      expect(handleGlobalConnectionFrame({ type: 'event.remote_connections.changed' }, active)).toBe(true);
+      expect(active.getQueryState(['remote-connections', 'list'])?.isInvalidated).toBe(true);
+      expect(active.getQueryState(['thread-bridges', 'list'])?.isInvalidated).toBe(true);
     } finally {
       active.clear();
       other.clear();
@@ -1854,7 +1860,8 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
       vi.stubGlobal(
         'fetch',
         vi.fn(async (input: RequestInfo | URL) => {
-          if (String(input).endsWith('/api/web-access/session')) {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.endsWith('/api/web-access/session')) {
             return {
               ok: true,
               json: async () => ({ code: 0, data: { authenticated: true } }),

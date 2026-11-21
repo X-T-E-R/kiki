@@ -36,7 +36,8 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { defineRoute } from '../middleware/defineRoute';
 import { boundedListPreview } from '../transport/klient/boundedContent';
-import { readSessionCursorSeq, type SessionCursorReader } from '../lib/sessionObserver';
+import { readSessionCursor, type SessionCursorReader } from '../lib/sessionObserver';
+import { toAttentionCursor } from '../transport/ws/v1/sessionEventJournal';
 import { resolveSessionPersonaId } from './sessionPersona';
 import { resolveSessionFacts, toWireSession } from './sessions';
 
@@ -196,8 +197,8 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
               },
             };
           }
-          const seq = await readSessionCursorSeq(core, broadcaster, summary.id, undefined, true);
-          return boundedListPreview(toWireSession(summary, cwd, facts, seq));
+          const cursor = await readSessionCursor(core, broadcaster, summary.id, undefined, true);
+          return boundedListPreview(toWireSession(summary, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor)));
         }));
         data[personaId] = { total: bucket.total, items };
       }));

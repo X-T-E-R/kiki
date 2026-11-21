@@ -175,6 +175,49 @@ describe('work_changed cache merge', () => {
     const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: false });
     expect(merged?.pages[0]?.items[0]).toMatchObject({ busy: false, executing: undefined, main_turn_active: undefined });
   });
+
+  it('merges attention_cursor monotonically on the same epoch and accepts a new epoch across work_changed and list merges', () => {
+    const initial = session('target', '2026-01-01T00:00:00.000Z', {
+      attention_cursor: { epoch: 'ep-1', seq: 5 },
+    });
+    const stale = patchSessionWorkChanged(initial, {
+      sessionId: 'target',
+      busy: false,
+      attention_cursor: { epoch: 'ep-1', seq: 3 },
+    });
+    expect(stale.attention_cursor).toEqual({ epoch: 'ep-1', seq: 5 });
+
+    const advanced = patchSessionWorkChanged(stale, {
+      sessionId: 'target',
+      busy: false,
+      attention_cursor: { epoch: 'ep-1', seq: 8 },
+    });
+    expect(advanced.attention_cursor).toEqual({ epoch: 'ep-1', seq: 8 });
+
+    const omitted = patchSessionWorkChanged(advanced, { sessionId: 'target', busy: true });
+    expect(omitted.attention_cursor).toEqual({ epoch: 'ep-1', seq: 8 });
+
+    const rolledEpoch = mergeSessionWorkChanged(data({ items: [omitted], has_more: false }), {
+      sessionId: 'target',
+      busy: false,
+      attention_cursor: { epoch: 'ep-2', seq: 1 },
+    })?.pages[0]?.items[0];
+    expect(rolledEpoch?.attention_cursor).toEqual({ epoch: 'ep-2', seq: 1 });
+
+    // Poll and activity merges also preserve monotonic attention_cursor on the same epoch.
+    const cached = data({ items: [advanced], has_more: false });
+    const polled = mergeSessionFirstPage(cached, {
+      items: [session('target', '2026-01-01T00:00:10.000Z', { attention_cursor: { epoch: 'ep-1', seq: 4 } })],
+      has_more: false,
+    });
+    expect(polled?.pages[0]?.items[0]?.attention_cursor).toEqual({ epoch: 'ep-1', seq: 8 });
+
+    const activity = mergeSessionActivity(
+      polled,
+      session('target', '2026-01-01T00:00:20.000Z', { attention_cursor: { epoch: 'ep-1', seq: 6 } }),
+    );
+    expect(activity?.pages[0]?.items[0]?.attention_cursor).toEqual({ epoch: 'ep-1', seq: 8 });
+  });
 });
 
 describe('dedupeSessions', () => {

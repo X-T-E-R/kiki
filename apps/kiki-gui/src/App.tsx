@@ -71,7 +71,6 @@ import { useHost } from './host';
 import {
   adjacentRunningSession,
   arrangePinnedFirst,
-  buildConversationInbox,
   dedupeSessions,
   groupConversationItems,
   mergeSessionFirstPage,
@@ -84,6 +83,7 @@ import {
   type SessionListData,
 } from '@kiki/session-core/sessions';
 import {
+  encodeConversationRef,
   readLastSessionId,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -107,9 +107,12 @@ import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/
 import { anyOverlayOpen, registerOverlay } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
 import { useAwayNotifications } from './lib/useAwayNotifications';
+import { useInboxTriageState } from './lib/useInboxTriageState';
+import { ALL_SPACE_SCOPE, useMultiSpaceSessions } from './lib/useMultiSpaceSessions';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
+import { useScopeRestore } from './components/NavScopeBoundary';
 import { recordNavigation } from './lib/navHistory';
 import {
   desktopPluginFocusHandoff,
@@ -237,7 +240,8 @@ function NormalApp() {
   const rawNavigate = useNavigate();
   const location = useLocation();
   const navType = useNavigationType();
-  const { scopeId, meta, connectionRef, localClient, connectionSource } = useConnection();
+  const { scopeId, spaceKey, meta, connectionRef, localClient, connectionSource } = useConnection();
+  const scopeRestore = useScopeRestore();
   const desktop = host.kind === 'tauri';
 
   // Commit the target visit before descendants' passive restoration effects.
@@ -742,12 +746,31 @@ function NormalApp() {
   const seen = useSessionSeen();
   const personaDirectoryState = usePersonaDirectory({ sessions: globalSessions, seen });
   const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
+  const multiSpace = useMultiSpaceSessions({
+    activeSessions: globalSessions,
+    activeRooms: conversations.rooms,
+    activeWorkspaces: workspaceOptions,
+    enabled: !drawerClosed,
+  });
+  const activeRoomMatch = useMatch('/rooms/:id');
+  const activeRoomId = activeRoomMatch?.params.id;
+  const activeConversationKey = activeSessionId !== undefined
+    ? encodeConversationRef({ spaceKey, kind: 'session', id: activeSessionId })
+    : activeRoomId !== undefined
+      ? encodeConversationRef({ spaceKey, kind: 'room', id: activeRoomId })
+      : undefined;
+  const inboxTriage = useInboxTriageState({
+    sources: multiSpace.sources,
+    currentSpaceKey: spaceKey,
+    spaceScope: layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE,
+    activeConversationKey,
+  });
   const sidebarBadge = useMemo<SidebarBadge | undefined>(() => {
-    const inbox = buildConversationInbox(globalSessions, conversations.rooms, seen, workspaceOptions);
-    return inbox.total === 0
+    const current = inboxTriage.inbox;
+    return current.total === 0
       ? undefined
-      : { total: inbox.total, needsYou: inbox.needsYou.length > 0, needsYouCount: inbox.needsYou.length };
-  }, [globalSessions, conversations.rooms, seen, workspaceOptions]);
+      : { total: current.total, needsYou: current.needsYouCount > 0, needsYouCount: current.needsYouCount };
+  }, [inboxTriage.inbox]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
     // A Bot's active home and a room member's own session keep their single
     // address (the Persona rows above, the room's row); everything else lists here.
@@ -781,6 +804,7 @@ function NormalApp() {
     host,
     sessions: globalSessions,
     listSessions: listNewestSessions,
+    unifiedInbox: inboxTriage.allSpacesInbox,
   });
 
   // document.title follows the route: session title, page name, or bare Kiki.
@@ -1058,6 +1082,11 @@ function NormalApp() {
       onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
       onNewSession={() => { void navigate(newSessionPath); }}
       onClose={closeSidebar}
+      multiSpaceSources={multiSpace.sources}
+      healthBySpace={multiSpace.healthBySpace}
+      hasMultipleSpaces={multiSpace.hasMultipleSpaces}
+      localSpaceKey={multiSpace.localSpaceKey}
+      inboxTriage={inboxTriage}
     />
   );
 
@@ -1070,6 +1099,9 @@ function NormalApp() {
       <NotifyAskBanner />
       <div className="app-sheet">
       <SpaceViewMemory />
+      {scopeRestore?.transitioningInPlace === true ? (
+        <div className="min-h-0 flex-1" aria-busy="true" />
+      ) : (
       <PageLoadBoundary
         resetKey={location.pathname}
         header={<PageHeader title={t('app.pageLoadFailed')} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
@@ -1191,6 +1223,7 @@ function NormalApp() {
         </Routes>
         </Suspense>
         </PageLoadBoundary>
+      )}
         </div>
       </div>
   );

@@ -25,17 +25,23 @@ export type SessionObserverResult =
 
 const inflightColdObservers = new WeakMap<Scope, Map<string, Promise<ColdObserverResult>>>();
 
+export interface SessionCursorSnapshot {
+  readonly seq: number;
+  readonly epoch?: string;
+  readonly attentionSeq?: number;
+}
+
 export interface SessionCursorReader {
   getCursor(
     sessionId: string,
     signal?: AbortSignal,
     indexed?: boolean,
-  ): Promise<{ readonly seq: number } | undefined> | { readonly seq: number } | undefined;
+  ): Promise<SessionCursorSnapshot | undefined> | SessionCursorSnapshot | undefined;
 }
 
 interface ColdCursorStore {
-  readonly values: Map<string, number>;
-  readonly inflight: Map<string, Promise<number | undefined>>;
+  readonly values: Map<string, SessionCursorSnapshot>;
+  readonly inflight: Map<string, Promise<SessionCursorSnapshot | undefined>>;
 }
 
 const MAX_COLD_CURSOR_CACHE = 2048;
@@ -71,13 +77,13 @@ function getColdCursorStore(core: Scope, broadcaster: object): ColdCursorStore {
   return store;
 }
 
-export async function readSessionCursorSeq(
+export async function readSessionCursor(
   core: Scope,
   broadcaster: SessionCursorReader | undefined,
   sessionId: string,
   signal?: AbortSignal,
   indexed = false,
-): Promise<number | undefined> {
+): Promise<SessionCursorSnapshot | undefined> {
   if (broadcaster === undefined) return undefined;
   signal?.throwIfAborted();
   let isLive = false;
@@ -87,7 +93,7 @@ export async function readSessionCursorSeq(
   const store = getColdCursorStore(core, broadcaster as object);
   if (isLive) {
     store.values.delete(sessionId);
-    return (await broadcaster.getCursor(sessionId, signal, indexed))?.seq;
+    return await broadcaster.getCursor(sessionId, signal, indexed);
   }
   const cached = store.values.get(sessionId);
   if (cached !== undefined) return cached;
@@ -95,19 +101,18 @@ export async function readSessionCursorSeq(
   if (pending === undefined) {
     pending = Promise.resolve(broadcaster.getCursor(sessionId, undefined, indexed))
       .then((cursor) => {
-        const seq = cursor?.seq;
         let nowLive = false;
         try {
           nowLive = core.accessor.get(ISessionManager).get(sessionId) !== undefined;
         } catch {}
-        if (!nowLive && seq !== undefined) {
+        if (!nowLive && cursor !== undefined) {
           if (store.values.size >= MAX_COLD_CURSOR_CACHE) {
             const oldest = store.values.keys().next().value;
             if (oldest !== undefined) store.values.delete(oldest);
           }
-          store.values.set(sessionId, seq);
+          store.values.set(sessionId, cursor);
         }
-        return seq;
+        return cursor;
       })
       .finally(() => {
         if (store.inflight.get(sessionId) === pending) {
@@ -117,7 +122,7 @@ export async function readSessionCursorSeq(
     store.inflight.set(sessionId, pending);
   }
   if (signal === undefined) return pending;
-  return new Promise<number | undefined>((resolve, reject) => {
+  return new Promise<SessionCursorSnapshot | undefined>((resolve, reject) => {
     const onAbort = () => reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'));
     if (signal.aborted) {
       onAbort();
@@ -135,6 +140,16 @@ export async function readSessionCursorSeq(
       },
     );
   });
+}
+
+export async function readSessionCursorSeq(
+  core: Scope,
+  broadcaster: SessionCursorReader | undefined,
+  sessionId: string,
+  signal?: AbortSignal,
+  indexed = false,
+): Promise<number | undefined> {
+  return (await readSessionCursor(core, broadcaster, sessionId, signal, indexed))?.seq;
 }
 
 export async function readSessionObserver(core: Scope, sessionId: string): Promise<SessionObserverResult> {

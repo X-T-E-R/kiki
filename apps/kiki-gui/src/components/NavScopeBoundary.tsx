@@ -20,6 +20,8 @@ const PAIRING_SETTINGS_ROUTE = '/settings/spaces#st-card-remote-connections';
 
 export interface ScopeRestoreValue {
   readonly state: ScopeRestoreState;
+  /** True during the single-tick in-place handoff after a verified connection commit, before the target route lands. */
+  readonly transitioningInPlace?: boolean;
   retry(token?: string): void;
   /** Give up the attempt; `route` is where to go instead of staying put. */
   cancel(route?: string): void;
@@ -44,6 +46,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   const [state, setState] = useState<ScopeRestoreState>({ phase: 'idle' });
   const tokenRef = useRef<string | undefined>(undefined);
   const acceptedRef = useRef<ScopeDestination | null>(null);
+  const inPlaceHandoffRef = useRef(false);
   const explicitRef = useRef<{ target: ScopeDestination; visitId: string; redirect?: NavigationRedirect } | null>(null);
   const retryRef = useRef<(() => void) | null>(null);
   const bootAttemptRef = useRef<AbortController | null>(null);
@@ -52,6 +55,8 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   const target = destinationForLocation(location, active);
   const safe = !(notificationBoot && verifiedBootRef.current !== location.key) && !isCrossScopeNavigation(active, target.scope) &&
     (target.scope.serverHomeId === undefined || target.scope.serverHomeId === active.serverHomeId);
+  const transitioningInPlace = !safe && inPlaceHandoffRef.current && acceptedRef.current !== null &&
+    !isCrossScopeNavigation(active, acceptedRef.current.scope);
   const performNavigation = useCallback<GuardedNavigate>((to, options) => {
     const explicit = explicitRef.current;
     if (explicit !== null) {
@@ -114,6 +119,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
         try {
           assertCurrent();
           acceptedRef.current = { ...candidate, scope: prepared.scope };
+          inPlaceHandoffRef.current = inPlace;
           await prepared.commit();
           assertCurrent();
           if (skipped && candidateVisit !== null && source !== null) {
@@ -125,6 +131,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
           return;
         } catch (error) {
           acceptedRef.current = null;
+          inPlaceHandoffRef.current = false;
           await prepared.dispose();
           if (!inPlace && !signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
             setState({ phase: 'failed', target: candidate, reason: error instanceof ScopeRestoreError ? error.reason : 'offline' });
@@ -191,6 +198,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
       // Keep its verified destination until the layout commit above consumes it.
       if (connection.needsScopeReload) return;
       acceptedRef.current = null;
+      inPlaceHandoffRef.current = false;
       setState({ phase: 'idle' });
       return;
     }
@@ -220,7 +228,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     // own home. Nothing is prepared, staged or navigated here — the new window
     // resolves the connection itself, and a cancelled or failed launch leaves
     // this window's page, draft and visit exactly as they were.
-    if (request.route === undefined && host.kind === 'tauri' && scope.scopeId.startsWith('remote:') && host.openRemoteSpace !== undefined &&
+    if (request.inPlace !== true && request.route === undefined && host.kind === 'tauri' && scope.scopeId.startsWith('remote:') && host.openRemoteSpace !== undefined &&
         launchWindowMode(readDesktopPrefs().windowMode) === 'windows') {
       const launch = async (signal = new AbortController().signal) => { await openRemoteScopeWindow(host, scope, signal); };
       retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(launch)).catch(() => {}); };
@@ -242,7 +250,16 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     if (!inPlace) {
       retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(execute, next.route)).catch(() => {}); };
     }
-    await guard.value.runAction?.(execute, next.route);
+    if (inPlace || request.onCancel !== undefined) {
+      let cancelled = false;
+      await guard.value.runAction?.(execute, next.route, () => {
+        cancelled = true;
+        request.onCancel?.();
+      });
+      if (cancelled) throw new DOMException('Navigation cancelled.', 'AbortError');
+    } else {
+      await guard.value.runAction?.(execute, next.route);
+    }
   }), [active, guard.value.runAction, guard.navigate, prepare]);
   const activeRef = useRef(active);
   activeRef.current = active;
@@ -296,12 +313,12 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   const localSpaceLabel = here !== null && !here.homeId.startsWith('remote:')
     ? (here.name ?? t('sidebar.space.unnamed'))
     : t('st.spaces.main');
-  const value = { state, retry, cancel };
+  const value = { state, transitioningInPlace, retry, cancel };
   return <ScopeRestoreContext.Provider value={value}>
     <DirtyGuardStateContext.Provider value={guard}>
       <DirtyGuardContext.Provider value={guard.value}>
         <div className="relative h-full">
-          <div className="h-full" inert={state.phase !== 'idle'}>{safe ? children : null}</div>
+          <div className="h-full" inert={state.phase !== 'idle'}>{safe || transitioningInPlace ? children : null}</div>
           {state.phase !== 'idle' ? <div className="absolute inset-0 z-50 bg-canvas">
             <NavScopeRecovery state={state} retry={retry} cancel={cancel} remote={remote} exitSpaceName={localSpaceLabel} />
           </div> : null}

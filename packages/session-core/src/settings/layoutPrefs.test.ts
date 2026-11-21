@@ -49,6 +49,8 @@ describe('readLayoutPreferences', () => {
       groupBy: 'time',
       sortBy: 'updated-desc',
       filters: { status: [], workspaces: [], archived: 'hide' },
+      sidebarMode: 'inbox',
+      spaceScope: 'all',
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       railWidth: RAIL_DEFAULT_WIDTH,
       pinnedNavItems: ['memory', 'personas', 'usage'],
@@ -71,6 +73,17 @@ describe('readLayoutPreferences', () => {
   it('falls back to default filters for a malformed value', () => {
     ls().setItem('kiki.layout', JSON.stringify({ filters: 'nope' }));
     expect(readLayoutPreferences().filters).toEqual({ status: [], workspaces: [], archived: 'hide' });
+  });
+
+  it('round-trips the sidebar mode and space scope with safe defaults', () => {
+    ls().setItem('kiki.layout', JSON.stringify({ sidebarMode: 'sessions', spaceScope: 'space-a' }));
+    expect(readLayoutPreferences()).toMatchObject({ sidebarMode: 'sessions', spaceScope: 'space-a' });
+
+    ls().setItem('kiki.layout', JSON.stringify({ sidebarMode: 'unknown', spaceScope: 42 }));
+    expect(readLayoutPreferences()).toMatchObject({ sidebarMode: 'inbox', spaceScope: 'all' });
+
+    ls().setItem('kiki.layout', JSON.stringify({ sidebarMode: 'inbox', spaceScope: '   ' }));
+    expect(readLayoutPreferences()).toMatchObject({ sidebarMode: 'inbox', spaceScope: 'all' });
   });
 
   it('clamps out-of-range widths to the min/max bounds', () => {
@@ -161,6 +174,13 @@ describe('writeLayoutPreferences', () => {
   it('clamps widths on write', () => {
     const next = writeLayoutPreferences({ railWidth: RAIL_MIN_WIDTH - 10 });
     expect(next.railWidth).toBe(RAIL_MIN_WIDTH);
+  });
+
+  it('persists the sidebar mode and space scope', () => {
+    resetLayoutPreferencesForTests();
+    const next = writeLayoutPreferences({ sidebarMode: 'sessions', spaceScope: 'space-b' });
+    expect(next).toMatchObject({ sidebarMode: 'sessions', spaceScope: 'space-b' });
+    expect(JSON.parse(ls().getItem('kiki.layout') ?? '{}')).toMatchObject({ sidebarMode: 'sessions', spaceScope: 'space-b' });
   });
 
   it('writes and updates pinnedNavItems, sidebarNavSectionCollapsed and sidebarPersonaSectionCollapsed', () => {

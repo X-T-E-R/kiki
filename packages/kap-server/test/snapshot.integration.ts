@@ -50,6 +50,7 @@ import { usageRuntime } from '../src/usage/usageRuntime';
 import * as panelCapabilities from '../src/routes/agentPanelCapabilities';
 import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot, readBrowseSnapshotContent, registerSnapshotRoutes } from '../src/routes/snapshot';
 import { sessionAgentRoster } from '../src/routes/sessionAgentRoster';
+import { ensureMainAgent as ensureLiveMainAgent } from '../src/transport/mainAgent';
 import { contentRevision } from '../src/transport/klient/contentRevision';
 import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
 import { applyContentSegment, jsonBytes, TRANSCRIPT_COVERAGE_VERSION, type ContentSegment } from '@kiki/transcript';
@@ -2885,6 +2886,63 @@ describe('cold session snapshot', () => {
       spies.resume.mockRestore();
       spies.workspaceAcquire.mockRestore();
     }
+  });
+
+  it('projects attention_cursor consistently across live, cold full, and cold browse snapshots', async () => {
+    const running = server as RunningServer;
+    const createRes = await fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: { ...authHeaders(running), 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home as string } }),
+    });
+    const created = (await createRes.json()) as { code: number; data: { id: string; attention_cursor?: { epoch: string; seq: number } } };
+    expect(created.code).toBe(0);
+    const sessionId = created.data.id;
+
+    const live = getLiveSessionById(running.core.accessor, sessionId)!;
+    const main = await ensureLiveMainAgent(live);
+    const bus = main.accessor.get(IEventBus);
+    bus.publish({ type: 'turn.started', turnId: 1 } as unknown as Event2<any>);
+    bus.publish({ type: 'turn.ended', turnId: 1, reason: 'completed' } as unknown as Event2<any>);
+
+    const liveRes = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+      headers: authHeaders(running),
+    });
+    const liveBody = (await liveRes.json()) as { code: number; data: unknown };
+    expect(liveBody.code).toBe(0);
+    const liveSnap = sessionSnapshotResponseSchema.parse(liveBody.data);
+    expect(liveSnap.session.attention_cursor).toEqual({
+      epoch: liveSnap.epoch,
+      seq: expect.any(Number),
+    });
+    const expectedAttention = liveSnap.session.attention_cursor!;
+    expect(expectedAttention.seq).toBeGreaterThan(0);
+
+    await closeSessionById(running.core.accessor, sessionId);
+
+    const coldFullRes = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+      headers: authHeaders(running),
+    });
+    const coldFullBody = (await coldFullRes.json()) as { code: number; data: unknown };
+    expect(coldFullBody.code).toBe(0);
+    const coldFullSnap = sessionSnapshotResponseSchema.parse(coldFullBody.data);
+    expect(coldFullSnap.session.attention_cursor).toEqual(expectedAttention);
+
+    const coldBrowseRes = await fetch(`${base}/api/sessions/${sessionId}/snapshot?mode=transcript`, {
+      headers: authHeaders(running),
+    });
+    const coldBrowseBody = (await coldBrowseRes.json()) as { code: number; data: unknown };
+    expect(coldBrowseBody.code).toBe(0);
+    const coldBrowseSnap = sessionSnapshotResponseSchema.parse(coldBrowseBody.data);
+    expect(coldBrowseSnap.session.attention_cursor).toEqual(expectedAttention);
+
+    const klientBrowseRes = await fetch(`${base}/api/klient/session-view/${sessionId}/snapshot`, {
+      headers: authHeaders(running),
+    });
+    const klientBrowseBody = (await klientBrowseRes.json()) as { code: number; data: unknown };
+    expect(klientBrowseBody.code).toBe(0);
+    const klientBrowseSnap = sessionSnapshotResponseSchema.parse(klientBrowseBody.data);
+    expect(klientBrowseSnap.session.attention_cursor).toEqual(expectedAttention);
   });
 });
 

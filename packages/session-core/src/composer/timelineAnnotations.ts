@@ -10,7 +10,7 @@
  */
 
 import { readSettings } from '../settings/settings';
-import { spaceStorage } from '../storage/spaceStorage';
+import { onDidChangeSpaceStorage, spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
 import { projectPresentedText } from '@kiki/transcript';
 import { parseSourceAnchor, sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
 
@@ -356,12 +356,27 @@ export function applyAnnotationOverrides(
 // ---- local override store (memory + optional localStorage mirror) ----
 
 const STORAGE_KEY = 'kiki.annotationOverrides';
+const EMPTY_SNAPSHOT: Readonly<Record<string, AnnotationOverride>> = Object.freeze({});
 
-const memory = new Map<string, AnnotationOverride>();
-let hydratedFromDisk = false;
-/** Frozen snapshot for useSyncExternalStore; identity changes only on writes. */
-let snapshot: Readonly<Record<string, AnnotationOverride>> = Object.freeze({});
+const memoryByScope = new Map<string, Map<string, AnnotationOverride>>();
+const hydratedScopes = new Set<string>();
+/** Per-scope frozen snapshots for useSyncExternalStore; identity changes only on writes. */
+const snapshotByScope = new Map<string, Readonly<Record<string, AnnotationOverride>>>();
 const listeners = new Set<() => void>();
+let spaceListenerBound = false;
+
+function activeOverrideScope(): string {
+  return spaceStorageKey(STORAGE_KEY);
+}
+
+function overrideMemoryForScope(scope: string = activeOverrideScope()): Map<string, AnnotationOverride> {
+  let scoped = memoryByScope.get(scope);
+  if (scoped === undefined) {
+    scoped = new Map<string, AnnotationOverride>();
+    memoryByScope.set(scope, scoped);
+  }
+  return scoped;
+}
 
 function overridesEnabled(): boolean {
   return readSettings().draftPersistence;
@@ -391,33 +406,39 @@ function readAllStored(): Record<string, AnnotationOverride> {
   }
 }
 
-function persistAll(): void {
+function persistAll(scoped: Map<string, AnnotationOverride>): void {
   if (!overridesEnabled()) return;
-  const all = Object.fromEntries(memory);
+  const all = Object.fromEntries(scoped);
   try {
-    if (memory.size === 0) spaceStorage.removeItem(STORAGE_KEY);
+    if (scoped.size === 0) spaceStorage.removeItem(STORAGE_KEY);
     else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   } catch {
     // storage full / unavailable — overrides are a convenience
   }
 }
 
-function rebuildSnapshot(): void {
-  snapshot = Object.freeze(Object.fromEntries(memory));
+function rebuildSnapshot(scope: string, scoped: Map<string, AnnotationOverride>): void {
+  snapshotByScope.set(scope, scoped.size === 0 ? EMPTY_SNAPSHOT : Object.freeze(Object.fromEntries(scoped)));
 }
 
-function hydrateFromDiskIfNeeded(): void {
-  if (hydratedFromDisk) return;
-  hydratedFromDisk = true;
-  if (!overridesEnabled()) return;
-  for (const [id, override] of Object.entries(readAllStored())) memory.set(id, override);
-  rebuildSnapshot();
+function hydrateFromDiskIfNeeded(scope: string = activeOverrideScope()): Map<string, AnnotationOverride> {
+  const scoped = overrideMemoryForScope(scope);
+  if (hydratedScopes.has(scope)) return scoped;
+  hydratedScopes.add(scope);
+  if (!overridesEnabled()) {
+    rebuildSnapshot(scope, scoped);
+    return scoped;
+  }
+  for (const [id, override] of Object.entries(readAllStored())) scoped.set(id, override);
+  rebuildSnapshot(scope, scoped);
+  return scoped;
 }
 
 /** Current overrides as one frozen object (stable identity between writes). */
 export function getAnnotationOverridesSnapshot(): Readonly<Record<string, AnnotationOverride>> {
-  hydrateFromDiskIfNeeded();
-  return snapshot;
+  const scope = activeOverrideScope();
+  hydrateFromDiskIfNeeded(scope);
+  return snapshotByScope.get(scope) ?? EMPTY_SNAPSHOT;
 }
 
 /**
@@ -426,20 +447,27 @@ export function getAnnotationOverridesSnapshot(): Readonly<Record<string, Annota
  * though the UI never produces that combination, the store stays total.
  */
 export function writeAnnotationOverride(id: string, override: AnnotationOverride | null): void {
-  hydrateFromDiskIfNeeded();
+  const scope = activeOverrideScope();
+  const scoped = hydrateFromDiskIfNeeded(scope);
   if (override === null || (override.comment === undefined && override.deleted === undefined)) {
-    memory.delete(id);
+    scoped.delete(id);
   } else {
-    memory.set(id, override);
+    scoped.set(id, override);
   }
-  persistAll();
-  rebuildSnapshot();
+  persistAll(scoped);
+  rebuildSnapshot(scope, scoped);
   for (const listener of listeners) listener();
 }
 
-/** Subscribe to override writes; returns the unsubscribe. */
+/** Subscribe to override writes and space-scope switches; returns the unsubscribe. */
 export function subscribeAnnotationOverrides(listener: () => void): () => void {
   listeners.add(listener);
+  if (!spaceListenerBound) {
+    spaceListenerBound = true;
+    onDidChangeSpaceStorage(() => {
+      for (const each of listeners) each();
+    });
+  }
   return () => {
     listeners.delete(listener);
   };
@@ -447,9 +475,9 @@ export function subscribeAnnotationOverrides(listener: () => void): () => void {
 
 /** Test-only: forget this-process memory as if the module were freshly imported. */
 export function resetAnnotationOverridesForTests(): void {
-  memory.clear();
-  hydratedFromDisk = false;
-  snapshot = Object.freeze({});
+  memoryByScope.clear();
+  hydratedScopes.clear();
+  snapshotByScope.clear();
   try {
     spaceStorage.removeItem(STORAGE_KEY);
   } catch {

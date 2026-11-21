@@ -92,6 +92,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   for (const fn of Object.values(rooms)) fn.mockReset();
   rooms.list.mockResolvedValue([]);
   rooms.get.mockResolvedValue(roomDoc());
@@ -220,6 +221,12 @@ describe('RoomPage', () => {
       await flush();
       expect(sessionSeenSnapshot()['room:release-031']).toBeUndefined();
     } finally { visibility.mockRestore(); }
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      await renderRoom();
+      await flush();
+      expect(sessionSeenSnapshot()['room:release-031']).toBeUndefined();
+    } finally { focus.mockRestore(); }
   });
 
   it.each([

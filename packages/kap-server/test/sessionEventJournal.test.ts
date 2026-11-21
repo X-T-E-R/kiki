@@ -401,4 +401,97 @@ describe('SessionEventJournal', () => {
     expect((await journal.readSince(1, 2)).map((entry) => entry.seq)).toEqual([2, 3]);
     expect((await readFile(filePath, 'utf8')).trim().split('\n')).toHaveLength(3);
   });
+
+  it('tracks attentionSeq only for attention events and survives compaction and cold peekWatermark', async () => {
+    const typedEnvelope = (seq: number, type: string): EventEnvelope => ({
+      type,
+      seq,
+      timestamp: new Date().toISOString(),
+      payload: { type, seq },
+    });
+
+    const journal = await SessionEventJournal.open(filePath, undefined, 2);
+    const epoch = journal.epoch;
+    expect(journal.attentionSeq).toBe(0);
+
+    journal.append(journal.nextSeq(), typedEnvelope(1, 'event.session.created'));
+    expect(journal.seq).toBe(1);
+    expect(journal.attentionSeq).toBe(0);
+
+    journal.append(journal.nextSeq(), typedEnvelope(2, 'turn.ended'));
+    expect(journal.seq).toBe(2);
+    expect(journal.attentionSeq).toBe(2);
+
+    for (let seq = 3; seq <= 8; seq += 1) {
+      journal.append(journal.nextSeq(), typedEnvelope(seq, seq % 2 === 0 ? 'session.meta.updated' : 'event.session.work_changed'));
+    }
+    expect(journal.seq).toBe(8);
+    expect(journal.attentionSeq).toBe(2);
+    await journal.close();
+
+    const lines = (await readFile(filePath, 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      kind: 'journal_header',
+      epoch,
+      last_seq: 8,
+      attention_seq: 2,
+    });
+
+    const cold = await SessionEventJournal.peekWatermark(filePath);
+    expect(cold).toEqual({ epoch, seq: 8, attentionSeq: 2 });
+
+    const reopened = await SessionEventJournal.open(filePath, undefined, 2);
+    expect(reopened.epoch).toBe(epoch);
+    expect(reopened.seq).toBe(8);
+    expect(reopened.attentionSeq).toBe(2);
+
+    reopened.append(reopened.nextSeq(), typedEnvelope(9, 'event.approval.requested'));
+    expect(reopened.attentionSeq).toBe(9);
+    reopened.append(reopened.nextSeq(), typedEnvelope(10, 'event.session.work_changed'));
+    expect(reopened.attentionSeq).toBe(9);
+    reopened.append(reopened.nextSeq(), typedEnvelope(11, 'turn.ended'));
+    expect(reopened.attentionSeq).toBe(11);
+    await reopened.close();
+
+    expect(await SessionEventJournal.peekWatermark(filePath)).toEqual({
+      epoch,
+      seq: 11,
+      attentionSeq: 11,
+    });
+  });
+
+  it('preserves attentionSeq across zero-capacity compaction and uncompacted large non-attention tails', async () => {
+    const typedEnvelope = (seq: number, type: string, padding = ''): EventEnvelope => ({
+      type,
+      seq,
+      timestamp: new Date().toISOString(),
+      payload: { type, seq, padding },
+    });
+
+    const zeroCap = await SessionEventJournal.open(filePath, undefined, 0);
+    zeroCap.append(zeroCap.nextSeq(), typedEnvelope(1, 'event.question.requested'));
+    zeroCap.append(zeroCap.nextSeq(), typedEnvelope(2, 'event.session.work_changed'));
+    await zeroCap.close();
+    expect(await SessionEventJournal.peekWatermark(filePath)).toEqual({
+      epoch: zeroCap.epoch,
+      seq: 2,
+      attentionSeq: 1,
+    });
+
+    const largePath = join(dir, 'large_tail.jsonl');
+    const large = await SessionEventJournal.open(largePath, undefined, 100);
+    large.append(large.nextSeq(), typedEnvelope(1, 'turn.ended'));
+    const pad = 'x'.repeat(8 * 1024);
+    for (let seq = 2; seq <= 15; seq += 1) {
+      large.append(large.nextSeq(), typedEnvelope(seq, 'event.session.work_changed', pad));
+    }
+    await large.flush();
+    expect(await SessionEventJournal.peekWatermark(largePath)).toEqual({
+      epoch: large.epoch,
+      seq: 15,
+      attentionSeq: 1,
+    });
+    await large.close();
+  });
 });

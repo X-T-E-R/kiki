@@ -52,6 +52,8 @@ import {
   readAdoptedShellCredential,
 } from '../lib/appShell';
 import { API_CODES, ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
+import { remoteConnectionKeys } from '../lib/remoteConnections';
+import { threadBridgeKeys } from '../lib/threadBridges';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { subscribePluginFreshness } from '../lib/pluginFreshness';
 import { subscribePersonaFreshness } from '../lib/personaFreshness';
@@ -112,6 +114,11 @@ export function handleGlobalConnectionFrame(
   frame: { readonly type: string },
   queryClient: Pick<QueryClient, 'invalidateQueries'>,
 ): boolean {
+  if (frame.type === 'event.remote_connections.changed') {
+    void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+    void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+    return true;
+  }
   if (frame.type !== 'event.model_catalog.changed') return false;
   void queryClient.invalidateQueries({ queryKey: ['models'] });
   void queryClient.invalidateQueries({ queryKey: ['providers'] });
@@ -138,6 +145,10 @@ export interface ConnectionValue {
    */
   readonly connectionSource: ConnectionSelection['source'] | null;
   readonly spaceKey: string;
+  /** The local home's space key even while viewing a remote space. */
+  readonly localSpaceKey?: string;
+  /** The local home's scope ID (e.g. 'local' on desktop, 'direct:<url>' on web) even while viewing a remote space. */
+  readonly localScopeId?: string;
   readonly scopeId: string;
   readonly connectionRef?: string;
   readonly sshLabel: string | null;
@@ -1036,7 +1047,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       instance = new KikiClient({
         baseUrl: localEndpoint, token: localToken, timeoutMs: requestTimeoutMs,
         onSessionMutation: (sessionId) => {
-          const localQueries = scopesRef.current.get('local');
+          const localQueries = scopesRef.current.get(localSelection.scopeId ?? 'local');
           if (localQueries !== undefined) refreshSessionAttention(localQueries, sessionId);
         },
       });
@@ -1584,11 +1595,26 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         offPlugins = subscribePluginFreshness(klient, queryClient);
         offPersonas();
         offPersonas = subscribePersonaFreshness(klient, queryClient);
+        void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
       handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient);
     });
+    // Forward remote-connection mutations as soon as the event facade emits them.
+    let remoteConnectionsSub: { dispose(): void } | undefined;
+    try {
+      const dynamicEvents = klient.events as unknown as {
+        on?: (name: string, cb: () => void) => { dispose(): void };
+      };
+      if (typeof dynamicEvents.on === 'function') {
+        remoteConnectionsSub = dynamicEvents.on('remoteConnections.changed', () => {
+          handleGlobalConnectionFrame({ type: 'event.remote_connections.changed' }, queryClient);
+        });
+      }
+    } catch {
+      remoteConnectionsSub = undefined;
+    }
     return () => {
       active = false;
       if (initialGraceTimer !== undefined) clearTimeout(initialGraceTimer);
@@ -1597,6 +1623,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       pendingWorkChanges.clear();
       offStatus();
       catalog.dispose();
+      remoteConnectionsSub?.dispose();
       searchIndex.dispose();
       workChanged.dispose();
       offUsage();
@@ -1718,8 +1745,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         }
         configureSpaceStorage({ homeId: next.scopeId });
       }
+      const sourceClient = adapterActiveRef.current.client;
       if (next.source === 'remote' && !desktopRuntime && sourceSelection !== null && sourceSelection.source !== 'remote' && sourceSelection.source !== 'ssh') {
-        updateLocalSelection({ ...sourceSelection, scopeId: adapterActiveRef.current.scope.scopeId });
+        const savedLocal: ConnectionSelection = { ...sourceSelection, scopeId: adapterActiveRef.current.scope.scopeId };
+        updateLocalSelection(savedLocal);
+        if (sourceClient !== null) {
+          localControlRef.current = { selection: savedLocal, client: sourceClient, timeoutMs: requestTimeoutMs };
+          localClientRef.current = sourceClient;
+          setLocalControl(localControlRef.current);
+        }
       } else if (!desktopRuntime && next.source !== 'remote' && next.source !== 'ssh' && localSelectionRef.current !== null) {
         updateLocalSelection(next);
       }
@@ -1763,7 +1797,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const homeId = priorSelection?.source === 'remote'
       ? host.activeSpace === undefined ? 'main' : parseActiveSpacePayload(await host.activeSpace())?.homeId ?? 'main'
       : activeSpace()?.homeId ?? 'main';
-    const prepared = await scopeAdapter.prepare({ homeId, scopeId: 'local' }, signal);
+    const localTargetScopeId = localSelectionRef.current?.scopeId ?? 'local';
+    const prepared = await scopeAdapter.prepare({ homeId, scopeId: localTargetScopeId }, signal);
     try {
       signal.throwIfAborted();
       if (instance !== localClientRef.current || priorSelection !== selectionRef.current || attempt !== sshAttemptRef.current) {
@@ -2047,8 +2082,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const activeRecovery = selection?.source === 'desktop' && desktopRecoveryRef.current?.client === client
       ? desktopRecoveryRef.current
       : null;
+    const resolvedLocalSpaceKey =
+      bootLocalSpaceRef.current?.homeId
+      ?? (connectionId === null ? spaceKey : 'main');
+    const resolvedLocalScopeId =
+      localSelection?.scopeId
+      ?? localSelectionRef.current?.scopeId
+      ?? (selection?.source !== 'remote' && selection?.source !== 'ssh' ? scopeId : 'local');
     return {
-      connectionId, connectionSource: selection?.source ?? null, spaceKey, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
+      connectionId, connectionSource: selection?.source ?? null, spaceKey, localSpaceKey: resolvedLocalSpaceKey, localScopeId: resolvedLocalScopeId, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
       activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload,
       config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed,
       recovery: activeRecovery === null || (activeRecovery.phase === 'checking' && wsBannerSuppressed)
@@ -2057,7 +2099,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       nudge: nudgeConnection,
       disconnect, applyConnection,
     };
-  }, [connectionId, connectionSource, spaceKey, scopeId, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed, desktopFailure, nudgeConnection, disconnect, applyConnection]);
+  }, [connectionId, connectionSource, spaceKey, scopeId, localSelection?.scopeId, selection?.source, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed, desktopFailure, nudgeConnection, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null

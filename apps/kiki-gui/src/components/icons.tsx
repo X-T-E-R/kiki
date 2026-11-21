@@ -15,6 +15,8 @@
 
 import type { ComponentType, ReactNode, SVGProps } from 'react';
 import {
+  Archive,
+  ArchiveRestore,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -76,6 +78,7 @@ import {
   Star,
   Target,
   TriangleAlert,
+  Undo2,
   Wrench,
   X,
 } from 'lucide-react';
@@ -140,6 +143,9 @@ export type IconName =
   | 'eyeOff'
   | 'copy'
   | 'refresh'
+  | 'archive'
+  | 'archiveRestore'
+  | 'undo'
   // Places and relations
   | 'board'
   | 'usage'
@@ -262,6 +268,9 @@ const LUCIDE_ICONS: Record<LucideIconName, LucideEntry> = {
   eyeOff: { component: EyeOff },
   copy: { component: Copy },
   refresh: { component: RefreshCw },
+  archive: { component: Archive },
+  archiveRestore: { component: ArchiveRestore },
+  undo: { component: Undo2 },
   thread: { component: CornerDownRight },
   room: { component: Hash },
   persona: { component: SquareUserRound },

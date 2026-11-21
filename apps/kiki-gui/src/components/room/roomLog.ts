@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { RoomDocument, RoomLogEntry, RoomUsage } from '@kiki/protocol';
-import { markRoomSeen } from '@kiki/session-core/settings';
 
 import type { BotRoomApi } from '../../lib/botRooms';
 
@@ -22,6 +21,8 @@ export interface RoomLogState {
   readonly loaded: boolean;
   readonly error: unknown;
   readonly truncated: boolean;
+  /** Latest server sequence observed on the room log (consumed by focus-aware viewed coordinator). */
+  readonly lastSeq: number | undefined;
   /** Fetch whatever is new right now (after a send or an action). */
   readonly refresh: () => void;
 }
@@ -32,6 +33,7 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [truncated, setTruncated] = useState(false);
+  const [lastSeq, setLastSeq] = useState<number | undefined>(undefined);
   const lastId = useRef<string | undefined>(undefined);
   const inFlight = useRef<Promise<void> | null>(null);
   const alive = useRef(true);
@@ -44,7 +46,9 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
         for (;;) {
           const page = await api.roomLog(roomId, { afterId: after, limit: PAGE });
           if (!alive.current) return;
-          if (page.lastSeq !== undefined && document.visibilityState !== 'hidden') markRoomSeen(roomId, page.lastSeq);
+          if (page.lastSeq !== undefined) {
+            setLastSeq((prev) => (prev === undefined ? page.lastSeq : Math.max(prev, page.lastSeq!)));
+          }
           if (page.entries.length > 0) {
             const pageEntries = page.entries;
             after = pageEntries.at(-1)?.id ?? after;
@@ -79,6 +83,7 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
     setLoaded(false);
     setError(null);
     setTruncated(false);
+    setLastSeq(undefined);
     void pull();
     return () => {
       alive.current = false;
@@ -95,7 +100,7 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
     };
   }, [pull, pollIntervalMs]);
 
-  return { entries, loaded, error, truncated, refresh: () => { void pull(); } };
+  return { entries, loaded, error, truncated, lastSeq, refresh: () => { void pull(); } };
 }
 
 /** The `@partial` word ending at the caret, if the caret is inside one. */

@@ -62,6 +62,7 @@ import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '@kiki/agent-core-v2/_b
 import type { UsageAccountingSnapshot } from '@kiki/protocol';
 
 import { type RunningServer, type ServerStartOptions, startServer } from '../src/start';
+import { ensureMainAgent } from '../src/transport/mainAgent';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
@@ -116,6 +117,7 @@ interface SessionWire {
   permission_rules: unknown[];
   message_count: number;
   last_seq: number;
+  attention_cursor?: { epoch: string; seq: number };
 }
 
 interface PageWire {
@@ -3784,5 +3786,60 @@ describe('server-v2 /api/sessions (SQLite read model)', () => {
       creation_id: creationUuid,
       reason: 'session_id_exists',
     });
+  });
+
+  it('returns consistent attention_cursor on create, list, get, fork, and cold reads without advancing on metadata updates', async () => {
+    const running = server as RunningServer;
+    const created = await postJson<SessionWire>('/api/sessions', {
+      title: 'Attention Check',
+      metadata: { cwd: home as string },
+    });
+    expect(created.body.code).toBe(0);
+    const id = created.body.data.id;
+    expect(created.body.data.attention_cursor).toEqual({
+      epoch: expect.stringMatching(/^ep_/),
+      seq: 0,
+    });
+    const epoch = created.body.data.attention_cursor!.epoch;
+
+    const live = getLiveSessionById(running.core.accessor, id)!;
+    const main = await ensureMainAgent(live);
+    const bus = main.accessor.get(IEventBus);
+    bus.publish({ type: 'turn.started', turnId: 1 } as unknown as Event2<any>);
+    bus.publish({ type: 'turn.ended', turnId: 1, reason: 'completed' } as unknown as Event2<any>);
+
+    const pointLive = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(pointLive.body.code).toBe(0);
+    const turn1AttentionSeq = pointLive.body.data.attention_cursor?.seq ?? 0;
+    expect(pointLive.body.data.attention_cursor).toEqual({ epoch, seq: turn1AttentionSeq });
+    expect(turn1AttentionSeq).toBeGreaterThan(0);
+
+    const updated = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+      title: 'Attention Check Renamed',
+    });
+    expect(updated.body.code).toBe(0);
+    expect(updated.body.data.attention_cursor).toEqual({ epoch, seq: turn1AttentionSeq });
+
+    const listedLive = await getJson<{ items: SessionWire[] }>('/api/sessions');
+    expect(listedLive.body.code).toBe(0);
+    const listedRow = listedLive.body.data.items.find((item) => item.id === id);
+    expect(listedRow?.attention_cursor).toEqual({ epoch, seq: turn1AttentionSeq });
+
+    const forked = await postJson<SessionWire>(`/api/sessions/${id}:fork`, { title: 'Forked Attention' });
+    expect(forked.body.code).toBe(0);
+    expect(forked.body.data.attention_cursor).toEqual({
+      epoch: expect.stringMatching(/^ep_/),
+      seq: 0,
+    });
+
+    await closeSessionById(running.core.accessor, id);
+    const pointCold = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(pointCold.body.code).toBe(0);
+    expect(pointCold.body.data.attention_cursor).toEqual({ epoch, seq: turn1AttentionSeq });
+
+    const listedCold = await getJson<{ items: SessionWire[] }>('/api/sessions');
+    expect(listedCold.body.code).toBe(0);
+    const coldRow = listedCold.body.data.items.find((item) => item.id === id);
+    expect(coldRow?.attention_cursor).toEqual({ epoch, seq: turn1AttentionSeq });
   });
 });

@@ -26,6 +26,8 @@ import {
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
   readLayoutPreferences,
+  resetConversationSeen,
+  resetConversationTriage,
   resetLayoutPreferencesForTests,
   writeLayoutPreferences,
   resetSessionSeen,
@@ -33,6 +35,8 @@ import {
 import { HostProvider, browserHost, type HostAdapter } from '../host';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
+import { resetPendingConversationOpens } from '../lib/conversationOpen';
+import { registerScopeNavigation } from '../lib/navScope';
 import { clearToasts, getToasts } from '../lib/toasts';
 import {
   registerSessionPluginPanelOpener,
@@ -61,6 +65,9 @@ const listEphemeralSessions = vi.fn(async (_query?: { before_id?: string; page_s
 const listPersonas = vi.fn(async (): Promise<readonly unknown[]> => []);
 const connectionScope = vi.hoisted(() => ({
   id: 'local',
+  spaceKey: 'main',
+  localSpaceKey: 'main',
+  localScopeId: 'local',
   ws: 'open' as 'open' | 'connecting' | 'closed',
   brokerConfig: undefined as { url: string; token: string } | undefined,
 }));
@@ -125,6 +132,9 @@ vi.mock('../state/connection', () => {
       klient: { rest: { rooms: roomRest } },
     },
     scopeId: connectionScope.id,
+    spaceKey: connectionScope.spaceKey,
+    localSpaceKey: connectionScope.localSpaceKey,
+    localScopeId: connectionScope.localScopeId,
     config: connectionScope.brokerConfig,
     meta: {
       server_version: '1.0.0',
@@ -279,6 +289,9 @@ beforeEach(() => {
   getConfig.mockReset();
   getConfig.mockReturnValue(new Promise(() => {}));
   connectionScope.id = 'local';
+  connectionScope.spaceKey = 'main';
+  connectionScope.localSpaceKey = 'main';
+  connectionScope.localScopeId = 'local';
   connectionScope.ws = 'open';
   connectionScope.brokerConfig = undefined;
   // Workspace folds and the list scroll persist across mounts.
@@ -288,6 +301,10 @@ beforeEach(() => {
   // without this a test that expands a section leaks it into the next one's
   // "preference unset" premise.
   localStorage.removeItem('kiki.layout');
+  resetLayoutPreferencesForTests();
+  resetConversationSeen();
+  resetConversationTriage();
+  resetPendingConversationOpens();
   configureSpaceStorage(null);
 });
 
@@ -306,6 +323,9 @@ afterEach(() => {
   for (const container of containers.splice(0)) container.remove();
   document.body.innerHTML = '';
   resetSessionSeen();
+  resetConversationSeen();
+  resetConversationTriage();
+  resetPendingConversationOpens();
 });
 
 afterAll(() => {
@@ -363,7 +383,9 @@ async function mount(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cachedSessions.length > 0) client.setQueryData(['sessions', 'cached'], { pages: [{ items: cachedSessions }] });
   const render = async (next: SidebarOverrides) => {
-    const { sessionGroups: rawGroups, initialEntries, guard, ...rest } = next;
+    const { sessionGroups: rawGroups, initialEntries, guard, sidebarMode: nextSidebarMode, nowMs: nextNowMs, ...rest } = next;
+    const sidebarMode = 'sidebarMode' in next ? nextSidebarMode : 'sessions';
+    const nowMs = 'nowMs' in next ? nextNowMs : Date.parse('2026-01-02T00:00:00.000Z');
     const sessionGroups = (rawGroups ?? []).map((group) => ({
       ...group,
       items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
@@ -395,6 +417,8 @@ async function mount(
                   onGroupBy={() => {}}
                   sortBy="updated-desc"
                   onSortBy={() => {}}
+                  sidebarMode={sidebarMode}
+                  nowMs={nowMs}
                   {...rest}
                 />
                 </MaybeGuard>
@@ -1382,7 +1406,7 @@ describe('Sidebar semantic structure', () => {
     const other = { ...session('other'), updated_at: fixtureStamp(6, 10) };
     const groups: SessionGroup[] = [
       { key: 'today', label: 'Today', items: [active, other] },
-      { key: 'week', label: 'Past 7 days', items: [{ ...session('older'), updated_at: fixtureStamp(2) }] },
+      { key: 'week', label: 'Past 7 days', items: [{ ...session('older'), updated_at: fixtureStamp(4) }] },
     ];
     const { container } = await mount({
       activeSessionId: 'active',
@@ -2008,7 +2032,7 @@ describe('Sidebar session menu location & link group', () => {
     const navigated: string[] = [];
     const { container } = await mount({
       ...listed(),
-      guard: { dirty: false, rawNavigate: (to) => { navigated.push(String(to)); } },
+      guard: { dirty: false, rawNavigate: (to) => { navigated.push(typeof to === 'string' ? to : typeof to === 'number' ? String(to) : (to.pathname ?? '')); } },
     });
     const menu1 = await openSessionMenu(container);
     const branchBtn = menu1.querySelector<HTMLButtonElement>('[data-menu-item="branch"]')!;
@@ -2279,9 +2303,9 @@ describe('session thread relations', () => {
 
   it('keeps promoted rows independent when thread activity also refreshes the parent aggregate', async () => {
     const stamp = (day: number, hour = 10) => new Date(2026, 9, day, hour).toISOString();
-    const parent = { ...session('root'), updated_at: stamp(2), own_updated_at: stamp(2) };
-    const child = { ...thread('t1', 'root'), updated_at: stamp(3), own_updated_at: stamp(3) };
-    const other = { ...session('other'), updated_at: stamp(4), own_updated_at: stamp(4) };
+    const parent = { ...session('root'), updated_at: stamp(4, 10), own_updated_at: stamp(4, 10) };
+    const child = { ...thread('t1', 'root'), updated_at: stamp(4, 11), own_updated_at: stamp(4, 11) };
+    const other = { ...session('other'), updated_at: stamp(4, 12), own_updated_at: stamp(4, 12) };
     const metadata = structuredClone(child.metadata);
     const testNowMs = new Date(2026, 9, 6, 12).getTime();
     const propsFor = (items: Session[], groupBy: 'none' | 'time' = 'none') => ({
@@ -2329,9 +2353,9 @@ describe('session thread relations', () => {
     const baseNow = new Date(2026, 9, 10, 12).getTime();
     const stamp = (day: number, hour = 10) => new Date(2026, 9, day, hour).toISOString();
 
-    // Family 1: p1 and c1 (day 6 = earlier in week)
-    const p1 = { ...session('p1'), created_at: stamp(1), updated_at: stamp(6, 10), own_updated_at: stamp(6, 10) };
-    const c1 = { ...thread('c1', 'p1'), created_at: stamp(2), updated_at: stamp(6, 11), own_updated_at: stamp(6, 11) };
+    // Family 1: p1 and c1 (day 8 = earlier in week, within 72h window)
+    const p1 = { ...session('p1'), created_at: stamp(1), updated_at: stamp(8, 10), own_updated_at: stamp(8, 10) };
+    const c1 = { ...thread('c1', 'p1'), created_at: stamp(2), updated_at: stamp(8, 11), own_updated_at: stamp(8, 11) };
 
     // Family 2: p2 and c2 (day 9 = yesterday)
     const p2 = { ...session('p2'), created_at: stamp(3), updated_at: stamp(9, 10), own_updated_at: stamp(9, 10) };
@@ -2402,6 +2426,7 @@ describe('session thread relations', () => {
                     onGroupBy={() => {}}
                     sortBy="updated-desc"
                     onSortBy={() => {}}
+                    sidebarMode="sessions"
                     {...rest}
                   />
                 </MemoryRouter>
@@ -3264,7 +3289,7 @@ describe('collapsed icon rail', () => {
 it('keeps time-group headings in nonshrinking normal flow instead of overlaying long session titles', async () => {
   writeLayoutPreferences({ sidebarCollapsed: false });
   const one = { ...session('one'), title: 'A very long session title '.repeat(10), updated_at: fixtureStamp(6, 10) };
-  const two = { ...session('two'), title: 'Another long title '.repeat(10), updated_at: fixtureStamp(2, 10) };
+  const two = { ...session('two'), title: 'Another long title '.repeat(10), updated_at: fixtureStamp(4, 10) };
   const { container } = await mount({ sessions: [one, two], groupBy: 'time', nowMs: FIXTURE_NOW_MS, sessionGroups: [
     { key: 'today', label: 'Today', items: [one] },
     { key: 'week', label: 'Last 7 days', items: [two] },
@@ -3814,6 +3839,7 @@ describe('sidebar on a phone', () => {
                   onGroupBy={() => {}}
                   sortBy="updated-desc"
                   onSortBy={() => {}}
+                  sidebarMode="sessions"
                 />
               </MemoryRouter>
             </HostProvider>
@@ -4318,5 +4344,267 @@ describe('Sidebar inline session rename reliability and confirmation UX', () => 
     const renderedResults = container.querySelectorAll('[data-search-result]');
     expect(renderedResults.length).toBeGreaterThan(5);
     expect(renderedResults.length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & optimistic click-to-read', () => {
+  it('defaults to inbox mode with [Inbox|Sessions] carrying the single two-tier badge (no duplicate bell badge)', async () => {
+    const done = { ...session('s-done'), last_turn_reason: 'completed' as const, last_seq: 5, updated_at: '2026-10-06T10:00:00Z' };
+    const { container } = await mount({
+      sidebarMode: undefined,
+      sessions: [done],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [done] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    expect(container.querySelector('[data-sidebar-mode="inbox"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-sidebar-inbox]')).not.toBeNull();
+    // Exactly one badge exists (on the Inbox tab), never duplicated on the bell button.
+    expect(container.querySelectorAll('[data-activity-badge]')).toHaveLength(1);
+    expect(container.querySelector('[data-nav-activity] [data-activity-badge]')).toBeNull();
+    expect(container.querySelector('[data-sidebar-mode="inbox"] [data-activity-badge]')?.getAttribute('data-activity-badge-tone')).toBe('unread');
+  });
+
+  it('holds a clicked unread done row in place (zero-jank viewing pin) with cleared dot until settled, busy, or navigated away', async () => {
+    const s1 = { ...session('s-1'), title: 'First done', last_turn_reason: 'completed' as const, last_seq: 8, updated_at: '2026-10-06T11:00:00Z' };
+    const s2 = { ...session('s-2'), title: 'Second done', last_turn_reason: 'completed' as const, last_seq: 6, updated_at: '2026-10-06T10:00:00Z' };
+    const mounted = await mount({
+      sidebarMode: 'inbox',
+      sessions: [s1, s2],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [s1, s2] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    const row1 = mounted.container.querySelector('[data-inbox-row="s-1"]')!;
+    expect(row1.getAttribute('data-inbox-unread')).toBe('true');
+
+    // Click s-1: unread dot clears synchronously AND row stays pinned in active stream.
+    await act(async () => {
+      row1.querySelector<HTMLButtonElement>('button')!.click();
+    });
+    const pinnedRow = mounted.container.querySelector('[data-inbox-row="s-1"]');
+    expect(pinnedRow).not.toBeNull();
+    expect(pinnedRow?.getAttribute('data-inbox-unread')).toBe('false');
+
+    // Settle via ✓ button (or e): row disappears from active stream immediately.
+    await act(async () => {
+      pinnedRow?.querySelector<HTMLButtonElement>('[data-inbox-action="settle"]')!.click();
+    });
+    expect(mounted.container.querySelector('[data-inbox-row="s-1"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-inbox-row="s-2"]')).not.toBeNull();
+
+    // Press u (undo): s-1 returns cleanly to active stream!
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'u' }));
+    });
+    expect(mounted.container.querySelector('[data-inbox-row="s-1"]')).not.toBeNull();
+  });
+
+  it('supports snooze (with wake-now), reversible inbox archive (with restore), omits settle on needsYou, and shows All clear when empty', async () => {
+    const blocked = { ...session('s-wait'), title: 'Needs approval', pending_interaction: 'approval' as const, last_seq: 4, updated_at: '2026-10-06T11:00:00Z' };
+    const done = { ...session('s-done'), title: 'Finished build', last_turn_reason: 'completed' as const, last_seq: 9, updated_at: '2026-10-06T10:30:00Z' };
+    const running = { ...session('s-run'), title: 'Running tests', busy: true, executing: true, last_seq: 3, updated_at: '2026-10-06T11:30:00Z' };
+    const { container } = await mount({
+      sidebarMode: 'inbox',
+      sessions: [blocked, done, running],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [blocked, done, running] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    // Unresolved needsYou must NOT offer settle ✓.
+    const waitRow = container.querySelector('[data-inbox-row="s-wait"]')!;
+    expect(waitRow.querySelector('[data-inbox-action="settle"]')).toBeNull();
+
+    // Snooze blocked row for 1h -> moves to Snoozed drawer.
+    await act(async () => {
+      waitRow.querySelector<HTMLButtonElement>('[data-inbox-action="snooze"]')!.click();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-snooze-preset="1h"]')!.click();
+    });
+    expect(container.querySelector('[data-inbox-active-list] [data-inbox-row="s-wait"]')).toBeNull();
+    expect(container.querySelector('[data-inbox-drawer="snoozed"]')).not.toBeNull();
+
+    // Archive done row -> active stream becomes empty -> All clear + Working/Snoozed/Archived bottom drawers.
+    const doneRow = container.querySelector('[data-inbox-row="s-done"]')!;
+    await act(async () => {
+      doneRow.querySelector<HTMLButtonElement>('[data-inbox-action="archive"]')!.click();
+    });
+    expect(container.querySelector('[data-inbox-all-clear]')?.textContent).toContain('All clear');
+    expect(container.querySelector('[data-inbox-drawer="working"] [data-inbox-row="s-run"]')).not.toBeNull();
+    expect(container.querySelector('[data-inbox-drawer="archived"]')).not.toBeNull();
+
+    // Expand Snoozed and wake s-wait immediately.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-inbox-drawer-toggle="snoozed"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-inbox-drawer="snoozed"] [data-inbox-action="wake"]')!.click();
+    });
+    expect(container.querySelector('[data-inbox-active-list] [data-inbox-row="s-wait"]')).not.toBeNull();
+  });
+
+  it('folds read sessions older than 72h in Sessions view while protecting unread, running, pinned and active rows, and clears unread immediately on cold-session click', async () => {
+    const recent = { ...session('s-recent'), title: 'Recent work', updated_at: '2026-10-06T09:00:00Z', last_seq: 0 };
+    const oldRead = { ...session('s-old-read'), title: 'Old read thread', updated_at: '2026-09-20T09:00:00Z', last_seq: 0 };
+    const oldUnread = { ...session('s-old-unread'), title: 'Old unread thread', updated_at: '2026-09-18T09:00:00Z', last_seq: 7, last_turn_reason: 'completed' as const };
+    // Clicking the cold unread session clears its unread state synchronously!
+    const { container, render } = await mount({
+      sidebarMode: 'sessions',
+      sessions: [recent, oldRead, oldUnread],
+      sessionGroups: [
+        { key: 'today', label: 'Today', items: [recent] },
+        { key: 'month', label: 'Past 30 days', items: [oldRead, oldUnread] },
+      ],
+      groupBy: 'time',
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    // Old read session is folded behind Older · 1; old unread session stays visible.
+    expect(container.querySelector('[data-session-row="s-recent"]')).not.toBeNull();
+    expect(container.querySelector('[data-session-row="s-old-read"]')).toBeNull();
+    expect(container.querySelector('[data-session-row="s-old-unread"]')?.getAttribute('data-session-row-state')).toBe('unread');
+    const foldToggle = container.querySelector<HTMLButtonElement>('[data-sidebar-cold-fold="collapsed"]')!;
+    expect(foldToggle.textContent).toContain('Older · 1');
+
+    // Clicking the cold unread session clears its unread state synchronously!
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-session-row="s-old-unread"] button')!.click();
+    });
+    // Navigation activates s-old-unread, protecting it from being folded while open.
+    await render({
+      sidebarMode: 'sessions',
+      activeSessionId: 's-old-unread',
+      sessions: [recent, oldRead, oldUnread],
+      sessionGroups: [
+        { key: 'today', label: 'Today', items: [recent] },
+        { key: 'month', label: 'Past 30 days', items: [oldRead, oldUnread] },
+      ],
+      groupBy: 'time',
+      nowMs: FIXTURE_NOW_MS,
+    });
+    expect(container.querySelector('[data-session-row="s-old-unread"]')?.getAttribute('data-session-row-state')).toBe('read');
+
+    // Expanding the fold reveals the folded >72h read row.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-sidebar-cold-fold="collapsed"]')!.click();
+    });
+    expect(container.querySelector('[data-session-row="s-old-read"]')).not.toBeNull();
+  });
+
+  it('keeps clicked remote unread row pinned through async cross-space navigation while still on conversation A, and rolls back on cancel/reject', async () => {
+    const localA = { ...session('s-a'), title: 'Local A', last_seq: 0, updated_at: '2026-10-06T11:00:00Z' };
+    const remoteB = { ...session('s-remote-b'), title: 'Remote B done', last_turn_reason: 'completed' as const, last_seq: 11, updated_at: '2026-10-06T11:30:00Z' };
+    const localC = { ...session('s-c'), title: 'Local C', last_seq: 0, updated_at: '2026-10-06T10:00:00Z' };
+    const remoteKey = 'remote:11111111-1111-4111-8111-111111111111';
+    const sources = [
+      { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [localA, localC], rooms: [], workspaces: [] },
+      { spaceKey: remoteKey, spaceName: 'GPU Box', isRemote: true, sessions: [remoteB], rooms: [], workspaces: [] },
+    ];
+    let resolveNav!: () => void;
+    const scopeNav = vi.fn(() => new Promise<void>((resolve) => { resolveNav = resolve; }));
+    const unregister = registerScopeNavigation(scopeNav);
+    try {
+      const mounted = await mount({
+        sidebarMode: 'inbox',
+        activeSessionId: 's-a',
+        sessions: [localA, localC],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [localA, localC] }],
+        multiSpaceSources: sources,
+        nowMs: FIXTURE_NOW_MS,
+      });
+
+      // Click remote B while still viewing local A.
+      await act(async () => {
+        mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-remote-b"] button')!.click();
+      });
+      await settle();
+
+      // While async cross-space navigation is still in flight (activeSessionId === 's-a'),
+      // row B must stay pinned with cleared unread dot instead of vanishing under the cursor.
+      const inFlightRow = mounted.container.querySelector('[data-inbox-row="s-remote-b"]');
+      expect(inFlightRow).not.toBeNull();
+      expect(inFlightRow?.getAttribute('data-inbox-unread')).toBe('false');
+      expect(scopeNav).toHaveBeenCalledWith(expect.objectContaining({
+        homeId: remoteKey,
+        scopeId: remoteKey,
+        route: '/s/s-remote-b',
+        inPlace: true,
+      }));
+
+      // Navigation lands on remote B -> stays pinned while viewing B.
+      resolveNav();
+      connectionScope.spaceKey = remoteKey;
+      await mounted.render({
+        sidebarMode: 'inbox',
+        activeSessionId: 's-remote-b',
+        sessions: [remoteB],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [remoteB] }],
+        multiSpaceSources: sources,
+        nowMs: FIXTURE_NOW_MS,
+      });
+      expect(mounted.container.querySelector('[data-inbox-row="s-remote-b"]')).not.toBeNull();
+
+      // Navigating away to local C releases the viewing pin cleanly.
+      connectionScope.spaceKey = 'main';
+      await mounted.render({
+        sidebarMode: 'inbox',
+        activeSessionId: 's-c',
+        sessions: [localA, localC],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [localA, localC] }],
+        multiSpaceSources: sources,
+        nowMs: FIXTURE_NOW_MS,
+      });
+      expect(mounted.container.querySelector('[data-inbox-row="s-remote-b"]')).toBeNull();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('passes real localScopeId when returning in-place from a remote space and rolls back optimistic read + pin on abort', async () => {
+    const remoteKey = 'remote:22222222-2222-4222-8222-222222222222';
+    const directScopeId = 'direct:http://127.0.0.1:19918';
+    connectionScope.id = remoteKey;
+    connectionScope.spaceKey = remoteKey;
+    connectionScope.localSpaceKey = 'main';
+    connectionScope.localScopeId = directScopeId;
+
+    const remoteA = { ...session('s-ra'), title: 'Remote A', last_seq: 0, updated_at: '2026-10-06T11:00:00Z' };
+    const localUnread = { ...session('s-local-unread'), title: 'Local unread', last_turn_reason: 'completed' as const, last_seq: 9, updated_at: '2026-10-06T11:20:00Z' };
+    const sources = [
+      { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [localUnread], rooms: [], workspaces: [] },
+      { spaceKey: remoteKey, spaceName: 'Remote Mac', isRemote: true, sessions: [remoteA], rooms: [], workspaces: [] },
+    ];
+    let rejectNav!: (err: unknown) => void;
+    const scopeNav = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectNav = reject; }));
+    const unregister = registerScopeNavigation(scopeNav);
+    try {
+      const mounted = await mount({
+        sidebarMode: 'inbox',
+        activeSessionId: 's-ra',
+        sessions: [remoteA],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [remoteA] }],
+        multiSpaceSources: sources,
+        nowMs: FIXTURE_NOW_MS,
+      });
+      await act(async () => {
+        mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-local-unread"] button')!.click();
+      });
+      expect(scopeNav).toHaveBeenCalledWith({
+        homeId: 'main',
+        scopeId: directScopeId,
+        route: '/s/s-local-unread',
+        inPlace: true,
+      });
+      // Optimistically cleared while in flight.
+      expect(mounted.container.querySelector('[data-inbox-row="s-local-unread"]')?.getAttribute('data-inbox-unread')).toBe('false');
+
+      // DirtyGuard / abort rejects navigation -> optimistic read overlay rolls back so unread dot returns.
+      await act(async () => {
+        rejectNav(new DOMException('Navigation cancelled.', 'AbortError'));
+      });
+      await settle();
+      expect(mounted.container.querySelector('[data-inbox-row="s-local-unread"]')?.getAttribute('data-inbox-unread')).toBe('true');
+    } finally {
+      unregister();
+    }
   });
 });

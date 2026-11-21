@@ -1,10 +1,40 @@
 import { createReadStream } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { SessionAttentionCursor } from '@kiki/protocol';
 import { ulid } from 'ulid';
 
 const JOURNAL_VERSION = 1;
 const WATERMARK_READ_BYTES = 64 * 1024;
+
+const ATTENTION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'turn.started',
+  'turn.ended',
+  'subagent.started',
+  'subagent.completed',
+  'subagent.failed',
+  'subagent.suspended',
+  'event.approval.requested',
+  'event.approval.resolved',
+  'event.question.requested',
+  'event.question.answered',
+  'event.question.dismissed',
+]);
+
+/** Whether a journaled event type advances the session's attention cursor. */
+export function isAttentionEventType(type: string): boolean {
+  return ATTENTION_EVENT_TYPES.has(type);
+}
+
+/** Project a journal epoch and attention sequence into a wire attention cursor when an epoch is known. */
+export function toAttentionCursor(
+  cursor: { readonly epoch?: string; readonly attentionSeq?: number } | undefined,
+): SessionAttentionCursor | undefined {
+  if (cursor?.epoch === undefined || cursor.epoch.length === 0) return undefined;
+  const seq = cursor.attentionSeq;
+  if (seq === undefined || !Number.isSafeInteger(seq) || seq < 0) return undefined;
+  return { epoch: cursor.epoch, seq };
+}
 
 /**
  * Wire event envelope — matches `wsEventEnvelopeSchema` /
@@ -28,11 +58,13 @@ interface JournalHeaderLine {
   epoch: string;
   created_at: number;
   last_seq?: number;
+  attention_seq?: number;
 }
 
 interface JournalEventLine {
   kind: 'event';
   seq: number;
+  attention_seq?: number;
   envelope: EventEnvelope;
 }
 
@@ -51,6 +83,7 @@ const noopLogger: JournalLogger = { warn: () => {} };
 
 export class SessionEventJournal {
   private _seq: number;
+  private _attentionSeq: number;
   private pendingLines: string[] = [];
   private flushPromise: Promise<void> | undefined;
   private headerPending: boolean;
@@ -62,6 +95,7 @@ export class SessionEventJournal {
   private compactPending = false;
   private closing = false;
   private durableSeq: number;
+  private durableAttentionSeq: number;
   private createdAt = Date.now();
 
   private constructor(
@@ -69,11 +103,14 @@ export class SessionEventJournal {
     private readonly logger: JournalLogger,
     public readonly epoch: string,
     lastSeq: number,
+    attentionSeq: number,
     isFresh: boolean,
     private readonly capacity: number,
   ) {
     this._seq = lastSeq;
+    this._attentionSeq = attentionSeq;
     this.durableSeq = lastSeq;
+    this.durableAttentionSeq = attentionSeq;
     this.headerPending = isFresh;
     if (isFresh) this.retainedLines = [];
   }
@@ -81,6 +118,11 @@ export class SessionEventJournal {
   /** Highest durable seq appended (0 if none). */
   get seq(): number {
     return this._seq;
+  }
+
+  /** Highest durable attention seq appended (0 if none). */
+  get attentionSeq(): number {
+    return this._attentionSeq;
   }
 
   /**
@@ -95,12 +137,14 @@ export class SessionEventJournal {
     if (!Number.isSafeInteger(capacity) || capacity < 0) throw new RangeError('journal capacity must be a nonnegative integer');
     let epoch: string | undefined;
     let lastSeq = 0;
+    let attentionSeq = 0;
     let sawAnyLine = false;
 
     try {
       const watermark = await readWatermark(filePath);
       epoch = watermark.epoch;
       lastSeq = watermark.lastSeq;
+      attentionSeq = watermark.attentionSeq;
       sawAnyLine = watermark.sawAnyLine;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -124,9 +168,9 @@ export class SessionEventJournal {
         }
       };
       await truncateStaleTailBeforeFreshHeader();
-      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, true, capacity);
+      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, 0, true, capacity);
     }
-    return new SessionEventJournal(filePath, logger, epoch, lastSeq, false, capacity);
+    return new SessionEventJournal(filePath, logger, epoch, lastSeq, attentionSeq, false, capacity);
   }
 
   /**
@@ -136,11 +180,11 @@ export class SessionEventJournal {
   static async peekWatermark(
     filePath: string,
     logger: JournalLogger = noopLogger,
-  ): Promise<{ seq: number; epoch: string }> {
+  ): Promise<{ seq: number; epoch: string; attentionSeq: number }> {
     try {
       const watermark = await readWatermark(filePath);
       if (watermark.epoch !== undefined) {
-        return { seq: watermark.lastSeq, epoch: watermark.epoch };
+        return { seq: watermark.lastSeq, epoch: watermark.epoch, attentionSeq: watermark.attentionSeq };
       }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -148,7 +192,7 @@ export class SessionEventJournal {
         logger.warn({ filePath, err: String(error) }, 'event journal watermark read failed');
       }
     }
-    return { seq: 0, epoch: '' };
+    return { seq: 0, epoch: '', attentionSeq: 0 };
   }
 
   /** Reserve the next durable seq. The caller must follow with `append()`. */
@@ -158,8 +202,21 @@ export class SessionEventJournal {
   }
 
   /** Queue a durable event line for write-behind flush. */
-  append(seq: number, envelope: EventEnvelope): void {
-    const line: JournalEventLine = { kind: 'event', seq, envelope };
+  append(
+    seq: number,
+    envelope: EventEnvelope,
+    options?: { readonly advancesAttention?: boolean },
+  ): void {
+    const advancesAttention = options?.advancesAttention ?? isAttentionEventType(envelope.type);
+    if (advancesAttention && seq > this._attentionSeq) {
+      this._attentionSeq = seq;
+    }
+    const line: JournalEventLine = {
+      kind: 'event',
+      seq,
+      attention_seq: this._attentionSeq,
+      envelope,
+    };
     this.pendingLines.push(JSON.stringify(line));
     this.scheduleFlush();
   }
@@ -207,8 +264,12 @@ export class SessionEventJournal {
 
   private header(): JournalHeaderLine {
     return {
-      kind: 'journal_header', version: JOURNAL_VERSION, epoch: this.epoch,
-      created_at: this.createdAt, last_seq: this.durableSeq,
+      kind: 'journal_header',
+      version: JOURNAL_VERSION,
+      epoch: this.epoch,
+      created_at: this.createdAt,
+      last_seq: this.durableSeq,
+      attention_seq: this.durableAttentionSeq,
     };
   }
 
@@ -287,7 +348,10 @@ export class SessionEventJournal {
       this.diskEventCount += events.length;
       for (const raw of events) {
         const parsed = parseJournalLine(raw);
-        if (parsed?.kind === 'event') this.durableSeq = Math.max(this.durableSeq, parsed.seq);
+        if (parsed?.kind === 'event') {
+          this.durableSeq = Math.max(this.durableSeq, parsed.seq);
+          this.durableAttentionSeq = Math.max(this.durableAttentionSeq, lineAttentionSeq(parsed));
+        }
       }
       this.retainedLines = this.capacity === 0 ? [] : retained.concat(events).slice(-this.capacity);
     }
@@ -310,16 +374,28 @@ export function sessionJournalPath(eventsDir: string, sessionId: string): string
   return join(eventsDir, `${sessionId}.jsonl`);
 }
 
+function nonNegativeSafeInt(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function lineAttentionSeq(line: JournalEventLine): number {
+  if (typeof line.attention_seq === 'number' && Number.isSafeInteger(line.attention_seq) && line.attention_seq >= 0) {
+    return line.attention_seq;
+  }
+  return isAttentionEventType(line.envelope.type) ? line.seq : 0;
+}
+
 async function readWatermark(filePath: string): Promise<{
   epoch: string | undefined;
   lastSeq: number;
+  attentionSeq: number;
   sawAnyLine: boolean;
 }> {
   const file = await open(filePath, 'r');
-  let fast: { epoch: string; lastSeq: number; sawAnyLine: boolean } | undefined;
+  let fast: { epoch: string; lastSeq: number; attentionSeq: number; sawAnyLine: boolean } | undefined;
   try {
     const { size } = await file.stat();
-    if (size === 0) return { epoch: undefined, lastSeq: 0, sawAnyLine: false };
+    if (size === 0) return { epoch: undefined, lastSeq: 0, attentionSeq: 0, sawAnyLine: false };
     const headSize = Math.min(size, WATERMARK_READ_BYTES);
     const head = Buffer.allocUnsafe(headSize);
     await file.read(head, 0, headSize, 0);
@@ -333,6 +409,7 @@ async function readWatermark(filePath: string): Promise<{
       await file.read(tail, 0, tail.length, tailStart);
       let end = tail.length;
       let lastSeq = 0;
+      let attentionSeq = 0;
       let valid = true;
       while (end > 0) {
         if (tail[end - 1] === 10) end -= 1;
@@ -348,6 +425,7 @@ async function readWatermark(filePath: string): Promise<{
         if (parsed.kind === 'event') {
           if (lastSeq > 0 && parsed.seq > lastSeq) valid = false;
           lastSeq = Math.max(lastSeq, parsed.seq);
+          attentionSeq = Math.max(attentionSeq, lineAttentionSeq(parsed));
         } else if (tailStart > 0 || parsed.epoch !== header.epoch) {
           valid = false;
         }
@@ -357,14 +435,24 @@ async function readWatermark(filePath: string): Promise<{
       if (valid && lastSeq === 0 && tailStart > 0) {
         for await (const raw of readLinesReverse(filePath)) {
           const parsed = parseJournalLine(raw);
-          if (parsed?.kind === 'event') lastSeq = parsed.seq;
-          else valid = false;
+          if (parsed?.kind === 'event') {
+            lastSeq = parsed.seq;
+            attentionSeq = Math.max(attentionSeq, lineAttentionSeq(parsed));
+          } else {
+            valid = false;
+          }
           break;
         }
       }
       if (valid && (lastSeq > 0 || tailStart === 0)) {
-        const savedSeq = Number.isSafeInteger(header.last_seq) && header.last_seq! >= 0 ? header.last_seq! : 0;
-        fast = { epoch: header.epoch, lastSeq: Math.max(lastSeq, savedSeq), sawAnyLine: true };
+        const savedSeq = nonNegativeSafeInt(header.last_seq);
+        const savedAttentionSeq = nonNegativeSafeInt(header.attention_seq);
+        fast = {
+          epoch: header.epoch,
+          lastSeq: Math.max(lastSeq, savedSeq),
+          attentionSeq: Math.max(attentionSeq, savedAttentionSeq),
+          sawAnyLine: true,
+        };
       }
     }
   } finally {
@@ -373,17 +461,22 @@ async function readWatermark(filePath: string): Promise<{
   if (fast !== undefined) return fast;
   let epoch: string | undefined;
   let lastSeq = 0;
+  let attentionSeq = 0;
   let sawAnyLine = false;
   for await (const raw of readLines(filePath)) {
     sawAnyLine = true;
     const parsed = parseJournalLine(raw);
     if (parsed?.kind === 'journal_header' && epoch === undefined) {
       epoch = parsed.epoch;
-      if (Number.isSafeInteger(parsed.last_seq) && parsed.last_seq! >= 0) lastSeq = parsed.last_seq!;
+      lastSeq = Math.max(lastSeq, nonNegativeSafeInt(parsed.last_seq));
+      attentionSeq = Math.max(attentionSeq, nonNegativeSafeInt(parsed.attention_seq));
     }
-    if (parsed?.kind === 'event') lastSeq = Math.max(lastSeq, parsed.seq);
+    if (parsed?.kind === 'event') {
+      lastSeq = Math.max(lastSeq, parsed.seq);
+      attentionSeq = Math.max(attentionSeq, lineAttentionSeq(parsed));
+    }
   }
-  return { epoch, lastSeq, sawAnyLine };
+  return { epoch, lastSeq, attentionSeq, sawAnyLine };
 }
 
 function parseJournalLine(raw: string): JournalHeaderLine | JournalEventLine | undefined {

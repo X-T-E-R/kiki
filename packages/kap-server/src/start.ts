@@ -1546,11 +1546,21 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const pairedBridge = threadBridge;
   const connectionEvents = core.accessor.get(IEventService);
   let connectionsRevision = 0;
-  const publishConnectionsChanged = () => connectionEvents.publish(new RemoteConnectionsChanged({ payload: { revision: ++connectionsRevision, at: Date.now() } }));
+  const publishConnectionsChanged = (
+    reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed',
+    connectionId?: string,
+  ) => connectionEvents.publish(new RemoteConnectionsChanged({
+    payload: {
+      revision: ++connectionsRevision,
+      at: Date.now(),
+      ...(reason === undefined ? {} : { reason }),
+      ...(connectionId === undefined ? {} : { connection_id: connectionId }),
+    },
+  }));
   const connectionChangeSubscriptions = [
-    remoteConnections.onDidChange(publishConnectionsChanged),
-    admission.onDidPersistChange(publishConnectionsChanged),
-    pairedBridge.onDidChange(publishConnectionsChanged),
+    remoteConnections.onDidChange((change) => publishConnectionsChanged(change.reason, change.connection_id)),
+    admission.onDidPersistChange((change) => publishConnectionsChanged(change.reason, change.grantId)),
+    pairedBridge.onDidChange(() => publishConnectionsChanged('updated')),
   ];
   app.addHook('preClose', () => { for (const subscription of connectionChangeSubscriptions) subscription.dispose(); });
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));

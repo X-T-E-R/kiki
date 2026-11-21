@@ -4,9 +4,11 @@ import { contextBreakdownSchema, type ContextBreakdown } from './context-usage';
 import { ToolInputDisplaySchema, type ToolInputDisplay } from './display';
 import { assistantStreamPartSchema, messageContentSchema, type AssistantStreamPart, type MessageContent } from './message';
 import {
+  sessionAttentionCursorSchema,
   sessionPendingInteractionSchema,
   sessionSchema,
   type Session,
+  type SessionAttentionCursor,
   type SessionPendingInteraction,
 } from './session';
 import { isoDateTimeSchema } from './time';
@@ -691,6 +693,7 @@ export interface SessionWorkChangedEvent {
   /** Outcome of the MAIN agent's most recent turn, when one has ended since
    *  activation (see `Session.last_turn_reason`). */
   readonly last_turn_reason?: 'completed' | 'cancelled' | 'failed';
+  readonly attention_cursor?: SessionAttentionCursor;
 }
 
 /**
@@ -720,6 +723,8 @@ export interface RemoteConnectionsChangedEvent {
   readonly type: 'event.remote_connections.changed';
   readonly revision: number;
   readonly at: number;
+  readonly reason?: 'created' | 'updated' | 'deleted' | 'paired' | 'state_changed';
+  readonly connection_id?: string;
 }
 
 export interface PersonaChangedEvent {
@@ -1977,6 +1982,7 @@ export const sessionWorkChangedEventSchema = z.object({
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  attention_cursor: sessionAttentionCursorSchema.optional(),
 }) satisfies z.ZodType<SessionWorkChangedEvent>;
 
 /** @deprecated See {@link SessionStatusChangedEvent}. */
@@ -2013,6 +2019,8 @@ export const modelCatalogChangedEventSchema = z.object({
 export const remoteConnectionsChangedPayloadSchema = z.object({
   revision: z.number().int().positive(),
   at: z.number().int().nonnegative(),
+  reason: z.enum(['created', 'updated', 'deleted', 'paired', 'state_changed']).optional(),
+  connection_id: z.string().min(1).optional(),
 });
 
 export const remoteConnectionsChangedEventSchema = remoteConnectionsChangedPayloadSchema.extend({

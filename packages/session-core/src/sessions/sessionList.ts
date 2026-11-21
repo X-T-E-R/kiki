@@ -1,7 +1,7 @@
 /** Session-list cache helpers: page-1 poll merge + overlap dedupe, plus
  * client-local pin state keyed off the wire `Session.metadata`. */
 
-import type { PageResponse, Session, SessionWorkChangedEvent, Workspace } from '@kiki/protocol';
+import type { PageResponse, Session, SessionAttentionCursor, SessionWorkChangedEvent, Workspace } from '@kiki/protocol';
 
 export type SessionListPage = PageResponse<Session> & { readonly next_cursor?: string };
 
@@ -20,7 +20,7 @@ export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
 export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'private' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>;
 
-export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason'> & {
+export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason' | 'attention_cursor'> & {
   readonly sessionId: string;
 };
 
@@ -91,10 +91,29 @@ export async function readSessionFirstPage(
   return head;
 }
 
-function retainSessionSeq(next: Session, currentSeq: number | undefined): Session {
-  return currentSeq !== undefined && currentSeq > next.last_seq
-    ? { ...next, last_seq: currentSeq }
-    : next;
+function mergeAttentionCursor(
+  current: SessionAttentionCursor | undefined,
+  incoming: SessionAttentionCursor | undefined,
+): SessionAttentionCursor | undefined {
+  if (incoming === undefined) return current;
+  if (current === undefined) return incoming;
+  if (current.epoch === incoming.epoch) return incoming.seq >= current.seq ? incoming : current;
+  return incoming;
+}
+
+function retainSessionCursors(
+  next: Session,
+  currentSeq: number | undefined,
+  currentCursor: SessionAttentionCursor | undefined,
+): Session {
+  const nextSeq = currentSeq !== undefined && currentSeq > next.last_seq ? currentSeq : next.last_seq;
+  const nextCursor = mergeAttentionCursor(currentCursor, next.attention_cursor);
+  if (nextSeq === next.last_seq && nextCursor === next.attention_cursor) return next;
+  return {
+    ...next,
+    last_seq: nextSeq,
+    ...(nextCursor !== undefined ? { attention_cursor: nextCursor } : {}),
+  };
 }
 
 /**
@@ -108,16 +127,19 @@ export function mergeSessionFirstPage(
 ): SessionListData | undefined {
   if (old === undefined || old === null || !Array.isArray(old.pages)) return old;
   const knownSeqs = new Map<string, number>();
+  const knownCursors = new Map<string, SessionAttentionCursor>();
   for (const page of old.pages) {
     if (!Array.isArray(page?.items)) continue;
     for (const item of page.items) {
       const prev = knownSeqs.get(item.id) ?? 0;
       if (item.last_seq > prev) knownSeqs.set(item.id, item.last_seq);
+      const mergedCursor = mergeAttentionCursor(knownCursors.get(item.id), item.attention_cursor);
+      if (mergedCursor !== undefined) knownCursors.set(item.id, mergedCursor);
     }
   }
   const normalizedFirst: SessionListPage = {
     ...first,
-    items: first.items.map((item) => retainSessionSeq(item, knownSeqs.get(item.id))),
+    items: first.items.map((item) => retainSessionCursors(item, knownSeqs.get(item.id), knownCursors.get(item.id))),
   };
   const previous = old.pages[0];
   if (previous === undefined || !Array.isArray(previous.items) || !normalizedFirst.has_more) return { pages: [normalizedFirst], pageParams: [undefined] };
@@ -141,16 +163,24 @@ export function mergeSessionActivity(old: SessionListData | undefined, fresh: Se
   return { ...old, pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
     ...page,
     items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at)
-      ? retainSessionSeq(fresh, session.last_seq)
+      ? retainSessionCursors(fresh, session.last_seq, session.attention_cursor)
       : session),
   })) };
 }
 
 export function patchSessionWorkChanged(session: Session, change: SessionWorkChangedPatch): Session {
-  return session.id === change.sessionId
-    ? { ...session, busy: change.busy, executing: change.executing, cleanup_pending: change.cleanup_pending,
-      main_turn_active: change.main_turn_active, pending_interaction: change.pending_interaction, last_turn_reason: change.last_turn_reason }
-    : session;
+  if (session.id !== change.sessionId) return session;
+  const attention_cursor = mergeAttentionCursor(session.attention_cursor, change.attention_cursor);
+  return {
+    ...session,
+    busy: change.busy,
+    executing: change.executing,
+    cleanup_pending: change.cleanup_pending,
+    main_turn_active: change.main_turn_active,
+    pending_interaction: change.pending_interaction,
+    last_turn_reason: change.last_turn_reason,
+    ...(attention_cursor !== undefined ? { attention_cursor } : {}),
+  };
 }
 
 export function mergeSessionWorkChanged(
