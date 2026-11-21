@@ -9,7 +9,7 @@ import { toErrorPayload } from '#/_base/errors/serialize';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
-import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+import { attachErrorDetails, toErrorDisplayMessage, unwrapErrorCause } from '#/errors';
 import {
   APIConnectionError,
   APIProviderOverloadedError,
@@ -32,6 +32,7 @@ import { AgentStepRetryService, TurnStepRetrying } from '#/agent/stepRetry/stepR
 import { IAgentStepRetryService } from '#/agent/stepRetry/stepRetry';
 import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
 import { resolveRetryDelay, resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
+import { requestModelWithRetry } from '#/agent/stepRetry/modelRequestRetry';
 import type { Model } from '#/kosong/model/catalog';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { ILogService } from '#/_base/log/log';
@@ -40,6 +41,8 @@ import { createServices } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentTaskService } from '#/agent/task/task';
@@ -331,6 +334,120 @@ describe('stepRetry plugin', () => {
         args: expect.objectContaining({ delayMs: MAX_RETRY_AFTER_MS }),
       }),
     ]);
+  });
+
+  it('fails fast with zero retries on 429 Retry-After 44083s under default config and outputs readable duration', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('429 weekly usage quota exhausted', 'req-429', 44_083_000, 'trace-429');
+      }),
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    if (result.type !== 'failed') throw new Error('Expected fail-fast failure');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+    const display = toErrorDisplayMessage(result.error);
+    expect(display).toContain('12h 14m 43s (44083s)');
+    expect(display).toContain('exceeds max_retry_after_ms');
+    expect(display).toContain('failing fast');
+    expect(display).toContain('429 weekly usage quota exhausted');
+  });
+
+  it('fails fast on 429 Retry-After 44083s even when a matching policy sets retry=true, backoff=15000, max_attempts=20', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('429 weekly usage quota exhausted', null, 44_083_000);
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '^provider\\.rate_limit$',
+              retry: true,
+              backoff: 15_000,
+              maxAttempts: 20,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+  });
+
+  it('retries 429 Retry-After 90s when max_retry_after_ms is explicitly raised to 120000', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw new APIProviderRateLimitError('temporary rate limit', null, 90_000);
+        return {
+          id: 'raised-cap-recovered',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'recovered' }],
+            toolCalls: [],
+          },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+      {
+        initialConfig: {
+          retry: {
+            maxRetryAfterMs: 120_000,
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('completed');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({
+        args: expect.objectContaining({ delayMs: 90_000 }),
+      }),
+    ]);
+  });
+
+  it('fails fast on 429 Retry-After 44083s even under KIKI_INFINITE_RETRY and uncommitted stream overload', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw attachErrorDetails(
+          new APIProviderRateLimitError('429 stream overload', null, 44_083_000),
+          { errorSource: 'provider_event' },
+        );
+      }),
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    if (result.type !== 'failed') throw new Error('Expected fail-fast failure');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+    expect(toErrorDisplayMessage(result.error)).toContain('12h 14m 43s (44083s)');
   });
 
   it('does not retry a non-retryable error', async () => {
@@ -1644,5 +1761,259 @@ describe('stepRetry binding lookup', () => {
   it('preserves selector-free policy calls without a binding argument', () => {
     expect(resolveRetryPolicy({ policies: [{ match: 'provider.rate_limit', maxAttempts: 7, retry: true }] }, context.error))
       .toEqual({ retry: true, maxAttempts: 7, backoffMs: undefined });
+  });
+
+  it('never marks 503 with Retry-After 120s as retryAfterExceeded while honoring policy maxRetryAfterMs for 429', () => {
+    expect(resolveRetryPolicy(undefined, new APIStatusError(503, 'overloaded', null, 120_000))).toEqual({
+      retry: true,
+      maxAttempts: undefined,
+      backoffMs: undefined,
+    });
+    expect(resolveRetryPolicy(
+      { policies: [{ match: '^provider\\.rate_limit$', maxRetryAfterMs: 120_000, retry: true }] },
+      new APIProviderRateLimitError('429', null, 90_000),
+    )).toEqual({ retry: true, maxAttempts: undefined, backoffMs: undefined });
+    expect(resolveRetryPolicy(
+      { policies: [{ match: '^provider\\.rate_limit$', maxRetryAfterMs: 120_000, retry: true }] },
+      new APIProviderRateLimitError('429', null, 121_000),
+    )).toEqual({ retry: false, retryAfterExceeded: { retryAfterMs: 121_000, maxRetryAfterMs: 120_000 } });
+  });
+
+  it('fails fast in requestModelWithRetry on 429 Retry-After exceeding max_retry_after_ms', async () => {
+    let attempts = 0;
+    const requester = {
+      model: { id: 'test-model', providerName: 'test-provider' },
+      request() {
+        attempts += 1;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => {
+                throw new APIProviderRateLimitError('429 long wait', null, 44_083_000);
+              },
+            };
+          },
+        };
+      },
+    } as unknown as Parameters<typeof requestModelWithRetry>[0];
+
+    let caught: unknown;
+    try {
+      for await (const _event of requestModelWithRetry(
+        requester,
+        { systemPrompt: '', tools: [], messages: [] },
+        new AbortController().signal,
+        { attribution: { logicalRequestId: 'req-1', waitBudget: { waitedMs: 0 }, purpose: 'connectivity_probe' } },
+        () => undefined,
+      )) {
+        void _event;
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(attempts).toBe(1);
+    expect(toErrorPayload(caught).details).toMatchObject({
+      retry_after_exceeded: true,
+      retry_after_ms: 44_083_000,
+      max_retry_after_ms: MAX_RETRY_AFTER_MS,
+    });
+    expect(toErrorDisplayMessage(caught)).toContain('12h 14m 43s (44083s)');
+  });
+
+  it('attaches HTTP response headers to Google GenAI ApiError via vendor patch', async () => {
+    vi.useRealTimers();
+    const server = createServer((_req, res) => {
+      res.writeHead(429, {
+        'content-type': 'application/json',
+        'retry-after': '44083',
+        'x-should-retry': 'false',
+        'x-trace-id': 'trace-loopback-google',
+      });
+      res.end(JSON.stringify({
+        error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Quota exhausted on upstream' },
+      }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected TCP address');
+    try {
+      const provider = new GoogleGenAIChatProvider({
+        model: 'gemini-2.5-flash',
+        apiKey: 'YOUR_API_KEY',
+        baseUrl: `http://127.0.0.1:${address.port}`,
+      });
+      const caught = await provider.generate('', [], [{ role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] }]).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(caught).toBeInstanceOf(APIProviderRateLimitError);
+      expect((caught as APIProviderRateLimitError).retryAfterMs).toBe(44_083_000);
+      expect((caught as APIProviderRateLimitError).traceId).toBe('trace-loopback-google');
+      expect(toErrorPayload(caught).details).toMatchObject({
+        upstream_retryable: false,
+        retryAfterMs: 44_083_000,
+        traceId: 'trace-loopback-google',
+      });
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it('preserves retryAfterMs, traceId, and details when runAgentTurn reconstructs a provider.rate_limit failure', async () => {
+    const payload = {
+      code: 'provider.rate_limit',
+      name: 'Error2',
+      message: 'weekly usage quota exhausted',
+      details: {
+        requestId: 'req-sub-429',
+        retryAfterMs: 44_083_000,
+        traceId: 'trace-sub-429',
+        retry_after_exceeded: true,
+        retry_after_ms: 44_083_000,
+        max_retry_after_ms: MAX_RETRY_AFTER_MS,
+      },
+    };
+    const target = {
+      id: 'subagent-1',
+      accessor: {
+        get: (token: unknown) => {
+          if (token === IAgentPromptService) {
+            return {
+              lookup: () => ({
+                phase: 'terminal',
+                terminal: {
+                  turnId: 1,
+                  state: 'failed',
+                  result: { type: 'failed', steps: 1, error: payload },
+                },
+              }),
+            };
+          }
+          throw new Error('Unexpected service lookup');
+        },
+      },
+    } as unknown as Parameters<typeof runAgentTurn>[0];
+
+    const handle = await runAgentTurn(
+      target,
+      { kind: 'prompt', promptId: 'prompt-sub-429', prompt: 'run check' },
+      { signal: new AbortController().signal },
+    );
+    const caught = await handle.completion.then(() => undefined, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(APIProviderRateLimitError);
+    expect((caught as APIProviderRateLimitError).requestId).toBe('req-sub-429');
+    expect((caught as APIProviderRateLimitError).retryAfterMs).toBe(44_083_000);
+    expect((caught as APIProviderRateLimitError).traceId).toBe('trace-sub-429');
+    expect(toErrorPayload(caught).details).toMatchObject({
+      retryAfterMs: 44_083_000,
+      traceId: 'trace-sub-429',
+      retry_after_exceeded: true,
+      retry_after_ms: 44_083_000,
+      max_retry_after_ms: MAX_RETRY_AFTER_MS,
+    });
+    expect(toErrorDisplayMessage(caught)).toContain('12h 14m 43s (44083s)');
+  });
+
+  it('surfaces readable Retry-After duration in SubagentTask stopReason and parent subagent.failed receipt after 1 attempt', async () => {
+    vi.useRealTimers();
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        requests += 1;
+        response.writeHead(429, {
+          'content-type': 'application/json',
+          'retry-after': '44083',
+          'x-trace-id': 'trace-subagent-429',
+        });
+        response.end(JSON.stringify({
+          type: 'error',
+          error: { type: 'rate_limit_error', message: 'weekly usage quota exhausted' },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected TCP address');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const provider = new AnthropicChatProvider({ model: 'claude-sonnet-4-5', apiKey: 'YOUR_API_KEY', baseUrl });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider() { return provider; }
+    }
+    const ctx = createRetryTestAgent(appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    ctx.configure({
+      provider: { type: 'anthropic', model: 'claude-sonnet-4-5', baseUrl, apiKey: 'YOUR_API_KEY' },
+    });
+    const rpcEvents = (name: string) =>
+      ctx.allEvents.filter(event => event.type === '[rpc]' && event.event === name);
+    try {
+      const controller = new AbortController();
+      const run = await ctx.get(IAgentExecutionService).run(
+        { kind: 'prompt', prompt: 'Inspect failing subagent.' },
+        { signal: controller.signal },
+      );
+      const tasks = ctx.get(IAgentTaskService);
+      const taskId = tasks.registerTask(
+        new SubagentTask(
+          {
+            agentId: 'subagent-429-child',
+            profileName: 'example-worker',
+            completion: run.completion.then(result => ({ result: result.summary })),
+          },
+          'Long 429 subagent receipt',
+          controller,
+        ),
+        { deferVisibility: true },
+      );
+      const failure: unknown = await run.completion.catch((error: unknown) => error);
+      expect(requests).toBe(1);
+      expect(failure).toBeInstanceOf(APIProviderRateLimitError);
+      expect(rpcEvents('turn.step.retrying')).toEqual([]);
+      const taskReceipt = await tasks.wait(taskId);
+      expect(taskReceipt).toMatchObject({
+        status: 'failed',
+        stopReason: expect.stringContaining('12h 14m 43s (44083s)'),
+      });
+
+      const requester: IAgentScopeHandle = {
+        kind: 'agent',
+        id: 'main',
+        accessor: { get: id => ctx.get(id) },
+        dispose: () => {},
+      };
+      await ctx.get(ISessionMetadata).registerAgent('subagent-429-child', { type: 'sub', model: 'claude-sonnet-4-5' });
+      await expect(
+        mirrorAgentRun(
+          requester,
+          { agentId: 'subagent-429-child', completion: Promise.reject(failure) },
+          {
+            profileName: 'example-worker',
+            signal: new AbortController().signal,
+            resolveTaskId: () => Promise.resolve(taskId),
+          },
+        ),
+      ).rejects.toBe(failure);
+      expect(rpcEvents('subagent.failed')).toContainEqual(
+        expect.objectContaining({
+          args: expect.objectContaining({ error: expect.stringContaining('12h 14m 43s (44083s)') }),
+        }),
+      );
+      expect((await ctx.get(ISessionMetadata).read()).agents?.['subagent-429-child']?.error).toContain('12h 14m 43s (44083s)');
+    } finally {
+      await ctx.dispose();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
   });
 });

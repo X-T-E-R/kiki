@@ -5,11 +5,13 @@ import {
   APIStatusError,
   isRetryableBufferedRequestError,
   isSafetyProviderErrorCode,
+  isStructuredQuotaExhaustedCode,
   readUpstreamSafetySubCode,
 } from '#/kosong/contract/errors';
 import { isAbortError } from '#/_base/utils/abort';
+import { MAX_RETRY_AFTER_MS, readRetryAfterMs } from '#/_base/utils/retry';
 import { sliceUtf16 } from '#/_base/text/utf16';
-import { isCodedError, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
+import { Error2, isCodedError, readAttachedErrorDetails, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
 
 export function isStreamedSafetyRefusalText(text: string): boolean {
   return text.includes("This request was blocked by Gemini's filters.") && text.includes('generative-ai/use-policy');
@@ -27,23 +29,93 @@ export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'qu
   if (details?.['compaction_stream_filtered'] === true) return 'filtered';
   const upstreamErrorCode = typeof details?.['upstreamErrorCode'] === 'string' ? details['upstreamErrorCode'].trim() : '';
   if (upstreamErrorCode.length > 0 && isSafetyProviderErrorCode(upstreamErrorCode)) return 'filtered';
+  const upstreamErrorType = typeof details?.['upstreamErrorType'] === 'string' ? details['upstreamErrorType'].trim() : '';
+  if (upstreamErrorType.length > 0 && isSafetyProviderErrorCode(upstreamErrorType)) return 'filtered';
   const subCode = readUpstreamSafetySubCode(details);
   if (subCode !== undefined && isSafetyProviderErrorCode(subCode)) return 'filtered';
   const status = cause instanceof APIStatusError ? cause : undefined;
   const message = status?.message ?? (cause instanceof Error ? cause.message : '');
   if (/CONTENT_FILTERED|content[_-]?filter|soft safety filter block|blocked by gemini's filters|safety filter blocks/i.test(message)) return 'filtered';
   if (status?.statusCode === 401 || status?.statusCode === 403) return 'auth';
-  if (cause instanceof APIProviderQuotaExhaustedError ||
-      /(?:insufficient_quota|quota[_ -]?(?:exceeded|exhausted)|billing[_ -]?(?:limit|exhausted))/i.test(status?.message ?? '')) return 'quota';
+  if (
+    cause instanceof APIProviderQuotaExhaustedError ||
+    isStructuredQuotaExhaustedCode(upstreamErrorCode) ||
+    isStructuredQuotaExhaustedCode(upstreamErrorType)
+  ) {
+    return 'quota';
+  }
+  const statusMessage = status?.message ?? '';
+  if (
+    /(?:insufficient_quota|quota[_ -]?(?:exceeded|exhausted)|billing[_ -]?(?:limit|exhausted))/i.test(statusMessage) &&
+    !/(?:per[ _-]?(?:second|minute)|(?:^|[^a-z])(?:rpm|tpm)(?:$|[^a-z]))/i.test(statusMessage)
+  ) {
+    return 'quota';
+  }
   if (/timeout|timed out/i.test(cause instanceof Error ? cause.message : '')) return 'timeout';
   return 'upstream';
 }
 
-export function isRetryableCompactionError(error: unknown): boolean {
+function statusCodeOf(error: unknown, cause: unknown): number | undefined {
+  if (cause instanceof APIStatusError) return cause.statusCode;
+  if (error instanceof APIStatusError) return error.statusCode;
+  for (const candidate of [error, cause]) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const attached = readAttachedErrorDetails(candidate);
+    const declared = candidate instanceof Error2 ? candidate.details : undefined;
+    for (const raw of [attached?.['statusCode'], attached?.['upstreamStatus'], declared?.['statusCode'], declared?.['upstreamStatus']]) {
+      if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
+    }
+  }
+  return undefined;
+}
+
+function hasDetailFlag(error: unknown, key: string, expected: boolean): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const attached = readAttachedErrorDetails(current);
+    const declared = current instanceof Error2 ? current.details : undefined;
+    if (attached?.[key] === expected || declared?.[key] === expected) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
+function isBufferedStreamTerminal502(error: unknown, cause: unknown): boolean {
+  if (statusCodeOf(error, cause) !== 502) return false;
+  const visited = new Set<object>();
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const attached = readAttachedErrorDetails(current);
+    const declared = current instanceof Error2 ? current.details : undefined;
+    const source = attached?.['errorSource'] ?? declared?.['errorSource'];
+    const code = attached?.['upstreamErrorCode'] ?? declared?.['upstreamErrorCode'];
+    if ((source === 'provider_event' || source === 'provider_http') && typeof code === 'string' && code.length > 0) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
+export function isRetryableCompactionError(error: unknown, maxRetryAfterMs = MAX_RETRY_AFTER_MS): boolean {
   const cause = unwrapErrorCause(error);
   if (isAbortError(error) || isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
+  if (hasDetailFlag(error, 'upstream_should_retry', false)) return false;
+  const statusCode = statusCodeOf(error, cause);
+  if (statusCode === 429) {
+    const retryAfterMs = readRetryAfterMs(cause) ?? readRetryAfterMs(error);
+    if (retryAfterMs !== null && retryAfterMs > maxRetryAfterMs) return false;
+    if (hasDetailFlag(error, 'upstream_retryable', false)) return false;
+  } else if (hasDetailFlag(error, 'upstream_retryable', false) && !isBufferedStreamTerminal502(error, cause)) {
+    return false;
+  }
   if (!isRetryableBufferedRequestError(error)) return false;
   if (cause instanceof APIStatusError && cause.statusCode === 400 && !(cause instanceof APIContextOverflowError)) return false;
   return true;

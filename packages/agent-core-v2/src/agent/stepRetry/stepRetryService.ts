@@ -26,7 +26,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { RETRY_SECTION, type RetryConfig } from './configSection';
-import { resolveRetryDelay, resolveRetryPolicy, type RetryBindingIdentity } from './retryPolicy';
+import { noteRetryAfterExceeded, resolveRetryDelay, resolveRetryPolicy, type RetryBindingIdentity } from './retryPolicy';
 import { IAgentStepRetryService } from './stepRetry';
 
 export interface TurnStepRetryingPayload {
@@ -145,13 +145,20 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
   }
 
   private shouldRetry(error: unknown): boolean {
-    return resolveRetryPolicy(
+    const decision = resolveRetryPolicy(
       this.retryConfig(), error, () => this.retryBinding(),
-    ).retry;
+    );
+    if (decision.retryAfterExceeded !== undefined) {
+      noteRetryAfterExceeded(error, decision.retryAfterExceeded);
+    }
+    return decision.retry;
   }
 
   private async recover(context: LoopErrorContext): Promise<boolean> {
     const decision = resolveRetryPolicy(this.retryConfig(), context.error, () => this.retryBinding());
+    if (decision.retryAfterExceeded !== undefined) {
+      noteRetryAfterExceeded(context.error, decision.retryAfterExceeded);
+    }
     if (!decision.retry) return false;
     const driver = context.failedDriver;
     if (driver === undefined || context.step === undefined) return false;

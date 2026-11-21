@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import '#/errors';
 
 import { Error2, attachErrorDetails } from '#/_base/errors/errors';
-import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
+import { formatRetryDurationMs, toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 import { APIProviderRateLimitError } from '#/kosong/contract/errors';
 
@@ -141,6 +141,36 @@ describe('toErrorDisplayMessage', () => {
     );
     expect(toErrorDisplayMessage(wrapped)).toBe(
       'Upstream stream closed prematurely (The provider request ended without an observed outcome.) [HTTP 502, code=gateway_stream_terminal_error, requestId=req-502, traceId=trace-502]',
+    );
+  });
+
+  it('formats retry durations and fail-fast retry-after summaries cleanly', () => {
+    expect(formatRetryDurationMs(500)).toBe('500ms');
+    expect(formatRetryDurationMs(45_000)).toBe('45s');
+    expect(formatRetryDurationMs(60_000)).toBe('1m (60s)');
+    expect(formatRetryDurationMs(44_083_000)).toBe('12h 14m 43s (44083s)');
+
+    const exceeded = attachErrorDetails(
+      new Error2('provider.rate_limit', '429 weekly usage quota exhausted', {
+        details: { statusCode: 429, retryAfterMs: 44_083_000 },
+      }),
+      { retry_after_exceeded: true, retry_after_ms: 44_083_000, max_retry_after_ms: 60_000 },
+    );
+    const display = toErrorDisplayMessage(exceeded);
+    expect(display).toBe(
+      'Retry-After 12h 14m 43s (44083s) exceeds max_retry_after_ms (1m (60s)); failing fast. 429 weekly usage quota exhausted',
+    );
+    expect(toErrorDisplayMessage(fromErrorPayload({ ...toErrorPayload(exceeded), message: display }))).toBe(display);
+
+    const denied = attachErrorDetails(
+      new Error2('provider.api_error', 'quota limit hit', {
+        name: 'APIProviderQuotaExhaustedError',
+        details: { statusCode: 429, retryAfterMs: 44_083_000 },
+      }),
+      {},
+    );
+    expect(toErrorDisplayMessage(denied)).toBe(
+      'quota limit hit [HTTP 429, retryAfter=12h 14m 43s (44083s)]',
     );
   });
 });

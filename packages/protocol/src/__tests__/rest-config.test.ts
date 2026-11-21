@@ -269,4 +269,25 @@ describe('model generation migration REST contract', () => {
     expect(modelGenerationMigrationRestoreRequestSchema.safeParse({ backup_key: 'backup', confirmed: true }).success).toBe(false);
     expect(modelGenerationMigrationRestoreRequestSchema.safeParse({ revision, backup_key: 'backup', confirmed: true }).success).toBe(true);
   });
+
+  it('round-trips retry max_retry_after_ms and maxRetryAfterMs on section and policy schemas', () => {
+    const patch = {
+      retry: {
+        max_attempts: 5,
+        max_retry_after_ms: 120_000,
+        policies: [{ match: '^provider\\.rate_limit$', max_retry_after_ms: 90_000, retry: true }],
+      },
+    };
+    expect(patchConfigRequestSchema.parse(patch)).toEqual(patch);
+    const response = {
+      retry: {
+        maxAttempts: 5,
+        maxRetryAfterMs: 120_000,
+        policies: [{ match: '^provider\\.rate_limit$', maxRetryAfterMs: 90_000, retry: true }],
+      },
+    };
+    expect(configResponseSchema.parse(response).retry).toEqual(response.retry);
+    expect(patchConfigRequestSchema.safeParse({ retry: { max_retry_after_ms: 0 } }).success).toBe(false);
+    expect(configResponseSchema.safeParse({ retry: { maxRetryAfterMs: -1 } }).success).toBe(false);
+  });
 });

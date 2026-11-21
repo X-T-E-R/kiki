@@ -39,7 +39,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
 import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
-import { findRetryPolicy, resolveRetryDelay } from '#/agent/stepRetry/retryPolicy';
+import { check429RetryAfterExceeded, findRetryPolicy, noteRetryAfterExceeded, resolveRetryDelay } from '#/agent/stepRetry/retryPolicy';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
@@ -938,6 +938,11 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (retry === 'never' || retryPolicy?.retry === false ||
           (hasExplicitRetryVeto(error) && !discardRetry && !canDegradeOrStripMedia) ||
           isAbortError(error) || signal?.aborted === true) throw error;
+        const retryAfterExceeded = check429RetryAfterExceeded(raw, retryConfig, retryPolicy);
+        if (retryAfterExceeded !== undefined) {
+          noteRetryAfterExceeded(error, retryAfterExceeded);
+          throw error;
+        }
         if (source?.type === 'turn' && (discardRetry || isRetryableRequestInterruption(error))) {
           const partialOutput = attemptObservedOutput || (discardRetry
             ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error));

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { attachErrorDetails, Error2, unwrapErrorCause } from '#/errors';
-import { APIConnectionError, APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, APITimeoutError, ChatProviderError, ambiguousRequestDelivery, markProviderEventError, markProviderHttpError, normalizeAPIStatusError, isRetryableGenerateError, isRetryableRequestInterruption, noteConfirmedRequestExecution, noteExecutedRequestDelivery, requestDeliveryProvenance } from '#/kosong/contract/errors';
+import { APIConnectionError, APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, APITimeoutError, ChatProviderError, ambiguousRequestDelivery, markProviderEventError, markProviderHttpError, normalizeAPIStatusError, isRetryableGenerateError, isRetryableRequestInterruption, noteConfirmedRequestExecution, noteExecutedRequestDelivery, noteExplicitUpstreamRetryDenial, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { compactionFailureKind, describeCompactionFailure, isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 
 describe('compaction-only retry classification', () => {
@@ -164,5 +164,39 @@ describe('compaction-only retry classification', () => {
     expect(described).toContain('HTTP 502 gateway_stream_terminal_error; anthropic/axon-message/gemini-4-argon; request req-stream-502; 1 attempt');
     expect(described).toContain('Upstream stream ended before a terminal event');
     expect(described).not.toContain('HTTP n/a error');
+  });
+
+  it('fails fast on 429 with excessive Retry-After, explicit upstream_retryable=false, and x-should-retry=false while honoring custom maxRetryAfterMs and transient RPM 429', () => {
+    expect(isRetryableCompactionError(new APIStatusError(429, 'rate limit', null, 44_083_000))).toBe(false);
+    expect(isRetryableCompactionError(new APIStatusError(429, 'rate limit', null, 90_000))).toBe(false);
+    expect(isRetryableCompactionError(new APIStatusError(429, 'rate limit', null, 90_000), 120_000)).toBe(true);
+    expect(isRetryableCompactionError(new APIStatusError(429, 'rate limit', null, 15_000))).toBe(true);
+    expect(isRetryableCompactionError(attachErrorDetails(new APIStatusError(429, 'rate limit'), { upstream_retryable: false }))).toBe(false);
+    expect(isRetryableCompactionError(attachErrorDetails(new APIStatusError(503, 'maintenance'), { upstream_retryable: false }))).toBe(false);
+    expect(
+      isRetryableCompactionError(
+        noteExplicitUpstreamRetryDenial(new APIStatusError(503, 'maintenance'), undefined, new Headers({ 'x-should-retry': 'false' })),
+      ),
+    ).toBe(false);
+    expect(
+      isRetryableCompactionError(
+        noteExplicitUpstreamRetryDenial(
+          markProviderHttpError(new APIStatusError(502, 'bad gateway'), 'upstream_error'),
+          undefined,
+          new Headers({ 'x-should-retry': 'false' }),
+        ),
+      ),
+    ).toBe(false);
+    expect(isRetryableCompactionError(new APIStatusError(503, 'relay overloaded', null, 120_000))).toBe(true);
+
+    const transientRpm429 = new APIStatusError(429, '429 Quota exceeded for metric requests per minute');
+    expect(compactionFailureKind(transientRpm429)).toBe('upstream');
+    expect(isRetryableCompactionError(transientRpm429)).toBe(true);
+
+    const structuredQuota = normalizeAPIStatusError(429, '429 limit reached', null, null, null, {
+      error: { code: 'usage_limit_reached', message: 'weekly quota exhausted' },
+    });
+    expect(compactionFailureKind(structuredQuota)).toBe('quota');
+    expect(isRetryableCompactionError(structuredQuota)).toBe(false);
   });
 });

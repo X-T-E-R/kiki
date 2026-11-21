@@ -77,10 +77,29 @@ function mergeDiagnosticDetails(chain: readonly ErrorPayload[]): Record<string, 
   return merged;
 }
 
+/** Formats a positive retry delay in milliseconds as a concise human-readable duration. */
+export function formatRetryDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0ms';
+  if (ms < 1_000) return `${Math.round(ms)}ms`;
+  const totalSeconds = Math.ceil(ms / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0) parts.push(`${seconds}s`);
+  return `${parts.join(' ')} (${totalSeconds}s)`;
+}
+
 function formatErrorDiagnosticSuffix(
   merged: Record<string, unknown>,
   message: string,
   includeStatus: boolean,
+  includeRetryAfter: boolean,
 ): string {
   const parts: string[] = [];
   const status = merged['statusCode'] ?? merged['upstreamStatus'];
@@ -88,6 +107,14 @@ function formatErrorDiagnosticSuffix(
   const upstreamType = readNonEmptyString(merged, 'upstreamErrorType');
   const requestId = readNonEmptyString(merged, 'requestId');
   const traceId = readNonEmptyString(merged, 'traceId');
+  const rawRetryAfterMs = merged['retryAfterMs'];
+  const retryAfterText =
+    includeRetryAfter &&
+    typeof rawRetryAfterMs === 'number' &&
+    Number.isFinite(rawRetryAfterMs) &&
+    rawRetryAfterMs > 0
+      ? formatRetryDurationMs(rawRetryAfterMs)
+      : undefined;
   const upstreamDetails = readObjectRecord(merged['upstreamDetails']);
   const hasUnrenderedDetail =
     includeStatus ||
@@ -95,6 +122,7 @@ function formatErrorDiagnosticSuffix(
     (upstreamType !== undefined && upstreamType !== upstreamCode && !message.includes(upstreamType)) ||
     (requestId !== undefined && !message.includes(requestId)) ||
     (traceId !== undefined && !message.includes(traceId)) ||
+    (retryAfterText !== undefined && !message.includes(`retryAfter=${retryAfterText}`)) ||
     (upstreamDetails !== undefined && Object.keys(upstreamDetails).length > 0);
   if (
     hasUnrenderedDetail &&
@@ -118,6 +146,9 @@ function formatErrorDiagnosticSuffix(
   }
   if (traceId !== undefined && !message.includes(traceId)) {
     parts.push(`traceId=${traceId}`);
+  }
+  if (retryAfterText !== undefined && !message.includes(`retryAfter=${retryAfterText}`)) {
+    parts.push(`retryAfter=${retryAfterText}`);
   }
   if (upstreamDetails !== undefined && Object.keys(upstreamDetails).length > 0) {
     try {
@@ -145,7 +176,23 @@ export function toErrorDisplayMessage(error: unknown): string {
     message = `${message} (${AMBIGUOUS_DELIVERY_MESSAGE})`;
   }
   const merged = mergeDiagnosticDetails(chain);
-  message = `${message}${formatErrorDiagnosticSuffix(merged, message, hadAmbiguousWrapper)}`;
+  const exceededOwner = chain.find((entry) => entry.details?.['retry_after_exceeded'] === true);
+  const exceededDetails = exceededOwner?.details;
+  const actualMs = exceededDetails?.['retry_after_ms'];
+  const limitMs = exceededDetails?.['max_retry_after_ms'];
+  const hasRetryAfterExceeded =
+    exceededDetails?.['retry_after_exceeded'] === true &&
+    typeof actualMs === 'number' && Number.isFinite(actualMs) && actualMs > 0 &&
+    typeof limitMs === 'number' && Number.isFinite(limitMs) && limitMs > 0;
+  const includeRetryAfter =
+    !hasRetryAfterExceeded &&
+    (merged['upstream_retryable'] === false ||
+      chain.some((entry) => entry.name === 'APIProviderQuotaExhaustedError'));
+  message = `${message}${formatErrorDiagnosticSuffix(merged, message, hadAmbiguousWrapper, includeRetryAfter)}`;
+  if (hasRetryAfterExceeded) {
+    const summary = `Retry-After ${formatRetryDurationMs(actualMs)} exceeds max_retry_after_ms (${formatRetryDurationMs(limitMs)}); failing fast.`;
+    return message.startsWith(summary) ? message : `${summary} ${message}`;
+  }
   const retryOwner = chain.find((entry) => entry.details?.['retry_exhausted'] === true) ?? payload;
   const details = retryOwner.details;
   const attempts = details?.['retry_attempts'];

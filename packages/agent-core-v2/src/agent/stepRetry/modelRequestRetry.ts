@@ -2,7 +2,7 @@ import { DEFAULT_MAX_RETRY_ATTEMPTS, sleepForRetry } from '#/_base/utils/retry';
 import { isContentPart, isVacuousContentPart, type StreamedMessagePart } from '#/kosong/contract/message';
 import type { ModelRequester, ModelRequestEvent, ModelRequestInput } from '#/kosong/model/modelRequester';
 import type { RetryConfig } from './configSection';
-import { resolveRetryDelay, resolveRetryPolicy } from './retryPolicy';
+import { noteRetryAfterExceeded, resolveRetryDelay, resolveRetryPolicy } from './retryPolicy';
 
 /** Reuses the step retry policy, five-attempt default, backoff and Retry-After for direct model requests. Output observation is monotonic across discarded attempts; cancellation, safety vetoes and retry: 'never' prevent replay. */
 export async function* requestModelWithRetry(
@@ -30,6 +30,9 @@ export async function* requestModelWithRetry(
       if (observedOutput || params.retry === 'never') throw error;
       const config = retryConfig();
       const decision = resolveRetryPolicy(config, error, { model: requester.model.id, provider: requester.model.providerName });
+      if (decision.retryAfterExceeded !== undefined) {
+        noteRetryAfterExceeded(error, decision.retryAfterExceeded);
+      }
       if (!decision.retry || attempt >= (decision.maxAttempts ?? config?.maxAttempts ?? DEFAULT_MAX_RETRY_ATTEMPTS)) throw error;
       await sleepForRetry(resolveRetryDelay(error, attempt - 1, decision.backoffMs), signal);
     }

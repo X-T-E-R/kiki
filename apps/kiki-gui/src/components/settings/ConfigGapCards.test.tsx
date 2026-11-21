@@ -122,6 +122,34 @@ describe('config gap cards', () => {
     expect(patchConfig).toHaveBeenLastCalledWith({ retry: { max_attempts: 9, retry_partial_responses: true }, replace_domains: ['retry'] });
   });
 
+  it('preserves retry max_retry_after_ms at section and policy level when saving replace_domains retry', async () => {
+    const withRetryAfterCap = {
+      ...CONFIG,
+      retry: {
+        maxAttempts: 5,
+        maxRetryAfterMs: 120_000,
+        retryPartialResponses: true,
+        policies: [{ match: '^provider\\.rate_limit$', maxAttempts: 20, backoff: 15_000, maxRetryAfterMs: 90_000, retry: true }],
+      },
+    } as unknown as KikiConfigResponse;
+    getConfig.mockResolvedValue(withRetryAfterCap);
+    patchConfig.mockResolvedValue(withRetryAfterCap);
+
+    const container = await render(<RetryPolicyCard />);
+    const attempts = container.querySelector<HTMLInputElement>('#retry-max-attempts')!;
+    await commitText(attempts, '7');
+    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      retry: {
+        max_attempts: 7,
+        max_retry_after_ms: 120_000,
+        retry_partial_responses: true,
+        policies: [{ match: '^provider\\.rate_limit$', models: undefined, providers: undefined, max_attempts: 20, backoff: 15_000, max_retry_after_ms: 90_000, retry: true }],
+      },
+      replace_domains: ['retry'],
+    });
+  });
+
   it('sends bash_file_tool_hints with the task policy draft', async () => {
     const container = await render(<TaskPolicyCard />);
     const card = container.querySelector('#st-card-task-policy')!;

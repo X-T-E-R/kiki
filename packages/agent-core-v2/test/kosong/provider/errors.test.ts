@@ -1317,3 +1317,144 @@ describe('convertGoogleGenAIError RetryInfo recovery', () => {
     });
   });
 });
+
+describe('provider boundary x-should-retry and structured quota error propagation', () => {
+  it('propagates x-should-retry: false and usage_limit_reached across Anthropic, OpenAI, and Google GenAI', () => {
+    const anthropicDenied = convertAnthropicError(
+      AnthropicAPIError.generate(
+        429,
+        { type: 'error', error: { type: 'rate_limit_error', message: 'rate limited' } },
+        '429 rate limited',
+        new Headers({ 'x-should-retry': 'false', 'retry-after': '44083' }),
+      ),
+    );
+    expect(anthropicDenied).toBeInstanceOf(APIProviderRateLimitError);
+    expect(isRetryableGenerateError(anthropicDenied)).toBe(false);
+    expect(toErrorPayload(anthropicDenied).details).toMatchObject({
+      upstream_retryable: false,
+      retryAfterMs: 44_083_000,
+    });
+
+    const anthropicQuota = convertAnthropicError(
+      AnthropicAPIError.generate(
+        429,
+        { type: 'error', error: { type: 'usage_limit_reached', message: 'usage limit reached' } },
+        '429 usage limit reached',
+        new Headers({ 'retry-after': '44083' }),
+      ),
+    );
+    expect(anthropicQuota).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(anthropicQuota)).toBe(false);
+
+    const openaiDenied = convertOpenAIError(
+      new OpenAIAPIError(
+        429,
+        { type: 'rate_limit_error', message: 'slow down' },
+        '429 slow down',
+        new Headers({ 'x-should-retry': 'false', 'retry-after-ms': '1500' }),
+      ),
+    );
+    expect(openaiDenied).toBeInstanceOf(APIProviderRateLimitError);
+    expect((openaiDenied as APIProviderRateLimitError).retryAfterMs).toBe(1_500);
+    expect(isRetryableGenerateError(openaiDenied)).toBe(false);
+
+    const openaiQuota = convertOpenAIError(
+      new OpenAIAPIError(
+        429,
+        { code: 'usage_limit_reached', message: 'usage limit reached' },
+        '429 usage limit reached',
+        new Headers(),
+      ),
+    );
+    expect(openaiQuota).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(openaiQuota)).toBe(false);
+
+    const googleSource = Object.assign(
+      new GoogleApiError({
+        message: JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'limit reached' } }),
+        status: 429,
+      }),
+      { headers: new Headers({ 'x-should-retry': 'false', 'retry-after': '44083', 'x-trace-id': 'trace-google-429' }) },
+    );
+    const googleConverted = convertGoogleGenAIError(googleSource);
+    expect(googleConverted).toBeInstanceOf(APIProviderRateLimitError);
+    expect((googleConverted as APIProviderRateLimitError).retryAfterMs).toBe(44_083_000);
+    expect((googleConverted as APIProviderRateLimitError).traceId).toBe('trace-google-429');
+    expect(isRetryableGenerateError(googleConverted)).toBe(false);
+    expect(toErrorPayload(googleConverted).details).toMatchObject({
+      upstream_retryable: false,
+      retryAfterMs: 44_083_000,
+      traceId: 'trace-google-429',
+    });
+
+    const googleShortInfoLongHeader = Object.assign(
+      new GoogleApiError({
+        message: JSON.stringify({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            message: 'limit reached',
+            details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '5s' }],
+          },
+        }),
+        status: 429,
+      }),
+      { headers: new Headers({ 'retry-after': '44083' }) },
+    );
+    const shortInfoConverted = convertGoogleGenAIError(googleShortInfoLongHeader);
+    expect(shortInfoConverted).toBeInstanceOf(APIProviderRateLimitError);
+    expect((shortInfoConverted as APIProviderRateLimitError).retryAfterMs).toBe(44_083_000);
+
+    const googleLongInfoShortHeader = Object.assign(
+      new GoogleApiError({
+        message: JSON.stringify({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            message: 'limit reached',
+            details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '90s' }],
+          },
+        }),
+        status: 429,
+      }),
+      { headers: new Headers({ 'retry-after': '5' }) },
+    );
+    const longInfoConverted = convertGoogleGenAIError(googleLongInfoShortHeader);
+    expect(longInfoConverted).toBeInstanceOf(APIProviderRateLimitError);
+    expect((longInfoConverted as APIProviderRateLimitError).retryAfterMs).toBe(90_000);
+  });
+
+  it('propagates embedded x-should-retry: false and structured usage_limit_reached on OpenAI Responses stream events', async () => {
+    const deniedStream = new OpenAIResponsesStreamedMessage(
+      streamEvents([
+        {
+          type: 'error',
+          code: 'rate_limit_exceeded',
+          message: 'Rate limit reached',
+          param: null,
+          headers: { 'X-Should-Retry': 'false', 'Retry-After': '44083' },
+        },
+      ]),
+      true,
+    );
+    const deniedCaught = await consume(deniedStream).then(() => undefined, (error: unknown) => error);
+    expect(deniedCaught).toBeInstanceOf(APIProviderRateLimitError);
+    expect((deniedCaught as APIProviderRateLimitError).retryAfterMs).toBe(44_083_000);
+    expect(isRetryableGenerateError(deniedCaught)).toBe(false);
+
+    const quotaStream = new OpenAIResponsesStreamedMessage(
+      streamEvents([
+        {
+          type: 'error',
+          code: 'usage_limit_reached',
+          message: 'Weekly usage limit reached',
+          param: null,
+        },
+      ]),
+      true,
+    );
+    const quotaCaught = await consume(quotaStream).then(() => undefined, (error: unknown) => error);
+    expect(quotaCaught).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(quotaCaught)).toBe(false);
+  });
+});

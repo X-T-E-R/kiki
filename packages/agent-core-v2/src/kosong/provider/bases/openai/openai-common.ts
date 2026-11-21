@@ -10,6 +10,7 @@ import {
   APIConnectionError,
   ambiguousRequestDelivery,
   isAmbiguousRequestDelivery,
+  isStructuredQuotaExhaustedCode,
   APIProviderQuotaExhaustedError,
   APITimeoutError,
   ChatProviderError,
@@ -109,7 +110,7 @@ export function toolToOpenAI(tool: Tool): OpenAIToolParam {
 }
 
 export function isOpenAIInsufficientQuotaCode(code: string | null | undefined): boolean {
-  return code === 'insufficient_quota';
+  return isStructuredQuotaExhaustedCode(code);
 }
 
 function isOpenAIInsufficientQuotaError(error: OpenAIAPIError): boolean {
@@ -130,7 +131,7 @@ export function convertOpenAIError(
   }
   const hooked = convertErrorHook?.(error);
   if (hooked !== undefined) {
-    return error instanceof OpenAIAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error) : hooked;
+    return error instanceof OpenAIAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error, error.headers) : hooked;
   }
   if (error instanceof OpenAITimeoutError) {
     return new APITimeoutError(error.message);
@@ -143,7 +144,7 @@ export function convertOpenAIError(
     const retryAfterMs = parseRetryAfterMs(error.headers);
     const traceId = parseTraceId(error.headers);
     if (isOpenAIInsufficientQuotaError(error)) {
-      return noteExplicitUpstreamRetryDenial(new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId), error.error);
+      return noteExplicitUpstreamRetryDenial(new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId), error.error, error.headers);
     }
     return noteExplicitUpstreamRetryDenial(markProviderHttpError(normalizeAPIStatusError(
       error.status,
@@ -152,7 +153,7 @@ export function convertOpenAIError(
       retryAfterMs,
       traceId,
       error.error,
-    ), error.code), error.error);
+    ), error.code), error.error, error.headers);
   }
   if (
     error instanceof OpenAIAPIError &&
@@ -163,9 +164,9 @@ export function convertOpenAIError(
   }
   if (error instanceof OpenAIAPIError && error.error !== undefined) {
     const displayMessage = `Error: ${error.message}`;
-    return markProviderEventError(new ChatProviderError(displayMessage, undefined, {
+    return noteExplicitUpstreamRetryDenial(markProviderEventError(new ChatProviderError(displayMessage, undefined, {
       details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers), displayMessage),
-    }), error.code);
+    }), error.code), error.error, error.headers);
   }
   if (error instanceof OpenAIError) {
     return new ChatProviderError(`Error: ${error.message}`);

@@ -5,7 +5,7 @@ import { abortable, linkAbortSignal, userCancellationReason } from '#/_base/util
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
-import { Error2, ErrorCodes, fromErrorPayload, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
+import { Error2, ErrorCodes, attachErrorDetails, fromErrorPayload, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
 import { IAgentPromptService, type PromptInput } from '#/agent/prompt/prompt';
 import { IAgentLoopService, TurnPersistenceError, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { IAgentUsageService } from '#/agent/usage/usage';
@@ -259,7 +259,18 @@ function stringifyRunError(value: unknown): string {
 function providerRateLimitErrorFromPayload(error: KimiErrorPayload): APIProviderRateLimitError {
   const requestId =
     typeof error.details?.['requestId'] === 'string' ? error.details['requestId'] : null;
-  return new APIProviderRateLimitError(error.message, requestId);
+  const rawRetryAfterMs = error.details?.['retryAfterMs'];
+  const retryAfterMs =
+    typeof rawRetryAfterMs === 'number' && Number.isFinite(rawRetryAfterMs) && rawRetryAfterMs > 0
+      ? rawRetryAfterMs
+      : null;
+  const traceId =
+    typeof error.details?.['traceId'] === 'string' ? error.details['traceId'] : null;
+  const reconstructed = new APIProviderRateLimitError(error.message, requestId, retryAfterMs, traceId);
+  if (error.details !== undefined) {
+    attachErrorDetails(reconstructed, error.details);
+  }
+  return reconstructed;
 }
 
 export function latestAssistantText(messages: readonly ContextMessage[]): string {

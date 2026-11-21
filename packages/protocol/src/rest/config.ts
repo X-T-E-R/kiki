@@ -110,12 +110,14 @@ export const retryPolicySchema = /* @__PURE__ */ z.object({
   providers: z.array(z.string().min(1)).min(1).optional(),
   max_attempts: z.number().int().min(1).optional(),
   backoff: z.number().int().min(0).optional(),
+  max_retry_after_ms: z.number().int().min(1).max(2_147_483_647).optional(),
   retry: z.boolean().optional(),
 }).strict();
 export type RetryPolicy = z.infer<typeof retryPolicySchema>;
 
 export const retryConfigSchema = /* @__PURE__ */ z.object({
   max_attempts: z.number().int().min(1).optional(),
+  max_retry_after_ms: z.number().int().min(1).max(2_147_483_647).optional(),
   retry_partial_responses: z.boolean().optional(),
   policies: z.array(retryPolicySchema).optional(),
 }).strict();
@@ -127,10 +129,12 @@ export const retryPolicyResponseSchema = /* @__PURE__ */ z.object({
   providers: z.array(z.string().min(1)).min(1).optional(),
   maxAttempts: z.number().int().min(1).optional(),
   backoff: z.number().int().min(0).optional(),
+  maxRetryAfterMs: z.number().int().min(1).max(2_147_483_647).optional(),
   retry: z.boolean(),
 }).strict();
 export const retryConfigResponseSchema = /* @__PURE__ */ z.object({
   maxAttempts: z.number().int().min(1).optional(),
+  maxRetryAfterMs: z.number().int().min(1).max(2_147_483_647).optional(),
   retryPartialResponses: z.boolean().optional(),
   policies: z.array(retryPolicyResponseSchema).optional(),
 }).strict();

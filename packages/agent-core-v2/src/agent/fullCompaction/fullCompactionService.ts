@@ -18,7 +18,9 @@ import { budgetFileReads, collectFileReads, fileReadHandoffMessages, fileReadLed
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
-import { retryBackoffDelay, sleepForRetry } from '#/_base/utils/retry';
+import { MAX_RETRY_AFTER_MS, retryBackoffDelay, sleepForRetry } from '#/_base/utils/retry';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { findRetryPolicy, type RetryBindingIdentity } from '#/agent/stepRetry/retryPolicy';
 import { IAgentLoopService, type LoopErrorContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
@@ -981,17 +983,44 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         return this.postProcessSummary(attempt.summary, relayInput);
       } catch (error) {
         if (isAbortError(error)) throw error;
-        if (retryCount + 1 >= maxAttempts || (!(error instanceof CompactionTruncatedError) && !isRetryableCompactionError(error))) {
+        const maxRetryAfterMs = this.effectiveMaxRetryAfterMs(error);
+        if (retryCount + 1 >= maxAttempts || (!(error instanceof CompactionTruncatedError) && !isRetryableCompactionError(error, maxRetryAfterMs))) {
           this.telemetry.track2('compaction_failed', { source: 'manual', tokens_before: tokensBefore,
             duration_ms: Date.now() - startedAt, round: 1, retry_count: retryCount,
             thinking_effort: model.thinkingLevel, error_type: error instanceof Error ? error.name : 'Unknown', strategy: 'summarize' });
           throw error;
         }
-        const status = findAPIStatusError(error);
-        await sleepForRetry(status?.retryAfterMs === undefined || status.retryAfterMs === null ? retryBackoffDelay(retryCount) : Math.min(status.retryAfterMs, 60_000), signal);
+        await sleepForRetry(this.compactionRetryDelayMs(error, retryCount, maxRetryAfterMs), signal);
         retryCount += 1;
       }
     }
+  }
+
+  private retryBinding(): RetryBindingIdentity | undefined {
+    const modelAlias = this.profile.data().modelAlias;
+    if (modelAlias === undefined) return undefined;
+    try {
+      const model = this.profile.getRuntimeModel(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
+      return { model: model.id, provider: model.providerName };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private effectiveMaxRetryAfterMs(error: unknown): number {
+    const retryConfig = this.appConfig.get<RetryConfig | undefined>(RETRY_SECTION);
+    const raw = unwrapErrorCause(error);
+    const policy = findRetryPolicy(retryConfig?.policies, raw, () => this.retryBinding());
+    return policy?.maxRetryAfterMs ?? retryConfig?.maxRetryAfterMs ?? MAX_RETRY_AFTER_MS;
+  }
+
+  private compactionRetryDelayMs(error: unknown, retryCount: number, maxRetryAfterMs: number): number {
+    const status = findAPIStatusError(error);
+    if (status?.retryAfterMs === null || status?.retryAfterMs === undefined) {
+      return retryBackoffDelay(retryCount);
+    }
+    const cap = status.statusCode === 429 ? maxRetryAfterMs : MAX_RETRY_AFTER_MS;
+    return Math.min(status.retryAfterMs, cap);
   }
 
   private async compactionRound(
@@ -1210,17 +1239,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
             retryCount = 0;
             continue;
           }
-          if (!(error instanceof CompactionTruncatedError) && !isRetryableCompactionError(error)) {
+          const maxRetryAfterMs = this.effectiveMaxRetryAfterMs(error);
+          if (!(error instanceof CompactionTruncatedError) && !isRetryableCompactionError(error, maxRetryAfterMs)) {
             throw error;
           }
           if (requestAttempts >= maxAttempts) {
             throw error;
           }
-          const status = findAPIStatusError(error);
-          const delay = status?.retryAfterMs === null || status?.retryAfterMs === undefined
-            ? retryBackoffDelay(retryCount)
-            : Math.min(status.retryAfterMs, 60_000);
-          await sleepForRetry(delay, signal);
+          await sleepForRetry(this.compactionRetryDelayMs(error, retryCount, maxRetryAfterMs), signal);
           retryCount += 1;
         }
       }
@@ -1228,7 +1254,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         if (error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
         const filteredFailure = compactionFailureKind(error) === 'filtered';
         const overflowFailure = this.shouldRecoverFromContextOverflow(error);
-        const rescueableFailure = overflowFailure || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError || filteredFailure;
+        const rescueableFailure = overflowFailure || isRetryableCompactionError(error, this.effectiveMaxRetryAfterMs(error)) || error instanceof CompactionTruncatedError || filteredFailure;
         const allowAutoEmergencyRelay = data.source === 'auto' && requested !== 'summarize' && rescueableFailure;
         if ((choice.strategy === 'summarize' && !allowAutoEmergencyRelay) || customInstruction || !rescueableFailure) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
