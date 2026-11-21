@@ -38,9 +38,16 @@ export interface AgentTaskStartHookContext {
   readonly agentName: string;
   readonly prompt: string;
   readonly signal: AbortSignal;
+  readonly agentId?: string;
+  readonly parentAgentId?: string;
+  readonly agentRole?: 'root' | 'subagent';
+  readonly profileName?: string;
+  readonly routeId?: string;
+  readonly appendReminder?: (content: string, origin: PromptOrigin) => void;
 }
 
 export interface AgentTaskStopHookContext {
+  readonly agentId?: string;
   readonly agentName: string;
   readonly response: string;
 }

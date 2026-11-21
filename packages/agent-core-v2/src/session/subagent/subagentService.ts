@@ -1,5 +1,5 @@
 import { Service } from '#/_base/di/service';
-import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
 import { AUTONOMOUS_RECEIPT_POLICY_LABEL, observeAutonomousReceipts, type ReceiptDelivery } from './autonomousReceipt';
@@ -26,6 +26,8 @@ import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/suba
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -279,7 +281,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     return complete;
   }
 
-  run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle> {
+  async run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle> {
     this.cancelRelease(agentId);
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) {
@@ -287,28 +289,58 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         details: { agentId },
       });
     }
-    return handle.accessor
-      .get(IAgentExecutionService)
-      .run(request, {
-        parentReceiptManaged: true,
-        summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
-        signal: opts.signal,
-        onReady: opts.onReady,
-        onQueued: opts.onQueued,
-        onBeforeExternalRun: opts.onBeforeExternalRun,
-        onExternalRunNotSent: opts.onExternalRunNotSent,
-        capacityReservation: opts.capacityReservation,
-      })
-      .then((run) => {
-        const settle = (): void => {
-          if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
-        };
-        void run.completion.then(settle, settle);
-        return run;
-      }, (error: unknown) => {
+    try {
+      if (agentId !== MAIN_AGENT_ID && request.kind === 'prompt') {
+        const scope = optionalFromHandle(handle, IAgentScopeContext);
+        const profileData = optionalFromHandle(handle, IAgentProfileService)?.data();
+        const targetName = profileData?.routeId ?? profileData?.profileName ?? agentId;
+        const profileName = profileData?.profileName ?? targetName;
+        await this.hooks.onWillStartAgentTask.run({
+          agentName: targetName,
+          prompt: request.prompt,
+          signal: opts.signal,
+          agentId: scope?.agentId ?? agentId,
+          parentAgentId: scope?.parentAgentId,
+          agentRole: scope === undefined ? 'subagent' : scope.parentAgentId === undefined ? 'root' : 'subagent',
+          profileName,
+          routeId: profileData?.routeId,
+          appendReminder: (content, origin) => {
+            const reminder = optionalFromHandle(handle, IAgentSystemReminderService);
+            if (reminder !== undefined) {
+              reminder.appendSystemReminder(content, origin);
+              return;
+            }
+            optionalFromHandle(handle, IAgentContextMemoryService)?.appendObservable({
+              role: 'user',
+              content: [{ type: 'text', text: wrapSystemReminder(content) }],
+              toolCalls: [],
+              origin,
+            });
+          },
+        });
+        opts.signal.throwIfAborted();
+      }
+      const run = await handle.accessor
+        .get(IAgentExecutionService)
+        .run(request, {
+          parentReceiptManaged: true,
+          summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
+          signal: opts.signal,
+          onReady: opts.onReady,
+          onQueued: opts.onQueued,
+          onBeforeExternalRun: opts.onBeforeExternalRun,
+          onExternalRunNotSent: opts.onExternalRunNotSent,
+          capacityReservation: opts.capacityReservation,
+        });
+      const settle = (): void => {
         if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
-        return Promise.reject(error);
-      });
+      };
+      void run.completion.then(settle, settle);
+      return run;
+    } catch (error) {
+      if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
+      throw error;
+    }
   }
 
   retain(agentId: string): import('#/_base/di/lifecycle').ISyncDisposable {
@@ -426,6 +458,14 @@ export function isReleasable(handle: IAgentScopeHandle): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function optionalFromHandle<T>(handle: IAgentScopeHandle, id: ServiceIdentifier<T>): T | undefined {
+  try {
+    return handle.accessor.get(id);
+  } catch {
+    return undefined;
   }
 }
 

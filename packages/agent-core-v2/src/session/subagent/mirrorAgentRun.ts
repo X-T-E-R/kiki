@@ -221,25 +221,10 @@ export async function mirrorAgentRun(
       new SubagentStarted({ subagentId: run.agentId, taskId: await options.resolveTaskId?.() }),
     );
   }
-  let hookFailed = false;
   try {
-    if (options.prompt !== undefined) {
-      try {
-        await subagents?.hooks.onWillStartAgentTask.run({
-          agentName: options.profileName,
-          prompt: options.prompt,
-          signal: options.signal,
-        });
-      } catch (error) {
-        hookFailed = true;
-        options.cancel?.(error);
-        void run.completion.catch(() => {});
-        throw error;
-      }
-      if (options.signal.aborted) {
-        void run.completion.catch(() => {});
-        throw options.signal.reason ?? userCancellationReason();
-      }
+    if (options.prompt !== undefined && options.signal.aborted) {
+      void run.completion.catch(() => {});
+      throw options.signal.reason ?? userCancellationReason();
     }
     const completed = await run.completion;
     const summary = await subagents?.adviseReturn?.({
@@ -271,13 +256,14 @@ export async function mirrorAgentRun(
       }),
     );
     subagents?.notifyAgentTaskStopped({
+      agentId: run.agentId,
       agentName: options.profileName,
       response: result.summary,
     });
     return result;
   } catch (error) {
     if (requester.accessor.get(ISessionExecutionControl).isParked(run.agentId)) throw error;
-    const cancelled = isAbortError(error) || (!hookFailed && options.signal.aborted && error === options.signal.reason);
+    const cancelled = isAbortError(error) || (options.signal.aborted && error === options.signal.reason);
     const taskId = await options.resolveTaskId?.();
     if ((options.deferStarted !== true || taskId !== undefined) && (cancelled || !shouldSuppressFailure(options, error))) {
       const reason = cancelled ? 'terminated' : errorMessage(error);

@@ -1,8 +1,12 @@
 import path from 'pathe';
+import { z } from 'zod';
 
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '@kiki/agent-profiles/frontmatter';
 import { sliceUtf16 } from '#/_base/text/utf16';
+import { HookDefSchema, type HookDefConfig } from '#/features/externalHooks/configSection';
+import { parseClaudeHookGroups } from '#/features/externalHooks/internal/claudeHooks';
+import type { HookDef } from '#/features/externalHooks/internal/types';
 
 import { SkillErrors } from './errors';
 import type { SkillDefinition, SkillMetadata, SkillSource } from './types';
@@ -106,18 +110,139 @@ export function parseSkillText(options: ParseSkillTextOptions): SkillDefinition 
   }
 
   const skillPath = path.resolve(options.skillMdPath);
+  const skillDir = path.dirname(skillPath);
+  const hooks = parseSkillHooks(frontmatter['hooks'], skillDir, options.skillMdPath);
   const content = parsed.body.trim();
   return {
     name: name ?? options.skillDirName,
     description: description ?? descriptionFromBody(content),
     path: skillPath,
-    dir: path.dirname(skillPath),
+    dir: skillDir,
     content,
     metadata,
     source: options.source,
     mermaid: parseMermaidFlowchart(content),
     d2: parseD2Flowchart(content),
+    hooks,
   };
+}
+
+const SkillHooksSchema = z.array(HookDefSchema);
+const SAFE_UNQUOTED_PATH = /^[A-Za-z0-9_./:@+=,-]+$/;
+
+export function resolveSkillHookCommand(command: string, skillDir: string): string {
+  if (!command.includes('./')) return command;
+  const dirPrefix = `${skillDir.replace(/\/+$/, '')}/`;
+  const isWindows = process.platform === 'win32';
+  let out = '';
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i]!;
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      let j = i + 1;
+      while (j < command.length) {
+        if (quote === '"' && command[j] === '\\' && j + 1 < command.length) {
+          j += 2;
+          continue;
+        }
+        if (command[j] === quote) break;
+        j += 1;
+      }
+      if (j < command.length) {
+        const inner = command.slice(i + 1, j);
+        if (inner.startsWith('./')) {
+          const rest = inner.slice(2);
+          const prefix = quote === '"' ? escapeForDoubleQuotes(dirPrefix, isWindows) : escapeForSingleQuotes(dirPrefix);
+          out += `${quote}${prefix}${rest}${quote}`;
+        } else {
+          out += command.slice(i, j + 1);
+        }
+        i = j + 1;
+        continue;
+      }
+    }
+    if (ch === '.' && command[i + 1] === '/' && isTokenBoundary(i === 0 ? undefined : command[i - 1])) {
+      let j = i;
+      let token = '';
+      while (j < command.length) {
+        if (!isWindows && command[j] === '\\' && j + 1 < command.length) {
+          token += command[j + 1]!;
+          j += 2;
+          continue;
+        }
+        if (isTokenDelimiter(command[j]!)) break;
+        token += command[j]!;
+        j += 1;
+      }
+      const resolved = path.resolve(skillDir, token);
+      out += quoteShellPath(resolved, isWindows);
+      i = j;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+function parseSkillHooks(raw: unknown, skillDir: string, skillMdPath: string): readonly HookDef[] | undefined {
+  if (raw === undefined) return undefined;
+  let defs: readonly HookDefConfig[];
+  if (Array.isArray(raw)) {
+    const parsed = SkillHooksSchema.safeParse(raw);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const detail = issue === undefined ? 'invalid format' : `${issue.path.join('.')}: ${issue.message}`;
+      throw new SkillParseError(`Invalid frontmatter field "hooks" in ${skillMdPath}: ${detail}`, parsed.error);
+    }
+    defs = parsed.data;
+  } else if (isRecord(raw)) {
+    const parsed = parseClaudeHookGroups(raw);
+    if (parsed.unsupported.length > 0) {
+      throw new SkillParseError(
+        `Invalid frontmatter field "hooks" in ${skillMdPath}: unsupported entries (${parsed.unsupported.join(', ')})`,
+      );
+    }
+    defs = parsed.hooks;
+  } else {
+    throw new SkillParseError(
+      `Invalid frontmatter field "hooks" in ${skillMdPath}: expected an array or event mapping`,
+    );
+  }
+  if (defs.length === 0) return undefined;
+  return defs.map((hook) => ({
+    ...hook,
+    command: resolveSkillHookCommand(hook.command, skillDir),
+    env: { KIKI_SKILL_DIR: skillDir, CLAUDE_SKILL_DIR: skillDir },
+  }));
+}
+
+function quoteShellPath(resolved: string, isWindows: boolean): string {
+  if (SAFE_UNQUOTED_PATH.test(resolved)) return resolved;
+  if (isWindows) {
+    return `"${resolved.replaceAll('"', '\\"')}"`;
+  }
+  return `'${resolved.replaceAll("'", "'\\''")}'`;
+}
+
+function escapeForDoubleQuotes(value: string, isWindows: boolean): string {
+  if (isWindows) {
+    return value.replaceAll('"', '\\"');
+  }
+  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$').replaceAll('`', '\\`');
+}
+
+function escapeForSingleQuotes(value: string): string {
+  return value.replaceAll("'", "'\\''");
+}
+
+function isTokenBoundary(ch: string | undefined): boolean {
+  return ch === undefined || /\s|[;|&><(=]/.test(ch);
+}
+
+function isTokenDelimiter(ch: string): boolean {
+  return /\s|[;|&><)'"]/.test(ch);
 }
 
 export function parseMermaidFlowchart(markdown: string): string | undefined {

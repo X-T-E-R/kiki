@@ -40,7 +40,9 @@ const OptionalStringSchema = z.preprocess(
     .optional(),
 );
 const HookSpecificOutputSchema = z.strictObject({
+  hookEventName: z.string().optional(),
   message: OptionalStringSchema,
+  additionalContext: OptionalStringSchema,
   permissionDecision: z.enum(['allow', 'deny']).optional(),
   permissionDecisionReason: z.string().optional(),
   recovery: z.discriminatedUnion('action', [
@@ -53,6 +55,7 @@ const HookSpecificOutputSchema = z.strictObject({
 });
 const HookJsonOutputSchema = z.strictObject({
   message: OptionalStringSchema,
+  additionalContext: OptionalStringSchema,
   hookSpecificOutput: HookSpecificOutputSchema.optional(),
 });
 
@@ -201,10 +204,15 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   const output = HookJsonOutputSchema.safeParse(parsed);
   if (!output.success) return { kind: 'invalid' };
 
-  const { message, hookSpecificOutput } = output.data;
+  const { message, additionalContext, hookSpecificOutput } = output.data;
+  const resolvedMessage =
+    hookSpecificOutput?.additionalContext ??
+    additionalContext ??
+    message ??
+    hookSpecificOutput?.message;
   const result = {
     kind: 'structured' as const,
-    message: message ?? hookSpecificOutput?.message,
+    message: resolvedMessage,
     recovery: hookSpecificOutput?.recovery,
   };
   if (hookSpecificOutput?.permissionDecision !== 'deny') {
@@ -220,7 +228,13 @@ function structuredOutput(stdout: string): StructuredOutputResult {
 function containsHookProtocolField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsHookProtocolField);
   if (!isPlainObject(value)) return false;
-  if (Object.hasOwn(value, 'message') || Object.hasOwn(value, 'hookSpecificOutput')) return true;
+  if (
+    Object.hasOwn(value, 'message') ||
+    Object.hasOwn(value, 'additionalContext') ||
+    Object.hasOwn(value, 'hookSpecificOutput')
+  ) {
+    return true;
+  }
   return Object.values(value).some(containsHookProtocolField);
 }
 
@@ -230,7 +244,7 @@ function attemptsHookProtocol(text: string): boolean {
   const strings = scanJsonLikeStrings(text);
   if (strings.invalid) return true;
   if (strings.values.some(isHookProtocolField)) return true;
-  return /(?:^|[,{]|\s)(?:message|hookSpecificOutput)\s*:/.test(text);
+  return /(?:^|[,{]|\s)(?:message|additionalContext|hookSpecificOutput)\s*:/.test(text);
 }
 
 function scanJsonLikeStrings(text: string): {
@@ -312,7 +326,7 @@ function decodeSimpleEscape(value: string, quote: '"' | "'"): string | undefined
 }
 
 function isHookProtocolField(value: string): boolean {
-  return value === 'message' || value === 'hookSpecificOutput';
+  return value === 'message' || value === 'additionalContext' || value === 'hookSpecificOutput';
 }
 
 function allowResult(input: {

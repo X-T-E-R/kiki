@@ -1,3 +1,5 @@
+import type { HookDef } from '#/features/externalHooks/internal/types';
+
 export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
 export interface SkillMetadata {
@@ -26,6 +28,7 @@ export interface SkillDefinition {
   readonly plugin?: SkillPluginContext;
   readonly mermaid?: string | undefined;
   readonly d2?: string;
+  readonly hooks?: readonly HookDef[];
   readonly productSpecific?: boolean;
   readonly experimentalFlag?: string;
 }

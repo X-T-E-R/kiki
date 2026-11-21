@@ -13,7 +13,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
+import { emitAgentRunSpawned, mirrorAgentRun, SubagentFailed } from '#/session/subagent/mirrorAgentRun';
 import { resolveDefaultSubagentProfileName } from '#/session/subagent/configSection';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 
@@ -82,11 +82,21 @@ export class SessionInitService implements ISessionInitService {
         model: own.modelAlias,
       });
 
-      const run = await this.subagents.run(
-        child.id,
-        { kind: 'prompt', prompt: DEFAULT_INIT_PROMPT },
-        { signal: controller.signal },
-      );
+      let run;
+      try {
+        run = await this.subagents.run(
+          child.id,
+          { kind: 'prompt', prompt: DEFAULT_INIT_PROMPT },
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        const cancelled = isAbortError(error) || isUserCancellation(error);
+        const reason = cancelled ? 'terminated' : (error instanceof Error ? error.message : String(error));
+        await main.accessor.get(IEventDispatcher).dispatch(
+          new SubagentFailed({ subagentId: child.id, error: reason }),
+        );
+        throw error;
+      }
       await mirrorAgentRun(main, run, {
         profileName: initProfileName,
         prompt: DEFAULT_INIT_PROMPT,

@@ -231,9 +231,9 @@ describe('FullCompaction', () => {
   it.each(['relay', 'summarize'] as const)('keeps a committed %s result when cancelled during system prompt refresh', async (strategy) => {
     const refreshing = deferred<void>();
     const release = deferred<void>();
-    const postCompact = vi.fn<IExternalHooksRunnerService['fireAndForgetTrigger']>(async () => []);
+    const postCompact = vi.fn<IExternalHooksRunnerService['trigger']>(async () => []);
     const ctx = testAgent({ hookEngine: {
-      trigger: async () => [], triggerBlock: async () => undefined, fireAndForgetTrigger: postCompact,
+      trigger: postCompact, triggerBlock: async () => undefined, fireAndForgetTrigger: async () => [],
     } });
     vi.spyOn(ctx.get(IAgentLifecycleService), 'get').mockImplementation((agentId) => agentId === 'main' ? {
       id: 'main', kind: LifecycleScope.Agent, accessor: { get: (id) => ctx.get(id) }, dispose: () => {},

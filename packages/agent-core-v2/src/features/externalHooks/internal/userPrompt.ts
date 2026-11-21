@@ -10,22 +10,29 @@ export interface RenderedHookResult {
   readonly text: string;
 }
 
-export function renderUserPromptHookResult(
+export function renderHookContextResult(
+  event: string,
   results: readonly HookResult[] | undefined,
 ): RenderedHookResult | undefined {
   const messages =
     results
       ?.filter((result) => result.action !== 'block')
-      ?.map(userPromptHookMessage)
+      ?.map(extractHookContextMessage)
       .filter(isNonEmptyString) ??
     [];
   if (messages.length === 0) return undefined;
   const displayMessage = messages.join('\n\n');
   return {
-    event: 'UserPromptSubmit',
+    event,
     message: displayMessage,
-    text: messages.map((message) => renderHookResult('UserPromptSubmit', message)).join('\n'),
+    text: messages.map((message) => renderHookResult(event, message)).join('\n'),
   };
+}
+
+export function renderUserPromptHookResult(
+  results: readonly HookResult[] | undefined,
+): RenderedHookResult | undefined {
+  return renderHookContextResult('UserPromptSubmit', results);
 }
 
 export function renderUserPromptHookBlockResult(
@@ -59,12 +66,13 @@ function userPromptBlockFallback(block: HookResult): string {
   return 'Blocked by UserPromptSubmit hook';
 }
 
-function userPromptHookMessage(result: HookResult): string | undefined {
+function extractHookContextMessage(result: HookResult): string | undefined {
   if (result.timedOut === true || (result.exitCode !== undefined && result.exitCode !== 0)) {
     return undefined;
   }
   const message = result.message?.trim();
   if (message !== undefined && message.length > 0) return message;
+  if (result.structuredOutput === true) return undefined;
   const stdout = result.stdout?.trim();
   return stdout === undefined || stdout.length === 0 ? undefined : stdout;
 }

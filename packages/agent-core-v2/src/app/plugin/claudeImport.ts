@@ -1,7 +1,8 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { HookDefSchema, type HookDefConfig } from '#/features/externalHooks/configSection';
+import { type HookDefConfig } from '#/features/externalHooks/configSection';
+import { parseClaudeHookGroups } from '#/features/externalHooks/internal/claudeHooks';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 import type { PluginCommandEntry, PluginDiagnostic, PluginManifest } from './types';
 
@@ -122,28 +123,14 @@ export async function importClaudePlugin(root: string, manifestPath: string, sig
     const mapping = typeof hooksRaw === 'object' && hooksRaw !== null && !Array.isArray(hooksRaw)
       ? (hooksRaw as Record<string, unknown>)['hooks'] : undefined;
     if (typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)) unsupported.push('hooks/hooks.json');
-    else for (const [event, groups] of Object.entries(mapping)) {
-      checkAborted(signal);
-      if (!HOOK_EVENTS.has(event) || !Array.isArray(groups)) { unsupported.push(`hooks:${event}`); continue; }
-      for (const [index, group] of groups.entries()) {
-        checkAborted(signal);
-        if (typeof group !== 'object' || group === null || !Array.isArray((group as Record<string, unknown>)['hooks'])) {
-          unsupported.push(`hooks:${event}[${index}]`); continue;
-        }
-        const record = group as { matcher?: unknown; hooks: unknown[] };
-        for (const hook of record.hooks) {
-          checkAborted(signal);
-          if (typeof hook !== 'object' || hook === null) { unsupported.push(`hooks:${event}[${index}]`); continue; }
-          const rawHook = hook as Record<string, unknown>;
-          const value = HookDefSchema.safeParse({
-            event, matcher: record.matcher, timeout: typeof rawHook['timeout'] === 'number' ? rawHook['timeout'] : undefined,
-            command: typeof rawHook['command'] === 'string'
-              ? rawHook['command'].replaceAll('${CLAUDE_PLUGIN_ROOT}', '${KIKI_PLUGIN_ROOT}') : undefined,
-          });
-          if (rawHook['type'] !== 'command' || !value.success) unsupported.push(`hooks:${event}[${index}]:${String(rawHook['type'])}`);
-          else hooks.push(value.data);
-        }
-      }
+    else {
+      const parsed = parseClaudeHookGroups(mapping, {
+        allowedEvents: HOOK_EVENTS,
+        transformCommand: (command) => command.replaceAll('${CLAUDE_PLUGIN_ROOT}', '${KIKI_PLUGIN_ROOT}'),
+        checkAborted: () => { checkAborted(signal); },
+      });
+      hooks.push(...parsed.hooks);
+      unsupported.push(...parsed.unsupported);
     }
   }
   checkAborted(signal);
