@@ -62,6 +62,8 @@ void test('desktop release freezes one catalog and keeps native to desktop order
   assert.match(native, /kiki-release-target-\$\{\{ github\.run_id \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ github\.run_attempt \}\}/);
   assert.match(native, /if: inputs\.prepare-artifact-id == ''[\s\S]*name: \$\{\{ inputs\.upload-artifact-prefix \}\}-\$\{\{ matrix\.target \}\}/);
   assert.match(native, /if: inputs\.build-desktop && matrix\.desktop-name != ''/);
+  assert.match(native, /desktop-name: macos-x64\r?\n\s+bundles: app,dmg/);
+  assert.match(native, /desktop-name: macos-arm64\r?\n\s+bundles: app,dmg/);
   assert.doesNotMatch(native, /vars\.KIKI_UPDATER_PUBLIC_KEY/);
   assert.match(native, /verify-prepare[\s\S]*?--github-env "\$GITHUB_ENV"/);
   assert.match(native, /--updater-public-key "\$\{KIKI_EMBEDDED_UPDATER_PUBLIC_KEY:-\}"/);

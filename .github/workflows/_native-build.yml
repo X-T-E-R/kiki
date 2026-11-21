@@ -90,13 +90,13 @@ jobs:
             rust-target: x86_64-apple-darwin
             extension: ''
             desktop-name: macos-x64
-            bundles: dmg
+            bundles: app,dmg
           - os: macos-15
             target: darwin-arm64
             rust-target: aarch64-apple-darwin
             extension: ''
             desktop-name: macos-arm64
-            bundles: dmg
+            bundles: app,dmg
           - os: windows-2025-vs2026
             target: win32-x64
             rust-target: x86_64-pc-windows-msvc
