@@ -3641,17 +3641,19 @@ function SubagentEventLine({ block, onOpen }: { block: SubagentBlock; onOpen?: (
       data-message-subagent-row={block.subagentId}
       onClick={onOpen}
       disabled={onOpen === undefined}
-      title={detail ?? block.name}
+      title={detail !== undefined ? `${block.name} — ${detail}` : block.name}
       className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md px-1 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
     >
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
       <Icon name="agent" size={12} className="shrink-0 text-ink-faint" />
-      <span className="shrink-0 font-medium text-ink">{block.name}</span>
+      <span
+        className={`min-w-0 truncate font-medium text-ink ${detail !== undefined ? 'max-sm:flex-1 sm:max-w-[16rem] sm:shrink' : 'flex-1'}`}
+      >
+        {block.name}
+      </span>
       {detail !== undefined ? (
-        <span className={`min-w-0 flex-1 truncate ${failed ? 'text-danger' : 'text-ink-faint'}`}>{detail}</span>
-      ) : (
-        <span className="flex-1" />
-      )}
+        <span className={`min-w-0 flex-1 truncate max-sm:hidden ${failed ? 'text-danger' : 'text-ink-faint'}`}>{detail}</span>
+      ) : null}
       {statusLabel !== undefined ? (
         <span className={`shrink-0 text-[11.5px] ${failed ? 'font-medium text-danger' : 'text-ink-faint'}`}>{statusLabel}</span>
       ) : null}

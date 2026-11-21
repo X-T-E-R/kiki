@@ -23,7 +23,7 @@ export function activitySteps(summary: ActivitySummary): number {
 
 /** A settled stretch with nothing to count (only internal prose): it draws no line. */
 export function isSilentActivity(summary: ActivitySummary): boolean {
-  if (summary.running) return false;
+  if (summary.running || summary.failed > 0) return false;
   const { reads, commands, subagents, memories, thinking } = summary.counts;
   return activitySteps(summary) === 0 && reads + commands + subagents + memories + thinking === 0;
 }
@@ -80,7 +80,7 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
   const [open, setOpen] = useState(false);
   const full = activityParts(summary, t, false);
   const compact = activityParts(summary, t, true);
-  if (full.length === 0 && !summary.running) return null;
+  if (full.length === 0 && summary.failed === 0 && !summary.running) return null;
   const duration = summary.durationMs !== undefined && summary.durationMs >= 1000 ? time.formatDuration(summary.durationMs) : undefined;
   const failed = summary.failed > 0 ? t('transcript.fold.failed', { count: summary.failed }) : undefined;
   const fullText = full.filter((part) => part.trim() !== '').join(' · ');

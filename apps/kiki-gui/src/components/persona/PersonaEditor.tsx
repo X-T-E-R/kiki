@@ -557,9 +557,9 @@ function PersonaForm({
       ) : null}
 
       {dirty || creating || conflict || saveFailure !== null || saved ? (
-        <div data-persona-save-bar className="sticky bottom-0 z-10 space-y-2 border-t border-hairline bg-paper pt-3 pb-2">
+        <div data-persona-save-bar className="sticky bottom-0 z-10 border-t border-hairline bg-paper pb-3">
           {conflict ? (
-            <div role="alert" data-persona-conflict className="flex flex-wrap items-center gap-2 py-1 text-[12px] text-amber-ink">
+            <div role="alert" data-persona-conflict className="flex flex-wrap items-center gap-2 pt-2.5 text-[12px] text-amber-ink">
               {t('persona.conflict')}
               {/* Reload is the reader saying "take theirs": the form follows the
                   fact that comes back, and the draft goes with it. */}
@@ -578,32 +578,28 @@ function PersonaForm({
             </div>
           ) : null}
           {saveFailure !== null ? (
-            <div data-persona-save-failure>
+            <div data-persona-save-failure className="pt-2.5">
               <FeedbackLine feedback={{ tone: 'error', text: saveFailure }} />
             </div>
           ) : null}
-          <div className="flex items-center gap-2">
-            {!creating ? <SettingHelp>{t('persona.frozenNotice')}</SettingHelp> : null}
-            <div className="min-w-0 flex-1">
-              <SettingsDraftFooter
-                id={`persona-${snapshot?.definition.id ?? 'new'}`}
-                dirty={dirty || creating}
-                persistent={creating}
-                saving={saveMutation.isPending}
-                saved={saved}
-                saveLabel={creating ? t('persona.create') : t('persona.save')}
-                onSave={save}
-                onDiscard={() => {
-                  if (creating) { onClosed(); return; }
-                  touched.current = false;
-                  setDraft(baseline);
-                  setAttempted(false);
-                  setSaveFailure(null);
-                  setConflict(false);
-                }}
-              />
-            </div>
-          </div>
+          <SettingsDraftFooter
+            id={`persona-${snapshot?.definition.id ?? 'new'}`}
+            dirty={dirty || creating}
+            persistent={creating}
+            saving={saveMutation.isPending}
+            saved={saved}
+            saveLabel={creating ? t('persona.create') : t('persona.save')}
+            extra={dirty && !creating ? <SettingHelp>{t('persona.frozenNotice')}</SettingHelp> : undefined}
+            onSave={save}
+            onDiscard={() => {
+              if (creating) { onClosed(); return; }
+              touched.current = false;
+              setDraft(baseline);
+              setAttempted(false);
+              setSaveFailure(null);
+              setConflict(false);
+            }}
+          />
         </div>
       ) : null}
     </form>

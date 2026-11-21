@@ -757,4 +757,35 @@ describe('message view (Bot mode)', () => {
     expect(container.textContent).toContain('devin_cue_mobile');
     expect(container.textContent).toContain('Devin Opus audit devin_cue_mobile');
   });
+
+  it('keeps a standalone failed detached taskref after SendMessage visible as an expandable failure summary row', async () => {
+    const failedTaskRef: Block = {
+      kind: 'notice',
+      id: 'agent-taskref-ref-media-post-send',
+      turnId: 't1',
+      tone: 'danger',
+      text: 'Media generation media-post-1 — Error: Media script exited 1',
+      taskRef: { taskId: 'media-post-1', kind: 'other', state: 'failed' },
+    };
+    const { container } = await render(
+      timeline(
+        [
+          user('u1', '发图给我', 't1'),
+          sendMessage('sm1', 't1', '已经在后台生成封面图了。'),
+          failedTaskRef,
+        ],
+        'message',
+      ),
+    );
+    expect(container.querySelectorAll('[data-message-outcome="danger"]')).toHaveLength(0);
+    const toggles = [...container.querySelectorAll<HTMLButtonElement>('[data-activity-summary-toggle]')];
+    expect(toggles).toHaveLength(1);
+    const toggle = toggles[0]!;
+    expect(toggle.textContent?.trim().startsWith('·')).toBe(false);
+    expect(toggle.textContent).toContain('1 个失败');
+
+    await act(async () => { toggle.click(); });
+    const members = container.querySelector('[data-activity-summary-members]');
+    expect(members?.textContent).toContain('Media generation media-post-1');
+  });
 });
