@@ -154,7 +154,8 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
         };
         setPending(true);
       });
-    }return action();
+    }
+    return action();
   }, [cancel]);
   const navigate = useCallback<GuardedNavigate>((target, options, onCancel) => {
     if (router) {
