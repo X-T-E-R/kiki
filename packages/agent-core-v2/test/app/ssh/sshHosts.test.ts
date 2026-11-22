@@ -550,6 +550,30 @@ describe('SSH config resolver caching and knownHostsPaths fast paths', () => {
     }
   });
 
+  it('never reuses a resolution across requests when the config uses Match exec, but still coalesces concurrent ones', async () => {
+    const { config } = await fixture();
+    await writeFile(config, `Match exec "exit 0"\n  User matched\n${await readFile(config, 'utf8')}`);
+    const resolveCalls: string[][] = [];
+    let release!: () => void;
+    let gate: Promise<void> | undefined = new Promise<void>((resolveGate) => { release = resolveGate; });
+    const execSsh: SshExecFile = async (file, args) => {
+      if (args.includes('-G') && args.includes('dev')) resolveCalls.push([file, ...args]);
+      if (gate !== undefined) await gate;
+      return { stdout: 'hostname 127.0.0.1\nuser tester\nport 2222\nuserknownhostsfile none\n', stderr: '' };
+    };
+    const resolver = new SshConfigResolver({ execSsh });
+
+    const concurrent = Promise.all([resolver.resolve('dev', config), resolver.resolve('dev', config), resolver.resolve('dev', config)]);
+    release();
+    gate = undefined;
+    await concurrent;
+    expect(resolveCalls).toHaveLength(1);
+
+    await resolver.resolve('dev', config);
+    await resolver.resolve('dev', config);
+    expect(resolveCalls).toHaveLength(3);
+  });
+
   it('bounds cache size, does not cache errors, and shares an instance-owned resolver inside SshHostService', async () => {
     const { home, config } = await fixture();
     await writeFile(config, [

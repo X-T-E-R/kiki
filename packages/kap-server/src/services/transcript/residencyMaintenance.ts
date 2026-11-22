@@ -200,9 +200,13 @@ export function failureSetSignature(retained: ReadonlyMap<string, ResidentProofF
 }
 
 export function estimateResidentTurnBytes(turn: TranscriptTurn): number {
+  return estimateResidentValueBytes(turn);
+}
+
+export function estimateResidentValueBytes(root: unknown): number {
   let bytes = 0;
   const seen = new WeakSet<object>();
-  const stack: unknown[] = [turn];
+  const stack: unknown[] = [root];
   while (stack.length > 0) {
     const value = stack.pop();
     if (value === null || value === undefined) {

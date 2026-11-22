@@ -63,6 +63,12 @@ export interface TranscriptResidentReport {
   readonly overBudget: boolean;
 }
 
+export interface DurableTurnReleaseGlobals {
+  readonly tasks?: readonly TranscriptTask[];
+  readonly attachments?: readonly TranscriptAttachment[];
+  readonly prompts?: readonly TranscriptPrompt[];
+}
+
 const mapValuesCache = new WeakMap<object, readonly unknown[]>();
 
 function stableMapValues<K, V>(map: ReadonlyMap<K, V>): readonly V[] {
@@ -349,16 +355,59 @@ export class AgentTranscript {
 
   /** Release only completed entities reproduced from durable history; this is residency, not a logical deletion. */
   releaseDurableHistory(durable: AgentTranscriptSnapshot, limits: TranscriptResidentLimits): readonly string[] {
-    const durableTurns = new Map(durable.items.filter((item): item is TranscriptTurn => item.kind === 'turn').map((turn) => [turn.turnId, turn]));
-    let turns = this.#state.items.filter((item) => item.kind === 'turn').length;
+    const durableTurns = new Map(
+      durable.items.filter((item): item is TranscriptTurn => item.kind === 'turn').map((turn) => [turn.turnId, turn]),
+    );
+    if (durableTurns.size === 0) return [];
+    return this.releaseDurableMatchedTurns(
+      (item) => {
+        const persisted = durableTurns.get(item.turnId);
+        return persisted !== undefined && sameResidentEntity(item, persisted);
+      },
+      limits,
+      durable.tasks,
+      durable.attachments,
+      durable.prompts,
+    );
+  }
+
+  /** Release a batch of proven completed turns whose resident object identity is unchanged; this is residency, not a logical deletion. */
+  releaseDurableTurns(
+    turns: ReadonlySet<TranscriptTurn> | readonly TranscriptTurn[],
+    limits: TranscriptResidentLimits,
+    durableGlobals?: DurableTurnReleaseGlobals,
+  ): readonly string[] {
+    const candidates: ReadonlySet<TranscriptTurn> = turns instanceof Set ? turns : new Set(turns);
+    if (candidates.size === 0) return [];
+    return this.releaseDurableMatchedTurns(
+      (item) => candidates.has(item),
+      limits,
+      durableGlobals?.tasks ?? [],
+      durableGlobals?.attachments ?? [],
+      durableGlobals?.prompts ?? [],
+    );
+  }
+
+  private releaseDurableMatchedTurns(
+    matches: (turn: TranscriptTurn) => boolean,
+    limits: TranscriptResidentLimits,
+    durableTasks: readonly TranscriptTask[],
+    durableAttachments: readonly TranscriptAttachment[],
+    durablePrompts: readonly TranscriptPrompt[],
+  ): readonly string[] {
+    let turns = 0;
+    let newest: TranscriptTurn | undefined;
+    for (const item of this.#state.items) {
+      if (item.kind !== 'turn') continue;
+      turns += 1;
+      newest = item;
+    }
     let bytes = estimateResidentStateBytes(this.#state);
     const released: string[] = [];
-    const newest = this.#state.items.findLast((item) => item.kind === 'turn');
     for (const item of this.#state.items) {
       if (turns <= limits.tailTurns && bytes <= limits.maxBytes) break;
       if (item.kind !== 'turn' || item.state === 'running' || (item === newest && limits.tailTurns > 0)) continue;
-      const persisted = durableTurns.get(item.turnId);
-      if (persisted === undefined || !sameResidentEntity(item, persisted)) continue;
+      if (!matches(item)) continue;
       released.push(item.turnId);
       turns -= 1;
       bytes -= estimateResidentValueBytes(item);
@@ -367,16 +416,46 @@ export class AgentTranscript {
     const ids = new Set(released);
     const items = this.#state.items.filter((item) => item.kind !== 'turn' || !ids.has(item.turnId));
     const selected = windowGlobals(this.#state, items, {
-      taskLimit: limits.tailTurns, attachmentLimit: limits.tailTurns, promptLimit: limits.tailTurns,
+      taskLimit: limits.tailTurns,
+      attachmentLimit: limits.tailTurns,
+      promptLimit: limits.tailTurns,
     });
-    const tasks = retainResidentEntities(this.#state.tasks, durable.tasks, (task) => task.taskId, new Set(selected.tasks.map((task) => task.taskId)));
-    const attachments = retainResidentEntities(this.#state.attachments, durable.attachments, (attachment) => attachment.attachmentId, new Set(selected.attachments.map((attachment) => attachment.attachmentId)));
-    const prompts = retainResidentEntities(this.#state.prompts, durable.prompts, (prompt) => prompt.promptId, new Set(selected.prompts.map((prompt) => prompt.promptId)));
+    const tasks = retainResidentEntities(
+      this.#state.tasks,
+      durableTasks,
+      (task) => task.taskId,
+      new Set(selected.tasks.map((task) => task.taskId)),
+    );
+    const attachments = retainResidentEntities(
+      this.#state.attachments,
+      durableAttachments,
+      (attachment) => attachment.attachmentId,
+      new Set(selected.attachments.map((attachment) => attachment.attachmentId)),
+    );
+    const prompts = retainResidentEntities(
+      this.#state.prompts,
+      durablePrompts,
+      (prompt) => prompt.promptId,
+      new Set(selected.prompts.map((prompt) => prompt.promptId)),
+    );
     this.#state = { ...this.#state, items, tasks, attachments, prompts, hasMoreOlder: true };
     this.rebuildToolCallIndex(items);
     this.#trimmedTurns += released.length;
-    for (const key of this.#appendDirty) {
-      if (released.some((turnId) => key.startsWith(`frame:${turnId}:`)) || (key.startsWith('task:') && !tasks.has(key.slice(5)))) this.#appendDirty.delete(key);
+    if (this.#appendDirty.size > 0) {
+      const hasColonTurnId = released.some((turnId) => turnId.includes(':'));
+      for (const key of this.#appendDirty) {
+        if (key.startsWith('task:')) {
+          if (!tasks.has(key.slice(5))) this.#appendDirty.delete(key);
+          continue;
+        }
+        if (!key.startsWith('frame:')) continue;
+        if (!hasColonTurnId) {
+          const end = key.indexOf(':', 6);
+          if (end > 6 && ids.has(key.slice(6, end))) this.#appendDirty.delete(key);
+        } else if (released.some((turnId) => key.startsWith(`frame:${turnId}:`))) {
+          this.#appendDirty.delete(key);
+        }
+      }
     }
     return released;
   }

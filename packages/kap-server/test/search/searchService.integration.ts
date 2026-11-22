@@ -1234,16 +1234,14 @@ describe('GlobalSearchService', () => {
     pendingGets[1]!({ ...initial, private: true });
   });
 
-  it('parks background sync on session index readiness when the index starts building mid-sync', { timeout: 30_000 }, async () => {
+  it('parks background sync on session index readiness when list reads reject while status still reports ready', { timeout: 30_000 }, async () => {
     const record = summary('s1', 'building race title');
-    let building = false;
-    let failNextList = true;
+    let rejectLists = true;
+    let generation = 1;
     let listCalls = 0;
     const warnings: string[] = [];
     const statusChanges = new Emitter<ReturnType<ISessionIndex['status']>>();
-    const currentStatus = () => (building
-      ? { source: 'read-model', state: 'building', generation: 1, degradedCount: 0 }
-      : { source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }) as ReturnType<ISessionIndex['status']>;
+    const currentStatus = () => ({ source: 'read-model', state: 'ready', generation, degradedCount: 0 }) as ReturnType<ISessionIndex['status']>;
     const index = {
       _serviceBrand: undefined,
       prepare: async () => currentStatus(),
@@ -1251,11 +1249,7 @@ describe('GlobalSearchService', () => {
       status: currentStatus,
       listRecent: async () => {
         listCalls += 1;
-        if (failNextList) {
-          failNextList = false;
-          building = true;
-          throw Object.assign(new Error('session index is building'), { code: 'session.index_building' });
-        }
+        if (rejectLists) throw Object.assign(new Error('session index is building'), { code: 'session.index_building' });
         return { items: [record], nextCursor: undefined };
       },
       get: async (id: string) => (id === record.id ? record : undefined),
@@ -1279,7 +1273,8 @@ describe('GlobalSearchService', () => {
     expect(listCalls).toBe(1);
     expect(warnings.filter((message) => message.includes('background sync failed'))).toEqual([]);
 
-    building = false;
+    rejectLists = false;
+    generation = 2;
     statusChanges.fire(currentStatus());
     const query = { query: 'buildingraceneedle', mode: 'literal' as const, indexOnly: true };
     await expect.poll(async () => (await service.search(query)).items.length, { timeout: 10_000 }).toBe(1);

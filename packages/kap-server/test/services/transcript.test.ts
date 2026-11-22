@@ -1510,14 +1510,9 @@ describe('TranscriptService live integration', () => {
         for (const owned of gates.values()) owned.release();
         if (round === 1) {
           await vi.waitFor(() => expect(secondEntered).toBe(true));
-          expect(store.getAgent('main')?.getTurn('t1')).toBeUndefined();
-          await collect();
-          const turnCollected = weak[0]!.deref() === undefined;
-          const frameCollected = weak[1]!.deref() === undefined;
-          const collected = turnCollected && frameCollected;
-          midRound = { collected, heap: process.memoryUsage().heapUsed, active: service.memoryReport().readLane.active };
-          console.log('mid-sweep-first-release', { turnCollected, frameCollected, ...midRound });
-          expect(collected).toBe(true);
+          expect(store.getAgent('main')?.getTurn('t1')).toBeDefined();
+          midRound = { collected: false, heap: process.memoryUsage().heapUsed, active: service.memoryReport().readLane.active };
+          console.log('mid-sweep-batch-pending', midRound);
           expect(midRound.active).toBeGreaterThan(0);
           releaseSecond();
         }
@@ -1881,6 +1876,135 @@ describe('TranscriptService live integration', () => {
       reportSpy.mockRestore();
       service.dispose();
       await navigation.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('releases K proven turns in one residency maintenance pass with a single store release and tool-index rebuild', async () => {
+    const home = await seedWireHome(undefined, true);
+    const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+    const agents = new FakeAgents();
+    const gate = () => {
+      let release!: () => void;
+      return { promise: new Promise<void>(resolve => { release = resolve; }), release: () => release() };
+    };
+    let currentGate = gate();
+    const main = agents.add('main', { wire: { ...stubAgentWire(), flush: () => currentGate.promise } });
+    const warn = vi.fn();
+    const service = new TranscriptService({
+      homeDir: home,
+      logger: { warn },
+      residentLimits: { tailTurns: 1, maxBytes: 1 << 20 },
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const navigation = new HistoryLocatorStore(database, service);
+    service.setHistoryLocatorReader(() => navigation);
+    const releaseTurnsSpy = vi.spyOn(AgentTranscript.prototype, 'releaseDurableTurns');
+    const releaseHistorySpy = vi.spyOn(AgentTranscript.prototype, 'releaseDurableHistory');
+    const reportSpy = vi.spyOn(AgentTranscript.prototype, 'residentReport');
+    const rebuildToolIndexSpy = vi.spyOn(
+      AgentTranscript.prototype as unknown as { rebuildToolCallIndex: (items: readonly unknown[]) => void },
+      'rebuildToolCallIndex',
+    );
+    const turnRecords = (id: number, text: string, ended = true) => [
+      { type: 'turn.prompt', turnId: id, promptId: `p${id}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: id * 2000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: id, step: 1, uuid: `s${id}` } },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: id, stepUuid: `s${id}`, uuid: `f${id}`, toolCallId: `c${id}`, name: 'Read', args: { path: `file-${id}` } } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${id}`, result: { output: `out-${id}`, isError: false } } },
+      ...(ended ? [{ type: 'turn.ended', turnId: id, reason: 'completed', time: id * 2000 + 1000 }] : []),
+    ];
+    const emit = (rows: Record<string, unknown>[]) => { for (const record of rows) main.bus.emit(ev(record)); };
+    const persist = (rows: Record<string, unknown>[]) => appendFixtureFile(path, rows.map(record => JSON.stringify(record)).join('\n') + '\n');
+    let initSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const transcript = store.getAgent('main')!;
+
+      for (let id = 1; id <= 11; id += 1) {
+        await persist(turnRecords(id, id === 6 ? 'disk-6' : `turn-${id}`));
+        emit(turnRecords(id, id === 6 ? 'live-6' : `turn-${id}`));
+      }
+      await persist(turnRecords(12, 'running-12', false));
+      emit(turnRecords(12, 'running-12', false));
+
+      releaseTurnsSpy.mockClear();
+      releaseHistorySpy.mockClear();
+      reportSpy.mockClear();
+      rebuildToolIndexSpy.mockClear();
+
+      currentGate.release();
+      await vi.waitFor(() => {
+        expect(transcript.getTurn('t0')).toBeUndefined();
+        for (const id of [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]) {
+          expect(transcript.getTurn(`t${id}`)).toBeUndefined();
+        }
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ mismatch: 1, notFound: 0, overBudget: 0 }),
+          'transcript: retaining turns without matching bounded durable proof',
+        );
+      }, { timeout: 15_000 });
+      expect(releaseTurnsSpy).toHaveBeenCalledTimes(1);
+      expect(releaseTurnsSpy.mock.results[0]?.value).toEqual(['t0', 't1', 't2', 't3', 't4', 't5', 't7', 't8', 't9', 't10', 't11']);
+      expect(releaseHistorySpy).toHaveBeenCalledTimes(0);
+      expect(reportSpy).toHaveBeenCalledTimes(1);
+      expect(rebuildToolIndexSpy).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 0, queued: 0 }));
+
+      expect(transcript.getTurn('t6')).toMatchObject({ state: 'completed', prompt: 'live-6' });
+      expect(transcript.getTurn('t12')).toMatchObject({ state: 'running', prompt: 'running-12' });
+      for (const id of [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]) {
+        expect(transcript.getToolCall(`c${id}`)).toBeUndefined();
+      }
+      expect(transcript.getToolCall('c6')?.turnId).toBe('t6');
+      expect(transcript.getToolCall('c12')?.turnId).toBe('t12');
+
+      const reread = await service.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't1' }, new AbortController().signal) as TranscriptTurn;
+      expect(reread.prompt).toBe('turn-1');
+      expect(reread.steps[0]?.frames[0]).toMatchObject({ kind: 'tool', toolCallId: 'c1', output: 'out-1' });
+
+      currentGate = gate();
+      let mutated = false;
+      const realInit = HistoryResidentProof.prototype.initialize;
+      initSpy = vi.spyOn(HistoryResidentProof.prototype, 'initialize').mockImplementation(async function (this: HistoryResidentProof, signal) {
+        await realInit.call(this, signal);
+        if (!mutated && this.resident.turnId === 't14') {
+          mutated = true;
+          const current = transcript.getTurn('t13')!;
+          transcript.apply([{ op: 'turn.upsert', turn: { ...current, prompt: 'mutated-mid-pass' } }]);
+        }
+      });
+
+      await persist([{ type: 'turn.ended', turnId: 12, reason: 'completed', time: 25_000 }]);
+      emit([{ type: 'turn.ended', turnId: 12, reason: 'completed', time: 25_000 }]);
+      for (const id of [13, 14, 15]) {
+        await persist(turnRecords(id, `turn-${id}`));
+        emit(turnRecords(id, `turn-${id}`));
+      }
+      releaseTurnsSpy.mockClear();
+      rebuildToolIndexSpy.mockClear();
+      currentGate.release();
+      await vi.waitFor(() => {
+        expect(mutated).toBe(true);
+        expect(transcript.getTurn('t12')).toBeUndefined();
+        expect(transcript.getTurn('t14')).toBeUndefined();
+      }, { timeout: 15_000 });
+      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 0, queued: 0 }));
+      expect(transcript.getTurn('t13')).toMatchObject({ state: 'completed', prompt: 'mutated-mid-pass' });
+      expect(transcript.getTurn('t15')).toMatchObject({ state: 'completed', prompt: 'turn-15' });
+      expect(releaseTurnsSpy).toHaveBeenCalledTimes(1);
+      expect(releaseTurnsSpy.mock.results[0]?.value).toEqual(['t12', 't14']);
+      expect(rebuildToolIndexSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      currentGate.release();
+      initSpy?.mockRestore();
+      releaseTurnsSpy.mockRestore();
+      releaseHistorySpy.mockRestore();
+      reportSpy.mockRestore();
+      rebuildToolIndexSpy.mockRestore();
+      service.dispose();
+      await database.close();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 30_000);

@@ -16,12 +16,34 @@ export interface WorkspacePathSnapshot {
 export interface WorkspacePathIndexOptions {
   readonly watch?: typeof watch;
   readonly reconcileDebounceMs?: number;
+  readonly maxScanRetainedMutations?: number;
 }
 
 type PreparedEntry = WorkspacePathEntry & { readonly charMask: number };
 
+interface PathTable {
+  readonly prepared: Map<string, PreparedEntry>;
+  readonly byPath: Map<string, WorkspacePathEntry>;
+  readonly directoryCounts: Map<string, number>;
+}
+
+interface ScanMutationRecord {
+  readonly seq: number;
+  readonly key: string;
+  readonly entry: WorkspacePathEntry | undefined;
+}
+
+interface ActiveScan {
+  readonly revision: number;
+  readonly startSeq: number;
+  readonly trackedKeys: Set<string>;
+  readonly retained: Map<string, ScanMutationRecord>;
+  fidelityLost: boolean;
+}
+
 const MUTATION_COALESCE_MS = 16;
 const DEFAULT_RECONCILE_DEBOUNCE_MS = 250;
+const DEFAULT_MAX_SCAN_RETAINED_MUTATIONS = 4_096;
 
 /** Returns true when a workspace root targets a UNC or SMB network share (`\\server\share`, `//server/share`, `\\?\UNC\server\share`). */
 export function isUncRoot(path: string): boolean {
@@ -87,6 +109,57 @@ function characterMask(text: string, asciiOnly = false): number {
   return mask;
 }
 
+function insertEntry(table: PathTable, key: string, entry: WorkspacePathEntry): void {
+  if (!table.byPath.has(key)) {
+    let slash = key.indexOf('/');
+    while (slash !== -1) {
+      const ancestor = key.slice(0, slash);
+      table.directoryCounts.set(ancestor, (table.directoryCounts.get(ancestor) ?? 0) + 1);
+      slash = key.indexOf('/', slash + 1);
+    }
+  }
+  table.byPath.set(key, entry);
+  table.prepared.set(key, { ...entry, charMask: characterMask(entry.path) });
+}
+
+function deleteEntry(table: PathTable, key: string): WorkspacePathEntry | undefined {
+  const removed = table.byPath.get(key);
+  if (removed === undefined) return undefined;
+  table.byPath.delete(key);
+  table.prepared.delete(key);
+  let slash = key.indexOf('/');
+  while (slash !== -1) {
+    const ancestor = key.slice(0, slash);
+    const next = (table.directoryCounts.get(ancestor) ?? 0) - 1;
+    if (next <= 0) table.directoryCounts.delete(ancestor);
+    else table.directoryCounts.set(ancestor, next);
+    slash = key.indexOf('/', slash + 1);
+  }
+  return removed;
+}
+
+function applyEntryMutation(
+  table: PathTable,
+  key: string,
+  entry: WorkspacePathEntry | undefined,
+  onRemovedChild?: (childPath: string) => void,
+): void {
+  if (entry === undefined) {
+    deleteEntry(table, key);
+    if ((table.directoryCounts.get(key) ?? 0) > 0) {
+      const prefix = `${key}/`;
+      for (const existing of Array.from(table.byPath.keys())) {
+        if (existing.startsWith(prefix)) {
+          const removed = deleteEntry(table, existing);
+          if (removed !== undefined) onRemovedChild?.(removed.path);
+        }
+      }
+    }
+    return;
+  }
+  insertEntry(table, key, entry);
+}
+
 export class WorkspacePathIndex {
   private watcher?: FSWatcher;
   private timer?: ReturnType<typeof setTimeout>;
@@ -95,6 +168,8 @@ export class WorkspacePathIndex {
   private pending?: Promise<void>;
   private revision = 0;
   private snapshotRevision = 0;
+  private mutationSeq = 0;
+  private committedScanStartSeq = 0;
   private current?: WorkspacePathSnapshot;
   private hasBaseSnapshot = false;
   private snapshotDirty = false;
@@ -111,7 +186,9 @@ export class WorkspacePathIndex {
   private readonly networkRoot: boolean;
   private readonly watchFn: typeof watch;
   private readonly reconcileDebounceMs: number;
+  private readonly maxScanRetainedMutations: number;
   private refreshController: AbortController | undefined;
+  private activeScan: ActiveScan | undefined;
   private started = false;
   private disposed = false;
   private watching = false;
@@ -137,6 +214,7 @@ export class WorkspacePathIndex {
     this.root = this.networkRoot ? root : resolve(root);
     this.watchFn = options.watch ?? watch;
     this.reconcileDebounceMs = options.reconcileDebounceMs ?? DEFAULT_RECONCILE_DEBOUNCE_MS;
+    this.maxScanRetainedMutations = Math.max(0, options.maxScanRetainedMutations ?? DEFAULT_MAX_SCAN_RETAINED_MUTATIONS);
     if (cacheDir !== undefined && !this.networkRoot) {
       this.trigram = new WorkspaceTrigramIndex(this.root, cacheDir, cpu);
     }
@@ -163,6 +241,10 @@ export class WorkspacePathIndex {
           this.rootDeleted = true;
           this.watching = false;
           this.hadCommittedSnapshot = false;
+          this.reconcileQueued = false;
+          this.activeScan = undefined;
+          this.refreshController?.abort();
+          this.refreshController = undefined;
           this.clearPublishedState();
           this.trigram?.reset();
           this.emitMutation(undefined);
@@ -182,8 +264,14 @@ export class WorkspacePathIndex {
       this.watcher.on('error', error => {
         this.error = error;
         this.watching = false;
-        this.clearPublishedState();
-        this.trigram?.invalidate();
+        if (this.activeScan !== undefined) {
+          this.loseScanFidelity(this.activeScan);
+        } else {
+          this.clearPublishedState();
+          this.trigram?.invalidate();
+          this.globCache.clear();
+          this.fuzzyCache.clear();
+        }
         this.emitMutation(undefined);
         this.watcher?.close();
         this.watcher = undefined;
@@ -235,10 +323,23 @@ export class WorkspacePathIndex {
     this.scheduleReconcile();
   }
 
+  private loseScanFidelity(scan: ActiveScan): void {
+    scan.fidelityLost = true;
+    scan.trackedKeys.clear();
+    scan.retained.clear();
+    this.reconcileQueued = true;
+    this.clearPublishedState();
+    this.trigram?.invalidate();
+    this.globCache.clear();
+    this.fuzzyCache.clear();
+    if (this.activeScan === scan) this.refreshController?.abort();
+  }
+
   invalidate(): void {
     if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
     this.revision++;
     this.reconcileQueued = false;
+    this.activeScan = undefined;
     this.refreshController?.abort();
     this.refreshController = undefined;
     this.clearPublishedState();
@@ -249,30 +350,22 @@ export class WorkspacePathIndex {
     this.armReconcileTimer();
   }
 
-  private insertPathEntry(key: string, entry: WorkspacePathEntry): void {
-    if (!this.byPath.has(key)) {
-      let slash = key.indexOf('/');
-      while (slash !== -1) {
-        const ancestor = key.slice(0, slash);
-        this.directoryCounts.set(ancestor, (this.directoryCounts.get(ancestor) ?? 0) + 1);
-        slash = key.indexOf('/', slash + 1);
-      }
-    }
-    this.byPath.set(key, entry);
-    this.prepared.set(key, { ...entry, charMask: characterMask(entry.path) });
-  }
-
-  private deletePathEntry(key: string): void {
-    if (!this.byPath.delete(key)) return;
-    this.prepared.delete(key);
-    let slash = key.indexOf('/');
-    while (slash !== -1) {
-      const ancestor = key.slice(0, slash);
-      const next = (this.directoryCounts.get(ancestor) ?? 0) - 1;
-      if (next <= 0) this.directoryCounts.delete(ancestor);
-      else this.directoryCounts.set(ancestor, next);
-      slash = key.indexOf('/', slash + 1);
-    }
+  private applyLiveMutation(key: string, display: string, entry: WorkspacePathEntry | undefined): void {
+    const table: PathTable = {
+      prepared: this.prepared,
+      byPath: this.byPath,
+      directoryCounts: this.directoryCounts,
+    };
+    applyEntryMutation(table, key, entry, childPath => {
+      this.trigram?.dirty(childPath);
+      this.pendingTrigramPatches.set(childPath, undefined);
+    });
+    this.snapshotDirty = true;
+    this.globCache.clear();
+    this.fuzzyCache.clear();
+    if (!this.overflowed) this.trigram?.dirty(entry?.path ?? display);
+    this.pendingTrigramPatches.set(display, entry);
+    this.schedulePublish();
   }
 
   private schedulePublish(): void {
@@ -313,13 +406,30 @@ export class WorkspacePathIndex {
       this.invalidate();
       return;
     }
+    const seq = ++this.mutationSeq;
     const key = pathIdentity(local);
-    if (!this.overflowed) this.trigram?.dirty(this.byPath.get(key)?.path ?? local);
+    const entryScan = this.activeScan;
+    if (this.overflowed) {
+      if (entryScan !== undefined) entryScan.fidelityLost = true;
+      return;
+    }
+    this.trigram?.dirty(this.byPath.get(key)?.path ?? local);
+    if (entryScan !== undefined && !entryScan.fidelityLost && seq > entryScan.startSeq) {
+      if (!entryScan.trackedKeys.has(key)) {
+        if (entryScan.trackedKeys.size >= this.maxScanRetainedMutations) {
+          this.loseScanFidelity(entryScan);
+        } else {
+          entryScan.trackedKeys.add(key);
+        }
+      }
+    }
     const previous = this.pathUpdates.get(key) ?? Promise.resolve();
     const update = previous.then(async () => {
-      if (this.disposed) return;
-      if (!this.hasBaseSnapshot) {
-        if (!this.overflowed) this.invalidate();
+      if (this.disposed || this.overflowed) return;
+      const scanAtStart = this.activeScan;
+      const trackingForScan = scanAtStart !== undefined && !scanAtStart.fidelityLost && seq > scanAtStart.startSeq;
+      if (!this.hasBaseSnapshot && !trackingForScan) {
+        if (scanAtStart === undefined) this.invalidate();
         return;
       }
       const epoch = this.revision;
@@ -328,32 +438,24 @@ export class WorkspacePathIndex {
         { type: 'workspace.path', root: this.root, path: resolve(this.root, display) },
         { signal: this.controller.signal, timeoutMs: 30_000, priority: 'low' },
       );
-      if (this.disposed || !this.hasBaseSnapshot || epoch !== this.revision) return;
+      if (this.disposed || this.overflowed || epoch !== this.revision) return;
+      if (seq <= this.committedScanStartSeq) return;
       if (entry?.kind === 'directory') {
         const old = this.byPath.get(key);
-        if (old?.kind !== 'directory' || old.ino !== entry.ino) this.invalidate();
+        if (!this.hasBaseSnapshot || old?.kind !== 'directory' || old.ino !== entry.ino) this.invalidate();
         return;
       }
-      if (entry === undefined) {
-        this.deletePathEntry(key);
-        if ((this.directoryCounts.get(key) ?? 0) > 0) {
-          const prefix = `${key}/`;
-          for (const existing of Array.from(this.byPath.keys())) {
-            if (existing.startsWith(prefix)) {
-              const childDisplay = this.byPath.get(existing)?.path ?? existing;
-              this.deletePathEntry(existing);
-              this.pendingTrigramPatches.set(childDisplay, undefined);
-            }
-          }
+      const currentScan = this.activeScan;
+      if (currentScan !== undefined && currentScan.revision === epoch && seq > currentScan.startSeq) {
+        if (currentScan.fidelityLost) return;
+        if (!currentScan.retained.has(key) && currentScan.retained.size >= this.maxScanRetainedMutations) {
+          this.loseScanFidelity(currentScan);
+          return;
         }
-      } else {
-        this.insertPathEntry(key, entry);
+        currentScan.retained.set(key, { seq, key, entry });
       }
-      this.snapshotDirty = true;
-      this.globCache.clear();
-      this.fuzzyCache.clear();
-      this.pendingTrigramPatches.set(display, entry);
-      this.schedulePublish();
+      if (!this.hasBaseSnapshot) return;
+      this.applyLiveMutation(key, display, entry);
     }).catch(error => {
       if (!this.disposed) { this.error = error; this.invalidate(); }
     }).finally(() => { if (this.pathUpdates.get(key) === update) this.pathUpdates.delete(key); });
@@ -373,7 +475,19 @@ export class WorkspacePathIndex {
       while (this.pending !== undefined) await this.pending;
       return;
     }
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
     const revision = this.revision;
+    const scan: ActiveScan = {
+      revision,
+      startSeq: this.mutationSeq,
+      trackedKeys: new Set(),
+      retained: new Map(),
+      fidelityLost: false,
+    };
+    this.activeScan = scan;
     const refreshController = new AbortController();
     this.refreshController = refreshController;
     const onDispose = (): void => { refreshController.abort(); };
@@ -384,9 +498,10 @@ export class WorkspacePathIndex {
     )
       .then(async inventory => {
         if (inventory.overflow) {
-          if (this.disposed || revision !== this.revision) return;
+          if (this.disposed || revision !== this.revision || this.activeScan !== scan) return;
           this.overflowed = true;
           this.hadCommittedSnapshot = false;
+          this.reconcileQueued = false;
           this.clearPublishedState();
           this.prepared.clear();
           this.byPath.clear();
@@ -397,37 +512,52 @@ export class WorkspacePathIndex {
           return;
         }
         const previousByPath = this.hadCommittedSnapshot ? this.byPath : undefined;
-        const prepared = new Map<string, PreparedEntry>();
-        const byPath = new Map<string, WorkspacePathEntry>();
-        const directoryCounts = new Map<string, number>();
+        const nextTable: PathTable = {
+          prepared: new Map(),
+          byPath: new Map(),
+          directoryCounts: new Map(),
+        };
         const totalEntries = inventory.entries.length;
         for (let offset = 0; offset < totalEntries; offset += 256) {
-          if (this.disposed || revision !== this.revision) return;
+          if (this.disposed || revision !== this.revision || this.activeScan !== scan) return;
+          if (scan.fidelityLost) break;
           const end = Math.min(offset + 256, totalEntries);
           for (let i = offset; i < end; i += 1) {
             const entry = inventory.entries[i]!;
-            const key = pathIdentity(entry.path);
-            if (!byPath.has(key)) {
-              let slash = key.indexOf('/');
-              while (slash !== -1) {
-                const ancestor = key.slice(0, slash);
-                directoryCounts.set(ancestor, (directoryCounts.get(ancestor) ?? 0) + 1);
-                slash = key.indexOf('/', slash + 1);
-              }
-            }
-            prepared.set(key, { ...entry, charMask: characterMask(entry.path) });
-            byPath.set(key, entry);
+            insertEntry(nextTable, pathIdentity(entry.path), entry);
           }
           await yieldToEventLoop();
         }
-        if (this.disposed || revision !== this.revision) return;
+        if (this.disposed || revision !== this.revision || this.activeScan !== scan) return;
+        if (scan.fidelityLost) {
+          this.overflowed = false;
+          this.clearPublishedState();
+          this.trigram?.invalidate();
+          this.globCache.clear();
+          this.fuzzyCache.clear();
+          this.reconcileQueued = true;
+          return;
+        }
+        const replayed = scan.retained.size > 0;
+        if (replayed) {
+          const records = [...scan.retained.values()].toSorted((left, right) => left.seq - right.seq);
+          for (const record of records) {
+            applyEntryMutation(nextTable, record.key, record.entry);
+          }
+        }
+        let dirtyPaths: ReadonlySet<string> | undefined = this.trigram?.dirtyPaths;
+        if (this.pendingTrigramPatches.size > 0) {
+          const merged = new Set<string>(dirtyPaths);
+          for (const path of this.pendingTrigramPatches.keys()) merged.add(path);
+          dirtyPaths = merged;
+        }
         const patches = previousByPath === undefined
           ? undefined
-          : diffTrigramPatches(previousByPath, byPath, this.trigram?.dirtyPaths);
+          : diffTrigramPatches(previousByPath, nextTable.byPath, dirtyPaths);
         this.overflowed = false;
-        this.prepared = prepared;
-        this.byPath = byPath;
-        this.directoryCounts = directoryCounts;
+        this.prepared = nextTable.prepared;
+        this.byPath = nextTable.byPath;
+        this.directoryCounts = nextTable.directoryCounts;
         this.snapshotDirty = false;
         this.pendingTrigramPatches.clear();
         if (this.publishTimer !== undefined) {
@@ -436,19 +566,24 @@ export class WorkspacePathIndex {
         }
         this.globCache.clear();
         this.fuzzyCache.clear();
+        this.committedScanStartSeq = Math.max(this.committedScanStartSeq, scan.startSeq);
         this.hasBaseSnapshot = true;
         this.hadCommittedSnapshot = true;
-        this.current = { revision: ++this.snapshotRevision, entries: inventory.entries };
+        const entries = replayed ? [...nextTable.byPath.values()] : inventory.entries;
+        this.current = { revision: ++this.snapshotRevision, entries };
         if (patches !== undefined) {
           this.trigram?.reconcile(this.current, patches);
         } else {
           this.trigram?.rebuild(this.current);
         }
         this.error = undefined;
-      }, error => { this.error = error; })
+      }, error => {
+        if (!refreshController.signal.aborted) this.error = error;
+      })
       .finally(() => {
         this.controller.signal.removeEventListener('abort', onDispose);
         if (this.refreshController === refreshController) this.refreshController = undefined;
+        if (this.activeScan === scan) this.activeScan = undefined;
         this.pending = undefined;
         if (!this.disposed && !this.networkRoot && !this.rootDeleted) {
           if (revision !== this.revision && this.timer === undefined) {
@@ -572,6 +707,8 @@ export class WorkspacePathIndex {
     if (this.publishTimer !== undefined) clearTimeout(this.publishTimer);
     if (this.repair !== undefined) clearInterval(this.repair);
     this.clearPublishedState();
+    this.activeScan = undefined;
+    this.refreshController = undefined;
     this.hadCommittedSnapshot = false;
     this.reconcileQueued = false;
     this.mutationListeners.clear();

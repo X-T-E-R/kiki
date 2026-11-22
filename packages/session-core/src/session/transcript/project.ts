@@ -3550,6 +3550,22 @@ function repeatsTurnFailure(turn: { readonly state?: string; readonly error?: st
   return failure === notice || failure.includes(notice) || notice.includes(failure);
 }
 
+// The main transcript renders the tail turn's failure in its turn tail; earlier
+// failed turns keep their notice because nothing else carries their error.
+function dropTailTurnFailureNotices(
+  blocks: Block[],
+  tail: { readonly kind: string; readonly turnId?: string; readonly state?: string; readonly error?: string } | undefined,
+): void {
+  if (tail?.kind !== 'turn' || tail.turnId === undefined || tail.state !== 'failed') return;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.kind === 'notice' && block.tone === 'danger' && block.turnId === tail.turnId &&
+      block.id.startsWith('agent-frame-') && repeatsTurnFailure(tail, block.text)) {
+      blocks.splice(index, 1);
+    }
+  }
+}
+
 export function turnOutcomeFromItem(item: {
   readonly turnId: string;
   readonly state?: string;
@@ -4094,7 +4110,8 @@ export function agentTranscriptToBlocks(
             break;
           }
           case 'notice':
-            if (frame.level === 'error' && repeatsTurnFailure(item as { readonly state?: string; readonly error?: string }, frame.message)) break;
+            if (subagentPromptAsUser && frame.level === 'error' &&
+              repeatsTurnFailure(item as { readonly state?: string; readonly error?: string }, frame.message)) break;
             blocks.push({
               kind: 'notice',
               id: `agent-frame-${frame.frameId}`,
@@ -4157,6 +4174,7 @@ export function agentTranscriptToBlocks(
       });
     }
   }
+  if (!subagentPromptAsUser) dropTailTurnFailureNotices(blocks, response.items.findLast((item) => item.kind === 'turn'));
   for (const { item, task } of pendingShellTaskRefs) {
     if (shellFrameTaskIds.has(task.taskId)) continue;
     deferredTaskBlocks.push({

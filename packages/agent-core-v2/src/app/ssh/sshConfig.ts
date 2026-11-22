@@ -401,7 +401,10 @@ interface ConfigScanCollector {
   readonly files: Map<string, string>;
   readonly globs: Map<string, readonly string[]>;
   readonly aliases: Set<string>;
+  dynamic: boolean;
 }
+
+const MATCH_EXEC = /^\s*match(?:\s*=\s*|\s+).*\bexec\b/i;
 
 function createCollector(): ConfigScanCollector {
   return {
@@ -409,6 +412,7 @@ function createCollector(): ConfigScanCollector {
     files: new Map<string, string>(),
     globs: new Map<string, readonly string[]>(),
     aliases: new Set<string>(),
+    dynamic: false,
   };
 }
 
@@ -438,6 +442,7 @@ async function scanConfigFile(
     throw error;
   }
   for (const line of text.split(/\r?\n/)) {
+    if (MATCH_EXEC.test(line)) collector.dynamic = true;
     const match = /^\s*(host|include)(?:\s*=\s*|\s+)(.+?)\s*$/i.exec(line);
     if (!match) continue;
     if (match[1]!.toLowerCase() === 'host') {
@@ -626,7 +631,8 @@ export class SshConfigResolver {
     });
 
     const fullSnapshot = finalizeSnapshot(collector);
-    if (this.generation === generation && await isSnapshotCurrent(preSnapshot) && await isSnapshotCurrent(fullSnapshot)) {
+    if (!collector.dynamic && this.generation === generation &&
+      await isSnapshotCurrent(preSnapshot) && await isSnapshotCurrent(fullSnapshot)) {
       setBounded(this.resolveCache, key, { snapshot: fullSnapshot, value: resolved }, this.maxEntries);
     }
     return resolved;

@@ -50,12 +50,16 @@ import {
   TranscriptStore,
   TranscriptWireAdapter,
   isPlainAgentId,
+  transcriptResidentValueEquals,
   type AgentDescriptor,
   type AgentTranscriptSnapshot,
+  type DurableTurnReleaseGlobals,
+  type TranscriptAttachment,
   type TranscriptChangeEvent,
   type TranscriptCursor,
   type TranscriptMarker,
   type TranscriptOperation,
+  type TranscriptPrompt,
   type TranscriptResidentLimits,
   type TranscriptWireAdapterCheckpoint,
   type TranscriptWireRecordPosition,
@@ -102,6 +106,7 @@ import {
 import { HistoryReadLane } from './historyReadLane';
 import {
   estimateResidentTurnBytes,
+  estimateResidentValueBytes,
   failureSetSignature,
   ResidencyMaintenanceScheduler,
   wireFingerprintForMaintenance,
@@ -1795,10 +1800,15 @@ export class TranscriptService {
     else this.residentWeights.set(key, bytes);
   }
 
+  private effectiveResidentLimits(key: string, bytes: number, limits: TranscriptResidentLimits): TranscriptResidentLimits {
+    const otherBytes = this.residentWeight - (this.residentWeights.get(key) ?? 0);
+    const allowance = Math.max(0, (64 << 20) - otherBytes);
+    return allowance < bytes ? { maxBytes: Math.min(limits.maxBytes, allowance), tailTurns: 0 } : limits;
+  }
+
   private aggregateResidentLimits(key: string, bytes: number, limits: TranscriptResidentLimits): TranscriptResidentLimits {
     this.setResidentWeight(key, bytes);
-    const allowance = Math.max(0, (64 << 20) - this.residentWeight + bytes);
-    return allowance < bytes ? { maxBytes: Math.min(limits.maxBytes, allowance), tailTurns: 0 } : limits;
+    return this.effectiveResidentLimits(key, bytes, limits);
   }
 
   private releaseDurableHistory(entry: LiveEntry, agentId: string, snapshot: AgentTranscriptSnapshot): void {
@@ -1814,20 +1824,40 @@ export class TranscriptService {
     entry.binding.releaseDurableTurns(agentId, released, promptIds);
   }
 
-  private releaseDurableTurn(
+  private releaseDurableTurns(
     entry: LiveEntry,
     agentId: string,
     transcript: AgentTranscript,
-    snapshot: AgentTranscriptSnapshot,
+    turns: readonly TranscriptTurn[],
+    durableGlobals: DurableTurnReleaseGlobals,
     effective: TranscriptResidentLimits,
-    nextEstimatedBytes: number,
+    initialBytes: number,
+    provenBytesByTurn: ReadonlyMap<string, number>,
   ): readonly string[] {
     const key = `${entry.store.sessionId}\0${agentId}`;
-    const released = transcript.releaseDurableHistory(snapshot, effective);
+    const retainedTasks = (durableGlobals.tasks ?? []).filter((task) => transcript.getTasks().has(task.taskId));
+    const retainedAttachments = (durableGlobals.attachments ?? []).filter((attachment) => transcript.getAttachments().has(attachment.attachmentId));
+    const retainedPrompts = (durableGlobals.prompts ?? []).filter((prompt) => transcript.getPrompts().has(prompt.promptId));
+    const released = transcript.releaseDurableTurns(turns, effective, durableGlobals);
     if (released.length === 0) return released;
-    this.setResidentWeight(key, nextEstimatedBytes);
     const ids = new Set(released);
-    const promptIds = snapshot.items.flatMap((item) => item.kind === 'turn' && ids.has(item.turnId) && item.promptId !== undefined ? [item.promptId] : []);
+    const promptIds: string[] = [];
+    let releasedBytes = 0;
+    for (const turn of turns) {
+      if (!ids.has(turn.turnId)) continue;
+      if (turn.promptId !== undefined) promptIds.push(turn.promptId);
+      releasedBytes += provenBytesByTurn.get(turn.turnId) ?? 0;
+    }
+    for (const task of retainedTasks) {
+      if (!transcript.getTasks().has(task.taskId)) releasedBytes += estimateResidentValueBytes(task);
+    }
+    for (const attachment of retainedAttachments) {
+      if (!transcript.getAttachments().has(attachment.attachmentId)) releasedBytes += estimateResidentValueBytes(attachment);
+    }
+    for (const prompt of retainedPrompts) {
+      if (!transcript.getPrompts().has(prompt.promptId)) releasedBytes += estimateResidentValueBytes(prompt);
+    }
+    this.setResidentWeight(key, Math.max(0, initialBytes - releasedBytes));
     entry.binding.releaseDurableTurns(agentId, released, promptIds);
     return released;
   }
@@ -1846,7 +1876,7 @@ export class TranscriptService {
       const activeLimits = this.resolveResidentLimits();
       if (activeLimits === undefined) return false;
       const weight = this.residentWeights.get(key) ?? 0;
-      const effective = this.aggregateResidentLimits(key, weight, activeLimits);
+      const effective = this.effectiveResidentLimits(key, weight, activeLimits);
       const turns = completedResidentTurnIds(transcript);
       if (turns.length === 0) return false;
       const newestId = newestResidentTurnId(transcript);
@@ -1924,46 +1954,119 @@ export class TranscriptService {
             await new Promise<void>(resolve => { setImmediate(resolve); });
             if (!isCurrent(signal)) return;
           } while (source === undefined);
-          for (const turnId of turns) {
+          const provenTurns: TranscriptTurn[] = [];
+          const provenBytesByTurn = new Map<string, number>();
+          const durableTasks = new Map<string, TranscriptTask>();
+          const durableAttachments = new Map<string, TranscriptAttachment>();
+          const durablePrompts = new Map<string, TranscriptPrompt>();
+          try {
+            for (const turnId of turns) {
+              signal.throwIfAborted();
+              if (!isCurrent(signal)) return;
+              let resident = transcript.getTurn(turnId);
+              if (resident === undefined || resident.state === 'running') continue;
+              const effective = this.effectiveResidentLimits(key, remainingBytes, activeLimits);
+              if (remainingTurns <= effective.tailTurns && remainingBytes <= effective.maxBytes) break;
+              const newestId = newestResidentTurnId(transcript);
+              if (effective.tailTurns > 0 && newestId === resident.turnId) continue;
+              let result: ResidentTurnProofResult | undefined;
+              try {
+                result = await source.prove(resident, signal);
+                if (!isCurrent(signal)) return;
+                if (transcript.getTurn(resident.turnId) !== resident) continue;
+                if (result.status === 'found') {
+                  const turnBytes = estimateResidentTurnBytes(resident);
+                  provenTurns.push(resident);
+                  provenBytesByTurn.set(resident.turnId, turnBytes);
+                  remainingTurns = Math.max(0, remainingTurns - 1);
+                  remainingBytes = Math.max(0, remainingBytes - turnBytes);
+                  for (const task of result.snapshot.tasks) {
+                    const current = transcript.getTask(task.taskId);
+                    if (current !== undefined && transcriptResidentValueEquals(current, task)) {
+                      durableTasks.set(task.taskId, current);
+                    } else if (!durableTasks.has(task.taskId)) {
+                      durableTasks.set(task.taskId, task);
+                    }
+                  }
+                  for (const attachment of result.snapshot.attachments) {
+                    const current = transcript.getAttachment(attachment.attachmentId);
+                    if (current !== undefined && transcriptResidentValueEquals(current, attachment)) {
+                      durableAttachments.set(attachment.attachmentId, current);
+                    } else if (!durableAttachments.has(attachment.attachmentId)) {
+                      durableAttachments.set(attachment.attachmentId, attachment);
+                    }
+                  }
+                  for (const prompt of result.snapshot.prompts) {
+                    const current = transcript.getPrompt(prompt.promptId);
+                    if (current !== undefined && transcriptResidentValueEquals(current, prompt)) {
+                      durablePrompts.set(prompt.promptId, current);
+                    } else if (!durablePrompts.has(prompt.promptId)) {
+                      durablePrompts.set(prompt.promptId, prompt);
+                    }
+                  }
+                } else {
+                  if (result.status === 'not_found') retained.notFound += 1;
+                  else if (result.status === 'mismatch') retained.mismatch += 1;
+                  else retained.overBudget += 1;
+                  retainedByTurn.set(resident.turnId, result.status);
+                  state.knownUnreleasable.set(resident.turnId, { turn: new WeakRef(resident), status: result.status });
+                }
+              } finally { resident = undefined; result = undefined; }
+            }
             signal.throwIfAborted();
             if (!isCurrent(signal)) return;
-            let resident = transcript.getTurn(turnId);
-            if (resident === undefined || resident.state === 'running') continue;
-            const effective = this.aggregateResidentLimits(key, remainingBytes, activeLimits);
-            if (remainingTurns <= effective.tailTurns && remainingBytes <= effective.maxBytes) break;
-            const newestId = newestResidentTurnId(transcript);
-            if (effective.tailTurns > 0 && newestId === resident.turnId) continue;
-            let result: ResidentTurnProofResult | undefined;
-            try {
-              result = await source.prove(resident, signal);
-              if (!isCurrent(signal)) return;
-              if (transcript.getTurn(resident.turnId) !== resident) continue;
-              if (result.status === 'found') {
-                const turnBytes = estimateResidentTurnBytes(resident);
-                const nextBytes = Math.max(0, remainingBytes - turnBytes);
-                const released = this.releaseDurableTurn(entry, agentId, transcript, result.snapshot, effective, nextBytes);
-                if (transcript.getTurn(resident.turnId) === undefined) {
-                  remainingTurns = Math.max(0, remainingTurns - Math.max(1, released.length));
-                  remainingBytes = nextBytes;
-                  state.knownUnreleasable.delete(resident.turnId);
-                } else {
-                  const reconciled = transcript.residentReport();
-                  remainingTurns = reconciled.turns;
-                  remainingBytes = reconciled.estimatedBytes;
-                  const reconciledEffective = this.aggregateResidentLimits(key, remainingBytes, activeLimits);
-                  if (remainingTurns <= reconciledEffective.tailTurns && remainingBytes <= reconciledEffective.maxBytes) break;
-                  retained.mismatch += 1;
-                  retainedByTurn.set(resident.turnId, 'mismatch');
-                  state.knownUnreleasable.set(resident.turnId, { turn: new WeakRef(resident), status: 'mismatch' });
-                }
-              } else {
-                if (result.status === 'not_found') retained.notFound += 1;
-                else if (result.status === 'mismatch') retained.mismatch += 1;
-                else retained.overBudget += 1;
-                retainedByTurn.set(resident.turnId, result.status);
-                state.knownUnreleasable.set(resident.turnId, { turn: new WeakRef(resident), status: result.status });
+            if (provenTurns.length > 0) {
+              const unchangedTurns: TranscriptTurn[] = [];
+              for (const proven of provenTurns) {
+                if (transcript.getTurn(proven.turnId) === proven) unchangedTurns.push(proven);
               }
-            } finally { resident = undefined; result = undefined; }
+              if (unchangedTurns.length > 0) {
+                const releaseLimits = this.resolveResidentLimits();
+                if (releaseLimits !== undefined) {
+                  const batchEffective = this.effectiveResidentLimits(key, initialReport.estimatedBytes, releaseLimits);
+                  const released = this.releaseDurableTurns(
+                    entry,
+                    agentId,
+                    transcript,
+                    unchangedTurns,
+                    {
+                      tasks: [...durableTasks.values()],
+                      attachments: [...durableAttachments.values()],
+                      prompts: [...durablePrompts.values()],
+                    },
+                    batchEffective,
+                    initialReport.estimatedBytes,
+                    provenBytesByTurn,
+                  );
+                  const releasedSet = new Set(released);
+                  for (const turnId of released) state.knownUnreleasable.delete(turnId);
+                  if (released.length < unchangedTurns.length) {
+                    const reconciled = transcript.residentReport();
+                    const reconciledEffective = this.aggregateResidentLimits(key, reconciled.estimatedBytes, releaseLimits);
+                    const stillOverBudget =
+                      reconciled.turns > reconciledEffective.tailTurns ||
+                      reconciled.estimatedBytes > reconciledEffective.maxBytes;
+                    const newestId = newestResidentTurnId(transcript);
+                    if (stillOverBudget) {
+                      for (const proven of unchangedTurns) {
+                        if (releasedSet.has(proven.turnId)) continue;
+                        if (reconciledEffective.tailTurns > 0 && newestId === proven.turnId) continue;
+                        if (transcript.getTurn(proven.turnId) !== proven) continue;
+                        retained.mismatch += 1;
+                        retainedByTurn.set(proven.turnId, 'mismatch');
+                        state.knownUnreleasable.set(proven.turnId, { turn: new WeakRef(proven), status: 'mismatch' });
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } finally {
+            provenTurns.length = 0;
+            provenBytesByTurn.clear();
+            durableTasks.clear();
+            durableAttachments.clear();
+            durablePrompts.clear();
           }
           state.verifiedWireFingerprint = currentWireFp;
           state.verifiedLocator = locator;

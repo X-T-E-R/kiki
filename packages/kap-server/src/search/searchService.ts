@@ -49,6 +49,8 @@ const CHANGED_SESSION_PAGE_SIZE = 100;
 const SESSION_MTIME_CONCURRENCY = 16;
 const FULL_SESSION_SCAN_INTERVAL_MS = 30 * 60_000;
 const SESSION_SOURCE_SCAN_INTERVAL_MS = 10 * 60_000;
+const SESSION_INDEX_RETRY_BASE_MS = 2_000;
+const SESSION_INDEX_RETRY_MAX_MS = 60_000;
 
 const MAX_QUERY_TERMS = 32;
 const MAX_LITERAL_QUERY_CHARS = 1_024;
@@ -246,6 +248,8 @@ export class GlobalSearchService implements IGlobalSearchService {
   private syncQueued = false;
   private syncSkippedForReadiness = false;
   private sessionIndexStatusWaiter: IDisposable | null = null;
+  private sessionIndexRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private sessionIndexRetryMs = 0;
   /** Trailing-pass timer behind the debounce window. */
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   /** Last background sync/reindex/worker failure — surfaced as degraded. */
@@ -494,7 +498,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private requestSync(): void {
-    if (this.disposed || this.reindexing || this.sqliteDisabled) return;
+    if (this.disposed || this.reindexing || this.sqliteDisabled || this.sessionIndexStatusWaiter !== null) return;
     if (this.syncPromise !== null) {
       this.syncQueued = true;
       return;
@@ -517,6 +521,10 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private clearSessionIndexStatusWaiter(): void {
+    if (this.sessionIndexRetryTimer !== null) {
+      clearTimeout(this.sessionIndexRetryTimer);
+      this.sessionIndexRetryTimer = null;
+    }
     const waiter = this.sessionIndexStatusWaiter;
     this.sessionIndexStatusWaiter = null;
     const disposed = waiter?.dispose();
@@ -529,15 +537,22 @@ export class GlobalSearchService implements IGlobalSearchService {
     return status.source === 'authoritative' || status.state === 'ready';
   }
 
-  private waitForSessionIndexReady(): void {
+  private waitForSessionIndexReady(retryAfterMs?: number): void {
     if (this.sessionIndexStatusWaiter !== null || this.disposed) return;
-    const handleStatus = (status: ReturnType<ISessionIndex['status']>): void => {
-      if (!this.sessionIndexUsable(status) || this.disposed) return;
+    const resume = (): void => {
+      if (this.disposed) return;
       this.clearSessionIndexStatusWaiter();
       this.requestSync();
     };
-    this.sessionIndexStatusWaiter = this.sessionIndex.onDidChangeStatus(handleStatus);
-    handleStatus(this.sessionIndex.status());
+    this.sessionIndexStatusWaiter = this.sessionIndex.onDidChangeStatus((status) => {
+      if (this.sessionIndexUsable(status)) resume();
+    });
+    if (retryAfterMs === undefined) {
+      if (this.sessionIndexUsable(this.sessionIndex.status())) resume();
+      return;
+    }
+    this.sessionIndexRetryTimer = setTimeout(resume, retryAfterMs);
+    this.sessionIndexRetryTimer.unref?.();
   }
 
   private startSyncPass(): void {
@@ -589,11 +604,12 @@ export class GlobalSearchService implements IGlobalSearchService {
       plan = await this.listSessionsForSync(dirtyAtStart, forcedAtStart);
     } catch (error) {
       if (!isSessionIndexBuilding(error)) throw error;
-      this.lastSyncStartedAt = Date.now();
       this.syncSkippedForReadiness = true;
-      this.waitForSessionIndexReady();
+      this.sessionIndexRetryMs = Math.min(SESSION_INDEX_RETRY_MAX_MS, this.sessionIndexRetryMs === 0 ? SESSION_INDEX_RETRY_BASE_MS : this.sessionIndexRetryMs * 2);
+      this.waitForSessionIndexReady(this.sessionIndexRetryMs);
       return;
     }
+    this.sessionIndexRetryMs = 0;
     if (this.disposed) return;
     const previousIndexable = this.summaries;
     const { fullSync, changedIds } = plan;

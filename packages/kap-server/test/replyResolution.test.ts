@@ -60,3 +60,28 @@ it('settles handlers that send from nested callbacks or helpers without resendin
   expect(JSON.parse((await server.get('/value')).body)).toEqual({ ok: 'value' });
   expect(server.lines.join('')).not.toMatch(/FST_ERR_REP_ALREADY_SENT|ERR_HTTP_HEADERS_SENT|already sent/u);
 });
+
+it('keeps the first payload when a handler returns another value after sending, and keeps the error path before sending', async () => {
+  const server = await serve((instance) => {
+    instance.get('/send-then-return', async (_request, reply) => {
+      reply.send({ ok: 'first' });
+      await Promise.resolve();
+      return { ok: 'second' };
+    });
+    instance.get('/send-then-throw', async (_request, reply) => {
+      reply.send({ ok: 'committed' });
+      await Promise.resolve();
+      throw new Error('late failure');
+    });
+    instance.get('/throw', async () => {
+      await Promise.resolve();
+      throw new Error('early failure');
+    });
+  });
+  expect(JSON.parse((await server.get('/send-then-return')).body)).toEqual({ ok: 'first' });
+  expect(JSON.parse((await server.get('/send-then-throw')).body)).toEqual({ ok: 'committed' });
+  expect((await server.get('/throw')).status).toBe(500);
+  const log = server.lines.join('');
+  expect(log).not.toMatch(/FST_ERR_REP_ALREADY_SENT|ERR_HTTP_HEADERS_SENT|already sent/u);
+  expect(log).toContain('route handler failed after its reply started');
+});

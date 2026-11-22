@@ -8059,6 +8059,47 @@ describe('compaction summary, error details, and bounded content sources', () =>
     expect(projected.blocks.some((block) => block.kind === 'notice' && block.id === 'agent-frame-f-blocked')).toBe(false);
     expect(projected.turnTail).toMatchObject({ turnId: 't-blocked', state: 'failed', error: failure });
   });
+
+  it('keeps an earlier failed main turn notice once a later turn owns the turn tail', () => {
+    const failure = 'antigravity_safety: The upstream response was blocked by a safety policy.';
+    const failed: AgentTranscriptSnapshot['items'][number] = {
+      kind: 'turn',
+      turnId: 't-blocked',
+      ordinal: 1,
+      state: 'failed',
+      origin: { kind: 'user', payload: { promptId: 'p-blocked' } },
+      prompt: 'Run check',
+      startedAt: FIXED_AT,
+      endedAt: FIXED_AT_1,
+      error: failure,
+      steps: [{
+        kind: 'step',
+        stepId: 's-blocked',
+        turnId: 't-blocked',
+        ordinal: 1,
+        state: 'failed',
+        frames: [{ kind: 'notice', frameId: 'f-blocked', level: 'error', message: failure }],
+      }],
+    };
+    const next: AgentTranscriptSnapshot['items'][number] = {
+      kind: 'turn',
+      turnId: 't-next',
+      ordinal: 2,
+      state: 'completed',
+      origin: { kind: 'user', payload: { promptId: 'p-next' } },
+      prompt: 'Try again',
+      startedAt: FIXED_AT_1,
+      endedAt: FIXED_AT_1,
+      steps: [],
+    };
+    const state = createViewState('session_test');
+    const tailOnly = projectAgentTranscriptView(state, 'main', emptySnapshot({ items: [failed] }));
+    expect(tailOnly.blocks.some((block) => block.id === 'agent-frame-f-blocked')).toBe(false);
+    const withNext = projectAgentTranscriptView(state, 'main', emptySnapshot({ items: [failed, next] }));
+    expect(withNext.blocks.find((block) => block.id === 'agent-frame-f-blocked')).toMatchObject({
+      kind: 'notice', turnId: 't-blocked', tone: 'danger', text: failure,
+    });
+  });
 });
 
 describe('linear transcript projection and running-turn settled step reuse (#11)', () => {
