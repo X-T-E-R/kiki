@@ -39,7 +39,8 @@ jobs:
       - name: Rebuild host PTY dependency
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+          NODE_GYP_BIN="$(dirname "$(dirname "$(command -v npm)")")/lib/node_modules/npm/node_modules/.bin"
+          PATH="$NODE_GYP_BIN:$PATH" pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - run: pnpm run build
       - name: Smoke test CLI bundle
         run: pnpm -C apps/kimi-code run smoke
@@ -69,7 +70,8 @@ jobs:
       - name: Rebuild host PTY dependency
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+          NODE_GYP_BIN="$(dirname "$(dirname "$(command -v npm)")")/lib/node_modules/npm/node_modules/.bin"
+          PATH="$NODE_GYP_BIN:$PATH" pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - name: Run ordinary test shard
         run: node scripts/ci-test-partition.mjs run ordinary --shard=${{ matrix.shard }}/5
 
@@ -134,7 +136,8 @@ jobs:
       - name: Rebuild host PTY dependency
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+          NODE_GYP_BIN="$(dirname "$(dirname "$(command -v npm)")")/lib/node_modules/npm/node_modules/.bin"
+          PATH="$NODE_GYP_BIN:$PATH" pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - name: Run real media preview tests
         run: node scripts/ci-test-partition.mjs run media
 
@@ -177,7 +180,8 @@ jobs:
       - name: Rebuild host PTY dependency
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+          NODE_GYP_BIN="$(dirname "$(dirname "$(command -v npm)")")/lib/node_modules/npm/node_modules/.bin"
+          PATH="$NODE_GYP_BIN:$PATH" pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - name: Build GUI assets for rendering tests
         run: pnpm --filter @kiki/gui run build
       - name: Run full root test shard

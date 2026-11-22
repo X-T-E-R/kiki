@@ -163,7 +163,8 @@ jobs:
         shell: bash
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+          NODE_GYP_BIN="$(dirname "$(dirname "$(command -v npm)")")/lib/node_modules/npm/node_modules/.bin"
+          PATH="$NODE_GYP_BIN:$PATH" pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
 
       - name: Setup macOS keychain (release only)
         if: runner.os == 'macOS' && inputs.sign-macos

@@ -150,7 +150,7 @@ async function render(width = '1100px') {
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   clients.push(client);
   await act(async () => {
     root.render(
@@ -480,7 +480,10 @@ describe('ChannelsCard two-way accounts', () => {
 
   it('retries a failed snapshot and catalog without offering a false binding action', async () => {
     fixture.discover();
-    vi.spyOn(fixture.client.imSessions, 'snapshot').mockRejectedValueOnce(new Error('Unavailable'));
+    vi.spyOn(fixture.client.imSessions, 'snapshot')
+      .mockRejectedValueOnce(new Error('Unavailable'))
+      .mockRejectedValueOnce(new Error('Unavailable'))
+      .mockRejectedValueOnce(new Error('Unavailable'));
     vi.spyOn(fixture.client.imSessions, 'catalog').mockRejectedValueOnce(new Error('Unavailable'));
     const container = await render();
     expect(container.textContent).toContain('Could not load IM accounts.');

@@ -84,7 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+          NODE_GYP_BIN="$(dirname "$(dirname "$(command -v npm)")")/lib/node_modules/npm/node_modules/.bin"
+          PATH="$NODE_GYP_BIN:$PATH" pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
       - name: Test workflow and updater contracts
         if: inputs.suite == 'smoke'
         run: node --test scripts/ci-test-partition.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs

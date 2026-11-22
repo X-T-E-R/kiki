@@ -15,7 +15,7 @@ jobs:
   publish:
     name: Publish Kiki preview
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'X-T-E-R' && github.event.pull_request.draft == false
+    if: vars.ENABLE_PKG_PR_NEW == 'true' && github.repository_owner == 'X-T-E-R' && github.event.pull_request.draft == false
 
     steps:
       - name: Checkout
