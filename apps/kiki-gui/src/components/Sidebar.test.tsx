@@ -4607,4 +4607,100 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
       unregister();
     }
   });
+
+  it('renders unified typographic tabs with keyboard roving focus and right-aligned session tools without a duplicate Sessions heading', async () => {
+    const running = { ...session('s-run'), title: 'Running job', busy: true, executing: true, last_seq: 4, updated_at: '2026-10-06T11:30:00Z' };
+    const { container, render } = await mount({
+      sidebarMode: 'sessions',
+      sessions: [running],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [running] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    const inboxTab = container.querySelector<HTMLButtonElement>('[data-sidebar-mode="inbox"]')!;
+    const sessionsTab = container.querySelector<HTMLButtonElement>('[data-sidebar-mode="sessions"]')!;
+    expect(sessionsTab.getAttribute('aria-selected')).toBe('true');
+    expect(sessionsTab.tabIndex).toBe(0);
+    expect(inboxTab.tabIndex).toBe(-1);
+
+    // Inline session actions live on the right of the unified mode bar, not below a duplicate Sessions heading.
+    const actionsBar = container.querySelector('[data-sidebar-mode-actions]');
+    expect(actionsBar).not.toBeNull();
+    expect(actionsBar?.querySelector('[data-filter-menu-toggle]')).not.toBeNull();
+    expect(actionsBar?.querySelector('[data-view-menu-toggle]')).not.toBeNull();
+    expect(actionsBar?.querySelector('[data-status-shortcut="running"]')).not.toBeNull();
+    expect(container.querySelector('[data-session-list] h2')).toBeNull();
+
+    // ArrowLeft switches cleanly to inbox mode and hides session-list tools.
+    await act(async () => {
+      sessionsTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    });
+    await render({
+      sidebarMode: 'inbox',
+      sessions: [running],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [running] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    expect(container.querySelector('[data-sidebar-mode="inbox"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-sidebar-mode-actions]')).toBeNull();
+  });
+
+  it('keeps the currently entered running or idle conversation visible in inbox active list without inflating badges, and moves it to working when navigating away', async () => {
+    const running = { ...session('s-run'), title: 'Active running thread', busy: true, executing: true, last_seq: 3, updated_at: '2026-10-06T11:30:00Z' };
+    const idle = { ...session('s-idle'), title: 'Quiet settled thread', last_seq: 0, updated_at: '2026-10-06T10:00:00Z' };
+    const mounted = await mount({
+      sidebarMode: 'inbox',
+      activeSessionId: 's-run',
+      sessions: [running, idle],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [running, idle] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    // While inside s-run as it executes, it stays in the primary active list (not hidden in Working drawer) with zero badge.
+    expect(mounted.container.querySelector('[data-inbox-active-list] [data-inbox-row="s-run"]')).not.toBeNull();
+    expect(mounted.container.querySelector('[data-inbox-drawer="working"] [data-inbox-row="s-run"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-activity-badge]')).toBeNull();
+
+    // Navigating to s-idle moves s-run cleanly into the Working drawer and keeps s-idle visible in the primary active list.
+    await mounted.render({
+      sidebarMode: 'inbox',
+      activeSessionId: 's-idle',
+      sessions: [running, idle],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [running, idle] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    expect(mounted.container.querySelector('[data-inbox-active-list] [data-inbox-row="s-idle"]')).not.toBeNull();
+    expect(mounted.container.querySelector('[data-inbox-active-list] [data-inbox-row="s-run"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-inbox-drawer="working"] [data-inbox-row="s-run"]')).not.toBeNull();
+    expect(mounted.container.querySelector('[data-activity-badge]')).toBeNull();
+  });
+
+  it('targets the clicked local subspace homeId (not main) when opening a cross-subspace inbox item', async () => {
+    const subSession = { ...session('s-sub'), title: 'Subspace run', last_turn_reason: 'completed' as const, last_seq: 5, updated_at: '2026-10-06T11:20:00Z' };
+    const sources = [
+      { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [], rooms: [], workspaces: [] },
+      { spaceKey: 'sub-work', spaceName: 'Work', isRemote: false, sessions: [subSession], rooms: [], workspaces: [] },
+    ];
+    const scopeNav = vi.fn(async () => {});
+    const unregister = registerScopeNavigation(scopeNav);
+    try {
+      const mounted = await mount({
+        sidebarMode: 'inbox',
+        sessions: [],
+        sessionGroups: [],
+        multiSpaceSources: sources,
+        nowMs: FIXTURE_NOW_MS,
+      });
+      await act(async () => {
+        mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-sub"] button')!.click();
+      });
+      expect(scopeNav).toHaveBeenCalledWith({
+        homeId: 'sub-work',
+        scopeId: 'local',
+        route: '/s/s-sub',
+        inPlace: true,
+      });
+    } finally {
+      unregister();
+    }
+  });
 });

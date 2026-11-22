@@ -97,7 +97,7 @@ interface ConversationShellContextValue {
 }
 
 const ConversationShellContext = createContext<ConversationShellContextValue | null>(null);
-const ConversationSeatHeightContext = createContext<number>(0);
+export const ConversationSeatHeightContext = createContext<number>(0);
 
 /** Measured pixel height of the bottom-docked composer seat (0 in hero / outside shell). */
 export function useConversationSeatHeight(): number {

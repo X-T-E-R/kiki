@@ -157,6 +157,7 @@ export interface ConnectionValue {
   readonly restoreLocal: (signal?: AbortSignal) => Promise<void>;
   readonly scopeAdapter: ScopeConnectionAdapter;
   readonly needsScopeReload: boolean;
+  readonly clearScopeReload?: () => void;
   readonly config: ConnectionConfig;
   readonly client: KikiClient;
   /** Desktop control connection, retained independently of the active SSH session. */
@@ -1699,6 +1700,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [connected, selection?.source, pairedAuthRevoked]);
 
   const [needsScopeReload, setNeedsScopeReload] = useState(false);
+  const clearScopeReload = useCallback(() => { setNeedsScopeReload(false); }, []);
   const adapterActiveRef = useRef({ scope: { homeId: spaceKey, scopeId }, selection, client });
   adapterActiveRef.current = { scope: { homeId: spaceKey, scopeId }, selection, client };
   const scopeAdapter = useMemo(() => createScopeConnectionAdapter({
@@ -1746,7 +1748,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         configureSpaceStorage({ homeId: next.scopeId });
       }
       const sourceClient = adapterActiveRef.current.client;
-      if (next.source === 'remote' && !desktopRuntime && sourceSelection !== null && sourceSelection.source !== 'remote' && sourceSelection.source !== 'ssh') {
+      if (
+        next.source === 'remote'
+        && sourceSelection !== null
+        && sourceSelection.source !== 'remote'
+        && sourceSelection.source !== 'ssh'
+        && (!desktopRuntime || localSelectionRef.current === null || localClientRef.current === null)
+      ) {
         const savedLocal: ConnectionSelection = { ...sourceSelection, scopeId: adapterActiveRef.current.scope.scopeId };
         updateLocalSelection(savedLocal);
         if (sourceClient !== null) {
@@ -2091,7 +2099,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       ?? (selection?.source !== 'remote' && selection?.source !== 'ssh' ? scopeId : 'local');
     return {
       connectionId, connectionSource: selection?.source ?? null, spaceKey, localSpaceKey: resolvedLocalSpaceKey, localScopeId: resolvedLocalScopeId, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
-      activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload,
+      activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, clearScopeReload,
       config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed,
       recovery: activeRecovery === null || (activeRecovery.phase === 'checking' && wsBannerSuppressed)
         ? undefined
@@ -2099,7 +2107,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       nudge: nudgeConnection,
       disconnect, applyConnection,
     };
-  }, [connectionId, connectionSource, spaceKey, scopeId, localSelection?.scopeId, selection?.source, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed, desktopFailure, nudgeConnection, disconnect, applyConnection]);
+  }, [connectionId, connectionSource, spaceKey, scopeId, localSelection?.scopeId, selection?.source, selection?.tunnelId, selection?.profile?.label, activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, clearScopeReload, config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed, desktopFailure, nudgeConnection, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null

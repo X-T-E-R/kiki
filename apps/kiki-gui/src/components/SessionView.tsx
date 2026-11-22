@@ -5361,6 +5361,25 @@ boundExecution,
       ),
     }
   ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
+  const composerBusy = canAbortActiveTurn(state);
+  const recoveryHoldCount = state.promptQueueHold?.count ?? 0;
+  const recoveryHold = recoveryHoldCount > 0;
+  // The composer footer carries connection facts and actionable continuation only;
+  // idle completed-history prompt caps stay out of the footer unless recovery
+  // hold, held/failed durable ingress, or an explicit load error needs attention.
+  const hasActionableDurableIngress = useMemo(
+    () => mainDurableIngress?.some((item) => item.admission === 'held' || item.admission === 'failed') ?? false,
+    [mainDurableIngress],
+  );
+  const showQueuePromptContinuation =
+    hasPromptContinuation
+    && promptCoverage !== undefined
+    && (
+      recoveryHold
+      || hasActionableDurableIngress
+      || promptEntityLoad !== undefined
+      || queuedItems.length >= Math.max(1, promptCoverage.returned - (composerBusy ? 1 : 0))
+    );
   const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
     // A queued switch is a queue item too: the strip stays visible so its
     // control row can be changed or cancelled before it runs. A scheduled
@@ -5410,7 +5429,7 @@ boundExecution,
           sendNowDisabled={state.resyncing || state.resyncFailed}
           sendNowUnavailable={nativeSteeringUnavailable ? t('harness.steerUnsupported') : undefined}
           timingReady={queueTimingReady}
-          promptContinuation={hasPromptContinuation && promptCoverage !== undefined
+          promptContinuation={showQueuePromptContinuation && promptCoverage !== undefined
             ? { coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }
             : undefined}
           agentRefTasks={state.tasks} onOpenAgent={openAgent}
@@ -5423,7 +5442,7 @@ boundExecution,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
     modelSwitches.switches, state.queuedPromptMeta, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
-    hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
+    showQueuePromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
     controller, sessionId, state.detailLoads, state.contentRefs, state.tasks, openAgent,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
@@ -5432,8 +5451,6 @@ boundExecution,
 
   // Keep recovery controls mounted until the engine releases the queue hold.
   const [recoveryPending, setRecoveryPending] = useState(false);
-  const recoveryHoldCount = state.promptQueueHold?.count ?? 0;
-  const recoveryHold = recoveryHoldCount > 0;
   const handleRecoveryConfirm = useCallback(() => {
     setRecoveryPending(true);
     void client
@@ -5571,13 +5588,6 @@ boundExecution,
     }
   ), [trayItems, trayAgentNames, reviewRequest?.seq, mainTimelineActions.resolveApproval, mainTimelineActions.answerQuestion, mainTimelineActions.dismissQuestion, handleBatchResolve,
     controller, state.detailLoads, state.contentRefs, sessionId, permissionMode, handlePermissionChange]);
-  // The composer footer carries connection facts and actionable continuation only;
-  // idle completed-history prompt caps stay out of the footer unless recovery
-  // hold, held/failed durable ingress, or an explicit load error needs attention.
-  const hasActionableDurableIngress = useMemo(
-    () => mainDurableIngress?.some((item) => item.admission === 'held' || item.admission === 'failed') ?? false,
-    [mainDurableIngress],
-  );
   const composerStatusNotice = useMemo(() => {
     if (!hasPromptContinuation || promptCoverage === undefined) return undefined;
     if (queueRowCount > 0) return undefined;
@@ -5585,7 +5595,6 @@ boundExecution,
     return <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} />;
   }, [hasPromptContinuation, promptCoverage, queueRowCount, recoveryHold, hasActionableDurableIngress, promptEntityLoad, handleLoadPromptEntities]);
 
-  const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is
   // busy (an approval or question hands the floor to the tray instead).
   const composerWorking = composerBusy && state.pendingInteraction === 'none';

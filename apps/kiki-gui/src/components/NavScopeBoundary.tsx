@@ -51,6 +51,10 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   const retryRef = useRef<(() => void) | null>(null);
   const bootAttemptRef = useRef<AbortController | null>(null);
   const verifiedBootRef = useRef<string | null>(null);
+  const failedBootKeyRef = useRef<string | null>(null);
+  const reloadDispatchedForRef = useRef<ScopeDestination | null>(null);
+  const locationKeyRef = useRef(location.key);
+  locationKeyRef.current = location.key;
   const notificationBoot = (location.state as { kikiNav?: { intent?: string } } | null)?.kikiNav?.intent === 'notification';
   const target = destinationForLocation(location, active);
   const safe = !(notificationBoot && verifiedBootRef.current !== location.key) && !isCrossScopeNavigation(active, target.scope) &&
@@ -116,11 +120,13 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
           token = undefined;
           continue;
         }
+        let committed = false;
         try {
           assertCurrent();
           acceptedRef.current = { ...candidate, scope: prepared.scope };
           inPlaceHandoffRef.current = inPlace;
           await prepared.commit();
+          committed = true;
           assertCurrent();
           if (skipped && candidateVisit !== null && source !== null) {
             const delta = getVisitDelta(candidateVisit.visitId, source);
@@ -133,7 +139,15 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
           acceptedRef.current = null;
           inPlaceHandoffRef.current = false;
           await prepared.dispose();
-          if (!inPlace && !signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
+          if (committed) {
+            failedBootKeyRef.current = locationKeyRef.current;
+            reloadDispatchedForRef.current = null;
+            connection.clearScopeReload?.();
+            retryRef.current = () => {
+              void requestScopeNavigation({ scope: candidate.scope, route: candidate.route }).catch(() => {});
+            };
+            setState({ phase: 'failed', target: candidate, reason: error instanceof ScopeRestoreError ? error.reason : 'offline' });
+          } else if (!inPlace && !signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
             setState({ phase: 'failed', target: candidate, reason: error instanceof ScopeRestoreError ? error.reason : 'offline' });
           } else if (inPlace) {
             setState({ phase: 'idle' });
@@ -142,7 +156,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
         }
       }
     } finally { release(); }
-  }, [connection.scopeAdapter, active]);
+  }, [connection.scopeAdapter, connection.clearScopeReload, active]);
   const guard = useDirtyGuardState(location, performNavigation, {
     needsPreparation: (next) => {
       const destination = destinationForLocation(next, active);
@@ -187,11 +201,23 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     // A remote space is carried by this window's own home, so there is no local
     // home to switch: the reload re-selects it from the handoff instead.
     if (remoteEntry) window.location.reload();
-    else if (host.switchSpace) void host.switchSpace(destination.scope.homeId).catch(() => {
-      setState({ phase: 'failed', target: destination, reason: 'offline' });
-    });
+    else if (host.switchSpace) {
+      if (reloadDispatchedForRef.current === destination) return;
+      reloadDispatchedForRef.current = destination;
+      void Promise.resolve(host.switchSpace(destination.scope.homeId)).catch(() => {
+        acceptedRef.current = null;
+        inPlaceHandoffRef.current = false;
+        reloadDispatchedForRef.current = null;
+        failedBootKeyRef.current = locationKeyRef.current;
+        connection.clearScopeReload?.();
+        retryRef.current = () => {
+          void requestScopeNavigation({ scope: destination.scope, route: destination.route }).catch(() => {});
+        };
+        setState({ phase: 'failed', target: destination, reason: 'offline' });
+      });
+    }
     else window.location.reload();
-  }, [connection.needsScopeReload, location, action, host, active]);
+  }, [connection.needsScopeReload, connection.clearScopeReload, location, action, host, active]);
   useEffect(() => {
     if (safe) {
       // A reload request can render while Router is still on the safe source.
@@ -199,10 +225,12 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
       if (connection.needsScopeReload) return;
       acceptedRef.current = null;
       inPlaceHandoffRef.current = false;
+      reloadDispatchedForRef.current = null;
+      failedBootKeyRef.current = null;
       setState({ phase: 'idle' });
       return;
     }
-    if (connection.needsScopeReload || acceptedRef.current !== null) return;
+    if (connection.needsScopeReload || acceptedRef.current !== null || failedBootKeyRef.current === location.key) return;
     const controller = new AbortController();
     bootAttemptRef.current = controller;
     const run = () => { void prepare(target, controller.signal, location).then((redirect) => {
@@ -276,18 +304,25 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     bootAttemptRef.current?.abort();
     guard.cancel();
     acceptedRef.current = null;
+    inPlaceHandoffRef.current = false;
+    reloadDispatchedForRef.current = null;
+    failedBootKeyRef.current = null;
     explicitRef.current = null;
     tokenRef.current = undefined;
     retryRef.current = null;
+    connection.clearScopeReload?.();
     setState({ phase: 'idle' });
-    if (!safe && !connection.needsScopeReload) {
+    if (!safe) {
       void rawNavigate(route ?? '/new', { replace: true, state: { kikiNav: { scope: active } } });
     } else if (route !== undefined) void guard.navigate(route);
-  }, [guard.cancel, guard.navigate, safe, connection.needsScopeReload, active, rawNavigate]);
+  }, [guard.cancel, guard.navigate, safe, connection.clearScopeReload, active, rawNavigate]);
   const retry = useCallback((token?: string) => {
     tokenRef.current = token;
     if (retryRef.current !== null) retryRef.current();
-    else void Promise.resolve(guard.confirm()).catch(() => {});
+    else {
+      failedBootKeyRef.current = null;
+      void Promise.resolve(guard.confirm()).catch(() => {});
+    }
   }, [guard.confirm]);
   const queryClient = useContext(QueryClientContext);
   // A paired space's pairing record lives on this window's own home — the same
@@ -313,14 +348,19 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   const localSpaceLabel = here !== null && !here.homeId.startsWith('remote:')
     ? (here.name ?? t('sidebar.space.unnamed'))
     : t('st.spaces.main');
-  const value = { state, transitioningInPlace, retry, cancel };
+  const recoveryState: ScopeRestoreState = state.phase !== 'idle'
+    ? state
+    : !safe && !transitioningInPlace
+      ? { phase: 'restoring', target }
+      : state;
+  const value = { state: recoveryState, transitioningInPlace, retry, cancel };
   return <ScopeRestoreContext.Provider value={value}>
     <DirtyGuardStateContext.Provider value={guard}>
       <DirtyGuardContext.Provider value={guard.value}>
         <div className="relative h-full">
-          <div className="h-full" inert={state.phase !== 'idle'}>{safe || transitioningInPlace ? children : null}</div>
-          {state.phase !== 'idle' ? <div className="absolute inset-0 z-50 bg-canvas">
-            <NavScopeRecovery state={state} retry={retry} cancel={cancel} remote={remote} exitSpaceName={localSpaceLabel} />
+          <div className="h-full" inert={recoveryState.phase !== 'idle'}>{safe || transitioningInPlace ? children : null}</div>
+          {recoveryState.phase !== 'idle' ? <div className="absolute inset-0 z-50 bg-canvas">
+            <NavScopeRecovery state={recoveryState} retry={retry} cancel={cancel} remote={remote} exitSpaceName={localSpaceLabel} />
           </div> : null}
         </div>
       </DirtyGuardContext.Provider>

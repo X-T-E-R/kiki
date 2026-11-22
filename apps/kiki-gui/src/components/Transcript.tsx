@@ -6234,10 +6234,39 @@ export const Transcript = memo(function Transcript({
     || (showTurnStatus && view !== 'message')
     || (!state.busy && state.turnTail !== undefined)
     || state.refreshing === true;
-  const seatPaddingEnd = 60 + Math.max(0, seatHeight - 36);
+  const tailSlotRef = useRef<HTMLDivElement | null>(null);
+  const [tailSlotElement, setTailSlotElement] = useState<HTMLDivElement | null>(null);
+  const handleTailSlotRef = useCallback((node: HTMLDivElement | null) => {
+    tailSlotRef.current = node;
+    setTailSlotElement(node);
+  }, []);
+  const [tailSlotHeight, setTailSlotHeight] = useState(0);
+  useLayoutEffect(() => {
+    if (!hasTailContent || tailSlotElement === null) {
+      setTailSlotHeight(0);
+      return;
+    }
+    const readHeight = (entry?: ResizeObserverEntry): number => {
+      const boxHeight = entry?.borderBoxSize?.[0]?.blockSize ?? entry?.contentRect?.height ?? 0;
+      if (boxHeight > 0) return Math.ceil(boxHeight);
+      const rectHeight = Math.ceil(tailSlotElement.getBoundingClientRect().height);
+      return rectHeight > 0 ? rectHeight : Math.ceil(tailSlotElement.offsetHeight);
+    };
+    const sync = (entries?: readonly ResizeObserverEntry[]) => {
+      const next = readHeight(entries?.[0]);
+      setTailSlotHeight((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => { sync(entries); });
+    observer.observe(tailSlotElement);
+    return () => { observer.disconnect(); };
+  }, [hasTailContent, tailSlotElement]);
+  const baseSeatPaddingEnd = 60 + Math.max(0, seatHeight - 36);
+  const effectiveTailHeight = hasTailContent ? tailSlotHeight : 0;
+  const seatPaddingEnd = baseSeatPaddingEnd + (effectiveTailHeight > 0 ? effectiveTailHeight + 12 : 0);
   const seatPaddingEndRef = useRef(seatPaddingEnd);
   seatPaddingEndRef.current = seatPaddingEnd;
-  const tailSlotRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
@@ -6354,6 +6383,31 @@ export const Transcript = memo(function Transcript({
   });
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
+  const prevSeatPaddingEndRef = useRef(seatPaddingEnd);
+  useLayoutEffect(() => {
+    const prev = prevSeatPaddingEndRef.current;
+    prevSeatPaddingEndRef.current = seatPaddingEnd;
+    if (seatPaddingEnd <= prev) return;
+    if (
+      !visible ||
+      !initialScrollDoneRef.current ||
+      olderInflightRef.current ||
+      navRestorePendingRef.current ||
+      rekeyedFoldAnchorRef.current !== null ||
+      !isFollowingBottom()
+    ) {
+      return;
+    }
+    const el = scrollRef.current;
+    if (el === null || !el.isConnected || el.clientHeight <= 0) return;
+    const target = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (target - el.scrollTop <= 0.5) return;
+    markProgrammaticScroll(target);
+    el.scrollTop = target;
+    virtualizer.scrollOffset = el.scrollTop;
+    lastObservedScrollTopRef.current = el.scrollTop;
+    lastTotalSizeRef.current = virtualizer.getTotalSize();
+  }, [seatPaddingEnd, visible, isFollowingBottom, markProgrammaticScroll, virtualizer]);
   const landAtEnd = useCallback(() => {
     const el = scrollRef.current;
     const stick = stickToBottomRef.current;
@@ -7891,7 +7945,7 @@ export const Transcript = memo(function Transcript({
           })}
           {hasTailContent ? (
             <div
-              ref={tailSlotRef}
+              ref={handleTailSlotRef}
               data-transcript-tail-slot
               className="pointer-events-none absolute top-0 left-0 w-full"
               style={{ transform: `translate3d(0, ${Math.max(0, virtualizer.getTotalSize() - seatPaddingEnd + 12)}px, 0)` }}

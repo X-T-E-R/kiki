@@ -361,4 +361,55 @@ describe('buildUnifiedInbox', () => {
     expect(triaged.active.map((item) => item.sessionId)).toEqual(['other-unread']);
     expect(triaged.archived.map((item) => item.sessionId)).toEqual(['viewed']);
   });
+
+  it('keeps the currently entered running, idle, settled, or snoozed conversation in active without inflating badge counts or duplicating drawers', () => {
+    const refRunning: ConversationRef = { spaceKey: 'main', kind: 'session', id: 'active-run' };
+    const refIdle: ConversationRef = { spaceKey: 'main', kind: 'session', id: 'active-idle' };
+    const refSnoozedBlocked: ConversationRef = { spaceKey: 'main', kind: 'session', id: 'active-snoozed' };
+    const refArchived: ConversationRef = { spaceKey: 'main', kind: 'session', id: 'active-archived' };
+    const runKey = keyOf(refRunning);
+    const idleKey = keyOf(refIdle);
+    const snoozedKey = keyOf(refSnoozedBlocked);
+    const archivedKey = keyOf(refArchived);
+
+    const entries: UnifiedInboxEntry[] = [
+      { kind: 'session', spaceKey: 'main', spaceName: 'Main', isRemote: false, session: session({ id: 'active-run', busy: true, executing: true, last_seq: 4, updated_at: '2026-01-01T03:00:00.000Z' }) },
+      { kind: 'session', spaceKey: 'main', spaceName: 'Main', isRemote: false, session: session({ id: 'active-idle', last_seq: 5, attention_cursor: { epoch: 'e1', seq: 5 }, updated_at: '2026-01-01T02:00:00.000Z' }) },
+      { kind: 'session', spaceKey: 'main', spaceName: 'Main', isRemote: false, session: session({ id: 'active-snoozed', pending_interaction: 'approval', last_seq: 6, attention_cursor: { epoch: 'e1', seq: 6 }, updated_at: '2026-01-01T01:00:00.000Z' }) },
+      { kind: 'session', spaceKey: 'main', spaceName: 'Main', isRemote: false, session: session({ id: 'active-archived', last_seq: 7, attention_cursor: { epoch: 'e1', seq: 7 }, updated_at: '2026-01-01T00:30:00.000Z' }) },
+    ];
+    const seenMap = {
+      [idleKey]: { epoch: 'e1', seq: 5, updatedAt: 100 },
+    };
+    const triageMap: ConversationTriageMap = {
+      [snoozedKey]: { s: 'snoozed', epoch: 'e1', seq: 6, u: 9000, t: 100 },
+      [archivedKey]: { s: 'archived', epoch: 'e1', seq: 7, t: 100 },
+    };
+
+    // Entering the running conversation keeps it in active (not duplicated in working) with zero badge count.
+    const viewingRunning = buildUnifiedInbox(entries, seenMap, triageMap, 1000, { activeConversationKey: runKey });
+    expect(viewingRunning.active.map((item) => item.sessionId)).toEqual(['active-run']);
+    expect(viewingRunning.working).toEqual([]);
+    expect(viewingRunning.needsYouCount).toBe(0);
+    expect(viewingRunning.unreadCount).toBe(0);
+    expect(viewingRunning.total).toBe(0);
+
+    // Navigating away to the idle conversation moves the running session cleanly to working and keeps the idle one visible in active.
+    const viewingIdle = buildUnifiedInbox(entries, seenMap, triageMap, 1000, { activeConversationKey: idleKey });
+    expect(viewingIdle.active.map((item) => item.sessionId)).toEqual(['active-idle']);
+    expect(viewingIdle.working.map((item) => item.sessionId)).toEqual(['active-run']);
+    expect(viewingIdle.total).toBe(0);
+
+    // Viewing a snoozed needsYou conversation shows it in active without duplicating in snoozed or inflating needsYouCount.
+    const viewingSnoozed = buildUnifiedInbox(entries, seenMap, triageMap, 1000, { activeConversationKey: snoozedKey });
+    expect(viewingSnoozed.active.map((item) => item.sessionId)).toEqual(['active-snoozed']);
+    expect(viewingSnoozed.snoozed).toEqual([]);
+    expect(viewingSnoozed.needsYouCount).toBe(0);
+    expect(viewingSnoozed.total).toBe(0);
+
+    // Viewing an inbox-archived conversation respects its archived bucket.
+    const viewingArchived = buildUnifiedInbox(entries, seenMap, triageMap, 1000, { activeConversationKey: archivedKey });
+    expect(viewingArchived.active).toEqual([]);
+    expect(viewingArchived.archived.map((item) => item.sessionId)).toEqual(['active-archived']);
+  });
 });

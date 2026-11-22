@@ -75,6 +75,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
   encodeConversationRef,
+  readDesktopPrefs,
   readLastSessionId,
   roomSeenKey,
   shownPinnedNavItems,
@@ -96,6 +97,7 @@ import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conve
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePaneResize, usePhoneMode } from '../lib/layoutHooks';
 import { requestScopeNavigation } from '../lib/navScope';
+import { enterSpace, launchWindowMode } from '../lib/spaces';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { remoteSpaceScope } from '../lib/remoteConnections';
 import { unzoomedPoint, unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
@@ -1088,15 +1090,23 @@ export function Sidebar({
     options?: { readonly pinItem?: UnifiedInboxItem },
   ) => {
     const sameSpace = ref.spaceKey === currentSpaceKey;
+    const isRemoteTarget = ref.spaceKey.startsWith('remote:');
+    const targetHomeId = ref.spaceKey !== '' ? ref.spaceKey : effectiveLocalSpaceKey;
+    const isOtherLocalSubspace = !sameSpace && !isRemoteTarget && targetHomeId !== effectiveLocalSpaceKey;
+    const opensSeparateWindow =
+      host.kind === 'tauri'
+      && isOtherLocalSubspace
+      && host.openSpace !== undefined
+      && launchWindowMode(readDesktopPrefs().windowMode) === 'windows';
     const handle = beginExplicitConversationOpen(ref, cursor, { syncLegacy: sameSpace });
-    if (options?.pinItem !== undefined) {
+    if (options?.pinItem !== undefined && !opensSeparateWindow) {
       inboxTriage.pinViewingItem(options.pinItem);
     } else {
       inboxTriage.clearViewingPin();
     }
     const rollback = () => {
       handle.cancel();
-      if (options?.pinItem !== undefined) {
+      if (options?.pinItem !== undefined && !opensSeparateWindow) {
         inboxTriage.clearViewingPin();
       }
     };
@@ -1107,7 +1117,7 @@ export function Sidebar({
       void navigate(href, undefined, rollback);
       return;
     }
-    if (ref.spaceKey.startsWith('remote:')) {
+    if (isRemoteTarget) {
       const targetConnectionId = ref.spaceKey.slice('remote:'.length);
       void requestScopeNavigation({
         ...remoteSpaceScope(targetConnectionId),
@@ -1116,13 +1126,17 @@ export function Sidebar({
       }).catch(rollback);
       return;
     }
+    if (opensSeparateWindow) {
+      void enterSpace(host, targetHomeId, 'windows').catch(rollback);
+      return;
+    }
     void requestScopeNavigation({
-      homeId: effectiveLocalSpaceKey,
-      scopeId: effectiveLocalScopeId,
+      homeId: targetHomeId,
+      scopeId: isOtherLocalSubspace ? 'local' : effectiveLocalScopeId,
       route: href,
       inPlace: true,
     }).catch(rollback);
-  }, [currentSpaceKey, effectiveLocalSpaceKey, effectiveLocalScopeId, inboxTriage, location.pathname, navigate]);
+  }, [currentSpaceKey, effectiveLocalSpaceKey, effectiveLocalScopeId, host, inboxTriage, location.pathname, navigate]);
 
   const openSessionRow = useCallback((session: Session, targetSpaceKey = currentSpaceKey) => {
     openConversation(
@@ -2322,10 +2336,70 @@ export function Sidebar({
       {!search.active ? (
         <SidebarModeSwitch
           mode={activeSidebarMode}
-          onChange={(nextMode) => { writeLayoutPreferences({ sidebarMode: nextMode }); }}
+          onChange={(nextMode) => {
+            if (nextMode !== 'sessions') setOpenMenu(null);
+            writeLayoutPreferences({ sidebarMode: nextMode });
+          }}
           needsYouCount={badgeNeedsYou}
           unreadCount={badgeUnread}
           total={badgeTotal}
+          actions={activeSidebarMode === 'sessions' ? (
+            <>
+              {counts.running > 0 ? (
+                <button
+                  type="button"
+                  data-status-shortcut="running"
+                  data-activity-summary
+                  aria-pressed={filters.status.includes('running')}
+                  aria-label={tp('sidebar.runningCount', counts.running)}
+                  title={tp('sidebar.runningCount', counts.running)}
+                  onClick={() => { toggleStatus('running'); }}
+                  className="hidden h-6 shrink-0 items-center gap-1 rounded-md px-1 text-[11.5px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:px-1.5 @[215px]:flex"
+                >
+                  <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
+                  <span>{counts.running}</span>
+                </button>
+              ) : null}
+              {workspaceGroupKeys.length > 1 && !foldsSuspended ? (
+                <button
+                  type="button"
+                  data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
+                  aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+                  title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+                  onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
+                  className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-9 pointer-coarse:w-9 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink @[215px]:flex"
+                >
+                  <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                ref={filterMenuButtonRef}
+                data-filter-menu-toggle
+                aria-haspopup="menu"
+                aria-expanded={openMenu === 'filter'}
+                aria-label={t('sidebar.filterMenu')}
+                title={t('sidebar.filterMenu')}
+                onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-9 pointer-coarse:w-9 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
+              >
+                <Icon name="filter" size={14} />
+              </button>
+              <button
+                type="button"
+                ref={viewMenuButtonRef}
+                data-view-menu-toggle
+                aria-haspopup="menu"
+                aria-expanded={openMenu === 'view'}
+                aria-label={t('sidebar.viewMenu')}
+                title={t('sidebar.viewMenu')}
+                onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-9 pointer-coarse:w-9 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
+              >
+                <Icon name="sliders" size={14} />
+              </button>
+            </>
+          ) : undefined}
         />
       ) : null}
 
@@ -2374,7 +2448,7 @@ export function Sidebar({
         ref={listRef}
         onScroll={onListScroll}
         data-session-list-scrolled={listScrolled ? 'true' : undefined}
-        className={`flex min-h-0 flex-1 flex-col overflow-y-auto border-t px-2.5 pb-2 transition-colors duration-[var(--kiki-motion-quick)] ${listScrolled ? 'border-hairline/75' : 'border-transparent'}`}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pt-1 pb-2"
         data-session-list
         role="region"
         aria-label={t('sidebar.inbox.aria')}
@@ -2399,73 +2473,12 @@ export function Sidebar({
         ref={listRef}
         onScroll={onListScroll}
         data-session-list-scrolled={listScrolled ? 'true' : undefined}
-        className={`min-h-0 flex-1 overflow-y-auto border-t px-2.5 pb-2 transition-colors duration-[var(--kiki-motion-quick)] ${listScrolled ? 'border-hairline/75' : 'border-transparent'}`}
+        className="min-h-0 flex-1 overflow-y-auto px-2.5 pt-1.5 pb-2"
         data-session-list
         role="region"
         aria-label={t('sidebar.listAria')}
       >
         <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
-
-        <div className="flex items-center gap-0.5 pt-2 pr-0 pb-0.5 pl-2">
-          {/* The section label never gives way: it is T5, unshrinkable and
-              single-line; the shortcuts beside it are what yield when the
-              sidebar is dragged narrow. "Needs you" is counted once, on the
-              bell above — here only the aggregate running mark remains. */}
-          <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
-          <span className="min-w-0 flex-1" />
-          {counts.running > 0 ? (
-            <button
-              type="button"
-              data-status-shortcut="running"
-              data-activity-summary
-              aria-pressed={filters.status.includes('running')}
-              title={tp('sidebar.runningCount', counts.running)}
-              onClick={() => { toggleStatus('running'); }}
-              className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-            >
-              <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
-              <span className="min-w-0 truncate">{tp('sidebar.runningCount', counts.running)}</span>
-            </button>
-          ) : null}
-          {workspaceGroupKeys.length > 1 && !foldsSuspended ? (
-            <button
-              type="button"
-              data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
-              aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
-              title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
-              onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-            >
-              <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            ref={filterMenuButtonRef}
-            data-filter-menu-toggle
-            aria-haspopup="menu"
-            aria-expanded={openMenu === 'filter'}
-            aria-label={t('sidebar.filterMenu')}
-            title={t('sidebar.filterMenu')}
-            onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
-          >
-            <Icon name="filter" size={14} />
-          </button>
-          <button
-            type="button"
-            ref={viewMenuButtonRef}
-            data-view-menu-toggle
-            aria-haspopup="menu"
-            aria-expanded={openMenu === 'view'}
-            aria-label={t('sidebar.viewMenu')}
-            title={t('sidebar.viewMenu')}
-            onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
-          >
-            <Icon name="sliders" size={14} />
-          </button>
-        </div>
 
         {filterChips.length > 0 ? (
           <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-1 pb-1.5">
