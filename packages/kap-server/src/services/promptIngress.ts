@@ -266,9 +266,14 @@ export class PromptIngress {
   }
   private async publish(target: Target, entry: Entry): Promise<void> {
     await this.save(target, entry);
+    await this.ensurePageKey(target, entry);
+  }
+  private async ensurePageKey(target: Target, entry: Entry): Promise<void> {
     await this.documents().update<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${Math.floor(entry.ordinal / PAGE_SIZE)}.json`, current => {
+      const slot = entry.ordinal % PAGE_SIZE;
+      if (current?.keys[slot] === entry.key) return current;
       const keys = [...(current?.keys ?? [])];
-      keys[entry.ordinal % PAGE_SIZE] = entry.key;
+      keys[slot] = entry.key;
       return { keys };
     });
   }
@@ -353,8 +358,13 @@ export class PromptIngress {
         contentIdentity, duplicateOf: duplicate?.promptId,
         error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
         steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
-      await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload);
-      await this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 });
+      const settledWrites = await Promise.allSettled([
+        this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload),
+        this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 }),
+      ]);
+      for (const outcome of settledWrites) {
+        if (outcome.status === 'rejected') throw outcome.reason;
+      }
       await this.publish(target, created);
       if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
       if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
@@ -378,8 +388,10 @@ export class PromptIngress {
     if (!Number.isSafeInteger(pageNumber) || pageNumber < 0 || (cursor !== undefined && String(pageNumber) !== cursor)) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid durable prompt cursor.');
     }
-    const index = await this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY);
-    const page = await this.documents().get<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${pageNumber}.json`);
+    const [index, page] = await Promise.all([
+      this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY),
+      this.documents().get<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${pageNumber}.json`),
+    ]);
     const items: PromptIngressItem[] = [];
     for (const key of page?.keys ?? []) {
       if (key === null || key === undefined) continue;

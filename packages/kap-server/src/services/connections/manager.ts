@@ -20,8 +20,11 @@ interface VerifiedGuiSession {
   pinnedFingerprint?: string;
   credential: Credential;
   verifiedAt: number;
+  provedAt: number;
 }
 const VERIFIED_HANDSHAKE_TTL_MS = 60_000;
+const VERIFIED_HANDSHAKE_MAX_AGE_MS = 15 * 60_000;
+const SUMMARY_PERSIST_INTERVAL_MS = 5 * 60_000;
 const TRANSPORT_OFFLINE_STRIKES = 3;
 
 function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -90,9 +93,13 @@ export class RemoteConnectionManager {
   private summaryTimer?: ReturnType<typeof setInterval>;
   private summaryPolling = false;
   private stopped = false;
+  private lastDiskPersistAt = 0;
+  private summaryRevision = 0;
+  private persistedSummaryRevision = 0;
   private readonly lastSummaryAttempt = new Map<string, number>();
   private readonly summaryLeases = new Map<string, ConnectionLease>();
   private readonly epochs = new Map<string, number>();
+  private readonly proofGenerations = new Map<string, number>();
   private readonly replacing = new Set<string>();
   private readonly verified = new Map<string, VerifiedGuiSession>();
   private readonly proveFlights = new Map<string, Promise<Credential>>();
@@ -101,6 +108,13 @@ export class RemoteConnectionManager {
   private readonly healthProbes = new Map<string, Promise<void>>();
   private retirePairingBridges?: (id: string, grantId: string) => Promise<void>;
   credentialEpoch(id: string): number { return this.epochs.get(id) ?? 0; }
+  private proofGeneration(id: string): number { return this.proofGenerations.get(id) ?? 0; }
+  private invalidateProof(id: string): number {
+    this.verified.delete(id);
+    const next = this.proofGeneration(id) + 1;
+    this.proofGenerations.set(id, next);
+    return next;
+  }
   setPairingBridgeRetirement(retire: (id: string, grantId: string) => Promise<void>): void { this.retirePairingBridges = retire; }
   private requireEpoch(id: string, epoch: number): void {
     if (this.credentialEpoch(id) !== epoch || this.replacing.has(id)) throw new AdmissionError(409, 'connection_stopped');
@@ -141,16 +155,20 @@ export class RemoteConnectionManager {
             if (envelope.code !== 0) throw new AdmissionError(502, 'summary_unavailable');
             this.requireEpoch(record.id, epoch);
             lease.signal.throwIfAborted();
+            const wasOnline = record.state === 'online';
             record.rttMs = Math.max(1, Math.round(performance.now() - startedAt));
             record.summary = { value: spaceSummarySchema.parse(envelope.data), lastSeen: Date.now(), stale: false };
+            this.summaryRevision += 1;
             this.notePeerSuccess(record.id, epoch);
-            succeeded = true;
+            if (wasOnline) {
+              succeeded = true;
+            }
           } catch (error) {
             if (!lease.signal.aborted) this.recordTransportStrike(record.id, error, epoch);
           }
-          if (succeeded) {
+          if (succeeded && Date.now() - this.lastDiskPersistAt >= SUMMARY_PERSIST_INTERVAL_MS) {
             try {
-              await this.change(async () => undefined);
+              await this.persistSummariesIfDue();
             } catch (error) {
               this.logger?.warn({ connection_id: record.id, err: error }, 'failed to persist outbound connection summary');
             }
@@ -168,6 +186,7 @@ export class RemoteConnectionManager {
     try {
       const raw = JSON.parse((await readPrivateFile(this.path)).toString('utf8')) as unknown[];
       this.records = raw.map<RemoteConnection>((entry) => { const record = remoteConnectionSchema.parse(entry); return { ...record, endpoint: record.transport === undefined ? validateEndpoint(record.endpoint) : descriptorEndpoint(record.transport), state: record.state === 'online' ? 'offline' : record.state, activeLeases: 0, summary: record.summary === undefined ? undefined : { ...record.summary, stale: true } }; });
+      this.lastDiskPersistAt = Date.now();
     }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
@@ -266,8 +285,11 @@ export class RemoteConnectionManager {
       try {
         await this.secrets.write(ref, credential);
         const next = existing === undefined ? [...this.records, saved] : this.records.map((entry) => entry === existing ? saved : entry);
+        const revision = this.summaryRevision;
         try {
           await writePrivateFile(this.path, JSON.stringify(next));
+          this.lastDiskPersistAt = Date.now();
+          this.persistedSummaryRevision = Math.max(this.persistedSummaryRevision, revision);
         } catch (error) {
           if (previous === undefined) await this.secrets.remove(ref);
           else await this.secrets.write(ref, previous);
@@ -400,13 +422,24 @@ export class RemoteConnectionManager {
     this.failureStrikes.clear();
     closePinnedAgents();
     await this.ssh?.close();
+    await this.serialize(async () => {
+      if (this.summaryRevision <= this.persistedSummaryRevision) return;
+      const revision = this.summaryRevision;
+      try {
+        await writePrivateFile(this.path, JSON.stringify(this.records));
+        this.lastDiskPersistAt = Date.now();
+        this.persistedSummaryRevision = Math.max(this.persistedSummaryRevision, revision);
+      } catch (error) {
+        this.logger?.warn({ err: error }, 'failed to persist outbound connection summary on close');
+      }
+    });
     await this.tail;
   }
   stop(id: string, purpose?: 'gui' | 'bridge'): void {
     const record = this.records.find((entry) => entry.id === id);
     if (purpose !== 'bridge') {
       this.stopSummary(id);
-      this.verified.delete(id);
+      this.invalidateProof(id);
       this.failureStrikes.delete(id);
     }
     if (purpose === undefined && record?.pinnedFingerprint !== undefined) {
@@ -420,10 +453,15 @@ export class RemoteConnectionManager {
   notePeerSuccess(id: string, epoch = this.credentialEpoch(id)): void {
     if (epoch !== this.credentialEpoch(id) || this.replacing.has(id) || this.stopped) return;
     this.failureStrikes.delete(id);
+    const now = Date.now();
+    const cached = this.verified.get(id);
+    if (cached !== undefined && cached.epoch === epoch && now - cached.provedAt < VERIFIED_HANDSHAKE_MAX_AGE_MS) {
+      cached.verifiedAt = now;
+    }
     const record = this.records.find((entry) => entry.id === id);
     if (record !== undefined && record.enabled && record.state === 'offline') {
       record.state = 'online';
-      record.lastConnectedAt = Date.now();
+      record.lastConnectedAt = now;
       delete record.lastError;
       void this.change(async () => undefined, { reason: 'state_changed', connection_id: id }).catch(() => {});
     }
@@ -441,6 +479,8 @@ export class RemoteConnectionManager {
     }
     const strikes = (this.failureStrikes.get(id) ?? 0) + 1;
     this.failureStrikes.set(id, strikes);
+    const cached = this.verified.get(id);
+    const generation = this.invalidateProof(id);
     if (strikes >= TRANSPORT_OFFLINE_STRIKES) {
       this.failed(id, error, epoch);
       return;
@@ -448,26 +488,27 @@ export class RemoteConnectionManager {
     if (this.healthProbes.has(id)) return;
     const probe = (async () => {
       try {
-        const cached = this.verified.get(id);
         const credential = cached?.epoch === epoch
           ? cached.credential
           : await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
         const endpoint = cached?.epoch === epoch ? cached.endpoint : record.endpoint;
         if (!endpoint.startsWith('http://') && !endpoint.startsWith('https://')) return;
         await this.provePeer(endpoint, record.target, credential, AbortSignal.timeout(5000), record.pinnedFingerprint);
-        if (this.credentialEpoch(id) === epoch && !this.replacing.has(id) && !this.stopped) {
-          this.verified.set(id, { epoch, endpoint, pinnedFingerprint: record.pinnedFingerprint, credential, verifiedAt: Date.now() });
+        if (this.credentialEpoch(id) === epoch && this.proofGeneration(id) === generation && !this.replacing.has(id) && !this.stopped) {
+          const now = Date.now();
+          this.verified.set(id, { epoch, endpoint, pinnedFingerprint: record.pinnedFingerprint, credential, verifiedAt: now, provedAt: now });
           this.notePeerSuccess(id, epoch);
         }
       } catch (probeError) {
-        if (isImmediateFailureError(probeError) || (this.failureStrikes.get(id) ?? 0) >= 2) {
+        if (this.proofGeneration(id) === generation && (isImmediateFailureError(probeError) || (this.failureStrikes.get(id) ?? 0) >= 2)) {
           this.failed(id, probeError, epoch);
         }
-      } finally {
-        this.healthProbes.delete(id);
       }
     })();
     this.healthProbes.set(id, probe);
+    void probe.finally(() => {
+      if (this.healthProbes.get(id) === probe) this.healthProbes.delete(id);
+    });
   }
   async connect(id: string, signal: AbortSignal, forceProve = false, deadlineSignal = signal, recordStrike = true): Promise<{ record: RemoteConnection; credential: Credential; transport: ConnectionTransport; fromCache: boolean }> {
     const record = this.get(id); const epoch = this.credentialEpoch(id);
@@ -478,17 +519,20 @@ export class RemoteConnectionManager {
       const transport = await this.acquireTransport(id, signal, 'gui');
       this.requireEpoch(id, epoch);
       const cached = forceProve ? undefined : this.verified.get(id);
+      const now = Date.now();
       if (
         cached !== undefined
         && record.state === 'online'
         && cached.epoch === epoch
         && cached.endpoint === transport.endpoint
         && cached.pinnedFingerprint === record.pinnedFingerprint
-        && Date.now() - cached.verifiedAt < VERIFIED_HANDSHAKE_TTL_MS
+        && now - cached.verifiedAt < VERIFIED_HANDSHAKE_TTL_MS
+        && now - cached.provedAt < VERIFIED_HANDSHAKE_MAX_AGE_MS
       ) {
         return { record, credential: cached.credential, transport, fromCache: true };
       }
-      const flightKey = `${id}:${epoch}:${transport.endpoint}:${record.pinnedFingerprint ?? ''}`;
+      const generation = this.proofGeneration(id);
+      const flightKey = `${id}:${epoch}:${generation}:${transport.endpoint}:${record.pinnedFingerprint ?? ''}`;
       let flight = forceProve ? undefined : this.proveFlights.get(flightKey);
       let measuredRttMs: number | undefined;
       if (flight === undefined) {
@@ -506,22 +550,26 @@ export class RemoteConnectionManager {
       }
       const credential = await raceSignal(flight, deadlineSignal);
       deadlineSignal.throwIfAborted(); this.requireEpoch(id, epoch);
-      this.verified.set(id, {
-        epoch,
-        endpoint: transport.endpoint,
-        pinnedFingerprint: record.pinnedFingerprint,
-        credential,
-        verifiedAt: Date.now(),
-      });
-      this.failureStrikes.delete(id);
-      const wasOnline = record.state === 'online';
-      if (measuredRttMs !== undefined) record.rttMs = measuredRttMs;
-      record.state = 'online'; record.lastConnectedAt = Date.now(); delete record.lastError;
-      if (!wasOnline) await this.change(async () => undefined, { reason: 'state_changed', connection_id: id });
+      if (this.proofGeneration(id) === generation) {
+        const provedAt = Date.now();
+        this.verified.set(id, {
+          epoch,
+          endpoint: transport.endpoint,
+          pinnedFingerprint: record.pinnedFingerprint,
+          credential,
+          verifiedAt: provedAt,
+          provedAt,
+        });
+        this.failureStrikes.delete(id);
+        const wasOnline = record.state === 'online';
+        if (measuredRttMs !== undefined) record.rttMs = measuredRttMs;
+        record.state = 'online'; record.lastConnectedAt = Date.now(); delete record.lastError;
+        if (!wasOnline) await this.change(async () => undefined, { reason: 'state_changed', connection_id: id });
+      }
       return { record, credential, transport, fromCache: false };
     } catch (error) {
       if (!signal.aborted) {
-        if (!deadlineSignal.aborted || isImmediateFailureError(error)) this.verified.delete(id);
+        if (!deadlineSignal.aborted || isImmediateFailureError(error)) this.invalidateProof(id);
         if (recordStrike && !deadlineSignal.aborted) this.recordTransportStrike(id, error, epoch);
       }
       throw error;
@@ -530,7 +578,7 @@ export class RemoteConnectionManager {
   failed(id: string, error: unknown, epoch = this.credentialEpoch(id)): void {
     const record = this.records.find((entry) => entry.id === id);
     if (epoch !== this.credentialEpoch(id) || this.replacing.has(id) || record === undefined || !record.enabled || this.stopped || record.state === 'identity_changed') return;
-    this.verified.delete(id);
+    this.invalidateProof(id);
     this.failureStrikes.delete(id);
     this.stopSummary(id);
     if (record.summary !== undefined) record.summary.stale = true;
@@ -612,7 +660,7 @@ export class RemoteConnectionManager {
           return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
         }
         void response.body?.cancel().catch(() => {});
-        this.verified.delete(id);
+        this.invalidateProof(id);
         if (fromCache) {
           await this.provePeer(transport.endpoint, record.target, credential, callSignal, record.pinnedFingerprint);
         }
@@ -626,7 +674,7 @@ export class RemoteConnectionManager {
     } catch (firstError) {
       if (!callSignal.aborted && rawBody === undefined && (isIdempotentHttpMethod(method) || options?.idempotentRetry === true) && isRetryableTransportError(firstError)) {
         const current = this.records.find((entry) => entry.id === id);
-        this.verified.delete(id);
+        this.invalidateProof(id);
         if (current !== undefined) evictPinnedAgent(current.endpoint, current.pinnedFingerprint);
         try {
           await abortableDelay(120 + Math.floor(Math.random() * 140), callSignal);
@@ -680,13 +728,26 @@ export class RemoteConnectionManager {
     }
     return readBoundedJsonBody(response, bytes);
   }
+  private persistSummariesIfDue(): Promise<void> {
+    return this.serialize(async () => {
+      if (this.summaryRevision <= this.persistedSummaryRevision) return;
+      if (Date.now() - this.lastDiskPersistAt < SUMMARY_PERSIST_INTERVAL_MS) return;
+      const revision = this.summaryRevision;
+      await writePrivateFile(this.path, JSON.stringify(this.records));
+      this.lastDiskPersistAt = Date.now();
+      this.persistedSummaryRevision = Math.max(this.persistedSummaryRevision, revision);
+    });
+  }
   private change<T>(
     work: () => Promise<T>,
     change?: RemoteConnectionChange | ((value: T) => RemoteConnectionChange | undefined),
   ): Promise<T> {
     return this.serialize(async () => {
       const value = await work();
+      const revision = this.summaryRevision;
       await writePrivateFile(this.path, JSON.stringify(this.records));
+      this.lastDiskPersistAt = Date.now();
+      this.persistedSummaryRevision = Math.max(this.persistedSummaryRevision, revision);
       const resolved = typeof change === 'function' ? change(value) : change;
       if (resolved !== undefined) {
         for (const listener of this.changeListeners) listener(resolved);

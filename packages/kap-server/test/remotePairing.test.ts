@@ -19,6 +19,7 @@ import { AdmissionError, ConnectionAdmission } from '../src/services/connections
 import { ConnectionAudience, isPeerProcedureAllowed } from '../src/services/connections/audience';
 import { RemoteConnectionManager, validateEndpoint } from '../src/services/connections/manager';
 import { directEndpoints, PairingRateLimit } from '../src/services/connections/pairing';
+import * as privateFiles from '../src/services/auth/privateFiles';
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true }); });
@@ -983,5 +984,274 @@ describe('paired peer surface parity and host boundaries', () => {
     const reloaded = await loadPeerTlsIdentity(legacyHome);
     expect(reloaded.cert).toBe(repaired.cert);
     expect(reloaded.tlsFingerprint).toBe(expectedFp);
+  });
+
+  it('avoids 5s outbound-connections.json rewrites during steady-state summary polls and refreshes verified handshakes on active traffic', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-steady-latency-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    let handshakeHits = 0;
+    let revoked = false;
+    const peer = createHttpsServer(tls, (req, res) => {
+      void (async () => {
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+          return;
+        }
+        if (req.url === '/api/remote-connections/handshake') {
+          handshakeHits += 1;
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: true } }));
+          return;
+        }
+        if (revoked) {
+          res.statusCode = 401;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 40101, msg: 'connection_not_approved' }));
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { online: true, busy_sessions: 0, needs_you_sessions: 0, revision: 'rev-1', as_of: Date.now() } }));
+      })().catch((error) => res.destroy(error));
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    const outboundPath = join(home, 'source', 'server', 'outbound-connections.json');
+    const writeSpy = vi.spyOn(privateFiles, 'writePrivateFile');
+    try {
+      const paired = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: true, requestBridge: false }, undefined);
+      const lease = manager.lease(paired.id);
+      const baseNow = Date.now();
+      let offset = 0;
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => baseNow + offset);
+      try {
+        const first = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(first.status).toBe(200);
+        await first.json();
+        const handshakesAfterWarmup = handshakeHits;
+
+        const outboundWritesBefore = () => writeSpy.mock.calls.filter(([filePath]) => filePath === outboundPath).length;
+        const writesStart = outboundWritesBefore();
+
+        offset = 5_000;
+        await manager.pollSummaries();
+        offset = 10_000;
+        await manager.pollSummaries();
+        offset = 45_000;
+        await manager.pollSummaries();
+        offset = 85_000;
+        const activeCall = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(activeCall.status).toBe(200);
+        await activeCall.json();
+
+        expect(outboundWritesBefore()).toBe(writesStart);
+        expect(handshakeHits).toBe(handshakesAfterWarmup);
+        expect(manager.get(paired.id).summary?.stale).toBe(false);
+
+        offset = 5 * 60_000 + 1_000;
+        await manager.pollSummaries();
+        expect(outboundWritesBefore()).toBe(writesStart + 1);
+        expect(handshakeHits).toBe(handshakesAfterWarmup + 1);
+
+        const afterIdleReprove = handshakeHits;
+        for (let step = 1; step <= 20; step += 1) {
+          offset += 45_000;
+          const callRes = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+          expect(callRes.status).toBe(200);
+          await callRes.json();
+        }
+        expect(handshakeHits).toBe(afterIdleReprove + 1);
+
+        const grants = admission.status().grants;
+        await admission.revoke(grants[0]!.id);
+        revoked = true;
+        await expect(manager.forward(paired.id, { operation: 'meta' }, lease.signal)).rejects.toMatchObject({ status: 401, reason: 'connection_not_approved' });
+        expect(manager.get(paired.id).state).toBe('authentication_required');
+      } finally {
+        nowSpy.mockRestore();
+        lease.release();
+      }
+    } finally {
+      writeSpy.mockRestore();
+      await manager.close();
+      await admission.close();
+      peer.closeAllConnections();
+      await new Promise<void>((resolve) => peer.close(() => resolve()));
+    }
+  });
+
+  it('invalidates the sliding handshake proof on the first non-retried transport failure while keeping online state until three strikes', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-first-strike-inval-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    let handshakeHits = 0;
+    let dropNextPost = false;
+    let holdHealthHandshake = false;
+    let releaseHealthHandshake!: () => void;
+    const healthHandshakeGate = new Promise<void>((resolve) => { releaseHealthHandshake = resolve; });
+    const peer = createHttpsServer(tls, (req, res) => {
+      void (async () => {
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+          return;
+        }
+        if (req.url === '/api/remote-connections/handshake') {
+          handshakeHits += 1;
+          if (holdHealthHandshake) {
+            holdHealthHandshake = false;
+            await healthHandshakeGate;
+          }
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: true } }));
+          return;
+        }
+        if (req.method === 'POST' && dropNextPost) {
+          dropNextPost = false;
+          req.socket.destroy();
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { ok: true } }));
+      })().catch((error) => res.destroy(error));
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    try {
+      const paired = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
+      const lease = manager.lease(paired.id);
+      try {
+        const warmup = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(warmup.status).toBe(200);
+        await warmup.json();
+        const handshakesBeforeDrop = handshakeHits;
+
+        dropNextPost = true;
+        holdHealthHandshake = true;
+        await expect(manager.forward(paired.id, { operation: 'sessionCreate', body: { work_dir: '/tmp/work' } }, lease.signal)).rejects.toThrow();
+        expect(manager.get(paired.id).state).toBe('online');
+
+        const afterStrike = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(afterStrike.status).toBe(200);
+        await afterStrike.json();
+        expect(handshakeHits).toBeGreaterThanOrEqual(handshakesBeforeDrop + 2);
+      } finally {
+        releaseHealthHandshake();
+        lease.release();
+      }
+    } finally {
+      releaseHealthHandshake();
+      await manager.close();
+      await admission.close();
+      peer.closeAllConnections();
+      await new Promise<void>((resolve) => peer.close(() => resolve()));
+    }
+  });
+
+  it('prevents a stale health probe from restoring online state or cached proof after a newer 403 inbound_disabled', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-stale-probe-fence-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    let handshakeHits = 0;
+    let dropNextPost = false;
+    let inboundDisabled = false;
+    let holdNextHandshake = false;
+    let signalProbeArrived!: () => void;
+    const probeArrived = new Promise<void>((resolve) => { signalProbeArrived = resolve; });
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const peer = createHttpsServer(tls, (req, res) => {
+      void (async () => {
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+          return;
+        }
+        if (req.url === '/api/remote-connections/handshake') {
+          handshakeHits += 1;
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (holdNextHandshake) {
+            holdNextHandshake = false;
+            signalProbeArrived();
+            await probeGate;
+          }
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: !inboundDisabled || proof?.status === 'approved' } }));
+          return;
+        }
+        if (inboundDisabled) {
+          res.statusCode = 403;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 40301, msg: 'inbound_disabled' }));
+          return;
+        }
+        if (req.method === 'POST' && dropNextPost) {
+          dropNextPost = false;
+          req.socket.destroy();
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { ok: true } }));
+      })().catch((error) => res.destroy(error));
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    try {
+      const paired = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
+      const lease = manager.lease(paired.id);
+      try {
+        const warmup = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(warmup.status).toBe(200);
+        await warmup.json();
+
+        dropNextPost = true;
+        holdNextHandshake = true;
+        await expect(manager.forward(paired.id, { operation: 'sessionCreate', body: { work_dir: '/tmp/work' } }, lease.signal)).rejects.toThrow();
+        await probeArrived;
+
+        inboundDisabled = true;
+        await admission.setEnabled(false);
+        await expect(manager.forward(paired.id, { operation: 'meta' }, lease.signal)).rejects.toThrow('inbound_disabled');
+        expect(manager.get(paired.id).state).toBe('offline');
+
+        releaseProbe();
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(manager.get(paired.id).state).toBe('offline');
+
+        const handshakesBeforeRecheck = handshakeHits;
+        await expect(manager.forward(paired.id, { operation: 'meta' }, lease.signal)).rejects.toThrow('inbound_disabled');
+        expect(handshakeHits).toBeGreaterThan(handshakesBeforeRecheck);
+      } finally {
+        releaseProbe();
+        lease.release();
+      }
+    } finally {
+      releaseProbe();
+      await manager.close();
+      await admission.close();
+      peer.closeAllConnections();
+      await new Promise<void>((resolve) => peer.close(() => resolve()));
+    }
   });
 });

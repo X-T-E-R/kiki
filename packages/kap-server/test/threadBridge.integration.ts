@@ -11,6 +11,7 @@ import {
   type AgentTool, type ThreadRef, type ReadThreadResult, type SendThreadMessageResult, type WaitThreadsResult,
 } from '@kiki/agent-core-v2';
 import type { BridgeLink, BridgePolicy, BridgeReceipt } from '@kiki/protocol';
+import { AdmissionError } from '../src/services/connections/admission';
 import { SpaceThreadBridge } from '../src/services/threadBridge/bridge';
 import * as privateFiles from '../src/services/auth/privateFiles';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
@@ -366,6 +367,7 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
     try {
       const pending = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), input);
       expect(pending.delivery).toBe('pending');
+      await vi.waitFor(() => expect(f.b.core.accessor.get(ISessionManager).get(f.target.sessionId)).toBeDefined(), { timeout: 15000 });
       const targetMain = await ensureMainAgent(f.b.core.accessor.get(ISessionManager).get(f.target.sessionId)!);
       await targetMain.accessor.get(IAgentLoopService).settled(); expect(f.modelRequests()).toBe(1);
       await vi.waitFor(() => expect(ack).toHaveBeenCalled());
@@ -397,5 +399,159 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
       await restored.accessor.get(IAgentLoopService).settled(); expect(f.modelRequests()).toBe(2);
       expect((await client.rest!.threadBridges.receipts()).items).toHaveLength(2);
     } finally { await client.close(); }
+  }, 60000);
+
+  it('returns pending without 5s receiver stall on slow cold resume and forwards subsequent messages without 1s head-of-line delay', async () => {
+    const f = await fixture();
+    const link = await linkFor(f, location, true, 10);
+    const manager = f.b.core.accessor.get(ISessionManager);
+    const origResume = manager.resume.bind(manager);
+    let releaseResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => { releaseResume = resolve; });
+    const resumeSpy = vi.spyOn(manager, 'resume').mockImplementation(async (id, ...rest) => {
+      if (id === f.target.sessionId) await resumeGate;
+      return origResume(id, ...rest);
+    });
+    try {
+      const startedFirst = performance.now();
+      const first = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), {
+        thread: toolRef(f.target, link),
+        content: 'First slow-target message.',
+        idempotency_key: 'slow-first',
+      });
+      const firstElapsedMs = performance.now() - startedFirst;
+      expect(first.delivery).toBe('pending');
+      expect(first.targetSeq).toBe(1);
+      expect(firstElapsedMs).toBeLessThan(2000);
+
+      const startedSecond = performance.now();
+      const second = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), {
+        thread: toolRef(f.target, link),
+        content: 'Second message while first accepted.',
+        idempotency_key: 'slow-second',
+      });
+      const secondElapsedMs = performance.now() - startedSecond;
+      expect(second.delivery).toBe('pending');
+      expect(second.targetSeq).toBe(2);
+      expect(secondElapsedMs).toBeLessThan(2000);
+
+      releaseResume();
+      await vi.waitFor(async () => {
+        const aClient = owner(f.a);
+        try {
+          const receipts = await aClient.rest!.threadBridges.receipts();
+          expect(receipts.items.filter((entry) => entry.delivery === 'delivered')).toHaveLength(2);
+        } finally { await aClient.close(); }
+      }, { timeout: 15000, interval: 100 });
+    } finally {
+      releaseResume();
+      resumeSpy.mockRestore();
+    }
+  }, 60000);
+
+  it('does not retain or dispatch an uncommitted outbox entry after a failed disk write on send', async () => {
+    const f = await fixture();
+    const link = await linkFor(f, location, true, 10);
+    const outboxPath = join(f.aHome, 'server', 'thread-bridges.json');
+    const origWrite = privateFiles.writePrivateFile;
+    let failOnce = true;
+    const writeSpy = vi.spyOn(privateFiles, 'writePrivateFile').mockImplementation(async (filePath, data) => {
+      if (failOnce && filePath === outboxPath) {
+        failOnce = false;
+        throw new Error('simulated_outbox_write_failure');
+      }
+      return origWrite(filePath, data);
+    });
+    const input = {
+      thread: toolRef(f.target, link),
+      content: 'Commit before dispatch.',
+      idempotency_key: 'commit-before-dispatch',
+    };
+    try {
+      await expect(execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), input)).rejects.toThrow('simulated_outbox_write_failure');
+      const retry = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), input);
+      expect(retry.deduplicated).toBe(false);
+      expect(retry.targetSeq).toBeGreaterThan(0);
+      const saved = JSON.parse(await readFile(outboxPath, 'utf8')) as { outbox: Array<{ receipt: BridgeReceipt }> };
+      expect(saved.outbox.some((entry) => entry.receipt.id === retry.messageId || entry.receipt.messageId === retry.messageId)).toBe(true);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  }, 60000);
+
+  it('dispatches a new send immediately when enqueued during a failing confirmation poll', async () => {
+    const f = await fixture();
+    const link = await linkFor(f, location, true, 10);
+    const manager = f.b.core.accessor.get(ISessionManager);
+    const origResume = manager.resume.bind(manager);
+    let releaseResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => { releaseResume = resolve; });
+    const resumeSpy = vi.spyOn(manager, 'resume').mockImplementation(async (id, ...rest) => {
+      if (id === f.target.sessionId) await resumeGate;
+      return origResume(id, ...rest);
+    });
+    const origInboundSend = SpaceThreadBridge.prototype.inboundSend;
+    let failFirstConfirmation = true;
+    let firstSentSeen = false;
+    let signalConfirmStarted!: () => void;
+    const confirmStarted = new Promise<void>((resolve) => { signalConfirmStarted = resolve; });
+    let releaseConfirmFailure!: () => void;
+    const confirmFailureGate = new Promise<void>((resolve) => { releaseConfirmFailure = resolve; });
+    const inboundSpy = vi.spyOn(SpaceThreadBridge.prototype, 'inboundSend').mockImplementation(async function (this: SpaceThreadBridge, grant, input, signal) {
+      if (input.idempotencyKey === 'confirm-fail-first') {
+        if (!firstSentSeen) {
+          firstSentSeen = true;
+        } else if (failFirstConfirmation) {
+          failFirstConfirmation = false;
+          signalConfirmStarted();
+          await confirmFailureGate;
+          throw new AdmissionError(503, 'simulated_transient_confirmation_failure');
+        }
+      }
+      return origInboundSend.call(this, grant, input, signal);
+    });
+    try {
+      const first = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), {
+        thread: toolRef(f.target, link),
+        content: 'First accepted message.',
+        idempotency_key: 'confirm-fail-first',
+      });
+      expect(first.delivery).toBe('pending');
+      expect(first.targetSeq).toBe(1);
+
+      await confirmStarted;
+      const startedSecond = performance.now();
+      const secondPromise = execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), {
+        thread: toolRef(f.target, link),
+        content: 'Enqueued during failing confirmation.',
+        idempotency_key: 'enqueued-during-confirm-fail',
+      });
+      const outboxPath = join(f.aHome, 'server', 'thread-bridges.json');
+      await vi.waitFor(async () => {
+        const saved = JSON.parse(await readFile(outboxPath, 'utf8')) as { outbox: Array<{ request?: { idempotencyKey?: string } }> };
+        expect(saved.outbox.some((entry) => entry.request?.idempotencyKey === 'enqueued-during-confirm-fail')).toBe(true);
+      }, { timeout: 5000, interval: 25 });
+
+      releaseConfirmFailure();
+      const second = await secondPromise;
+      const elapsedMs = performance.now() - startedSecond;
+      expect(second.delivery).toBe('pending');
+      expect(second.targetSeq).toBe(2);
+      expect(elapsedMs).toBeLessThan(2000);
+
+      releaseResume();
+      await vi.waitFor(async () => {
+        const aClient = owner(f.a);
+        try {
+          const receipts = await aClient.rest!.threadBridges.receipts();
+          expect(receipts.items.filter((entry) => entry.delivery === 'delivered')).toHaveLength(2);
+        } finally { await aClient.close(); }
+      }, { timeout: 15000, interval: 100 });
+    } finally {
+      releaseConfirmFailure();
+      releaseResume();
+      inboundSpy.mockRestore();
+      resumeSpy.mockRestore();
+    }
   }, 60000);
 });
