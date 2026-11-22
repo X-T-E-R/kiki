@@ -110,32 +110,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     private var deliveredDocumentNavNonce: String?
     private var urlObservation: NSKeyValueObservation?
     private var loadingObservation: NSKeyValueObservation?
-    private var foregroundObserver: NSObjectProtocol?
-    private var lastForegroundAt: Date?
-    static let resumeUnreachableGrace: TimeInterval = 8
     static let pairDeeplinkEventScript = "window.dispatchEvent(new CustomEvent('kiki:pair-deeplink'));"
-
-    deinit {
-        if let foregroundObserver {
-            NotificationCenter.default.removeObserver(foregroundObserver)
-        }
-    }
-
-    static func isWithinResumeGrace(now: Date, resumedAt: Date?) -> Bool {
-        guard let resumedAt else { return false }
-        let elapsed = now.timeIntervalSince(resumedAt)
-        return elapsed >= 0 && elapsed <= resumeUnreachableGrace
-    }
 
     public override func load() {
         super.load()
-        foregroundObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.willEnterForegroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.lastForegroundAt = Date()
-        }
         urlObservation = webView?.observe(\.url, options: [.new]) { [weak self] webView, _ in
             guard let self else { return }
             if webView.isLoading {
@@ -747,10 +725,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     mutualInvitedVerified: mutualInvited,
                     inboundEnabled: inboundEnabled
                 ) {
-                    // Keep the page only when this document already holds credentials; an unprovisioned
-                    // document resumed inside the grace window would otherwise stay blank.
+                    // A document that already holds credentials keeps its page through a transient
+                    // outage (its own offline handling takes over); an unprovisioned one would stay blank.
                     let provisioned = self.deliveredDocumentNavNonce == expectedNavNonce
-                    if failureReason == "unreachable", provisioned, finalize || Self.isWithinResumeGrace(now: Date(), resumedAt: self.lastForegroundAt) {
+                    if failureReason == "unreachable", provisioned {
                         self.clearPendingAuthIfCurrent(epoch: expectedEpoch)
                         return
                     }
