@@ -32,7 +32,7 @@ always_deny_paths:
 
 # Approval Policy (`X-T-E-R/kiki`)
 
-This policy is read strictly from the protected default branch (`kiki`). Pull requests that modify this file or any listed `protected_paths` are flagged for semantic review by the Kiki project lead maintainer before merging; `always_deny_paths` cover external native/npm release publishing scripts and always require manual human review.
+This policy is read strictly from the protected default branch (`kiki`). Pull requests that modify this file or any listed `protected_paths` undergo head-bound Jev semantic review, with unresolved holds escalated to the Kiki project lead maintainer before merging; `always_deny_paths` cover external native/npm release publishing scripts and always require manual human review.
 
 ## Rollout Mode
 
@@ -47,5 +47,5 @@ This policy is read strictly from the protected default branch (`kiki`). Pull re
    - Pull request title conforms to `.github/pr-title-checker-config.json` (Conventional Commits) and fills `.github/pull_request_template.md`.
    - Required GitHub Actions checks (including Linux GUI checks) are green on the exact head commit.
 3. **Escalation Boundaries**:
-   - Changes touching `protected_paths` (root policy/governance files, authentication, native crypto, Tauri desktop packaging, or release pipeline tests) escalate for semantic review by the Kiki project lead maintainer.
+   - Changes touching `protected_paths` (root policy/governance files, authentication, native crypto, Tauri desktop packaging, or release pipeline tests) undergo head-bound Jev semantic review and escalate unresolved holds to the Kiki project lead maintainer before merging.
    - Changes touching `always_deny_paths` (`apps/kimi-code/scripts/native/`, `apps/kimi-code/scripts/npm/`) always require manual human review.
