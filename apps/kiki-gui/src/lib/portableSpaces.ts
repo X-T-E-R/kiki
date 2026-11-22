@@ -6,7 +6,6 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { z } from 'zod';
 
 import {
   portableSpaceApplyReceiptSchema,
@@ -14,6 +13,7 @@ import {
   portableSpaceInspectResultSchema,
   portableSpaceMutateReceiptSchema,
   portableSpacePreviewResultSchema,
+  portableSpaceRemoveSourceResponseSchema,
   portableSpaceSourceRecordSchema,
   portableSpaceSourcesListResponseSchema,
   type PortableSpaceApplyInput,
@@ -33,6 +33,7 @@ import {
   type PortableSpacePreviewResult,
   type PortableSpaceRegisterSourceInput,
   type PortableSpaceRekeyInput,
+  type PortableSpaceRemoveSourceResponse,
   type PortableSpaceSourceRecord,
   type PortableSpaceSourcesListResponse,
 } from '@kiki/protocol';
@@ -40,12 +41,10 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import type { KikiClient } from './client';
 
-const removeSourceResponseSchema = z.object({ removed: z.literal(true) });
-
 export interface PortableSpacesApi {
   listSources(signal?: AbortSignal): Promise<PortableSpaceSourcesListResponse>;
   registerSource(input: PortableSpaceRegisterSourceInput, signal?: AbortSignal): Promise<PortableSpaceSourceRecord>;
-  removeSource(id: string, signal?: AbortSignal): Promise<{ removed: true }>;
+  removeSource(id: string, signal?: AbortSignal): Promise<PortableSpaceRemoveSourceResponse>;
   inspect(input: PortableSpaceInspectInput, signal?: AbortSignal): Promise<PortableSpaceInspectResult>;
   exportSpace(input: PortableSpaceExportInput, signal?: AbortSignal): Promise<PortableSpaceExportReceipt>;
   preview(input: PortableSpacePreviewInput, signal?: AbortSignal): Promise<PortableSpacePreviewResult>;
@@ -85,7 +84,7 @@ async function requestPortable<T>(
   client: KikiClient,
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
-  schema: z.ZodType<T>,
+  schema: { parse(data: unknown): T },
   options: { readonly body?: unknown; readonly signal?: AbortSignal; readonly timeoutMs?: number; readonly token?: string } = {},
 ): Promise<T> {
   const data = await client.requestApiJson<unknown>(method, path, {
@@ -107,7 +106,7 @@ export function portableSpacesApi(client: KikiClient, options?: { readonly token
     registerSource: (body, signal) =>
       requestPortable(client, 'POST', '/spaces/portable/sources', portableSpaceSourceRecordSchema, { body, signal, token }),
     removeSource: (id, signal) =>
-      requestPortable(client, 'DELETE', `/spaces/portable/sources/${encodeURIComponent(id)}`, removeSourceResponseSchema, { signal, token }),
+      requestPortable(client, 'DELETE', `/spaces/portable/sources/${encodeURIComponent(id)}`, portableSpaceRemoveSourceResponseSchema, { signal, token }),
     inspect: (body, signal) =>
       requestPortable(client, 'POST', '/spaces/portable/inspect', portableSpaceInspectResultSchema, { body, signal, token }),
     exportSpace: (body, signal) =>

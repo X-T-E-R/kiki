@@ -153,6 +153,11 @@ export const portableSpaceRegisterSourceInputSchema = z.object({
 }).strict();
 export type PortableSpaceRegisterSourceInput = z.infer<typeof portableSpaceRegisterSourceInputSchema>;
 
+export const portableSpaceRemoveSourceResponseSchema = z.object({
+  removed: z.literal(true),
+}).strict();
+export type PortableSpaceRemoveSourceResponse = z.infer<typeof portableSpaceRemoveSourceResponseSchema>;
+
 export const portableSpaceExportInputSchema = z.object({
   source: portableSpaceEndpointSchema.default({ kind: 'live', spaceId: 'main' }),
   destination: z.string().min(1).max(4096),
