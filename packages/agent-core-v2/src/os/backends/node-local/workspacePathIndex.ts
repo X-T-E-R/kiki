@@ -101,7 +101,7 @@ function pathIdentity(path: string): string { return process.platform === 'win32
 function characterMask(text: string, asciiOnly = false): number {
   let mask = 0;
   for (const char of text.toLowerCase()) {
-    const code = char.codePointAt(0);
+    const code = char.codePointAt(0) ?? 0;
     if (code >= 97 && code <= 122) mask |= 1 << (code - 97);
     else if (code >= 48 && code <= 57) mask |= 1 << (26 + (code - 48) % 5);
     else if (!asciiOnly) mask |= 1 << 31;
