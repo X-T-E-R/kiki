@@ -22,6 +22,8 @@ import type { CognitionContent } from '#/kosong/model/model';
 import '#/features/modelSteering/modelSteeringFeature';
 
 import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
+import { CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
   createTestAgent,
   appServices,
@@ -565,6 +567,38 @@ describe('AgentModelSteeringService', () => {
         { kind: 'system_trigger', name: 'thread_create' },
         { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'example-peer', acceptedAt: 2 },
       ]);
+  });
+
+  it.each([
+    { label: 'local creator', creator: 'example-creator', origin: { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-creator' }, messageId: 'example-follow-up', acceptedAt: 2 } },
+    { label: 'cross-space creator', creator: 'example-remote-host:example-creator', origin: {
+      kind: 'bridged_peer', source: { hostId: 'example-remote-host', workspaceId: 'example-workspace', sessionId: 'example-creator' },
+      sourceHomeId: 'example-remote-home', targetHomeId: 'example-home', bridgeId: 'example-bridge', revision: 1, location: 'network',
+      createdAt: 1, expiresAt: 10, sourceSeq: 1, causeId: 'example-cause', hop: 1, messageId: 'example-follow-up', acceptedAt: 2,
+    } },
+  ] satisfies { label: string; creator: string; origin: ContextMessage['origin'] }[])('inherits steering for each later message from the $label while other peers stay off', async ({ creator, origin }) => {
+    ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
+    await bindModel(true);
+    const agent = ctx;
+    const metadata = agent.get(ISessionMetadata);
+    await metadata.update({ custom: { ...(await metadata.read()).custom, [CREATED_BY_SESSION_ID_KEY]: creator } });
+    const prompts = agent.get(IAgentPromptService);
+    const send = async (text: string, messageOrigin: ContextMessage['origin']) => {
+      agent.mockNextResponse({ type: 'text', text: `${text} answer` });
+      const handle = await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text }], origin: messageOrigin } });
+      await handle.completion;
+    };
+    await send('Open the new thread', { kind: 'system_trigger', name: 'thread_create' });
+    await send('Creator follow-up', origin);
+    await send('Creator second follow-up', { ...origin, messageId: 'example-second-follow-up' });
+    await send('Unrelated peer', { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-other' }, messageId: 'example-other-peer', acceptedAt: 3 });
+    await agent.get(IAgentLoopService).settled();
+    expect(agent.llmCalls).toHaveLength(4);
+    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    expect(cues).toEqual([1, 2, 3, 3]);
+    for (const call of agent.llmCalls.slice(0, 3)) {
+      expect(call.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] });
+    }
   });
 
   it('rearms one inherited cue after compaction and a cold retry without dropping the original thread instruction', async () => {

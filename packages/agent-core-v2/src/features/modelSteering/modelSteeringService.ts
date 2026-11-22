@@ -13,12 +13,14 @@ import { IEventBus } from '#/app/event/eventBus';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentModelSteeringService } from './modelSteering';
-import { steeringInputSources, type SteeringInputSource } from './modelSteeringSources';
+import { steeringInputSource, steeringInputSources, type SteeringInputSource } from './modelSteeringSources';
 
 const MODEL_STEERING_INJECTION_VARIANT = 'model_steering';
 
-/** Frozen per-source steering at safe request boundaries. Verified child completions and an unconfigured new thread's first instruction inherit steering; other non-user sources require configuration. */
+/** Frozen per-source steering at safe request boundaries. Verified child completions and, when the thread source is unconfigured, a new thread's first instruction and later messages from the thread that created it inherit steering; other non-user sources require configuration. */
 export class AgentModelSteeringService extends Disposable implements IAgentModelSteeringService {
   declare readonly _serviceBrand: undefined;
   private lastStepId: string | undefined;
@@ -28,7 +30,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
   private readonly cadence = new Map<SteeringInputSource, { steps: number; lastInjection: number; countedStep?: number }>();
   private activeSources = new Set<SteeringInputSource>();
   private completedSubagentInput = false;
-  private initialThreadCreate = false;
+  private threadOrigins: readonly PromptOrigin[] = [];
   private observedTail: ContextMessage | undefined;
   private turnSources: Set<SteeringInputSource> | undefined;
   private turnId: number | undefined;
@@ -43,6 +45,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     @IAgentLoopService loop: IAgentLoopService,
     @IEventBus events: IEventBus,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
   ) {
     super();
     this._register(events.subscribe(TurnStarted, (event) => {
@@ -52,13 +55,13 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
           const lastInput = this.context.get().findLast((message) => message.role === 'user' && message.origin?.kind !== 'injection' && message.origin?.kind !== 'compaction_summary' && message.origin?.kind !== 'shell_command');
           this.activeSources = steeringInputSources(lastInput?.origin);
           this.completedSubagentInput = this.isCompletedSubagentInput(lastInput?.origin);
-          this.initialThreadCreate = this.isInitialThreadCreate(lastInput?.origin);
+          this.threadOrigins = threadInputOrigins(lastInput?.origin);
         }
         return;
       }
       this.turnSources = steeringInputSources(event.origin);
       this.completedSubagentInput = this.isCompletedSubagentInput(event.origin);
-      this.initialThreadCreate = this.isInitialThreadCreate(event.origin);
+      this.threadOrigins = threadInputOrigins(event.origin);
     }));
     this._register(loop.hooks.onWillBeginStep.register('model-steering.cadence', async ({ stepId, signal }, next) => {
       signal.throwIfAborted();
@@ -90,7 +93,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
       if (!this.activeSources.has(source)) continue;
       const setting = source === 'user' ? undefined : frozen?.[source];
       const inheritCompletion = source === 'task' && setting === undefined && this.completedSubagentInput;
-      const inheritThreadCreate = source === 'thread' && setting === undefined && this.initialThreadCreate;
+      const inheritThreadCreate = source === 'thread' && setting === undefined && await this.fromThreadCreator(this.threadOrigins);
       if (source !== 'user' && !inheritCompletion && !inheritThreadCreate && (setting === undefined || setting.mode === 'off')) continue;
       const inherited = source === 'user' || inheritCompletion || inheritThreadCreate || setting?.mode === 'inherit';
       const onTurn = inherited ? binding.config?.steeringOnTurn ?? true : setting?.custom?.steering_on_turn ?? true;
@@ -116,7 +119,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     const sources = new Set<SteeringInputSource>();
     let hasInput = false;
     let completedSubagentInput = false;
-    let initialThreadCreate = false;
+    const threadOrigins: PromptOrigin[] = [];
     for (let index = history.length - 1; index > floor; index--) {
       const message = history[index]!;
       if (message.role === 'assistant' && tailIndex < 0) break;
@@ -124,12 +127,12 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
       if (this.turnId !== undefined && message.source?.turnId !== undefined && message.source.turnId !== this.turnId) continue;
       hasInput = true;
       completedSubagentInput ||= this.isCompletedSubagentInput(message.origin);
-      initialThreadCreate ||= this.isInitialThreadCreate(message.origin);
+      threadOrigins.push(...threadInputOrigins(message.origin));
       for (const source of steeringInputSources(message.origin)) sources.add(source);
     }
     if (hasInput) {
       this.completedSubagentInput = completedSubagentInput;
-      this.initialThreadCreate = initialThreadCreate;
+      this.threadOrigins = threadOrigins;
     }
     this.observedTail = history.at(-1);
     return { sources, hasInput };
@@ -142,8 +145,19 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     return task?.kind === 'agent' && task.status === 'completed' && task.receiptVerification === 'verified';
   }
 
-  private isInitialThreadCreate(origin: PromptOrigin | undefined): boolean {
-    if (origin?.kind === 'merged') return origin.origins.some((item) => this.isInitialThreadCreate(item));
-    return origin?.kind === 'system_trigger' && origin.name === 'thread_create';
+  private async fromThreadCreator(origins: readonly PromptOrigin[]): Promise<boolean> {
+    if (origins.some((origin) => origin.kind === 'system_trigger' && origin.name === 'thread_create')) return true;
+    if (!origins.some((origin) => origin.kind === 'peer_thread' || origin.kind === 'bridged_peer')) return false;
+    const creator = (await this.metadata.read()).custom?.[CREATED_BY_SESSION_ID_KEY];
+    if (typeof creator !== 'string' || creator === '') return false;
+    return origins.some((origin) => origin.kind === 'peer_thread'
+      ? origin.source.sessionId === creator
+      : origin.kind === 'bridged_peer' && `${origin.source.hostId}:${origin.source.sessionId}` === creator);
   }
+}
+
+function threadInputOrigins(origin: PromptOrigin | undefined): PromptOrigin[] {
+  if (origin === undefined) return [];
+  if (origin.kind === 'merged') return origin.origins.flatMap((item) => threadInputOrigins(item));
+  return steeringInputSource(origin) === 'thread' ? [origin] : [];
 }
