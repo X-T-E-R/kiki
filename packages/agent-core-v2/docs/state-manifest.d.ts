@@ -4316,6 +4316,8 @@ export interface AgentStateSnapshot {
   'turn': /* TurnModelState — packages/agent-core-v2/src/agent/loop/turnOps.ts */ {
     readonly nextTurnId: number;
     readonly cancelledTurnIds: readonly number[];
+    readonly heldCancelledTurns: Readonly<Record<number, true>>;
+    readonly authorizedInputTurnId?: number;
     readonly anchorTurnIds: readonly number[];
     readonly lastEnded?: {
       readonly turnId: number;
