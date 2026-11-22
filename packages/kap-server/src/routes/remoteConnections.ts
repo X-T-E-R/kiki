@@ -212,7 +212,8 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         batchStream?.destroy(err);
       });
       const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps', 'subagents'].includes(input.operation);
-      const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
+      const longSessionOperation = ['prompt', 'steer', 'promptReplace', 'promptResume', 'promptSteer', 'skillActivate', 'messageEdit', 'messageRegenerate', 'sessionRestore', 'compact'].includes(input.operation);
+      const lease = manager.lease(id, reading ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(longSessionOperation ? 120_000 : 30_000)])); release = () => lease.release();
       if (input.operation === 'procedureBatch') {
         const items = parseKlientBatchEnvelope(input.body, resolveKlientBatchMax());
         const localLines: string[] = [];

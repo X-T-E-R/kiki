@@ -39,8 +39,11 @@ import {
   ThreadMailboxBacklogError,
 } from '#/app/threadCommunication/mailboxErrors';
 import {
+  ACCEPT_BRIDGED_THREAD_MESSAGE,
   SEND_PEER_THREAD_MESSAGE,
+  SPACE_THREAD_ROUTER,
   peerSendCapability,
+  spaceThreadCapability,
 } from '#/app/threadCommunication/peerThreadCapability';
 import {
   IThreadMailboxStore,
@@ -997,6 +1000,78 @@ describe('ThreadCommunicationService', () => {
     expect(result.delivery).toBe('pending');
     expect(events).toEqual(['persist']);
     expect(result.deduplicated).toBe(false);
+
+    unblockResume();
+    await vi.waitFor(() => expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']));
+    await expect(service.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('bounds bridged peer fast-delivery wait to 100ms on slow cold resume while completing delivery in background', async () => {
+    promptState = 'pending';
+    let unblockResume!: () => void;
+    resume.mockImplementationOnce(() => new Promise((resolve) => {
+      unblockResume = () => {
+        events.push('resume');
+        resolve({
+          id: 'target',
+          kind: LifecycleScope.Session,
+          accessor: accessor([[IAgentLifecycleService, {
+            create: async () => ({
+              id: 'main',
+              kind: LifecycleScope.Agent,
+              accessor: accessor([[IAgentPromptService, {
+                lookup: () => undefined,
+                enqueue: promptEnqueue,
+                inject: promptInject,
+                steer: promptSteer,
+                abort: promptAbort,
+              }]]),
+              dispose: () => {},
+            }),
+            get: () => undefined,
+            list: () => [],
+          } as unknown as IAgentLifecycleService]]),
+          dispose: () => {},
+        } as ISessionScopeHandle);
+      };
+    }));
+
+    const service = ix.get(IThreadCommunicationService);
+    const space = spaceThreadCapability(service);
+    space[SPACE_THREAD_ROUTER]({
+      create: async () => { throw new Error('unused'); },
+      list: async () => ({ threads: [] }),
+      read: async () => { throw new Error('unused'); },
+      send: async () => { throw new Error('unused'); },
+      wait: async () => { throw new Error('unused'); },
+      beforeDelivery: async () => 'deliver',
+    });
+
+    const started = performance.now();
+    const result = await space[ACCEPT_BRIDGED_THREAD_MESSAGE]({
+      producer: {
+        kind: 'bridged_peer',
+        source: { hostId: 'remote-host', workspaceId: 'workspace-a', sessionId: 'source' },
+        bridgeId: '00000000-0000-4000-8000-000000000001',
+        revision: 1,
+        sourceHomeId: '00000000-0000-4000-8000-000000000002',
+        targetHomeId: '00000000-0000-4000-8000-000000000003',
+        location: 'network',
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        sourceSeq: 1,
+        causeId: 'cause-1',
+        hop: 0,
+      },
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'bridged-slow-resume',
+      idempotencyKey: 'bridged-slow-resume-key',
+    });
+    const elapsedMs = performance.now() - started;
+
+    expect(result.delivery).toBe('pending');
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(events).toEqual(['persist']);
 
     unblockResume();
     await vi.waitFor(() => expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']));

@@ -677,32 +677,57 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const transcript = await readSessionViewTranscriptPage(this.transcript, input.target.sessionId, { agentId: 'main', beforeItem: input.cursor, pageSize: input.limit ?? 20, signal });
     return { thread: input.target, turns: [], nextCursor: transcript?.next_cursor, view: { transcript } };
   }
-  async inboundSend(grant: BridgeGrant, input: BridgeSend): Promise<SendThreadMessageResult> {
+  async inboundSend(grant: BridgeGrant, input: BridgeSend, signal?: AbortSignal): Promise<SendThreadMessageResult> {
+    signal?.throwIfAborted();
     this.checkInbound(grant, input, 'send', input.target); await this.requireTarget(input.target);
+    signal?.throwIfAborted();
     const producer = { kind: 'bridged_peer' as const, source: input.source, bridgeId: grant.id, revision: input.revision,
       sourceHomeId: input.sourceHomeId, targetHomeId: input.targetHomeId, location: grant.location,
       createdAt: input.createdAt, expiresAt: input.expiresAt, sourceSeq: input.sourceSeq, causeId: input.causeId, hop: input.hop };
     await this.beforeDelivery({ producer, target: input.target, content: input.content, idempotencyKey: input.idempotencyKey, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
     const key = hash(JSON.stringify([grant.id, input.source, input.target, input.idempotencyKey]));
-    await this.change(() => {
-      const now = Date.now();
-      this.pruneInboundReceipts(now);
-      const keys = this.state.inboundKeys!;
-      const duplicate = keys.some((entry) => entry.key === key);
-      if (!duplicate) this.requireInboundRate(grant, now);
-      if (!duplicate) keys.push({ key, grantId: grant.id, at: now });
-    });
-    const record = await this.change(async () => {
+    const record = await this.serialize(async () => {
+      signal?.throwIfAborted();
       this.checkInbound(grant, input, 'send', input.target);
-      const targets = this.state.targets ??= [];
-      if (!targets.some((target) => JSON.stringify(target) === JSON.stringify(input.target))) {
-        if (targets.length >= 100) throw new AdmissionError(429, 'bridge_target_queue_full'); targets.push(input.target);
+      const now = Date.now();
+      const prevKeys = this.state.inboundKeys ?? [];
+      const prevCreates = this.state.inboundCreates ?? [];
+      const nextKeys = prevKeys.filter((entry) => entry.at > now - RECEIPT_RETENTION_MS);
+      const nextCreates = prevCreates.filter((entry) => entry.at > now - RECEIPT_RETENTION_MS);
+      let dirty = nextKeys.length !== prevKeys.length || nextCreates.length !== prevCreates.length;
+      const duplicate = nextKeys.some((entry) => entry.key === key);
+      if (!duplicate) {
+        const recent = (entry: { grantId: string; at: number }) => entry.grantId === grant.id && entry.at > now - 60000;
+        if (nextKeys.filter(recent).length + nextCreates.filter(recent).length >= grant.messagesPerMinute) throw new AdmissionError(429, 'bridge_rate_limit');
       }
+      const prevTargets = this.state.targets ?? [];
+      const hasTarget = prevTargets.some((target) => target.hostId === input.target.hostId && target.workspaceId === input.target.workspaceId && target.sessionId === input.target.sessionId);
+      if (!hasTarget && prevTargets.length >= 100) throw new AdmissionError(429, 'bridge_target_queue_full');
+      const finalKeys = duplicate ? nextKeys : [...nextKeys, { key, grantId: grant.id, at: now }];
+      const finalTargets = hasTarget ? prevTargets : [...prevTargets, input.target];
+      if (!duplicate || !hasTarget) dirty = true;
+      if (dirty) {
+        const nextState: State = { ...this.state, inboundKeys: finalKeys, inboundCreates: nextCreates, targets: finalTargets };
+        await writePrivateFile(this.path, JSON.stringify(nextState));
+        this.state.inboundKeys = finalKeys;
+        this.state.inboundCreates = nextCreates;
+        this.state.targets = finalTargets;
+      }
+      signal?.throwIfAborted();
       return this.mailbox.acceptMessage({ producer, target: input.target, content: input.content, idempotencyKey: input.idempotencyKey,
         pendingLimit: grant.pendingLimit, rateLimit: { key: grant.id, count: grant.messagesPerMinute, windowMs: 60000 } });
     });
     if (record.payloadConflict) throw new AdmissionError(409, 'bridge_idempotency_conflict');
-    return spaceThreadCapability(this.threads)[ACCEPT_BRIDGED_THREAD_MESSAGE]({ producer, target: input.target, content: input.content, idempotencyKey: input.idempotencyKey });
+    if (record.delivery !== 'pending') {
+      return {
+        messageId: record.message.messageId,
+        targetSeq: record.message.targetSeq,
+        acceptedAt: record.message.acceptedAt,
+        deduplicated: record.deduplicated,
+        delivery: record.delivery,
+      };
+    }
+    return spaceThreadCapability(this.threads)[ACCEPT_BRIDGED_THREAD_MESSAGE]({ producer, target: input.target, content: input.content, idempotencyKey: input.idempotencyKey, signal });
   }
   async inboundWait(grant: BridgeGrant, input: ReturnType<typeof bridgeWaitSchema.parse>, signal: AbortSignal): Promise<WaitThreadsResult> {
     this.checkInbound(grant, input, 'wait', input.target); await this.requireTarget(input.target);
@@ -881,22 +906,37 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const fingerprint = hash(JSON.stringify({ source: plainRef(input.source), target: plainRef(input.target), content: input.content }));
     const id = hash(JSON.stringify([link.grant.id, plainRef(input.source), plainRef(input.target), input.idempotencyKey]));
     let existing: Outbox | undefined; let duplicate = false;
-    await this.change(() => {
+    await this.serialize(async () => {
       input.signal?.throwIfAborted();
       const now = Date.now();
-      this.state.outbox = this.state.outbox.filter((entry) => isPending(entry) || (entry.finishedAt ?? entry.receipt.createdAt) > now - RECEIPT_RETENTION_MS);
-      existing = this.state.outbox.find((entry) => entry.receipt.id === id);
-      if (existing !== undefined) { duplicate = true; if (existing.fingerprint !== fingerprint) throw new AdmissionError(409, 'bridge_idempotency_conflict'); return; }
-      const pending = this.state.outbox.filter(isPending);
+      const prunedOutbox = this.state.outbox.filter((entry) => isPending(entry) || (entry.finishedAt ?? entry.receipt.createdAt) > now - RECEIPT_RETENTION_MS);
+      const pruned = prunedOutbox.length !== this.state.outbox.length;
+      existing = prunedOutbox.find((entry) => entry.receipt.id === id);
+      if (existing !== undefined) {
+        duplicate = true;
+        if (existing.fingerprint !== fingerprint) throw new AdmissionError(409, 'bridge_idempotency_conflict');
+        if (pruned) {
+          await writePrivateFile(this.path, JSON.stringify({ ...this.state, outbox: prunedOutbox }));
+          this.state.outbox = prunedOutbox;
+        }
+        return;
+      }
+      const pending = prunedOutbox.filter(isPending);
       if (pending.length >= 100 || pending.filter((entry) => entry.receipt.bridgeId === link.grant.id).length >= link.grant.pendingLimit) throw new AdmissionError(429, 'bridge_queue_full');
-      if (this.state.outbox.filter((entry) => entry.receipt.bridgeId === link.grant.id && entry.receipt.createdAt > now - 60000).length >= link.grant.messagesPerMinute) throw new AdmissionError(429, 'bridge_rate_limit');
+      if (prunedOutbox.filter((entry) => entry.receipt.bridgeId === link.grant.id && entry.receipt.createdAt > now - 60000).length >= link.grant.messagesPerMinute) throw new AdmissionError(429, 'bridge_rate_limit');
       const hop = input.cause === undefined ? 0 : input.cause.hop + 1; if (hop > 4) denied('bridge_hop_limit');
-      const expiresAt = Math.min(now + 15 * 60000, link.grant.expiresAt); const sourceSeq = this.state.nextSeq++;
+      const expiresAt = Math.min(now + 15 * 60000, link.grant.expiresAt); const sourceSeq = this.state.nextSeq;
       const request: BridgeSend = { bridgeId: link.grant.id, revision: link.grant.revision, source: plainRef(input.source), target: plainRef(input.target), content: input.content,
         idempotencyKey: input.idempotencyKey, sourceHomeId: this.admission.identity.homeId, targetHomeId: link.grant.target.homeId,
         createdAt: now, expiresAt, sourceSeq, causeId: input.cause?.causeId ?? randomUUID(), hop };
       const receipt: BridgeReceipt = { id, bridgeId: link.grant.id, connectionId: link.connectionId, source: request.source, target: request.target, sourceSeq, createdAt: now, expiresAt, delivery: 'pending' };
-      existing = { receipt, request, fingerprint }; this.state.outbox.push(existing);
+      const created: Outbox = { receipt, request, fingerprint };
+      const nextOutbox = [...prunedOutbox, created];
+      const nextSeq = sourceSeq + 1;
+      await writePrivateFile(this.path, JSON.stringify({ ...this.state, outbox: nextOutbox, nextSeq }));
+      this.state.outbox = nextOutbox;
+      this.state.nextSeq = nextSeq;
+      existing = created;
     });
     await this.retryLink(link.grant.id, input.signal);
     input.signal?.throwIfAborted();
@@ -969,8 +1009,16 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (this.lifetime.signal.aborted) return;
     const targets = this.state.targets ?? [];
     await spaceThreadCapability(this.threads)[RECHECK_BRIDGED_THREADS](targets);
-    if (targets.length > 0) await this.change(async () => {
-      this.state.targets = [...await this.mailbox.listPendingTargets({ targets: this.state.targets ?? [], signal: this.lifetime.signal })];
+    if (targets.length > 0) await this.serialize(async () => {
+      const current = this.state.targets ?? [];
+      const next = [...await this.mailbox.listPendingTargets({ targets: current, signal: this.lifetime.signal })];
+      const unchanged = next.length === current.length && next.every((item, index) => {
+        const prev = current[index]!;
+        return prev.hostId === item.hostId && prev.workspaceId === item.workspaceId && prev.sessionId === item.sessionId;
+      });
+      if (unchanged) return;
+      await writePrivateFile(this.path, JSON.stringify({ ...this.state, targets: next }));
+      this.state.targets = next;
     });
   }
   private retryLink(id: string, signal?: AbortSignal): Promise<void> {
@@ -978,37 +1026,118 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const pending = this.doRetryLink(id, signal); this.flights.set(id, pending);
     void pending.finally(() => { if (this.flights.get(id) === pending) this.flights.delete(id); }).catch(() => {}); return pending;
   }
-  private finish(entry: Outbox, delivery: 'delivered' | 'rejected' | 'undeliverable', reason?: string): void {
-    entry.receipt.delivery = delivery; entry.receipt.reason = reason; entry.finishedAt = Date.now();
-    entry.request = undefined; entry.nextAttemptAt = undefined;
+  private async commitOutboxEntry(entry: Outbox, nextEntry: Outbox): Promise<void> {
+    const nextOutbox = this.state.outbox.map((item) => item === entry ? nextEntry : item);
+    await writePrivateFile(this.path, JSON.stringify({ ...this.state, outbox: nextOutbox }));
+    Object.assign(entry.receipt, nextEntry.receipt);
+    entry.attempts = nextEntry.attempts;
+    entry.nextAttemptAt = nextEntry.nextAttemptAt;
+    entry.finishedAt = nextEntry.finishedAt;
+    entry.request = nextEntry.request;
   }
   private async doRetryLink(id: string, signal?: AbortSignal): Promise<void> {
-    for (const entry of this.state.outbox.filter((record) => record.receipt.bridgeId === id && isPending(record)).sort((a, b) => a.receipt.sourceSeq - b.receipt.sourceSeq)) {
-      if (this.lifetime.signal.aborted || signal?.aborted) return;
+    const dispatchEntry = async (entry: Outbox): Promise<'continue' | 'backoff' | 'stop'> => {
+      if (this.lifetime.signal.aborted || signal?.aborted) return 'stop';
       const request = entry.request; if (request === undefined) throw new Error('Pending bridge receipt has no payload');
       try {
         if (request.expiresAt <= Date.now()) throw new AdmissionError(410, 'bridge_message_expired_without_delivery_confirmation');
-        if (!this.link(id).enabled && !this.link(id).grant.revoked) return;
+        if (!this.link(id).enabled && !this.link(id).grant.revoked) return 'stop';
         const link = this.choose({ bridgeId: id }, request.source, request.target, 'send');
-        if (entry.nextAttemptAt !== undefined && entry.nextAttemptAt > Date.now()) return;
-        const result = await this.remote<SendThreadMessageResult>(link, 'send', request, signal);
-        await this.change(() => {
-          Object.assign(entry.receipt, { messageId: result.messageId, targetSeq: result.targetSeq, acceptedAt: result.acceptedAt });
-          if (result.delivery === 'pending') { entry.receipt.delivery = 'accepted'; entry.receipt.reason = undefined; entry.attempts = 0; entry.nextAttemptAt = Date.now() + 1000; }
-          else this.finish(entry, result.delivery);
-        });
-        if (result.delivery === 'pending') return;
-      } catch (error) {
-        if (signal?.aborted || this.lifetime.signal.aborted) return;
-        if (error instanceof AdmissionError && [400, 401, 403, 404, 409, 410].includes(error.status)) {
-          await this.change(() => this.finish(entry, 'rejected', error.reason)); continue;
+        if (entry.nextAttemptAt !== undefined && entry.nextAttemptAt > Date.now()) {
+          return entry.receipt.delivery === 'accepted' ? 'continue' : 'stop';
         }
-        await this.change(() => {
-          entry.attempts = (entry.attempts ?? 0) + 1;
-          entry.receipt.reason = error instanceof AdmissionError && error.status === 429 ? error.reason : 'target_temporarily_unavailable';
-          entry.nextAttemptAt = Date.now() + Math.min(60000, 1000 * 2 ** Math.min(6, entry.attempts));
-        }); return;
+        const result = await this.remote<SendThreadMessageResult>(link, 'send', request, signal);
+        await this.serialize(async () => {
+          const unchanged = result.delivery === 'pending'
+            && entry.receipt.delivery === 'accepted'
+            && entry.receipt.messageId === result.messageId
+            && entry.receipt.targetSeq === result.targetSeq
+            && entry.receipt.acceptedAt === result.acceptedAt
+            && entry.receipt.reason === undefined
+            && (entry.attempts ?? 0) === 0;
+          if (unchanged) {
+            entry.nextAttemptAt = Date.now() + 1000;
+            return;
+          }
+          const nextEntry: Outbox = result.delivery === 'pending'
+            ? {
+              ...entry,
+              receipt: {
+                ...entry.receipt,
+                messageId: result.messageId,
+                targetSeq: result.targetSeq,
+                acceptedAt: result.acceptedAt,
+                delivery: 'accepted',
+                reason: undefined,
+              },
+              attempts: 0,
+              nextAttemptAt: Date.now() + 1000,
+            }
+            : {
+              ...entry,
+              receipt: {
+                ...entry.receipt,
+                messageId: result.messageId,
+                targetSeq: result.targetSeq,
+                acceptedAt: result.acceptedAt,
+                delivery: result.delivery,
+                reason: undefined,
+              },
+              finishedAt: Date.now(),
+              request: undefined,
+              nextAttemptAt: undefined,
+            };
+          await this.commitOutboxEntry(entry, nextEntry);
+        });
+        return 'continue';
+      } catch (error) {
+        if (signal?.aborted || this.lifetime.signal.aborted) return 'stop';
+        if (error instanceof AdmissionError && [400, 401, 403, 404, 409, 410].includes(error.status)) {
+          await this.serialize(async () => {
+            await this.commitOutboxEntry(entry, {
+              ...entry,
+              receipt: { ...entry.receipt, delivery: 'rejected', reason: error.reason },
+              finishedAt: Date.now(),
+              request: undefined,
+              nextAttemptAt: undefined,
+            });
+          });
+          return 'continue';
+        }
+        await this.serialize(async () => {
+          const attempts = (entry.attempts ?? 0) + 1;
+          await this.commitOutboxEntry(entry, {
+            ...entry,
+            attempts,
+            receipt: {
+              ...entry.receipt,
+              reason: error instanceof AdmissionError && error.status === 429 ? error.reason : 'target_temporarily_unavailable',
+            },
+            nextAttemptAt: Date.now() + Math.min(60000, 1000 * 2 ** Math.min(6, attempts)),
+          });
+        });
+        return 'backoff';
       }
+    };
+    const isDueUnaccepted = (record: Outbox): boolean =>
+      record.receipt.bridgeId === id && record.receipt.delivery === 'pending'
+      && (record.nextAttemptAt === undefined || record.nextAttemptAt <= Date.now());
+    for (;;) {
+      const pendingForLink = this.state.outbox
+        .filter((record) => record.receipt.bridgeId === id && isPending(record))
+        .sort((a, b) => a.receipt.sourceSeq - b.receipt.sourceSeq);
+      const unaccepted = pendingForLink.filter((record) => record.receipt.delivery === 'pending');
+      const confirmations = pendingForLink.filter((record) => record.receipt.delivery === 'accepted');
+      for (const entry of unaccepted) {
+        if (await dispatchEntry(entry) !== 'continue') return;
+      }
+      for (const entry of confirmations) {
+        const outcome = await dispatchEntry(entry);
+        if (outcome === 'stop') return;
+        if (outcome === 'backoff') break;
+      }
+      if (this.lifetime.signal.aborted || signal?.aborted) return;
+      if (!this.state.outbox.some(isDueUnaccepted)) return;
     }
   }
   async triggerPeerRetry(grantId: string): Promise<void> {
@@ -1089,9 +1218,13 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     return () => { set.delete(controller); if (set.size === 0 && this.incoming.get(id) === set) this.incoming.delete(id); };
   }
   private cancelIncoming(id: string): void { for (const controller of this.incoming.get(id) ?? []) controller.abort(); this.incoming.delete(id); }
+  private serialize<T>(work: () => T | Promise<T>): Promise<T> {
+    const result = this.tail.then(() => work());
+    this.tail = result.catch(() => {});
+    return result;
+  }
   private change<T>(work: () => T | Promise<T>): Promise<T> {
-    const result = this.tail.then(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.state)); return value; });
-    this.tail = result.catch(() => {}); return result;
+    return this.serialize(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.state)); return value; });
   }
 }
 
@@ -1211,7 +1344,7 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
     try {
       const result = operation === 'list' ? await bridge.inboundList(grant, bridgeListSchema.parse(req.body))
         : operation === 'read' ? await bridge.inboundRead(grant, bridgeReadSchema.parse(req.body), signal)
-        : operation === 'send' ? await bridge.inboundSend(grant, bridgeSendSchema.parse(req.body))
+        : operation === 'send' ? await bridge.inboundSend(grant, bridgeSendSchema.parse(req.body), signal)
         : operation === 'create' ? await bridge.inboundCreate(grant, bridgeCreateSchema.parse(req.body))
         : operation === 'tools_list' ? await bridge.inboundToolsList(grant, bridgeToolsListSchema.parse(req.body), signal)
         : operation === 'tools_call' ? await bridge.inboundToolsCall(grant, bridgeToolsCallSchema.parse(req.body), signal)

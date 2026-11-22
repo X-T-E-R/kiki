@@ -485,7 +485,7 @@ export class OutboundPeerBridgeClient {
         const signal = AbortSignal.any([controller.signal, this.shutdownSignal]);
         const result = operation === 'list' ? await this.bridge.inboundList(grant, bridgeListSchema.parse(body))
           : operation === 'read' ? await this.bridge.inboundRead(grant, bridgeReadSchema.parse(body), signal)
-          : operation === 'send' ? await this.bridge.inboundSend(grant, bridgeSendSchema.parse(body))
+          : operation === 'send' ? await this.bridge.inboundSend(grant, bridgeSendSchema.parse(body), signal)
           : operation === 'create' ? await this.bridge.inboundCreate(grant, bridgeCreateSchema.parse(body))
           : operation === 'tools_list' ? await this.bridge.inboundToolsList(grant, bridgeToolsListSchema.parse(body), signal)
           : operation === 'tools_call' ? await this.bridge.inboundToolsCall(grant, bridgeToolsCallSchema.parse(body), signal)

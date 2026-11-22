@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import Fastify from 'fastify';
 import { WebSocket, WebSocketServer } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
@@ -295,5 +295,41 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     expect(bridge.signal.aborted).toBe(true);
     expect(() => manager.lease(record.id)).toThrow(AdmissionError);
     expect(() => manager.lease(record.id, undefined, 'bridge')).toThrow(AdmissionError);
+  });
+
+  it('gives prompt broker calls the 120s lease ceiling instead of aborting at the 30s default', async () => {
+    const f = await fixture();
+    f.target.post('/api/sessions/:sessionId/prompts', async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      return { code: 0, msg: 'success', data: { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hi' }], created_at: new Date().toISOString() } };
+    });
+    f.target.get('/api/meta', async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      return { code: 0, msg: 'success', data: { ok: true } };
+    });
+    const { call } = await f.start();
+    const seenTimeouts: number[] = [];
+    const origTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+      seenTimeouts.push(ms);
+      if (ms === 30_000) return origTimeout(60);
+      if (ms === 120_000) return origTimeout(2_000);
+      return origTimeout(ms);
+    });
+    try {
+      const promptRes = await call('call', {
+        operation: 'prompt',
+        params: { sessionId: 'fixture' },
+        body: { content: [{ type: 'text', text: 'hi' }] },
+      });
+      expect(promptRes.status).toBe(200);
+      expect(seenTimeouts).toContain(120_000);
+
+      const metaRes = await call('call', { operation: 'meta' });
+      expect(metaRes.status).toBeGreaterThanOrEqual(500);
+      expect(seenTimeouts).toContain(30_000);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
