@@ -106,8 +106,6 @@ public class KikiShellPlugin extends Plugin {
     private volatile boolean pendingOpenCommitted = false;
     private volatile String currentDocumentNavNonce;
     private volatile String deliveredDocumentNavNonce;
-    private volatile long lastResumeAtMs = 0;
-    static final long RESUME_UNREACHABLE_GRACE_MS = 8000;
     static final String PAIR_DEEPLINK_EVENT_SCRIPT = "window.dispatchEvent(new CustomEvent('kiki:pair-deeplink'));";
     private WebViewListener shellWebViewListener;
 
@@ -965,10 +963,10 @@ public class KikiShellPlugin extends Plugin {
                     ) {
                         return;
                     }
-                    // Keep the page only when this document already holds credentials; an unprovisioned
-                    // document resumed inside the grace window would otherwise stay blank.
+                    // A document that already holds credentials keeps its page through a transient
+                    // outage (its own offline handling takes over); an unprovisioned one would stay blank.
                     boolean provisioned = expectedNavNonce.equals(deliveredDocumentNavNonce);
-                    if ("unreachable".equals(failureReason) && provisioned && (finalize || isWithinResumeGraceNow())) {
+                    if ("unreachable".equals(failureReason) && provisioned) {
                         clearPendingAuthIfCurrent(expectedEpoch);
                         return;
                     }
@@ -982,6 +980,8 @@ public class KikiShellPlugin extends Plugin {
             }
             String token = readPeerToken(targetServerId, targetOrigin);
             if (token == null || token.isEmpty()) {
+                // No credential left to hand over: a tunnel prepared for it must not outlive it.
+                closeWsTunnel();
                 if (finalize) {
                     view.post(() -> {
                         if (
@@ -1701,7 +1701,7 @@ public class KikiShellPlugin extends Plugin {
             "var W=function(u,p){var s=String(u);try{var m=window.__kikiWsTunnel;var r=new URL(s,window.location.href);if(m&&r.protocol===\"wss:\"&&(\"wss://\"+r.host)===m.from){s=m.to+r.pathname+r.search;}}catch(e){}return arguments.length>1?new N(s,p):new N(s);};" +
             "W.prototype=N.prototype;W.CONNECTING=0;W.OPEN=1;W.CLOSING=2;W.CLOSED=3;" +
             "try{Object.defineProperty(window,\"WebSocket\",{configurable:true,writable:true,value:W});}catch(e){window.WebSocket=W;}" +
-            "window.__kikiWsTunnelInstalled=true;try{window.dispatchEvent(new Event(\"kiki:ws-tunnel-ready\"));}catch(e){}return true;}catch(e){return false;}})();"
+            "window.__kikiWsTunnelInstalled=true;return true;}catch(e){return false;}})();"
         );
     }
 
@@ -1922,20 +1922,6 @@ public class KikiShellPlugin extends Plugin {
         pendingPairUri = data.toString();
         intent.setData(null);
         return true;
-    }
-
-    private boolean isWithinResumeGraceNow() {
-        return isWithinResumeGrace(android.os.SystemClock.elapsedRealtime(), lastResumeAtMs);
-    }
-
-    static boolean isWithinResumeGrace(long nowMs, long resumedAtMs) {
-        return resumedAtMs > 0 && nowMs >= resumedAtMs && nowMs - resumedAtMs <= RESUME_UNREACHABLE_GRACE_MS;
-    }
-
-    @Override
-    protected void handleOnResume() {
-        super.handleOnResume();
-        lastResumeAtMs = android.os.SystemClock.elapsedRealtime();
     }
 
     @Override
