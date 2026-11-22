@@ -12,6 +12,7 @@ import type { Task } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
+import type { CronTask } from '../../lib/client';
 import {
   branchLifecycleState,
   isEphemeralBtwNode,
@@ -20,6 +21,7 @@ import {
 } from '../agent-panel/InspectorBranches';
 import { Icon } from '../icons';
 import { age, useNow } from './model';
+import { NextFire } from './SessionCronSection';
 import { FOCUS_RING, StateMark } from './shell';
 
 const ROW_HEIGHT = 28;
@@ -45,7 +47,32 @@ interface TopologySubagentNode {
   readonly startedAt: number | undefined;
 }
 
-type TopologyChildNode = TopologyBranchNode | TopologySubagentNode;
+interface TopologyCronNode {
+  readonly kind: 'cron';
+  readonly id: 'cron';
+  readonly label: string;
+  readonly count: number;
+  readonly nextFireAt: string | null;
+  readonly state: 'running';
+  readonly priority: number;
+  readonly startedAt: number | undefined;
+}
+
+type TopologyChildNode = TopologyBranchNode | TopologySubagentNode | TopologyCronNode;
+
+function earliestFireAt(tasks: readonly CronTask[]): string | null {
+  let bestIso: string | null = null;
+  let bestMs = Number.POSITIVE_INFINITY;
+  for (const task of tasks) {
+    if (task.next_fire_at === null) continue;
+    const ms = Date.parse(task.next_fire_at);
+    if (Number.isFinite(ms) && ms < bestMs) {
+      bestMs = ms;
+      bestIso = task.next_fire_at;
+    }
+  }
+  return bestIso;
+}
 
 function parseTimestamp(iso: string | undefined): number | undefined {
   if (iso === undefined || iso === '') return undefined;
@@ -61,10 +88,12 @@ export interface RailLiveTopologyProps {
   readonly forest: AgentForest;
   readonly openBranches: readonly AgentTreeNode[];
   readonly runningSubagentTasks: readonly Task[];
+  readonly activeCronTasks?: readonly CronTask[];
   readonly waitingAgentIds: ReadonlySet<string>;
   readonly pendingCount: number;
   readonly onSwitchToRun: () => void;
   readonly onOpenAgent: (agentId: string) => void;
+  readonly onOpenCron?: () => void;
 }
 
 export const RailLiveTopology = memo(function RailLiveTopology({
@@ -75,10 +104,12 @@ export const RailLiveTopology = memo(function RailLiveTopology({
   forest,
   openBranches,
   runningSubagentTasks,
+  activeCronTasks,
   waitingAgentIds,
   pendingCount,
   onSwitchToRun,
   onOpenAgent,
+  onOpenCron,
 }: RailLiveTopologyProps) {
   const { t, tp, locale } = useI18n();
 
@@ -136,15 +167,41 @@ export const RailLiveTopology = memo(function RailLiveTopology({
       pushSubagent(node.agentId, node.label);
     }
 
+    const activeCrons = rootAgentId === MAIN_AGENT_ID
+      ? (activeCronTasks ?? []).filter((task) => !task.paused)
+      : [];
+    if (activeCrons.length > 0) {
+      const nextFireAt = earliestFireAt(activeCrons);
+      items.push({
+        kind: 'cron',
+        id: 'cron',
+        label: activeCrons.length === 1
+          ? activeCrons[0]!.prompt_preview
+          : t('rail.topology.cronNode', { count: activeCrons.length }),
+        count: activeCrons.length,
+        nextFireAt,
+        state: 'running',
+        priority: 3,
+        startedAt: undefined,
+      });
+    }
+
     items.sort((left, right) => {
       if (left.priority !== right.priority) return left.priority - right.priority;
-      if (left.kind !== right.kind) return left.kind === 'branch' ? -1 : 1;
+      if (left.kind !== right.kind) {
+        if (left.kind === 'branch') return -1;
+        if (right.kind === 'branch') return 1;
+        return left.kind === 'subagent' ? -1 : 1;
+      }
       return (right.startedAt ?? 0) - (left.startedAt ?? 0);
     });
     return items;
-  }, [forest.byId, openBranches, rootAgentId, runningSubagentTasks, waitingAgentIds]);
+  }, [activeCronTasks, forest.byId, openBranches, rootAgentId, runningSubagentTasks, t, waitingAgentIds]);
 
-  const isActive = busy || liveChildren.length > 0 || pendingCount > 0;
+  const activeCronCount = rootAgentId === MAIN_AGENT_ID
+    ? (activeCronTasks ?? []).filter((task) => !task.paused).length
+    : 0;
+  const isActive = busy || liveChildren.length > 0 || pendingCount > 0 || activeCronCount > 0;
   const now = useNow(30_000, isActive);
 
   if (!isActive) return null;
@@ -163,6 +220,7 @@ export const RailLiveTopology = memo(function RailLiveTopology({
     pendingCount > 0 ? tp('inspector.waiting', pendingCount) : undefined,
     branchCount > 0 ? `${branchCount} ${t('rail.group.branches')}` : undefined,
     runningSubagentCount > 0 ? `${runningSubagentCount} ${t('inspector.running')}` : undefined,
+    activeCronCount > 0 ? t('rail.topology.cronSummary', { count: activeCronCount }) : undefined,
   ].filter((part): part is string => part !== undefined);
 
   return (
@@ -262,6 +320,33 @@ export const RailLiveTopology = memo(function RailLiveTopology({
           ) : (
             liveChildren.map((item) => {
               const isWaiting = item.state === 'waiting';
+              if (item.kind === 'cron') {
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-topology-node="cron"
+                    data-topology-kind="cron"
+                    title={item.label}
+                    onClick={() => { (onOpenCron ?? onSwitchToRun)(); }}
+                    className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-paper/70 px-2 text-left transition-colors hover:border-hairline-strong hover:bg-canvas ${FOCUS_RING}`}
+                  >
+                    <Icon name="clock" size={12} className="shrink-0 text-ink-soft" />
+                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink">
+                      {item.label}
+                    </span>
+                    {item.nextFireAt !== null ? (
+                      <span className="shrink-0 font-mono text-[10.5px] text-ink-faint tabular-nums">
+                        <NextFire at={item.nextFireAt} />
+                      </span>
+                    ) : (
+                      <span className="shrink-0 text-[10.5px] text-ink-faint">
+                        {t('cron.status.running')}
+                      </span>
+                    )}
+                  </button>
+                );
+              }
               if (item.kind === 'branch') {
                 const statusText = t(`rail.branches.status.${item.state}` as I18nKey);
                 return (

@@ -15,8 +15,8 @@
  * to another conversation never renders here.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { QueryClient, QueryClientContext, useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
 import { cronScheduleLabel } from '@kiki/session-core/util';
@@ -27,8 +27,13 @@ import { useOptionalConnection } from '../../state/connection';
 import { RAIL_MARK } from '../agent-panel/InspectorAgents';
 import { INSPECTOR_HEAD, INSPECTOR_LINK } from '../agent-panel/InspectorSection';
 import { DisclosureChevron, Icon } from '../icons';
+import { LifeMark } from '../LifeMark';
 import { useNow } from '../RelativeTime';
 import { FOCUS_RING } from './shell';
+
+const FALLBACK_QUERY_CLIENT = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
 
 /** Rows shown before the rest fold behind one control of their own. */
 const SHOWN_ROWS = 3;
@@ -60,6 +65,50 @@ export function sessionCronQueryKey(sessionId: string): readonly [string, string
   return ['cron-tasks', 'session', sessionId];
 }
 
+const EMPTY_CRON_TASKS: readonly CronTask[] = [];
+
+/**
+ * Shared read of this conversation's scheduled tasks over `sessionCronQueryKey`.
+ * Reused by both `Run` / `RailLiveTopology` and `Config -> SessionCronSection`
+ * so TanStack Query deduplicates requests with zero duplicate polling.
+ */
+export function useSessionCronTasks(sessionId: string, enabled = true): {
+  readonly tasks: readonly CronTask[];
+  readonly activeTasks: readonly CronTask[];
+} {
+  const connection = useOptionalConnection();
+  const queryClient = useContext(QueryClientContext);
+  const queryKey = useMemo(() => sessionCronQueryKey(sessionId), [sessionId]);
+  const hasClient = connection !== null && typeof connection.client?.listCronTasks === 'function';
+  const canQuery = enabled && hasClient && queryClient !== undefined && Boolean(sessionId && sessionId.trim() !== '');
+
+  const read = useInfiniteQuery(
+    {
+      queryKey,
+      queryFn: ({ pageParam }) =>
+        connection!.client.listCronTasks({ session_id: sessionId, page_size: PAGE_SIZE, offset: pageParam }),
+      initialPageParam: 0,
+      getNextPageParam: (lastPage) => lastPage.next_offset,
+      staleTime: 30_000,
+      retry: false,
+      enabled: canQuery,
+    },
+    queryClient ?? FALLBACK_QUERY_CLIENT,
+  );
+
+  const tasks = useMemo(() => {
+    if (!canQuery || read.data === undefined) return EMPTY_CRON_TASKS;
+    return read.data.pages.flatMap((page) => page.items).filter((task) => task.session_id === sessionId);
+  }, [canQuery, read.data, sessionId]);
+
+  const activeTasks = useMemo(
+    () => tasks.filter((task) => !task.paused),
+    [tasks],
+  );
+
+  return { tasks, activeTasks };
+}
+
 /** The block's folding head: title, count, and the next fire while closed. */
 function CronHead({
   title,
@@ -85,7 +134,7 @@ function CronHead({
 }
 
 /** Countdown to the next fire, aging with the shared clock. */
-function NextFire({ at }: { readonly at: string }) {
+export function NextFire({ at }: { readonly at: string }) {
   const { time } = useI18n();
   useNow();
   return (
@@ -380,6 +429,201 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
             </button>
           </div>
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+function isTaskRecentlyTriggered(task: CronTask, turnStartedAt: number | undefined): boolean {
+  if (turnStartedAt === undefined || !Number.isFinite(turnStartedAt)) return false;
+  const windowStart = turnStartedAt - 15_000;
+  if (task.last_fired_at !== null) {
+    const firedAt = Date.parse(task.last_fired_at);
+    if (Number.isFinite(firedAt) && firedAt >= windowStart) return true;
+  }
+  const check = task.last_trigger_check;
+  if (check !== undefined && check.outcome === 'allowed' && check.checkedAt >= windowStart) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Quiet active-only scheduled tasks section inside the `Run` tab.
+ * Renders `null` (0px) when zero active (non-paused) cron tasks exist so an
+ * idle `Run` rail stays completely uncluttered.
+ */
+export function RunCronSection({
+  sessionId,
+  activeTasks,
+  cronTurnActive = false,
+  turnStartedAt,
+}: {
+  readonly sessionId: string;
+  readonly activeTasks: readonly CronTask[];
+  readonly cronTurnActive?: boolean;
+  readonly turnStartedAt?: number;
+}) {
+  const { t, locale } = useI18n();
+  const navigate = useNavigate();
+  const connection = useOptionalConnection();
+  const queryClient = useContext(QueryClientContext);
+  const [showAll, setShowAll] = useState(false);
+  const [failedId, setFailedId] = useState<string | null>(null);
+  const queryKey = useMemo(() => sessionCronQueryKey(sessionId), [sessionId]);
+
+  const pause = useMutation(
+    {
+      mutationFn: (id: string) => connection!.client.pauseCronTask(id, sessionId),
+      onMutate: () => { setFailedId(null); },
+      onSuccess: (result) => {
+        queryClient?.setQueryData<InfiniteData<ListCronTasksResponse, number>>(queryKey, (old) =>
+          old === undefined ? undefined : {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              items: page.items.map((entry) =>
+                entry.id === result.task.id && entry.workspace_id === result.task.workspace_id ? result.task : entry),
+            })),
+          },
+        );
+      },
+      onError: (_error, id) => { setFailedId(id); },
+      onSettled: () => { void queryClient?.invalidateQueries({ queryKey }); },
+    },
+    queryClient ?? FALLBACK_QUERY_CLIENT,
+  );
+
+  const manage = useCallback(() => {
+    void navigate(`/cron?session=${encodeURIComponent(sessionId)}`);
+  }, [navigate, sessionId]);
+
+  if (activeTasks.length === 0) return null;
+
+  const canPause = connection !== null && typeof connection.client?.pauseCronTask === 'function';
+  const shown = showAll ? activeTasks : activeTasks.slice(0, SHOWN_ROWS);
+  const hidden = activeTasks.length - shown.length;
+  const matchedRunningIds = new Set<string>();
+  if (cronTurnActive) {
+    for (const task of activeTasks) {
+      if (isTaskRecentlyTriggered(task, turnStartedAt)) matchedRunningIds.add(task.id);
+    }
+    if (matchedRunningIds.size === 0 && activeTasks.length === 1) {
+      matchedRunningIds.add(activeTasks[0]!.id);
+    }
+  }
+  const headerRunning = cronTurnActive && matchedRunningIds.size === 0;
+
+  return (
+    <section data-rail-run-cron="" aria-labelledby="rail-run-cron-head">
+      <header className="flex h-7 min-w-0 items-center gap-1.5">
+        <h3 id="rail-run-cron-head" className={`${INSPECTOR_HEAD} whitespace-nowrap`}>
+          {t('cron.panel.title')}
+        </h3>
+        <span className="text-[12px] text-ink-faint tabular-nums">{activeTasks.length}</span>
+        {headerRunning ? (
+          <span data-rail-run-cron-live="" className="inline-flex items-center gap-1 text-[11px] font-medium text-accent">
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
+            {t('rail.cron.running')}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          data-rail-run-cron-manage=""
+          onClick={manage}
+          title={t('rail.cron.manage')}
+          aria-label={t('rail.cron.manage')}
+          className={`ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9 ${FOCUS_RING}`}
+        >
+          <Icon name="arrowUpRight" size={12} />
+        </button>
+      </header>
+      <ul className="mt-0.5 space-y-0.5">
+        {shown.map((task) => {
+          const pending = pause.isPending && pause.variables === task.id;
+          const running = matchedRunningIds.has(task.id);
+          const schedule = cronScheduleLabel(locale, task.cron, task.human_schedule, t);
+          const reveal = pending ? '' : HOVER_REVEAL;
+          return (
+            <li
+              key={task.id}
+              data-rail-item
+              data-rail-run-cron-row={task.id}
+              data-rail-cron-running={running ? '' : undefined}
+              aria-busy={pending}
+              className={`rail-cron-row group -mx-2 flex items-center gap-1 rounded-lg px-2 py-1 transition-opacity hover:bg-ink/[0.04] ${pending ? 'opacity-60' : ''}`}
+            >
+              <button
+                type="button"
+                data-cron-open={task.id}
+                title={task.prompt_preview}
+                onClick={manage}
+                className="flex min-w-0 flex-1 cursor-pointer items-start rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+              >
+                <span className={RAIL_MARK}>
+                  {running ? (
+                    <LifeMark markId={`cron:${task.id}`} life="working" tone="bg-success" still />
+                  ) : (
+                    <Icon name="clock" size={12} className="text-ink-faint" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] leading-5 text-ink">
+                    {task.prompt_preview}
+                  </span>
+                  <span className="flex min-w-0 items-baseline gap-1.5 text-[11.5px] leading-[17px] text-ink-faint">
+                    <span data-rail-cron-schedule className="min-w-0 truncate" title={schedule}>{schedule}</span>
+                    {running ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span data-rail-run-cron-live="" className="shrink-0 font-medium text-accent">{t('rail.cron.running')}</span>
+                      </>
+                    ) : task.next_fire_at !== null ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <NextFire at={task.next_fire_at} />
+                      </>
+                    ) : null}
+                  </span>
+                </span>
+              </button>
+              {canPause ? (
+                <button
+                  type="button"
+                  data-rail-cron-toggle={task.id}
+                  aria-label={`${t('cron.action.pause')} · ${task.prompt_preview}`}
+                  disabled={pending}
+                  onClick={() => { pause.mutate(task.id); }}
+                  className={`${ROW_ACTION} ${reveal} text-ink-faint`}
+                >
+                  {t('cron.action.pause')}
+                </button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {hidden > 0 ? (
+        <button type="button" data-rail-run-cron-more="" onClick={() => { setShowAll(true); }} className={TAIL_BUTTON}>
+          {t('rail.cron.more', { count: hidden })}
+        </button>
+      ) : null}
+      {failedId !== null ? (
+        <p
+          role="status"
+          data-rail-cron-error={failedId}
+          className="flex items-baseline gap-1.5 pt-0.5 text-[12px] leading-relaxed text-ink-faint"
+        >
+          <span className="min-w-0">{t('rail.cron.pauseFailed')}</span>
+          <button
+            type="button"
+            data-rail-cron-error-retry
+            onClick={() => { pause.mutate(failedId); }}
+            className={`shrink-0 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+          >
+            {t('common.retry')}
+          </button>
+        </p>
       ) : null}
     </section>
   );

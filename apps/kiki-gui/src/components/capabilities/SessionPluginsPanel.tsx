@@ -29,11 +29,12 @@
  *   instead of implying that switching it off here stops that service.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 
-import type { PluginUsageItem, PluginUsageResponse, PluginUsageTarget } from '@kiki/protocol';
+import type { PluginGuiSlotContribution, PluginUsageItem, PluginUsageResponse, PluginUsageTarget } from '@kiki/protocol';
+import { resolvePluginLocalizedText } from '@kiki/session-core';
 import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -41,9 +42,10 @@ import { useConnection } from '../../state/connection';
 import { isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
 import { SidePanel } from '../SidePanel';
 import { FOCUS_RING } from '../rail-variants/shell';
-import { InspectorChevron } from '../agent-panel/InspectorSection';
-import { Spinner } from '../icons';
+import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
+import { Icon, Spinner } from '../icons';
 import { Toggle } from '../controls';
+import { usePluginGuiSlots } from '../plugins/PluginComposerSlots';
 import type { PluginMarketplaceEntry } from '../../lib/client';
 import { CapabilityIcon } from './CapabilityIcon';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
@@ -67,12 +69,77 @@ import { PLUGIN_QUERY_KEYS, useInvalidatePlugins, usePluginMarketplace } from '.
 
 type UsageRead = UseQueryResult<PluginUsageResponse, Error>;
 
+const ENABLED_VISIBLE_LIMIT = 6;
+const PLUGIN_SEARCH_AUTO_MIN = 6;
+
+function collectSlotSearchTokens(
+  slots: readonly PluginGuiSlotContribution[],
+  locale: Locale,
+): ReadonlyMap<string, readonly string[]> {
+  const map = new Map<string, string[]>();
+  const push = (pluginId: string, value: string | undefined) => {
+    if (value === undefined || value.trim() === '') return;
+    let list = map.get(pluginId);
+    if (list === undefined) {
+      list = [];
+      map.set(pluginId, list);
+    }
+    list.push(value);
+  };
+  for (const slot of slots) {
+    push(slot.pluginId, slot.id);
+    if ('label' in slot && slot.label !== undefined) {
+      push(slot.pluginId, resolvePluginLocalizedText(slot.label, locale));
+      push(slot.pluginId, slot.label.default);
+      if (slot.label.zh !== undefined) push(slot.pluginId, slot.label.zh);
+    }
+    if ('tooltip' in slot && slot.tooltip !== undefined) {
+      push(slot.pluginId, resolvePluginLocalizedText(slot.tooltip, locale));
+    }
+    if ('title' in slot && slot.title !== undefined) {
+      push(slot.pluginId, resolvePluginLocalizedText(slot.title, locale));
+    }
+    if ('subtitle' in slot && slot.subtitle !== undefined) {
+      push(slot.pluginId, resolvePluginLocalizedText(slot.subtitle, locale));
+    }
+    if ('action' in slot && slot.action !== undefined) {
+      if (slot.action.kind === 'open_plugin_panel') push(slot.pluginId, slot.action.panelId);
+      else if (slot.action.kind === 'insert_prompt') push(slot.pluginId, slot.action.text);
+    }
+    if ('toolNames' in slot && Array.isArray(slot.toolNames)) {
+      for (const toolName of slot.toolNames) push(slot.pluginId, toolName);
+    }
+  }
+  return map;
+}
+
+function pluginRowMatches(
+  item: PluginUsageItem,
+  query: string,
+  extraTokens: readonly string[] | undefined,
+): boolean {
+  const needles = query.trim().toLowerCase().split(/\s+/).filter((part) => part !== '');
+  if (needles.length === 0) return true;
+  const fields: string[] = [
+    item.displayName,
+    item.id,
+    item.version ?? '',
+    item.mcpServerCount > 0 ? 'mcp' : '',
+    item.skillCount > 0 ? 'skill 技能' : '',
+    ...(extraTokens ?? []),
+  ];
+  const haystack = fields.join('\n').toLowerCase();
+  return needles.every((needle) => haystack.includes(needle));
+}
+
 export function SessionPluginsPanel({
   sessionId,
   showStoreActions = true,
+  headerTitle,
 }: {
   readonly sessionId: string;
   readonly showStoreActions?: boolean;
+  readonly headerTitle?: string;
 }) {
   const { t, locale } = useI18n();
   const location = useLocation();
@@ -98,6 +165,16 @@ export function SessionPluginsPanel({
   const [browse, setBrowse] = useState(false);
   const [adding, setAdding] = useState(false);
   const [showDisabled, setShowDisabled] = useState(false);
+  const [showAllEnabled, setShowAllEnabled] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const pluginSlots = usePluginGuiSlots({ sessionId });
+  useEffect(() => {
+    setSearchQuery('');
+    setSearchOpen(false);
+    setShowAllEnabled(false);
+  }, [sessionId]);
   // An install in flight remembers the session that opened it, because the
   // install itself is a home-scope fact and only the session `on` that
   // follows is session-scoped.
@@ -198,13 +275,23 @@ export function SessionPluginsPanel({
 
   const scope = scopeOf(read.data);
   const items = read.data?.plugins ?? [];
-  const { primaryItems, foldedDisabledItems } = useMemo(() => {
+  const slotSearchTokens = useMemo(
+    () => collectSlotSearchTokens(pluginSlots.slots, locale),
+    [locale, pluginSlots.slots],
+  );
+  const autoSearch = items.length > PLUGIN_SEARCH_AUTO_MIN;
+  const showSearchInput = items.length > 0 && (autoSearch || searchOpen);
+  const filtering = searchQuery.trim() !== '';
+
+  const { activeCount, primaryItems, foldedDisabledItems } = useMemo(() => {
     const enabled: PluginUsageItem[] = [];
     const disabled: PluginUsageItem[] = [];
+    let active = 0;
     for (const item of items) {
       const key = rowKey(item.id);
       const pendingState = pending[key];
       const effective = pendingState === undefined ? item.effective : pendingState === 'on';
+      if (effective) active += 1;
       if (effective || pendingState !== undefined || failures[key] !== undefined) {
         enabled.push(item);
       } else {
@@ -212,12 +299,22 @@ export function SessionPluginsPanel({
       }
     }
     if (disabled.length > 2) {
-      return { primaryItems: enabled, foldedDisabledItems: disabled };
+      return { activeCount: active, primaryItems: enabled, foldedDisabledItems: disabled };
     }
-    return { primaryItems: [...enabled, ...disabled], foldedDisabledItems: [] as PluginUsageItem[] };
+    return { activeCount: active, primaryItems: [...enabled, ...disabled], foldedDisabledItems: [] as PluginUsageItem[] };
   }, [failures, items, pending, rowKey]);
 
+  const filteredItems = useMemo(() => {
+    if (!filtering) return items;
+    return items.filter((item) => pluginRowMatches(item, searchQuery, slotSearchTokens.get(item.id)));
+  }, [filtering, items, searchQuery, slotSearchTokens]);
+
   if (unsupported) return null;
+
+  const hasEnabledOverflow = !filtering && primaryItems.length > ENABLED_VISIBLE_LIMIT;
+  const visiblePrimaryItems = hasEnabledOverflow && !showAllEnabled
+    ? primaryItems.slice(0, ENABLED_VISIBLE_LIMIT)
+    : primaryItems;
 
   const renderRow = (item: PluginUsageItem) => (
     <PluginUsageRow
@@ -232,14 +329,51 @@ export function SessionPluginsPanel({
     />
   );
 
+  const searchToggleButton = items.length > 0 && !autoSearch ? (
+    <button
+      type="button"
+      data-rail-plugins-search-toggle=""
+      aria-label={t('rail.plugins.search')}
+      aria-pressed={searchOpen}
+      title={t('rail.plugins.search')}
+      onClick={() => {
+        setSearchOpen((open) => {
+          const next = !open;
+          if (!next) setSearchQuery('');
+          else queueMicrotask(() => { searchInputRef.current?.focus(); });
+          return next;
+        });
+      }}
+      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink ${
+        searchOpen ? 'bg-ink/[0.06] text-ink' : 'text-ink-faint'
+      } ${FOCUS_RING}`}
+    >
+      <Icon name="search" size={12} />
+    </button>
+  ) : null;
+
   return (
     <>
       {/* The control block owns the fold and heading; this component owns the
           plugin rows and their read/write states. */}
       <div data-rail-plugins="" className="space-y-1.5 px-2 pt-0.5">
+        {headerTitle !== undefined ? (
+          <div className="flex min-h-6 items-center justify-between gap-1.5 pb-0.5">
+            <h4 className={INSPECTOR_HEAD}>{headerTitle}</h4>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {items.length > 0 ? (
+                <span className="text-[11px] font-normal text-ink-faint tabular-nums">
+                  {activeCount}/{items.length}
+                </span>
+              ) : null}
+              {searchToggleButton}
+            </div>
+          </div>
+        ) : null}
         <ScopeLine
           scope={scope}
           showStoreActions={showStoreActions}
+          trailing={headerTitle === undefined ? searchToggleButton : undefined}
           onBrowse={() => { setBrowse(true); }}
           onAddFromSource={() => { setAdding(true); }}
         />
@@ -250,37 +384,121 @@ export function SessionPluginsPanel({
           <p className="text-[11.5px] leading-4 text-ink-faint" data-rail-plugins-hint>{t('rail.plugins.hint')}</p>
         ) : null}
 
+        {showSearchInput ? (
+          <label className="relative block">
+            <span className="sr-only">{t('rail.plugins.search')}</span>
+            <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-faint" />
+            <input
+              ref={searchInputRef}
+              type="search"
+              data-rail-plugins-search=""
+              value={searchQuery}
+              onChange={(event) => { setSearchQuery(event.target.value); }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && searchQuery !== '') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setSearchQuery('');
+                }
+              }}
+              placeholder={t('rail.plugins.search')}
+              className="h-7 w-full rounded-md border border-hairline bg-transparent pr-7 pl-7 text-[12px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink pointer-coarse:h-9 [&::-webkit-search-cancel-button]:hidden"
+            />
+            {searchQuery !== '' ? (
+              <button
+                type="button"
+                data-rail-plugins-search-clear=""
+                aria-label={t('inspector.cap.clearSearch')}
+                onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
+                className={`absolute top-1/2 right-1.5 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+              >
+                <Icon name="close" size={12} />
+              </button>
+            ) : null}
+          </label>
+        ) : null}
+
         <UsageStatus read={read} />
 
-        {primaryItems.length > 0 ? (
-          <ul className="space-y-px">
-            {primaryItems.map(renderRow)}
-          </ul>
-        ) : null}
-
-        {foldedDisabledItems.length > 0 ? (
-          <div data-rail-plugins-disabled-group="">
-            <button
-              type="button"
-              data-rail-plugins-disabled-toggle=""
-              aria-expanded={showDisabled}
-              onClick={() => { setShowDisabled((value) => !value); }}
-              className={`-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
-            >
-              <span className="min-w-0 flex-1 truncate">
-                {showDisabled
-                  ? t('rail.plugins.disabledHide')
-                  : t('rail.plugins.disabledMore', { count: foldedDisabledItems.length })}
-              </span>
-              <InspectorChevron open={showDisabled} />
-            </button>
-            {showDisabled ? (
-              <ul data-rail-plugins-disabled-list="" className="space-y-px">
-                {foldedDisabledItems.map(renderRow)}
+        {filtering ? (
+          filteredItems.length === 0 ? (
+            <div data-rail-plugins-no-match="" className="flex items-baseline gap-2 py-1 text-[12px] text-ink-faint">
+              <span>{t('rail.plugins.noMatch')}</span>
+              <button
+                type="button"
+                onClick={() => { setSearchQuery(''); }}
+                className={`rounded text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink ${FOCUS_RING}`}
+              >
+                {t('inspector.cap.clearSearch')}
+              </button>
+            </div>
+          ) : (
+            <div data-rail-plugins-scroll="" className="max-h-72 overflow-y-auto pr-0.5">
+              <ul className="space-y-px">
+                {filteredItems.map(renderRow)}
               </ul>
+            </div>
+          )
+        ) : (
+          <>
+            {visiblePrimaryItems.length > 0 ? (
+              showAllEnabled && hasEnabledOverflow ? (
+                <div data-rail-plugins-scroll="" className="max-h-72 overflow-y-auto pr-0.5">
+                  <ul className="space-y-px">
+                    {visiblePrimaryItems.map(renderRow)}
+                  </ul>
+                </div>
+              ) : (
+                <ul className="space-y-px">
+                  {visiblePrimaryItems.map(renderRow)}
+                </ul>
+              )
             ) : null}
-          </div>
-        ) : null}
+
+            {hasEnabledOverflow ? (
+              <button
+                type="button"
+                data-rail-plugins-enabled-more=""
+                aria-expanded={showAllEnabled}
+                onClick={() => { setShowAllEnabled((value) => !value); }}
+                className={`-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {showAllEnabled
+                    ? t('rail.plugins.enabledHide')
+                    : t('rail.plugins.enabledMore', { count: primaryItems.length })}
+                </span>
+                <InspectorChevron open={showAllEnabled} />
+              </button>
+            ) : null}
+
+            {foldedDisabledItems.length > 0 ? (
+              <div data-rail-plugins-disabled-group="">
+                <button
+                  type="button"
+                  data-rail-plugins-disabled-toggle=""
+                  aria-expanded={showDisabled}
+                  onClick={() => { setShowDisabled((value) => !value); }}
+                  className={`-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {showDisabled
+                      ? t('rail.plugins.disabledHide')
+                      : t('rail.plugins.disabledMore', { count: foldedDisabledItems.length })}
+                  </span>
+                  <InspectorChevron open={showDisabled} />
+                </button>
+                {showDisabled ? (
+                  <div className={foldedDisabledItems.length > ENABLED_VISIBLE_LIMIT ? 'max-h-60 overflow-y-auto pr-0.5' : undefined}>
+                    <ul data-rail-plugins-disabled-list="" className="space-y-px">
+                      {foldedDisabledItems.map(renderRow)}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        )}
 
         {items.length === 0 && read.isSuccess ? (
           <p className="pt-0.5 text-[12px] leading-relaxed text-ink-faint" data-rail-plugins-empty>{t('rail.plugins.empty')}</p>
@@ -317,11 +535,13 @@ export function SessionPluginsPanel({
 function ScopeLine({
   scope,
   showStoreActions,
+  trailing,
   onBrowse,
   onAddFromSource,
 }: {
   readonly scope: UsageScope | undefined;
   readonly showStoreActions: boolean;
+  readonly trailing?: React.ReactNode;
   readonly onBrowse: () => void;
   readonly onAddFromSource: () => void;
 }) {
@@ -335,14 +555,19 @@ function ScopeLine({
       <p className="min-w-0 flex-1 text-[12.5px] leading-5 text-ink-soft" data-rail-plugins-scope title={scope.root}>
         {scopeTitle(scope, t)}
       </p>
-      {showStoreActions ? (
+      {showStoreActions || trailing !== undefined ? (
         <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-          <button type="button" onClick={onBrowse} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-browse="">
-            {t('rail.plugins.browse')}
-          </button>
-          <button type="button" onClick={onAddFromSource} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-add-source="">
-            {t('rail.plugins.addSource')}
-          </button>
+          {showStoreActions ? (
+            <>
+              <button type="button" onClick={onBrowse} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-browse="">
+                {t('rail.plugins.browse')}
+              </button>
+              <button type="button" onClick={onAddFromSource} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-add-source="">
+                {t('rail.plugins.addSource')}
+              </button>
+            </>
+          ) : null}
+          {trailing}
         </div>
       ) : null}
     </div>
@@ -517,10 +742,15 @@ export function PluginCatalogDialog({
 }) {
   const { t } = useI18n();
   const catalog = usePluginMarketplace();
-  const [query] = useState('');
+  const [query, setQuery] = useState('');
+  const catalogSearchRef = useRef<HTMLInputElement>(null);
+  const allInstallable = useMemo(
+    () => (catalog.data?.entries ?? []).filter((entry) => entry.installable !== false),
+    [catalog.data],
+  );
   const entries = useMemo(
-    () => (catalog.data?.entries ?? []).filter((entry) => catalogMatches(entry, query) && entry.installable !== false),
-    [catalog.data, query],
+    () => allInstallable.filter((entry) => catalogMatches(entry, query)),
+    [allInstallable, query],
   );
   return (
     <SidePanel
@@ -530,23 +760,64 @@ export function PluginCatalogDialog({
       onClose={onClose}
       width="md"
     >
-      <div className="space-y-1">
-        {entries.length === 0 ? (
-          <p className="text-[12px] text-ink-faint">{query.trim() === '' ? t('cap.plugins.noneAvailable') : t('cap.plugins.noMatch', { query })}</p>
-        ) : entries.map((entry) => (
-          <button key={entry.id} type="button" onClick={() => { onPick(entry); }} className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`} data-rail-plugin-catalog-entry={entry.id}>
-            <CapabilityIcon icon={entry.icon} kind="plugin" size="sm" />
-            <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.displayName}</span>
-            <span className="shrink-0 text-[12px] text-ink-faint">{t('rail.plugins.addHere')}</span>
-          </button>
-        ))}
+      <div className="space-y-2">
+        {allInstallable.length > 0 ? (
+          <label className="relative block">
+            <span className="sr-only">{t('cap.plugins.search')}</span>
+            <Icon name="search" size={14} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-faint" />
+            <input
+              ref={catalogSearchRef}
+              type="search"
+              data-rail-plugin-catalog-search=""
+              value={query}
+              onChange={(event) => { setQuery(event.target.value); }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && query !== '') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setQuery('');
+                }
+              }}
+              placeholder={t('cap.plugins.search')}
+              className="h-8 w-full rounded-md border border-hairline bg-transparent pr-8 pl-8 text-[13px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink [&::-webkit-search-cancel-button]:hidden"
+            />
+            {query !== '' ? (
+              <button
+                type="button"
+                data-rail-plugin-catalog-search-clear=""
+                aria-label={t('inspector.cap.clearSearch')}
+                onClick={() => { setQuery(''); catalogSearchRef.current?.focus(); }}
+                className={`absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+              >
+                <Icon name="close" size={12} />
+              </button>
+            ) : null}
+          </label>
+        ) : null}
+        <div className="space-y-1">
+          {entries.length === 0 ? (
+            <p className="text-[12px] text-ink-faint">{query.trim() === '' ? t('cap.plugins.noneAvailable') : t('cap.plugins.noMatch', { query })}</p>
+          ) : entries.map((entry) => (
+            <button key={entry.id} type="button" onClick={() => { onPick(entry); }} className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`} data-rail-plugin-catalog-entry={entry.id}>
+              <CapabilityIcon icon={entry.icon} kind="plugin" size="sm" />
+              <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.displayName}</span>
+              <span className="shrink-0 text-[12px] text-ink-faint">{t('rail.plugins.addHere')}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </SidePanel>
   );
 }
 
 function catalogMatches(entry: PluginMarketplaceEntry, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (needle === '') return true;
-  return entry.displayName.toLowerCase().includes(needle) || (entry.description ?? '').toLowerCase().includes(needle);
+  const needles = query.trim().toLowerCase().split(/\s+/).filter((part) => part !== '');
+  if (needles.length === 0) return true;
+  const haystack = [
+    entry.displayName,
+    entry.id,
+    entry.description ?? '',
+    ...(entry.keywords ?? []),
+  ].join('\n').toLowerCase();
+  return needles.every((needle) => haystack.includes(needle));
 }

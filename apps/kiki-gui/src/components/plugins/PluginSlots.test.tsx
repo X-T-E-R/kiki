@@ -192,6 +192,60 @@ describe('E12 declarative plugin GUI slot components', () => {
     expect(loc).toBe('/settings/plugins?plugin=cordis-lsp');
   });
 
+  it('keeps PluginStatusCapsules on one horizontal line and collapses excess capsules into a searchable +N popover', () => {
+    const manyCapsules: PluginGuiSlotContribution[] = Array.from({ length: 8 }, (_, index) => ({
+      slot: 'status-capsule',
+      pluginId: `plug-${index + 1}`,
+      id: `cap-${index + 1}`,
+      label: { default: index === 6 ? 'Vibe42 Fleet' : `Plugin ${index + 1}`, zh: index === 6 ? '远端集群' : `插件 ${index + 1}` },
+      valueText: `${index + 1}ms`,
+      dotTone: index === 6 ? 'warn' : 'ok',
+      order: index + 1,
+      action: { kind: 'open_settings_section', sectionId: 'plugins' },
+    }));
+
+    renderWithProviders(
+      <PluginStatusCapsules
+        slots={manyCapsules}
+        sessionId="sess-1"
+        workspaceId="ws-1"
+      />,
+      'zh',
+    );
+
+    // 3 inline + +5 overflow button carrying the hidden warn tone dot.
+    expect(container.querySelectorAll('[data-plugin-status-capsule]')).toHaveLength(3);
+    const overflow = container.querySelector<HTMLButtonElement>('[data-plugin-capsules-overflow="5"]')!;
+    expect(overflow).not.toBeNull();
+    expect(overflow.textContent).toContain('+5');
+    expect(overflow.querySelector('[data-plugin-capsules-overflow-tone="warn"]')).not.toBeNull();
+
+    act(() => { overflow.click(); });
+    expect(document.querySelector('[data-plugin-capsules-popover]')).not.toBeNull();
+    expect(document.querySelectorAll('[data-plugin-capsules-popover] [data-plugin-status-capsule]')).toHaveLength(5);
+
+    const search = document.querySelector<HTMLInputElement>('[data-plugin-capsules-search]')!;
+    expect(search).not.toBeNull();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(search, '远端');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(document.querySelectorAll('[data-plugin-capsules-popover] [data-plugin-status-capsule]')).toHaveLength(1);
+    expect(document.querySelector('[data-plugin-capsules-popover] [data-plugin-status-capsule="plug-7:cap-7"]')).not.toBeNull();
+
+    // First Escape clears query while keeping the popover open; second Escape closes it.
+    act(() => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(search.value).toBe('');
+    expect(document.querySelector('[data-plugin-capsules-popover]')).not.toBeNull();
+    act(() => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('[data-plugin-capsules-popover]')).toBeNull();
+  });
+
   it('filters Slot 3 message actions strictly by role (user vs assistant)', () => {
     renderWithProviders(
       <div>

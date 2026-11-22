@@ -4059,6 +4059,13 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
 });
 
 describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterEach(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+
   const makePanelSlot = (pluginId: string, id: string, label: string, panelId = 'main'): PluginGuiSlotContribution => ({
     slot: 'composer-toolbar',
     pluginId,
@@ -4109,6 +4116,8 @@ describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
     return {
       probe,
       cleanup: () => {
+        act(() => { probe.root.unmount(); });
+        probe.container.remove();
         fetchSpy.mockRestore();
         connectionMock.config = prevConfig;
       },
@@ -4169,6 +4178,54 @@ describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
       await act(async () => { trigger.click(); });
       expect(document.querySelector('[data-workspace-panel-item="p4:s4"]')).not.toBeNull();
       expect(document.querySelector('[data-workspace-panel-item="p5:s5"]')).not.toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('filters across all plugin panels inside the overflow popover with keyboard-friendly search', async () => {
+    const slots = Array.from({ length: 10 }, (_, index) =>
+      makePanelSlot(`plug-${index + 1}`, `panel-${index + 1}`, index === 0 ? 'Vibe42 Workbench' : index === 8 ? 'Phone Preview' : `Panel ${index + 1}`),
+    );
+    const { probe, cleanup } = await mountWithSlots(slots);
+    try {
+      const trigger = probe.container.querySelector<HTMLButtonElement>('[data-workspace-panels-trigger]')!;
+      await act(async () => { trigger.click(); });
+      const search = document.querySelector<HTMLInputElement>('[data-workspace-panels-search]')!;
+      expect(search).not.toBeNull();
+
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      // Search finds both overflow panels and inline panels (e.g. Vibe42 Workbench).
+      await act(async () => {
+        setter.call(search, 'phone');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(document.querySelectorAll('[data-workspace-panels-popover] [data-workspace-panel-item]')).toHaveLength(1);
+      expect(document.querySelector('[data-workspace-panels-popover] [data-workspace-panel-item="plug-9:panel-9"]')).not.toBeNull();
+
+      await act(async () => {
+        setter.call(search, 'vibe42');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(document.querySelector('[data-workspace-panels-popover] [data-workspace-panel-item="plug-1:panel-1"]')).not.toBeNull();
+
+      // Empty match shows quiet feedback with no defensive prose.
+      await act(async () => {
+        setter.call(search, 'zzz-no-panel');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(document.querySelector('[data-workspace-panels-empty]')).not.toBeNull();
+
+      // First Escape clears the non-empty query while keeping the popover open; second Escape closes it.
+      await act(async () => {
+        search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(search.value).toBe('');
+      expect(document.querySelector('[data-workspace-panels-popover]')).not.toBeNull();
+      await act(async () => {
+        search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(document.querySelector('[data-workspace-panels-popover]')).toBeNull();
     } finally {
       cleanup();
     }

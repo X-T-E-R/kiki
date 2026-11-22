@@ -141,9 +141,10 @@ export function heldCount(rows: readonly McpSessionRow[]): number {
 
 /** The row's search text: the server, its source, and its transport. */
 export function mcpRowMatches(row: McpSessionRow, query: string): boolean {
-  if (query === '') return true;
-  const needle = query.toLowerCase();
-  return [row.name, row.origin, row.pluginLabel ?? '', row.transport].some((field) => field.toLowerCase().includes(needle));
+  const needles = query.trim().toLowerCase().split(/\s+/).filter((part) => part !== '');
+  if (needles.length === 0) return true;
+  const haystack = [row.name, row.origin, row.pluginLabel ?? '', row.transport].join('\n').toLowerCase();
+  return needles.every((needle) => haystack.includes(needle));
 }
 
 /** Do two locators name the same server? Unknown on either side is not a match. */
