@@ -364,7 +364,12 @@ async function exportSessions(files: Map<string, Buffer>, live: LiveServices, se
 
 function userConfig(live: LiveServices): Data {
   const raw: Data = {};
-  for (const { domain } of live.registry.listSections()) applySectionToToml(raw, domain, live.config.inspect(domain).userValue, live.registry);
+  const domains = new Set<string>([
+    'defaultModel',
+    'defaultProvider',
+    ...live.registry.listSections().map((section) => section.domain),
+  ]);
+  for (const domain of domains) applySectionToToml(raw, domain, live.config.inspect(domain).userValue, live.registry);
   return raw;
 }
 
@@ -528,11 +533,17 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
     const local = original && 'cwd' in original && original.cwd ? { cwd: original.cwd } : {};
     return { name, exists: original !== undefined, input: server === undefined ? undefined : { ...McpServerConfigSchema.parse({ ...mergeConfigCredentials(object(server), object(mcpSecrets[name])), ...local }), name } };
   });
-  const memoryChanges = await Promise.all(memories.map(async (change) => {
-    const existing = await live.memory.get(change.doc.scope, change.doc.id);
+  const memoryChanges = (await Promise.all(memories.map(async (change) => {
+    let existing: Awaited<ReturnType<typeof live.memory.get>>;
+    try {
+      existing = await live.memory.get(change.doc.scope, change.doc.id);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Workspace not found') return undefined;
+      throw error;
+    }
     if (existing?.applicability === 'machine-local' || existing && existing.status !== 'active') throw new Error(`Memory ${change.doc.id} collides with a non-portable target entry`);
     return { ...change, existing };
-  }));
+  }))).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
   if (configDomains.size) await live.config.replaceSections(transformTomlData(patch, live.registry), ConfigTarget.User, expected);
   for (const { name, exists, input } of mcpChanges) {
     if (input === undefined) { if (exists) await live.mcp.remove(name); }

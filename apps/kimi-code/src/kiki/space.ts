@@ -151,7 +151,15 @@ function nonEmpty(values: readonly string[] | undefined): readonly string[] | un
 }
 
 function asOptions(command: Command): SpaceOptions {
-  return command.optsWithGlobals<SpaceOptions>();
+  const merged = command.optsWithGlobals<SpaceOptions & { yolo?: boolean }>();
+  let yes = merged.yes === true || merged.yolo === true;
+  let cursor: Command | null = command;
+  while (!yes && cursor !== null) {
+    const opts = cursor.opts<{ yes?: boolean; yolo?: boolean }>();
+    if (opts.yes === true || opts.yolo === true) yes = true;
+    cursor = cursor.parent;
+  }
+  return yes ? { ...merged, yes: true } : merged;
 }
 
 function writeJson(value: unknown, dependencies: SpaceCommandDependencies, compact = false): void {
@@ -571,7 +579,7 @@ async function runApply(sourceValues: readonly (string | PortableSpaceEndpoint)[
         token = preview.previewToken;
       } else if (options.dryRun) throw new Error('Dry run requires source endpoints, not a preview token');
       const input: PortableSpaceApplyInput = portableSpaceApplyInputSchema.parse({
-        previewToken: token, selectedIds: options.selected, createBackup: options.backup !== false, targetEncryption: encryptionFromOptions(options),
+        previewToken: token, selectedIds: nonEmpty(options.selected), createBackup: options.backup !== false, targetEncryption: encryptionFromOptions(options),
       });
       outputReceipt(await portableSpaceRequest(connection, 'apply', { method: 'POST', body: input, parse: portableSpaceApplyReceiptSchema, fetch: dependencies.fetch }), options, dependencies);
     } finally { if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 3 }); }
@@ -766,6 +774,7 @@ async function runRekey(target: string, outputPath: string | undefined, command:
 }
 
 const INSTALL_SCRIPT_URL = 'https://raw.githubusercontent.com/X-T-E-R/kiki/kiki/scripts/install.sh';
+const REMOTE_POSIX_PATH = 'export PATH=~/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; ';
 
 async function remoteCommand(program: string, args: string[], archive?: string, outputArchive?: string): Promise<string> {
   const bashCcp = process.platform === 'win32' && program === 'ccp';
@@ -855,8 +864,7 @@ async function runClone(remote: string, command: Command, dependencies: SpaceCom
   const channel = options.channel ?? 'beta';
   if (channel !== 'stable' && channel !== 'beta') throw new Error('Clone channel must be stable or beta');
   const { invoke, ready } = await resolveRemoteTarget(remote, run);
-  const path = 'export PATH="$HOME/.local/bin:$PATH"; ';
-  const bootstrap = `${path}if ! command -v kiki >/dev/null 2>&1; then setup=$(mktemp) && curl -fsSL ${INSTALL_SCRIPT_URL} -o "$setup" && sh "$setup" --channel ${channel} >&2; status=$?; rm -f "$setup"; [ "$status" -eq 0 ] || exit "$status"; fi; exec kiki space key show --json`;
+  const bootstrap = `${REMOTE_POSIX_PATH}if ! command -v kiki >/dev/null 2>&1; then (curl -fsSL ${INSTALL_SCRIPT_URL} | sh -s -- --channel ${channel} >&2) || exit 1; fi; exec kiki space key show --json`;
   const keys = portableSpaceSourcesListResponseSchema.parse(JSON.parse(await invoke(bootstrap)));
   const root = await mkdtemp(join(tmpdir(), 'kiki-space-clone-'));
   try {
@@ -870,7 +878,7 @@ async function runClone(remote: string, command: Command, dependencies: SpaceCom
       sessions, includeMemories: options.memories !== false, targetPlatform: options.platform,
     });
     await withConnection(command, dependencies, (connection) => portableSpaceRequest(connection, 'export', { method: 'POST', body: input, parse: portableSpaceExportReceiptSchema, fetch: dependencies.fetch }));
-    const result = await invoke(`${path}exec kiki space apply - --override --yes --json`, destination);
+    const result = await invoke(`${REMOTE_POSIX_PATH}exec kiki space apply - --override --yes --json`, destination);
     portableSpaceApplyReceiptSchema.parse(JSON.parse(result));
     outputFor(dependencies).stdout.write(`${ready}\n`);
   } finally { await rm(root, { recursive: true, force: true, maxRetries: 3 }); }
@@ -890,7 +898,6 @@ async function runRemotePull(remote: string, target: string | undefined, command
     throw new Error('Local Kiki server did not return a valid age device recipient.');
   }
   const { invoke } = await resolveRemoteTarget(remote, run);
-  const path = 'export PATH="$HOME/.local/bin:$PATH"; ';
   const exportArgs = ['kiki', 'space', 'export', '-', '--format', 'age', '--recipient', localKeys.deviceRecipient];
   const domains = domainsOf(options);
   if (domains !== undefined) {
@@ -906,7 +913,7 @@ async function runRemotePull(remote: string, target: string | undefined, command
   if (options.credentials === false) {
     exportArgs.push('--no-credentials');
   }
-  const script = `${path}exec ${exportArgs.map(quotePosixShellArg).join(' ')}`;
+  const script = `${REMOTE_POSIX_PATH}exec ${exportArgs.map(quotePosixShellArg).join(' ')}`;
   const root = await mkdtemp(join(tmpdir(), 'kiki-space-pull-'));
   try {
     const archivePath = join(root, 'pull.kiki.age');
