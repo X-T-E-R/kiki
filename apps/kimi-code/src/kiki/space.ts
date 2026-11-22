@@ -278,13 +278,45 @@ function endpointFromOption(value: string | undefined, options: SpaceOptions): P
   return parsePortableEndpoint(value ?? options.space, { branch: options.branch, subpath: options.subpath });
 }
 
-async function readEnvelope(response: Response): Promise<{ readonly code: number; readonly msg: string; readonly data?: unknown }> {
+interface PortableSpaceEnvelope {
+  readonly code: number;
+  readonly msg: string;
+  readonly data?: unknown;
+  readonly details?: unknown;
+  readonly request_id?: string;
+}
+
+export class PortableSpaceRequestError extends Error {
+  readonly httpStatus: number;
+  readonly code: number;
+  readonly requestId?: string;
+  readonly details?: unknown;
+
+  constructor(
+    message: string,
+    info: {
+      readonly httpStatus: number;
+      readonly code: number;
+      readonly requestId?: string;
+      readonly details?: unknown;
+    },
+  ) {
+    super(message);
+    this.name = 'PortableSpaceRequestError';
+    this.httpStatus = info.httpStatus;
+    this.code = info.code;
+    this.requestId = info.requestId;
+    this.details = info.details;
+  }
+}
+
+async function readEnvelope(response: Response): Promise<PortableSpaceEnvelope> {
   let body: unknown;
   try { body = await response.json(); } catch { throw new Error(`Portable Space request returned non-JSON HTTP ${response.status}.`); }
   if (typeof body !== 'object' || body === null || !('code' in body) || typeof body.code !== 'number' || !('msg' in body) || typeof body.msg !== 'string') {
     throw new Error(`Portable Space request returned an invalid envelope (HTTP ${response.status}).`);
   }
-  return body as { readonly code: number; readonly msg: string; readonly data?: unknown };
+  return body as PortableSpaceEnvelope;
 }
 
 export async function portableSpaceRequest<T>(
@@ -302,7 +334,17 @@ export async function portableSpaceRequest<T>(
     redirect: 'error',
   });
   const envelope = await readEnvelope(response);
-  if (!response.ok || envelope.code !== 0) throw new Error(envelope.msg || `Portable Space request failed (HTTP ${response.status}).`);
+  if (!response.ok || envelope.code !== 0) {
+    throw new PortableSpaceRequestError(
+      envelope.msg || `Portable Space request failed (HTTP ${response.status}).`,
+      {
+        httpStatus: response.status,
+        code: envelope.code,
+        requestId: envelope.request_id,
+        details: envelope.details ?? envelope.data,
+      },
+    );
+  }
   return options.parse === undefined ? envelope.data as T : options.parse.parse(envelope.data);
 }
 
@@ -733,15 +775,12 @@ async function runRekey(target: string, outputPath: string | undefined, command:
 async function remoteCommand(program: string, args: string[], archive?: string): Promise<string> {
   const bashCcp = process.platform === 'win32' && program === 'ccp';
   const child = spawn(bashCcp ? 'bash.exe' : program, bashCcp ? ['-lc', 'exec ccp "$@"', 'ccp', ...args] : args, {
-    stdio: [archive ? 'pipe' : 'ignore', 'pipe', 'inherit'], windowsHide: true, timeout: 180_000,
+    stdio: [archive ? 'pipe' : 'ignore', 'pipe', 'inherit'], windowsHide: true,
   });
   const result = new Promise<string>((resolveCommand, reject) => {
     const stdout: Buffer[] = [];
-    let length = 0;
     child.stdout!.on('data', (chunk: Buffer) => {
-      length += chunk.length;
-      if (length > 1024 * 1024) { child.kill(); reject(new Error('Remote command output exceeds 1 MiB')); }
-      else stdout.push(chunk);
+      stdout.push(chunk);
     });
     child.once('error', reject);
     child.once('close', (code, signal) => code === 0 ? resolveCommand(Buffer.concat(stdout).toString('utf8')) : reject(new Error(`${program} exited with ${code ?? signal}`)));

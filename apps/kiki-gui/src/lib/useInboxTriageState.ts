@@ -49,8 +49,6 @@ import {
 import { pushToast, UNDO_TOAST_MS } from './toasts';
 import { matchesSpaceScope } from './useMultiSpaceSessions';
 
-const MAX_UNDO_STACK = 10;
-
 interface UndoEntry {
   readonly ref: ConversationRef;
   readonly cursor: AttentionCursor;
@@ -269,7 +267,6 @@ export function useInboxTriageState({
 
   const pushUndo = useCallback((entry: UndoEntry) => {
     const next = [...undoStackRef.current, entry];
-    if (next.length > MAX_UNDO_STACK) next.splice(0, next.length - MAX_UNDO_STACK);
     undoStackRef.current = next;
     setUndoDepth(next.length);
   }, []);

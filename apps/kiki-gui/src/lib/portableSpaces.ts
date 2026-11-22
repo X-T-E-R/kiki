@@ -90,7 +90,7 @@ async function requestPortable<T>(
   const data = await client.requestApiJson<unknown>(method, path, {
     body: options.body,
     signal: options.signal,
-    timeoutMs: options.timeoutMs ?? 60_000,
+    timeoutMs: options.timeoutMs ?? 0,
     token: options.token,
   });
   return schema.parse(data);
@@ -110,17 +110,17 @@ export function portableSpacesApi(client: KikiClient, options?: { readonly token
     inspect: (body, signal) =>
       requestPortable(client, 'POST', '/spaces/portable/inspect', portableSpaceInspectResultSchema, { body, signal, token }),
     exportSpace: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/export', portableSpaceExportReceiptSchema, { body, signal, token, timeoutMs: 120_000 }),
+      requestPortable(client, 'POST', '/spaces/portable/export', portableSpaceExportReceiptSchema, { body, signal, token }),
     preview: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/preview', portableSpacePreviewResultSchema, { body, signal, token, timeoutMs: 120_000 }),
+      requestPortable(client, 'POST', '/spaces/portable/preview', portableSpacePreviewResultSchema, { body, signal, token }),
     apply: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/apply', portableSpaceApplyReceiptSchema, { body, signal, token, timeoutMs: 120_000 }),
+      requestPortable(client, 'POST', '/spaces/portable/apply', portableSpaceApplyReceiptSchema, { body, signal, token }),
     pack: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/pack', portableSpaceExportReceiptSchema, { body, signal, token, timeoutMs: 120_000 }),
+      requestPortable(client, 'POST', '/spaces/portable/pack', portableSpaceExportReceiptSchema, { body, signal, token }),
     unpack: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/unpack', portableSpaceExportReceiptSchema, { body, signal, token, timeoutMs: 120_000 }),
+      requestPortable(client, 'POST', '/spaces/portable/unpack', portableSpaceExportReceiptSchema, { body, signal, token }),
     fork: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/fork', portableSpaceExportReceiptSchema, { body, signal, token, timeoutMs: 120_000 }),
+      requestPortable(client, 'POST', '/spaces/portable/fork', portableSpaceExportReceiptSchema, { body, signal, token }),
     mutate: (body, signal) =>
       requestPortable(client, 'POST', '/spaces/portable/mutate', portableSpaceMutateReceiptSchema, { body, signal, token }),
     rekey: (body, signal) =>

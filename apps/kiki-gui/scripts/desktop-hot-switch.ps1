@@ -10,7 +10,7 @@ param(
     [switch]$Detach,
     [switch]$InspectOnly,
     [switch]$CanaryCheck,
-    [ValidateRange(5, 300)][int]$CanaryTimeoutSeconds = 30,
+    [ValidateRange(0, 86400)][int]$CanaryTimeoutSeconds = 0,
     [ValidateRange(0, 300)][int]$DetachDelaySeconds = 5,
     [ValidateRange(1, 86400)][int]$SettleSeconds = 600,
     [ValidateRange(1, 3600)][int]$StartupSeconds = 90,
@@ -360,7 +360,7 @@ function New-CanaryOwnerToken {
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
-function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '', [int]$TimeoutSeconds = 30) {
+function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '', [int]$TimeoutSeconds = 0) {
     if (-not (Test-Path -LiteralPath $ServerExePath -PathType Leaf)) {
         throw "Canary server executable is missing: $ServerExePath"
     }
@@ -405,13 +405,16 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
         $proc = [Diagnostics.Process]::Start($psi)
         if ($null -eq $proc) { throw "Failed to start canary process: $ServerExePath" }
 
-        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $deadline = if ($TimeoutSeconds -gt 0) { [DateTime]::UtcNow.AddSeconds($TimeoutSeconds) } else { $null }
         $meta = $null
         do {
             if ($proc.HasExited) {
                 throw "Canary server exited prematurely with code $($proc.ExitCode)."
             }
             $ownedPids = @(Get-ProcessTreePids @([int]$proc.Id))
+            if ($ownedPids.Count -eq 0) {
+                throw "Canary server lost process liveness before reporting readiness."
+            }
             foreach ($file in @(Get-ChildItem -LiteralPath $canaryInstances -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
                 try {
                     $inst = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
@@ -437,7 +440,7 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
             }
             if ($null -ne $meta) { break }
             Start-Sleep -Milliseconds 150
-        } while ([DateTime]::UtcNow -lt $deadline)
+        } while ($null -eq $deadline -or [DateTime]::UtcNow -lt $deadline)
 
         if ($null -eq $meta) {
             throw "Canary server did not report /api/meta readiness within ${TimeoutSeconds}s."

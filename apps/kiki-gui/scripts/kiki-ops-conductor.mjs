@@ -934,7 +934,7 @@ export async function switchRuntime({
   settleSeconds = 30,
   startupSeconds = 90,
   stopGraceSeconds = 30,
-  canaryTimeoutSeconds = 30,
+  canaryTimeoutSeconds,
   skipCanary = false,
   background = false,
   noInterruptAfterSettle = false,
@@ -994,7 +994,10 @@ export async function switchRuntime({
     psArgs.push('-ExpectedCommit', targetCommit);
   }
   if (!skipCanary) {
-    psArgs.push('-CanaryCheck', '-CanaryTimeoutSeconds', String(canaryTimeoutSeconds));
+    psArgs.push('-CanaryCheck');
+    if (canaryTimeoutSeconds !== undefined && canaryTimeoutSeconds > 0) {
+      psArgs.push('-CanaryTimeoutSeconds', String(canaryTimeoutSeconds));
+    }
   }
   if (background) psArgs.push('-Background');
   if (noInterruptAfterSettle) psArgs.push('-NoInterruptAfterSettle');
@@ -1202,7 +1205,10 @@ async function main() {
       settleSeconds: parsePositiveInt(options['settle-seconds'], 30, '--settle-seconds'),
       startupSeconds: parsePositiveInt(options['startup-seconds'], 90, '--startup-seconds'),
       stopGraceSeconds: parsePositiveInt(options['stop-grace-seconds'], 30, '--stop-grace-seconds'),
-      canaryTimeoutSeconds: parsePositiveInt(options['canary-timeout-seconds'], 30, '--canary-timeout-seconds'),
+      canaryTimeoutSeconds:
+        options['canary-timeout-seconds'] === undefined
+          ? undefined
+          : parsePositiveInt(options['canary-timeout-seconds'], 0, '--canary-timeout-seconds'),
       skipCanary: Boolean(options['skip-canary']),
       background: Boolean(options.background),
       noInterruptAfterSettle: Boolean(options['no-interrupt-after-settle']),

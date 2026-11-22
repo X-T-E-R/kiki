@@ -27,52 +27,92 @@ export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set(
   JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'legacy-mock-allowlist.json'), 'utf8')),
 );
 
-function stripCommentsPreservingLines(src) {
-  let out = '';
+function lexCommentsAndStrings(src) {
+  let text = '';
+  const insideString = new Uint8Array(src.length);
+  const templateBraceStack = [];
   let i = 0;
   let quote = null;
   while (i < src.length) {
     const ch = src[i];
     const next = src[i + 1];
     if (quote !== null) {
-      out += ch;
       if (ch === '\\' && i + 1 < src.length) {
-        out += src[i + 1];
+        insideString[i] = 1;
+        insideString[i + 1] = 1;
+        text += ch + src[i + 1];
         i += 2;
         continue;
       }
-      if (ch === quote) quote = null;
+      if (quote === '`' && ch === '$' && next === '{') {
+        templateBraceStack.push(0);
+        quote = null;
+        text += '${';
+        i += 2;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+        text += ch;
+        i += 1;
+        continue;
+      }
+      insideString[i] = 1;
+      text += ch;
       i += 1;
       continue;
     }
+    if (templateBraceStack.length > 0) {
+      if (ch === '{') {
+        templateBraceStack[templateBraceStack.length - 1] += 1;
+      } else if (ch === '}') {
+        if (templateBraceStack[templateBraceStack.length - 1] === 0) {
+          templateBraceStack.pop();
+          quote = '`';
+          text += ch;
+          i += 1;
+          continue;
+        }
+        templateBraceStack[templateBraceStack.length - 1] -= 1;
+      }
+    }
     if (ch === "'" || ch === '"' || ch === '`') {
       quote = ch;
-      out += ch;
+      text += ch;
       i += 1;
       continue;
     }
     if (ch === '/' && next === '/') {
       while (i < src.length && src[i] !== '\n') {
-        out += ' ';
+        text += ' ';
         i += 1;
       }
       continue;
     }
     if (ch === '/' && next === '*') {
-      out += '  ';
+      text += '  ';
       i += 2;
       while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
-        out += src[i] === '\n' ? '\n' : ' ';
+        text += src[i] === '\n' ? '\n' : ' ';
         i += 1;
       }
       if (i < src.length) {
-        out += '  ';
+        text += '  ';
         i += 2;
       }
       continue;
     }
-    out += ch;
+    text += ch;
     i += 1;
+  }
+  return { text, insideString };
+}
+
+function stripStringsAndCommentsPreservingLines(src) {
+  const { text, insideString } = lexCommentsAndStrings(src);
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    out += insideString[i] === 1 && text[i] !== '\n' ? ' ' : text[i];
   }
   return out;
 }
@@ -208,11 +248,12 @@ function isExemptMockCall(callExpr) {
 }
 
 function findIntraMonorepoMocks(rawText, lineNumberAtOffset) {
-  const text = stripCommentsPreservingLines(rawText);
+  const { text, insideString } = lexCommentsAndStrings(rawText);
   const hits = [];
   INTRA_MONOREPO_MOCK_GLOBAL_RE.lastIndex = 0;
   let match;
   while ((match = INTRA_MONOREPO_MOCK_GLOBAL_RE.exec(text)) !== null) {
+    if (insideString[match.index] === 1) continue;
     const openParen = text.indexOf('(', match.index);
     const callExpr = openParen >= 0 ? extractBalancedCall(text, openParen) : match[0];
     if (isExemptMockCall(callExpr)) continue;
@@ -500,10 +541,12 @@ export function scanDisabledTests(repoRoot = DEFAULT_ROOT, { allowlist = LEGACY_
     const files = walkFiles(dir, (_abs, name) => TEST_FILE_RE.test(name));
     for (const abs of files) {
       const rel = toPosix(path.relative(repoRoot, abs));
-      const lines = fs.readFileSync(abs, 'utf8').split(/\r?\n/u);
-      for (let i = 0; i < lines.length; i += 1) {
-        if (DISABLED_TEST_RE.test(lines[i])) {
-          const hit = { file: rel, line: i + 1, text: lines[i].trim() };
+      const raw = fs.readFileSync(abs, 'utf8');
+      const rawLines = raw.split(/\r?\n/u);
+      const codeLines = stripStringsAndCommentsPreservingLines(raw).split(/\r?\n/u);
+      for (let i = 0; i < codeLines.length; i += 1) {
+        if (DISABLED_TEST_RE.test(codeLines[i])) {
+          const hit = { file: rel, line: i + 1, text: rawLines[i].trim() };
           if (allowlist.has(rel)) legacyExempted.push(hit);
           else violations.push(hit);
         }
@@ -521,11 +564,7 @@ export function scanIntraMonorepoMocks(
   const legacyExempted = [];
   for (const sub of roots) {
     const dir = path.join(repoRoot, sub);
-    const files = walkFiles(dir, (abs, name) => {
-      if (!TEST_FILE_RE.test(name)) return false;
-      const rel = toPosix(path.relative(repoRoot, abs));
-      return rel !== 'scripts/ccp-chaos/ccp-chaos.test.mjs';
-    });
+    const files = walkFiles(dir, (_abs, name) => TEST_FILE_RE.test(name));
     for (const abs of files) {
       const rel = toPosix(path.relative(repoRoot, abs));
       const content = fs.readFileSync(abs, 'utf8');
@@ -600,6 +639,25 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
         text: found.text,
       });
     }
+    const strippedHunkLines = stripStringsAndCommentsPreservingLines(hunkText).split('\n');
+    for (let idx = 0; idx < addedHunk.length; idx += 1) {
+      const codeLine = strippedHunkLines[idx] ?? '';
+      const rawEntry = addedHunk[idx];
+      if (WEAK_ASSERTION_RE.test(codeLine)) {
+        weakAssertionViolations.push({
+          file: currentFile,
+          line: rawEntry.line,
+          text: rawEntry.text.trim(),
+        });
+      }
+      if (DISABLED_TEST_RE.test(codeLine)) {
+        disabledAddedViolations.push({
+          file: currentFile,
+          line: rawEntry.line,
+          text: rawEntry.text.trim(),
+        });
+      }
+    }
     addedHunk = [];
   };
 
@@ -615,25 +673,11 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
       currentLine = m ? Number.parseInt(m[1], 10) - 1 : 0;
       continue;
     }
-    if (!currentFile || !TEST_FILE_RE.test(currentFile) || currentFile === 'scripts/ccp-chaos/ccp-chaos.test.mjs') continue;
+    if (!currentFile || !TEST_FILE_RE.test(currentFile)) continue;
     if (rawLine.startsWith('+') && !rawLine.startsWith('+++')) {
       currentLine += 1;
       const added = rawLine.slice(1);
       addedHunk.push({ line: currentLine, text: added });
-      if (WEAK_ASSERTION_RE.test(added)) {
-        weakAssertionViolations.push({
-          file: currentFile,
-          line: currentLine,
-          text: added.trim(),
-        });
-      }
-      if (DISABLED_TEST_RE.test(added)) {
-        disabledAddedViolations.push({
-          file: currentFile,
-          line: currentLine,
-          text: added.trim(),
-        });
-      }
     } else {
       flushHunk();
     }

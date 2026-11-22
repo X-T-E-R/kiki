@@ -111,7 +111,6 @@ export async function readTree(root: string, live: boolean, include: (path: stri
         const alias = canonical.toLowerCase();
         if (names.has(alias)) throw new Error(`Portable Space paths overlap: ${canonical}`);
         names.add(alias);
-        if (names.size > 32_768) throw new Error('Portable Space has too many files');
         const binary = path === SEALED || /\.(?:avif|gif|ico|jpe?g|mp[34]|otf|png|ttf|webm|webp|woff2?)$/i.test(path);
         const limit = path.startsWith('sessions/') || path === RECIPE_INSTALLATIONS || path.startsWith(`${RECIPE_STORE}revisions/`) || binary ? MAX_SPACE_BYTES - total : Math.min(MAX_FILE_BYTES, MAX_SPACE_BYTES - total);
         const bytes = await readBounded(current, limit);
