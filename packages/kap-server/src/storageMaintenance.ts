@@ -19,6 +19,7 @@ import { createAuthHook } from './middleware/auth';
 import { createHostCheck, isHostCheckDisabled, parseAllowedHosts } from './middleware/hostnames';
 import { createOriginHook, parseCorsOrigins } from './middleware/origin';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
+import { installReplyResolution } from './middleware/replyResolution';
 import { registerWebAccessRoutes } from './routes/webAccess';
 import { registerWebAssetRoutes } from './routes/webAssets';
 import { StorageMigrationController, registerStorageMigrationRoutes } from './routes/storageMigration';
@@ -84,6 +85,7 @@ export async function startStorageMaintenance(input: StorageMaintenanceInput): P
 
   async function listen(): Promise<void> {
     app = Fastify({ loggerInstance: logger, disableRequestLogging: true, genReqId: (request) => resolveRequestId(request.headers) }) as unknown as FastifyInstance;
+    installReplyResolution(app);
     const webRequests = new WeakSet<IncomingMessage>();
     web = new WebAccess(homeDir, input.serverHomeId, (configuration) => {
       if (options.sshManaged === true || options.disableAuth === true) throw new AdmissionError(403, 'web_access_unavailable');

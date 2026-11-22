@@ -10,7 +10,8 @@ const IDLE_BACKGROUND_POLL_MS = 30_000;
  * only while its indicator can be visible (e.g. the composer only while the
  * session works); `background` (used by the sidebar badge) polls every 1s
  * while requests are active or queued and backs off to a quiet 30s heartbeat
- * when idle over an open socket, waking immediately on `session.workChanged`.
+ * when idle over an open socket, waking on `session.workChanged` (bursts
+ * coalesce to at most one refresh per active poll interval).
  */
 export function useRequestGovernance(options?: {
   readonly enabled?: boolean;
@@ -36,10 +37,30 @@ export function useRequestGovernance(options?: {
   useEffect(() => {
     const events = klient?.events;
     if (!enabled || !background || wsStatus !== 'open' || events === undefined) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending = false;
+    const invalidate = () => { void queryClient.invalidateQueries({ queryKey: ['request-governance', scopeId] }); };
+    const settle = () => {
+      if (!pending) {
+        timer = undefined;
+        return;
+      }
+      pending = false;
+      invalidate();
+      timer = setTimeout(settle, ACTIVE_POLL_MS);
+    };
     const sub = events.on('session.workChanged', () => {
-      void queryClient.invalidateQueries({ queryKey: ['request-governance', scopeId] });
+      if (timer !== undefined) {
+        pending = true;
+        return;
+      }
+      invalidate();
+      timer = setTimeout(settle, ACTIVE_POLL_MS);
     });
-    return () => { sub.dispose(); };
+    return () => {
+      sub.dispose();
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, [enabled, background, klient, queryClient, scopeId, wsStatus]);
   return { snapshot: query.data, stale: query.isError || wsStatus !== 'open', loading: available && query.isPending };
 }

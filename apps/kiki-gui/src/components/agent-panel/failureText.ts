@@ -27,12 +27,28 @@ function messageOf(value: unknown, depth = 0): string | undefined {
   return undefined;
 }
 
-/** Try the whole text, then the first `{…}` / `[…]` span inside it. */
+/** The first balanced `{…}` / `[…]` span starting at `start`, honouring JSON strings. */
+function balancedSpan(text: string, start: number): string | undefined {
+  let depth = 0;
+  let quoted = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === '\\') index += 1;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === '{' || char === '[') depth += 1;
+    else if ((char === '}' || char === ']') && --depth === 0) return text.slice(start, index + 1);
+  }
+  return undefined;
+}
+
+/** Try the whole text, then the first `{…}` / `[…]` span inside it, even with trailing prose. */
 function parsePayload(text: string): unknown {
-  const attempts = [text];
   const start = text.search(/[{[]/);
-  if (start > 0) attempts.push(text.slice(start));
+  const attempts = [text, start > 0 ? text.slice(start) : undefined, start >= 0 ? balancedSpan(text, start) : undefined];
   for (const attempt of attempts) {
+    if (attempt === undefined) continue;
     try {
       return JSON.parse(attempt) as unknown;
     } catch {
@@ -66,6 +82,6 @@ export function plainFailure(raw: string | undefined): string | undefined {
   if (line === undefined) return undefined;
   // A payload that did not parse still must not leak as JSON.
   if (/^[{[]/.test(line) && /[}\]]$/.test(line)) return undefined;
-  const clean = line.replace(/^(?:Error|error):\s*/, '').replace(/\s+/g, ' ');
+  const clean = line.replace(/^(?:Error|error):\s*/, '').replaceAll(/\s+/g, ' ');
   return clean.length > MAX_LENGTH ? `${clean.slice(0, MAX_LENGTH - 1)}…` : clean;
 }

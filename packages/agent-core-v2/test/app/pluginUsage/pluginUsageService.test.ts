@@ -72,6 +72,20 @@ describe('PluginUsageService', () => {
     return container.get(ISessionPluginUsageService);
   }
 
+  it('defaults missing stored usage fields for workspace and session reads', async () => {
+    const documents = new MemoryDocuments();
+    await documents.set('plugin-usage', 'workspace-empty', {});
+    await documents.set('plugin-usage', 'workspace-revision', { revision: 3 });
+    await documents.set('session-plugin-usage', 'session-empty', {});
+    await documents.set('session-plugin-usage', 'session-revision', { revision: 3 });
+    const { service } = create(documents);
+
+    await expect(service.read('workspace-empty')).resolves.toMatchObject({ revision: 0, overrides: {} });
+    await expect(service.read('workspace-revision')).resolves.toMatchObject({ revision: 3, overrides: {} });
+    await expect(service.readSession('workspace-empty', 'session-empty')).resolves.toMatchObject({ revision: 0, overrides: {} });
+    await expect(service.readSession('workspace-empty', 'session-revision')).resolves.toMatchObject({ revision: 3, overrides: {} });
+  });
+
   it('isolates workspace overrides so turning A off leaves B unchanged', async () => {
     const { service } = create();
 

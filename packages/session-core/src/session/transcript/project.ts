@@ -1680,7 +1680,7 @@ function subagentBlocksFromSnapshot(
     else list.push(task);
   }
   const taskByAgent = new Map(
-    [...tasksByAgent.entries()].map(([agentId, list]) => [agentId, list[list.length - 1]!] as const),
+    [...tasksByAgent.entries()].map(([agentId, list]) => [agentId, list.at(-1)!] as const),
   );
   const tasksByAgentKeySet: ReadonlySet<string> = new Set(tasksByAgent.keys());
   // The roster is GLOBAL (unpaginated) while `items` are a page window. The
@@ -1719,7 +1719,7 @@ function subagentBlocksFromSnapshot(
     entries.sort((left, right) => left.at - right.at || left.order - right.order);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!;
-      if (turnStartTimes.length > 0 && turnStartTimes[turnStartTimes.length - 1] === entry.at) {
+      if (turnStartTimes.length > 0 && turnStartTimes.at(-1) === entry.at) {
         continue;
       }
       turnStartTimes.push(entry.at);
@@ -2141,7 +2141,7 @@ function insertSubagentBlocks(
   frameTimes?: ReadonlyMap<string, number>,
 ): Block[] {
   if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
-  const sorted = [...subagents].sort(compareSubagentTimeline);
+  const sorted = [...subagents].toSorted(compareSubagentTimeline);
   const byParentTool = new Map<string, SubagentBlock[]>();
   for (const subagent of sorted) {
     const aliases = new Set(
@@ -2473,7 +2473,7 @@ function insertInteractionBlocks(
         ? [interactionPlacement(interaction, block)]
         : [];
     })
-    .sort(compareProjectedInteraction);
+    .toSorted(compareProjectedInteraction);
   if (projected.length === 0) return base;
 
   const existingIds = new Set<string>();
@@ -3543,6 +3543,30 @@ function turnRetryFromItem(
   };
 }
 
+function repeatsTurnFailure(turn: { readonly state?: string; readonly error?: string }, message: string): boolean {
+  if (turn.state !== 'failed') return false;
+  const failure = turn.error?.trim();
+  const notice = message.trim();
+  if (failure === undefined || failure === '' || notice === '') return false;
+  return failure === notice || failure.includes(notice) || notice.includes(failure);
+}
+
+// The main transcript renders the tail turn's failure in its turn tail; earlier
+// failed turns keep their notice because nothing else carries their error.
+function dropTailTurnFailureNotices(
+  blocks: Block[],
+  tail: { readonly kind: string; readonly turnId?: string; readonly state?: string; readonly error?: string } | undefined,
+): void {
+  if (tail?.kind !== 'turn' || tail.turnId === undefined || tail.state !== 'failed') return;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.kind === 'notice' && block.tone === 'danger' && block.turnId === tail.turnId &&
+      block.id.startsWith('agent-frame-') && repeatsTurnFailure(tail, block.text)) {
+      blocks.splice(index, 1);
+    }
+  }
+}
+
 export function turnOutcomeFromItem(item: {
   readonly turnId: string;
   readonly state?: string;
@@ -4079,6 +4103,8 @@ export function agentTranscriptToBlocks(
             break;
           }
           case 'notice':
+            if (subagentPromptAsUser && frame.level === 'error' &&
+              repeatsTurnFailure(item as { readonly state?: string; readonly error?: string }, frame.message)) break;
             blocks.push({
               kind: 'notice',
               id: `agent-frame-${frame.frameId}`,
@@ -4141,6 +4167,7 @@ export function agentTranscriptToBlocks(
       });
     }
   }
+  if (!subagentPromptAsUser) dropTailTurnFailureNotices(blocks, response.items.findLast((item) => item.kind === 'turn'));
   for (const { item, task } of pendingShellTaskRefs) {
     if (shellFrameTaskIds.has(task.taskId)) continue;
     deferredTaskBlocks.push({

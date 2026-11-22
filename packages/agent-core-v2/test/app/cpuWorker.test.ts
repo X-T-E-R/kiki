@@ -161,6 +161,42 @@ describe('CPU worker pool', () => {
       expect(workers.liveWorkerCount).toBe(1);
     }
   });
+
+  it('caps concurrent low-priority work at max(1, floor(W/2)) and lets normal tasks run while low tasks saturate their cap', async () => {
+    const requestedMaxWorkers = Math.min(4, Math.max(1, availableParallelism() - 1));
+    const workers = await pool({ maxWorkers: requestedMaxWorkers });
+    const expectedCap = workers.size > 1 ? Math.max(1, Math.floor(workers.size / 2)) : 1;
+    expect(workers.maxLowConcurrency).toBe(expectedCap);
+
+    if (workers.size > 1) {
+      const lowIds = await Promise.all(
+        Array.from({ length: expectedCap + 2 }, () => workers.request<number>({ type: 'delay', ms: 80 }, { priority: 'low' })),
+      );
+      expect(new Set(lowIds).size).toBeLessThanOrEqual(expectedCap);
+
+      const activeLow = Array.from(
+        { length: expectedCap + 2 },
+        () => workers.request<number>({ type: 'delay', ms: 200 }, { priority: 'low' }),
+      );
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      const normalStartedAt = Date.now();
+      const normalResult = await workers.request<number>({ type: 'delay', ms: 10 }, { priority: 'normal' });
+      const normalElapsed = Date.now() - normalStartedAt;
+      expect(typeof normalResult).toBe('number');
+      expect(normalElapsed).toBeLessThan(160);
+      await Promise.all(activeLow);
+    }
+
+    const single = await pool({ maxWorkers: 1 });
+    expect(single.maxLowConcurrency).toBe(1);
+    const order: string[] = [];
+    const holder = single.request({ type: 'delay', ms: 60 }, { priority: 'low' });
+    const lowQueued = single.request('low', { priority: 'low' }).then((v) => { order.push(String(v)); });
+    const normalQueued = single.request('normal', { priority: 'normal' }).then((v) => { order.push(String(v)); });
+    const highQueued = single.request('high', { priority: 'high' }).then((v) => { order.push(String(v)); });
+    await Promise.all([holder, lowQueued, normalQueued, highQueued]);
+    expect(order).toEqual(['high', 'normal', 'low']);
+  });
 });
 
 function productionPool(): CpuWorkerPool {

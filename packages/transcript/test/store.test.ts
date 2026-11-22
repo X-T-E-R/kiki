@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { AgentTranscript, placeTranscriptItems } from '#/store/agentTranscript';
 import { AgentTranscriptDraft } from '#/store/agentTranscriptDraft';
@@ -1460,5 +1460,115 @@ describe('TranscriptStore', () => {
     });
     expect(snapshot.attachments.map((att) => att.attachmentId)).toEqual(['att_1', 'att_2', 'att_3', 'att_4']);
     expect(snapshot.attachmentRefs).toEqual([{ kind: 'attachment', attachmentId: 'att_other' }]);
+  });
+
+  it('releaseDurableTurns batches multiple proven turns in one filter and one tool-index rebuild while enforcing identity and budgets', () => {
+    const tx = new AgentTranscript('main');
+    const ops: TranscriptOperation[] = [];
+    for (let ordinal = 0; ordinal < 6; ordinal += 1) {
+      ops.push(
+        {
+          op: 'turn.upsert',
+          turn: {
+            kind: 'turn',
+            turnId: `t${ordinal}`,
+            ordinal,
+            state: ordinal === 5 ? 'running' : 'completed',
+            origin: { kind: 'user' },
+            prompt: `prompt-${ordinal}`,
+            promptId: `p${ordinal}`,
+            attachmentIds: [`att-${ordinal}`],
+          },
+        },
+        {
+          op: 'step.upsert',
+          turnId: `t${ordinal}`,
+          step: { kind: 'step', stepId: `s${ordinal}`, turnId: `t${ordinal}`, ordinal: 1, state: 'completed' },
+        },
+        {
+          op: 'frame.upsert',
+          turnId: `t${ordinal}`,
+          stepId: `s${ordinal}`,
+          frame: {
+            kind: 'tool',
+            frameId: `f${ordinal}`,
+            toolCallId: `call_${ordinal}`,
+            name: 'Read',
+            state: 'done',
+            input: { path: `/${ordinal}` },
+            output: `out-${ordinal}`,
+          } satisfies ToolCallFrame,
+        },
+        {
+          op: 'attachment.upsert',
+          attachment: {
+            attachmentId: `att-${ordinal}`,
+            mediaType: 'text/plain',
+            name: `${ordinal}.txt`,
+            size: 10,
+            source: { kind: 'file', fileId: `file-${ordinal}` },
+          },
+        },
+        {
+          op: 'prompt.upsert',
+          prompt: {
+            promptId: `p${ordinal}`,
+            status: ordinal === 5 ? 'running' : 'completed',
+            createdAt: `2026-01-01T00:00:0${ordinal}.000Z`,
+            content: `prompt-${ordinal}`,
+          },
+        },
+      );
+    }
+    tx.apply(ops);
+
+    const proven = [
+      tx.getTurn('t0')!,
+      tx.getTurn('t1')!,
+      tx.getTurn('t2')!,
+      tx.getTurn('t3')!,
+      tx.getTurn('t4')!,
+      tx.getTurn('t5')!,
+    ];
+    const durableGlobals = {
+      attachments: [...tx.getAttachments().values()],
+      prompts: [...tx.getPrompts().values()],
+    };
+
+    tx.apply([
+      {
+        op: 'turn.upsert',
+        turn: { ...tx.getTurn('t2')!, prompt: 'mutated-after-proof' },
+      },
+    ]);
+
+    const rebuildSpy = vi.spyOn(
+      AgentTranscript.prototype as unknown as { rebuildToolCallIndex: (items: readonly TranscriptItem[]) => void },
+      'rebuildToolCallIndex',
+    );
+    try {
+      const released = tx.releaseDurableTurns(proven, { tailTurns: 1, maxBytes: 1 << 20 }, durableGlobals);
+      expect(released).toEqual(['t0', 't1', 't3', 't4']);
+      expect(rebuildSpy).toHaveBeenCalledTimes(1);
+      expect(tx.hasMoreOlder).toBe(true);
+      expect(tx.residentReport().trimmedTurns).toBe(4);
+      expect(tx.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t2', 't5']);
+      expect(tx.getTurn('t2')?.prompt).toBe('mutated-after-proof');
+      expect(tx.getToolCall('call_0')).toBeUndefined();
+      expect(tx.getToolCall('call_1')).toBeUndefined();
+      expect(tx.getToolCall('call_3')).toBeUndefined();
+      expect(tx.getToolCall('call_4')).toBeUndefined();
+      expect(tx.getToolCall('call_2')?.turnId).toBe('t2');
+      expect(tx.getToolCall('call_5')?.turnId).toBe('t5');
+      expect(tx.getAttachment('att-0')).toBeUndefined();
+      expect(tx.getAttachment('att-1')).toBeUndefined();
+      expect(tx.getAttachment('att-2')).toBeDefined();
+      expect(tx.getAttachment('att-5')).toBeDefined();
+      expect(tx.getPrompt('p0')).toBeUndefined();
+      expect(tx.getPrompt('p2')).toBeDefined();
+      expect(tx.getPrompt('p5')).toBeDefined();
+    } finally {
+      rebuildSpy.mockRestore();
+    }
   });
 });

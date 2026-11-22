@@ -6,7 +6,7 @@ import { parse, stringify } from 'smol-toml';
 
 import type { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
-import { appendSshHost, discoverSshAliases, resolveSshConfig, validateSshAlias, workspaceSshKey, type ResolvedSshConfig } from './sshConfig';
+import { appendSshHost, SshConfigResolver, validateSshAlias, workspaceSshKey, type ResolvedSshConfig } from './sshConfig';
 
 export interface SshHostRecord {
   readonly id: string;
@@ -109,6 +109,7 @@ export class SshHostStore {
     private readonly documents: IAtomicTomlDocumentStore,
     private readonly sshConfigFile = join(homedir(), '.ssh', 'config'),
     private readonly baseDocuments?: IAtomicTomlDocumentStore,
+    private readonly configResolver: Pick<SshConfigResolver, 'resolve' | 'discoverAliases'> = new SshConfigResolver(),
   ) {}
 
   private async baseGlobal(): Promise<HostDocument> {
@@ -153,7 +154,7 @@ export class SshHostStore {
     const workspace = workspaceId === undefined ? {} : (await this.read(workspaceSshKey(workspaceId))).document;
     const hosts = new Map<string, SshHostRecord>();
     if (configSyncSettings(global, base).enabled) {
-      for (const alias of await discoverSshAliases(this.sshConfigFile)) {
+      for (const alias of await this.configResolver.discoverAliases(this.sshConfigFile)) {
         hosts.set(alias, { id: alias, name: alias, source: 'ssh-config' });
       }
     }
@@ -162,11 +163,11 @@ export class SshHostStore {
         hosts.set(id, normalizeHost({ ...input, id }));
       }
     }
-    return [...hosts.values()].sort((a, b) => a.id.localeCompare(b.id));
+    return [...hosts.values()].toSorted((a, b) => a.id.localeCompare(b.id));
   }
 
   async discover(): Promise<readonly SshHostRecord[]> {
-    return (await discoverSshAliases(this.sshConfigFile)).map((alias) => ({
+    return (await this.configResolver.discoverAliases(this.sshConfigFile)).map((alias) => ({
       id: alias, name: alias, source: 'ssh-config' as const,
     }));
   }
@@ -191,7 +192,7 @@ export class SshHostStore {
   async resolve(id: string, workspaceId?: string): Promise<ResolvedSshConfig> {
     const host = (await this.list(workspaceId)).find((item) => item.id === id);
     if (host === undefined) throw new Error('Unknown SSH host');
-    const configured = await resolveSshConfig(id, this.sshConfigFile);
+    const configured = await this.configResolver.resolve(id, this.sshConfigFile);
     return {
       ...configured,
       hostname: host.hostname ?? configured.hostname,
@@ -206,6 +207,6 @@ export class SshHostStore {
     if (host === undefined || host.source !== 'kiki' || host.hostname === undefined || host.user === undefined) {
       throw new Error('Only Kiki hosts with an explicit hostname and user may be written to ssh config');
     }
-    await appendSshHost(this.sshConfigFile, host.id, host.hostname, host.user, host.port ?? 22);
+    await appendSshHost(this.sshConfigFile, host.id, host.hostname, host.user, host.port ?? 22, this.configResolver);
   }
 }

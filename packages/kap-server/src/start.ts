@@ -117,6 +117,7 @@ import {
 import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middleware/origin';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createWireCompressionHook } from './middleware/wireCompression';
+import { installReplyResolution } from './middleware/replyResolution';
 import { createKimiDeviceId } from '@kiki/oauth';
 import { loadOrCreateLocalOwnerToken } from './services/auth/localOwner';
 import { ConnectionAdmission, AdmissionError } from './services/connections/admission';
@@ -701,6 +702,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     disableRequestLogging: true,
     genReqId: (req) => resolveRequestId(req.headers),
   }) as unknown as FastifyInstance;
+  installReplyResolution(app);
   const usageExport = new UsageExportRuntime(core, homeDir);
   app.addHook('preClose', () => usageExport.close());
   const webRequests = new WeakSet<IncomingMessage>();
@@ -1583,7 +1585,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('preClose', () => { for (const subscription of connectionChangeSubscriptions) subscription.dispose(); });
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));
   pairingHooks.current = {
-    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).slice(0, MAX_PAIR_SOURCE_WORKSPACES).map((workspace) => workspace.id),
+    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].toSorted((left, right) => right.lastOpenedAt - left.lastOpenedAt).slice(0, MAX_PAIR_SOURCE_WORKSPACES).map((workspace) => workspace.id),
     issueBridges: (input) => pairedBridge.issuePairingBridges(input),
     installBridge: async (connectionId, grant, credential, connectionGrantId, borrowTools) => { await pairedBridge.install({ connectionId, grant, credential }, connectionGrantId, borrowTools); },
     revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),
@@ -1616,7 +1618,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     logger,
     env: opts.env,
   });
-  const { server: wssPanelStreams, closeStream: closePanelStream } = createPluginPanelStreamServer(core);
+  const panelStreams = createPluginPanelStreamServer(core);
+  const wssPanelStreams = panelStreams.server;
   app.addHook('preClose', () => {
     for (const ws of wssPanelStreams.clients) ws.terminate();
     wssPanelStreams.close();
@@ -1631,7 +1634,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       admission.closeAll();
       for (const socket of [...wssV1.clients, ...wssKlient.clients, ...wssKlient.peerServer.clients, ...wssBroker.clients, ...wssPanelStreams.clients]) {
         if (wsAuthGeneration.get(socket) === next) continue;
-        if (wssPanelStreams.clients.has(socket)) closePanelStream(socket, 4001, 'server authentication changed');
+        if (wssPanelStreams.clients.has(socket)) panelStreams.closeStream(socket, 4001, 'server authentication changed');
         else socket.close(4001, 'server authentication changed');
       }
     }, 250);

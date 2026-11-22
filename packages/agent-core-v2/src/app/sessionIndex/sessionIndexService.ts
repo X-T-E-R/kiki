@@ -284,10 +284,22 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     ));
   }
 
+  private enqueueWatchedSession(workspaceId: string, id: string): void {
+    this.watchedSessions.set(`${workspaceId}/${id}`, { workspaceId, id });
+    if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
+      this.watchInventory = true;
+      this.watchedSessions.clear();
+    }
+  }
+
   private async reconcileWatched(): Promise<void> {
     if (this._store.isDisposed || !this.readModelEnabled()) return;
     if (this.reconcileFlight !== undefined) {
       await this.reconcileFlight;
+      return;
+    }
+    if (this.projectFlight !== undefined) {
+      await this.projectFlight;
       return;
     }
     if (this.watchInventory && this.watchedSessions.size === 0) {
@@ -507,30 +519,87 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       let conflicts = 0;
       while (!projected) {
         this.checkReconcileActive(conflicts);
-        const baseline = await this.mirror.runExclusive(async () => ({
-          epoch: this.mirror.epoch(),
-          generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
-          revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
-        }));
-        const scan = await this.projector.scan({ fresh: scanFresh });
-        const result = await this.mirror.runExclusive(async () => {
-          const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-          const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
-          if (this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return undefined;
-          const next = (manifest?.seq ?? 0) + 1;
-          return this.projector.project(next, scan);
-        });
-        if (result === undefined) {
-          if (++conflicts >= RECONCILE_MAX_ATTEMPTS) {
-            this.projectionRetryAt = Date.now() + DEGRADED_RETRY_MS;
-            throw new SessionIndexReconcilePendingError('concurrent_changes', conflicts, DEGRADED_RETRY_MS);
+        const mutated = new Map<string, string>();
+        let hasUnknownMutation = false;
+        let sawIdentifiableMutation = false;
+        const subscription = this.mirror.onDidChange(({ id, workspaceId }) => {
+          if (workspaceId === undefined) {
+            hasUnknownMutation = true;
+            return;
           }
-          scanFresh = true;
-          continue;
+          sawIdentifiableMutation = true;
+          mutated.set(id, workspaceId);
+        });
+        try {
+          const baseline = await this.mirror.runExclusive(async () => {
+            mutated.clear();
+            hasUnknownMutation = false;
+            sawIdentifiableMutation = false;
+            return {
+              epoch: this.mirror.epoch(),
+              generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
+              revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
+              flushRevisionCount: this.mirror.flushRevisionCount?.() ?? 0,
+            };
+          });
+          let scan = await this.projector.scan({ fresh: scanFresh });
+          const failedRefresh: { readonly workspaceId: string; readonly id: string }[] = [];
+          if (!hasUnknownMutation && mutated.size > 0) {
+            const toRefresh = [...mutated.entries()].map(([id, workspaceId]) => ({ workspaceId, id }));
+            mutated.clear();
+            const refreshed = await this.projector.refreshScan(scan, toRefresh);
+            scan = refreshed.scan;
+            failedRefresh.push(...refreshed.failed);
+          }
+          const result = await this.mirror.runExclusive(async () => {
+            this.checkReconcileActive(conflicts);
+            const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+            const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
+            const flushDelta = (this.mirror.flushRevisionCount?.() ?? 0) - baseline.flushRevisionCount;
+            const revisionDelta = (revision?.seq ?? 0) - (baseline.revision ?? 0);
+            const externalRevisionChanged = revisionDelta !== flushDelta;
+            if (
+              manifest?.seq !== baseline.generation ||
+              externalRevisionChanged ||
+              hasUnknownMutation ||
+              (this.mirror.epoch() !== baseline.epoch && !sawIdentifiableMutation)
+            ) {
+              return undefined;
+            }
+            const next = (manifest?.seq ?? 0) + 1;
+            const epochBeforeProject = this.mirror.epoch();
+            const published = await this.projector.project(next, scan);
+            for (const entry of failedRefresh) {
+              this.projector.invalidateFingerprint(entry.workspaceId, entry.id);
+              this.enqueueWatchedSession(entry.workspaceId, entry.id);
+            }
+            for (const [id, workspaceId] of mutated) {
+              this.projector.invalidateFingerprint(workspaceId, id);
+              this.enqueueWatchedSession(workspaceId, id);
+            }
+            if (hasUnknownMutation) {
+              this.watchInventory = true;
+              if (this.readModelEnabled()) this.mirror.settleDirty(epochBeforeProject);
+            } else {
+              const dirty = this.mirror.dirtyEpoch();
+              if (dirty !== undefined && this.readModelEnabled()) this.mirror.settleDirty(dirty);
+            }
+            return published;
+          });
+          if (result === undefined) {
+            if (++conflicts >= RECONCILE_MAX_ATTEMPTS) {
+              this.projectionRetryAt = Date.now() + DEGRADED_RETRY_MS;
+              throw new SessionIndexReconcilePendingError('concurrent_changes', conflicts, DEGRADED_RETRY_MS);
+            }
+            scanFresh = true;
+            continue;
+          }
+          this.generation = result.generation;
+          this.markReady(true);
+          projected = true;
+        } finally {
+          subscription.dispose();
         }
-        this.generation = result.generation;
-        this.markReady(true);
-        projected = true;
       }
     } catch (error) {
       if (this.recoveryRequired) throw error;

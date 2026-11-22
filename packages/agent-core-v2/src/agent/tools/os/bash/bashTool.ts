@@ -294,12 +294,13 @@ export class BashTool implements IBashTool {
     }
     let proc: IHostProcess;
     let command: string;
+    let isReadOnlyBash = false;
     try {
       const view = new RuntimeWorkspaceView(lease.runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
       const env = lease.runtime.environment;
+      isReadOnlyBash = env.shellName === 'bash' && isConcurrencySafeBash(args.command);
       command = env.osKind === 'Windows' && env.shellName === 'bash' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
-      lease.runtime.pathIndex?.invalidate();
       proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
     } catch (error) {
       releaseBashSlot();
@@ -333,7 +334,11 @@ export class BashTool implements IBashTool {
     let taskId: string;
     try {
       taskId = this.tasks.registerTask(
-        new ProcessTask(proc, command, description, onProcessOutput, () => { releaseBashSlot(); lease.runtime.pathIndex?.invalidate(); lease.dispose(); }),
+        new ProcessTask(proc, command, description, onProcessOutput, () => {
+          releaseBashSlot();
+          if (!isReadOnlyBash) lease.runtime.pathIndex?.notifyExternalChange();
+          lease.dispose();
+        }),
         {
           detached: startsInBackground,
           lifetime: startsInBackground ? (args.lifetime ?? 'finite') : undefined,

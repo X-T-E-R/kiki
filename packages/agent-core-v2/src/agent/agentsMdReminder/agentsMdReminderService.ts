@@ -41,7 +41,8 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   private readonly pending = new Map<string, PendingInstruction>();
   private pendingGeneration = 0;
   private readonly telemetryFired = new Set<string>();
-  private readonly loaded = new Map<string, { item: PendingInstruction; mtimeMs: number; size: number }>();
+  private readonly loaded = new Map<string, { item: PendingInstruction; mtimeMs: number; size: number; dirRevision: number }>();
+  private readonly loadFlights = new Map<string, Promise<PendingInstruction | undefined>>();
 
   constructor(
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
@@ -96,7 +97,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     for (const item of this.pending.values()) {
       const lease = this.acquire(item.file.runtimeId.startsWith('ssh:') ? item.file.runtimeId.slice(4) : item.file.runtimeId === 'local' ? 'local' : undefined);
       try {
-        const current = await this.load(lease, item.sourcePath);
+        const current = await this.load(lease, item.sourcePath, true);
         if (current !== undefined) candidates.push(current);
       } finally { lease.dispose(); }
       if (generation !== this.pendingGeneration) return;
@@ -128,31 +129,63 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     for (const item of items) this.pending.set(instructionKey(item.file, item.pathClass), item);
   }
 
-  private async load(lease: RuntimeLease, path: string): Promise<PendingInstruction | undefined> {
+  private async load(lease: RuntimeLease, path: string, freshStat = false): Promise<PendingInstruction | undefined> {
+    const scopeDir = basename(dirname(path)).toLowerCase() === '.kiki' ? dirname(dirname(path)) : dirname(path);
+    const key = `${lease.runtime.identity.runtimeId}:${lease.runtime.identity.generation}:${normalize(path)}`;
+    const cacheState = this.discovery.directoryCacheState?.(lease.runtime, scopeDir);
+    if (!freshStat) {
+      const cached = this.loaded.get(key);
+      if (cached !== undefined && cacheState !== undefined && cacheState.fresh && cacheState.revision === cached.dirRevision) {
+        return cached.item;
+      }
+      const inflight = this.loadFlights.get(key);
+      if (inflight !== undefined) return inflight;
+    }
+    const flight = this.loadFromDisk(lease, path, scopeDir, key, cacheState?.revision ?? 0).finally(() => {
+      if (this.loadFlights.get(key) === flight) this.loadFlights.delete(key);
+    });
+    if (!freshStat) this.loadFlights.set(key, flight);
+    return flight;
+  }
+
+  private async loadFromDisk(
+    lease: RuntimeLease,
+    path: string,
+    scopeDir: string,
+    key: string,
+    dirRevision: number,
+  ): Promise<PendingInstruction | undefined> {
     try {
       const fs = lease.runtime.fs!;
       const stat = await fs.stat(path);
       if (!stat.isFile) return undefined;
-      const key = `${lease.runtime.identity.runtimeId}:${lease.runtime.identity.generation}:${normalize(path)}`;
       const cached = this.loaded.get(key);
-      if (stat.mtimeMs !== undefined && cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.item;
+      if (stat.mtimeMs !== undefined && cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        this.loaded.set(key, { ...cached, dirRevision });
+        return cached.item;
+      }
       const content = (await fs.readText(path, { errors: 'strict' })).trim();
       if (!content) return undefined;
       const canonical = await fs.realpath(path);
       const item: PendingInstruction = { content, sourcePath: path, pathClass: lease.runtime.environment.pathClass, file: { path: normalize(canonical),
-        version: instructionVersion(content), scope: basename(dirname(path)).toLowerCase() === '.kiki' ? dirname(dirname(path)) : dirname(path),
+        version: instructionVersion(content), scope: scopeDir,
         runtimeId: lease.runtime.identity.runtimeId } };
       if (stat.mtimeMs !== undefined) {
         if (this.loaded.size >= 64) this.loaded.delete(this.loaded.keys().next().value!);
-        this.loaded.set(key, { item, mtimeMs: stat.mtimeMs, size: stat.size });
+        this.loaded.set(key, { item, mtimeMs: stat.mtimeMs, size: stat.size, dirRevision });
       }
       return item;
     } catch { return undefined; }
   }
 
   private async discoverDir(lease: RuntimeLease, directory: string): Promise<readonly string[]> {
-    let target = normalize(directory);
-    try { target = normalize(await lease.runtime.fs!.realpath(target)); } catch {}
+    let target: string;
+    if (this.discovery.resolveRealPath !== undefined) {
+      target = await this.discovery.resolveRealPath(lease, directory);
+    } else {
+      target = normalize(directory);
+      try { target = normalize(await lease.runtime.fs!.realpath(target)); } catch {}
+    }
     const pathClass = lease.runtime.environment.pathClass;
     const base = normalize(lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(this.runtime, {
       workDir: this.sessionContext.cwd,
@@ -164,10 +197,11 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   }
 
   private async discoverFor(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<PendingInstruction[]> {
+    const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' && access.workspaceRoot !== true ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
+    if (dirs.length === 0) return [];
     const host = stringArg(args, 'host');
     const lease = this.acquire(host);
     try {
-      const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' && access.workspaceRoot !== true ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
       const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, dir)))).flat())];
       const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
       return preferredInstructions(loaded).filter((item) => !this.covered(item));
@@ -177,17 +211,19 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   private async afterTool(ctx: ToolDidExecuteContext): Promise<void> {
     if (ctx.outcome !== 'executed') return;
     const accesses = ctx.accesses ?? [];
-    const lease = this.acquire(stringArg(ctx.args, 'host'));
-    try {
-      for (const access of accesses) {
-        if (access.kind !== 'file' || access.workspaceRoot === true || basename(access.path).toLowerCase() !== 'agents.md') continue;
-        if (access.operation === 'write' || access.operation === 'readwrite') {
-          const directory = dirname(access.path);
-          this.discovery.invalidate(lease.runtime, basename(directory).toLowerCase() === '.kiki' ? dirname(directory) : directory);
-          this.loaded.clear();
-        }
-      }
-    } finally { lease.dispose(); }
+    const mutatedAgentsMdDirs = accesses.flatMap((access) => {
+      if (access.kind !== 'file' || access.workspaceRoot === true || basename(access.path).toLowerCase() !== 'agents.md') return [];
+      if (access.operation !== 'write' && access.operation !== 'readwrite') return [];
+      const directory = dirname(access.path);
+      return [basename(directory).toLowerCase() === '.kiki' ? dirname(directory) : directory];
+    });
+    if (mutatedAgentsMdDirs.length > 0) {
+      const lease = this.acquire(stringArg(ctx.args, 'host'));
+      try {
+        for (const directory of mutatedAgentsMdDirs) this.discovery.invalidate(lease.runtime, directory);
+        this.loaded.clear();
+      } finally { lease.dispose(); }
+    }
     let missing = await this.discoverFor(accesses, ctx.args);
     if (ctx.toolCall.name === 'Bash') {
       const lease = this.acquire(stringArg(ctx.args, 'host'));

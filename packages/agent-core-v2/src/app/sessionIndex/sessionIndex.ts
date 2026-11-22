@@ -136,6 +136,7 @@ export interface ISessionIndexMirror {
   epoch(): number;
   dirtyEpoch(): number | undefined;
   settleDirty(epoch: number): void;
+  flushRevisionCount?(): number;
   resourceExhaustionCooldownUntil?(): number;
   clearResourceExhaustionCooldown?(): void;
   invalidate(id: string): void;

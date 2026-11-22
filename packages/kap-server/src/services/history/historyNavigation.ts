@@ -4,7 +4,7 @@ import type { HistoryPreparation } from '@kiki/agent-core-v2/agent/tools/history
 import type { ContentSource, TranscriptTurn } from '@kiki/transcript';
 import type { TranscriptService } from '../transcript/transcriptService';
 import type { HistoryLocatorEngine, HistoryLocatorStore, HistoryNavRow, HistoryNavSearch } from './historyLocatorStore';
-import type { ResidentCheckpoint, ResidentFailureReceipt } from './historyCanonicalReader';
+import type { ResidentCheckpoint, ResidentProofFailure } from './historyCanonicalReader';
 import { decodeHistoryRef, encodeHistoryRef } from './historySource';
 import { HistoryNavigationWorker } from './worker/host';
 import type { NavigationMethod, NavigationReport } from './worker/protocol';
@@ -19,10 +19,19 @@ const EMPTY_REPORT: NavigationReport = {
 
 type Result<K extends keyof HistoryLocatorStore> = HistoryLocatorStore[K] extends (...args: never[]) => Promise<infer T> ? T : never;
 
+interface LocalResidentFailure {
+  readonly scope: string;
+  readonly navGeneration: number;
+  readonly revision: string;
+  readonly status: ResidentProofFailure;
+}
+
 export class HistoryNavigation implements HistoryLocatorStore {
   private readonly worker: HistoryNavigationWorker;
   private generation = 0;
-  private readonly residentFailures = new WeakMap<TranscriptTurn, ResidentFailureReceipt>();
+  private residentFailures = new WeakMap<TranscriptTurn, LocalResidentFailure>();
+  private readonly failedTurnsByScope = new Map<string, Map<string, WeakRef<TranscriptTurn>>>();
+  private localProofSkipped = 0;
   readonly supportsSortedSearch = true;
 
   constructor(private readonly database: string, transcript: TranscriptService) {
@@ -80,23 +89,85 @@ export class HistoryNavigation implements HistoryLocatorStore {
     return this.invoke('readDurableTurn', [session, agent, turnId], signal, session, agent);
   }
 
+  private liveFailedTurnIds(agentKey: string): string[] {
+    const turns = this.failedTurnsByScope.get(agentKey);
+    if (turns === undefined) return [];
+    const ids: string[] = [];
+    for (const [turnId, ref] of turns) {
+      if (ref.deref() === undefined) turns.delete(turnId);
+      else ids.push(turnId);
+    }
+    if (turns.size === 0) this.failedTurnsByScope.delete(agentKey);
+    return ids;
+  }
+
+  private rememberFailedTurn(agentKey: string, turnId: string, resident: TranscriptTurn): void {
+    let turns = this.failedTurnsByScope.get(agentKey);
+    if (turns === undefined) {
+      turns = new Map();
+      this.failedTurnsByScope.set(agentKey, turns);
+    }
+    turns.set(turnId, new WeakRef(resident));
+  }
+
+  private forgetFailedTurn(agentKey: string, turnId: string, resident: TranscriptTurn): void {
+    const turns = this.failedTurnsByScope.get(agentKey);
+    if (turns === undefined) return;
+    const current = turns.get(turnId)?.deref();
+    if (current === undefined || current === resident) turns.delete(turnId);
+    if (turns.size === 0) this.failedTurnsByScope.delete(agentKey);
+  }
+
   async prepareResidentProof(session: string, agent: string, signal: AbortSignal): ReturnType<HistoryLocatorStore['prepareResidentProof']> {
     const generation = this.generation;
+    const agentKey = `${session}\0${agent}`;
+    const failedTurnIds = this.liveFailedTurnIds(agentKey);
     const checkpoint = await this.worker.request<ResidentCheckpoint | undefined>(
-      'prepareResidentProof', [session, agent], signal, { session, agent });
+      'prepareResidentProof',
+      failedTurnIds.length > 0 ? [session, agent, failedTurnIds] : [session, agent],
+      signal,
+      { session, agent },
+    );
     if (checkpoint === undefined) return undefined;
+    const workerCheckpoint: ResidentCheckpoint = {
+      scope: checkpoint.scope,
+      wirePath: checkpoint.wirePath,
+      manifest: checkpoint.manifest,
+      generation: checkpoint.generation,
+    };
+    const localTurnRevisions = new Map<string, string>(
+      checkpoint.turnRevisions === undefined ? [] : Object.entries(checkpoint.turnRevisions),
+    );
     return {
       prove: async (resident, owned) => {
+        owned.throwIfAborted();
         if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
         const cached = this.residentFailures.get(resident);
-        if (cached !== undefined && await this.worker.request<boolean>('checkResidentFailure', [checkpoint, resident.turnId, cached], owned)) {
+        if (
+          cached !== undefined &&
+          cached.navGeneration === generation &&
+          cached.scope === checkpoint.scope &&
+          localTurnRevisions.get(resident.turnId) === cached.revision
+        ) {
+          this.localProofSkipped += 1;
           return { status: cached.status };
         }
         const { result, failure } = await this.worker.request<Awaited<ReturnType<HistoryLocatorEngine['proveResidentCheckpoint']>>>(
-          'proveResident', [checkpoint, agent, resident], owned);
+          'proveResident', [workerCheckpoint, agent, resident], owned);
         if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
-        if (failure === undefined) this.residentFailures.delete(resident);
-        else this.residentFailures.set(resident, failure);
+        if (failure === undefined) {
+          this.residentFailures.delete(resident);
+          this.forgetFailedTurn(agentKey, resident.turnId, resident);
+        } else {
+          this.residentFailures.set(resident, {
+            scope: checkpoint.scope,
+            navGeneration: generation,
+            revision: failure.revision,
+            status: failure.status,
+          });
+          this.rememberFailedTurn(agentKey, resident.turnId, resident);
+          localTurnRevisions.set(resident.turnId, failure.revision);
+        }
         return result.status === 'found' ? { ...result, snapshot: { ...result.snapshot, items: [resident] } } : result;
       },
     };
@@ -115,9 +186,20 @@ export class HistoryNavigation implements HistoryLocatorStore {
   }
 
   get retainedBodyChars(): number { return this.worker.retainedBodyChars; }
-  canonicalReadReport(): NavigationReport { return this.worker.report ?? EMPTY_REPORT; }
-  invalidateCanonical(): void { this.generation += 1; this.worker.invalidate(); }
+  canonicalReadReport(): NavigationReport {
+    const report = this.worker.report ?? EMPTY_REPORT;
+    return this.localProofSkipped === 0 ? report : { ...report, proofSkipped: report.proofSkipped + this.localProofSkipped };
+  }
+  invalidateCanonical(): void {
+    this.generation += 1;
+    this.residentFailures = new WeakMap();
+    this.failedTurnsByScope.clear();
+    this.worker.invalidate();
+  }
   deleteSession(sessionId: string): Promise<number> {
+    for (const key of this.failedTurnsByScope.keys()) {
+      if (key.startsWith(`${sessionId}\0`)) this.failedTurnsByScope.delete(key);
+    }
     if (!this.worker.isRunning && !existsSync(this.database)) return Promise.resolve(0);
     return this.invoke('deleteSession', [sessionId]);
   }

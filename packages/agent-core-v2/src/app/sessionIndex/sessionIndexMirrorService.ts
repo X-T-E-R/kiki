@@ -57,6 +57,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   private mutationEpochValue = 0;
   private dirtyEpochValue = 0;
   private settledDirtyEpoch = 0;
+  private flushRevisionCountValue = 0;
   private lastReadModelEnabled: boolean;
   private disposed = false;
 
@@ -120,6 +121,10 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
       this.consecutiveFailures = 0;
       this.resourceExhaustionCooldownUntilValue = 0;
     }
+  }
+
+  flushRevisionCount(): number {
+    return this.flushRevisionCountValue;
   }
 
   resourceExhaustionCooldownUntil(): number {
@@ -312,6 +317,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
         }),
       ];
       await advanceSessionIndexRevision(this.queryStore);
+      this.flushRevisionCountValue += 1;
       await this.queryStore.batch(ops);
       this.acknowledge(chunk.map(([, summary]) => summary));
       this.consecutiveFailures = 0;

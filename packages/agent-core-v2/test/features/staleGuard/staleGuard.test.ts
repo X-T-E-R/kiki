@@ -225,6 +225,33 @@ describe('StaleGuardService', () => {
     expect(records).toHaveLength(1);
   });
 
+  it('single-flights concurrent Read observations of the same file into one stat and one durable record', async () => {
+    let statCalls = 0;
+    let releaseStat!: () => void;
+    const statGate = new Promise<void>((resolveGate) => { releaseStat = resolveGate; });
+    activeFs = {
+      _serviceBrand: undefined,
+      stat: async () => {
+        statCalls += 1;
+        await statGate;
+        return { isFile: true, isDirectory: false, size: 42, mtimeMs: 321 };
+      },
+    } as unknown as IHostFileSystem;
+
+    const parallel = Promise.all([
+      runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/shared.txt') }),
+      runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/shared.txt') }),
+      runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/shared.txt') }),
+    ]);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    releaseStat();
+    await parallel;
+
+    expect(statCalls).toBe(1);
+    expect(freshness.recordedMtimeMs('/tmp/shared.txt')).toBe(321);
+    expect(records).toHaveLength(1);
+  });
+
   it('does not record when the read failed', async () => {
     activeFs = stubFs({ mtimeMs: 111 });
 

@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import type { FSWatcher, WatchListener } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
@@ -512,4 +514,113 @@ describe('indexed workspace search with real files, workers and ripgrep', () => 
       await rm(fixture, { recursive: true, force: true });
     }
   });
+
+  it('keeps a watcher-delivered file created during an in-flight scan visible to Glob and Grep after scan commit', async () => {
+    await mkdir(resolve('.tmp'), { recursive: true });
+    const fixture = await mkdtemp(resolve('.tmp', 'workspace-scan-race-'));
+    const root = join(fixture, 'root');
+    await mkdir(join(root, 'src'), { recursive: true });
+    for (let offset = 0; offset < 1500; offset += 100) {
+      await Promise.all(Array.from({ length: 100 }, (_, item) => writeFile(
+        join(root, 'src', `file-${offset + item}.ts`),
+        `ordinary-${offset + item}\n`,
+      )));
+    }
+    const pool = new CpuWorkerPool(new URL('../../../src/app/cpuWorker/bootstrap.mjs', import.meta.url), { maxWorkers: 1 });
+    const ix = new TestInstantiationService();
+    let inventoryCalls = 0;
+    let scanEnteredResolve!: () => void;
+    const scanEntered = new Promise<void>((resolveEntered) => { scanEnteredResolve = resolveEntered; });
+    let releaseScan!: () => void;
+    const scanGate = new Promise<void>((resolveGate) => { releaseScan = resolveGate; });
+
+    const emitter = new EventEmitter();
+    let watchListener: WatchListener<string> | undefined;
+    const fakeWatcher = Object.assign(emitter, {
+      close(): void {},
+      ref() { return fakeWatcher; },
+      unref() { return fakeWatcher; },
+    }) as unknown as FSWatcher;
+    const fakeWatch = ((_path: unknown, _options: unknown, cb?: WatchListener<string>) => {
+      watchListener = cb;
+      return fakeWatcher;
+    }) as unknown as typeof import('node:fs').watch;
+
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown, options?: CpuRequestOptions) => {
+        const op = operation as { readonly type?: string };
+        if (op.type === 'workspace.paths') {
+          inventoryCalls += 1;
+          const result = await pool.request<T>(operation, options);
+          if (inventoryCalls === 2) {
+            scanEnteredResolve();
+            await scanGate;
+          }
+          return result;
+        }
+        return pool.request<T>(operation, options);
+      },
+    };
+
+    const index = new WorkspacePathIndex(root, cpu, join(fixture, 'cache'), { watch: fakeWatch });
+    let runtime: LocalRuntime | undefined;
+    try {
+      await index.refresh();
+      await index.trigram!.whenReady();
+
+      const environment: IHostEnvironment = { _serviceBrand: undefined, osKind: process.platform === 'win32' ? 'Windows' : 'Linux',
+        osArch: 'x64', osVersion: 'test', pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+        homeDir: root, shellName: 'bash', shellPath: 'bash', ready: Promise.resolve() };
+      const fs = new HostFileSystem();
+      const processes = new HostProcessService();
+      runtime = new LocalRuntime('workspace', environment, fs, processes, undefined, undefined, index);
+      const lease = () => ({ runtime: runtime!, track: <T>(resource: T) => resource, dispose() {} });
+      ix.set(IAgentRuntimeService, { _serviceBrand: undefined, onDidChange: () => ({ dispose() {} }),
+        inspect: () => runtime!, acquire: lease, isAvailable: () => true });
+      ix.set(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: root, additionalDirs: [],
+        resolve: path => resolve(root, path), isWithin: path => path === root || path.startsWith(`${root}/`) });
+      ix.set(IHostFileSystem, fs);
+      ix.set(ITelemetryService, noopTelemetryService);
+      ix.set(IBootstrapService, stubBootstrap(root));
+      ix.set(ISessionSkillCatalog, { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog);
+      ix.set(IGlobTool, new SyncDescriptor(GlobTool));
+      ix.set(IGrepTool, new SyncDescriptor(GrepTool));
+      const glob = ix.get(IGlobTool);
+      const grep = ix.get(IGrepTool);
+
+      const scanPromise = index.refresh();
+      await scanEntered;
+
+      await writeFile(join(root, 'src', 'late.txt'), 'lateScanRaceNeedle\n');
+      watchListener?.('rename', join('src', 'late.txt'));
+      await index.whenSettled();
+      expect(index.snapshot()?.entries.some((entry) => entry.path === 'src/late.txt')).toBe(true);
+      await index.trigram!.whenReady();
+
+      releaseScan();
+      await scanPromise;
+      await index.trigram!.whenReady();
+
+      expect(await index.glob(root, '**/late.txt')).toEqual([join(root, 'src', 'late.txt')]);
+      const globOutput = await execute(await glob.resolveExecution(GlobInputSchema.parse({ pattern: '**/late.txt' })));
+      expect(globOutput).toContain('late.txt');
+
+      const candidates = await index.trigram!.candidates(index.snapshot()!, 'lateScanRaceNeedle', true, false);
+      expect(candidates).toContain('src/late.txt');
+      const grepOutput = await execute(await grep.resolveExecution(GrepInputSchema.parse({
+        pattern: 'lateScanRaceNeedle',
+        literal: true,
+        output_mode: 'files_with_matches',
+      })));
+      expect(grepOutput).toContain('late.txt');
+    } finally {
+      releaseScan();
+      if (runtime !== undefined) await runtime.dispose();
+      else await index.dispose();
+      await ix.dispose();
+      await pool.close();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

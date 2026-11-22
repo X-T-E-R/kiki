@@ -231,6 +231,156 @@ export class SessionIndexProjector {
     }
   }
 
+  async refreshScan(
+    scan: AuthoritativeScan,
+    changedSessions: readonly { readonly workspaceId: string; readonly id: string }[],
+  ): Promise<{
+    readonly scan: AuthoritativeScan;
+    readonly failed: readonly { readonly workspaceId: string; readonly id: string }[];
+  }> {
+    if (changedSessions.length === 0) return { scan, failed: [] };
+    const { storage, docs, sessionsScope, log } = this.deps;
+    const summariesByKey = new Map<string, SessionSummary>();
+    const workspacesBySessionId = new Map<string, Set<string>>();
+    for (const summary of scan.summaries) {
+      summariesByKey.set(`${summary.workspaceId}\0${summary.id}`, summary);
+      let owners = workspacesBySessionId.get(summary.id);
+      if (owners === undefined) {
+        owners = new Set<string>();
+        workspacesBySessionId.set(summary.id, owners);
+      }
+      owners.add(summary.workspaceId);
+    }
+
+    const targets = new Map<string, { readonly workspaceId: string; readonly id: string }>();
+    for (const entry of changedSessions) {
+      targets.set(`${entry.workspaceId}\0${entry.id}`, entry);
+      const existingOwners = workspacesBySessionId.get(entry.id);
+      if (existingOwners !== undefined) {
+        for (const existingWorkspaceId of existingOwners) {
+          if (existingWorkspaceId !== entry.workspaceId) {
+            targets.set(`${existingWorkspaceId}\0${entry.id}`, {
+              workspaceId: existingWorkspaceId,
+              id: entry.id,
+            });
+          }
+        }
+      }
+    }
+
+    const maybeYield = createCooperativeYield();
+    const runLargeRead = createLargeReadGate(maybeYield);
+    let readCount = 0;
+    const refreshed = await mapBounded([...targets.values()], SUMMARY_READ_CONCURRENCY, async ({ workspaceId, id }) => {
+      const fingerprint = await sessionStateFingerprint(storage, sessionsScope, workspaceId, id, log);
+      const result = isLargeFingerprint(fingerprint)
+        ? await runLargeRead(() => readSessionSummaryResult(docs, sessionsScope, workspaceId, id, log, storage))
+        : await readSessionSummaryResult(docs, sessionsScope, workspaceId, id, log, storage);
+      readCount += 1;
+      await maybeYield(readCount % COOPERATIVE_SCAN_ITEMS === 0);
+      return { workspaceId, id, fingerprint, result };
+    });
+
+    const counts = new Map(scan.counts);
+    const fingerprints = new Map(scan.fingerprints);
+    const workspaceSources = new Map(scan.workspaceSources);
+    const touchedWorkspaces = new Map<
+      string,
+      {
+        readonly existed: boolean;
+        readonly sessionIds: Set<string>;
+        readonly activeSessionIds: Set<string>;
+        readonly archivedSessionIds: Set<string>;
+      }
+    >();
+    const ensureWorkspace = (workspaceId: string) => {
+      let state = touchedWorkspaces.get(workspaceId);
+      if (state === undefined) {
+        const previous = workspaceSources.get(workspaceId);
+        state = {
+          existed: previous !== undefined,
+          sessionIds: new Set(previous?.sessionIds ?? []),
+          activeSessionIds: new Set(previous?.activeSessionIds ?? []),
+          archivedSessionIds: new Set(previous?.archivedSessionIds ?? []),
+        };
+        touchedWorkspaces.set(workspaceId, state);
+      }
+      return state;
+    };
+
+    const failed: { readonly workspaceId: string; readonly id: string }[] = [];
+    const foundIds = new Set<string>();
+    let sourceMaxMtimeMs = scan.sourceMaxMtimeMs;
+
+    for (const item of refreshed) {
+      sourceMaxMtimeMs = Math.max(
+        sourceMaxMtimeMs,
+        item.fingerprint.directMtimeMs,
+        item.fingerprint.nestedMtimeMs,
+      );
+      if (item.result.kind === 'error') {
+        failed.push({ workspaceId: item.workspaceId, id: item.id });
+        continue;
+      }
+      if (item.result.kind === 'found') {
+        foundIds.add(item.id);
+      }
+    }
+
+    for (const item of refreshed) {
+      if (item.result.kind === 'error') continue;
+      const key = `${item.workspaceId}\0${item.id}`;
+      summariesByKey.delete(key);
+      const owners = workspacesBySessionId.get(item.id);
+      owners?.delete(item.workspaceId);
+      const ws = ensureWorkspace(item.workspaceId);
+      ws.activeSessionIds.delete(item.id);
+      ws.archivedSessionIds.delete(item.id);
+      if (item.result.kind === 'found') {
+        summariesByKey.set(key, item.result.summary);
+        let nextOwners = workspacesBySessionId.get(item.id);
+        if (nextOwners === undefined) {
+          nextOwners = new Set<string>();
+          workspacesBySessionId.set(item.id, nextOwners);
+        }
+        nextOwners.add(item.workspaceId);
+        fingerprints.set(item.id, item.fingerprint);
+        ws.sessionIds.add(item.id);
+        if (item.result.summary.archived) ws.archivedSessionIds.add(item.id);
+        else ws.activeSessionIds.add(item.id);
+      } else {
+        ws.sessionIds.delete(item.id);
+        if (!foundIds.has(item.id) && (owners?.size ?? 0) === 0) {
+          fingerprints.delete(item.id);
+        }
+      }
+    }
+
+    for (const [workspaceId, ws] of touchedWorkspaces) {
+      if (!ws.existed && ws.sessionIds.size === 0) continue;
+      workspaceSources.set(workspaceId, {
+        sessionIds: [...ws.sessionIds].toSorted(),
+        activeSessionIds: [...ws.activeSessionIds].toSorted(),
+        archivedSessionIds: [...ws.archivedSessionIds].toSorted(),
+      });
+      counts.set(workspaceId, {
+        active: ws.activeSessionIds.size,
+        archived: ws.archivedSessionIds.size,
+      });
+    }
+
+    return {
+      scan: {
+        summaries: [...summariesByKey.values()],
+        counts,
+        fingerprints,
+        workspaceSources,
+        sourceMaxMtimeMs,
+      },
+      failed,
+    };
+  }
+
   async project(generation: number, scan: AuthoritativeScan): Promise<ProjectionResult> {
     const { queryStore, log } = this.deps;
     const { summaries, counts, fingerprints, workspaceSources, sourceMaxMtimeMs } = scan;

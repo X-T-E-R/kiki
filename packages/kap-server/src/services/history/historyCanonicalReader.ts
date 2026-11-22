@@ -45,6 +45,7 @@ export interface ResidentCheckpoint {
   readonly wirePath: string;
   readonly manifest: HistoryNavManifest;
   readonly generation: number;
+  readonly turnRevisions?: Readonly<Record<string, string>>;
 }
 
 /** A source-backed detail read is not yet covered by the navigation watermark. */
@@ -419,20 +420,21 @@ export class HistoryCanonicalReader {
     return {
       prove: async (resident, owned) => {
         owned.throwIfAborted();
-        const { db, scope, manifest } = input;
-        const turnRevision = db.canonicalTurnRevision(scope, resident.turnId);
-        const revision = `${generation}\0${manifest.generation}\0${manifest.incarnation}\0${turnRevision}`;
-        const current = db.readManifest(scope);
-        if (
-          generation === this.generation &&
-          current?.generation === manifest.generation &&
-          current.incarnation === manifest.incarnation &&
-          current.offset >= manifest.offset
-        ) {
-          const cached = this.residentFailures.get(resident);
-          if (cached?.revision === revision) {
-            this.proofSkipped += 1;
-            return { status: cached.status };
+        const cached = this.residentFailures.get(resident);
+        if (cached !== undefined && generation === this.generation) {
+          const { db, scope, manifest } = input;
+          const current = db.readManifest(scope);
+          if (
+            current?.generation === manifest.generation &&
+            current.incarnation === manifest.incarnation &&
+            current.offset >= manifest.offset
+          ) {
+            const turnRevision = db.canonicalTurnRevision(scope, resident.turnId);
+            const revision = `${generation}\0${manifest.generation}\0${manifest.incarnation}\0${turnRevision}`;
+            if (cached.revision === revision) {
+              this.proofSkipped += 1;
+              return { status: cached.status };
+            }
           }
         }
         return this.transcript.scheduleHistoryRead(owned, active => this.proveResidentTurn(input, agent, resident, generation, active));
@@ -440,11 +442,23 @@ export class HistoryCanonicalReader {
     };
   }
 
-  async residentCheckpoint(session: string, agent: string, signal: AbortSignal): Promise<ResidentCheckpoint | undefined> {
+  async residentCheckpoint(
+    session: string,
+    agent: string,
+    signal: AbortSignal,
+    failedTurnIds?: readonly string[],
+  ): Promise<ResidentCheckpoint | undefined> {
     const generation = this.generation;
     const input = await this.prepare(session, agent, signal);
     if (input === undefined) return undefined;
-    return { scope: input.scope, wirePath: input.wirePath, manifest: input.manifest, generation };
+    let turnRevisions: Record<string, string> | undefined;
+    if (failedTurnIds !== undefined && failedTurnIds.length > 0) {
+      turnRevisions = {};
+      for (const turnId of failedTurnIds) {
+        turnRevisions[turnId] = `${generation}\0${input.manifest.generation}\0${input.manifest.incarnation}\0${input.db.canonicalTurnRevision(input.scope, turnId)}`;
+      }
+    }
+    return { scope: input.scope, wirePath: input.wirePath, manifest: input.manifest, generation, turnRevisions };
   }
 
   async proveResidentCheckpoint(checkpoint: ResidentCheckpoint, agent: string, resident: TranscriptTurn, signal: AbortSignal) {

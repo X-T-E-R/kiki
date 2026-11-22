@@ -12,6 +12,7 @@ import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 
 const DISCOVERY_CACHE_TTL_MS = 5_000;
 const MAX_DIRECTORY_WATCHERS = 64;
+const MAX_REALPATH_CACHE = 512;
 const WATCHED_ENTRY_NAMES = new Set(['.kiki', ...AGENTS_MD_PLAIN_NAMES.map((name) => name.toLowerCase())]);
 
 interface DirectoryEntry {
@@ -21,6 +22,11 @@ interface DirectoryEntry {
 
 interface ProjectRootEntry {
   readonly root: string;
+  readonly expiresAt: number;
+}
+
+interface RealPathEntry {
+  readonly path: string;
   readonly expiresAt: number;
 }
 
@@ -36,8 +42,16 @@ interface RuntimeCache {
   readonly existingDirectories: Map<string, number>;
   readonly projectRoots: Map<string, ProjectRootEntry>;
   readonly projectRootFlights: Map<string, Promise<string>>;
+  readonly realpaths: Map<string, RealPathEntry>;
+  readonly realpathFlights: Map<string, Promise<string>>;
   readonly revisions: Map<string, number>;
   readonly watchers: Map<string, WatchEntry>;
+  pathIndexUnsubscribe?: () => void;
+}
+
+export interface DirectoryCacheState {
+  readonly fresh: boolean;
+  readonly revision: number;
 }
 
 export interface IAgentsMdDiscoveryService {
@@ -45,6 +59,8 @@ export interface IAgentsMdDiscoveryService {
 
   discover(lease: RuntimeLease, targetDir: string, boundary?: string): Promise<readonly string[]>;
   invalidate(runtime: Runtime, directory: string): void;
+  resolveRealPath?(lease: RuntimeLease, directory: string): Promise<string>;
+  directoryCacheState?(runtime: Runtime, directory: string): DirectoryCacheState;
 }
 
 export const IAgentsMdDiscoveryService: ServiceIdentifier<IAgentsMdDiscoveryService> =
@@ -83,6 +99,46 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     this.invalidateKey(cache, pathKey(directory, runtime.environment.pathClass));
   }
 
+  async resolveRealPath(lease: RuntimeLease, directory: string): Promise<string> {
+    const normalized = normalize(directory);
+    const runtime = lease.runtime;
+    const fs = runtime.fs;
+    if (fs === undefined) return normalized;
+    const cache = this.cacheFor(runtime);
+    const key = pathKey(normalized, runtime.environment.pathClass);
+    const cached = cache.realpaths.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.path;
+    const inflight = cache.realpathFlights.get(key);
+    if (inflight !== undefined) return inflight;
+    const flight = fs.realpath(normalized)
+      .then((resolved) => normalize(resolved), () => normalized)
+      .then((resolved) => {
+        if (this.ttlMs > 0) {
+          if (cache.realpaths.size >= MAX_REALPATH_CACHE) {
+            cache.realpaths.delete(cache.realpaths.keys().next().value!);
+          }
+          cache.realpaths.set(key, { path: resolved, expiresAt: this.now() + this.ttlMs });
+        }
+        return resolved;
+      })
+      .finally(() => {
+        if (cache.realpathFlights.get(key) === flight) cache.realpathFlights.delete(key);
+      });
+    cache.realpathFlights.set(key, flight);
+    return flight;
+  }
+
+  directoryCacheState(runtime: Runtime, directory: string): DirectoryCacheState {
+    const cache = this.runtimeCaches.get(runtime);
+    if (cache === undefined) return { fresh: false, revision: 0 };
+    const key = pathKey(directory, runtime.environment.pathClass);
+    const cached = cache.directories.get(key);
+    return {
+      fresh: cached !== undefined && cached.expiresAt > this.now(),
+      revision: cache.revisions.get(key) ?? 0,
+    };
+  }
+
   private cacheFor(runtime: Runtime): RuntimeCache {
     let cache = this.runtimeCaches.get(runtime);
     if (cache !== undefined) return cache;
@@ -92,6 +148,8 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       existingDirectories: new Map(),
       projectRoots: new Map(),
       projectRootFlights: new Map(),
+      realpaths: new Map(),
+      realpathFlights: new Map(),
       revisions: new Map(),
       watchers: new Map(),
     };
@@ -179,6 +237,39 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     return paths;
   }
 
+  private ensurePathIndexSubscription(runtime: Runtime, cache: RuntimeCache): boolean {
+    const pathIndex = runtime.pathIndex;
+    if (pathIndex === undefined || !pathIndex.isWatching) return false;
+    if (cache.pathIndexUnsubscribe === undefined) {
+      const pathClass = runtime.environment.pathClass;
+      cache.pathIndexUnsubscribe = pathIndex.onDidMutate((changedPath) => {
+        if (changedPath === undefined) {
+          cache.existingDirectories.clear();
+          cache.realpaths.clear();
+          const keys = new Set([...cache.directories.keys(), ...cache.revisions.keys()]);
+          for (const owner of keys) this.invalidateKey(cache, owner);
+          return;
+        }
+        const name = basename(changedPath).toLowerCase();
+        const parentDir = dirname(changedPath);
+        const parentName = basename(parentDir).toLowerCase();
+        const changedKey = pathKey(changedPath, pathClass);
+        if (cache.directories.has(changedKey) || cache.revisions.has(changedKey)) {
+          cache.existingDirectories.delete(changedKey);
+          this.invalidateKey(cache, changedKey);
+        }
+        if (!WATCHED_ENTRY_NAMES.has(name) && parentName !== '.kiki') return;
+        const affectedDir = parentName === '.kiki' ? dirname(parentDir) : parentDir;
+        const affectedKey = pathKey(affectedDir, pathClass);
+        if (cache.directories.has(affectedKey) || cache.revisions.has(affectedKey)) {
+          cache.existingDirectories.delete(affectedKey);
+          this.invalidateKey(cache, affectedKey);
+        }
+      });
+    }
+    return true;
+  }
+
   private async ensureWatcher(
     lease: RuntimeLease,
     cache: RuntimeCache,
@@ -186,9 +277,16 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     ownerKey: string,
   ): Promise<void> {
     const runtime = lease.runtime;
+    const pathClass = runtime.environment.pathClass;
+    if (
+      runtime.pathIndex?.isWatching === true &&
+      isPathUnderRoot(watchPath, runtime.pathIndex.root, pathClass) &&
+      this.ensurePathIndexSubscription(runtime, cache)
+    ) {
+      return;
+    }
     const watch = runtime.watch;
     if (watch === undefined || this.maxWatchers <= 0) return;
-    const pathClass = runtime.environment.pathClass;
     const watchKey = pathKey(watchPath, pathClass);
     const current = cache.watchers.get(watchKey);
     if (current !== undefined) {
@@ -279,6 +377,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
 
   private invalidateKey(cache: RuntimeCache, key: string): void {
     cache.directories.delete(key);
+    cache.realpaths.delete(key);
     cache.revisions.set(key, (cache.revisions.get(key) ?? 0) + 1);
   }
 }
@@ -332,6 +431,14 @@ async function isNonEmptyFile(
 function pathKey(path: string, pathClass: 'posix' | 'win32'): string {
   const normalized = normalize(path);
   return pathClass === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function isPathUnderRoot(candidate: string, root: string, pathClass: 'posix' | 'win32'): boolean {
+  const normalizedCandidate = pathKey(candidate, pathClass);
+  const normalizedRoot = pathKey(root, pathClass);
+  if (normalizedCandidate === normalizedRoot) return true;
+  const prefix = normalizedRoot.endsWith('/') ? normalizedRoot : `${normalizedRoot}/`;
+  return normalizedCandidate.startsWith(prefix);
 }
 
 function affectsDirectory(

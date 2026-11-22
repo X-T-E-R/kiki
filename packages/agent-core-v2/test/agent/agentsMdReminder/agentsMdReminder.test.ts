@@ -1339,6 +1339,54 @@ describe('agentsMdReminder discovery cache', () => {
     await fire(h, didCtx('Read', { path: join(subDir, 'expired.ts') }));
     expect(reminderText(h)).toContain(agentsMd);
   });
+
+  it('skips redundant stat and realpath walks across repeated reads and reuses an active WorkspacePathIndex watcher', async () => {
+    const hostFs = new HostFileSystem();
+    const watch = watchHarness();
+    const listeners = new Set<(path: string | undefined) => void>();
+    const fakePathIndex = {
+      root: workDir,
+      isWatching: true,
+      onDidMutate: (listener: (path: string | undefined) => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+    };
+    const environment = {
+      _serviceBrand: undefined,
+      homeDir,
+      pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+    } as unknown as IHostEnvironment;
+    const runtime = Object.assign(testRuntime(hostFs, environment, watch.service), { pathIndex: fakePathIndex }) as unknown as Runtime;
+    const h = createHarness({ hostFs, runtime });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await mkdir(subDir, { recursive: true });
+    const agentsMd = await writeAgentsMd(workDir, 'initial workspace rules');
+    h.reminder.seedInjected([], workDir);
+
+    const stat = vi.spyOn(hostFs, 'stat');
+    const realpath = vi.spyOn(hostFs, 'realpath');
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'a.ts') }));
+    expect(watch.paths).toEqual([]);
+    const statsAfterFirst = stat.mock.calls.length;
+    const realpathsAfterFirst = realpath.mock.calls.length;
+
+    await Promise.all([
+      fire(h, didCtx('Read', { path: join(subDir, 'b.ts') }, { id: 'call-b' })),
+      fire(h, didCtx('Read', { path: join(subDir, 'c.ts') }, { id: 'call-c' })),
+    ]);
+
+    expect(stat.mock.calls.length).toBe(statsAfterFirst);
+    expect(realpath.mock.calls.length).toBe(realpathsAfterFirst);
+
+    await writeAgentsMd(workDir, 'updated workspace rules');
+    for (const listener of listeners) listener(agentsMd);
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'd.ts') }, { id: 'call-d' }));
+    expect(h.reminders).toHaveLength(2);
+    expect(reminderText(h)).toContain('updated workspace rules');
+  });
 });
 
 describe('agentsMdReminder round-2 hardening', () => {

@@ -1050,11 +1050,24 @@ function messageContainsStatusErrorDetail(message: string, detail: string): bool
   }
 }
 
+function statusPrefixOfJsonOnlyMessage(message: string): string | undefined {
+  const start = message.search(/[{[]/);
+  if (start < 0 || tryParseJsonValue(message.slice(start)) === undefined) return undefined;
+  const prefix = message.slice(0, start).trim();
+  return prefix === '' || /^\d{3}(?:\s+[A-Za-z][A-Za-z ]*)?$/.test(prefix) ? prefix : undefined;
+}
+
 function composeStatusErrorMessage(message: string, body: unknown, statusCode?: number): string {
   const redactedMessage = redactSensitiveText(message);
   const detail = extractStatusErrorBodyDetail(body, statusCode);
   let assembled = redactedMessage;
-  if (detail !== null && !messageContainsStatusErrorDetail(redactedMessage, detail)) {
+  const jsonOnlyPrefix = detail === null || tryParseJsonValue(detail) !== undefined
+    ? undefined
+    : statusPrefixOfJsonOnlyMessage(redactedMessage);
+  if (detail !== null && jsonOnlyPrefix !== undefined) {
+    const snippet = truncateStatusErrorSnippet(detail);
+    assembled = jsonOnlyPrefix === '' ? snippet : `${jsonOnlyPrefix} ${snippet}`;
+  } else if (detail !== null && !messageContainsStatusErrorDetail(redactedMessage, detail)) {
     const snippet = truncateStatusErrorSnippet(detail);
     if (!messageContainsStatusErrorDetail(redactedMessage, snippet)) {
       assembled = `${redactedMessage} — ${snippet}`;

@@ -11,7 +11,7 @@ import {
   type TrustUnknownKey,
 } from '@kiki/kaos/ssh-connection';
 
-import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { createDecorator, ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -24,7 +24,7 @@ import { ISshHostDocumentStore } from '#/persistence/interface/sshHostDocumentSt
 
 import { NATIVE_SSH_FLAG_ID } from './flag';
 import { SshHostStore, normalizeHost, type SshConfigSyncSettings, type SshHostInput, type SshHostRecord } from './sshHosts';
-import { parseTransientSshTarget, resolveSshConfig, type ResolvedSshConfig } from './sshConfig';
+import { parseTransientSshTarget, SshConfigResolver, type ResolvedSshConfig } from './sshConfig';
 import type { SshCredentialSubmission } from '#/session/approval/approval';
 
 export interface SshHostStatus extends SshConnectionStatus {
@@ -67,12 +67,19 @@ export interface ISshHostService {
   onHostsChanged(listener: (workspaceId?: string) => void | Promise<void>): () => void;
 }
 
+export interface ISshConfigResolver extends Pick<SshConfigResolver, 'resolve' | 'discoverAliases' | 'clear'> {
+  readonly _serviceBrand: undefined;
+}
+
+export const ISshConfigResolver: ServiceIdentifier<ISshConfigResolver> = createDecorator<ISshConfigResolver>('sshConfigResolver');
+
 export const ISshHostService: ServiceIdentifier<ISshHostService> = createDecorator<ISshHostService>('sshHostService');
 
 type TrustPolicy = { trustUnknown?: TrustUnknownKey; autoTrustFirstKey?: boolean; credential?: SshCredentialSubmission; keyboardInteractive?: (prompts: readonly { prompt: string; echo: boolean }[]) => Promise<readonly string[]> };
 
 export class SshHostService extends Disposable implements ISshHostService {
   declare readonly _serviceBrand: undefined;
+  private readonly configResolver: ISshConfigResolver;
   private readonly hosts: SshHostStore;
   private readonly connections: SshConnectionManager;
   private readonly trust = new Map<string, TrustPolicy>();
@@ -85,10 +92,22 @@ export class SshHostService extends Disposable implements ISshHostService {
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IFlagService private readonly flags: IFlagService,
     @ISshCredentialStore private readonly credentials: ISshCredentialStore,
+    @ref(ISshConfigResolver) configResolverRef?: LiveRef<ISshConfigResolver>,
   ) {
     super();
+    const injectedResolver = configResolverRef?.current;
+    const ownedResolver = injectedResolver === undefined ? new SshConfigResolver() : undefined;
+    this.configResolver = injectedResolver ?? ownedResolver!;
+    if (ownedResolver !== undefined) {
+      this._register(toDisposable(() => { ownedResolver.clear(); }));
+    }
     const shared = bootstrap.baseHomeDir !== undefined && bootstrap.space?.inherit.credentials === 'shared';
-    this.hosts = new SshHostStore(documents, join(bootstrap.osHomeDir, '.ssh', 'config'), shared ? bootstrap.baseConfigDocumentStore : undefined);
+    this.hosts = new SshHostStore(
+      documents,
+      join(bootstrap.osHomeDir, '.ssh', 'config'),
+      shared ? bootstrap.baseConfigDocumentStore : undefined,
+      this.configResolver,
+    );
     this.connections = new SshConnectionManager((key) => this.resolveConnection(key));
     this._register(toDisposable(() => { void this.connections.dispose(); }));
   }
@@ -149,7 +168,7 @@ export class SshHostService extends Disposable implements ISshHostService {
     const transient = this.transient.get(`${JSON.stringify(workspaceId ?? '')}:${id}`);
     if (transient === undefined) return this.hosts.resolve(id, workspaceId);
     const parsed = parseTransientSshTarget(id)!;
-    const configured = await resolveSshConfig(parsed.hostname);
+    const configured = await this.configResolver.resolve(parsed.hostname);
     return { ...configured, hostname: parsed.hostname, user: parsed.user, port: parsed.port,
       identityFiles: [], proxyJump: undefined, proxyCommand: undefined };
   }
