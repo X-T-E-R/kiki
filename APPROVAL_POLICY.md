@@ -4,6 +4,14 @@ pr_actor: owner_gh
 merge_strategy: daemon_verified_rebase
 max_autofix_attempts: 2
 spend_limit_usd: 1.5
+required_checks:
+  - pr-title-checker
+  - Check flake.nix workspace sync
+  - docs-governance
+  - lint
+  - typecheck
+  - build
+  - test-gui
 protected_paths:
   - APPROVAL_POLICY.md
   - AGENTS.md
