@@ -12,6 +12,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { TurnStarted } from '#/agent/loop/turnEvents';
 import { turnKey } from '#/agent/loop/turnOps';
 import { constrainPermissionMode } from '#/agent/permissionMode/permissionMode';
 import { permissionModeCeilingKey, PermissionSetModeCeiling } from '#/agent/permissionMode/permissionModeOps';
@@ -43,6 +44,7 @@ import {
 import {
   AgentBranchSealed,
   AgentToolLockChanged,
+  BranchTurnMerged,
   branchSealedKey,
   branchToolLockKey,
 } from '#/features/btw/branchOps';
@@ -269,14 +271,8 @@ describe('SessionBranchService completion metadata', () => {
   it.each(['native', 'example-external'])('delivers a fold through the %s execution owner even while finalizing', async (executorId) => {
     const harness = createBranchFoldHarness(ix, {}, executorId);
     await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Fold result', done: false });
-    if (executorId === 'native') {
-      expect(harness.enqueue).toHaveBeenCalledOnce();
-      expect(harness.enqueue.mock.calls[0]![0]).toMatchObject({ admissionPolicy: 'activeOrNewTurn' });
-      expect(harness.prompt).not.toHaveBeenCalled();
-    } else {
-      expect(harness.prompt).toHaveBeenCalledWith(expect.objectContaining({ message: expect.objectContaining({ origin: expect.objectContaining({ kind: 'branch_fold' }) }), waitForLaunch: false }));
-      expect(harness.enqueue).not.toHaveBeenCalled();
-    }
+    expect(harness.prompt).toHaveBeenCalledWith(expect.objectContaining({ id: expect.stringMatching(/^fold_/), message: expect.objectContaining({ origin: expect.objectContaining({ kind: 'branch_fold' }) }), waitForLaunch: false }));
+    expect(harness.enqueue).not.toHaveBeenCalled();
   });
 
   it.each(['BTW', 'Custom branch title'])('restores a cold %s branch from its persisted profile binding', async (displayName) => {
@@ -294,7 +290,7 @@ describe('SessionBranchService completion metadata', () => {
     await harness.service.setToolsLocked({ branchId: 'branch-1', locked: false });
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({ restoreBinding: expect.objectContaining({ profileName: 'example', modelAlias: 'example-model', thinkingEffort: 'high' }) }));
     await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Cold result', done: false });
-    expect(harness.enqueue).toHaveBeenCalledOnce();
+    expect(harness.prompt).toHaveBeenCalledOnce();
   });
 
   it('binds unbound persisted branches to the default agent profile on restore and binds new branches from unbound main when default_model is configured', async () => {
@@ -413,6 +409,26 @@ describe('SessionBranchService completion metadata', () => {
     }
   });
 
+  it('reports an in-flight fold until its merge watermark is recorded', async () => {
+    const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
+    let releaseParent: () => void = () => {};
+    harness.prompt.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseParent = resolve; }));
+    const settled: string[] = [];
+    const subscription = harness.service.onDidSettleFold((agentId) => { settled.push(agentId); });
+    try {
+      const folding = harness.service.foldBranch({ branchId: 'branch-1', summary: 'Interim update', done: false });
+      await vi.waitFor(() => expect(harness.prompt).toHaveBeenCalledOnce());
+      expect(harness.service.isFolding('branch-1')).toBe(true);
+      expect(settled).toEqual([]);
+      releaseParent();
+      await expect(folding).resolves.toMatchObject({ status: 'merged', done: false });
+      expect(harness.service.isFolding('branch-1')).toBe(false);
+      expect(settled).toEqual(['branch-1']);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
   it('serializes concurrent foldBranch calls on the same branch so only one seals and emits branch_fold', async () => {
     const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
     let releaseFirstMetadataRead: () => void = () => {};
@@ -451,7 +467,7 @@ describe('SessionBranchService completion metadata', () => {
     if (secondOutcome.status === 'rejected') {
       expect(secondOutcome.reason).toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     }
-    expect(harness.enqueue).toHaveBeenCalledTimes(1);
+    expect(harness.prompt).toHaveBeenCalledTimes(1);
     expect(harness.updateAgent).toHaveBeenCalledTimes(1);
   });
 });
@@ -643,7 +659,16 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         const dispatcher = registerTestEventDispatcher(ix);
         const agentState = ix.get(IAgentStateService);
         agentState.contributeState(permissionModeCeilingKey);
-        return { ix, dispatcher, agentState };
+        let branchMeta: AgentMeta = {
+          labels: { branch: 'true', branchSealed: 'true' },
+          status: 'completed',
+          completedAt: 1,
+          resultSummary: 'Earlier merged summary',
+          error: 'Earlier error',
+        };
+        const updateAgent = vi.fn(async (_agentId: string, update: (current: AgentMeta) => AgentMeta) => { branchMeta = update(branchMeta); });
+        ix.stub(ISessionMetadata, { updateAgent } as unknown as ISessionMetadata);
+        return { ix, dispatcher, agentState, updateAgent, branchMeta: () => branchMeta };
       };
 
       const executorEvents = stubToolExecutorEvents();
@@ -713,12 +738,59 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         formatDenyMessage: (msg: string) => msg,
       } as unknown as IAgentToolApprovalService);
       replayed.ix.set(IAgentBranchGuardService, new SyncDescriptor(AgentBranchGuardService));
-      replayed.ix.get(IAgentBranchGuardService);
+      const replayedGuard = replayed.ix.get(IAgentBranchGuardService);
       await replayed.dispatcher.restore();
 
       expect(replayed.agentState.get(permissionModeCeilingKey)).toBe('auto');
       expect(replayed.agentState.get(branchToolLockKey)).toBe(false);
       expect(replayed.agentState.get(branchSealedKey)).toBe(true);
+
+      let releaseMetadataUpdate: () => void = () => {};
+      const metadataGate = new Promise<void>((resolve) => { releaseMetadataUpdate = resolve; });
+      const origUpdate = replayed.updateAgent.getMockImplementation()!;
+      replayed.updateAgent.mockImplementationOnce(async (id, update) => {
+        await metadataGate;
+        return origUpdate(id, update);
+      });
+      let metaAtUnsealEvent: AgentMeta | undefined;
+      replayed.ix.get(IEventBus).subscribe(AgentBranchSealed, (event) => {
+        if (event.sealed === false) metaAtUnsealEvent = replayed.branchMeta();
+      });
+
+      await replayed.dispatcher.dispatch(new TurnStarted({ turnId: 3, origin: { kind: 'user' } }));
+      const pendingBash = replayedExecutorEvents.fireBeforeExecute({
+        turnId: 3,
+        signal: new AbortController().signal,
+        toolCall: bashCall,
+        toolCalls: [bashCall],
+        args: {},
+        execution: { approvalRule: 'Bash', execute: async () => ({ output: 'ok' }) },
+      });
+      releaseMetadataUpdate();
+      await replayedGuard.revived();
+      expect(metaAtUnsealEvent).toEqual({
+        labels: { branch: 'true' },
+        status: undefined,
+        completedAt: undefined,
+        resultSummary: undefined,
+        error: undefined,
+      });
+      expect(replayed.agentState.get(branchSealedKey)).toBe(false);
+      expect(replayed.branchMeta()).toEqual({
+        labels: { branch: 'true' },
+        status: undefined,
+        completedAt: undefined,
+        resultSummary: undefined,
+        error: undefined,
+      });
+      expect(await pendingBash).toBeUndefined();
+
+      const revivedAgain = buildWireHost();
+      revivedAgain.ix.stub(IAgentToolExecutorService, stubToolExecutorEvents().executor);
+      revivedAgain.ix.set(IAgentBranchGuardService, new SyncDescriptor(AgentBranchGuardService));
+      revivedAgain.ix.get(IAgentBranchGuardService);
+      await revivedAgain.dispatcher.restore();
+      expect(revivedAgain.agentState.get(branchSealedKey)).toBe(false);
     } finally {
       await disposables.dispose();
     }
@@ -930,6 +1002,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
           get: (token: unknown) => {
             if (token === IEventDispatcher) {
               return {
+                dispatchDurably: vi.fn(async (ev: unknown) => { dispatchedBranchEvents.push(ev); }),
                 dispatch: vi.fn(async (ev: unknown) => {
                   dispatchedBranchEvents.push(ev);
                   if (ev instanceof AgentBranchSealed) {
@@ -1070,7 +1143,13 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         through_turn: 2,
       });
 
-      const mergedMsg = mainMessages.at(-1)!;
+      expect(dispatchedBranchEvents.filter((event) => event instanceof BranchTurnMerged)).toEqual([
+        expect.objectContaining({ turnId: 2 }),
+      ]);
+      const queuedFold = mainPromptEnqueued[0] as { id: string; message: ContextMessage };
+      expect(queuedFold.id).toBe(parsedReceipt.fold_id);
+      const mergedMsg = queuedFold.message;
+      mainMessages.push(mergedMsg);
       expect(mergedMsg.origin).toMatchObject({
         kind: 'branch_fold',
         branchId: 'branch-side-1',
@@ -1089,7 +1168,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       expect(textBody).toContain('Branch history: HistoryList({ agent_id: "branch-side-1" }) · HistoryRead({ agent_id: "branch-side-1", turn: 2 })');
       expect(textBody).not.toContain('Edited files:');
       expect(textBody).not.toContain('Commands run:');
-      expect(mainPromptEnqueued).toHaveLength(1);
+      expect(mainPromptEnqueued).toHaveLength(2);
 
       const undoCutAfterMerge = computeUndoCut(mainMessages, 1);
       expect(undoCutAfterMerge.removedCount).toBe(1);

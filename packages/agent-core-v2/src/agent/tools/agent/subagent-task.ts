@@ -16,7 +16,10 @@ import {
 type SubagentCompletion = {
   readonly result: string;
   readonly usage?: TokenUsage;
+  readonly continued?: boolean;
 };
+
+export const AGENT_SEND_CONTINUED = 'The child has AgentSend follow-up input and is continuing automatically. Do not resend the message or resume the child; its next completion will be reported separately.';
 
 export type SubagentHandle = {
   readonly agentId: string;
@@ -99,10 +102,11 @@ export class SubagentTask implements AgentTask {
   readonly executorProtocol?: string;
   readonly collaborationTaskName?: string;
   readonly collaborationAgentType?: string;
+  private continued = false;
 
   constructor(
     private readonly handle: SubagentHandle,
-    readonly description: string,
+    private readonly runDescription: string,
     private readonly abortController: AbortController,
     collaboration?: { readonly taskName: string; readonly agentType: string },
     private readonly resolveParentSteering?: () => string | undefined,
@@ -119,6 +123,10 @@ export class SubagentTask implements AgentTask {
     this.collaborationAgentType = collaboration?.agentType;
   }
 
+  get description(): string {
+    return this.continued ? `${this.runDescription} — phase completed; child continuing after AgentSend` : this.runDescription;
+  }
+
   async start(sink: AgentTaskSink): Promise<void> {
     const requestAbort = (): void => {
       this.abortController.abort(sink.signal.reason);
@@ -132,8 +140,10 @@ export class SubagentTask implements AgentTask {
     try {
       const outcome = await this.handle.completion;
       requireAgentReceipt(outcome, this.agentId);
-      if (sink.setFinalOutput !== undefined) sink.setFinalOutput(outcome.result);
-      else sink.appendOutput(outcome.result);
+      this.continued = outcome.continued === true;
+      const result = this.continued ? `${AGENT_SEND_CONTINUED}\n\n${outcome.result}` : outcome.result;
+      if (sink.setFinalOutput !== undefined) sink.setFinalOutput(result);
+      else sink.appendOutput(result);
       await sink.settle({ status: 'completed' });
     } catch (error: unknown) {
       if (sink.signal.aborted && (isAbortError(error) || error === sink.signal.reason)) {
@@ -151,6 +161,8 @@ export class SubagentTask implements AgentTask {
     return {
       ...base,
       kind: 'agent',
+      description: this.description,
+      continued: this.continued || undefined,
       agentId: this.agentId,
       sourceRef: this.handle.sourceRef,
       profile: this.profile,

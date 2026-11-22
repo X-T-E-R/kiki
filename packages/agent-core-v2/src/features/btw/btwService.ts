@@ -2,6 +2,7 @@ import { ulid } from 'ulid';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
+import { Emitter } from '#/_base/event';
 import {
   readPersistedAgentProfileSnapshot,
   resolvePersistedAgentCreateOptions,
@@ -14,7 +15,6 @@ import type { BranchFoldOrigin, ContextMessage } from '#/agent/contextMemory/typ
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { turnKey } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -38,8 +38,10 @@ import { AUTONOMOUS_RECEIPT_POLICY_LABEL } from '#/session/subagent/autonomousRe
 import { readTodoState, todoKey, ToolsUpdateStore } from '#/session/todo/todoOps';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
+import { IAgentBranchGuardService } from './agentBranchGuardService';
 import {
   AgentBranchSealed,
+  BranchTurnMerged,
   AgentToolLockChanged,
   branchSealedKey,
   branchToolLockKey,
@@ -68,6 +70,9 @@ export class SessionBranchService extends Service implements ISessionBranchServi
   private readonly profileHost: { readonly accessor: ServicesAccessor };
   private readonly foldTails = new Map<string, Promise<unknown>>();
   private readonly sealingBranches = new Set<string>();
+  private readonly foldingBranches = new Map<string, number>();
+  private readonly foldSettled = this._register(new Emitter<string>());
+  readonly onDidSettleFold = this.foldSettled.event;
   private readonly lifetime = new AbortController();
 
   constructor(
@@ -105,6 +110,10 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     }
     const agent = this.metadata.peekAgent !== undefined ? this.metadata.peekAgent(agentId) : this.metadata.snapshot().agents?.[agentId];
     return agent?.labels?.['branchSealed'] === 'true';
+  }
+
+  isFolding(agentId: string): boolean {
+    return this.foldingBranches.has(agentId);
   }
 
   private assertBranchAllowed(initiator: 'user' | 'agent', toolsLocked: boolean, callerAgentId: string): void {
@@ -373,6 +382,18 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     if (branchId.length === 0 || branchId === MAIN_AGENT_ID) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'branchId must identify a non-main branch agent.');
     }
+    this.foldingBranches.set(branchId, (this.foldingBranches.get(branchId) ?? 0) + 1);
+    try {
+      return await this.foldSerialized(branchId, input);
+    } finally {
+      const remaining = (this.foldingBranches.get(branchId) ?? 1) - 1;
+      if (remaining === 0) this.foldingBranches.delete(branchId);
+      else this.foldingBranches.set(branchId, remaining);
+      this.foldSettled.fire(branchId);
+    }
+  }
+
+  private foldSerialized(branchId: string, input: FoldSessionBranchInput): Promise<FoldSessionBranchResult> {
     return this.runSerializedFold(branchId, async () => {
       const sessionMeta = await this.metadata.read();
       const branchMeta = sessionMeta.agents?.[branchId];
@@ -382,10 +403,14 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         });
       }
       const branchHandle = await this.ensureLiveAgent(branchId);
+      await branchHandle.accessor.get(IAgentBranchGuardService)?.revived();
       const branchStates = branchHandle.accessor.get(IAgentStateService);
+      const effectiveBranchMeta = branchMeta.labels?.['branchSealed'] === 'true' && branchStates.get(branchSealedKey) !== true
+        ? (await this.metadata.read()).agents?.[branchId] ?? branchMeta
+        : branchMeta;
       const alreadySealed =
         branchStates.get(branchSealedKey) === true ||
-        branchMeta.labels?.['branchSealed'] === 'true' ||
+        effectiveBranchMeta.labels?.['branchSealed'] === 'true' ||
         this.sealingBranches.has(branchId);
       const turnState = branchStates.get(turnKey);
       const throughTurnId = Math.max(0, (turnState?.nextTurnId ?? 0) - 1);
@@ -465,17 +490,9 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       let handedBackCount = 0;
       if (done) this.sealingBranches.add(branchId);
       try {
-        if ((targetHandle.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native') {
-          targetHandle.accessor.get(IAgentLoopService).enqueue(new MessageStepRequest(foldMessage, {
-            kind: 'branch_fold',
-            admission: 'activeOrNewTurn',
-            mergeable: false,
-            turnScoped: false,
-            deliveryOrigin: 'mailbox',
-          }));
-        } else {
-          await targetHandle.accessor.get(IAgentPromptService).enqueue({ message: foldMessage, waitForLaunch: false });
-        }
+        await targetHandle.accessor.get(IAgentPromptService).enqueue({ id: foldId, message: foldMessage, waitForLaunch: false });
+
+        if (hasTurns) await branchHandle.accessor.get(IEventDispatcher).dispatchDurably(new BranchTurnMerged({ turnId: throughTurnId }));
 
         if (done) {
           await this.metadata.updateAgent(branchId, (current) => ({

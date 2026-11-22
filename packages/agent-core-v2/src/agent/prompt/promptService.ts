@@ -1454,7 +1454,7 @@ export class AgentPromptService implements IAgentPromptService {
         if (signal?.aborted) throw submissionCancelled(id);
         const handle = await this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint,
           waitForLaunch: options?.waitForLaunch, nativeSteer: options?.nativeSteer, retryContentRanges: options?.contentRanges,
-          parentReceiptManaged: options?.parentReceiptManaged });
+          parentReceiptManaged: message.origin?.kind === 'user' ? false : options?.parentReceiptManaged });
         if (durableAcceptance && this.unflushedPromptIds.has(id)) {
           await this.timeSubphase(id, 'durable_wire_flush', () => this.flushPendingWireIds());
         }
@@ -2252,6 +2252,19 @@ export class AgentPromptService implements IAgentPromptService {
     void this.dispatcher.dispatch(new PromptMoved({ promptId: id, targetIndex, queuedPromptIds: order, movedAt: new Date().toISOString() }));
   }
 
+  private promoteSendNow(items: readonly Record[], promoted: ReadonlySet<string>): void {
+    const order = [...this.queueOrder].filter((candidate) => candidate.startsWith(MODEL_SWITCH_QUEUE_PREFIX) || this.pending.some((item) => item.id === candidate));
+    const moving = items.map(item => item.id).filter(id => order.includes(id));
+    if (moving.length === 0) return;
+    const rest = order.filter(id => !moving.includes(id));
+    let lead = 0;
+    while (lead < rest.length && promoted.has(rest[lead]!)) lead++;
+    const next = [...rest.slice(0, lead), ...moving, ...rest.slice(lead)];
+    if (next.every((id, index) => id === order[index])) return;
+    this.pending.sort((left, right) => next.indexOf(left.id) - next.indexOf(right.id));
+    void this.dispatcher.dispatch(new PromptMoved({ promptId: moving[0]!, targetIndex: lead, queuedPromptIds: next, movedAt: new Date().toISOString() }));
+  }
+
   private scheduleSwitchBoundary(selected: readonly Record[]): Promise<void> {
     const fresh = selected.filter(item => !this.boundaryPromptIds.has(item.id));
     if (fresh.length === 0) return Promise.resolve();
@@ -2331,6 +2344,8 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private readonly steerAcceptances = new Map<string, Promise<void>>();
+  private readonly externalSteerBatches = new Map<number | undefined, { readonly ids: Set<string>; readonly done: Promise<void> }>();
+  private externalSteerTail = Promise.resolve();
 
   async acceptSteer(promptIds: readonly string[], targetTurnId?: number): Promise<readonly PromptHandle[]> {
     const ids = new Set(promptIds);
@@ -2340,10 +2355,40 @@ export class AgentPromptService implements IAgentPromptService {
     if ((this.profile.data().executorId ?? 'native') !== 'native') {
       const fresh = selected.filter(item => !this.steerAcceptances.has(item.id) && item.deliveryReason !== 'external_retry');
       if (fresh.length > 0) {
-        const result = this.steerExternal(fresh.map(item => item.id), true).then(() => {}).finally(() => {
-          for (const item of fresh) this.steerAcceptances.delete(item.id);
-        });
-        for (const item of fresh) this.steerAcceptances.set(item.id, result);
+        if (fresh.some(item => item.execution?.afterModelSwitch !== undefined || this.hasExecutionBindingChange(item.execution, item.id))) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a model-switch dependency or different execution binding must run as their own turn');
+        }
+        const turnId = this.active?.turn.id;
+        let batch = this.externalSteerBatches.get(turnId);
+        if (batch === undefined) {
+          const ids = new Set<string>();
+          const done = this.externalSteerTail.then(async () => {
+            const execution = this.instantiation.invokeFunction(accessor => accessor.get(IAgentExecutionService));
+            let ready = false;
+            try {
+              ready = turnId !== undefined && this.active?.turn.id === turnId &&
+                (await execution.waitForSteerBoundary?.(turnId) ?? true);
+            } finally {
+              this.externalSteerBatches.delete(turnId);
+            }
+            const pending = [...ids].filter(id => this.pending.some(item => item.id === id));
+            if (pending.length > 0 && this.closing === undefined) await this.steerExternal(pending, true, ready && this.active?.turn.id === turnId);
+          }).finally(() => {
+            for (const id of ids) {
+              this.steerAcceptances.delete(id);
+              this.steeringPromptIds.delete(id);
+            }
+            if (this.active === undefined) this.scheduleNext();
+          });
+          batch = { ids, done };
+          this.externalSteerBatches.set(turnId, batch);
+          this.externalSteerTail = done.catch(() => {});
+        }
+        for (const item of fresh) {
+          batch.ids.add(item.id);
+          this.steeringPromptIds.add(item.id);
+          this.steerAcceptances.set(item.id, batch.done);
+        }
       }
       await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)).filter(promise => promise !== undefined));
       return selected.map(item => item.handle);
@@ -2412,6 +2457,7 @@ export class AgentPromptService implements IAgentPromptService {
     const selected = this.pending.filter(item => ids.has(item.id));
     if (ids.size === 0 || ids.size !== promptIds.length || selected.length !== ids.size) return this.steerNow(promptIds);
     if (selected.some(item => this.hasExecutionBindingChange(item.execution, item.id) || item.execution?.afterModelSwitch !== undefined)) return this.steerNow(promptIds);
+    const orderedIds = new Set(selected.map(item => item.id));
     let batch = this.steerBatches.get(turnId);
     const result = deferred<readonly PromptHandle[]>();
     if (batch === undefined) {
@@ -2430,7 +2476,7 @@ export class AgentPromptService implements IAgentPromptService {
             });
             if (valid.length === 0) return;
             const ids = new Set(valid.flatMap(call => [...call.ids]));
-            const handles = await this.steerNow([...ids]);
+            const handles = await this.steerNow([...ids], true);
             for (const call of valid) call.result.resolve(handles.filter(handle => call.ids.has(handle.id)));
           } catch (error) {
             for (const call of scheduled.calls) call.result.reject(error);
@@ -2450,11 +2496,11 @@ export class AgentPromptService implements IAgentPromptService {
       batch.ids.add(id);
       this.steeringPromptIds.add(id);
     }
-    batch.calls.push({ ids, result });
+    batch.calls.push({ ids: orderedIds, result });
     return result.promise;
   }
 
-  private async steerNow(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
+  private async steerNow(promptIds: readonly string[], preserveOrder = false): Promise<readonly PromptHandle[]> {
     this.assertNativePromptExecutor();
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     const targetTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
@@ -2462,7 +2508,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (ids.size !== promptIds.length || this.pending.filter((item) => ids.has(item.id)).length !== ids.size) {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
-    const selected = this.pending.filter((item) => ids.has(item.id));
+    const selected = preserveOrder ? promptIds.map(id => this.pending.find(item => item.id === id)!) : this.pending.filter(item => ids.has(item.id));
     for (const item of selected) item.deliveryReason = undefined;
     const directBindingBoundary = targetTurnId !== undefined && selected.some(item =>
       !this.boundarySteeringIds.has(item.id) && this.hasExecutionBindingChange(item.execution, item.id)) &&
@@ -2476,6 +2522,7 @@ export class AgentPromptService implements IAgentPromptService {
       return selected.map(item => item.handle);
     }
     if (targetTurnId === undefined) {
+      this.promoteSendNow(selected, this.immediatePromptIds);
       for (const item of selected) {
         item.deliveryReason = 'no_active_turn';
         this.immediatePromptIds.add(item.id);
@@ -2611,13 +2658,13 @@ export class AgentPromptService implements IAgentPromptService {
     }
   }
 
-  private async steerExternal(promptIds: readonly string[], retainUnknown = false): Promise<readonly PromptHandle[]> {
+  private async steerExternal(promptIds: readonly string[], retainUnknown = false, deliverInTurn = true): Promise<readonly PromptHandle[]> {
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     const ids = new Set(promptIds);
     if (ids.size !== promptIds.length || this.pending.filter((item) => ids.has(item.id)).length !== ids.size) {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
-    const selected = this.pending.filter((item) => ids.has(item.id));
+    const selected = retainUnknown ? promptIds.map(id => this.pending.find(item => item.id === id)!) : this.pending.filter(item => ids.has(item.id));
     if (selected.some((item) => item.execution?.afterModelSwitch !== undefined || this.hasExecutionBindingChange(item.execution, item.id))) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a model-switch dependency or different execution binding must run as their own turn');
     }
@@ -2634,7 +2681,7 @@ export class AgentPromptService implements IAgentPromptService {
       const message = mergeSteerMessages(selected);
       const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
       const textOnly = message.content.every((part) => part.type === 'text');
-      if (active !== undefined && textOnly && execution.steer !== undefined) {
+      if (deliverInTurn && active !== undefined && textOnly && execution.steer !== undefined) {
         if (retainUnknown) {
           if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
           await this.dispatcher.dispatchDurably(new PromptExternalSteerStarted({ promptIds: selected.map(item => item.id) }));
@@ -2689,6 +2736,7 @@ export class AgentPromptService implements IAgentPromptService {
         }));
         this.syncRecoveryHold();
       } else {
+        this.promoteSendNow(remaining, this.queuedExternalSteerIds);
         for (const item of remaining) {
           item.deliveryReason = this.active === undefined ? 'no_active_turn' : 'executor_deferred';
           this.queuedExternalSteerIds.add(item.id);

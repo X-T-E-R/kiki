@@ -448,6 +448,7 @@ export const transcriptZh = {
   'transcript.branch.folding': '正在合回…',
   'transcript.branch.mergedFrom': '已合入分支',
   'transcript.branch.openBranch': '查看分支',
+  'transcript.branch.promote': '拆为新线程',
   'transcript.branch.sealed': '已合入',
   'transcript.branch.seamHeader': '分支自 {parent}',
   'transcript.branch.seed.compact': '摘要',

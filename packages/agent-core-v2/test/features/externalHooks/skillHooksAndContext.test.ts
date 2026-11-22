@@ -1381,7 +1381,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       agentStates.set(autonomousReceiptsKey, { pending: { '0': receipt } });
       bus.publish(new TurnEnded({ turnId: 0, reason: 'completed' }));
       const deliveries: ReceiptDelivery[] = [];
-      disposables.add(observeAutonomousReceipts(childHandle, (delivery) => deliveries.push(delivery), new AbortController().signal));
+      disposables.add(observeAutonomousReceipts(childHandle, (delivery) => deliveries.push(delivery), () => false, () => {}, new AbortController().signal));
       expect(deliveries).toHaveLength(1);
       const resumed = await runChildWithTool('Resume the child');
       bus.publish(new TurnStarted({ turnId: 1, parentReceiptManaged: true, origin: { kind: 'user' } }));

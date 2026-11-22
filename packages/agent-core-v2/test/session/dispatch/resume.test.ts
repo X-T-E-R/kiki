@@ -110,10 +110,11 @@ function dispatchFor(ctx: TestAgentContext) {
   containers.push(ix);
   const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   const callerHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
+  const creating = new Emitter<IAgentScopeHandle>();
   const created = new Emitter<IAgentScopeHandle>();
   let removed = false;
   const remove = vi.fn(async () => { removed = true; });
-  ix.stub(IAgentLifecycleService, { onWillCreate: Event.None as Event<IAgentScopeHandle>, onDidCreate: created.event, onDidDispose: Event.None as Event<string>, remove,
+  ix.stub(IAgentLifecycleService, { onWillCreate: creating.event, onDidCreate: created.event, onDidDispose: Event.None as Event<string>, remove,
     get: (id) => id === CHILD ? removed ? undefined : childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
@@ -136,7 +137,7 @@ function dispatchFor(ctx: TestAgentContext) {
   ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
   const dispatch = ix.get(ISessionDispatchService);
   const child: DispatchChild = { agent: childHandle, agentId: CHILD, name: 'saved_child', profileName: 'example-worker', thinkingEffort: 'off' };
-  return { dispatch, child, runs: ix.get(ISessionSubagentService), created, remove };
+  return { dispatch, child, runs: ix.get(ISessionSubagentService), creating, created, remove };
 }
 
 async function defaultExternal(id = 'claude-acp', modelAlias?: string) {
@@ -1150,7 +1151,7 @@ describe('dispatch resume through model switch and real native run', () => {
 describe('compact resume lifecycle retention (CM-001)', () => {
   it.each(['success', 'failure', 'cancel'] as const)('keeps idle preparation resident and restores release after %s', async outcome => {
     const ctx = await host();
-    const { dispatch, child, created, remove } = dispatchFor(ctx);
+    const { dispatch, child, creating, created, remove } = dispatchFor(ctx);
     const controller = new AbortController();
     const operationId = `retained-compact-${outcome}`;
     const failure = new Error('Summary preparation failed');
@@ -1162,6 +1163,7 @@ describe('compact resume lifecycle retention (CM-001)', () => {
     if (outcome === 'success') ctx.mockNextResponse({ type: 'text', text: 'Continued after compact.' });
     vi.useFakeTimers();
     try {
+      creating.fire(child.agent);
       created.fire(child.agent);
       const pending = dispatch.runOnExisting(child, 'Continue after summary', { ...options(operationId, { contextMode: 'compact', modelAlias: NEW }), signal: controller.signal });
       let settled = false;

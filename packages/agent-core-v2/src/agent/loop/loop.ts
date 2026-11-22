@@ -38,6 +38,7 @@ export interface BeforeStepContext {
   readonly logicalStepId?: string;
   readonly attempt?: number;
   readonly signal: AbortSignal;
+  readonly continuedParentPhase?: { readonly stepId: string; readonly summary: string };
 }
 
 export interface AfterStepContext extends BeforeStepContext {

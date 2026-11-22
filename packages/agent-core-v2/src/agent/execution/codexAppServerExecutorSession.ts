@@ -556,6 +556,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.context = { ...this.context, binding };
   }
 
+  async waitForSteerBoundary(turnId: number): Promise<boolean> {
+    const active = this.#active;
+    return active?.turn.id === turnId && await active.recorder.toolsSettled(active.turn.signal) && this.#active === active;
+  }
+
   async steer(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     const remote = this.#client.status();

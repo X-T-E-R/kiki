@@ -1,4 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { Event } from '#/_base/event';
 import type { ThreadDeliveryClaim } from '#/app/threadCommunication/threadMailboxStore';
 
 export const AGENT_MESSAGE_BACKLOG_LIMIT = 128;
@@ -54,6 +55,7 @@ export interface AgentMessageDiscardResult {
 
 export interface IAgentCollaborationMessageStore {
   readonly _serviceBrand: undefined;
+  readonly onDidChangePending?: Event<{ readonly sessionId: string; readonly agentId: string }>;
 
   accept(input: {
     readonly sessionId: string;
@@ -86,6 +88,7 @@ export const IAgentCollaborationMessageStore: ServiceIdentifier<IAgentCollaborat
  */
 export interface IAgentCollaborationMessagingService {
   readonly _serviceBrand: undefined;
+  hasOwnedContinuation?(agentId: string, turnId: number): boolean;
 
   sendUserMessage(input: {
     readonly targetAgentId: string;

@@ -644,7 +644,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     },
     [...logSeed(logging), ...panelBoardSeeds(() => core),
       ...historyArchiveSeed(() => core, () => transcriptService, navigation),
-      ...historyDirectorySeed(() => transcriptService, navigation), ...(opts.seeds ?? [])],
+      ...historyDirectorySeed(() => core, () => transcriptService, navigation), ...(opts.seeds ?? [])],
   );
 
   if (startup !== undefined) startup.core = core;

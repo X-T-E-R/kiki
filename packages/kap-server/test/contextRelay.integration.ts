@@ -5,11 +5,12 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  getLiveSessionById, resumeSessionById, IAgentLifecycleService, IAgentPromptService, IAgentLoopService, IAgentProfileService, IAgentTaskService, ISessionSubagentService, ISessionMetadata, IAuthSummaryService, IAgentProfileRegistry, normalizeAgentProfile,
+  getLiveSessionById, resumeSessionById, IAgentLifecycleService, IAgentPromptService, IAgentLoopService, IAgentProfileService, IAgentTaskService, ISessionSubagentService, ISessionMetadata, ISessionManager, IAuthSummaryService, IAgentProfileRegistry, normalizeAgentProfile,
 } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { IMergeTool } from '@kiki/agent-core-v2/features/btw/tools/mergeTool';
+import { ISessionBranchService } from '@kiki/agent-core-v2/features/btw/btw';
 import { IHistoryListTool } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import { IHistoryReadTool, IHistorySearchTool } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
@@ -326,6 +327,92 @@ describe('relay-v1 REST and cold wire contract', () => {
     }
   }, 30_000);
 
+  it('lists cross-session Branch status with live activity and after restart without restoring the target', async () => {
+    scriptedReplyText = 'Finished the example work.';
+    const targetId = await create();
+    const callerId = await create();
+    const target = getLiveSessionById(server!.core.accessor, targetId)!;
+    const lifecycle = target.accessor.get(IAgentLifecycleService);
+    const branches = target.accessor.get(ISessionBranchService);
+    const { branchId: idle } = await branches.createBranch({ seed: 'fresh', title: 'Open branch' });
+    const { branchId: merged } = await branches.createBranch({ seed: 'fresh', title: 'Merged branch' });
+    const { branchId: failed } = await branches.createBranch({ seed: 'fresh', title: 'Failed branch', initiator: 'agent' });
+    const list = async (sessionId = targetId, agentId = 'main') => {
+      const caller = getLiveSessionById(server!.core.accessor, callerId)!;
+      const agent = caller.accessor.get(IAgentLifecycleService).get(agentId)!;
+      const tool = agent.accessor.get(IHistoryListTool);
+      const execution = await tool.resolveExecution({ kind: 'agents', session_id: sessionId });
+      if (!('execute' in execution)) throw new Error(String(execution.output));
+      const result = await execution.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'branch-directory' });
+      expect(result.isError, String(result.output)).not.toBe(true);
+      return JSON.parse(String(result.output)) as { source: string; agents: Array<{ agent_id: string }> };
+    };
+    const open = (agentId: string) => lifecycle.get(agentId)!.accessor.get(IAgentPromptService).enqueue({
+      message: { ...text('user', 'Run example work.'), origin: { kind: 'user' } }, waitForLaunch: false,
+    });
+    const failure = lifecycle.get(failed)!.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('fixture-branch-error', () => {
+      throw new Error('Example Branch failed before generation');
+    });
+    try {
+      expect((await (await open(failed)).completion).state).toBe('failed');
+    } finally {
+      await failure.dispose();
+    }
+    await vi.waitFor(async () => expect((await target.accessor.get(ISessionMetadata).read()).agents?.[failed]?.branchTurn?.outcome).toBe('failed'));
+    await branches.foldBranch({ branchId: merged, summary: 'Verified branch result.', done: true });
+    const runningLoop = lifecycle.get(idle)!.accessor.get(IAgentLoopService);
+    const began = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const hold = runningLoop.hooks.onWillBeginStep.register('fixture-hold-branch', async (_step, next) => {
+      began.resolve();
+      await release.promise;
+      await next();
+    });
+    const prompt = await open(idle);
+    const expected = (agentId: string, status: string, lastTurnReason?: string) => expect.objectContaining({
+      agent_id: agentId, kind: 'branch', sealed: status === 'merged', status, updated_at: expect.any(String),
+      ...(lastTurnReason === undefined ? {} : { last_turn_reason: lastTurnReason }),
+    });
+    try {
+      await began.promise;
+      expect(await list()).toMatchObject({ source: 'live', agents: expect.arrayContaining([
+        expected(idle, 'running'), expected(merged, 'merged'), expected(failed, 'failed', 'failed'),
+      ]) });
+    } finally {
+      release.resolve();
+      await hold.dispose();
+    }
+    expect((await prompt.completion).state).toBe('completed');
+    await runningLoop.settled();
+    expect((await list()).agents).toEqual(expect.arrayContaining([expected(idle, 'idle', 'completed')]));
+
+    const unstarted = await request<{ id: string }>('/api/sessions', 'POST', { metadata: { cwd: home } });
+    expect(unstarted.code, unstarted.msg).toBe(0);
+    const unstartedLifecycle = getLiveSessionById(server!.core.accessor, unstarted.data.id)!.accessor.get(IAgentLifecycleService);
+    expect(unstartedLifecycle.get('main')).toBeUndefined();
+    expect((await list(unstarted.data.id)).agents).toEqual([expect.objectContaining({ agent_id: 'main', status: 'idle' })]);
+    expect(unstartedLifecycle.get('main')).toBeUndefined();
+
+    await server!.close();
+    server = undefined;
+    await start();
+    await resumeSessionById(server!.core.accessor, callerId);
+    const manager = server!.core.accessor.get(ISessionManager);
+    const resume = vi.spyOn(manager, 'resume');
+    expect(manager.get(targetId)).toBeUndefined();
+    const calls = modelCalls;
+    try {
+      expect(await list()).toMatchObject({ source: 'transcript', agents: expect.arrayContaining([
+        expected(idle, 'idle'), expected(merged, 'merged'), expected(failed, 'failed', 'failed'),
+      ]) });
+      expect(resume).not.toHaveBeenCalled();
+      expect(manager.get(targetId)).toBeUndefined();
+      expect(modelCalls).toBe(calls);
+    } finally {
+      resume.mockRestore();
+    }
+  }, 40_000);
+
   it('merges model-authored branch summary with agent_id pointer and reads live + cold branch transcripts via HistoryList, HistoryRead, and HistorySearch', async () => {
     scriptedReplyText = 'Branch investigated retry-jitter-token-771 and verified exponential cap.';
     const sessionRes = await request<{ id: string }>('/api/sessions', 'POST', {
@@ -378,10 +465,12 @@ describe('relay-v1 REST and cold wire contract', () => {
     expect(mergeResult.isError).toBeUndefined();
 
     const mainHandle = live.accessor.get(IAgentLifecycleService).get('main')!;
-    const mainMessages = mainHandle.accessor.get(IAgentContextMemoryService).get();
-    const foldMsg = mainMessages.find((m) => m.origin?.kind === 'branch_fold');
-    expect(foldMsg).toBeDefined();
-    const foldText = (foldMsg!.content[0] as { type: 'text'; text: string }).text;
+    const foldMsg = await vi.waitFor(() => {
+      const message = mainHandle.accessor.get(IAgentContextMemoryService).get().find(m => m.origin?.kind === 'branch_fold');
+      expect(message).toBeDefined();
+      return message!;
+    });
+    const foldText = (foldMsg.content[0] as { type: 'text'; text: string }).text;
     expect(foldText).toContain(`Merged branch ${branchId} (Retry Jitter Audit):`);
     expect(foldText).toContain('Retry jitter cap is 60s; no retry storm found.');
     expect(foldText).toContain(`HistoryList({ agent_id: "${branchId}" })`);
@@ -400,7 +489,7 @@ describe('relay-v1 REST and cold wire contract', () => {
     const liveAgents = await runTool(mainHandle, IHistoryListTool as never, { kind: 'agents', raw: true });
     const listedAgents = liveAgents['agents'] as Array<Record<string, unknown>>;
     expect(listedAgents).toEqual(expect.arrayContaining([
-      expect.objectContaining({ agent_id: branchId, kind: 'branch', branch_title: 'Retry Jitter Audit', sealed: true }),
+      expect.objectContaining({ agent_id: branchId, kind: 'branch', branch_title: 'Retry Jitter Audit', sealed: true, status: 'merged' }),
     ]));
 
     const liveTurns = await runTool(mainHandle, IHistoryListTool as never, { agent_id: branchId, kind: 'turns' });

@@ -66,7 +66,7 @@ export async function resumeAgentTask(child: IAgentScopeHandle, turn: Turn): Pro
     thinkingEffort: info.thinkingEffort, thinkingEffortExplicit: info.thinkingEffortExplicit,
     executorId: info.executorId, executorProtocol: info.executorProtocol,
     parentSteering: resolveParentSteering() ?? info.parentSteering,
-    completion: mirrored.then(result => ({ result: result.summary, usage: result.usage })),
+    completion: mirrored.then(result => ({ result: result.summary, usage: result.usage, continued: result.continued })),
   }, info.description, controller, taskName === undefined ? undefined : { taskName, agentType }, resolveParentSteering), {
     taskId: info.taskId,
     detached: info.detached,

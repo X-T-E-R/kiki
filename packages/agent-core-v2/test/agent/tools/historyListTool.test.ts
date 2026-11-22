@@ -116,12 +116,22 @@ describe('HistoryListTool', () => {
     expect(() => decodeHistoryDirectoryCursor(encodeHistoryDirectoryCursor({ ...value, afterTurn: undefined }))).toThrow('tail cursor');
   });
 
-  it('uses the agent directory without an agent filter', async () => {
+  it('returns the cross-session branch status without an agent filter', async () => {
     const source = directory();
+    vi.mocked(source.list).mockResolvedValueOnce({
+      status: 'partial', target: { sessionId: 'old', workspaceId: 'ws-a' }, source: 'transcript',
+      coverage: { complete: false, domain: 'directory' },
+      agents: [{ agentId: 'branch', kind: 'branch', branchTitle: 'Review', sealed: false,
+        status: 'failed', lastTurnReason: 'failed', updatedAt: '2026-01-02T00:00:00.000Z' }],
+    });
     const tool = new HistoryListTool(source, session, workspaces, sessions, caller);
     await expect(tool.resolveExecution({ kind: 'agents', agent_id: 'child' })).rejects.toThrow('agent_id');
-    await run(tool, { kind: 'agents' });
-    expect(source.list).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'agents', agentId: undefined }));
+    const result = await run(tool, { kind: 'agents', session_id: 'old' });
+    expect(source.list).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'old', kind: 'agents', agentId: undefined }));
+    expect(JSON.parse(result.output as string)).toMatchObject({
+      status: 'partial', agents: [{ agent_id: 'branch', kind: 'branch', branch_title: 'Review', sealed: false,
+        status: 'failed', last_turn_reason: 'failed', updated_at: '2026-01-02T00:00:00.000Z' }],
+    });
   });
 
   it('rejects private sessions outside the current scope before directory discovery', async () => {

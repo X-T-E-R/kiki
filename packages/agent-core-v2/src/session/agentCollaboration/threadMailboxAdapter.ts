@@ -1,4 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import { createDecorator } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { randomUUID } from 'node:crypto';
@@ -40,14 +41,17 @@ interface AgentPendingAck {
   readonly requestId: string;
 }
 
-export class AgentCollaborationMessageStoreAdapter implements IAgentCollaborationMessageStore {
+export class AgentCollaborationMessageStoreAdapter extends Disposable implements IAgentCollaborationMessageStore {
   declare readonly _serviceBrand: undefined;
 
   private readonly claimRequestIds = new Map<string, string>();
   private readonly cleanupClaimRequestIds = new Map<string, string>();
   private readonly pendingAcks = new Map<string, AgentPendingAck>();
 
-  constructor(@IThreadMailboxStore private readonly mailbox: IThreadMailboxStore) {}
+  private readonly pendingChanged = this._register(new Emitter<{ sessionId: string; agentId: string }>());
+  readonly onDidChangePending = this.pendingChanged.event;
+
+  constructor(@IThreadMailboxStore private readonly mailbox: IThreadMailboxStore) { super(); }
 
   async accept(input: {
     readonly sessionId: string;
@@ -74,6 +78,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
         content: JSON.stringify(envelope),
         idempotencyKey: input.idempotencyKey,
       });
+      if (!accepted.deduplicated) this.pendingChanged.fire({ sessionId: input.sessionId, agentId: input.targetAgentId });
       return {
         message: toAgentMessage(accepted.message),
         deduplicated: accepted.deduplicated,
@@ -127,6 +132,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
       requestId: pending.requestId,
     });
     if (this.pendingAcks.get(key) === pending) this.pendingAcks.delete(key);
+    if (changed) this.pendingChanged.fire({ sessionId: pending.claim.message.target.workspaceId, agentId: pending.claim.message.target.sessionId });
     return changed;
   }
 
@@ -164,6 +170,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
       });
       if (!changed) continue;
       discarded += 1;
+      this.pendingChanged.fire({ sessionId: target.workspaceId, agentId: target.sessionId });
       await this.mailbox.appendActivity({
         target,
         kind: 'message_undeliverable',

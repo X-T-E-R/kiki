@@ -621,11 +621,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return !this.#promptAttempted && state.sessionRef === undefined;
   }
 
+  async waitForSteerBoundary(turnId: number): Promise<boolean> {
+    const active = this.#active;
+    if (active?.turn.id !== turnId || this.#client.steer === undefined) return false;
+    const boundary = AbortSignal.any([active.turn.signal, AbortSignal.timeout(STEER_TOOL_BOUNDARY_MS)]);
+    return await active.recorder.toolsSettled(boundary) && this.#active === active;
+  }
+
   async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
-    if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
-    const boundary = AbortSignal.any([active.turn.signal, AbortSignal.timeout(STEER_TOOL_BOUNDARY_MS)]);
-    if (!await active.recorder.toolsSettled(boundary) || this.#active !== active) return false;
+    if (active === undefined || this.#client.steer === undefined || !await this.waitForSteerBoundary(active.turn.id)) return false;
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     const discardEcho = active.recorder.expectUserEcho(text);
     let outcome: boolean | 'unknown' = false;

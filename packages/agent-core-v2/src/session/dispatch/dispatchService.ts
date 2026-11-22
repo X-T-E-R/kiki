@@ -583,7 +583,8 @@ export class SessionDispatchService implements ISessionDispatchService {
     const release = reservation ?? (() => {});
     let cleanup = (): void => {};
     try {
-      const requester = delegator?.kind === 'agent' && options.requesterAgentId === undefined
+      const branchMailbox = requestInput.kind === 'mailbox' && meta?.labels?.['branch'] === 'true' && meta.labels['branchInitiator'] === 'agent';
+      const requester = !branchMailbox && delegator?.kind === 'agent' && options.requesterAgentId === undefined
         ? this.requireHandle(delegator.agentId, 'Delegator agent')
         : undefined;
       const controller = requester === undefined ? undefined : new AbortController();
@@ -903,7 +904,7 @@ export class SessionDispatchService implements ISessionDispatchService {
           thinkingEffort: run.child.thinkingEffort,
           thinkingEffortExplicit: childProfile.thinkingEffortExplicit,
           parentSteering: childProfileService.getParentSteering?.(),
-          completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
+          completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage, continued: result.continued })),
         };
         let taskId: string | undefined;
         try {

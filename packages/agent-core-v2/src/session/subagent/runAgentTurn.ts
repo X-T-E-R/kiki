@@ -24,6 +24,7 @@ const SUBAGENT_MAX_TOKENS_ERROR =
   'Subagent turn failed before completing its final summary: reason=max_tokens';
 
 export interface RunAgentTurnOptions {
+  readonly parentReceiptManaged?: boolean;
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
   readonly signal: AbortSignal;
   readonly onReady?: () => void;
@@ -73,7 +74,7 @@ export async function runAgentTurn(
       ? await launchRunPrompt(target, promptInput, options.signal, options.onQueued)
       : request.kind === 'mailbox'
         ? await launchRunPrompt(target, {
-            parentReceiptManaged: true,
+            parentReceiptManaged: options.parentReceiptManaged !== false,
             message: request.message,
             alreadyMaterialized: hasMailboxMessageInContext(target.accessor.get(IAgentContextMemoryService).get(), request.message),
             signal: options.signal,
@@ -146,6 +147,7 @@ async function awaitRun(
     const summary = await distillSummary(
       target,
       controller,
+      turn.id,
       options.summaryPolicy,
       (t) => {
         turnRef = t;
@@ -193,12 +195,13 @@ async function awaitTurn(
 async function distillSummary(
   target: AgentExecutorAgentContext,
   controller: AbortController,
+  turnId: number,
   policy: AgentProfileSummaryPolicy | undefined,
   setTurn: (turn: Turn) => void,
   cancelTurn: (turn: Turn, reason: unknown) => void,
 ): Promise<string> {
   const memory = target.accessor.get(IAgentContextMemoryService);
-  let summary = latestAssistantText(memory.get());
+  let summary = latestAssistantText(memory.get().filter(message => message.source?.turnId === turnId));
   if (policy === undefined) return summary;
   if (isSummaryAdequate(summary, policy)) return summary;
 
@@ -213,7 +216,7 @@ async function distillSummary(
     setTurn(turn);
     const result = await awaitTurn(turn, controller, cancelTurn);
     classifyTurnResult(result);
-    const continued = latestAssistantText(memory.get());
+    const continued = latestAssistantText(memory.get().filter(message => message.source?.turnId === turn.id));
     if (continued.trim().length > 0) summary = continued;
     if (isSummaryAdequate(summary, policy)) break;
   }

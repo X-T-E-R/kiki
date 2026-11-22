@@ -448,6 +448,7 @@ export const transcriptEn = {
   'transcript.branch.folding': 'Folding…',
   'transcript.branch.mergedFrom': 'Merged branch',
   'transcript.branch.openBranch': 'Open branch',
+  'transcript.branch.promote': 'Open as thread',
   'transcript.branch.sealed': 'Merged',
   'transcript.branch.seamHeader': 'Branch of {parent}',
   'transcript.branch.seed.compact': 'Compact',

@@ -91,6 +91,9 @@ export interface HistoryDirectoryAgent {
   readonly branchTitle?: string;
   readonly branchSeed?: 'fresh' | 'compact' | 'verbatim';
   readonly sealed?: boolean;
+  readonly status?: 'running' | 'idle' | 'merged' | 'completed' | 'failed' | 'interrupted';
+  readonly lastTurnReason?: 'completed' | 'failed' | 'cancelled' | 'blocked';
+  readonly updatedAt?: string;
   readonly parentAgentId?: string;
   readonly firstTime?: string;
   readonly lastTime?: string;
@@ -367,6 +370,9 @@ export class HistoryListTool implements IHistoryListTool {
               branch_title: agent.branchTitle,
               branch_seed: agent.branchSeed,
               sealed: agent.sealed,
+              status: agent.status,
+              last_turn_reason: agent.lastTurnReason,
+              updated_at: agent.updatedAt,
               parent_agent_id: agent.parentAgentId,
               first_time: agent.firstTime,
               last_time: agent.lastTime,

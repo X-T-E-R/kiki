@@ -336,6 +336,12 @@ export class AgentExecutionService implements IAgentExecutionService {
       this.session === undefined && (this.profile.data().executorId ?? 'native') !== 'native';
   }
 
+  waitForSteerBoundary(turnId: number): Promise<boolean> {
+    const status = this.status();
+    if (status.state !== 'running' || status.turnId !== turnId) return Promise.resolve(false);
+    return this.session?.waitForSteerBoundary?.(turnId) ?? Promise.resolve(true);
+  }
+
   steer(
     message: ContextMessage,
     trailingMessages?: readonly ContextMessage[],

@@ -2,7 +2,7 @@ import { Service } from '#/_base/di/service';
 import { ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
-import { AUTONOMOUS_RECEIPT_POLICY_LABEL, observeAutonomousReceipts, type ReceiptDelivery } from './autonomousReceipt';
+import { AUTONOMOUS_RECEIPT_POLICY_LABEL, hasReceiptWork, isBranchReceiptOwner, observeAutonomousReceipts, type ReceiptDelivery, type ReceiptObserver } from './autonomousReceipt';
 import { readPendingAutonomousReceipts } from './autonomousReceiptRecovery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -82,7 +82,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
   private readonly onDidStopAgentTaskEmitter = this._register(
     new Emitter<AgentTaskStopHookContext>(),
   );
-  private readonly receiptObservers = this._register(new DisposableMap<string>());
+  private readonly receiptObservers = this._register(new DisposableMap<string, ReceiptObserver>());
+  private readonly parentIds = new Map<string, string>();
   private readonly pendingReceipts = new Set<ReceiptDelivery & {
     readonly child: IAgentScopeHandle;
     readonly parentId?: string;
@@ -125,6 +126,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     }));
     this._register(agentLifecycle.onDidCreate((handle) => {
       if (handle.id !== MAIN_AGENT_ID) {
+        const parentId = handle.accessor.get(IAgentScopeContext).parentAgentId;
+        if (parentId !== undefined) this.parentIds.set(handle.id, parentId);
         for (const prior of this.pendingReceipts) {
           if (prior.child.id === handle.id && prior.child !== handle) this.pendingReceipts.delete(prior);
         }
@@ -132,18 +135,21 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
           const receipt = {
             ...delivery,
             child: handle,
-            parentId: handle.accessor.get(IAgentScopeContext).parentAgentId,
+            parentId,
           };
           this.pendingReceipts.add(receipt);
+          this.recheckAncestors(handle.id);
           this.publishPendingReceipts();
           void receipt.settled.then(() => {
             this.pendingReceipts.delete(receipt);
+            this.recheckAncestors(handle.id);
             if (!this.stopped) this.publishPendingReceipts();
             if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
           }, (error: unknown) => {
             if (!this.stopped) this.log.error('autonomous subagent receipt delivery stopped before completion', { agentId: handle.id, error });
           });
-        }, receipts.signal));
+        }, () => this.hasDescendantReceiptWork(handle.id), () => this.recheckAncestors(handle.id), receipts.signal));
+        this.recheckAncestors(handle.id);
       }
       if (!this.pendingReleases.has(handle.id)) this.scheduleRelease(handle.id, false);
     }));
@@ -158,6 +164,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
       this._register(agentLifecycle.onDidDispose((agentId) => {
         void this.receiptObservers.deleteAndDispose(agentId);
         this.cancelRelease(agentId);
+        this.recheckAncestors(agentId);
+        this.parentIds.delete(agentId);
       }));
     }
     this._register(
@@ -212,6 +220,25 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     start();
   }
 
+  private recheckAncestors(agentId: string): void {
+    if (this.stopped) return;
+    for (let parent = this.parentIds.get(agentId); parent !== undefined; parent = this.parentIds.get(parent)) {
+      this.receiptObservers.get(parent)?.recheck();
+    }
+  }
+
+  private hasDescendantReceiptWork(agentId: string): boolean {
+    for (const [childId, directParent] of this.parentIds) {
+      let parent: string | undefined = directParent;
+      while (parent !== undefined && parent !== agentId) parent = this.parentIds.get(parent);
+      if (parent === undefined) continue;
+      const handle = this.agentLifecycle.get(childId);
+      if (handle !== undefined && (hasReceiptWork(handle) ||
+        Object.keys(handle.accessor.get(IAgentStateService).get(autonomousReceiptsKey).pending).length > 0)) return true;
+    }
+    return false;
+  }
+
   private publishPendingReceipts(): void {
     this.states.set(pendingSubagentReceiptsKey, this.pendingReceipts.size + Number(this.discoveringReceipts));
   }
@@ -221,7 +248,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     const candidates = Object.entries(meta.agents ?? {}).filter(([agentId, agent]) =>
       agentId !== MAIN_AGENT_ID &&
       agent.parentAgentId !== null &&
-      agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] !== 'local' &&
+      (agent.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] !== 'local' || isBranchReceiptOwner(agent)) &&
       this.agentLifecycle.get(agentId) === undefined,
     );
     if (candidates.length === 0) return true;
@@ -320,11 +347,12 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         });
         opts.signal.throwIfAborted();
       }
+      const branchMailbox = request.kind === 'mailbox' && isBranchReceiptOwner(this.metadata.snapshot().agents?.[agentId]);
       const run = await handle.accessor
         .get(IAgentExecutionService)
         .run(request, {
-          parentReceiptManaged: true,
-          summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
+          parentReceiptManaged: !branchMailbox,
+          summaryPolicy: branchMailbox ? undefined : opts.summaryPolicy ?? this.summaryPolicyFor(handle),
           signal: opts.signal,
           onReady: opts.onReady,
           onQueued: opts.onQueued,
@@ -414,7 +442,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     if (this.stopped || !this.flags.enabled(SUBAGENT_RELEASE_IDLE_FLAG)) return;
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) return;
-    if (this.retained.has(handle) || [...this.pendingReceipts].some((receipt) => receipt.child === handle) || !isReleasable(handle)) {
+    if (this.retained.has(handle) || Object.keys(handle.accessor.get(IAgentStateService).get(autonomousReceiptsKey).pending).length > 0 ||
+      [...this.pendingReceipts].some((receipt) => receipt.child === handle) || !isReleasable(handle)) {
       this.scheduleRelease(agentId, false);
       return;
     }

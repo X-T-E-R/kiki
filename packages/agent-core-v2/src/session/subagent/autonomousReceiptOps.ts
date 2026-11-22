@@ -5,11 +5,13 @@ import { ContextAppendLoopEvent, ContextAppendMessage } from '#/agent/contextMem
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded, TurnPrompt } from '#/agent/loop/turnOps';
 import { defineState } from '#/state/state';
+import { BranchTurnMerged } from '#/features/btw/branchOps';
 
-const receiptSchema = z.object({ turnId: z.number(), startedAt: z.number(), endedAt: z.number(), summary: z.string() });
+const receiptSchema = z.object({ turnId: z.number(), startedAt: z.number(), endedAt: z.number(), summary: z.string(), outcome: z.enum(['failed', 'cancelled']).optional(), error: z.string().optional(), userPrompt: z.literal(true).optional() });
 const stateSchema = z.object({
-  active: z.object({ turnId: z.number(), startedAt: z.number(), summary: z.string() }).optional(),
+  active: z.object({ turnId: z.number(), startedAt: z.number(), summary: z.string(), userPrompt: z.literal(true).optional() }).optional(),
   pending: z.record(z.string(), receiptSchema),
+  mergedThrough: z.number().optional(),
 });
 export type AutonomousReceipt = z.infer<typeof receiptSchema>;
 
@@ -24,10 +26,10 @@ export interface AutonomousReceiptDelivered extends z.infer<typeof deliveredSche
 export const autonomousReceiptsKey = defineState('subagent.autonomousReceipts', (): z.infer<typeof stateSchema> => ({ pending: {} }))
   .replayable({ schema: stateSchema })
   .on(TurnPrompt, (state, event) => {
-    state.active = event.parentReceiptManaged !== false || event.turnId === undefined ? undefined : { turnId: event.turnId, startedAt: event.time, summary: '' };
+    state.active = event.parentReceiptManaged !== false || event.turnId === undefined ? undefined : { turnId: event.turnId, startedAt: event.time, summary: '', userPrompt: event.origin.kind === 'user' ? true : undefined };
   })
   .on(TurnStarted, (state, event) => {
-    state.active = event.parentReceiptManaged === true ? undefined : { turnId: event.turnId, startedAt: event.time, summary: '' };
+    state.active = event.parentReceiptManaged === true ? undefined : { turnId: event.turnId, startedAt: event.time, summary: '', userPrompt: event.origin.kind === 'user' ? true : undefined };
   })
   .on(ContextAppendLoopEvent, (state, { event }) => {
     if (state.active === undefined || Number(event.type === 'tool.result' ? undefined : event.turnId) !== state.active.turnId) return;
@@ -41,7 +43,12 @@ export const autonomousReceiptsKey = defineState('subagent.autonomousReceipts', 
   .on(TurnEnded, (state, event) => {
     const active = state.active;
     if (active?.turnId !== event.turnId) return;
-    if (event.reason === 'completed' && active.summary.trim() !== '') state.pending[String(event.turnId)] = { ...active, endedAt: event.time };
+    if (event.reason !== 'blocked') state.pending[String(event.turnId)] = {
+      ...active, endedAt: event.time,
+      outcome: event.reason === 'completed' ? undefined : event.reason,
+      error: event.error?.message,
+    };
     state.active = undefined;
   })
+  .on(BranchTurnMerged, (state, event) => { state.mergedThrough = Math.max(state.mergedThrough ?? -1, event.turnId); })
   .on(AutonomousReceiptDelivered, (state, event) => { delete state.pending[String(event.turnId)]; });

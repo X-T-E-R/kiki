@@ -910,6 +910,11 @@ export interface SessionStateSnapshot {
       readonly allowKikiSubagents?: boolean;
       readonly status?: 'cancelled' | 'completed' | 'failed';
       readonly completedAt?: number;
+      readonly branchTurn?: {
+        readonly startedAt: number;
+        readonly endedAt: number;
+        readonly outcome: 'cancelled' | 'completed' | 'failed';
+      };
       readonly resultSummary?: string;
       readonly error?: string;
       readonly taskId?: string;
@@ -9379,6 +9384,7 @@ export interface AgentStateSnapshot {
   // replayable · durable — folds: TaskStarted, TaskTerminated
   'task': /* TaskModelState — packages/agent-core-v2/src/agent/task/taskOps.ts */ Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
+    readonly continued?: boolean;
     readonly sourceRef?: /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
       readonly messageId: string;
       readonly refId: string;
@@ -9517,6 +9523,7 @@ export interface AgentStateSnapshot {
   'task.deliveredNotificationKeys': Set<string>;
   'task.ghosts': Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
+    readonly continued?: boolean;
     readonly sourceRef?: /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
       readonly messageId: string;
       readonly refId: string;
@@ -9838,19 +9845,24 @@ export interface AgentStateSnapshot {
     readonly response?: unknown;
   }>;
   // src/session/subagent/autonomousReceiptOps.ts
-  // replayable · durable — folds: TurnPrompt, TurnStarted, ContextAppendLoopEvent, ContextAppendMessage, TurnEnded, AutonomousReceiptDelivered
+  // replayable · durable — folds: TurnPrompt, TurnStarted, ContextAppendLoopEvent, ContextAppendMessage, TurnEnded, BranchTurnMerged, AutonomousReceiptDelivered
   'subagent.autonomousReceipts': {
     pending: Record<string, {
       turnId: number;
       startedAt: number;
       endedAt: number;
       summary: string;
+      outcome?: 'cancelled' | 'failed';
+      error?: string;
+      userPrompt?: true;
     }>;
     active?: {
       turnId: number;
       startedAt: number;
       summary: string;
+      userPrompt?: true;
     };
+    mergedThrough?: number;
   };
   // src/session/todo/continuityState.ts
   // replayable · durable — folds: TurnPrompt, TurnSteer, ContextAppendLoopEvent, ContextAppendMessage, ToolsUpdateStore

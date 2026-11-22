@@ -1178,6 +1178,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       throw createMaxStepsExceededError(maxSteps);
     }
     const batch = runtime.queue.takeNextBatch()!;
+    const phase = runtime.completedPhase;
+    runtime.completedPhase = undefined;
+    const parentId = this.scope.parentAgentId;
+    const continuedParentPhase = phase !== undefined && [batch.driver, ...batch.merged].some(request => {
+      const origin = request.turnSeed?.origin;
+      return request.kind === 'steer' && origin?.kind === 'agent_message' && origin.senderAgentId === parentId;
+    }) ? phase : undefined;
     if (runtime.job !== undefined) runtime.job.steerController = new AbortController();
     const mutableStep = runtime.job?.steps.get(batch.driver.id);
     if (mutableStep !== undefined) {
@@ -1202,6 +1209,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       batch,
       mutableStep,
       allowsSilentPostDelivery,
+      continuedParentPhase,
       signal: mutableStep?.controller === undefined
         ? runtime.turnSignal
         : AbortSignal.any([runtime.turnSignal, mutableStep.controller.signal]),
@@ -1227,7 +1235,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         details: { finishReason: 'filtered' },
       });
     }
-    if (!result.hookStopTurn) return undefined;
+    if (!result.hookStopTurn) {
+      if (runtime.job?.seed.parentReceiptManaged === true && result.phaseSummary !== undefined && runtime.queue.pendingKinds().every(kind => kind === 'steer')) {
+        runtime.completedPhase = { stepId: current.uuid, summary: result.phaseSummary };
+      }
+      return undefined;
+    }
     return { type: 'completed', steps: runtime.steps, truncated: result.stopReason === 'truncated' };
   }
 
@@ -1482,7 +1495,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       await this.pauseAtBoundary(continuationBudget);
     }
     await timeRestorePhase(this.log, { agentId: this.scope.agentId, turnId, step: currentStep, firstStepOfTurn },
-      'turn_context_ready', () => this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity }));
+      'turn_context_ready', () => this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity,
+        continuedParentPhase: continuationBudget.current?.continuedParentPhase }));
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
     let stepEndAppended = false;
     try {
@@ -1739,7 +1753,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         this.enqueue(new ThinkingOnlyContinuationStepRequest());
       }
       await this.runBoundaryRequests(turnId, signal);
-      return { stopReason: finishReason, hookStopTurn };
+      const phaseSummary = finishReason === 'completed' && response.message.toolCalls.length === 0 && response.message.partial !== true
+        ? response.message.content.flatMap(part => part.type === 'text' ? [part.text] : []).join('') : '';
+      return { stopReason: finishReason, hookStopTurn, phaseSummary: phaseSummary.trim() ? phaseSummary : undefined };
     } catch (error) {
       if (!stepEndAppended && !this.parkedForExit) {
         this.appendStepEnd({
@@ -2660,6 +2676,7 @@ interface LoopRuntime {
   thinkingOnlySnapshotActive: boolean;
   requestFailure?: { readonly error: unknown };
   lastStopReason: FinishReason | undefined;
+  completedPhase?: BeforeStepContext['continuedParentPhase'];
   current: StepRuntime | undefined;
 }
 
@@ -2670,6 +2687,7 @@ interface StepRuntime {
   readonly batch: StepRequestBatch;
   readonly mutableStep: MutableStep | undefined;
   readonly allowsSilentPostDelivery: boolean;
+  readonly continuedParentPhase?: BeforeStepContext['continuedParentPhase'];
   readonly signal: AbortSignal;
 }
 
@@ -2709,6 +2727,7 @@ function interruptReasonFor(
 type StepExecutionResult = {
   readonly stopReason: FinishReason;
   readonly hookStopTurn: boolean;
+  readonly phaseSummary?: string;
 };
 
 type LoopErrorDisposition =

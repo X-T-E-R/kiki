@@ -30,6 +30,7 @@ export interface AgentMeta {
   readonly allowKikiSubagents?: boolean;
   readonly status?: 'completed' | 'failed' | 'cancelled';
   readonly completedAt?: number;
+  readonly branchTurn?: { readonly startedAt: number; readonly endedAt: number; readonly outcome: 'completed' | 'failed' | 'cancelled' };
   readonly resultSummary?: string;
   readonly error?: string;
   readonly taskId?: string;

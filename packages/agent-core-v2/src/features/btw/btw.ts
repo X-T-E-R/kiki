@@ -1,4 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { Event } from '#/_base/event';
 
 import type { SessionSeedCarry, SessionSeedMode } from './seedBuilder';
 
@@ -99,6 +100,10 @@ export interface ISessionBranchService {
   isBranch(agentId: string): boolean;
   isToolsLocked(agentId: string): boolean;
   isSealed(agentId: string): boolean;
+  /** True while a fold of this branch is admitted but has not yet recorded its merge watermark. */
+  isFolding(agentId: string): boolean;
+  /** Fires with the branch id after an in-flight fold settles, successfully or not. */
+  readonly onDidSettleFold: Event<string>;
 }
 
 export const ISessionBranchService: ServiceIdentifier<ISessionBranchService> =
