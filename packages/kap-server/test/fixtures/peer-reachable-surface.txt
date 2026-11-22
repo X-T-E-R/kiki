@@ -132,6 +132,8 @@ REST persona: GET /personas/{personaId}
 REST personaAvatar: GET /personas/{personaId}/avatar
 REST personaHome: POST /personas/{personaId}/home
 REST personaState: PATCH /personas/{personaId}/state
+REST personaPut: PUT /personas/{personaId}
+REST personaArchive: POST /personas/{personaId}:archive
 REST bots: GET /bots
 REST botHome: POST /bots/{botId}/home
 REST rooms: GET /rooms
