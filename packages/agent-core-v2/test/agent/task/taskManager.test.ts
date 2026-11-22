@@ -1340,4 +1340,52 @@ describe('AgentTaskService', () => {
     expect(info).toMatchObject({ kind: 'process', status: 'completed', exitCode: 0 });
     expect(await manager.readOutput(taskId)).toContain('bg-ok');
   }, 15_000);
+
+  it('does not detach a foreground task once stop has begun cleanup', async () => {
+    const { manager } = createAgentTaskService();
+    let resolveExit!: (code: number) => void;
+    let resolveFirstKill!: () => void;
+    const firstKillGate = new Promise<void>((resolve) => { resolveFirstKill = resolve; });
+    let firstKill = true;
+    let exited = false;
+    const proc: IHostProcess = {
+      _serviceBrand: undefined,
+      stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 4242,
+      get exitCode(): number | null {
+        return exited ? 143 : null;
+      },
+      wait: () => new Promise<number>((resolve) => { resolveExit = resolve; }),
+      kill: vi.fn(async () => {
+        if (firstKill) {
+          firstKill = false;
+          await firstKillGate;
+        }
+      }) as unknown as IHostProcess['kill'],
+      dispose: vi.fn(async () => {}) as unknown as IHostProcess['dispose'],
+    };
+
+    const taskId = manager.registerTask(new ProcessTask(proc, 'sleep 60', 'stopping task'), {
+      detached: false,
+      timeoutMs: 60_000,
+    });
+    const waitRelease = manager.waitForForegroundRelease(taskId);
+
+    const stopPromise = manager.stop(taskId, 'Stopped by operator');
+    await vi.waitFor(() => {
+      expect(proc.kill).toHaveBeenCalledTimes(1);
+    });
+
+    const detachResult = manager.detach(taskId);
+    expect(detachResult).toMatchObject({ detached: false, status: 'running' });
+
+    resolveFirstKill();
+    exited = true;
+    resolveExit(143);
+
+    expect(await waitRelease).toBe('terminal');
+    expect(await stopPromise).toMatchObject({ status: 'killed', stopReason: 'Stopped by operator' });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

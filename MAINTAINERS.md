@@ -50,7 +50,7 @@ When you add or remove a workspace package, update all three, then run
 ## Governance checks
 
 `pnpm run check:meta` runs `node scripts/check-repo-meta.mjs` (workspace parity,
-package dependency boundaries, meta-doc links, retired scopes, word budgets, and
+package dependency boundaries, meta-doc links, retired scopes, and
 scratch hygiene) and `node scripts/check-docs-governance.mjs` (`docs/en/` and
 `docs/zh/` structural parity and link resolution). Neither check assesses prose
 accuracy — verify behavior from source and tests.

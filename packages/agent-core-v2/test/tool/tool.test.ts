@@ -1532,6 +1532,82 @@ describe('AgentRun tool execution contract', () => {
     expect((await pending).output).toContain('[summary]\ninline result');
   });
 
+  it('defaults in-session branch AgentRun omission to background and auto-detaches explicit foreground waits after 15s', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const bgCompletion = deferred<{ readonly summary: string }>();
+      const bgLifecycle = createAgentLifecycleStub({ createAgentIds: ['branch-child-bg'], runCompletion: () => bgCompletion.promise });
+      bgLifecycle.addHandle('branch-1', 'agent');
+      const bgContext = createAgentToolContext(bgLifecycle, agentService(IAgentScopeContext, makeAgentScopeContext({
+        agentId: 'branch-1', parentAgentId: 'main', agentScope: 'agents/branch-1', isBranch: true,
+      })));
+      const bgResult = await executeAgentToolRaw(bgContext, {
+        prompt: 'Inspect', description: 'Branch background default', model_alias: 'mock-model',
+      });
+      expect(bgResult.output).toContain('automatic_notification: true');
+      const bgTasks = bgContext.get(IAgentTaskService);
+      expect(bgTasks.list(false)[0]).toMatchObject({ detached: true, status: 'running' });
+      bgCompletion.resolve({ summary: 'branch bg done' });
+      await bgTasks.wait(bgTasks.list(false)[0]!.taskId);
+
+      const fgCompletion = deferred<{ readonly summary: string }>();
+      const fgLifecycle = createAgentLifecycleStub({ createAgentIds: ['branch-child-fg'], runCompletion: () => fgCompletion.promise });
+      fgLifecycle.addHandle('branch-2', 'agent');
+      const fgContext = createAgentToolContext(fgLifecycle, agentService(IAgentScopeContext, makeAgentScopeContext({
+        agentId: 'branch-2', parentAgentId: 'main', agentScope: 'agents/branch-2', isBranch: true,
+      })));
+      const fgPending = executeTool(agentTool(fgContext), {
+        turnId: 0, toolCallId: 'branch-fg-auto-detach',
+        args: { prompt: 'Long work', description: 'Branch foreground auto-detach', model_alias: 'mock-model', background: false },
+        signal,
+      });
+      const fgTasks = fgContext.get(IAgentTaskService);
+      await vi.waitFor(() => expect(fgTasks.list(false)).toHaveLength(1));
+      expect(fgTasks.list(false)[0]).toMatchObject({ detached: false, status: 'running', timeoutMs: MAIN_FOREGROUND_AUTO_DETACH_MS });
+      await vi.advanceTimersByTimeAsync(MAIN_FOREGROUND_AUTO_DETACH_MS);
+      const fgResult = await fgPending;
+      expect(fgResult.output).toContain('Foreground wait moved to background');
+      expect(fgTasks.list(false)[0]).toMatchObject({ detached: true, status: 'running' });
+      expect(fgLifecycle.run.mock.calls[0]![2].signal.aborted).toBe(false);
+      fgCompletion.resolve({ summary: 'branch fg done' });
+      expect(await fgTasks.wait(fgTasks.list(false)[0]!.taskId)).toMatchObject({ detached: true, status: 'completed' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { label: 'branch', agentId: 'branch-steer', isBranch: true, background: false },
+    { label: 'subagent', agentId: 'agent-parent-steer', isBranch: false, background: undefined },
+  ] as const)('detaches a $label foreground wait immediately on steer without stopping the child when background tools are enabled', async ({ agentId, isBranch, background }) => {
+    const completion = deferred<{ readonly summary: string }>();
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'], runCompletion: () => completion.promise });
+    lifecycle.addHandle(agentId, 'agent');
+    const context = createAgentToolContext(lifecycle, agentService(IAgentScopeContext, makeAgentScopeContext({
+      agentId, parentAgentId: 'main', agentScope: `agents/${agentId}`, isBranch,
+    })));
+    context.get(IAgentProfileService).update({ activeToolNames: ['AgentRun', 'TaskList', 'TaskOutput', 'TaskStop'] });
+    const steer = new AbortController();
+    const parent = new AbortController();
+    const pending = executeTool(agentTool(context), {
+      turnId: 0, toolCallId: `steer-${agentId}`,
+      args: { prompt: 'Inspect', description: 'Steered foreground child', model_alias: 'mock-model', background },
+      signal: parent.signal, steerSignal: steer.signal,
+    });
+    const tasks = context.get(IAgentTaskService);
+    await vi.waitFor(() => expect(tasks.list(false)).toHaveLength(1));
+    expect(tasks.list(false)[0]).toMatchObject({ detached: false, status: 'running' });
+    steer.abort(new Error('new input'));
+    const result = await pending;
+    const task = tasks.list(false)[0]!;
+    expect(result.output).toContain('New input ended this foreground wait');
+    expect(task).toMatchObject({ detached: true, status: 'running' });
+    parent.abort(userCancellationReason());
+    expect(lifecycle.run.mock.calls[0]![2].signal.aborted).toBe(false);
+    completion.resolve({ summary: 'continued after steer' });
+    expect(await tasks.wait(task.taskId)).toMatchObject({ detached: true, status: 'completed' });
+  });
+
   it('removes the steer listener after foreground completion without detaching or duplicating delivery', async () => {
     const lifecycle = createAgentLifecycleStub();
     const context = createAgentToolContext(lifecycle);

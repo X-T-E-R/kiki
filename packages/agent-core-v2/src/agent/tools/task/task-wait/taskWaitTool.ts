@@ -161,9 +161,9 @@ export class TaskWaitTool implements ITaskWaitTool {
     const saved = ctx.executionWait?.kind === 'task' ? ctx.executionWait : undefined;
     const startedAt = saved?.startedAt ?? Date.now();
     const timeoutMs = saved?.timeoutMs ?? args.timeout * 1000;
-    const mainOutsideGoal = this.scope.agentId === MAIN_AGENT_ID &&
-      this.scope.parentAgentId === undefined &&
-      this.goals.getGoal().goal?.status !== 'active';
+    const isRootMain = this.scope.agentId === MAIN_AGENT_ID && this.scope.parentAgentId === undefined;
+    const hasActiveGoal = isRootMain && this.goals.getGoal().goal?.status === 'active';
+    const mainOutsideGoal = (isRootMain || this.scope.isBranch === true) && !hasActiveGoal;
     const running = saved === undefined ? this.tasks.list(true)
       : saved.taskIds.flatMap(id => { const task = this.tasks.getTask(id); return task === undefined ? [] : [task]; });
     const skippedSubagents = args.task_id === undefined && mainOutsideGoal

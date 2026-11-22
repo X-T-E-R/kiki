@@ -54,7 +54,7 @@ Kiki maintains **two UI codebases** across all client surfaces:
 ## Environment & Workspace Sync
 
 - **Toolchain**: Node `>=24.22.1 <25 || >=26.12.1` (`.nvmrc` = `24.22.1`), `pnpm@10.33.0` (`engine-strict=true` in `.npmrc`).
-- **Workspace parity**: Whenever adding or removing a workspace package, update `pnpm-workspace.yaml`, `flake.nix` (`workspacePaths` and `workspaceNames`), and `## Workspace Map` above in the same change, then run `pnpm run check:meta` (`scripts/check-repo-meta.mjs` enforces workspace parity, `scripts/check-nix-workspace.mjs`, dependency boundaries, links, and doc budgets).
+- **Workspace parity**: Whenever adding or removing a workspace package, update `pnpm-workspace.yaml`, `flake.nix` (`workspacePaths` and `workspaceNames`), and `## Workspace Map` above in the same change, then run `pnpm run check:meta` (`scripts/check-repo-meta.mjs` enforces workspace parity, `scripts/check-nix-workspace.mjs`, dependency boundaries, and links).
 
 ## Coding, Testing & Flags
 

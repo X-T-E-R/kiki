@@ -139,22 +139,6 @@ function createCleanFixture() {
   write(root, 'packages/transcript/AGENTS.md', '# Transcript\n\nPure TypeScript.\n');
   write(root, 'packages/transcript/src/index.ts', 'export const store = 1;\n');
 
-  write(
-    root,
-    'config/doc-budgets.json',
-    JSON.stringify(
-      {
-        defaults: { subtreeAgentsMaxWords: 200 },
-        files: {
-          'AGENTS.md': { maxWords: 120, maxLines: 40 },
-          'MAINTAINERS.md': { maxWords: 120 },
-        },
-      },
-      null,
-      2,
-    ),
-  );
-
   const boundaries = {
     NON_NPM_SURFACES: ['apps/native-shell'],
     IGNORED_NON_WORKSPACE_DIRS: new Set(),
@@ -362,18 +346,6 @@ void test('rule 5 [maintainers-router-parity] catches unlinked subtree AGENTS.md
   assert.ok(hits.some((e) => e.message.includes('packages/transcript/missing.d.ts')));
   assert.ok(hits.some((e) => e.message.includes('scripts/missing-gen.mjs')));
   for (const hit of hits) assertFormattedWithFix(hit, 'maintainers-router-parity');
-});
-
-void test('rule 6 [doc-word-budgets] catches documents exceeding word or line ceilings', async () => {
-  const { root, boundaries } = createCleanFixture();
-  const bloated = ['# Transcript', '', ...Array.from({ length: 220 }, (_, i) => `word${i}`)].join(' ');
-  write(root, 'packages/transcript/AGENTS.md', bloated);
-
-  const errors = await checkRepoMeta(root, { boundaries, trackedFiles: null });
-  const hits = errors.filter((e) => e.rule === 'doc-word-budgets');
-  assert.equal(hits.length, 1);
-  assert.equal(hits[0].file, 'packages/transcript/AGENTS.md');
-  assertFormattedWithFix(hits[0], 'doc-word-budgets');
 });
 
 void test('rule 7 [pkg-boundary-graph] catches forbidden deps, imports, escapes, undeclared @kiki imports, DOM globals, and platform flags', async () => {

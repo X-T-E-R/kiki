@@ -4,11 +4,19 @@ import { splitConfigCredentials } from '#/app/config/credentials';
 import {
   permissionFromToml,
   PermissionConfigSchema,
+  PermissionReviewerConfigSchema,
   permissionToToml,
 } from '#/agent/permissionRules/configSection';
 import { InteractionConfigSchema } from '#/agent/tools/ask-user-question/configSection';
 
 describe('reviewer configuration', () => {
+  it('defaults allowThreshold and denyThreshold to the natural 0.5 binary boundary', () => {
+    expect(PermissionReviewerConfigSchema.parse({})).toMatchObject({
+      allowThreshold: 0.5,
+      denyThreshold: 0.5,
+    });
+  });
+
   it('round-trips nested snake_case settings and separates the Jev key', () => {
     const parsed = PermissionConfigSchema.parse(permissionFromToml({
       reviewer: {

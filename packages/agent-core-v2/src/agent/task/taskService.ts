@@ -1378,7 +1378,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private detachEntry(entry: ManagedTask, viaTimeout: boolean): AgentTaskInfo | undefined {
-    if (TERMINAL_STATUSES.has(entry.status)) return this.toInfo(entry);
+    if (
+      TERMINAL_STATUSES.has(entry.status) ||
+      entry.stopping !== undefined ||
+      entry.cleanupFailure !== undefined
+    ) {
+      return this.toInfo(entry);
+    }
 
     const foregroundRelease = entry.foregroundRelease;
     if (foregroundRelease === undefined) return this.toInfo(entry);

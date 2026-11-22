@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { PassThrough, Readable, type Writable } from 'node:stream';
@@ -719,8 +719,9 @@ function context(
   args: BashInput,
   signal = new AbortController().signal,
   onForegroundTaskStart?: (taskId: string) => void,
+  steerSignal?: AbortSignal,
 ) {
-  return { turnId: 0, toolCallId: 'call_bash', args, signal, onForegroundTaskStart };
+  return { turnId: 0, toolCallId: 'call_bash', args, signal, onForegroundTaskStart, steerSignal };
 }
 
 function isPromiseLike(value: ToolExecution | Promise<ToolExecution>): value is Promise<ToolExecution> {
@@ -1734,6 +1735,167 @@ describe('BashTool background mode', () => {
     await expect(service.wait(task.taskId)).resolves.toMatchObject({
       status: 'completed',
     });
+  });
+
+  it('detaches a running foreground command to background on steer without killing it', async () => {
+    const { proc, finish } = pendingProcess();
+    const { runner } = createTestRunner(proc);
+    const { service } = createFakeTaskService();
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+    const steer = new AbortController();
+    const cancel = new AbortController();
+
+    const running = executeTool(tool, context({ command: 'sleep 30', timeout: 60 }, cancel.signal, undefined, steer.signal));
+    await vi.waitFor(() => {
+      expect(service.list(false)).toHaveLength(1);
+    });
+    const task = service.list(false)[0]!;
+    await vi.waitFor(() => {
+      expect((proc.stdout as PassThrough).listenerCount('data')).toBeGreaterThanOrEqual(1);
+    });
+    (proc.stdout as PassThrough).write('partial output\n');
+    steer.abort(new Error('new input'));
+
+    const result = await running;
+    expect(result).toMatchObject({ isError: false, brief: `Backgrounded ${task.taskId} on new input` });
+    expect(result.output).toContain(`task_id: ${task.taskId}`);
+    expect(result.output).toContain('New input ended this foreground wait');
+    expect(result.output).toContain('partial output\n');
+    expect(proc.kill).not.toHaveBeenCalled();
+    expect(service.getTask(task.taskId)).toMatchObject({ detached: true, status: 'running' });
+
+    cancel.abort(userCancellationReason());
+    expect(proc.kill).not.toHaveBeenCalled();
+
+    finish();
+    await expect(service.wait(task.taskId)).resolves.toMatchObject({
+      detached: true,
+      status: 'completed',
+    });
+  });
+
+  it('releases a foreground command queued for a saturated local slot on steer without spawning it', async () => {
+    const maxSlots = Math.max(4, Math.min(6, Math.floor(availableParallelism() / 3)));
+    const holders = Array.from({ length: maxSlots }, () => pendingProcess());
+    let spawnCount = 0;
+    const runner: IHostProcessService = {
+      _serviceBrand: undefined,
+      spawn: vi.fn(async () => {
+        const next = holders[spawnCount];
+        spawnCount += 1;
+        return next?.proc ?? pendingProcess().proc;
+      }),
+    };
+    const { service } = createFakeTaskService();
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+
+    const activeRuns = holders.map((_, index) =>
+      executeTool(tool, context({ command: `sleep 3${String(index)}`, timeout: 60 })),
+    );
+    await vi.waitFor(() => {
+      expect(spawnCount).toBe(maxSlots);
+      expect(service.list(false)).toHaveLength(maxSlots);
+    });
+
+    const steer = new AbortController();
+    const queuedRun = executeTool(tool, context({ command: 'echo queued', timeout: 60 }, undefined, undefined, steer.signal));
+    await Promise.resolve();
+    expect(spawnCount).toBe(maxSlots);
+
+    steer.abort(new Error('new input'));
+    const queuedResult = await queuedRun;
+    expect(queuedResult.isError).toBe(false);
+    expect(queuedResult.output).toContain('New input arrived before this command started');
+    expect(spawnCount).toBe(maxSlots);
+
+    for (const holder of holders) holder.finish(0);
+    await Promise.all(activeRuns);
+  });
+
+  it('skips spawning and releases the slot when steer arrives during local slot handoff', async () => {
+    const maxSlots = Math.max(4, Math.min(6, Math.floor(availableParallelism() / 3)));
+    const holders = Array.from({ length: maxSlots }, () => pendingProcess());
+    let spawnCount = 0;
+    const runner: IHostProcessService = {
+      _serviceBrand: undefined,
+      spawn: vi.fn(async () => {
+        const next = holders[spawnCount];
+        spawnCount += 1;
+        return next?.proc ?? processWithOutput({ stdout: 'ok\n', exitCode: 0 });
+      }),
+    };
+    const { service } = createFakeTaskService();
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+
+    const activeRuns = holders.map((_, index) =>
+      executeTool(tool, context({ command: `sleep 4${String(index)}`, timeout: 60 })),
+    );
+    await vi.waitFor(() => {
+      expect(spawnCount).toBe(maxSlots);
+      expect(service.list(false)).toHaveLength(maxSlots);
+    });
+
+    const steer = new AbortController();
+    const queuedRun = executeTool(tool, context({ command: 'echo handoff', timeout: 60 }, undefined, undefined, steer.signal));
+    await Promise.resolve();
+    expect(spawnCount).toBe(maxSlots);
+
+    const firstTaskId = service.list(false)[0]!.taskId;
+    service.detach(firstTaskId);
+    queueMicrotask(() => steer.abort(new Error('new input')));
+
+    const queuedResult = await queuedRun;
+    expect(queuedResult.isError).toBe(false);
+    expect(queuedResult.output).toContain('New input arrived before this command started');
+    expect(spawnCount).toBe(maxSlots);
+
+    const followUp = await executeTool(tool, context({ command: 'echo after-handoff', timeout: 60 }));
+    expect(followUp.isError).toBe(false);
+    expect(spawnCount).toBe(maxSlots + 1);
+
+    for (const holder of holders) holder.finish(0);
+    await Promise.all(activeRuns);
+  });
+
+  it('does not detach a foreground command on steer when background tools are disabled', async () => {
+    const { proc, finish } = pendingProcess();
+    const { runner } = createTestRunner(proc);
+    const { service } = createFakeTaskService();
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service, stubToolPolicy(() => false));
+    const steer = new AbortController();
+    let settled = false;
+
+    const running = executeTool(tool, context({ command: 'sleep 30', timeout: 60 }, undefined, undefined, steer.signal))
+      .then((result) => { settled = true; return result; });
+    await vi.waitFor(() => {
+      expect(service.list(false)).toHaveLength(1);
+    });
+    steer.abort(new Error('new input'));
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(service.list(false)[0]).toMatchObject({ detached: false, status: 'running' });
+    finish(0);
+    expect((await running).isError).toBe(false);
+  });
+
+  it('cleans up the steer listener after normal foreground completion without detaching', async () => {
+    const { proc, finish } = pendingProcess();
+    const { runner } = createTestRunner(proc);
+    const { service } = createFakeTaskService();
+    const detach = vi.spyOn(service, 'detach');
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+    const steer = new AbortController();
+
+    const running = executeTool(tool, context({ command: 'echo ok', timeout: 60 }, undefined, undefined, steer.signal));
+    await vi.waitFor(() => {
+      expect(service.list(false)).toHaveLength(1);
+    });
+    finish(0);
+    expect((await running).isError).toBe(false);
+
+    steer.abort(new Error('late input'));
+    expect(detach).not.toHaveBeenCalled();
   });
 
   it('notifies when a foreground command registers its background task', async () => {
