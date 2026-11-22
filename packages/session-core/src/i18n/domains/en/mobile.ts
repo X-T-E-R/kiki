@@ -75,7 +75,7 @@ export const mobileEn = {
   'mobile.onboarding.codePlaceholder': 'XXXX-XXXX',
   'mobile.onboarding.connect': 'Pair computer',
   'mobile.onboarding.endpointLabel': 'Computer address',
-  'mobile.onboarding.endpointPlaceholder': '192.168.1.10:5494 or kiki://pair?…',
+  'mobile.onboarding.endpointPlaceholder': '198.51.100.10:5494 or kiki://pair?…',
   'mobile.onboarding.pasteLink': 'Paste pairing link',
   'mobile.onboarding.scanQr': 'Scan QR code',
   'mobile.onboarding.subtitle': 'Scan the QR code from Kiki on your computer or paste a pairing link.',

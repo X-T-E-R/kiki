@@ -75,7 +75,7 @@ export const mobileZh = {
   'mobile.onboarding.codePlaceholder': 'XXXX-XXXX',
   'mobile.onboarding.connect': '配对电脑',
   'mobile.onboarding.endpointLabel': '电脑地址或配对链接',
-  'mobile.onboarding.endpointPlaceholder': '192.168.1.10:5494 或 kiki://pair?…',
+  'mobile.onboarding.endpointPlaceholder': '198.51.100.10:5494 或 kiki://pair?…',
   'mobile.onboarding.pasteLink': '粘贴配对链接',
   'mobile.onboarding.scanQr': '扫码配对',
   'mobile.onboarding.subtitle': '扫描电脑端 Kiki 的二维码，或粘贴配对链接即可接入。',

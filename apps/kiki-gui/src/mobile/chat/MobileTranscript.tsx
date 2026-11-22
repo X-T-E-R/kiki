@@ -8,7 +8,7 @@ import { buildMessageNodes } from '../../components/message/messageTimeline';
 import { useI18n } from '../../i18n';
 import { isInlineDecidable, summarizeApproval } from '../approvalSummary';
 import { ApprovalHeadline, RejectReasonSheet } from '../components/ApprovalParts';
-import { MobileMarkdown } from '../mobileMarkdown';
+import { Markdown } from '../../components/Markdown';
 import { extractFileChanges, type HoodTab } from './LiftTheHoodSheet';
 import { MobileQuestionCard, type QuestionAnswers } from './MobileQuestionCard';
 
@@ -164,8 +164,8 @@ function InlineApprovalCard({
 
 function AssistantBubble({ text }: { readonly text: string }) {
   return (
-    <div data-mobile-msg="assistant" className="w-full">
-      <MobileMarkdown content={text} />
+    <div data-mobile-msg="assistant" className="w-full text-[15.5px] leading-[1.6] text-ink">
+      <Markdown text={text} />
     </div>
   );
 }
@@ -282,8 +282,8 @@ export function MobileTranscript({
         ) : null}
 
         {showGreeting ? (
-          <div data-mobile-msg="greeting" className="w-full">
-            <MobileMarkdown content={greeting.text} />
+          <div data-mobile-msg="greeting" className="w-full text-[15.5px] leading-[1.6] text-ink">
+            <Markdown text={greeting.text} />
           </div>
         ) : null}
 

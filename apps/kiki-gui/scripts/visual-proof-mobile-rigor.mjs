@@ -628,18 +628,18 @@ const SCENARIOS = [
       try {
         // Seed multi-machine paired computers using the real `STORE_SERVERS_KEY = 'kiki.shell.servers'` schema (`apps/kiki-gui/mobile/src/target.ts`).
         await page.addInitScript(() => {
-          const originA = 'http://dorm-3090-workstation.tailnet-example.ts.net:5494';
-          const originALan = 'http://192.168.88.142:5494';
-          const originB = 'https://macbook-air-remote-gateway-very-long-subdomain.example.test:8443';
+          const originA = 'http://studio-workstation.example.test:5494';
+          const originALan = 'http://198.51.100.142:5494';
+          const originB = 'https://laptop-remote-gateway-very-long-subdomain.example.test:8443';
           const seeded = [
             {
               id: 'srv-workstation-01',
-              label: 'Dorm RTX-3090 Dev Workstation',
+              label: 'Studio GPU Dev Workstation',
               origin: originA,
               origins: [originA, originALan],
               verifiedOrigins: [originA, originALan],
               paired: true,
-              targetHomeId: 'home-dorm-3090',
+              targetHomeId: 'home-studio-ws',
               updatedAt: Date.now() - 120_000,
             },
             {
