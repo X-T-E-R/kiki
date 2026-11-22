@@ -28,10 +28,23 @@ struct CurrentReleaseManifest {
     release_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveReleaseManifest {
+    schema_version: u64,
+    release_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LayoutKind {
+    Versioned { release_id: String },
+    Active,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ReleaseLayout {
     runtime_root: PathBuf,
-    release_id: String,
+    kind: LayoutKind,
     release_dir: PathBuf,
 }
 
@@ -40,6 +53,7 @@ struct PromotedRelease {
     release_id: String,
     release_dir: PathBuf,
     desktop_exe: PathBuf,
+    is_active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,9 +125,11 @@ where
 }
 
 /// Resolve the executable path to use when launching sibling windows or creating shortcuts.
-/// When the running binary resides under `<RuntimeRoot>/releases/<id>/` and `<RuntimeRoot>/current.json`
-/// points to an existing, non-empty promoted release, returns that promoted executable; otherwise
-/// falls back to the normalized `current_exe()`.
+/// When the running binary resides under `<RuntimeRoot>/releases/<id>/` or `<RuntimeRoot>/active/`
+/// and `<RuntimeRoot>/current.json` points to an existing, non-empty promoted release, returns
+/// `<RuntimeRoot>/active/kiki-desktop(.exe)` when aligned with `current.json` (or
+/// `<RuntimeRoot>/releases/<id>/kiki-desktop(.exe)` otherwise); falls back to the normalized
+/// `current_exe()`.
 pub fn resolve_launch_executable() -> io::Result<PathBuf> {
     let current = env::current_exe()?;
     Ok(resolve_launch_executable_for(&current))
@@ -173,9 +189,13 @@ pub(crate) fn resolve_redirect(
     let normalized_exe = strip_windows_verbatim_prefix(current_exe);
     let layout = parse_release_layout(&normalized_exe)?;
     let target = resolve_promoted_release(&layout)?;
-    if names_match(&target.release_id, &layout.release_id)
-        || paths_equal(&normalized_exe, &target.desktop_exe)
-    {
+    let already_on_target = paths_equal(&normalized_exe, &target.desktop_exe)
+        || (!target.is_active
+            && matches!(
+                &layout.kind,
+                LayoutKind::Versioned { release_id } if names_match(&target.release_id, release_id)
+            ));
+    if already_on_target {
         return None;
     }
     let working_dir = current_dir.and_then(|cwd| {
@@ -325,8 +345,19 @@ fn parse_release_layout(normalized_exe: &Path) -> Option<ReleaseLayout> {
         return None;
     }
     let release_dir = normalized_exe.parent()?;
-    let release_id = release_dir.file_name()?.to_str()?;
-    if !is_valid_release_id(release_id) {
+    let dir_name = release_dir.file_name()?.to_str()?;
+    if names_match(dir_name, "active") {
+        let runtime_root = release_dir.parent()?;
+        if runtime_root.as_os_str().is_empty() {
+            return None;
+        }
+        return Some(ReleaseLayout {
+            runtime_root: runtime_root.to_path_buf(),
+            kind: LayoutKind::Active,
+            release_dir: release_dir.to_path_buf(),
+        });
+    }
+    if !is_valid_release_id(dir_name) {
         return None;
     }
     let releases_dir = release_dir.parent()?;
@@ -340,9 +371,22 @@ fn parse_release_layout(normalized_exe: &Path) -> Option<ReleaseLayout> {
     }
     Some(ReleaseLayout {
         runtime_root: runtime_root.to_path_buf(),
-        release_id: release_id.to_string(),
+        kind: LayoutKind::Versioned {
+            release_id: dir_name.to_string(),
+        },
         release_dir: release_dir.to_path_buf(),
     })
+}
+
+fn read_active_release_id(active_dir: &Path) -> Option<String> {
+    let manifest_path = active_dir.join("active-release.json");
+    let raw = fs::read_to_string(&manifest_path).ok()?;
+    let manifest: ActiveReleaseManifest =
+        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()?;
+    if manifest.schema_version != 1 || !is_valid_release_id(&manifest.release_id) {
+        return None;
+    }
+    Some(manifest.release_id)
 }
 
 fn resolve_promoted_release(layout: &ReleaseLayout) -> Option<PromotedRelease> {
@@ -352,6 +396,24 @@ fn resolve_promoted_release(layout: &ReleaseLayout) -> Option<PromotedRelease> {
         serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()?;
     if manifest.schema_version != 1 || !is_valid_release_id(&manifest.release_id) {
         return None;
+    }
+    let active_dir = layout.runtime_root.join("active");
+    if is_real_directory(&active_dir) {
+        if let Some(active_id) = read_active_release_id(&active_dir) {
+            if names_match(&active_id, &manifest.release_id) {
+                let active_desktop = active_dir.join(DESKTOP_EXE_NAME);
+                let active_server = active_dir.join(SERVER_EXE_NAME);
+                if is_real_non_empty_file(&active_desktop) && is_real_non_empty_file(&active_server)
+                {
+                    return Some(PromotedRelease {
+                        release_id: manifest.release_id,
+                        release_dir: active_dir,
+                        desktop_exe: active_desktop,
+                        is_active: true,
+                    });
+                }
+            }
+        }
     }
     let release_dir = layout
         .runtime_root
@@ -366,7 +428,35 @@ fn resolve_promoted_release(layout: &ReleaseLayout) -> Option<PromotedRelease> {
         release_id: manifest.release_id,
         release_dir,
         desktop_exe,
+        is_active: false,
     })
+}
+
+fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir() && !is_reparse_or_symlink(&metadata))
+        .unwrap_or(false)
+}
+
+fn is_real_non_empty_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() > 0 && !is_reparse_or_symlink(&metadata))
+        .unwrap_or(false)
 }
 
 fn is_non_empty_file(path: &Path) -> bool {
@@ -461,6 +551,25 @@ mod tests {
                 "a".repeat(40)
             );
             self.write_current_json(&json);
+        }
+
+        fn create_active(&self, release_id: Option<&str>, desktop_bytes: &[u8], server_bytes: &[u8]) -> PathBuf {
+            let dir = self.root.join("active");
+            fs::create_dir_all(&dir).unwrap();
+            if !desktop_bytes.is_empty() {
+                fs::write(dir.join(DESKTOP_EXE_NAME), desktop_bytes).unwrap();
+            }
+            if !server_bytes.is_empty() {
+                fs::write(dir.join(SERVER_EXE_NAME), server_bytes).unwrap();
+            }
+            if let Some(id) = release_id {
+                let json = format!(
+                    r#"{{"schemaVersion":1,"releaseId":"{id}","gitSha":"{}","syncedAtUtc":"2026-11-22T00:00:00Z"}}"#,
+                    "b".repeat(40)
+                );
+                fs::write(dir.join("active-release.json"), json).unwrap();
+            }
+            dir
         }
     }
 
@@ -975,5 +1084,141 @@ mod tests {
             assert!(!is_valid_release_id("AAAAAAAAAAAAAAAAAAAAAAAA-BBBBBBBBBBBBBBBBBBBBBBBB"));
         }
         assert!(!is_valid_release_id("11111111111111111111111g-222222222222222222222222"));
+    }
+
+    #[test]
+    fn prefers_aligned_active_directory_for_redirects_and_sibling_launches() {
+        let rt = TempRuntime::new();
+        let old_dir = rt.create_release(OLD_RELEASE_ID, b"old-gui", b"old-srv");
+        let new_dir = rt.create_release(NEW_RELEASE_ID, b"new-gui", b"new-srv");
+        let active_dir = rt.create_active(Some(NEW_RELEASE_ID), b"new-gui", b"new-srv");
+        rt.write_current_release(NEW_RELEASE_ID);
+
+        let old_exe = old_dir.join(DESKTOP_EXE_NAME);
+        let new_exe = new_dir.join(DESKTOP_EXE_NAME);
+        let active_exe = active_dir.join(DESKTOP_EXE_NAME);
+
+        // Old versioned release redirects to active/ when active-release.json matches current.json.
+        let plan_from_old = resolve_redirect(
+            &old_exe,
+            Some(&old_dir),
+            &os_args(&["kiki-desktop.exe", "--home", r"C:\space"]),
+            None,
+        )
+        .expect("old release should redirect to aligned active/");
+        assert_eq!(plan_from_old.executable, active_exe);
+        assert_eq!(plan_from_old.working_dir, Some(active_dir.clone()));
+
+        // Versioned current release also redirects onto the stable active/ path.
+        let plan_from_new = resolve_redirect(
+            &new_exe,
+            Some(&new_dir),
+            &os_args(&["kiki-desktop.exe"]),
+            None,
+        )
+        .expect("versioned current release should redirect to aligned active/");
+        assert_eq!(plan_from_new.executable, active_exe);
+        assert_eq!(plan_from_new.working_dir, Some(active_dir.clone()));
+
+        // Already running from aligned active/ must NOT redirect.
+        assert!(resolve_redirect(
+            &active_exe,
+            Some(&active_dir),
+            &os_args(&["kiki-desktop.exe"]),
+            None,
+        )
+        .is_none());
+
+        // Sibling launches stay on the stable active/ executable.
+        assert_eq!(
+            resolve_launch_executable_for(&active_exe),
+            strip_windows_verbatim_prefix(&active_exe)
+        );
+        assert_eq!(
+            resolve_launch_executable_for(&old_exe),
+            strip_windows_verbatim_prefix(&active_exe)
+        );
+        assert_eq!(child_working_dir(&active_exe, &active_dir, &active_exe), None);
+        assert_eq!(
+            child_working_dir(&old_exe, &old_dir, &active_exe),
+            Some(strip_windows_verbatim_prefix(&active_dir))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_versioned_release_when_active_is_stale_incomplete_or_reparse() {
+        let rt = TempRuntime::new();
+        let old_dir = rt.create_release(OLD_RELEASE_ID, b"old-gui", b"old-srv");
+        let new_dir = rt.create_release(NEW_RELEASE_ID, b"new-gui", b"new-srv");
+        let active_dir = rt.create_active(Some(OLD_RELEASE_ID), b"old-gui", b"old-srv");
+        rt.write_current_release(NEW_RELEASE_ID);
+
+        let old_exe = old_dir.join(DESKTOP_EXE_NAME);
+        let new_exe = new_dir.join(DESKTOP_EXE_NAME);
+        let active_exe = active_dir.join(DESKTOP_EXE_NAME);
+
+        // Stale active/ (locked on OLD_RELEASE_ID) causes both old versioned and active launches
+        // to target releases/<NEW_RELEASE_ID>/.
+        let plan_from_old = resolve_redirect(&old_exe, Some(&old_dir), &os_args(&["kiki-desktop.exe"]), None)
+            .expect("stale active/ should fall back to versioned new release");
+        assert_eq!(plan_from_old.executable, new_exe);
+        assert_eq!(plan_from_old.working_dir, Some(new_dir.clone()));
+
+        let plan_from_active = resolve_redirect(&active_exe, Some(&active_dir), &os_args(&["kiki-desktop.exe"]), None)
+            .expect("running from stale active/ should redirect to versioned new release");
+        assert_eq!(plan_from_active.executable, new_exe);
+        assert_eq!(plan_from_active.working_dir, Some(new_dir.clone()));
+        assert_eq!(
+            resolve_launch_executable_for(&active_exe),
+            strip_windows_verbatim_prefix(&new_exe)
+        );
+        assert_eq!(
+            child_working_dir(&active_exe, &active_dir, &new_exe),
+            Some(strip_windows_verbatim_prefix(&new_dir))
+        );
+
+        // Active with matching manifest but missing server binary falls back to releases/<NEW_RELEASE_ID>/
+        // for BOTH launches from releases/ and direct launches from active/.
+        fs::remove_file(active_dir.join(SERVER_EXE_NAME)).unwrap();
+        let aligned_manifest = format!(
+            r#"{{"schemaVersion":1,"releaseId":"{NEW_RELEASE_ID}","gitSha":"{}"}}"#,
+            "b".repeat(40)
+        );
+        fs::write(active_dir.join("active-release.json"), aligned_manifest).unwrap();
+        assert_eq!(
+            resolve_launch_executable_for(&old_exe),
+            strip_windows_verbatim_prefix(&new_exe)
+        );
+        let plan_from_broken_active = resolve_redirect(
+            &active_exe,
+            Some(&active_dir),
+            &os_args(&["kiki-desktop.exe"]),
+            None,
+        )
+        .expect("broken active/ with missing sidecar must redirect to versioned release even when manifest ID matches");
+        assert_eq!(plan_from_broken_active.executable, new_exe);
+        assert_eq!(plan_from_broken_active.working_dir, Some(new_dir.clone()));
+
+        // Active pointing to releases/<NEW_RELEASE_ID> via junction/symlink is rejected in favor of versioned release.
+        fs::remove_dir_all(&active_dir).unwrap();
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&active_dir)
+                .arg(&new_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "mklink /J failed with {status}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&new_dir, &active_dir).unwrap();
+        }
+        let res = resolve_launch_executable_for(&old_exe);
+        let _ = fs::remove_dir(&active_dir).or_else(|_| fs::remove_file(&active_dir));
+        assert_eq!(res, strip_windows_verbatim_prefix(&new_exe));
     }
 }

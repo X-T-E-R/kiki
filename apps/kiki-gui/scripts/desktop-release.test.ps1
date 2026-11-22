@@ -223,6 +223,21 @@ if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate
     Assert-True (Test-Path -LiteralPath $cliPath -PathType Leaf) 'Initial promotion did not publish cli\kiki.exe.'
     Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText($cliPath)) 'Published CLI bytes differ from the promoted backend.'
 
+    $activeDir = Join-Path $runtimeRoot 'active'
+    Assert-True (Test-Path -LiteralPath $activeDir -PathType Container) 'Initial promotion did not create active\ directory.'
+    Assert-True ((([IO.File]::GetAttributes($activeDir)) -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'active\ must be a real directory, not a junction or symlink.'
+    Assert-Equal 'main-build-a' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-desktop.exe'))) 'Active GUI bytes differ from promoted release.'
+    Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-server.exe'))) 'Active backend bytes differ from promoted release.'
+    Assert-Equal "gitSha: $expectedCommit" ([IO.File]::ReadAllText((Join-Path $activeDir 'build-info.txt'))) 'Active build-info.txt did not match.'
+    $activeManifest = Get-Content -LiteralPath (Join-Path $activeDir 'active-release.json') -Raw | ConvertFrom-Json
+    Assert-Equal 1 ([int]$activeManifest.schemaVersion) 'active-release.json schemaVersion mismatch.'
+    Assert-Equal ([string]$firstManifest.releaseId) ([string]$activeManifest.releaseId) 'active-release.json releaseId did not match current.json.'
+    Assert-Equal $expectedCommit ([string]$activeManifest.gitSha) 'active-release.json gitSha mismatch.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$activeManifest.syncedAtUtc)) 'active-release.json missing syncedAtUtc.'
+    $resolvedActive = Invoke-LaunchResolve $runtimeRoot
+    Assert-True ($resolvedActive.Contains((Join-Path $activeDir 'kiki-desktop.exe'))) 'Resolve-LaunchTarget did not prefer aligned active\kiki-desktop.exe without hashing.'
+    Assert-True ($resolvedActive.Contains((Join-Path $activeDir 'kiki-server.exe'))) 'Resolve-LaunchTarget did not prefer aligned active\kiki-server.exe without hashing.'
+
     $manifestBytesBeforeRepeat = [IO.File]::ReadAllBytes($manifestPath)
     Invoke-Controller $common | Out-Null
     $releaseDirectories = @(Get-ChildItem -LiteralPath (Join-Path $runtimeRoot 'releases') -Directory | Where-Object { -not $_.Name.StartsWith('.pending-') })
@@ -293,6 +308,7 @@ if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate
     ) | Out-Null
     $installedController = Join-Path (Join-Path $runtimeRoot 'controller') 'desktop-release.ps1'
     Assert-True (Test-Path -LiteralPath $installedController -PathType Leaf) 'Shortcut installation did not install the stable release controller.'
+    Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $runtimeRoot 'controller') 'kiki-ops-conductor.mjs') -PathType Leaf) 'Shortcut installation did not sync kiki-ops-conductor.mjs into controller/.'
     $settings = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installedController) 'settings.json') -Raw | ConvertFrom-Json
     Assert-Equal ([IO.Path]::GetFullPath($candidateRoot)) ([string]$settings.candidateRoot) 'Installed controller did not retain the injected candidate path.'
     Assert-Equal $expectedCommit ([string]$settings.expectedCommit) 'Installed settings did not retain the commit passed to InstallShortcuts.'
@@ -395,11 +411,83 @@ if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate
     Assert-BytesEqual $manifestBytesBeforeOmitted ([IO.File]::ReadAllBytes($manifestPath)) 'Promote without ExpectedCommit changed current.json.'
 
     Remove-Item -LiteralPath $invalidExistingRelease -Recurse -Force
+    # Simulate active\kiki-server.exe being locked while promoting a newer build:
+    # Promote must stage releases\<id>\ and current.json without corrupting active\.
+    $activeLockStream = [IO.File]::Open((Join-Path $activeDir 'kiki-server.exe'), [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $lockedPromoteOut = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-ExpectedCommit', $expectedCommit) 0 $installedController
+        Assert-True ($lockedPromoteOut -match 'staged for the next switch/relaunch') "Locked active Promote did not report staged state.`n$lockedPromoteOut"
+        $configuredManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        Assert-Equal $secondReleaseId ([string]$configuredManifest.releaseId) 'The installed controller did not promote from its configured candidate path.'
+        Assert-Equal $expectedCommit ([string]$configuredManifest.gitSha) 'The installed controller recorded a source other than the build receipt.'
+        Assert-Equal 'sidecar-build-b' ([IO.File]::ReadAllText($cliPath)) 'Repromotion did not refresh cli\kiki.exe to the new backend.'
+        $activeManifestWhileLocked = Get-Content -LiteralPath (Join-Path $activeDir 'active-release.json') -Raw | ConvertFrom-Json
+        Assert-Equal ([string]$firstManifest.releaseId) ([string]$activeManifestWhileLocked.releaseId) 'Locked active-release.json was overwritten while locked.'
+        $fallbackResolve = Invoke-LaunchResolve $runtimeRoot
+        Assert-True ($fallbackResolve.Contains((Join-Path (Join-Path $runtimeRoot 'releases') (Join-Path $secondReleaseId 'kiki-desktop.exe')))) 'Launch fallback did not target releases\<newId>\ while active\ was locked on older release.'
+    }
+    finally {
+        $activeLockStream.Dispose()
+    }
+    # Once unlocked, re-promoting syncs active\ cleanly without rewriting current.json.
+    $syncAfterUnlockOut = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-ExpectedCommit', $expectedCommit) 0 $installedController
+    Assert-True ($syncAfterUnlockOut -match 'Synced active runtime') "Unlocked repromote did not sync active\.`n$syncAfterUnlockOut"
+    $activeManifestAfterUnlock = Get-Content -LiteralPath (Join-Path $activeDir 'active-release.json') -Raw | ConvertFrom-Json
+    Assert-Equal $secondReleaseId ([string]$activeManifestAfterUnlock.releaseId) 'active-release.json did not advance after lock release.'
+    Assert-Equal 'main-build-b' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-desktop.exe'))) 'Active GUI bytes did not update after lock release.'
+    # Incomplete parseable active-release.json ({}) must not crash under StrictMode and must be repaired by Launch.
+    [IO.File]::WriteAllText((Join-Path $activeDir 'active-release.json'), '{}', (New-Object Text.UTF8Encoding($false)))
+    $brokenActiveResolve = Invoke-LaunchResolve $runtimeRoot
+    Assert-True ($brokenActiveResolve.Contains((Join-Path (Join-Path $runtimeRoot 'releases') (Join-Path $secondReleaseId 'kiki-desktop.exe')))) 'Resolve-LaunchTarget did not fall back to releases\ on incomplete active-release.json.'
+    $repairedSyncOut = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-ExpectedCommit', $expectedCommit) 0 $installedController
+    Assert-True ($repairedSyncOut -match 'Synced active runtime') "Promote did not repair incomplete active-release.json.`n$repairedSyncOut"
+    $repairedManifest = Get-Content -LiteralPath (Join-Path $activeDir 'active-release.json') -Raw | ConvertFrom-Json
+    Assert-Equal $secondReleaseId ([string]$repairedManifest.releaseId) 'Repaired active-release.json did not match current release.'
+
+    # Locked build-info.txt during Promote must not leave partially replaced binaries in active\.
+    $buildInfoLock = [IO.File]::Open((Join-Path $activeDir 'build-info.txt'), [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-desktop.exe'), 'main-build-c')
+        [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-server.exe'), 'sidecar-build-c')
+        Write-Receipt $candidateRoot $expectedCommit
+        $lockedBuildInfoOut = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-ExpectedCommit', $expectedCommit) 0 $installedController
+        Assert-True ($lockedBuildInfoOut -match 'staged for the next switch/relaunch') "Locked build-info.txt did not defer active\ sync.`n$lockedBuildInfoOut"
+        Assert-Equal 'main-build-b' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-desktop.exe'))) 'Locked build-info.txt allowed partial overwrite of active kiki-desktop.exe.'
+        Assert-Equal 'sidecar-build-b' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-server.exe'))) 'Locked build-info.txt allowed partial overwrite of active kiki-server.exe.'
+    }
+    finally {
+        $buildInfoLock.Dispose()
+    }
+    # Late publication failure AFTER both binaries and build-info.txt are replaced must roll back all replaced files via [NullString]::Value.
+    $lateRollbackRunner = Join-Path $testRoot 'late-rollback.ps1'
+    [IO.File]::WriteAllText($lateRollbackRunner, @'
+param([string]$ControllerPath, [string]$RuntimePath, [string]$ReleaseId, [string]$Commit)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+function Write-AtomicUtf8Json([string]$Path, [object]$Value) {
+    throw 'simulated manifest write failure after binary replacement'
+}
+$failed = $false
+try {
+    Sync-ActiveRelease $RuntimePath $ReleaseId $Commit | Out-Null
+}
+catch {
+    if ($_.Exception.Message -match 'simulated manifest write failure') { $failed = $true }
+    else { throw }
+}
+if (-not $failed) { throw 'Expected Sync-ActiveRelease to throw on simulated manifest write failure.' }
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-ControllerPath', $controller, '-RuntimePath', $runtimeRoot, '-ReleaseId', ([string]$firstManifest.releaseId), '-Commit', $expectedCommit) 0 $lateRollbackRunner | Out-Null
+    Assert-Equal 'main-build-b' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-desktop.exe'))) 'Late sync failure did not roll back active\kiki-desktop.exe.'
+    Assert-Equal 'sidecar-build-b' ([IO.File]::ReadAllText((Join-Path $activeDir 'kiki-server.exe'))) 'Late sync failure did not roll back active\kiki-server.exe.'
+    $manifestAfterLateRollback = Get-Content -LiteralPath (Join-Path $activeDir 'active-release.json') -Raw | ConvertFrom-Json
+    Assert-Equal $secondReleaseId ([string]$manifestAfterLateRollback.releaseId) 'Late sync failure altered active-release.json.'
+
+    # Restore candidate back to build-b and re-promote so downstream assertions remain consistent.
+    [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-desktop.exe'), 'main-build-b')
+    [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-server.exe'), 'sidecar-build-b')
+    Write-Receipt $candidateRoot $expectedCommit
     Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-ExpectedCommit', $expectedCommit) 0 $installedController | Out-Null
-    $configuredManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    Assert-Equal $secondReleaseId ([string]$configuredManifest.releaseId) 'The installed controller did not promote from its configured candidate path.'
-    Assert-Equal $expectedCommit ([string]$configuredManifest.gitSha) 'The installed controller recorded a source other than the build receipt.'
-    Assert-Equal 'sidecar-build-b' ([IO.File]::ReadAllText($cliPath)) 'Repromotion did not refresh cli\kiki.exe to the new backend.'
 
     $legacyRoot = Join-Path $testRoot 'legacy-runtime'
     $legacyCandidate = Join-Path $testRoot 'legacy-candidate'
@@ -453,6 +541,10 @@ Invoke-Launch $RuntimePath -Background
 if ($calls.Count -ne 2) { throw "Expected 2 Start-Process calls, saw $($calls.Count)." }
 if ($calls[0].Arguments -ne '') { throw "Foreground launch passed unexpected arguments: $($calls[0].Arguments)" }
 if ($calls[1].Arguments -ne '--background') { throw "Background launch did not pass --background: $($calls[1].Arguments)" }
+$expectedActiveDir = Join-Path ([IO.Path]::GetFullPath($RuntimePath)) 'active'
+$expectedActiveExe = Join-Path $expectedActiveDir 'kiki-desktop.exe'
+if ($calls[0].FilePath -ine $expectedActiveExe) { throw "Launch did not sync and run from active\: $($calls[0].FilePath)" }
+if ($calls[0].WorkingDirectory -ine $expectedActiveDir) { throw "Launch did not set WorkingDirectory to active\: $($calls[0].WorkingDirectory)" }
 '@, (New-Object Text.UTF8Encoding($false)))
     Invoke-Controller @('-ControllerPath', $controller, '-RuntimePath', $legacyRoot) 0 $backgroundRunner | Out-Null
 
@@ -563,6 +655,17 @@ if (-not $mismatchCaught) { throw 'Await-Release did not reject mismatched build
 
 $script:mockServer.instance.build_id = $expectedSha
 $script:mockServer.meta.build_id = $expectedSha
+$script:mockServer | Add-Member -NotePropertyName executablePath -NotePropertyValue (Join-Path (Join-Path $runtime 'releases\rel-new') 'kiki-server.exe') -Force
+$nonActiveCaught = $false
+try {
+    $null = Await-Release 'rel-new' $expectedSha $launcherStub
+} catch {
+    if ($_.Exception.Message -match 'instead of active path') { $nonActiveCaught = $true }
+    else { throw "Unexpected non-active Await-Release error: $($_.Exception.Message)" }
+}
+if (-not $nonActiveCaught) { throw 'Await-Release did not reject a server running outside active\.' }
+
+$script:mockServer.executablePath = Join-Path (Join-Path $runtime 'active') 'kiki-server.exe'
 $matched = Await-Release 'rel-new' $expectedSha $launcherStub
 if ($matched.meta.build_id -cne $expectedSha) { throw 'Await-Release did not return matching build_id server.' }
 

@@ -53,7 +53,7 @@ function Write-AtomicUtf8Json([string]$Path, [object]$Value) {
 }
 
 function Get-Sha256([string]$Path) {
-    $stream = [IO.File]::OpenRead($Path)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
     $algorithm = [Security.Cryptography.SHA256]::Create()
     try {
         $bytes = $algorithm.ComputeHash($stream)
@@ -99,7 +99,9 @@ function Read-CurrentManifest([string]$Root, [switch]$AllowMissing) {
     catch {
         throw "The Kiki release pointer is unreadable: $path. Promote a known-good build to repair it."
     }
-    if ($manifest.schemaVersion -ne 1 -or $manifest.releaseId -notmatch '^[0-9a-f]{24}-[0-9a-f]{24}$') {
+    $schemaVersion = Get-ObjectProperty $manifest 'schemaVersion'
+    $releaseId = [string](Get-ObjectProperty $manifest 'releaseId')
+    if ($schemaVersion -ne 1 -or $releaseId -notmatch '^[0-9a-f]{24}-[0-9a-f]{24}$') {
         throw "The Kiki release pointer is invalid: $path. Promote a known-good build to repair it."
     }
     return $manifest
@@ -110,6 +112,356 @@ function Get-ReleasePath([string]$Root, [string]$ReleaseId) {
         throw "Invalid Kiki release identifier: $ReleaseId"
     }
     return Join-Path (Join-Path $Root 'releases') $ReleaseId
+}
+
+function Get-ActivePath([string]$Root) {
+    return Join-Path (Get-FullPath $Root) 'active'
+}
+
+function Test-IsReparsePoint([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $attrs = [IO.File]::GetAttributes($Path)
+    return (($attrs -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
+function Get-ProcessPathSafe([object]$Proc) {
+    if ($null -eq $Proc) { return $null }
+    try { return $Proc.Path } catch { return $null }
+}
+
+function Read-ActiveManifest([string]$Root, [switch]$AllowMissing) {
+    $path = Join-Path (Get-ActivePath $Root) 'active-release.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        if ($AllowMissing) { return $null }
+        throw "Active Kiki release manifest is missing: $path"
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    }
+    catch {
+        if ($AllowMissing) { return $null }
+        throw "Active Kiki release manifest is unreadable: $path"
+    }
+    $schemaVersion = Get-ObjectProperty $manifest 'schemaVersion'
+    $releaseId = [string](Get-ObjectProperty $manifest 'releaseId')
+    if ($null -eq $manifest -or $schemaVersion -ne 1 -or $releaseId -notmatch '^[0-9a-f]{24}-[0-9a-f]{24}$') {
+        if ($AllowMissing) { return $null }
+        throw "Active Kiki release manifest is invalid: $path"
+    }
+    return $manifest
+}
+
+function Get-ActiveRuntimeProcesses([string]$Root) {
+    $activeDir = Get-ActivePath $Root
+    $prefix = $activeDir.TrimEnd('\') + '\'
+    $found = @()
+    foreach ($proc in @(Get-Process -Name 'kiki-desktop', 'kiki-server' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($proc.HasExited) { continue }
+            $procPath = Get-ProcessPathSafe $proc
+            if ($procPath -and $procPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                $found += $proc
+            }
+        }
+        catch {
+        }
+    }
+    return $found
+}
+
+function Resolve-ActiveReleaseId([string]$Root) {
+    $activeDir = Get-ActivePath $Root
+    $desktopPath = Join-Path $activeDir 'kiki-desktop.exe'
+    $serverPath = Join-Path $activeDir 'kiki-server.exe'
+    if ((Test-Path -LiteralPath $desktopPath -PathType Leaf) -and (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
+        try {
+            $desktop = Get-ArtifactInfo $desktopPath 'Active Kiki GUI'
+            $server = Get-ArtifactInfo $serverPath 'Active Kiki backend'
+            return '{0}-{1}' -f $desktop.Hash.Substring(0, 24), $server.Hash.Substring(0, 24)
+        }
+        catch {
+        }
+    }
+    $activeManifest = Read-ActiveManifest $Root -AllowMissing
+    if ($null -ne $activeManifest) {
+        return [string]$activeManifest.releaseId
+    }
+    return $null
+}
+
+function Test-ActiveReleaseAligned([string]$Root, [string]$ReleaseId) {
+    $activeDir = Get-ActivePath $Root
+    if (-not (Test-Path -LiteralPath $activeDir -PathType Container)) { return $false }
+    if (Test-IsReparsePoint $activeDir) { return $false }
+    $activeManifest = Read-ActiveManifest $Root -AllowMissing
+    if ($null -eq $activeManifest -or ([string]$activeManifest.releaseId) -cne $ReleaseId) { return $false }
+    foreach ($name in @('kiki-desktop.exe', 'kiki-server.exe')) {
+        $filePath = Join-Path $activeDir $name
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { return $false }
+        if (Test-IsReparsePoint $filePath) { return $false }
+        if ((Get-Item -LiteralPath $filePath).Length -le 0) { return $false }
+    }
+    return $true
+}
+
+function Test-FileExclusiveWritable([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $true }
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream.Dispose()
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Sync-ActiveReleaseCore(
+    [string]$RootPath,
+    [string]$ReleaseId,
+    [string]$GitSha,
+    [object]$DesktopInfo,
+    [object]$SidecarInfo,
+    [switch]$SkipIfLocked
+) {
+    $activePath = Get-ActivePath $RootPath
+    $releasePath = Get-ReleasePath $RootPath $ReleaseId
+    $releaseMain = Join-Path $releasePath 'kiki-desktop.exe'
+    $releaseSidecar = Join-Path $releasePath 'kiki-server.exe'
+    $releaseBuildInfo = Join-Path $releasePath 'build-info.txt'
+    $activeMain = Join-Path $activePath 'kiki-desktop.exe'
+    $activeSidecar = Join-Path $activePath 'kiki-server.exe'
+    $activeBuildInfo = Join-Path $activePath 'build-info.txt'
+    $activeManifestPath = Join-Path $activePath 'active-release.json'
+
+    if (Test-ActiveReleaseAligned $RootPath $ReleaseId) {
+        $existingMain = Get-ArtifactInfo $activeMain 'Active Kiki GUI'
+        $existingSidecar = Get-ArtifactInfo $activeSidecar 'Active Kiki backend'
+        if ($existingMain.Hash -ceq $DesktopInfo.Hash -and $existingMain.Length -eq $DesktopInfo.Length `
+            -and $existingSidecar.Hash -ceq $SidecarInfo.Hash -and $existingSidecar.Length -eq $SidecarInfo.Length `
+            -and (Test-Path -LiteralPath $activeBuildInfo -PathType Leaf)) {
+            return [pscustomobject]@{
+                Synced = $true
+                AlreadyCurrent = $true
+                Locked = $false
+                ActivePath = $activePath
+                ReleaseId = $ReleaseId
+                LockingPids = @()
+            }
+        }
+    }
+
+    $running = @(Get-ActiveRuntimeProcesses $RootPath)
+    if ($running.Count -gt 0) {
+        $pids = @($running | ForEach-Object { [int]$_.Id })
+        if ($SkipIfLocked) {
+            return [pscustomobject]@{
+                Synced = $false
+                AlreadyCurrent = $false
+                Locked = $true
+                ActivePath = $activePath
+                ReleaseId = $ReleaseId
+                LockingPids = $pids
+            }
+        }
+        throw ("Cannot sync active runtime at {0} while process(es) are running from it (PIDs: {1})." -f $activePath, ($pids -join ', '))
+    }
+
+    if ((-not (Test-FileExclusiveWritable $activeMain)) -or (-not (Test-FileExclusiveWritable $activeSidecar)) -or (-not (Test-FileExclusiveWritable $activeBuildInfo)) -or (-not (Test-FileExclusiveWritable $activeManifestPath))) {
+        if ($SkipIfLocked) {
+            return [pscustomobject]@{
+                Synced = $false
+                AlreadyCurrent = $false
+                Locked = $true
+                ActivePath = $activePath
+                ReleaseId = $ReleaseId
+                LockingPids = @()
+            }
+        }
+        throw "Cannot sync active runtime at $activePath because an active runtime file is locked."
+    }
+
+    [IO.Directory]::CreateDirectory($activePath) | Out-Null
+    $nonce = [guid]::NewGuid().ToString('N')
+    $stagedMain = Join-Path $activePath ('.kiki-desktop.exe.{0}.tmp' -f $nonce)
+    $stagedSidecar = Join-Path $activePath ('.kiki-server.exe.{0}.tmp' -f $nonce)
+    $stagedBuildInfo = Join-Path $activePath ('.build-info.txt.{0}.tmp' -f $nonce)
+    $mainBackup = Join-Path $activePath ('.kiki-desktop.exe.{0}.bak' -f $nonce)
+    $sidecarBackup = Join-Path $activePath ('.kiki-server.exe.{0}.bak' -f $nonce)
+    $buildInfoBackup = Join-Path $activePath ('.build-info.txt.{0}.bak' -f $nonce)
+    $hadExistingMain = Test-Path -LiteralPath $activeMain -PathType Leaf
+    $hadExistingSidecar = Test-Path -LiteralPath $activeSidecar -PathType Leaf
+    $hadExistingBuildInfo = Test-Path -LiteralPath $activeBuildInfo -PathType Leaf
+    $mainReplaced = $false
+    $sidecarReplaced = $false
+    $buildInfoReplaced = $false
+    $restoreFailed = $false
+
+    try {
+        Copy-Item -LiteralPath $releaseMain -Destination $stagedMain -Force
+        Copy-Item -LiteralPath $releaseSidecar -Destination $stagedSidecar -Force
+        if (Test-Path -LiteralPath $releaseBuildInfo -PathType Leaf) {
+            Copy-Item -LiteralPath $releaseBuildInfo -Destination $stagedBuildInfo -Force
+        }
+        else {
+            Write-BuildInfo $stagedBuildInfo $GitSha
+        }
+
+        Assert-ArtifactMatches $DesktopInfo $stagedMain 'Active Kiki GUI'
+        Assert-ArtifactMatches $SidecarInfo $stagedSidecar 'Active Kiki backend'
+
+        try {
+            if ($hadExistingMain) { [IO.File]::Replace($stagedMain, $activeMain, $mainBackup) }
+            else { [IO.File]::Move($stagedMain, $activeMain) }
+            $mainReplaced = $true
+
+            if ($hadExistingSidecar) { [IO.File]::Replace($stagedSidecar, $activeSidecar, $sidecarBackup) }
+            else { [IO.File]::Move($stagedSidecar, $activeSidecar) }
+            $sidecarReplaced = $true
+
+            if ($hadExistingBuildInfo) { [IO.File]::Replace($stagedBuildInfo, $activeBuildInfo, $buildInfoBackup) }
+            else { [IO.File]::Move($stagedBuildInfo, $activeBuildInfo) }
+            $buildInfoReplaced = $true
+
+            $activeManifest = [ordered]@{
+                schemaVersion = 1
+                releaseId = $ReleaseId
+                gitSha = $GitSha
+                syncedAtUtc = [DateTime]::UtcNow.ToString('o')
+                files = [ordered]@{
+                    'kiki-desktop.exe' = [ordered]@{ sha256 = $DesktopInfo.Hash; bytes = $DesktopInfo.Length }
+                    'kiki-server.exe' = [ordered]@{ sha256 = $SidecarInfo.Hash; bytes = $SidecarInfo.Length }
+                }
+            }
+            Write-AtomicUtf8Json $activeManifestPath $activeManifest
+        }
+        catch {
+            $syncFailure = $_
+            foreach ($rollbackItem in @(
+                @{ Replaced = $buildInfoReplaced; Had = $hadExistingBuildInfo; Dest = $activeBuildInfo; Backup = $buildInfoBackup },
+                @{ Replaced = $sidecarReplaced; Had = $hadExistingSidecar; Dest = $activeSidecar; Backup = $sidecarBackup },
+                @{ Replaced = $mainReplaced; Had = $hadExistingMain; Dest = $activeMain; Backup = $mainBackup }
+            )) {
+                if (-not $rollbackItem.Replaced) { continue }
+                try {
+                    if ($rollbackItem.Had -and (Test-Path -LiteralPath $rollbackItem.Backup -PathType Leaf)) {
+                        # PowerShell 5.1 coerces $null to "" for string overloads; use [NullString]::Value so File.Replace accepts null destinationBackupFileName.
+                        [IO.File]::Replace($rollbackItem.Backup, $rollbackItem.Dest, [NullString]::Value)
+                    }
+                    elseif (-not $rollbackItem.Had -and (Test-Path -LiteralPath $rollbackItem.Dest -PathType Leaf)) {
+                        Remove-Item -LiteralPath $rollbackItem.Dest -Force -ErrorAction Stop
+                    }
+                }
+                catch {
+                    $restoreFailed = $true
+                    Write-Warning ("Failed to restore active file {0} from backup {1}: {2}" -f $rollbackItem.Dest, $rollbackItem.Backup, $_.Exception.Message)
+                }
+            }
+            throw $syncFailure
+        }
+    }
+    finally {
+        foreach ($tempFile in @($stagedMain, $stagedSidecar, $stagedBuildInfo)) {
+            if (Test-Path -LiteralPath $tempFile) {
+                Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if (-not $restoreFailed) {
+            foreach ($backupFile in @($mainBackup, $sidecarBackup, $buildInfoBackup)) {
+                if (Test-Path -LiteralPath $backupFile) {
+                    Remove-Item -LiteralPath $backupFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Synced = $true
+        AlreadyCurrent = $false
+        Locked = $false
+        ActivePath = $activePath
+        ReleaseId = $ReleaseId
+        LockingPids = @()
+    }
+}
+
+function Open-ActiveLock([string]$RootPath, [int]$WaitSeconds = 15) {
+    [IO.Directory]::CreateDirectory($RootPath) | Out-Null
+    $activeLockPath = Join-Path $RootPath 'active.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+    do {
+        try {
+            return [IO.File]::Open($activeLockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        }
+        catch {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                return $null
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    } while ($true)
+}
+
+function Sync-ActiveRelease(
+    [string]$Root,
+    [string]$ReleaseId,
+    [string]$GitSha = '',
+    [object]$ExpectedDesktop = $null,
+    [object]$ExpectedSidecar = $null,
+    [switch]$SkipIfLocked
+) {
+    $rootPath = Get-FullPath $Root
+    $activePath = Get-ActivePath $rootPath
+    $releasePath = Get-ReleasePath $rootPath $ReleaseId
+    $releaseMain = Join-Path $releasePath 'kiki-desktop.exe'
+    $releaseSidecar = Join-Path $releasePath 'kiki-server.exe'
+    $releaseBuildInfo = Join-Path $releasePath 'build-info.txt'
+
+    $desktopInfo = if ($null -ne $ExpectedDesktop) { $ExpectedDesktop } else { Get-ArtifactInfo $releaseMain 'Release Kiki GUI' }
+    $sidecarInfo = if ($null -ne $ExpectedSidecar) { $ExpectedSidecar } else { Get-ArtifactInfo $releaseSidecar 'Release Kiki backend' }
+    if (('{0}-{1}' -f $desktopInfo.Hash.Substring(0, 24), $sidecarInfo.Hash.Substring(0, 24)) -cne $ReleaseId) {
+        throw "Release binaries at $releasePath do not match releaseId $ReleaseId; active runtime was not modified."
+    }
+
+    $resolvedGitSha = $GitSha
+    if ([string]::IsNullOrWhiteSpace($resolvedGitSha)) {
+        $currentManifest = Read-CurrentManifest $rootPath -AllowMissing
+        if ($null -ne $currentManifest -and ([string]$currentManifest.releaseId) -ceq $ReleaseId -and -not [string]::IsNullOrWhiteSpace([string](Get-ObjectProperty $currentManifest 'gitSha'))) {
+            $resolvedGitSha = [string]$currentManifest.gitSha
+        }
+        elseif (Test-Path -LiteralPath $releaseBuildInfo -PathType Leaf) {
+            $rawInfo = ([IO.File]::ReadAllText($releaseBuildInfo)).Trim()
+            if ($rawInfo -match '^gitSha:\s*(\S+)') { $resolvedGitSha = $Matches[1] }
+        }
+        if ([string]::IsNullOrWhiteSpace($resolvedGitSha)) { $resolvedGitSha = 'unknown' }
+    }
+
+    if (Test-Path -LiteralPath $activePath) {
+        if ((Test-IsReparsePoint $activePath) -or (-not (Test-Path -LiteralPath $activePath -PathType Container))) {
+            throw "Active runtime path must be a regular directory (not a symlink or junction): $activePath"
+        }
+    }
+
+    $activeLock = Open-ActiveLock $rootPath ($(if ($SkipIfLocked) { 2 } else { 15 }))
+    if ($null -eq $activeLock) {
+        if ($SkipIfLocked) {
+            return [pscustomobject]@{
+                Synced = $false
+                AlreadyCurrent = $false
+                Locked = $true
+                ActivePath = $activePath
+                ReleaseId = $ReleaseId
+                LockingPids = @()
+            }
+        }
+        throw "Cannot acquire active publication lock under $rootPath."
+    }
+    try {
+        return Sync-ActiveReleaseCore $rootPath $ReleaseId $resolvedGitSha $desktopInfo $sidecarInfo -SkipIfLocked:$SkipIfLocked
+    }
+    finally {
+        $activeLock.Dispose()
+    }
 }
 
 function Get-GitSha([string]$Candidate) {
@@ -279,7 +631,14 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
 
     $current = Read-CurrentManifest $rootPath -AllowMissing
     if ($null -ne $current -and $current.releaseId -eq $releaseId) {
+        $syncResult = Sync-ActiveRelease $rootPath $releaseId $gitSha $mainSource $sidecarSource -SkipIfLocked
         Write-SourceDiagnostic $Verified.Path $gitSha
+        if ($syncResult.Locked) {
+            Write-Output "Active runtime is in use; current.json is staged for the next switch/relaunch: $($syncResult.ActivePath)"
+        }
+        elseif (-not $syncResult.AlreadyCurrent) {
+            Write-Output "Synced active runtime: $($syncResult.ActivePath)"
+        }
         Write-Output "Kiki release is already current: $releasePath"
         return
     }
@@ -295,7 +654,14 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
         }
     }
     Write-AtomicUtf8Json (Join-Path $rootPath 'current.json') $manifest
+    $syncResult = Sync-ActiveRelease $rootPath $releaseId $gitSha $mainSource $sidecarSource -SkipIfLocked
     Write-SourceDiagnostic $Verified.Path $gitSha
+    if ($syncResult.Locked) {
+        Write-Output "Active runtime is in use; current.json is staged for the next switch/relaunch: $($syncResult.ActivePath)"
+    }
+    else {
+        Write-Output "Synced active runtime: $($syncResult.ActivePath)"
+    }
     Write-Output "Promoted Kiki release: $releasePath"
 }
 
@@ -328,28 +694,61 @@ function Publish-CliExecutable([string]$Root, [string]$SourcePath, [object]$Side
 function Resolve-LaunchTarget([string]$Root) {
     $rootPath = Get-FullPath $Root
     $manifest = Read-CurrentManifest $rootPath
-    $releasePath = Get-ReleasePath $rootPath $manifest.releaseId
-    $mainPath = Join-Path $releasePath 'kiki-desktop.exe'
-    $sidecarPath = Join-Path $releasePath 'kiki-server.exe'
-    foreach ($path in @($mainPath, $sidecarPath)) {
+    $releaseId = [string]$manifest.releaseId
+    $releasePath = Get-ReleasePath $rootPath $releaseId
+    $releaseMainPath = Join-Path $releasePath 'kiki-desktop.exe'
+    $releaseSidecarPath = Join-Path $releasePath 'kiki-server.exe'
+    foreach ($path in @($releaseMainPath, $releaseSidecarPath)) {
         if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
             throw "The selected Kiki executable is missing or empty: $path"
         }
     }
+    $usingActive = Test-ActiveReleaseAligned $rootPath $releaseId
+    if ($usingActive) {
+        $activePath = Get-ActivePath $rootPath
+        $launchDirectory = $activePath
+        $mainPath = Join-Path $activePath 'kiki-desktop.exe'
+        $sidecarPath = Join-Path $activePath 'kiki-server.exe'
+    }
+    else {
+        $launchDirectory = $releasePath
+        $mainPath = $releaseMainPath
+        $sidecarPath = $releaseSidecarPath
+    }
     return [pscustomobject]@{
         Root = $rootPath
         ReleasePath = $releasePath
+        LaunchDirectory = $launchDirectory
         MainPath = $mainPath
         SidecarPath = $sidecarPath
-        ReleaseId = [string]$manifest.releaseId
+        ReleaseId = $releaseId
+        UsingActive = $usingActive
     }
 }
 
 function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background) {
-    $target = Resolve-LaunchTarget $Root
+    $rootPath = Get-FullPath $Root
+    $manifest = Read-CurrentManifest $rootPath
+    $releaseId = [string]$manifest.releaseId
+    $launchLock = Open-ActiveLock $rootPath 15
     $previousHome = $env:KIKI_HOME
     $previousNoRedirect = $env:KIKI_NO_RELEASE_REDIRECT
     try {
+        if ($null -ne $launchLock -and (-not (Test-ActiveReleaseAligned $rootPath $releaseId))) {
+            $releasePath = Get-ReleasePath $rootPath $releaseId
+            $desktopInfo = Get-ArtifactInfo (Join-Path $releasePath 'kiki-desktop.exe') 'Release Kiki GUI'
+            $sidecarInfo = Get-ArtifactInfo (Join-Path $releasePath 'kiki-server.exe') 'Release Kiki backend'
+            if (('{0}-{1}' -f $desktopInfo.Hash.Substring(0, 24), $sidecarInfo.Hash.Substring(0, 24)) -cne $releaseId) {
+                throw "Release binaries at $releasePath do not match releaseId $releaseId; launch aborted."
+            }
+            $gitSha = [string](Get-ObjectProperty $manifest 'gitSha')
+            if ([string]::IsNullOrWhiteSpace($gitSha)) { $gitSha = 'unknown' }
+            $syncResult = Sync-ActiveReleaseCore $rootPath $releaseId $gitSha $desktopInfo $sidecarInfo -SkipIfLocked
+            if ($syncResult.Locked) {
+                Write-Warning ("Active runtime at {0} is locked by running process(es); launching release {1} from releases directory without modifying active." -f $syncResult.ActivePath, $releaseId)
+            }
+        }
+        $target = Resolve-LaunchTarget $rootPath
         if ($LaunchHome) { $env:KIKI_HOME = $LaunchHome }
         elseif ((Split-Path -Leaf $target.Root) -eq 'Kiki-Dev') { $env:KIKI_HOME = $target.Root }
         if ($null -ne $previousNoRedirect) {
@@ -357,7 +756,7 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
         }
         $startParams = @{
             FilePath = $target.MainPath
-            WorkingDirectory = $target.ReleasePath
+            WorkingDirectory = $target.LaunchDirectory
             PassThru = [bool]$PassThru
         }
         if ($Background) {
@@ -373,6 +772,7 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
         else {
             $env:KIKI_NO_RELEASE_REDIRECT = $previousNoRedirect
         }
+        if ($null -ne $launchLock) { $launchLock.Dispose() }
     }
 }
 
@@ -430,6 +830,8 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     $installedController = Join-Path $controllerDirectory 'desktop-release.ps1'
     $sourceHotSwitch = Join-Path $PSScriptRoot 'desktop-hot-switch.ps1'
     $installedHotSwitch = Join-Path $controllerDirectory 'desktop-hot-switch.ps1'
+    $sourceConductor = Join-Path $PSScriptRoot 'kiki-ops-conductor.mjs'
+    $installedConductor = Join-Path $controllerDirectory 'kiki-ops-conductor.mjs'
     [IO.Directory]::CreateDirectory($controllerDirectory) | Out-Null
     [IO.Directory]::CreateDirectory($desktopFullPath) | Out-Null
 
@@ -438,6 +840,9 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     }
     if ((Test-Path -LiteralPath $sourceHotSwitch -PathType Leaf) -and ((Get-FullPath $sourceHotSwitch) -ne (Get-FullPath $installedHotSwitch))) {
         Copy-Item -LiteralPath $sourceHotSwitch -Destination $installedHotSwitch -Force
+    }
+    if ((Test-Path -LiteralPath $sourceConductor -PathType Leaf) -and ((Get-FullPath $sourceConductor) -ne (Get-FullPath $installedConductor))) {
+        Copy-Item -LiteralPath $sourceConductor -Destination $installedConductor -Force
     }
     Write-AtomicUtf8Json (Join-Path $controllerDirectory 'settings.json') ([ordered]@{
         schemaVersion = 1
