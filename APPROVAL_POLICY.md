@@ -19,7 +19,9 @@ always_deny_paths:
   - packages/oauth/
   - packages/kap-server/src/auth/
   - apps/kiki-gui/src-tauri/
-  - scripts/release-pipeline.mjs
+  - apps/kimi-code/scripts/native/
+  - apps/kimi-code/scripts/npm/
+  - scripts/release-pipeline.test.mjs
 ---
 
 # Approval Policy (`X-T-E-R/kiki`)
