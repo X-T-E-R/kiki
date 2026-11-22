@@ -3663,7 +3663,7 @@ it('keeps a merged branch chat live and offers to split it into its own thread',
   await settle();
 
   const sealedBar = dock.querySelector('[data-branch-sealed-bar]');
-  expect(sealedBar?.textContent).toContain(translate('en', 'transcript.branch.sealedContinue'));
+  expect(sealedBar?.textContent).toContain(translate('en', 'transcript.branch.sealed'));
   expect(header.querySelector('[data-branch-fold-action]')).toBeNull();
   const textarea = composerInput(dock);
   expect(textarea.disabled).toBe(false);

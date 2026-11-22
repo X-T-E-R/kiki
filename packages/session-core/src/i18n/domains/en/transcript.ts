@@ -450,7 +450,6 @@ export const transcriptEn = {
   'transcript.branch.openBranch': 'Open branch',
   'transcript.branch.promote': 'Open as thread',
   'transcript.branch.sealed': 'Merged',
-  'transcript.branch.sealedContinue': 'Merged · send a message to continue this branch',
   'transcript.branch.seamHeader': 'Branch of {parent}',
   'transcript.branch.seed.compact': 'Compact',
   'transcript.branch.seed.fresh': 'Fresh',

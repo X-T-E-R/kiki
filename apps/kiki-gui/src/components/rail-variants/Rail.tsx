@@ -1028,7 +1028,7 @@ export const Rail = memo(function Rail({
               <NowAction
                 data-rail-promote=""
                 icon="arrowUpRight"
-                label={t(promote.pending ? 'agent.promotePending' : 'agent.promote')}
+                label={t(promote.pending ? 'agent.promotePending' : (viewingBranch ? 'transcript.branch.promote' : 'agent.promote'))}
                 disabled={promote.pending}
                 onClick={promote.promote}
               />

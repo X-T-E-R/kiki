@@ -680,7 +680,7 @@ function AgentWorkspaceHeader({
                     className={`${isBranch && !branchSealed ? 'flex sm:hidden' : 'flex'} h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent`}
                     onClick={() => { setMenuOpen(false); promote.promote(); }}
                   >
-                    {t(promote.pending ? 'agent.promotePending' : 'agent.promote')}
+                    {t(promote.pending ? 'agent.promotePending' : (isBranch ? 'transcript.branch.promote' : 'agent.promote'))}
                   </button>
                 ) : null}
               </div>
@@ -1824,7 +1824,7 @@ function ChildAgentWorkspace({
             innerClassName="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
           >
             <span className="min-w-0 truncate font-medium text-ink">
-              {t('transcript.branch.sealedContinue')}
+              {t('transcript.branch.sealed')}
             </span>
             <span className="flex shrink-0 items-center gap-1">
               {promoteAction !== undefined ? (
