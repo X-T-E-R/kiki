@@ -462,3 +462,56 @@ describe('a save that lands after the reader moved on', () => {
     expect(setUsage).toHaveBeenCalledWith({ target: { session_id: 'sess-b' }, plugin_id: 'demo', override: 'inherit' });
   });
 });
+
+describe('SessionPluginsPanel high-density search and bounded disclosure', () => {
+  async function setInput(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  it('auto-reveals search and bounds initial enabled rows when 15 plugins are enabled', async () => {
+    const manyEnabled = Array.from({ length: 15 }, (_, index) => item({
+      id: `plugin-${index + 1}`,
+      displayName: index === 12 ? 'Bilibili Operator' : `Plugin ${index + 1}`,
+      effective: true,
+    }));
+    const disabledExtras = Array.from({ length: 3 }, (_, index) => item({
+      id: `disabled-${index + 1}`,
+      displayName: index === 1 ? 'Vaultwarden Secrets' : `Disabled ${index + 1}`,
+      effective: false,
+      global_enabled: false,
+      reason: 'global_disabled',
+    }));
+    getUsage.mockResolvedValue(answer({ plugins: [...manyEnabled, ...disabledExtras] }));
+    await render();
+    await settle();
+
+    // Search auto-reveals when >6 plugins exist, and only first 6 enabled render initially.
+    const search = container.querySelector<HTMLInputElement>('[data-rail-plugins-search]')!;
+    expect(search).not.toBeNull();
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(6);
+    const expandBtn = container.querySelector<HTMLButtonElement>('[data-rail-plugins-enabled-more]')!;
+    expect(expandBtn.textContent).toContain('15');
+
+    // Expanding shows all 15 enabled inside a bounded scroll container.
+    await act(async () => { expandBtn.click(); });
+    expect(container.querySelector('[data-rail-plugins-scroll]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(15);
+
+    // Searching finds both enabled (beyond row 6) and disabled plugins directly.
+    await setInput(search, 'vaultwarden');
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(1);
+    expect(container.querySelector('[data-rail-plugin="disabled-2"]')).not.toBeNull();
+
+    await setInput(search, 'bilibili');
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(1);
+    expect(container.querySelector('[data-rail-plugin="plugin-13"]')).not.toBeNull();
+
+    // Unmatched query renders quiet empty state without defensive prose.
+    await setInput(search, 'nonexistent-xyz');
+    expect(container.querySelector('[data-rail-plugins-no-match]')).not.toBeNull();
+  });
+});

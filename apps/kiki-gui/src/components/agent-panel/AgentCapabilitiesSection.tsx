@@ -506,7 +506,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   // different here), then global; alphabetical inside each.
   const skillGroups = useMemo(() => {
     const byName = (a: AgentSkillCapability, b: AgentSkillCapability) => a.name.localeCompare(b.name);
-    const visible = skills.filter((skill) => matchesQuery(query, skill.name, skill.description));
+    const visible = skills.filter((skill) => matchesQuery(query, skill.name, skill.description, skill.source, skill.path));
     return ([
       ['workspace', t('rail.source.workspace'), visible.filter((skill) => skill.scope === 'workspace').toSorted(byName)],
       ['global', t('rail.source.global'), visible.filter((skill) => skill.scope !== 'workspace').toSorted(byName)],
@@ -528,9 +528,15 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     { id: 'subagents', label: t('inspector.cap.subagents'), count: subagentsStatus === 'ready' ? counts.subagents : undefined },
   ];
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!;
-  // The threshold follows every reported tool, not just the ones that are on:
-  // a group with fifty tools must still be searchable.
-  const searchable = capReady && (tab === 'tools' ? tools.length > CAP_SHOWN : (current.count ?? 0) > CAP_SHOWN);
+  // The threshold follows every reported entry, not just the ones that are on:
+  // a long list with many disabled entries must still be searchable.
+  const searchable = capReady && (
+    tab === 'tools'
+      ? tools.length > CAP_SHOWN
+      : tab === 'skills'
+        ? skills.length > CAP_SHOWN
+        : subagentTargets.length > CAP_SHOWN
+  );
   const onTabKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
     event.preventDefault();

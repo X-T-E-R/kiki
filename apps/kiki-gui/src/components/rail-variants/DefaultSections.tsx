@@ -587,9 +587,12 @@ export function SessionEnvironmentControls({ sessionId }: { sessionId: string })
         <OptionalCapabilityRows sessionId={sessionId} />
       </div>
       <div className="border-t border-hairline pt-3" data-rail-control-group="plugins">
-        <h4 className={`${INSPECTOR_HEAD} pb-1`}>{t('inspector.cap.plugins')}</h4>
         <div className="-mx-2">
-          <SessionPluginsPanel sessionId={sessionId} showStoreActions={false} />
+          <SessionPluginsPanel
+            sessionId={sessionId}
+            showStoreActions={false}
+            headerTitle={t('inspector.cap.plugins')}
+          />
         </div>
       </div>
       <SessionMcpRail sessionId={sessionId} />
