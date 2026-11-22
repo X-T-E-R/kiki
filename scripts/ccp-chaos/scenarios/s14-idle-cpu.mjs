@@ -1,3 +1,4 @@
+import { loadChaosMatrix } from '../matrix/loader.mjs';
 import { sampleDisjointIdleWindow } from '../telemetry/process-tree.mjs';
 import { evaluateIdleCpuGate, FROZEN_V23_THRESHOLDS } from '../verify/verdict.mjs';
 
@@ -21,21 +22,24 @@ export async function runScenarioS14IdleCpu({
   trackedWorkloadPids = [],
   t0LastTerminalReceiptAt = null,
   tier = 'smoke',
+  matrix = null,
   settleSec,
   windowCount,
   windowSec,
   progress = () => {},
 }) {
-  const isFull = tier === 'full';
+  const loadedMatrix = matrix ?? loadChaosMatrix(tier);
+  const idleCfg = loadedMatrix?.tiers?.idleCpu ?? {};
+  const isFull = (loadedMatrix?.tier ?? tier) === 'full';
   const t0Ts = typeof t0LastTerminalReceiptAt === 'number' && t0LastTerminalReceiptAt > 0
     ? t0LastTerminalReceiptAt
     : Date.now();
-  const effectiveSettleSec = settleSec ?? (isFull ? 30 : 25);
+  const effectiveSettleSec = settleSec ?? idleCfg.settleSeconds ?? (isFull ? 30 : 10);
   const effectiveWindowCount = Math.max(
     isFull ? FROZEN_V23_THRESHOLDS.s14.minWindowsFull : FROZEN_V23_THRESHOLDS.s14.minWindowsSmoke,
-    windowCount ?? (isFull ? 12 : 3),
+    windowCount ?? idleCfg.windowCount ?? (isFull ? 12 : 3),
   );
-  const effectiveWindowSec = windowSec ?? (isFull ? 10 : 10);
+  const effectiveWindowSec = windowSec ?? idleCfg.windowSeconds ?? (isFull ? 10 : 5);
 
   let recorderRafDisabled = false;
   let browserPid = null;

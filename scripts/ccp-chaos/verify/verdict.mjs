@@ -2,6 +2,8 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { loadChaosMatrix, resolveS17MatrixConfig } from '../matrix/loader.mjs';
+
 /**
  * Single strict evidence validator and exit-code authority (Astra v2.3 §§7, 9, 10).
  *
@@ -39,7 +41,7 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
       '/status',
       '/transcript/plan',
     ]),
-    fullRequiredSizeMiB: Object.freeze([20, 60, 82.65, 100]),
+    fullRequiredSizeMiB: Object.freeze([20, 60, 82.65, 100, 408.2]),
   }),
   p02: Object.freeze({
     maxInboundBytesPerSecP99: 128 * 1024,
@@ -84,7 +86,128 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
     switchFirstMessagePaintP95MaxMs: 2_000,
     maxJsWireMiB: 2.5,
   }),
+  s17: Object.freeze({
+    searchP95MaxMs: 2_000,
+    listP95MaxMs: 1_000,
+    usageP95MaxMs: 1_500,
+    promptAdmissionMaxMs: 2_500,
+    externalStallHealthMaxMs: 500,
+    processHelperBurstP95MaxMs: 8_000,
+    eldP99MaxMs: 250,
+    eldMaxMs: 1_500,
+  }),
 });
+
+/**
+ * Validates that a loaded matrix JSON (smoke.json, ccp.json, workstation-cliff.json)
+ * has zero threshold/parameter drift against FROZEN_V23_THRESHOLDS.
+ */
+export function validateMatrixThresholdParity(matrix) {
+  const drifts = [];
+  if (!matrix || typeof matrix !== 'object' || !matrix.tiers) {
+    return { ok: false, drifts: ['Missing matrix.tiers'] };
+  }
+  const s10 = matrix.tiers.s10 ?? {};
+  const s10Frozen = FROZEN_V23_THRESHOLDS.s10;
+  for (const key of [
+    'promptAdmissionTextP95Ms',
+    'promptAdmissionTextMaxMs',
+    'promptAdmissionPngP95Ms',
+    'promptAdmissionPngMaxMs',
+    'promptAdmissionP95Ms',
+    'promptAdmissionMaxMs',
+    'sendToReceiptP95Ms',
+    'sendToReceiptMaxMs',
+    'eldP99Ms',
+    'eldMaxMs',
+  ]) {
+    if (s10[key] !== s10Frozen[key]) {
+      drifts.push(`tiers.s10.${key}=${String(s10[key])} !== FROZEN_V23_THRESHOLDS.s10.${key}=${String(s10Frozen[key])}`);
+    }
+  }
+  const idle = matrix.tiers.idleCpu;
+  if (!idle || typeof idle !== 'object') {
+    drifts.push('Missing tiers.idleCpu');
+  } else {
+    if (idle.maxServerCorePct !== FROZEN_V23_THRESHOLDS.s14.maxServerCorePct) {
+      drifts.push(`tiers.idleCpu.maxServerCorePct=${idle.maxServerCorePct} !== ${FROZEN_V23_THRESHOLDS.s14.maxServerCorePct}`);
+    }
+    if (idle.maxRendererPlusGpuCorePct !== FROZEN_V23_THRESHOLDS.s14.maxRendererPlusGpuCorePct) {
+      drifts.push(`tiers.idleCpu.maxRendererPlusGpuCorePct=${idle.maxRendererPlusGpuCorePct} !== ${FROZEN_V23_THRESHOLDS.s14.maxRendererPlusGpuCorePct}`);
+    }
+  }
+  const p01 = matrix.tiers.p01ColdChild;
+  if (!p01 || !Array.isArray(p01.sizesMiB) || p01.sizesMiB.length === 0) {
+    drifts.push('Missing tiers.p01ColdChild.sizesMiB');
+  } else if (matrix.tier === 'full') {
+    const sizes = p01.sizesMiB;
+    for (const reqMiB of FROZEN_V23_THRESHOLDS.p01.fullRequiredSizeMiB) {
+      if (!sizes.some((s) => Math.abs(Number(s) - reqMiB) <= 0.5)) {
+        drifts.push(`tiers.p01ColdChild.sizesMiB missing required empirical size ${reqMiB} MiB`);
+      }
+    }
+  }
+  const s17 = matrix.tiers.s17WorkstationCliff;
+  if (!s17 || typeof s17 !== 'object') {
+    drifts.push('Missing tiers.s17WorkstationCliff');
+  } else {
+    if (s17.sqliteContention?.enableSearch !== true) {
+      drifts.push('tiers.s17WorkstationCliff.sqliteContention.enableSearch must be true');
+    }
+    const T17 = FROZEN_V23_THRESHOLDS.s17;
+    if (s17.sqliteContention?.searchP95MaxMs !== T17.searchP95MaxMs) {
+      drifts.push(`s17.sqliteContention.searchP95MaxMs=${s17.sqliteContention?.searchP95MaxMs} !== ${T17.searchP95MaxMs}`);
+    }
+    if (s17.sqliteContention?.listP95MaxMs !== T17.listP95MaxMs) {
+      drifts.push(`s17.sqliteContention.listP95MaxMs=${s17.sqliteContention?.listP95MaxMs} !== ${T17.listP95MaxMs}`);
+    }
+    if (s17.sqliteContention?.usageP95MaxMs !== T17.usageP95MaxMs) {
+      drifts.push(`s17.sqliteContention.usageP95MaxMs=${s17.sqliteContention?.usageP95MaxMs} !== ${T17.usageP95MaxMs}`);
+    }
+    if (s17.sqliteContention?.promptAdmissionMaxMs !== T17.promptAdmissionMaxMs) {
+      drifts.push(`s17.sqliteContention.promptAdmissionMaxMs=${s17.sqliteContention?.promptAdmissionMaxMs} !== ${T17.promptAdmissionMaxMs}`);
+    }
+    if (s17.externalStalls?.healthMaxMs !== T17.externalStallHealthMaxMs) {
+      drifts.push(`s17.externalStalls.healthMaxMs=${s17.externalStalls?.healthMaxMs} !== ${T17.externalStallHealthMaxMs}`);
+    }
+    if (s17.processHelperContention?.maxBurstP95Ms !== T17.processHelperBurstP95MaxMs) {
+      drifts.push(`s17.processHelperContention.maxBurstP95Ms=${s17.processHelperContention?.maxBurstP95Ms} !== ${T17.processHelperBurstP95MaxMs}`);
+    }
+    const sub = Number(s17.workspacePathCliffs?.subOverflowFiles ?? 0);
+    const over = Number(s17.workspacePathCliffs?.umbrellaOverflowFiles ?? 0);
+    const cap = Number(s17.workspacePathCliffs?.inventoryLimit ?? 0);
+    if (!(sub > 0 && sub < cap && over > cap)) {
+      drifts.push(`s17.workspacePathCliffs must straddle inventoryLimit (${sub} < ${cap} < ${over})`);
+    }
+    if (matrix.tier === 'full') {
+      if ((s17.corpus?.coldSessions ?? 0) < 500) {
+        drifts.push(`full tier s17.corpus.coldSessions=${s17.corpus?.coldSessions} < 500`);
+      }
+      if ((s17.corpus?.maxSubagentsPerSession ?? 0) < 1528) {
+        drifts.push(`full tier s17.corpus.maxSubagentsPerSession=${s17.corpus?.maxSubagentsPerSession} < 1528`);
+      }
+      if ((s17.corpus?.giantMainWireMiB ?? 0) < 3200) {
+        drifts.push(`full tier s17.corpus.giantMainWireMiB=${s17.corpus?.giantMainWireMiB} < 3200`);
+      }
+      if ((s17.corpus?.checkpointlessChildWireMiB ?? 0) < 408) {
+        drifts.push(`full tier s17.corpus.checkpointlessChildWireMiB=${s17.corpus?.checkpointlessChildWireMiB} < 408`);
+      }
+      if (sub < 200_000 || sub >= 250_000) {
+        drifts.push(`full tier s17.workspacePathCliffs.subOverflowFiles=${sub} outside [200000, 250000)`);
+      }
+      if (over < 280_000) {
+        drifts.push(`full tier s17.workspacePathCliffs.umbrellaOverflowFiles=${over} < 280000`);
+      }
+      if ((s17.multiSessionStorm?.activeWritingSessions ?? 0) < 8) {
+        drifts.push(`full tier s17.multiSessionStorm.activeWritingSessions=${s17.multiSessionStorm?.activeWritingSessions} < 8`);
+      }
+      if ((s17.multiSessionStorm?.activeChildren ?? 0) < 40) {
+        drifts.push(`full tier s17.multiSessionStorm.activeChildren=${s17.multiSessionStorm?.activeChildren} < 40`);
+      }
+    }
+  }
+  return { ok: drifts.length === 0, drifts };
+}
 
 export function domainDigest(domain, fields) {
   const h = createHash('sha256');
@@ -939,11 +1062,15 @@ export function evaluateCcpRunVerdict({
       if (chaosReport.overallPassed !== true) {
         productFailures.push('Chaos report overallPassed is not true');
       }
-      if ((chaosReport.skipped ?? 0) > 0) {
-        harnessFailures.push(`Chaos report has skipped=${chaosReport.skipped} > 0`);
+      if (chaosReport.skipped !== 0) {
+        harnessFailures.push(`Chaos report must record skipped === 0, got ${String(chaosReport.skipped)}`);
       }
 
-      const sc = chaosReport.scenarios ?? {};
+      const rawSc = chaosReport.scenarios;
+      if (chaosReport.overallPassed === true && (!rawSc || typeof rawSc !== 'object' || Object.keys(rawSc).length === 0)) {
+        harnessFailures.push('Chaos report scenarios map is missing or empty');
+      }
+      const sc = rawSc && typeof rawSc === 'object' ? rawSc : {};
       const reportTier =
         chaosReport.tier === 'v23-full' || chaosReport.tier === 'full' ? 'full' : 'smoke';
       const enforceV23Set =
@@ -951,6 +1078,7 @@ export function evaluateCcpRunVerdict({
         chaosReport.mode === 'v23' ||
         chaosReport.tier === 'v23-smoke' ||
         chaosReport.tier === 'v23-full';
+      const enforceWorkstationCliff = chaosReport.mode === 'workstation-cliff';
 
       if (enforceV23Set) {
         for (const key of ['p01', 's10', 's11', 's12', 's13', 's14', 's16']) {
@@ -958,6 +1086,9 @@ export function evaluateCcpRunVerdict({
             harnessFailures.push(`Missing required v2.3 scenario "${key}" in chaos report`);
           }
         }
+      }
+      if (enforceWorkstationCliff && (!sc.s17 || typeof sc.s17 !== 'object')) {
+        harnessFailures.push('Missing required scenario "s17" in workstation-cliff chaos report');
       }
 
       if (sc.p01) {
@@ -1078,6 +1209,26 @@ export function evaluateCcpRunVerdict({
         const s16Eval = evaluateS16MobileVerdict(sc.s16);
         productFailures.push(...s16Eval.productFailures);
         harnessFailures.push(...s16Eval.harnessFailures);
+      }
+
+      const normExpectedTier = (t) => (String(t ?? '').includes('full') ? 'full' : 'smoke');
+      if (expectedTier !== undefined && expectedTier !== null && chaosReport.matrix?.tier) {
+        if (normExpectedTier(chaosReport.matrix.tier) !== normExpectedTier(expectedTier)) {
+          harnessFailures.push(
+            `Matrix tier mismatch between manifest ("${String(expectedTier)}") and chaos report matrix ("${chaosReport.matrix.tier}")`,
+          );
+        }
+      }
+      if (sc.s17) {
+        const expectedS17Target =
+          expectedTier !== undefined && expectedTier !== null
+            ? normExpectedTier(expectedTier)
+            : chaosReport.matrix?.name ?? reportTier;
+        const s17Eval = evaluateS17WorkstationCliffVerdict(sc.s17, expectedS17Target);
+        productFailures.push(...s17Eval.productFailures);
+        harnessFailures.push(...s17Eval.harnessFailures);
+      } else if (chaosReport.mode === 'workstation-cliff') {
+        harnessFailures.push('Missing required workstation-cliff scenario "s17" in chaos report');
       }
     }
   }
@@ -1386,6 +1537,347 @@ export function evaluateS16MobileVerdict(report) {
     }
     if ((sw.stickyUnreadCount ?? 0) > 0) {
       productFailures.push(`S16 rapid switch left ${sw.stickyUnreadCount} viewed session(s) with sticky unread state`);
+    }
+  }
+
+  const exitCode =
+    harnessFailures.length > 0
+      ? EXIT_HARNESS_FAIL
+      : productFailures.length > 0
+        ? EXIT_PRODUCT_FAIL
+        : EXIT_PASS;
+
+  return {
+    passed: exitCode === EXIT_PASS,
+    exitCode,
+    status: exitCode === EXIT_PASS ? 'PASS' : exitCode === EXIT_PRODUCT_FAIL ? 'PRODUCT_FAIL' : 'HARNESS_FAIL',
+    productFailures,
+    harnessFailures,
+  };
+}
+
+/**
+ * Evaluates Scenario S17: Empirical Workstation-Cliff Stress Gate
+ * (dual real-directory WorkspacePathIndex cliffs, real [search] + multi-store SQLite contention,
+ * multi-session concurrent writing storm + cold giant main/child wire opens, synchronized 429/524
+ * faults, stalled MCP/SSH endpoints, residency eviction drain, and process-helper contention).
+ */
+export function evaluateS17WorkstationCliffVerdict(report, matrixOrTierOverride = null) {
+  const productFailures = [];
+  const harnessFailures = [];
+  if (!report || typeof report !== 'object') {
+    harnessFailures.push('S17 missing workstation-cliff report');
+    return { passed: false, exitCode: EXIT_HARNESS_FAIL, status: 'HARNESS_FAIL', productFailures, harnessFailures };
+  }
+  const T = FROZEN_V23_THRESHOLDS.s17;
+  let expectedMatrix;
+  try {
+    if (matrixOrTierOverride && typeof matrixOrTierOverride === 'object' && matrixOrTierOverride.tiers) {
+      expectedMatrix = matrixOrTierOverride;
+    } else {
+      const targetName =
+        typeof matrixOrTierOverride === 'string'
+          ? matrixOrTierOverride
+          : report.matrixName && ['smoke', 'ccp', 'workstation-cliff'].includes(report.matrixName)
+            ? report.matrixName
+            : report.tier === 'full'
+              ? 'ccp'
+              : 'smoke';
+      expectedMatrix = loadChaosMatrix(targetName);
+    }
+  } catch (error) {
+    harnessFailures.push(`S17 failed to resolve expected matrix: ${String(error?.message ?? error)}`);
+    return { passed: false, exitCode: EXIT_HARNESS_FAIL, status: 'HARNESS_FAIL', productFailures, harnessFailures };
+  }
+  const tier = expectedMatrix.tier === 'full' ? 'full' : 'smoke';
+  const expectedCfg = resolveS17MatrixConfig(expectedMatrix);
+
+  // 1. Dual WorkspacePathIndex Real-Directory Cliffs (NO symlinks!)
+  const cliffs = report.workspacePathCliffs;
+  if (!cliffs || typeof cliffs !== 'object') {
+    harnessFailures.push('S17 missing workspacePathCliffs evidence');
+  } else {
+    if (cliffs.symlinksUsed !== 0) {
+      harnessFailures.push(`S17 workspacePathCliffs illegally used ${cliffs.symlinksUsed} symlink(s) (must use real directories/files)`);
+    }
+    const sub = cliffs.subOverflow;
+    const over = cliffs.umbrellaOverflow;
+    const minSubFiles = expectedCfg.workspacePathCliffs.subOverflowFiles;
+    const minOverFiles = expectedCfg.workspacePathCliffs.umbrellaOverflowFiles;
+    if (!sub || sub.overflow !== false || (sub.entryCount ?? 0) <= 0 || (sub.fileCount ?? 0) < minSubFiles) {
+      harnessFailures.push(`S17 sub-overflow cliff invalid (overflow=${sub?.overflow}, files=${sub?.fileCount} < ${minSubFiles}, entries=${sub?.entryCount})`);
+    }
+    if (sub && sub.concurrentToolsPassed !== true) {
+      productFailures.push(`S17 sub-overflow concurrent Bash+Glob+Grep leg failed: ${sub.error ?? 'incomplete'}`);
+    }
+    if (!over || over.isNonGit !== true || over.overflow !== true || (over.fileCount ?? 0) < minOverFiles) {
+      harnessFailures.push(`S17 umbrella overflow cliff invalid (isNonGit=${over?.isNonGit}, overflow=${over?.overflow}, files=${over?.fileCount} < ${minOverFiles})`);
+    }
+    if (over && over.fallbackToolsPassed !== true) {
+      productFailures.push(`S17 umbrella overflow fallback leg failed or starved cpuWorker: ${over.error ?? 'incomplete'}`);
+    }
+    if (!cliffs.toolEvidence || typeof cliffs.toolEvidence !== 'object') {
+      harnessFailures.push('S17 workspacePathCliffs missing toolEvidence');
+    } else {
+      if ((cliffs.toolEvidence.concurrentProbesExecuted ?? 0) < Math.max(2, expectedCfg.workspacePathCliffs.concurrentToolProbes ?? 2)) {
+        harnessFailures.push(`S17 workspacePathCliffs concurrent probes under-executed (${cliffs.toolEvidence.concurrentProbesExecuted})`);
+      }
+      if ((cliffs.toolEvidence.toolErrors ?? 0) > 0 || cliffs.toolEvidence.postMutationFileVisible !== true) {
+        productFailures.push(`S17 workspacePathCliffs tool/invalidation evidence failed (${JSON.stringify(cliffs.toolEvidence)})`);
+      }
+    }
+    if (tier === 'full') {
+      if ((sub?.fileCount ?? 0) < 200_000 || (sub?.fileCount ?? 0) >= 250_000) {
+        harnessFailures.push(`S17 full tier sub-overflow fileCount=${sub?.fileCount} outside [200000, 250000)`);
+      }
+      if ((over?.fileCount ?? 0) < 280_000) {
+        harnessFailures.push(`S17 full tier umbrella fileCount=${over?.fileCount} < 280000`);
+      }
+    }
+  }
+
+  // 2. Real [search] + Multi-Store SQLite Contention
+  const sq = report.sqliteContention;
+  if (!sq || typeof sq !== 'object') {
+    harnessFailures.push('S17 missing sqliteContention evidence');
+  } else {
+    if (sq.searchEnabled !== true) {
+      harnessFailures.push('S17 sqliteContention ran with [search] disabled');
+    }
+    if (sq.searchIndexerState === 'unavailable') {
+      productFailures.push('S17 SQLite search indexer reported unavailable');
+    }
+    if (
+      (sq.seededSearchDocs ?? 0) < expectedCfg.sqliteContention.searchSeedDocs ||
+      (sq.seededHistoryNavRows ?? 0) < expectedCfg.sqliteContention.historyNavSeedRows ||
+      (sq.seededUsageFacts ?? 0) < expectedCfg.sqliteContention.usageSeedFacts
+    ) {
+      harnessFailures.push(
+        `S17 sqliteContention underscaled seeds (search=${sq.seededSearchDocs}/${expectedCfg.sqliteContention.searchSeedDocs}, nav=${sq.seededHistoryNavRows}/${expectedCfg.sqliteContention.historyNavSeedRows}, usage=${sq.seededUsageFacts}/${expectedCfg.sqliteContention.usageSeedFacts})`,
+      );
+    }
+    const walStats = sq.walReaderStats;
+    if (
+      !walStats ||
+      walStats.workerThreadsUsed !== true ||
+      walStats.overlappingWalWriter !== true ||
+      (walStats.failed ?? 1) > 0 ||
+      (walStats.matchedRows ?? 0) <= 0 ||
+      (sq.walConcurrentReadsCompleted ?? 0) < expectedCfg.sqliteContention.concurrentWalReaders
+    ) {
+      harnessFailures.push(
+        `S17 sqliteContention WAL multi-thread contention incomplete (reads=${sq.walConcurrentReadsCompleted}, failed=${walStats?.failed}, workerThreads=${walStats?.workerThreadsUsed}, overlappingWriter=${walStats?.overlappingWalWriter}, matchedRows=${walStats?.matchedRows})`,
+      );
+    }
+    if ((sq.searchQueriesSucceeded ?? 0) < expectedCfg.sqliteContention.concurrentSearchQueries || (sq.searchQueriesFailed ?? 0) > 0) {
+      productFailures.push(`S17 /api/search failed under contention (ok=${sq.searchQueriesSucceeded}/${expectedCfg.sqliteContention.concurrentSearchQueries}, failed=${sq.searchQueriesFailed})`);
+    }
+    if ((sq.searchHitsTotal ?? 0) <= 0) {
+      productFailures.push('S17 /api/search returned 0 total hits against pre-populated search-index-v2');
+    }
+    if (!Number.isFinite(sq.searchLatencyMs?.p95)) {
+      harnessFailures.push('S17 missing finite /api/search latency p95');
+    } else if (sq.searchLatencyMs.p95 > T.searchP95MaxMs) {
+      productFailures.push(`S17 /api/search p95 ${sq.searchLatencyMs.p95}ms > ${T.searchP95MaxMs}ms`);
+    }
+    if ((sq.listQueriesSucceeded ?? 0) <= 0 || (sq.listQueriesFailed ?? 0) > 0) {
+      productFailures.push(`S17 /api/sessions list failed under contention (ok=${sq.listQueriesSucceeded}, failed=${sq.listQueriesFailed})`);
+    }
+    if (!Number.isFinite(sq.listLatencyMs?.p95)) {
+      harnessFailures.push('S17 missing finite /api/sessions list latency p95');
+    } else if (sq.listLatencyMs.p95 > T.listP95MaxMs) {
+      productFailures.push(`S17 /api/sessions list p95 ${sq.listLatencyMs.p95}ms > ${T.listP95MaxMs}ms`);
+    }
+    if ((sq.usageQueriesSucceeded ?? 0) <= 0 || (sq.usageQueriesFailed ?? 0) > 0) {
+      productFailures.push(`S17 /api/usage accounting failed under contention (ok=${sq.usageQueriesSucceeded}, failed=${sq.usageQueriesFailed})`);
+    }
+    if (!Number.isFinite(sq.usageLatencyMs?.p95)) {
+      harnessFailures.push('S17 missing finite /api/usage latency p95');
+    } else if (sq.usageLatencyMs.p95 > T.usageP95MaxMs) {
+      productFailures.push(`S17 /api/usage p95 ${sq.usageLatencyMs.p95}ms > ${T.usageP95MaxMs}ms`);
+    }
+    if (sq.promptUnderContentionOk !== true) {
+      productFailures.push(`S17 prompt submission under SQLite contention failed: ${sq.promptError ?? 'not ok'}`);
+    } else if (!Number.isFinite(sq.promptAdmissionMs)) {
+      harnessFailures.push('S17 missing finite promptAdmissionMs under SQLite contention');
+    } else if (sq.promptAdmissionMs > T.promptAdmissionMaxMs) {
+      productFailures.push(`S17 prompt admission under SQLite contention ${sq.promptAdmissionMs}ms > ${T.promptAdmissionMaxMs}ms`);
+    }
+  }
+
+  // 3. Multi-Session Concurrent Storm + Simultaneous Cold Giant Wire Opens
+  const ms = report.multiSessionStorm;
+  if (!ms || typeof ms !== 'object') {
+    harnessFailures.push('S17 missing multiSessionStorm evidence');
+  } else {
+    const reqWriters = expectedCfg.multiSessionStorm.activeWritingSessions;
+    const reqChildren = expectedCfg.multiSessionStorm.activeChildren;
+    const reqColdOpens = expectedCfg.multiSessionStorm.coldGiantOpens ?? 1;
+    if ((ms.writingSessionsAttempted ?? 0) < reqWriters) {
+      harnessFailures.push(`S17 multi-session writers underscaled (${ms.writingSessionsAttempted} < ${reqWriters})`);
+    } else if ((ms.writingSessionsSucceeded ?? 0) < (ms.writingSessionsAttempted ?? 0)) {
+      productFailures.push(`S17 multi-session writers incomplete (${ms.writingSessionsSucceeded}/${ms.writingSessionsAttempted})`);
+    }
+    if ((ms.observedActiveChildren ?? 0) < reqChildren) {
+      harnessFailures.push(`S17 observed spawned children underscaled (${ms.observedActiveChildren} < ${reqChildren})`);
+    }
+    if ((ms.writeResultsOk ?? 0) < reqWriters) {
+      productFailures.push(`S17 multi-session storm Write tool results too low (${ms.writeResultsOk} < ${reqWriters})`);
+    }
+    if (ms.coldOpensOverlappedWriters !== true) {
+      harnessFailures.push('S17 cold wire opens did not overlap active writing storm');
+    }
+    const minMainBytes = Math.floor(Number(expectedCfg.corpus.giantMainWireMiB ?? 1) * 1024 * 1024 * 0.9);
+    const minChildBytes = Math.floor(Number(expectedCfg.corpus.checkpointlessChildWireMiB ?? 1) * 1024 * 1024 * 0.9);
+    if ((ms.coldMainWireBytes ?? 0) < minMainBytes || (ms.coldChildWireBytes ?? 0) < minChildBytes) {
+      harnessFailures.push(
+        `S17 cold wire byte sizes underscaled (main=${ms.coldMainWireBytes} < ${minMainBytes}, child=${ms.coldChildWireBytes} < ${minChildBytes})`,
+      );
+    }
+    if ((ms.coldMainOpensSucceeded ?? 0) < reqColdOpens || (ms.coldMainTranscriptItems ?? 0) <= 0) {
+      productFailures.push(`S17 simultaneous cold giant main wire open failed (${ms.coldMainOpensSucceeded}/${reqColdOpens}, items=${ms.coldMainTranscriptItems})`);
+    }
+    if ((ms.coldChildOpensSucceeded ?? 0) <= 0 || (ms.coldChildTranscriptItems ?? 0) <= 0) {
+      productFailures.push(`S17 simultaneous cold checkpointless child wire open failed (ok=${ms.coldChildOpensSucceeded}, items=${ms.coldChildTranscriptItems})`);
+    }
+    if ((ms.contractViolations ?? 0) > 0) {
+      productFailures.push(`S17 twin recorded ${ms.contractViolations} contract violation(s)`);
+    }
+  }
+
+  // 4. Synchronized 429 (Retry-After / x-should-retry) & 524 Upstream Faults
+  const uf = report.upstreamFaults;
+  if (!uf || typeof uf !== 'object') {
+    harnessFailures.push('S17 missing upstreamFaults evidence');
+  } else {
+    const reqRa = expectedCfg.upstreamFaults.sync429RetryAfterCount;
+    const reqNr = expectedCfg.upstreamFaults.sync429NoRetryCount;
+    const req524 = expectedCfg.upstreamFaults.sync524TimeoutCount;
+    if ((uf.sync429RetryAfterAttempted ?? 0) < reqRa) {
+      harnessFailures.push(`S17 sync 429 Retry-After underscaled (${uf.sync429RetryAfterAttempted} < ${reqRa})`);
+    } else if ((uf.sync429RetryAfterRecovered ?? 0) < (uf.sync429RetryAfterAttempted ?? 0)) {
+      productFailures.push(`S17 sync 429 Retry-After recovery failed (${uf.sync429RetryAfterRecovered}/${uf.sync429RetryAfterAttempted})`);
+    } else if ((uf.sync429RetryAfterDelayRespected ?? 0) < (uf.sync429RetryAfterAttempted ?? 0)) {
+      productFailures.push(`S17 sync 429 Retry-After delay not honored (${uf.sync429RetryAfterDelayRespected}/${uf.sync429RetryAfterAttempted}, delays=${JSON.stringify(uf.sync429RetryAfterDelaysMs)})`);
+    }
+    if ((uf.sync429NoRetryAttempted ?? 0) < reqNr) {
+      harnessFailures.push(`S17 sync 429 x-should-retry:false underscaled (${uf.sync429NoRetryAttempted} < ${reqNr})`);
+    } else if ((uf.sync429NoRetryVetoRespected ?? 0) < (uf.sync429NoRetryAttempted ?? 0)) {
+      productFailures.push(`S17 sync 429 x-should-retry:false veto failed (${uf.sync429NoRetryVetoRespected}/${uf.sync429NoRetryAttempted})`);
+    }
+    if ((uf.sync524Attempted ?? 0) < req524) {
+      harnessFailures.push(`S17 sync 524 underscaled (${uf.sync524Attempted} < ${req524})`);
+    } else if ((uf.sync524Recovered ?? 0) < (uf.sync524Attempted ?? 0)) {
+      productFailures.push(`S17 sync 524 Gateway Timeout recovery failed (${uf.sync524Recovered}/${uf.sync524Attempted})`);
+    }
+  }
+
+  // 5. Slow / Stalled MCP & SSH Mock Endpoints
+  const stalls = report.externalStalls;
+  if (!stalls || typeof stalls !== 'object') {
+    harnessFailures.push('S17 missing externalStalls evidence');
+  } else {
+    if (stalls.mcpStallProbed !== true || (stalls.mcpConnectionsAccepted ?? 0) < 1) {
+      harnessFailures.push(`S17 MCP stall endpoint was not contacted (probed=${stalls.mcpStallProbed}, accepted=${stalls.mcpConnectionsAccepted})`);
+    } else if (stalls.mcpStallContained !== true) {
+      productFailures.push(`S17 MCP stall hung or broke server health: ${stalls.mcpError ?? 'uncontained'}`);
+    }
+    if (stalls.sshStallProbed !== true || (stalls.sshConnectionsAccepted ?? 0) < 1) {
+      harnessFailures.push(`S17 SSH stall endpoint was not contacted (probed=${stalls.sshStallProbed}, accepted=${stalls.sshConnectionsAccepted})`);
+    } else if (stalls.sshStallContained !== true) {
+      productFailures.push(`S17 SSH stall hung or broke server health: ${stalls.sshError ?? 'uncontained'}`);
+    }
+    if ((stalls.concurrentHealthSamples ?? 0) < 3) {
+      harnessFailures.push(`S17 externalStalls recorded too few concurrent /api/healthz samples (${stalls.concurrentHealthSamples})`);
+    }
+    if ((stalls.concurrentHealthFailures ?? 0) > 0) {
+      productFailures.push(`S17 server /api/healthz had ${stalls.concurrentHealthFailures} failure(s) during MCP/SSH stalls`);
+    }
+    if (!Number.isFinite(stalls.concurrentHealthMaxMs)) {
+      harnessFailures.push('S17 externalStalls missing finite concurrentHealthMaxMs');
+    } else if (stalls.concurrentHealthMaxMs > T.externalStallHealthMaxMs) {
+      productFailures.push(`S17 server /api/healthz stalled during MCP/SSH timeouts (${stalls.concurrentHealthMaxMs}ms > ${T.externalStallHealthMaxMs}ms)`);
+    }
+  }
+
+  // 6. Resident-Session Eviction Memory / Handle Drain
+  const ev = report.residencyEviction;
+  if (!ev || typeof ev !== 'object') {
+    harnessFailures.push('S17 missing residencyEviction evidence');
+  } else {
+    if ((ev.sessionsOpened ?? 0) < expectedCfg.residencyEviction.sessionsToOpen) {
+      harnessFailures.push(`S17 residencyEviction opened too few sessions (${ev.sessionsOpened} < ${expectedCfg.residencyEviction.sessionsToOpen})`);
+    }
+    if (!Number.isFinite(ev.peakLiveSessions) || ev.peakLiveSessions <= expectedCfg.residencyEviction.maxLiveSessions) {
+      harnessFailures.push(`S17 residencyEviction peakLiveSessions=${ev.peakLiveSessions} did not exceed maxLiveSessions=${expectedCfg.residencyEviction.maxLiveSessions}`);
+    }
+    if (ev.autoEvictedBelowCap !== true || (ev.autoEvictionSuccesses ?? 0) <= 0) {
+      productFailures.push(`S17 SessionManager automatic residency eviction did not drain below cap (postAuto=${ev.postAutoSweepLiveSessions}, cap=${expectedCfg.residencyEviction.maxLiveSessions}, successes=${ev.autoEvictionSuccesses})`);
+    }
+    if (!Number.isFinite(ev.postEvictLiveSessions) || ev.drainedCleanly !== true) {
+      productFailures.push(`S17 residency eviction did not drain live sessions cleanly (postLive=${ev.postEvictLiveSessions}, maxAllowed=${ev.postEvictMaxLiveSessions})`);
+    }
+    if (
+      !Number.isFinite(ev.peakRssMiB) ||
+      !Number.isFinite(ev.postEvictRssMiB) ||
+      !Number.isFinite(ev.peakHandleCount) ||
+      !Number.isFinite(ev.postEvictHandleCount)
+    ) {
+      harnessFailures.push(
+        `S17 residency eviction missing RSS/handle telemetry (peakRss=${ev.peakRssMiB}, postRss=${ev.postEvictRssMiB}, peakHandles=${ev.peakHandleCount}, postHandles=${ev.postEvictHandleCount})`,
+      );
+    } else {
+      if (ev.postEvictRssMiB > ev.peakRssMiB * 1.2) {
+        productFailures.push(`S17 residency eviction RSS grew post-eviction (${ev.postEvictRssMiB} MiB > 1.2x peak ${ev.peakRssMiB} MiB)`);
+      }
+      if (ev.postEvictHandleCount > ev.peakHandleCount + 64) {
+        productFailures.push(`S17 residency eviction leaked OS handles (${ev.postEvictHandleCount} > peak ${ev.peakHandleCount} + 64)`);
+      }
+    }
+    if ((ev.unhandledRejections ?? 0) > 0 || (ev.uncaughtExceptions ?? 0) > 0) {
+      productFailures.push(`S17 residency eviction observed uncaught/unhandled errors (${ev.unhandledRejections}/${ev.uncaughtExceptions})`);
+    }
+  }
+
+  // 7. Process-Helper Contention (win32 Bash bursts under CPU worker load)
+  const ph = report.processHelperContention;
+  if (!ph || typeof ph !== 'object') {
+    harnessFailures.push('S17 missing processHelperContention evidence');
+  } else {
+    const reqBursts = expectedCfg.processHelperContention.bashBursts;
+    const reqGlobGrep = expectedCfg.processHelperContention.concurrentGlobGrep;
+    if ((ph.burstsAttempted ?? 0) < reqBursts) {
+      harnessFailures.push(`S17 process-helper bursts underscaled (${ph.burstsAttempted} < ${reqBursts})`);
+    } else if ((ph.burstsSucceeded ?? 0) < (ph.burstsAttempted ?? 0)) {
+      productFailures.push(`S17 process-helper Bash bursts failed (${ph.burstsSucceeded}/${ph.burstsAttempted})`);
+    }
+    if ((ph.bashToolCallsOk ?? 0) < reqBursts || (ph.globToolCallsOk ?? 0) < reqGlobGrep || (ph.grepToolCallsOk ?? 0) < reqGlobGrep || (ph.toolErrors ?? 0) > 0) {
+      productFailures.push(`S17 process-helper concurrent Bash/Glob/Grep tool evidence failed (bash=${ph.bashToolCallsOk}/${reqBursts}, glob=${ph.globToolCallsOk}/${reqGlobGrep}, grep=${ph.grepToolCallsOk}/${reqGlobGrep}, errors=${ph.toolErrors})`);
+    }
+    if (ph.platform === 'win32' && ph.win32HelperVerified !== true) {
+      productFailures.push('S17 win32 process-helper verification failed');
+    }
+    if (ph.processScanSucceeded !== true) {
+      harnessFailures.push(`S17 process-tree descendant scan failed: ${ph.processScanError ?? 'unknown'}`);
+    } else if ((ph.survivingDescendants ?? 0) > 0) {
+      productFailures.push(`S17 process-helper contention left ${ph.survivingDescendants} surviving descendant(s)`);
+    }
+    if (!Number.isFinite(ph.burstLatencyMs?.p95)) {
+      harnessFailures.push('S17 missing finite process-helper burst latency p95');
+    } else if (ph.burstLatencyMs.p95 > T.processHelperBurstP95MaxMs) {
+      productFailures.push(`S17 process-helper Bash burst p95 ${ph.burstLatencyMs.p95}ms > ${T.processHelperBurstP95MaxMs}ms`);
+    }
+  }
+
+  // 8. Server Event Loop Health (required finite evidence)
+  if (!Number.isFinite(report.eld?.p99Ms) || !Number.isFinite(report.eld?.maxMs)) {
+    harnessFailures.push(`S17 missing finite server ELD telemetry (p99=${report.eld?.p99Ms}, max=${report.eld?.maxMs})`);
+  } else {
+    if (report.eld.p99Ms > T.eldP99MaxMs) {
+      productFailures.push(`S17 ELD p99 ${report.eld.p99Ms}ms > ${T.eldP99MaxMs}ms`);
+    }
+    if (report.eld.maxMs > T.eldMaxMs) {
+      productFailures.push(`S17 ELD max ${report.eld.maxMs}ms > ${T.eldMaxMs}ms`);
     }
   }
 

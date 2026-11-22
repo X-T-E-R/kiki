@@ -1,0 +1,105 @@
+{
+  "name": "workstation-cliff",
+  "tier": "full",
+  "seed": 20261122,
+  "censusDate": "2026-11-22",
+  "tiers": {
+    "s10": {
+      "turns": 600,
+      "seededSubagents": 1528,
+      "activeChildren": 16,
+      "waves": [16, 32, 48, 80],
+      "scaleUpTiers": [16, 32, 48, 80],
+      "stepsPerChild": 6,
+      "deltasPerStep": 110,
+      "cadenceMs": 16,
+      "workspaceFiles": 21621,
+      "promptRounds": 8,
+      "promptAdmissionTextP95Ms": 250,
+      "promptAdmissionTextMaxMs": 750,
+      "promptAdmissionPngP95Ms": 500,
+      "promptAdmissionPngMaxMs": 1500,
+      "promptAdmissionP95Ms": 500,
+      "promptAdmissionMaxMs": 1500,
+      "sendToReceiptP95Ms": 750,
+      "sendToReceiptMaxMs": 2000,
+      "eldP99Ms": 50,
+      "eldMaxMs": 250
+    },
+    "p01ColdChild": {
+      "sizesMiB": [20, 60, 82.65, 100, 408.2],
+      "lanes": ["legacy", "reopen"],
+      "seedsPerCell": 3,
+      "stepCount": 320
+    },
+    "p02MainOnlyWs": {
+      "activeChildren": [16, 32, 48, 80],
+      "scoringSeconds": 60
+    },
+    "mesh": {
+      "acceptanceSliceSessions": 6,
+      "scaleTiers": [256, 1024],
+      "epochs": 3
+    },
+    "idleCpu": {
+      "settleSeconds": 30,
+      "windowSeconds": 10,
+      "windowCount": 12,
+      "maxServerCorePct": 2.0,
+      "maxRendererPlusGpuCorePct": 3.0
+    },
+    "s17WorkstationCliff": {
+      "corpus": {
+        "workspaces": 102,
+        "coldSessions": 2000,
+        "maxSubagentsPerSession": 1528,
+        "giantMainWireMiB": 3338,
+        "checkpointlessChildWireMiB": 408.2
+      },
+      "workspacePathCliffs": {
+        "inventoryLimit": 250000,
+        "subOverflowFiles": 235000,
+        "umbrellaOverflowFiles": 290000,
+        "concurrentToolProbes": 16
+      },
+      "sqliteContention": {
+        "enableSearch": true,
+        "searchSeedDocs": 60000,
+        "historyNavSeedRows": 50000,
+        "usageSeedFacts": 60000,
+        "concurrentSearchQueries": 48,
+        "concurrentWalReaders": 16,
+        "searchP95MaxMs": 2000,
+        "listP95MaxMs": 1000,
+        "usageP95MaxMs": 1500,
+        "promptAdmissionMaxMs": 2500
+      },
+      "multiSessionStorm": {
+        "activeWritingSessions": 16,
+        "activeChildren": 80,
+        "coldGiantOpens": 2
+      },
+      "upstreamFaults": {
+        "sync429RetryAfterCount": 16,
+        "sync429NoRetryCount": 8,
+        "sync524TimeoutCount": 16
+      },
+      "externalStalls": {
+        "mcpStallMs": 2500,
+        "sshStallMs": 2500,
+        "probeTimeoutMs": 4500,
+        "healthMaxMs": 500
+      },
+      "residencyEviction": {
+        "maxLiveSessions": 16,
+        "sessionsToOpen": 32,
+        "postEvictMaxLiveSessions": 16
+      },
+      "processHelperContention": {
+        "bashBursts": 32,
+        "concurrentGlobGrep": 16,
+        "maxBurstP95Ms": 8000
+      }
+    }
+  }
+}

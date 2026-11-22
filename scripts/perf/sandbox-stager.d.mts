@@ -66,4 +66,6 @@ export function stageCorpusSandbox(options: {
   readonly backgroundRecords?: readonly CorpusRecord[];
   readonly sandboxParentDir?: string;
   readonly isolateProcessEnv?: boolean;
+  readonly extremeFullSize?: boolean;
+  readonly enableSearch?: boolean;
 }): StagedCorpusSandbox;

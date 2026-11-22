@@ -1,26 +1,34 @@
 {
   "name": "smoke",
+  "tier": "smoke",
   "seed": 20261120,
   "tiers": {
     "s10": {
       "turns": 120,
       "seededSubagents": 120,
       "activeChildren": 4,
-      "stepsPerChild": 6,
-      "deltasPerStep": 40,
-      "cadenceMs": 10,
+      "waves": [4],
+      "stepsPerChild": 5,
+      "deltasPerStep": 44,
+      "cadenceMs": 20,
       "workspaceFiles": 400,
+      "promptRounds": 4,
+      "promptAdmissionTextP95Ms": 250,
+      "promptAdmissionTextMaxMs": 750,
+      "promptAdmissionPngP95Ms": 500,
+      "promptAdmissionPngMaxMs": 1500,
       "promptAdmissionP95Ms": 500,
       "promptAdmissionMaxMs": 1500,
-      "sendToReceiptP95Ms": 1000,
-      "sendToReceiptMaxMs": 2500,
-      "eldP99Ms": 150,
-      "eldMaxMs": 500
+      "sendToReceiptP95Ms": 750,
+      "sendToReceiptMaxMs": 2000,
+      "eldP99Ms": 50,
+      "eldMaxMs": 250
     },
     "p01ColdChild": {
       "sizesMiB": [20],
       "lanes": ["legacy", "reopen"],
-      "seedsPerCell": 1
+      "seedsPerCell": 1,
+      "stepCount": 120
     },
     "p02MainOnlyWs": {
       "activeChildren": [4],
@@ -29,6 +37,66 @@
     "mesh": {
       "sessions": 6,
       "epochs": 2
+    },
+    "idleCpu": {
+      "settleSeconds": 10,
+      "windowSeconds": 5,
+      "windowCount": 3,
+      "maxServerCorePct": 2.0,
+      "maxRendererPlusGpuCorePct": 3.0
+    },
+    "s17WorkstationCliff": {
+      "corpus": {
+        "workspaces": 4,
+        "coldSessions": 24,
+        "maxSubagentsPerSession": 64,
+        "giantMainWireMiB": 12,
+        "checkpointlessChildWireMiB": 10
+      },
+      "workspacePathCliffs": {
+        "inventoryLimit": 500,
+        "subOverflowFiles": 360,
+        "umbrellaOverflowFiles": 640,
+        "concurrentToolProbes": 4
+      },
+      "sqliteContention": {
+        "enableSearch": true,
+        "searchSeedDocs": 400,
+        "historyNavSeedRows": 300,
+        "usageSeedFacts": 400,
+        "concurrentSearchQueries": 8,
+        "concurrentWalReaders": 4,
+        "searchP95MaxMs": 2000,
+        "listP95MaxMs": 1000,
+        "usageP95MaxMs": 1500,
+        "promptAdmissionMaxMs": 2500
+      },
+      "multiSessionStorm": {
+        "activeWritingSessions": 4,
+        "activeChildren": 4,
+        "coldGiantOpens": 1
+      },
+      "upstreamFaults": {
+        "sync429RetryAfterCount": 2,
+        "sync429NoRetryCount": 1,
+        "sync524TimeoutCount": 2
+      },
+      "externalStalls": {
+        "mcpStallMs": 500,
+        "sshStallMs": 500,
+        "probeTimeoutMs": 4500,
+        "healthMaxMs": 500
+      },
+      "residencyEviction": {
+        "maxLiveSessions": 4,
+        "sessionsToOpen": 8,
+        "postEvictMaxLiveSessions": 4
+      },
+      "processHelperContention": {
+        "bashBursts": 4,
+        "concurrentGlobGrep": 4,
+        "maxBurstP95Ms": 8000
+      }
     }
   }
 }

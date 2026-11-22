@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
+import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
+
 import {
   checkDiffMockRatchet,
   collectRegisteredFlagIds,
@@ -17,8 +21,25 @@ import {
 } from './check-test-hygiene.mjs';
 import { clone10kSubagents } from './clone-10k-subagents.mjs';
 import { createContractTwinServer } from './contract-twin-server.mjs';
-import { generateChaosCorpus } from './corpus-generator.mjs';
+import { buildChaosConfigToml, generateChaosCorpus } from './corpus-generator.mjs';
+import {
+  encodeFts5Terms,
+  generateRealDirectoryTree,
+  prepopulateHistoryNavigationDb,
+  prepopulateSearchIndexV2,
+  prepopulateUsageReadModelV2,
+  runConcurrentHistoryWalReaders,
+} from './fixtures/real-scale-generators.mjs';
+import {
+  listBuiltinMatrixNames,
+  loadChaosMatrix,
+  resolveP01MatrixSizes,
+  resolveS10MatrixConfig,
+  resolveS17MatrixConfig,
+} from './matrix/loader.mjs';
 import { parseCcpCliArgs, resolveAccountSources, resolveManifestPath } from './run-on-ccp.mjs';
+import { runScenarioS10LiveStorm } from './scenarios/s10-live-orchestrator-storm.mjs';
+import { validateMatrixThresholdParity } from './verify/verdict.mjs';
 import {
   computeSoakLinearSlopes,
   generateExtremeMediaSession,
@@ -1018,5 +1039,215 @@ describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
     const withPopupOverlap = cleanInput();
     withPopupOverlap.flightRecorder.breaches.floatingOverlapBreaches.push({ count: 2 });
     assert.equal(evaluateS9Verdict(withPopupOverlap).passed, false);
+  });
+});
+
+describe('ESC-20261122-002 Workstation-Cliff Matrix, Real-Dir Dual Cliffs, SQLite Pre-Populators & Twin 429/524 Faults', () => {
+  it('enforces single-source-of-truth matrix parity across smoke, ccp, and workstation-cliff with zero drift and fixes s10/search config bugs', () => {
+    assert.equal(typeof runScenarioS10LiveStorm, 'function');
+    const names = listBuiltinMatrixNames();
+    assert.deepEqual(names, ['smoke', 'ccp', 'workstation-cliff']);
+
+    for (const name of names) {
+      const matrix = loadChaosMatrix(name);
+      const parity = validateMatrixThresholdParity(matrix);
+      assert.equal(parity.ok, true, `Matrix ${name} has threshold drift: ${parity.drifts.join('; ')}`);
+      const s10Cfg = resolveS10MatrixConfig(matrix);
+      assert.ok(s10Cfg.turns > 0 && s10Cfg.activeChildren > 0);
+      const s17Cfg = resolveS17MatrixConfig(matrix);
+      assert.equal(s17Cfg.sqliteContention.enableSearch, true);
+      assert.ok(s17Cfg.workspacePathCliffs.subOverflowFiles < s17Cfg.workspacePathCliffs.inventoryLimit);
+      assert.ok(s17Cfg.workspacePathCliffs.umbrellaOverflowFiles > s17Cfg.workspacePathCliffs.inventoryLimit);
+    }
+
+    const ccpP01Sizes = resolveP01MatrixSizes('ccp').map((s) => Number(s.sizeMiB.toFixed(1)));
+    assert.ok(ccpP01Sizes.includes(408.2), `Expected 408.2 MiB empirical child wire max in ccp P0-1 sizes, got ${ccpP01Sizes.join(', ')}`);
+
+    const toml = buildChaosConfigToml({
+      anthropicBaseUrl: 'http://127.0.0.1:41001',
+      openaiBaseUrl: 'http://127.0.0.1:41001/v1',
+      sessionResidency: { maxLiveSessions: 4, idleTtlMs: 3000, minIdleMs: 1000, sweepIntervalMs: 1000 },
+    });
+    assert.match(toml, /\[search\]\s+enabled\s*=\s*true/u);
+    assert.match(toml, /\[session_residency\]\s+max_live_sessions\s*=\s*4/u);
+
+    const parsedCli = parseCcpCliArgs(['--matrix', 'workstation-cliff', '--s17-only', '--workstation-cliff']);
+    assert.equal(parsedCli.matrix, 'workstation-cliff');
+    assert.equal(parsedCli.s17Only, true);
+    assert.equal(parsedCli.workstationCliff, true);
+  });
+
+  it('generates zero-symlink real-directory trees that trigger both WorkspacePathIndex sub-overflow and non-Git umbrella overflow', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-real-dir-cliff-'));
+    try {
+      const subDir = path.join(tmpRoot, 'sub-overflow');
+      const umbrellaDir = path.join(tmpRoot, 'umbrella-overflow');
+
+      const [subTree, umbrellaTree] = await Promise.all([
+        generateRealDirectoryTree({ rootDir: subDir, fileCount: 60, isGitRepo: true, needlePrefix: 'SUB_TEST' }),
+        generateRealDirectoryTree({ rootDir: umbrellaDir, fileCount: 140, isGitRepo: false, needlePrefix: 'UMB_TEST' }),
+      ]);
+
+      assert.equal(subTree.symlinksUsed, 0);
+      assert.equal(umbrellaTree.symlinksUsed, 0);
+      assert.equal(fs.existsSync(path.join(subDir, '.git')), true);
+      assert.equal(fs.existsSync(path.join(umbrellaDir, '.git')), false);
+      assert.ok(subTree.sampleNeedles.length >= 1);
+      assert.ok(umbrellaTree.sampleNeedles.length >= 1);
+      assert.equal(fs.lstatSync(path.join(subDir, subTree.sampleNeedles[0].relPath)).isSymbolicLink(), false);
+      assert.equal(fs.lstatSync(path.join(umbrellaDir, umbrellaTree.sampleNeedles[0].relPath)).isSymbolicLink(), false);
+
+      const rootReq = createRequire(path.join(REPO_ROOT, 'package.json'));
+      const { register } = await import(pathToFileURL(rootReq.resolve('tsx/esm/api')).href);
+      const unregister = register();
+      try {
+        const { workspacePathInventory } = await import(
+          pathToFileURL(path.join(REPO_ROOT, 'packages/agent-core-v2/src/os/backends/node-local/workspacePathInventory.ts')).href
+        );
+        const subInv = workspacePathInventory(subDir, 120);
+        const umbInv = workspacePathInventory(umbrellaDir, 120);
+        assert.equal(subInv.overflow, false);
+        assert.ok(subInv.entries.length >= 60);
+        assert.equal(umbInv.overflow, true);
+      } finally {
+        unregister();
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('pre-populates schema-authentic search-index-v2, history-navigation (WAL + concurrent readers), and usage-read-model-v2 SQLite stores', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-sqlite-seed-'));
+    try {
+      const corpus = generateChaosCorpus({
+        dir: tmpRoot,
+        giantGiB: 0.004,
+        subagentCount: 4,
+        heavySubagentMiB: 1,
+        backgroundSessionCount: 4,
+        workspaceCount: 2,
+        anthropicBaseUrl: 'http://127.0.0.1:41002',
+        openaiBaseUrl: 'http://127.0.0.1:41002/v1',
+      });
+      assert.equal(corpus.enableSearch, true);
+      assert.equal(corpus.workspaceCount, 2);
+
+      const sessionIds = [corpus.giantSessionId, 'chaos_bg_0001', 'chaos_bg_0002'];
+      const searchSeed = prepopulateSearchIndexV2({
+        homeDir: corpus.homeDir,
+        workspaceId: corpus.workspaceId,
+        sessionIds,
+        docCount: 60,
+        needleToken: 'UNIT_SEARCH_NEEDLE',
+      });
+      const navSeed = prepopulateHistoryNavigationDb({
+        homeDir: corpus.homeDir,
+        workspaceId: corpus.workspaceId,
+        sessionIds,
+        rowCount: 50,
+        needleToken: 'UNIT_NAV_NEEDLE',
+      });
+      const usageSeed = prepopulateUsageReadModelV2({
+        homeDir: corpus.homeDir,
+        workspaceId: corpus.workspaceId,
+        sessionIds,
+        factCount: 48,
+      });
+
+      const sdb = new DatabaseSync(searchSeed.dbPath, { readOnly: true });
+      try {
+        assert.equal(sdb.prepare('PRAGMA application_id').get().application_id, 0x4b534958);
+        assert.equal(sdb.prepare('PRAGMA user_version').get().user_version, 2);
+        assert.equal(sdb.prepare("SELECT v FROM meta WHERE k='extractor_version'").get().v, '3');
+        assert.equal(sdb.prepare("SELECT v FROM meta WHERE k='selfcheck'").get().v, 'passed');
+        const termExpr = `"${encodeFts5Terms('UNIT_SEARCH_NEEDLE')}"`;
+        const ftsHits = sdb.prepare('SELECT count(*) AS n FROM docs_terms WHERE docs_terms MATCH ?').get(termExpr);
+        assert.ok(ftsHits.n >= 1);
+      } finally {
+        sdb.close();
+      }
+
+      const ndb = new DatabaseSync(navSeed.dbPath, { readOnly: true });
+      try {
+        assert.equal(ndb.prepare('PRAGMA application_id').get().application_id, 0x4b484e31);
+        assert.equal(ndb.prepare('PRAGMA user_version').get().user_version, 4);
+      } finally {
+        ndb.close();
+      }
+      const walStats = await runConcurrentHistoryWalReaders({
+        dbPath: navSeed.dbPath,
+        needleToken: 'UNIT_NAV_NEEDLE',
+        readerCount: 4,
+        queriesPerReader: 4,
+      });
+      assert.equal(walStats.failed, 0);
+      assert.equal(walStats.workerThreadsUsed, true);
+      assert.equal(walStats.overlappingWalWriter, true);
+      assert.equal(walStats.succeeded, 16);
+      assert.ok(walStats.matchedRows > 0);
+
+      const udb = new DatabaseSync(usageSeed.dbPath, { readOnly: true });
+      try {
+        assert.equal(udb.prepare('PRAGMA application_id').get().application_id, 0x4b555332);
+        assert.equal(udb.prepare('PRAGMA user_version').get().user_version, 2);
+        assert.equal(udb.prepare('SELECT count(*) AS n FROM fact').get().n, 48);
+        assert.ok(udb.prepare('SELECT count(*) AS n FROM source_model_total').get().n >= 1);
+        assert.ok(udb.prepare('SELECT count(*) AS n FROM source_hour_total_v1').get().n >= 1);
+      } finally {
+        udb.close();
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('injects 429 Retry-After, persistent 429 x-should-retry:false, and 524 faults with [CHAOS_SCOPE] precedence over metadata.user_id', async () => {
+    const twin = await createContractTwinServer({ mode: 'clean', seed: 20261122, enableTls: false });
+    try {
+      const postMsg = async (text) =>
+        fetch(`${twin.httpBaseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': 'twin-test' },
+          body: JSON.stringify({
+            model: 'twin-anthropic',
+            max_tokens: 128,
+            metadata: { user_id: 'shared_metadata_user_id' },
+            messages: [{ role: 'user', content: text }],
+          }),
+        });
+
+      const ra1 = await postMsg('[CHAOS_SCOPE:unit_429_ra] [CHAOS:RATE_LIMIT_429_RETRY_AFTER] test');
+      assert.equal(ra1.status, 429);
+      assert.equal(ra1.headers.get('retry-after'), '1');
+      assert.equal(ra1.headers.get('x-should-retry'), 'true');
+      const ra2 = await postMsg('[CHAOS_SCOPE:unit_429_ra] [CHAOS:RATE_LIMIT_429_RETRY_AFTER] test');
+      assert.equal(ra2.status, 200);
+
+      const nr1 = await postMsg('[CHAOS_SCOPE:unit_429_nr] [CHAOS:RATE_LIMIT_429_NO_RETRY] test');
+      assert.equal(nr1.status, 429);
+      assert.equal(nr1.headers.get('x-should-retry'), 'false');
+      const nr1Json = await nr1.json();
+      assert.equal(nr1Json?.error?.retryable, undefined);
+      const nr2 = await postMsg('[CHAOS_SCOPE:unit_429_nr] [CHAOS:RATE_LIMIT_429_NO_RETRY] test');
+      assert.equal(nr2.status, 429);
+      assert.equal(nr2.headers.get('x-should-retry'), 'false');
+
+      const gw1 = await postMsg('[CHAOS_SCOPE:unit_524] [CHAOS:GATEWAY_524] test');
+      assert.equal(gw1.status, 524);
+      assert.equal(gw1.headers.get('x-should-retry'), 'true');
+      const gw2 = await postMsg('[CHAOS_SCOPE:unit_524] [CHAOS:GATEWAY_524] test');
+      assert.equal(gw2.status, 200);
+
+      const stats = twin.getStats();
+      assert.equal(stats.scopeAttempts.unit_429_ra, 2);
+      assert.equal(stats.scopeAttempts.unit_429_nr, 2);
+      assert.equal(stats.scopeAttempts.unit_524, 2);
+      assert.equal(stats.faultsInjected.rate_limit_429_retry_after, 1);
+      assert.equal(stats.faultsInjected.rate_limit_429_no_retry, 2);
+      assert.equal(stats.faultsInjected.gateway_524, 1);
+    } finally {
+      await twin.close();
+    }
   });
 });

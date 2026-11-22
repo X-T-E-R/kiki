@@ -192,7 +192,12 @@ function writeGiantWireFile(filePath, { targetBytes, spikeLineBytes, baseTime })
   };
 }
 
-export function buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSearch = false }) {
+export function buildChaosConfigToml({
+  anthropicBaseUrl,
+  openaiBaseUrl,
+  enableSearch = true,
+  sessionResidency = null,
+}) {
   const lines = [
     'default_model = "twin-anthropic"',
     '',
@@ -239,6 +244,22 @@ export function buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSe
     `enabled = ${enableSearch ? 'true' : 'false'}`,
     '',
   ];
+  if (sessionResidency && typeof sessionResidency === 'object') {
+    lines.push('[session_residency]');
+    if (Number.isInteger(sessionResidency.maxLiveSessions)) {
+      lines.push(`max_live_sessions = ${sessionResidency.maxLiveSessions}`);
+    }
+    if (Number.isInteger(sessionResidency.idleTtlMs)) {
+      lines.push(`idle_ttl_ms = ${sessionResidency.idleTtlMs}`);
+    }
+    if (Number.isInteger(sessionResidency.minIdleMs)) {
+      lines.push(`min_idle_ms = ${sessionResidency.minIdleMs}`);
+    }
+    if (Number.isInteger(sessionResidency.sweepIntervalMs)) {
+      lines.push(`sweep_interval_ms = ${sessionResidency.sweepIntervalMs}`);
+    }
+    lines.push('');
+  }
   return lines.join('\n');
 }
 
@@ -262,7 +283,7 @@ function seedSyntheticWorkspaceFiles(workspaceDir, count = 120) {
   }
 }
 
-export function retargetRestoredCorpus({ dir, anthropicBaseUrl, openaiBaseUrl, enableSearch = false }) {
+export function retargetRestoredCorpus({ dir, anthropicBaseUrl, openaiBaseUrl, enableSearch = true, sessionResidency = null }) {
   const rootDir = path.resolve(dir);
   const homeDir = path.join(rootDir, 'home');
   const workspaceDir = path.join(rootDir, 'workspace');
@@ -279,7 +300,7 @@ export function retargetRestoredCorpus({ dir, anthropicBaseUrl, openaiBaseUrl, e
   );
   fs.writeFileSync(
     path.join(homeDir, 'config.toml'),
-    buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSearch }),
+    buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSearch, sessionResidency }),
     'utf8',
   );
   return {
@@ -323,6 +344,10 @@ export function generateChaosCorpus(options = {}) {
   const anthropicBaseUrl = options.anthropicBaseUrl ?? 'http://127.0.0.1:9';
   const openaiBaseUrl = options.openaiBaseUrl ?? 'http://127.0.0.1:9/v1';
 
+  const enableSearch = options.enableSearch !== false;
+  const sessionResidency = options.sessionResidency ?? null;
+  const workspaceCount = Math.max(1, Number(options.workspaceCount ?? 1));
+
   fs.rmSync(rootDir, { recursive: true, force: true });
   fs.mkdirSync(homeDir, { recursive: true });
   seedSyntheticWorkspaceFiles(workspaceDir, options.workspaceFileCount ?? 120);
@@ -331,18 +356,36 @@ export function generateChaosCorpus(options = {}) {
   const baseTime = 1_760_000_000_000;
   const nowIso = new Date(baseTime).toISOString();
 
+  const workspaceEntries = {
+    [workspaceId]: {
+      root: workspaceDir,
+      name: 'Chaos Benchmark Workspace',
+      created_at: nowIso,
+      last_opened_at: nowIso,
+    },
+  };
+  const extraWorkspaceIds = [];
+  if (workspaceCount > 1) {
+    const extraRoot = path.join(rootDir, 'extra-workspaces');
+    for (let w = 1; w < workspaceCount; w += 1) {
+      const wDir = path.join(extraRoot, `ws-${String(w).padStart(3, '0')}`);
+      fs.mkdirSync(wDir, { recursive: true });
+      const wId = computeChaosWorkDirKey(wDir);
+      extraWorkspaceIds.push({ id: wId, root: wDir });
+      workspaceEntries[wId] = {
+        root: wDir,
+        name: `Chaos Workspace #${w + 1}`,
+        created_at: nowIso,
+        last_opened_at: nowIso,
+      };
+    }
+  }
+
   fs.writeFileSync(
     path.join(homeDir, 'workspaces.json'),
     JSON.stringify({
       version: 1,
-      workspaces: {
-        [workspaceId]: {
-          root: workspaceDir,
-          name: 'Chaos Benchmark Workspace',
-          created_at: nowIso,
-          last_opened_at: nowIso,
-        },
-      },
+      workspaces: workspaceEntries,
       deleted_workspace_ids: [],
     }),
     'utf8',
@@ -350,7 +393,7 @@ export function generateChaosCorpus(options = {}) {
 
   fs.writeFileSync(
     path.join(homeDir, 'config.toml'),
-    buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSearch: false }),
+    buildChaosConfigToml({ anthropicBaseUrl, openaiBaseUrl, enableSearch, sessionResidency }),
     'utf8',
   );
 
@@ -428,11 +471,18 @@ export function generateChaosCorpus(options = {}) {
     'utf8',
   );
 
+  const allWorkspaces = [{ id: workspaceId, root: workspaceDir }, ...extraWorkspaceIds];
+  const backgroundSessionRecords = [];
   for (let i = 0; i < backgroundSessionCount; i += 1) {
     const sid = `chaos_bg_${String(i + 1).padStart(4, '0')}`;
-    const sDir = path.join(homeDir, 'sessions', workspaceId, sid);
+    const targetWs = allWorkspaces[i < 4 ? 0 : i % allWorkspaces.length];
+    const sDir = path.join(homeDir, 'sessions', targetWs.id, sid);
     fs.mkdirSync(path.join(sDir, 'agents', 'main'), { recursive: true });
-    fs.writeFileSync(path.join(sDir, 'agents', 'main', 'wire.jsonl'), minimalSubWire, 'utf8');
+    const bgWire =
+      i < 4
+        ? `${JSON.stringify({ time: baseTime, type: 'metadata', payload: { protocolVersion: '1.3' } })}\n${buildTurnWireLines(1, baseTime, `WORKSTATION_CLIFF_SEARCH_NEEDLE bg-session-${i + 1}`).join('\n')}\n`
+        : minimalSubWire;
+    fs.writeFileSync(path.join(sDir, 'agents', 'main', 'wire.jsonl'), bgWire, 'utf8');
     fs.writeFileSync(
       path.join(sDir, 'state.json'),
       JSON.stringify({
@@ -443,7 +493,7 @@ export function generateChaosCorpus(options = {}) {
         createdAt: baseTime - (i + 1) * 1000,
         updatedAt: baseTime - (i + 1) * 500,
         archived: false,
-        cwd: workspaceDir,
+        cwd: targetWs.root,
         lastTurnReason: 'completed',
         agents: {
           main: {
@@ -457,6 +507,7 @@ export function generateChaosCorpus(options = {}) {
       }),
       'utf8',
     );
+    backgroundSessionRecords.push({ id: sid, workspaceId: targetWs.id, cwd: targetWs.root });
   }
 
   const elapsedMs = Number((performance.now() - startedAt).toFixed(2));
@@ -465,6 +516,8 @@ export function generateChaosCorpus(options = {}) {
     homeDir,
     workspaceDir,
     workspaceId,
+    workspaceCount,
+    enableSearch,
     giantSessionId,
     heavySubagentId,
     giantMainWirePath,
@@ -474,6 +527,7 @@ export function generateChaosCorpus(options = {}) {
     heavySubagentBytes: heavySubStats.bytes,
     subagentCount,
     backgroundSessionCount,
+    backgroundSessionRecords,
     restoredFromArchive: false,
     elapsedMs,
   };

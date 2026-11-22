@@ -2,9 +2,36 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+export const LIVE_WORKSTATION_CENSUS_2026_11_22 = Object.freeze({
+  censusDate: '2026-11-22',
+  workspaces: 102,
+  sessions: 482,
+  subagents: 11_996,
+  maxSubagentsInOneSession: 1_528,
+  wiresAndCheckpointsGiB: 85.14,
+  mainWireP99Bytes: 658_800_000,
+  mainWireMaxBytes: Math.round(3.26 * 1024 * 1024 * 1024),
+  childWireMaxBytes: Math.round(408.2 * 1024 * 1024),
+  sqliteTotalGiB: 7.2,
+  sqliteStores: Object.freeze({
+    searchIndexV2GiB: 4.25,
+    historyNavigationGiB: 2.04,
+    historyNavigationWalMiB: 32,
+    usageReadModelMiB: 730,
+  }),
+  workspacePathCliffs: Object.freeze({
+    inventoryCap: 250_000,
+    subOverflowMinFiles: 200_000,
+    subOverflowMaxFiles: 240_000,
+    umbrellaOverflowMinFiles: 280_000,
+    umbrellaOverflowMaxFiles: 300_000,
+  }),
+});
+
 /**
  * Empirical byte-size quantile definitions from Kiki production telemetry
- * (Astra v2.2 §2 & §9.1). Each population is kept strictly separate.
+ * (Astra v2.2 §2 & §9.1 + live workstation census 2026-11-22).
+ * Each population is kept strictly separate.
  */
 export const EMPIRICAL_POPULATIONS = Object.freeze({
   repoFiles: Object.freeze({
@@ -40,8 +67,19 @@ export const EMPIRICAL_POPULATIONS = Object.freeze({
     max: 388_403,
     mean: 128_000,
   }),
+  mainWires: Object.freeze({
+    n: 482,
+    min: 1_024,
+    p50: 4_850_000,
+    p75: 28_400_000,
+    p90: 142_000_000,
+    p95: 295_000_000,
+    p99: 658_800_000,
+    max: Math.round(3.26 * 1024 * 1024 * 1024),
+    mean: 88_400_000,
+  }),
   historicalChildWires: Object.freeze({
-    n: 521,
+    n: 11_996,
     checkpointlessCensusCount: 511,
     min: 65_536,
     p50: 3_680_502,
@@ -49,16 +87,17 @@ export const EMPIRICAL_POPULATIONS = Object.freeze({
     p90: 18_255_708,
     p95: 28_919_726,
     p99: 64_634_225,
-    max: 106_262_692,
+    max: Math.round(408.2 * 1024 * 1024),
     mean: 7_518_290,
   }),
 });
 
 export const P01_COLD_CHILD_SIZES_BYTES = Object.freeze([
-  { label: '20MB', targetBytes: 20 * 1024 * 1024, stepCount: 120 },
-  { label: '60MB', targetBytes: 60 * 1024 * 1024, stepCount: 220 },
-  { label: '82.65MB', targetBytes: Math.round(82.65 * 1024 * 1024), stepCount: 280 },
-  { label: '100MB', targetBytes: 100 * 1024 * 1024, stepCount: 340 },
+  { label: '20MB', sizeMiB: 20, targetBytes: 20 * 1024 * 1024, stepCount: 120 },
+  { label: '60MB', sizeMiB: 60, targetBytes: 60 * 1024 * 1024, stepCount: 220 },
+  { label: '82.65MB', sizeMiB: 82.65, targetBytes: Math.round(82.65 * 1024 * 1024), stepCount: 280 },
+  { label: '100MB', sizeMiB: 100, targetBytes: 100 * 1024 * 1024, stepCount: 340 },
+  { label: '408.2MB', sizeMiB: 408.2, targetBytes: Math.round(408.2 * 1024 * 1024), stepCount: 360 },
 ]);
 
 export function createSeededRng(seed) {
@@ -234,20 +273,24 @@ export function writeCheckpointlessColdChildWire({
       const callId = `tc-${agentId}-0-${s}`;
       const toolName = toolNames[(s - 1) % toolNames.length];
       const payloadTarget = Math.max(256, perStepTarget - 560);
-      const chunks = [
-        `step=${s}/${stepCount} tool=${toolName} agent=${agentId} marker=${distinctiveMarker} file=src/mod_${String(s).padStart(4, '0')}.ts\n`,
-      ];
-      let accLen = chunks[0].length;
+      const headerLine = `step=${s}/${stepCount} tool=${toolName} agent=${agentId} marker=${distinctiveMarker} file=src/mod_${String(s).padStart(4, '0')}.ts\n`;
+      const blockCap = Math.min(payloadTarget, 16 * 1024);
+      const blockChunks = [headerLine];
+      let blockLen = headerLine.length;
       let lineIdx = 0;
-      while (accLen < payloadTarget) {
+      while (blockLen < blockCap) {
         const h1 = nextU32().toString(16).padStart(8, '0');
         const h2 = nextU32().toString(16).padStart(8, '0');
         const line = `L${String(lineIdx).padStart(5, '0')}:${toolName}:mod_${String(s).padStart(4, '0')}:${h1}${h2}:val=${(nextU32() % 99991).toString()}\n`;
-        chunks.push(line);
-        accLen += line.length;
+        blockChunks.push(line);
+        blockLen += line.length;
         lineIdx += 1;
       }
-      const toolOutput = chunks.join('');
+      const baseBlock = blockChunks.join('');
+      const toolOutput =
+        payloadTarget <= baseBlock.length
+          ? baseBlock
+          : baseBlock.repeat(Math.ceil(payloadTarget / baseBlock.length)).slice(0, payloadTarget);
 
       writeLine({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '0', step: s, uuid: stepUuid }, time: ts });
       writeLine({

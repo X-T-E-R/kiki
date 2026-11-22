@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { loadChaosMatrix } from './matrix/loader.mjs';
 import { evaluateCcpRunVerdict, EXIT_HARNESS_FAIL } from './verify/verdict.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -405,7 +406,12 @@ export async function runChaosOnCcp(options = {}) {
   const s9Only = Boolean(options.s9Only);
   const runS7S8 = Boolean(options.runS7S8);
   const runAll = Boolean(options.runAll);
-  const tier = options.tier === 'smoke' ? 'smoke' : 'full';
+  const resolvedMatrix = options.matrix
+    ? loadChaosMatrix(options.matrix)
+    : options.workstationCliff
+      ? loadChaosMatrix('workstation-cliff')
+      : null;
+  const tier = options.tier === 'smoke' || resolvedMatrix?.tier === 'smoke' ? 'smoke' : 'full';
   const isolatedOnly = s6Only || s7Only || s8Only || s9Only || runS7S8;
   const runS6 = s6Only || runAll || Boolean(options.runS6);
   const runS9 = s9Only || runAll || Boolean(options.runS9);
@@ -722,8 +728,11 @@ export async function runChaosOnCcp(options = {}) {
     const buildId = options.buildId ?? ((gitHead.status === 0 ? gitHead.stdout.trim() : 'unknown') || 'unknown');
     const remoteRunDir = `/tmp/kiki-chaos-run-${runId}`;
     const s10Only = Boolean(options.s10Only);
+    const s17Only = Boolean(options.s17Only || options.workstationCliff);
     const runS10 = s10Only || runAll || Boolean(options.runS10);
-    const effectiveIsolatedOnly = isolatedOnly || s10Only || Boolean(options.v23Smoke || options.v23Full);
+    const runS17 = s17Only || runAll || Boolean(options.runS17 || options.matrix || options.v23Smoke || options.v23Full);
+    const effectiveIsolatedOnly =
+      isolatedOnly || s10Only || s17Only || Boolean(options.matrix || options.v23Smoke || options.v23Full);
 
     // Clean stale local result artifacts in outDir so a failed run can never read an old green JSON
     for (const staleName of [
@@ -738,15 +747,15 @@ export async function runChaosOnCcp(options = {}) {
 
     log(
       effectiveIsolatedOnly
-        ? `Running targeted Chaos-Scale scenarios (runId=${runId}, tier=${tier}, s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}, s9=${s9Only || runS9}, s10=${runS10}) on CCP Linux (keepRuntime=${keepRuntime})...`
-        : `Running test hygiene, node --test, full S1-S5${runAll ? '+S6-S10' : runS9 ? '+S9' : ''} Chaos-Scale + 1000-way + Playwright UX suite (runId=${runId}) on CCP Linux...`,
+        ? `Running targeted Chaos-Scale scenarios (runId=${runId}, tier=${tier}, matrix=${options.matrix ?? 'default'}, s6=${s6Only || runS6}, s7=${s7Only || runS7S8}, s8=${s8Only || runS7S8}, s9=${s9Only || runS9}, s10=${runS10}, s17=${runS17}) on CCP Linux (keepRuntime=${keepRuntime})...`
+        : `Running test hygiene, node --test, full S1-S5${runAll ? '+S6-S10+S17' : runS9 ? '+S9' : ''} Chaos-Scale + 1000-way + Playwright UX suite (runId=${runId}) on CCP Linux...`,
     );
     const runnerFlags = [
       '--dir /tmp/kiki-chaos-nvme',
       `--run-id ${runId}`,
       `--build-id ${buildId}`,
       `--tier ${tier}`,
-      `--giant-gib ${giantGiB}`,
+      ...(options.matrix || options.workstationCliff ? [] : [`--giant-gib ${giantGiB}`]),
       `--concurrency ${concurrency}`,
       `--extreme-concurrency ${extremeConcurrency}`,
       `--max-old-space-mb ${maxOldSpaceMb}`,
@@ -755,12 +764,15 @@ export async function runChaosOnCcp(options = {}) {
       ...(runAll ? ['--run-all'] : []),
       ...(options.v23Smoke ? ['--v23-smoke'] : []),
       ...(options.v23Full ? ['--v23-full'] : []),
+      ...(options.matrix ? [`--matrix "${options.matrix}"`] : []),
+      ...(options.workstationCliff ? ['--workstation-cliff'] : []),
       ...(options.manifestPath ? [`--manifest "${options.manifestPath}"`] : []),
       ...(s6Only ? ['--s6-only'] : options.runS6 ? ['--run-s6'] : []),
       ...(s7Only ? ['--s7-only'] : options.runS7 ? ['--run-s7'] : []),
       ...(s8Only ? ['--s8-only'] : options.runS8 ? ['--run-s8'] : []),
       ...(s9Only ? ['--s9-only'] : options.runS9 ? ['--run-s9'] : []),
       ...(s10Only ? ['--s10-only'] : options.runS10 ? ['--run-s10'] : []),
+      ...(options.s17Only ? ['--s17-only'] : options.runS17 ? ['--run-s17'] : []),
       ...(runS7S8 ? ['--run-s7-s8'] : []),
       ...(s7Only || runS7S8 || runAll || options.runS7 ? [`--s7-cycles ${s7Cycles}`] : []),
       ...(runS6 || runS9 ? [`--tenk-subagents ${tenKSubagentCount}`, `--s6-step-timeout-ms ${s6StepTimeoutMs}`] : []),
@@ -993,6 +1005,9 @@ export function parseCcpCliArgs(args) {
     s8Only: false,
     s9Only: false,
     s10Only: false,
+    s17Only: false,
+    workstationCliff: false,
+    matrix: undefined,
     runS7S8: false,
     runAll: false,
     v23Smoke: false,
@@ -1003,6 +1018,7 @@ export function parseCcpCliArgs(args) {
     runS8: false,
     runS9: false,
     runS10: false,
+    runS17: false,
     s7Cycles: 200,
     tenKSubagentCount: 10_000,
     s6StepTimeoutMs: 45_000,
@@ -1026,6 +1042,9 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--s8-only') opts.s8Only = true;
     else if (args[i] === '--s9-only') opts.s9Only = true;
     else if (args[i] === '--s10-only') opts.s10Only = true;
+    else if (args[i] === '--s17-only') opts.s17Only = true;
+    else if (args[i] === '--workstation-cliff') opts.workstationCliff = true;
+    else if (args[i] === '--matrix' && args[i + 1]) opts.matrix = args[++i];
     else if (args[i] === '--run-s7-s8') opts.runS7S8 = true;
     else if (args[i] === '--run-all') opts.runAll = true;
     else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
@@ -1036,6 +1055,7 @@ export function parseCcpCliArgs(args) {
     else if (args[i] === '--run-s8') opts.runS8 = true;
     else if (args[i] === '--run-s9') opts.runS9 = true;
     else if (args[i] === '--run-s10') opts.runS10 = true;
+    else if (args[i] === '--run-s17') opts.runS17 = true;
     else if (args[i] === '--s7-cycles' && args[i + 1]) opts.s7Cycles = Number(args[++i]);
     else if (args[i] === '--tenk-subagents' && args[i + 1]) opts.tenKSubagentCount = Number(args[++i]);
     else if (args[i] === '--s6-step-timeout-ms' && args[i + 1]) opts.s6StepTimeoutMs = Number(args[++i]);

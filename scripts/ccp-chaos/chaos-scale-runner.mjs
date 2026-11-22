@@ -24,6 +24,7 @@ import {
   runScenarioS9BrowserFlightRecorder,
   seedS9ChaosExtensions,
 } from './scenario-s9-browser-flight-recorder.mjs';
+import { loadChaosMatrix, resolveS17MatrixConfig } from './matrix/loader.mjs';
 import { runScenarioS10LiveStorm } from './scenarios/s10-live-orchestrator-storm.mjs';
 import { runP01ColdChildFanoutProbe } from './scenarios/p01-cold-child-open.mjs';
 import { runScenarioS11Mesh256 } from './scenarios/s11-mesh-256-1024.mjs';
@@ -31,7 +32,9 @@ import { runScenarioS12BlindHmacTrials } from './scenarios/s12-blind-hmac-trials
 import { runScenarioS13ChaosFaults } from './scenarios/s13-chaos-faults.mjs';
 import { runScenarioS14IdleCpu } from './scenarios/s14-idle-cpu.mjs';
 import { runScenarioS16MobileHeavySession } from './scenarios/s16-mobile-heavy-session.mjs';
+import { prepopulateS17SqliteStores, runScenarioS17WorkstationCliff } from './scenarios/s17-workstation-cliff.mjs';
 import { listDescendantPids } from './telemetry/process-tree.mjs';
+import { validateMatrixThresholdParity } from './verify/verdict.mjs';
 import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 import { ensureGuiStaticBuild } from '../perf/browser-runner.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
@@ -395,7 +398,11 @@ if (isServerWorker) {
       unhandledRejections,
       uncaughtExceptions,
       errorSamples: [...errorSamples],
-      liveSessionCount: server.core.accessor.get(ISessionManager).listLive?.().length ?? null,
+      residencyReport: server.core.accessor.get(ISessionManager).residencyReport?.() ?? null,
+      liveSessionCount:
+        server.core.accessor.get(ISessionManager).residencyReport?.()?.liveSessions ??
+        server.core.accessor.get(ISessionManager).listLive?.().length ??
+        null,
     };
   };
 
@@ -1951,15 +1958,6 @@ const FROZEN_S5_DESKTOP_BUDGETS = Object.freeze({
 export async function runChaosScaleSuite(options = {}) {
   const startedAt = performance.now();
   const dir = path.resolve(options.dir ?? '/tmp/kiki-chaos-nvme');
-  const tier = options.tier === 'smoke' ? 'smoke' : 'full';
-  const s9TierConfig = resolveS9TierConfig(tier);
-  const giantGiB = options.giantGiB ?? (tier === 'smoke' ? s9TierConfig.giantGiB : 3.1);
-  const subagentCount = options.subagentCount ?? (tier === 'smoke' ? 80 : 1520);
-  const concurrency = options.concurrency ?? (tier === 'smoke' ? 16 : 128);
-  const extremeConcurrency = options.extremeConcurrency ?? (tier === 'smoke' ? 0 : 1000);
-  const maxOldSpaceMb = options.maxOldSpaceMb ?? 2048;
-  const existingCorpus = Boolean(options.existingCorpus);
-  const runBrowser = options.runBrowser !== false;
   const s6Only = Boolean(options.s6Only);
   const s7Only = Boolean(options.s7Only);
   const s8Only = Boolean(options.s8Only);
@@ -1971,13 +1969,87 @@ export async function runChaosScaleSuite(options = {}) {
   const s13Only = Boolean(options.s13Only);
   const s14Only = Boolean(options.s14Only);
   const s16Only = Boolean(options.s16Only);
+  const s17Only = Boolean(options.s17Only || options.workstationCliff);
   const v23Smoke = Boolean(options.v23Smoke);
   const v23Full = Boolean(options.v23Full);
-  const effectiveTier = v23Full ? 'full' : v23Smoke ? 'smoke' : tier;
   const runS7S8 = Boolean(options.runS7S8);
   const runAll = Boolean(options.runAll);
+
+  const explicitMatrixInput =
+    options.matrix ?? (options.workstationCliff ? 'workstation-cliff' : null);
+  const explicitScenarioFlags =
+    s6Only ||
+    s7Only ||
+    s8Only ||
+    s9Only ||
+    s10Only ||
+    p01Only ||
+    s11Only ||
+    s12Only ||
+    s13Only ||
+    s14Only ||
+    s16Only ||
+    s17Only ||
+    v23Smoke ||
+    v23Full ||
+    runS7S8 ||
+    runAll ||
+    Boolean(
+      options.runS6 ||
+        options.runS7 ||
+        options.runS8 ||
+        options.runS9 ||
+        options.runS10 ||
+        options.runP01 ||
+        options.runS11 ||
+        options.runS12 ||
+        options.runS13 ||
+        options.runS14 ||
+        options.runS16 ||
+        options.runS17,
+    );
+  const matrixModeOnly = Boolean(explicitMatrixInput && !explicitScenarioFlags);
+
+  let loadedMatrix = null;
+  if (explicitMatrixInput) {
+    loadedMatrix = loadChaosMatrix(explicitMatrixInput);
+  } else if (s17Only || options.runS17 || v23Smoke || v23Full || runAll) {
+    const defaultName = v23Full ? 'ccp' : v23Smoke || options.tier === 'smoke' ? 'smoke' : 'ccp';
+    loadedMatrix = loadChaosMatrix(defaultName);
+  }
+  if (loadedMatrix) {
+    const parity = validateMatrixThresholdParity(loadedMatrix);
+    if (!parity.ok) {
+      throw new Error(
+        `Matrix threshold parity failed for ${loadedMatrix.name}: ${(parity.drifts ?? []).join('; ')}`,
+      );
+    }
+  }
+
+  const tier =
+    options.tier === 'smoke' || loadedMatrix?.tier === 'smoke'
+      ? 'smoke'
+      : 'full';
+  const effectiveTier = v23Full ? 'full' : v23Smoke ? 'smoke' : tier;
+  const s9TierConfig = resolveS9TierConfig(effectiveTier);
+  const s17Config = resolveS17MatrixConfig(loadedMatrix ?? effectiveTier);
   const isolatedOnly =
-    s6Only || s7Only || s8Only || s9Only || s10Only || p01Only || s11Only || s12Only || s13Only || s14Only || s16Only || v23Smoke || v23Full || runS7S8;
+    s6Only ||
+    s7Only ||
+    s8Only ||
+    s9Only ||
+    s10Only ||
+    p01Only ||
+    s11Only ||
+    s12Only ||
+    s13Only ||
+    s14Only ||
+    s16Only ||
+    s17Only ||
+    matrixModeOnly ||
+    v23Smoke ||
+    v23Full ||
+    runS7S8;
   const runS6 = s6Only || runAll || Boolean(options.runS6);
   const runS7 = s7Only || runS7S8 || runAll || Boolean(options.runS7);
   const runS8 = s8Only || runS7S8 || runAll || Boolean(options.runS8);
@@ -1989,19 +2061,66 @@ export async function runChaosScaleSuite(options = {}) {
   const runS13 = s13Only || v23Smoke || v23Full || runAll || Boolean(options.runS13);
   const runS14 = s14Only || v23Smoke || v23Full || runAll || Boolean(options.runS14);
   const runS16 = s16Only || v23Smoke || v23Full || runAll || Boolean(options.runS16);
+  const runS17 = s17Only || matrixModeOnly || v23Smoke || v23Full || runAll || Boolean(options.runS17);
+
+  const useS17CorpusDefaults = s17Only || matrixModeOnly;
+  const giantGiB =
+    options.giantGiB ??
+    (useS17CorpusDefaults
+      ? Number((s17Config.corpus.giantMainWireMiB / 1024).toFixed(4))
+      : effectiveTier === 'smoke'
+        ? s9TierConfig.giantGiB
+        : 3.1);
+  const subagentCount =
+    options.subagentCount ??
+    (useS17CorpusDefaults
+      ? s17Config.corpus.maxSubagentsPerSession
+      : effectiveTier === 'smoke'
+        ? 80
+        : 1520);
+  const backgroundSessionCount =
+    options.backgroundSessionCount ??
+    (runS17
+      ? s17Config.corpus.coldSessions
+      : effectiveTier === 'smoke'
+        ? 12
+        : 80);
+  const workspaceCount =
+    options.workspaceCount ??
+    (runS17 ? s17Config.corpus.workspaces : 1);
+  const sessionResidencyConfig = runS17
+    ? {
+        maxLiveSessions: s17Config.residencyEviction.maxLiveSessions,
+        idleTtlMs: 2_000,
+        minIdleMs: 500,
+        sweepIntervalMs: 1_000,
+      }
+    : null;
+  const concurrency = options.concurrency ?? (effectiveTier === 'smoke' ? 16 : 128);
+  const extremeConcurrency = options.extremeConcurrency ?? (effectiveTier === 'smoke' ? 0 : 1000);
+  const maxOldSpaceMb = options.maxOldSpaceMb ?? 2048;
+  const existingCorpus = Boolean(options.existingCorpus);
+  const runBrowser = options.runBrowser !== false;
   const runId = options.runId ?? `chaos_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const s7Cycles = options.s7Cycles ?? 200;
-  const tenKSubagentCount = options.tenKSubagentCount ?? (tier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
+  const tenKSubagentCount = options.tenKSubagentCount ?? (effectiveTier === 'smoke' ? s9TierConfig.subagentCount : 10_000);
   const s6StepTimeoutMs = options.s6StepTimeoutMs ?? 45_000;
   const progress = (msg) => process.stderr.write(`[ccp-chaos] ${msg}\n`);
 
-  const { createKlient } = await import(
-    pathToFileURL(path.join(REPO_ROOT, 'packages/klient/src/transports/http/index.ts')).href
-  );
+  let createKlient = null;
+  if (!isolatedOnly || runS6) {
+    ({ createKlient } = await import(
+      pathToFileURL(path.join(REPO_ROOT, 'packages/klient/src/transports/http/index.ts')).href
+    ));
+  }
   const kapRequire = createRequire(path.join(REPO_ROOT, 'packages', 'kap-server', 'package.json'));
   const { WebSocket } = kapRequire('ws');
 
-  const twin = await createContractTwinServer({ mode: 'clean', seed: 20261120, enableTls: true });
+  const twin = await createContractTwinServer({
+    mode: 'clean',
+    seed: loadedMatrix?.seed ?? 20261120,
+    enableTls: true,
+  });
   progress(`Contract Twin live: HTTP/1.1=${twin.httpBaseUrl}, HTTP/2 TLS=${twin.h2BaseUrl}`);
 
   const corpus = existingCorpus && fs.existsSync(path.join(dir, 'home', 'workspaces.json'))
@@ -2010,21 +2129,43 @@ export async function runChaosScaleSuite(options = {}) {
         anthropicBaseUrl: twin.httpBaseUrl,
         openaiBaseUrl: twin.httpV1BaseUrl,
         enableSearch: true,
+        sessionResidency: sessionResidencyConfig,
       })
     : generateChaosCorpus({
         dir,
         giantGiB,
         subagentCount,
-        heavySubagentMiB: options.heavySubagentMiB ?? (tier === 'smoke' ? 1 : 16),
-        backgroundSessionCount: options.backgroundSessionCount ?? (tier === 'smoke' ? 12 : 80),
+        heavySubagentMiB: options.heavySubagentMiB ?? (effectiveTier === 'smoke' ? 1 : 16),
+        backgroundSessionCount,
+        workspaceCount,
         anthropicBaseUrl: twin.httpBaseUrl,
         openaiBaseUrl: twin.httpV1BaseUrl,
         enableSearch: true,
+        sessionResidency: sessionResidencyConfig,
       });
   twin.setWorkspaceDir(corpus.workspaceDir);
   progress(
-    `Corpus ready (${corpus.restoredFromArchive ? 'RESTORED from Drive DIRECT_HTTPS' : `generated in ${corpus.elapsedMs}ms`}): giant=${corpus.giantMainWireGiB} GiB, subagents=${corpus.subagentCount}, bg=${corpus.backgroundSessionCount}`,
+    `Corpus ready (${corpus.restoredFromArchive ? 'RESTORED from Drive DIRECT_HTTPS' : `generated in ${corpus.elapsedMs}ms`}): giant=${corpus.giantMainWireGiB} GiB, subagents=${corpus.subagentCount}, bg=${corpus.backgroundSessionCount}, workspaces=${corpus.workspaceCount ?? 1}`,
   );
+
+  let s17SqliteSeed = null;
+  if (runS17) {
+    const bgIds = Array.isArray(corpus.backgroundSessionRecords)
+      ? corpus.backgroundSessionRecords.filter((r) => r.workspaceId === corpus.workspaceId).map((r) => r.id).slice(0, 64)
+      : Array.from(
+          { length: Math.min(corpus.backgroundSessionCount ?? 0, 64) },
+          (_, idx) => `chaos_bg_${String(idx + 1).padStart(4, '0')}`,
+        );
+    s17SqliteSeed = prepopulateS17SqliteStores({
+      homeDir: corpus.homeDir,
+      workspaceId: corpus.workspaceId,
+      sessionIds: [corpus.giantSessionId, ...bgIds],
+      s17Config,
+    });
+    progress(
+      `Pre-populated S17 SQLite stores: searchDocs=${s17SqliteSeed.searchSeed.seededDocs}, historyNavRows=${s17SqliteSeed.historyNavSeed.seededRows}, usageFacts=${s17SqliteSeed.usageSeed.seededFacts}`,
+    );
+  }
 
   let tenKCorpus = null;
   if (runS6 || runS9) {
@@ -2109,8 +2250,16 @@ export async function runChaosScaleSuite(options = {}) {
   const report = {
     runId,
     buildId: options.buildId ?? 'local',
-    mode: v23Full || v23Smoke ? 'v23' : 'standard',
+    mode: v23Full || v23Smoke ? 'v23' : s17Only || matrixModeOnly ? 'workstation-cliff' : 'standard',
     tier: v23Full ? 'v23-full' : v23Smoke ? 'v23-smoke' : effectiveTier,
+    matrix: loadedMatrix
+      ? {
+          name: loadedMatrix.name,
+          tier: loadedMatrix.tier,
+          path: loadedMatrix.path,
+          parityOk: true,
+        }
+      : null,
     skipped: 0,
     timestamp: new Date().toISOString(),
     environment: {
@@ -2163,7 +2312,7 @@ export async function runChaosScaleSuite(options = {}) {
   };
 
   const needsGuiWebAssets =
-    runBrowser && (!isolatedOnly || runS6 || runS7 || runS8 || runS9 || runS10 || runP01 || runS16);
+    runBrowser && (!isolatedOnly || runS6 || runS7 || runS8 || runS9 || runS10 || (runP01 && !matrixModeOnly) || runS16);
   const guiDistBuild = needsGuiWebAssets
     ? ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'))
     : null;
@@ -2353,6 +2502,7 @@ export async function runChaosScaleSuite(options = {}) {
         corpus,
         WebSocket,
         tier: effectiveTier,
+        matrix: loadedMatrix,
         runBrowser,
         keepBrowserAlive: runBrowser && (runP01 || runS14),
         progress,
@@ -2384,8 +2534,9 @@ export async function runChaosScaleSuite(options = {}) {
         corpus,
         WebSocket,
         tier: effectiveTier,
+        matrix: loadedMatrix,
         targetBytes: options.p01Bytes ?? null,
-        stepCount: options.p01Steps ?? 200,
+        stepCount: options.p01Steps ?? null,
         reopenSession: s10ReopenCandidates.length > 0 ? s10ReopenCandidates : s10ReopenCandidate,
         browserHandle: sharedBrowserHandle,
         progress,
@@ -2456,6 +2607,7 @@ export async function runChaosScaleSuite(options = {}) {
         trackedWorkloadPids: [...trackedWorkloadPids],
         t0LastTerminalReceiptAt,
         tier: effectiveTier,
+        matrix: loadedMatrix,
         settleSec: options.idleSettleSec,
         windowCount: options.idleWindows,
         windowSec: options.idleWindowSec,
@@ -2480,6 +2632,23 @@ export async function runChaosScaleSuite(options = {}) {
         recordSkipped('S16_mobileHeavySession', 'skipped by --no-browser flag');
         report.scenarios.s16 = report.scenarios.S16_mobileHeavySession;
       }
+      persistCheckpoint();
+    }
+
+    if (runS17) {
+      const s17Res = await runScenarioS17WorkstationCliff({
+        server: mainServer,
+        twin,
+        corpus,
+        workRoot: dir,
+        tier: effectiveTier,
+        matrix: loadedMatrix,
+        sqliteSeeds: s17SqliteSeed,
+        progress,
+      });
+      report.scenarios.S17_workstationCliff = s17Res;
+      report.scenarios.s17 = s17Res;
+      t0LastTerminalReceiptAt = Date.now();
       persistCheckpoint();
     }
 
@@ -2515,6 +2684,7 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS13) checks.push(recordCheck(report.scenarios.S13_chaosFaults));
       if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
       if (runS16) checks.push(recordCheck(report.scenarios.S16_mobileHeavySession));
+      if (runS17) checks.push(recordCheck(report.scenarios.S17_workstationCliff));
       report.overallPassed = report.skipped === 0 && checks.length > 0 && checks.every(Boolean);
     } else {
       const checks = [
@@ -2535,6 +2705,7 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS13) checks.push(recordCheck(report.scenarios.S13_chaosFaults));
       if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
       if (runS16) checks.push(recordCheck(report.scenarios.S16_mobileHeavySession));
+      if (runS17) checks.push(recordCheck(report.scenarios.S17_workstationCliff));
       report.overallPassed = report.skipped === 0 && checks.every(Boolean);
     }
     report.exitCode = report.overallPassed ? 0 : exitCodes.includes(2) ? 2 : 1;
@@ -2575,6 +2746,9 @@ if (isCliMain && !isServerWorker) {
     s13Only: false,
     s14Only: false,
     s16Only: false,
+    s17Only: false,
+    workstationCliff: false,
+    matrix: undefined,
     v23Smoke: false,
     v23Full: false,
     p01Bytes: undefined,
@@ -2595,6 +2769,7 @@ if (isCliMain && !isServerWorker) {
     runS13: false,
     runS14: false,
     runS16: false,
+    runS17: false,
     runId: undefined,
     buildId: undefined,
     s7Cycles: 200,
@@ -2625,6 +2800,9 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s13-only') opts.s13Only = true;
     else if (args[i] === '--s14-only') opts.s14Only = true;
     else if (args[i] === '--s16-only') opts.s16Only = true;
+    else if (args[i] === '--s17-only') opts.s17Only = true;
+    else if (args[i] === '--workstation-cliff') opts.workstationCliff = true;
+    else if (args[i] === '--matrix' && args[i + 1]) opts.matrix = args[++i];
     else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
     else if (args[i] === '--v23-full') { opts.v23Full = true; opts.tier = 'full'; }
     else if (args[i] === '--p01-bytes' && args[i + 1]) opts.p01Bytes = Number(args[++i]);
@@ -2645,8 +2823,13 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--run-s13') opts.runS13 = true;
     else if (args[i] === '--run-s14') opts.runS14 = true;
     else if (args[i] === '--run-s16') opts.runS16 = true;
+    else if (args[i] === '--run-s17') opts.runS17 = true;
     else if (args[i] === '--manifest' && args[i + 1]) {
-      const m = JSON.parse(fs.readFileSync(args[++i], 'utf8'));
+      const manifestFile = args[++i];
+      const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+      if (m.tiers && typeof m.tiers === 'object') {
+        opts.matrix = manifestFile;
+      }
       if (m.tier) opts.tier = m.tier;
       if (typeof m.p01Bytes === 'number') opts.p01Bytes = m.p01Bytes;
       if (typeof m.meshSessions === 'number') opts.meshSessions = m.meshSessions;
@@ -2659,6 +2842,7 @@ if (isCliMain && !isServerWorker) {
           else if (sc === 's13') opts.runS13 = true;
           else if (sc === 's14') opts.runS14 = true;
           else if (sc === 's16') opts.runS16 = true;
+          else if (sc === 's17') opts.runS17 = true;
         }
         opts.v23Smoke = true;
       }

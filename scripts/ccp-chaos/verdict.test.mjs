@@ -33,13 +33,16 @@ import {
   evaluateP1TimeoutVsDetachCell,
   evaluateS10Verdict,
   evaluateS16MobileVerdict,
+  evaluateS17WorkstationCliffVerdict,
   EXIT_HARNESS_FAIL,
   EXIT_PASS,
   EXIT_PRODUCT_FAIL,
+  validateMatrixThresholdParity,
   verifyMeshGraph,
   verifySavedBundle,
   verifySixStageChildChain,
 } from './verify/verdict.mjs';
+import { loadChaosMatrix } from './matrix/loader.mjs';
 import { evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 
 const AST_BUILD_SCRIPT = path.resolve(import.meta.dirname, 'workloads', 'ast-build.mjs');
@@ -1233,5 +1236,301 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(s16Cheated.passed, false);
     assert.equal(s16Cheated.exitCode, EXIT_HARNESS_FAIL);
+  });
+
+  it('S17 Workstation-Cliff negative meta-gates & matrix threshold drift detector', () => {
+    // Matrix drift detection rejects mutated thresholds, missing sections, and underscaled full workloads
+    const driftedMatrix = structuredClone(loadChaosMatrix('smoke'));
+    driftedMatrix.tiers.s17WorkstationCliff.sqliteContention.searchP95MaxMs = 99999;
+    const parityFail = validateMatrixThresholdParity(driftedMatrix);
+    assert.equal(parityFail.ok, false);
+    assert.ok(parityFail.drifts.some((d) => d.includes('searchP95MaxMs')));
+
+    const missingIdle = structuredClone(loadChaosMatrix('smoke'));
+    delete missingIdle.tiers.idleCpu;
+    assert.equal(validateMatrixThresholdParity(missingIdle).ok, false);
+
+    const driftedPrompt = structuredClone(loadChaosMatrix('smoke'));
+    driftedPrompt.tiers.s17WorkstationCliff.sqliteContention.promptAdmissionMaxMs = 1;
+    assert.equal(validateMatrixThresholdParity(driftedPrompt).ok, false);
+
+    const underscaledFull = structuredClone(loadChaosMatrix('ccp'));
+    underscaledFull.tiers.s17WorkstationCliff.corpus.coldSessions = 1;
+    assert.equal(validateMatrixThresholdParity(underscaledFull).ok, false);
+
+    const cleanS17 = () => ({
+      runId: 's17_unit_clean',
+      matrixName: 'smoke',
+      tier: 'smoke',
+      platform: 'win32',
+      workspacePathCliffs: {
+        inventoryLimit: 500,
+        symlinksUsed: 0,
+        toolEvidence: {
+          concurrentProbesExecuted: 4,
+          concurrentProbesSucceeded: 4,
+          postMutationFileVisible: true,
+          bashResultsOk: 2,
+          globResultsOk: 3,
+          grepResultsOk: 3,
+          toolErrors: 0,
+        },
+        subOverflow: { fileCount: 360, entryCount: 401, overflow: false, concurrentToolsPassed: true },
+        umbrellaOverflow: { fileCount: 640, isNonGit: true, overflow: true, fallbackToolsPassed: true },
+      },
+      sqliteContention: {
+        searchEnabled: true,
+        searchIndexerState: 'ready',
+        seededSearchDocs: 400,
+        seededHistoryNavRows: 300,
+        seededUsageFacts: 400,
+        searchQueriesSucceeded: 8,
+        searchQueriesFailed: 0,
+        searchHitsTotal: 24,
+        searchLatencyMs: { p95: 420 },
+        listQueriesSucceeded: 4,
+        listQueriesFailed: 0,
+        listLatencyMs: { p95: 180 },
+        usageQueriesSucceeded: 4,
+        usageQueriesFailed: 0,
+        usageLatencyMs: { p95: 310 },
+        walConcurrentReadsCompleted: 24,
+        walReaderStats: {
+          workerThreadsUsed: true,
+          overlappingWalWriter: true,
+          walWritesCompleted: 4,
+          walBytesObserved: 16384,
+          failed: 0,
+          matchedRows: 240,
+        },
+        promptUnderContentionOk: true,
+        promptAdmissionMs: 920,
+      },
+      multiSessionStorm: {
+        writingSessionsAttempted: 4,
+        writingSessionsSucceeded: 4,
+        activeChildrenTarget: 4,
+        observedActiveChildren: 4,
+        writeResultsOk: 6,
+        coldOpensOverlappedWriters: true,
+        coldMainWireBytes: 12_641_291,
+        coldMainOpensAttempted: 1,
+        coldMainOpensSucceeded: 1,
+        coldMainTranscriptItems: 12,
+        coldChildWireBytes: 10_737_418,
+        coldChildOpensSucceeded: 1,
+        coldChildTranscriptItems: 5,
+        contractViolations: 0,
+      },
+      upstreamFaults: {
+        sync429RetryAfterAttempted: 2,
+        sync429RetryAfterRecovered: 2,
+        sync429RetryAfterDelayRespected: 2,
+        sync429RetryAfterDelaysMs: [1050, 1080],
+        sync429NoRetryAttempted: 1,
+        sync429NoRetryVetoRespected: 1,
+        sync524Attempted: 2,
+        sync524Recovered: 2,
+      },
+      externalStalls: {
+        mcpStallProbed: true,
+        mcpConnectionsAccepted: 1,
+        mcpStallContained: true,
+        sshStallProbed: true,
+        sshConnectionsAccepted: 1,
+        sshStallContained: true,
+        concurrentHealthSamples: 12,
+        concurrentHealthFailures: 0,
+        concurrentHealthMaxMs: 42,
+      },
+      residencyEviction: {
+        sessionsOpened: 8,
+        peakLiveSessions: 8,
+        peakRssMiB: 1320,
+        peakHandleCount: 440,
+        postAutoSweepLiveSessions: 4,
+        autoEvictionAttempts: 8,
+        autoEvictionSuccesses: 4,
+        autoEvictedBelowCap: true,
+        postEvictLiveSessions: 0,
+        postEvictMaxLiveSessions: 4,
+        postEvictRssMiB: 1280,
+        postEvictHandleCount: 410,
+        drainedCleanly: true,
+        unhandledRejections: 0,
+        uncaughtExceptions: 0,
+      },
+      processHelperContention: {
+        platform: 'win32',
+        burstsAttempted: 4,
+        burstsSucceeded: 4,
+        concurrentGlobGrepCount: 4,
+        bashToolCallsOk: 4,
+        globToolCallsOk: 4,
+        grepToolCallsOk: 4,
+        toolErrors: 0,
+        win32HelperVerified: true,
+        processScanSucceeded: true,
+        burstLatencyMs: { p95: 4200 },
+        survivingDescendants: 0,
+      },
+      eld: { p99Ms: 35, maxMs: 180 },
+    });
+
+    const ok = evaluateS17WorkstationCliffVerdict(cleanS17(), 'smoke');
+    assert.equal(ok.passed, true, `Expected cleanS17 pass, got: ${JSON.stringify(ok)}`);
+    assert.equal(ok.exitCode, EXIT_PASS);
+
+    // 1. Symlink cheat fails harness
+    const withSymlinks = cleanS17();
+    withSymlinks.workspacePathCliffs.symlinksUsed = 12;
+    assert.equal(evaluateS17WorkstationCliffVerdict(withSymlinks, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 2. Disabled [search] fails harness
+    const searchOff = cleanS17();
+    searchOff.sqliteContention.searchEnabled = false;
+    assert.equal(evaluateS17WorkstationCliffVerdict(searchOff, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 3. Zero search hits fails product gate
+    const zeroHits = cleanS17();
+    zeroHits.sqliteContention.searchHitsTotal = 0;
+    assert.equal(evaluateS17WorkstationCliffVerdict(zeroHits, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
+
+    // 4. Failed WAL reads or missing Worker threads fail harness
+    const walFailed = cleanS17();
+    walFailed.sqliteContention.walReaderStats.failed = 1;
+    assert.equal(evaluateS17WorkstationCliffVerdict(walFailed, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 5. Underscaled writers/children or zero-byte cold wires fail harness (including full tier)
+    const underscaledStorm = cleanS17();
+    underscaledStorm.multiSessionStorm.writingSessionsAttempted = 1;
+    underscaledStorm.multiSessionStorm.writingSessionsSucceeded = 1;
+    assert.equal(evaluateS17WorkstationCliffVerdict(underscaledStorm, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    const zeroWire = cleanS17();
+    zeroWire.multiSessionStorm.coldChildWireBytes = 0;
+    assert.equal(evaluateS17WorkstationCliffVerdict(zeroWire, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 6. Smoke receipt mutated to full file counts still fails full tier on underscaled writers/children/seeds
+    const fakeFull = cleanS17();
+    fakeFull.workspacePathCliffs.subOverflow.fileCount = 220_000;
+    fakeFull.workspacePathCliffs.umbrellaOverflow.fileCount = 290_000;
+    assert.equal(evaluateS17WorkstationCliffVerdict(fakeFull, 'full').exitCode, EXIT_HARNESS_FAIL);
+
+    // 7. Missing ELD fails harness
+    const noEld = cleanS17();
+    delete noEld.eld;
+    assert.equal(evaluateS17WorkstationCliffVerdict(noEld, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 8. SSH mock with 0 accepted connections fails harness
+    const sshUncontacted = cleanS17();
+    sshUncontacted.externalStalls.sshConnectionsAccepted = 0;
+    assert.equal(evaluateS17WorkstationCliffVerdict(sshUncontacted, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 9. Failed 429 x-should-retry:false veto or unhonored Retry-After delay fails product gate
+    const badVeto = cleanS17();
+    badVeto.upstreamFaults.sync429NoRetryVetoRespected = 0;
+    assert.equal(evaluateS17WorkstationCliffVerdict(badVeto, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
+
+    const noDelay = cleanS17();
+    noDelay.upstreamFaults.sync429RetryAfterDelayRespected = 0;
+    assert.equal(evaluateS17WorkstationCliffVerdict(noDelay, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
+
+    // 10. Failed automatic eviction or failed process scan fails gate
+    const noAutoEvict = cleanS17();
+    noAutoEvict.residencyEviction.autoEvictedBelowCap = false;
+    noAutoEvict.residencyEviction.autoEvictionSuccesses = 0;
+    assert.equal(evaluateS17WorkstationCliffVerdict(noAutoEvict, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
+
+    const badScan = cleanS17();
+    badScan.processHelperContention.processScanSucceeded = false;
+    assert.equal(evaluateS17WorkstationCliffVerdict(badScan, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    // 11. Surviving workload descendants fail product gate
+    const leakedChild = cleanS17();
+    leakedChild.processHelperContention.survivingDescendants = 1;
+    assert.equal(evaluateS17WorkstationCliffVerdict(leakedChild, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
+
+    // 12. S17 integrates cleanly into evaluateCcpRunVerdict, and empty scenarios/missing skipped fail closed
+    const ccpPass = evaluateCcpRunVerdict({
+      expectedRunId: 'run_s17_ok',
+      expectedBuildId: 'build_s17_ok',
+      remoteExitCode: 0,
+      receipt: {
+        runId: 'run_s17_ok',
+        buildId: 'build_s17_ok',
+        stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } },
+      },
+      chaosReport: {
+        runId: 'run_s17_ok',
+        buildId: 'build_s17_ok',
+        mode: 'workstation-cliff',
+        tier: 'smoke',
+        matrix: { name: 'smoke', tier: 'smoke', parityOk: true },
+        overallPassed: true,
+        skipped: 0,
+        scenarios: { s17: cleanS17() },
+      },
+      hygieneReport: { ok: true, contractFailures: [], unexemptedDisabled: [], unexemptedTreeMocks: [] },
+    });
+    assert.equal(ccpPass.passed, true, `Expected ccpPass.passed=true, got: ${JSON.stringify(ccpPass)}`);
+    assert.equal(ccpPass.exitCode, EXIT_PASS);
+
+    const strippedBundle = evaluateCcpRunVerdict({
+      expectedRunId: 'run_s17_ok',
+      expectedBuildId: 'build_s17_ok',
+      remoteExitCode: 0,
+      receipt: {
+        runId: 'run_s17_ok',
+        buildId: 'build_s17_ok',
+        stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } },
+      },
+      chaosReport: {
+        runId: 'run_s17_ok',
+        buildId: 'build_s17_ok',
+        overallPassed: true,
+      },
+      hygieneReport: { ok: true, contractFailures: [], unexemptedDisabled: [], unexemptedTreeMocks: [] },
+    });
+    assert.equal(strippedBundle.passed, false);
+    assert.equal(strippedBundle.exitCode, EXIT_HARNESS_FAIL);
+
+    // 13. Smoke matrix cannot spoof expectedTier='full', and 1-byte wires / leaked handles / missing toolEvidence fail
+    const spoofedMatrix = evaluateCcpRunVerdict({
+      expectedRunId: 'run_s17_ok',
+      expectedBuildId: 'build_s17_ok',
+      expectedTier: 'full',
+      remoteExitCode: 0,
+      receipt: {
+        runId: 'run_s17_ok',
+        buildId: 'build_s17_ok',
+        stages: { hygiene: { exitCode: 0 }, unitTests: { exitCode: 0 }, chaos: { exitCode: 0 } },
+      },
+      chaosReport: {
+        runId: 'run_s17_ok',
+        buildId: 'build_s17_ok',
+        mode: 'workstation-cliff',
+        tier: 'full',
+        matrix: { name: 'smoke', tier: 'smoke', parityOk: true },
+        overallPassed: true,
+        skipped: 0,
+        scenarios: { s17: cleanS17() },
+      },
+      hygieneReport: { ok: true, contractFailures: [], unexemptedDisabled: [], unexemptedTreeMocks: [] },
+    });
+    assert.equal(spoofedMatrix.passed, false);
+    assert.equal(spoofedMatrix.exitCode, EXIT_HARNESS_FAIL);
+
+    const oneByteWire = cleanS17();
+    oneByteWire.multiSessionStorm.coldMainWireBytes = 1;
+    assert.equal(evaluateS17WorkstationCliffVerdict(oneByteWire, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    const missingToolEv = cleanS17();
+    delete missingToolEv.workspacePathCliffs.toolEvidence;
+    assert.equal(evaluateS17WorkstationCliffVerdict(missingToolEv, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    const leakedHandles = cleanS17();
+    leakedHandles.residencyEviction.postEvictHandleCount = 999_999;
+    assert.equal(evaluateS17WorkstationCliffVerdict(leakedHandles, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
   });
 });

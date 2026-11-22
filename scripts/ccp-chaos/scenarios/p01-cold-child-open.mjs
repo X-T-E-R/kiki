@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { P01_COLD_CHILD_SIZES_BYTES, writeCheckpointlessColdChildWire } from '../fixtures/empirical-manifest.mjs';
+import { resolveP01MatrixSizes } from '../matrix/loader.mjs';
 import { evaluateP01ColdChildGate } from '../verify/verdict.mjs';
 
 function roundMs(ms) {
@@ -436,9 +437,10 @@ export async function runP01ColdChildFanoutProbe({
   corpus,
   WebSocket,
   tier = 'smoke',
+  matrix = null,
   targetBytes = null,
   targetSizesBytes = null,
-  stepCount = 200,
+  stepCount = null,
   reopenSession = null,
   browserHandle = null,
   progress = () => {},
@@ -447,9 +449,7 @@ export async function runP01ColdChildFanoutProbe({
     ? targetSizesBytes
     : typeof targetBytes === 'number' && targetBytes > 0
       ? [targetBytes]
-      : tier === 'full'
-        ? [...P01_COLD_CHILD_SIZES_BYTES]
-        : [P01_COLD_CHILD_SIZES_BYTES[2]];
+      : resolveP01MatrixSizes(matrix ?? tier);
 
   const trials = [];
   const productFailures = [];
@@ -459,9 +459,11 @@ export async function runP01ColdChildFanoutProbe({
     const sizeEntry = sizes[si];
     const sizeBytes = typeof sizeEntry === 'object' && sizeEntry !== null ? Number(sizeEntry.targetBytes) : Number(sizeEntry);
     const entryStepCount =
-      typeof sizeEntry === 'object' && sizeEntry !== null && Number.isFinite(sizeEntry.stepCount)
-        ? Number(sizeEntry.stepCount)
-        : stepCount;
+      typeof stepCount === 'number' && Number.isFinite(stepCount) && stepCount > 0
+        ? Math.floor(stepCount)
+        : typeof sizeEntry === 'object' && sizeEntry !== null && Number.isFinite(sizeEntry.stepCount)
+          ? Number(sizeEntry.stepCount)
+          : 200;
     const sessionId = `chaos_p01_${si}_${randomUUID().slice(0, 8)}`;
     const childAgentId = 'sub_cold_p01';
     const seeded = seedColdCheckpointlessChildSession({

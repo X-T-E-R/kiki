@@ -360,7 +360,10 @@ const CHAOS_TAG_MAP = [
   ['[CHAOS:SOFT_SAFETY]', 'soft_safety'],
   ['[CHAOS:MALFORMED_TOOL]', 'malformed_tool'],
   ['[CHAOS:EARLY_413]', 'early_413'],
+  ['[CHAOS:RATE_LIMIT_429_RETRY_AFTER]', 'rate_limit_429_retry_after'],
+  ['[CHAOS:RATE_LIMIT_429_NO_RETRY]', 'rate_limit_429_no_retry'],
   ['[CHAOS:RATE_LIMIT_429]', 'rate_limit_429'],
+  ['[CHAOS:GATEWAY_524]', 'gateway_524'],
   ['[CHAOS:MID_STREAM_EOF]', 'mid_stream_eof'],
   ['[CHAOS:SLOW_DRIP]', 'slow_drip'],
   ['[CHAOS:THREAD_LOST]', 'thread_lost'],
@@ -401,10 +404,10 @@ function detectStreamHoldMs(text) {
 }
 
 function extractScopeKey(headers, body, promptText) {
-  const userId = body?.metadata?.user_id;
-  if (typeof userId === 'string' && userId.length > 0) return userId;
   const tagMatch = /\[CHAOS_SCOPE:([A-Za-z0-9_.:-]+)\]/u.exec(promptText);
   if (tagMatch) return tagMatch[1];
+  const userId = body?.metadata?.user_id;
+  if (typeof userId === 'string' && userId.length > 0) return userId;
   const sessionHeader = extractHeader(headers, 'x-session-id') ?? extractHeader(headers, 'x-kiki-session-id');
   if (sessionHeader) return sessionHeader;
   const firstUserText = promptText.slice(0, 120);
@@ -571,6 +574,8 @@ export async function createContractTwinServer(options = {}) {
   const pending413Scopes = new Map();
   const oneShotFaultFired = new Set();
   const scopeToolStep = new Map();
+  const scopeAttempts = new Map();
+  const scopeAttemptTimestamps = new Map();
   const toolIdToName = new Map();
   const barriers = new Map();
   const violations = [];
@@ -697,7 +702,7 @@ export async function createContractTwinServer(options = {}) {
     const tagged = detectTaggedFault(promptText);
     if (tagged) {
       const shotKey = `${scopeKey}:${tagged}`;
-      if (tagged === 'soft_safety') {
+      if (tagged === 'soft_safety' || tagged === 'rate_limit_429_no_retry') {
         return tagged;
       }
       if (!oneShotFaultFired.has(shotKey)) {
@@ -996,6 +1001,57 @@ export async function createContractTwinServer(options = {}) {
       return;
     }
 
+    if (faultKind === 'rate_limit_429_retry_after') {
+      sendJson(
+        res,
+        429,
+        {
+          type: 'error',
+          error: {
+            type: 'rate_limit_error',
+            code: 'rate_limit_exceeded',
+            message: 'Synchronized 429 burst with Retry-After and x-should-retry: true',
+          },
+        },
+        { 'retry-after': '1', 'x-should-retry': 'true' },
+      );
+      return;
+    }
+
+    if (faultKind === 'rate_limit_429_no_retry') {
+      sendJson(
+        res,
+        429,
+        {
+          type: 'error',
+          error: {
+            type: 'rate_limit_error',
+            code: 'rate_limit_exceeded',
+            message: 'Upstream 429 with explicit HTTP x-should-retry: false veto header',
+          },
+        },
+        { 'retry-after': '5', 'x-should-retry': 'false' },
+      );
+      return;
+    }
+
+    if (faultKind === 'gateway_524') {
+      sendJson(
+        res,
+        524,
+        {
+          type: 'error',
+          error: {
+            type: 'server_error',
+            code: 'gateway_timeout_524',
+            message: 'Cloudflare origin timeout (524) — retryable upstream stall',
+          },
+        },
+        { 'x-should-retry': 'true' },
+      );
+      return;
+    }
+
     if (faultKind === 'thread_lost') {
       sendJson(res, 400, {
         type: 'error',
@@ -1281,6 +1337,10 @@ export async function createContractTwinServer(options = {}) {
 
           const promptText = extractAllPromptText(body);
           const scopeKey = extractScopeKey(req.headers, body, promptText);
+          scopeAttempts.set(scopeKey, (scopeAttempts.get(scopeKey) ?? 0) + 1);
+          const tsList = scopeAttemptTimestamps.get(scopeKey) ?? [];
+          tsList.push(Date.now());
+          scopeAttemptTimestamps.set(scopeKey, tsList);
           const mediaInfo = countMediaBlocks(body);
 
           const pending413 = pending413Scopes.get(scopeKey);
@@ -1913,6 +1973,8 @@ export async function createContractTwinServer(options = {}) {
       violations: [...violations],
       pending413Scopes: pending413Scopes.size,
       trackedThreads: threadStore.size,
+      scopeAttempts: Object.fromEntries(scopeAttempts.entries()),
+      scopeAttemptTimestamps: Object.fromEntries(scopeAttemptTimestamps.entries()),
     }),
     resetStats: () => {
       violations.length = 0;
@@ -1921,6 +1983,8 @@ export async function createContractTwinServer(options = {}) {
       pending413Scopes.clear();
       oneShotFaultFired.clear();
       scopeToolStep.clear();
+      scopeAttempts.clear();
+      scopeAttemptTimestamps.clear();
       toolIdToName.clear();
       for (const k of Object.keys(counters)) counters[k] = 0;
     },
@@ -1931,9 +1995,19 @@ export async function createContractTwinServer(options = {}) {
           b.releaseFn();
         }
       }
-      await Promise.all([
+      const closePromises = [
         new Promise((resolve) => httpServer.close(() => resolve())),
         h2Server ? new Promise((resolve) => h2Server.close(() => resolve())) : Promise.resolve(),
+      ];
+      try {
+        httpServer.closeAllConnections?.();
+      } catch {}
+      try {
+        h2Server?.closeAllConnections?.();
+      } catch {}
+      await Promise.race([
+        Promise.all(closePromises),
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
       ]);
     },
   };
