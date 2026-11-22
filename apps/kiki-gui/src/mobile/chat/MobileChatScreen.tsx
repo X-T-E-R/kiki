@@ -29,6 +29,8 @@ interface MobileChatScreenProps {
   readonly onBack?: () => void;
   readonly onOpenWorkbench: () => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
+  /** Persona name known before the session snapshot loads (composer placeholder). */
+  readonly personaNameHint?: string;
 }
 
 export function MobileChatScreen({
@@ -42,12 +44,14 @@ export function MobileChatScreen({
   onBack,
   onOpenWorkbench,
   onOpenVoiceForChat,
+  personaNameHint,
 }: MobileChatScreenProps) {
   const { t } = useI18n();
   const stream = useMobileSessionStream(client, spaceKey, sessionId);
   const [hoodOpen, setHoodOpen] = useState(false);
   const [hoodTab, setHoodTab] = useState<HoodTab>('info');
   const [hoodChangeId, setHoodChangeId] = useState<string | undefined>(undefined);
+  const [hoodModels, setHoodModels] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [planMode, setPlanMode] = useState(false);
   const isRoot = variant === 'root';
@@ -56,9 +60,10 @@ export function MobileChatScreen({
   const [swipeX, setSwipeX] = useState(0);
   const edgeSwipeRef = useRef<{ readonly startX: number; readonly startY: number; active: boolean } | null>(null);
 
-  const openHood = (tab: HoodTab, changeId?: string) => {
+  const openHood = (tab: HoodTab, changeId?: string, models = false) => {
     setHoodTab(tab);
     setHoodChangeId(changeId);
+    setHoodModels(models);
     setHoodOpen(true);
   };
 
@@ -183,6 +188,8 @@ export function MobileChatScreen({
         onLoadOlder={() => { void stream.loadOlder(); }}
         onOpenHood={openHood}
         onResolveApproval={(approvalId, decision, reason) => { void stream.resolveApproval(approvalId, decision, reason); }}
+        onAnswerQuestion={stream.answerQuestion}
+        onDismissQuestion={stream.dismissQuestion}
         onOpenWorkbench={onOpenWorkbench}
       />
 
@@ -209,11 +216,11 @@ export function MobileChatScreen({
 
         <MobileComposer
           draftKey={`${spaceKey}::${sessionId}`}
-          spaceName={persona?.name ?? spaceName}
+          spaceName={persona?.name ?? personaNameHint ?? spaceName}
           busy={stream.state.busy}
           planMode={planMode}
           onPlanModeChange={setPlanMode}
-          onOpenModelPicker={() => { openHood('info'); }}
+          onOpenModelPicker={() => { openHood('info', undefined, true); }}
           onOpenVoice={() => {
             onOpenVoiceForChat((spoken) => {
               void send(spoken);
@@ -230,6 +237,7 @@ export function MobileChatScreen({
         open={hoodOpen}
         initialTab={hoodTab}
         initialChangeId={hoodChangeId}
+        initialModelPicker={hoodModels}
         onClose={() => { setHoodOpen(false); }}
         client={client}
         spaceKey={spaceKey}

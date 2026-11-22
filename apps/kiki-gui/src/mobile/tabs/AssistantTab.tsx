@@ -11,7 +11,8 @@ import type { KikiClient } from '../../lib/client';
 import { MobileChatScreen } from '../chat/MobileChatScreen';
 import { AssistantSetupView, type AssistantComputer } from '../components/AssistantSetupView';
 import { NeedsYouSheet, NeedsYouStrip } from '../components/NeedsYouStrip';
-import { useMobileAssistant, writeMobileAssistant } from '../mobileAssistantStore';
+import { spaceKeyToScope } from '../../lib/useMultiSpaceSessions';
+import { assistantScopeTarget, useMobileAssistant, writeMobileAssistant, type MobileAssistantBinding } from '../mobileAssistantStore';
 
 interface AssistantTabProps {
   /** Concrete space from the current scope, or undefined for All spaces. */
@@ -25,6 +26,8 @@ interface AssistantTabProps {
   readonly onPairComputer: () => void;
   readonly onOpenWorkbench: (spaceKey: string, sessionId: string) => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
+  /** Moves the global space scope (a `spaceScope` token). */
+  readonly onScopeChange: (scope: string) => void;
 }
 
 /**
@@ -43,12 +46,21 @@ export function AssistantTab({
   onPairComputer,
   onOpenWorkbench,
   onOpenVoiceForChat,
+  onScopeChange,
 }: AssistantTabProps) {
   const { t } = useI18n();
   const recent = useMobileAssistant(undefined);
   const preferredKey = scopeSpaceKey ?? recent?.spaceKey ?? computers[0]?.spaceKey;
   const binding = useMobileAssistant(preferredKey);
-  const [setupSpaceKey, setSetupSpaceKey] = useState<string | undefined>(preferredKey);
+  // A computer picked in setup only counts while the scope it was picked under is current.
+  const [setupChoice, setSetupChoice] = useState<{ readonly base: string | undefined; readonly spaceKey: string } | undefined>(undefined);
+  const setupSpaceKey = setupChoice !== undefined && setupChoice.base === preferredKey ? setupChoice.spaceKey : undefined;
+  const setSetupSpaceKey = (spaceKey: string) => { setSetupChoice({ base: preferredKey, spaceKey }); };
+  const startAssistant = (next: MobileAssistantBinding) => {
+    writeMobileAssistant(next);
+    const target = assistantScopeTarget(scopeSpaceKey, next.spaceKey);
+    if (target !== undefined) onScopeChange(spaceKeyToScope(target));
+  };
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [needsYouOpen, setNeedsYouOpen] = useState(false);
 
@@ -81,7 +93,7 @@ export function AssistantTab({
           spaceKey={setupSpaceKey ?? preferredKey}
           onSelectSpace={setSetupSpaceKey}
           resolveClient={resolveClient}
-          onStarted={writeMobileAssistant}
+          onStarted={startAssistant}
           onPairComputer={onPairComputer}
         />
         {needsYouSheet}
@@ -106,7 +118,10 @@ export function AssistantTab({
             type="button"
             data-mobile-assistant-switch
             aria-label={t('mobile.assistant.switch')}
-            onClick={() => { setSwitcherOpen(true); }}
+            onClick={() => {
+              setSetupChoice(undefined);
+              setSwitcherOpen(true);
+            }}
             className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-full py-1 pl-1.5 pr-3 text-left transition-colors hover:bg-ink/[0.04]"
           >
             <PersonaAvatar persona={personaAvatarOf({ id: binding.personaId, name: personaName })} size={34} />
@@ -122,6 +137,7 @@ export function AssistantTab({
         belowHeader={<NeedsYouStrip count={needsYouItems.length} onOpen={() => { setNeedsYouOpen(true); }} />}
         onOpenWorkbench={() => { onOpenWorkbench(binding.spaceKey, binding.sessionId); }}
         onOpenVoiceForChat={onOpenVoiceForChat}
+        personaNameHint={boundPersona?.name}
       />
 
       {switcherOpen ? (
@@ -142,7 +158,7 @@ export function AssistantTab({
             resolveClient={resolveClient}
             initialPersonaId={(setupSpaceKey ?? binding.spaceKey) === binding.spaceKey ? binding.personaId : undefined}
             onStarted={(next) => {
-              writeMobileAssistant(next);
+              startAssistant(next);
               setSwitcherOpen(false);
             }}
             onPairComputer={() => {

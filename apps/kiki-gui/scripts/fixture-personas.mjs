@@ -197,6 +197,21 @@ export async function handlePersonas(server, req, res, path, query) {
     return ok(snapshotOf(next));
   }
   if (record === undefined) return fail(40425, `persona ${id} does not exist`);
+  if (sub === 'home' && method === 'POST') {
+    // Opens (or adopts) the daily conversation, like the real ensure-home route.
+    let homeSessionId = record.state?.homeSessionId;
+    if (homeSessionId === undefined) {
+      const eligible = [...(server.sessions?.values() ?? [])]
+        .map((entry) => entry.record)
+        .filter((session) => session !== undefined && session.ephemeral !== true && session.metadata?.room_member_of === undefined);
+      const personaOfSession = (session) => session.agent_config?.persona?.id;
+      const candidate = eligible.find((session) => personaOfSession(session) === id) ?? eligible.find((session) => personaOfSession(session) === undefined) ?? eligible[0];
+      if (candidate === undefined) return fail(40402, 'no session can become the daily conversation');
+      homeSessionId = candidate.id;
+      record.state = { ...(record.state ?? {}), homeSessionId };
+    }
+    return ok({ homeSessionId });
+  }
   if (sub === 'home' && method === 'PUT') {
     const body = await json();
     const sessionId = body.sessionId;

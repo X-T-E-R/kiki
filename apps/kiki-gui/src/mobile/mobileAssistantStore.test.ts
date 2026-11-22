@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  assistantScopeTarget,
   clearMobileAssistant,
   MOBILE_ASSISTANT_STORAGE_KEY,
   readMobileAssistant,
@@ -33,5 +34,11 @@ describe('mobileAssistantStore', () => {
     expect(readMobileAssistant('local')).toBeUndefined();
     localStorage.setItem(MOBILE_ASSISTANT_STORAGE_KEY, 'not json');
     expect(readMobileAssistant()).toBeUndefined();
+  });
+
+  it('moves a concrete scope to the computer the assistant started on', () => {
+    expect(assistantScopeTarget('main', 'remote:abc')).toBe('remote:abc');
+    expect(assistantScopeTarget('remote:abc', 'remote:abc')).toBeUndefined();
+    expect(assistantScopeTarget(undefined, 'remote:abc')).toBeUndefined();
   });
 });

@@ -76,6 +76,8 @@ interface LiftTheHoodSheetProps {
   readonly initialTab: HoodTab;
   /** Opens the Changes tab on this file instead of the first one. */
   readonly initialChangeId?: string;
+  /** Opens the info tab with the model list already expanded. */
+  readonly initialModelPicker?: boolean;
   readonly onClose: () => void;
   readonly client: KikiClient;
   readonly spaceKey: string;
@@ -93,6 +95,7 @@ export function LiftTheHoodSheet({
   open,
   initialTab,
   initialChangeId,
+  initialModelPicker = false,
   onClose,
   client,
   spaceKey,
@@ -116,9 +119,9 @@ export function LiftTheHoodSheet({
     if (!open) return;
     setTab(initialTab);
     setSelectedChangeId(initialChangeId ?? null);
-    setModelPickerOpen(false);
+    setModelPickerOpen(initialModelPicker);
     setExpandedToolId(null);
-  }, [open, initialTab, initialChangeId]);
+  }, [open, initialTab, initialChangeId, initialModelPicker]);
 
   useEffect(() => {
     if (!open || tab !== 'diff' || selectedChangeId === null) return;

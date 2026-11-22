@@ -21,6 +21,7 @@ import {
 import { ToastAnchor, Toasts } from '../components/Toasts';
 import { useI18n } from '../i18n';
 import { androidBridge, subscribeAndroidHostEvents } from '../lib/androidBridge';
+import { isEmbeddedAndroidHost } from '../lib/appShell';
 import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
 import { useLayoutPreferences, useVisualViewportHeightVar } from '../lib/layoutHooks';
 import { requestScopeNavigation } from '../lib/navScope';
@@ -282,11 +283,11 @@ export function MobileAppShell() {
   const resolveSpaceName = useCallback(
     (spaceKey: string): string => {
       if (spaceKey === 'local' || spaceKey === multiSpace.localSpaceKey) {
-        return multiSpace.localSpaceName;
+        return isEmbeddedAndroidHost() ? t('mobile.space.localPhone') : multiSpace.localSpaceName;
       }
       return multiSpace.healthBySpace.get(spaceKey)?.spaceName ?? spaceKey;
     },
-    [multiSpace.healthBySpace, multiSpace.localSpaceKey, multiSpace.localSpaceName],
+    [multiSpace.healthBySpace, multiSpace.localSpaceKey, multiSpace.localSpaceName, t],
   );
 
   const activeScopeKey = spaceScopeToKey(activeScope);
@@ -331,7 +332,7 @@ export function MobileAppShell() {
   );
 
   const assistantComputers = useMemo<readonly AssistantComputer[]>(() => {
-    const computers: AssistantComputer[] = [{ spaceKey: multiSpace.localSpaceKey, name: multiSpace.localSpaceName }];
+    const computers: AssistantComputer[] = [{ spaceKey: multiSpace.localSpaceKey, name: resolveSpaceName(multiSpace.localSpaceKey) }];
     for (const record of multiSpace.remoteConnections) {
       if (!record.enabled) continue;
       const key = remoteSpaceKey(record.id);
@@ -339,7 +340,7 @@ export function MobileAppShell() {
       if (online) computers.push({ spaceKey: key, name: record.label });
     }
     return computers;
-  }, [multiSpace.healthBySpace, multiSpace.localSpaceKey, multiSpace.localSpaceName, multiSpace.remoteConnections]);
+  }, [multiSpace.healthBySpace, multiSpace.localSpaceKey, multiSpace.remoteConnections, resolveSpaceName]);
 
   const archiveItem = useCallback(
     async (item: UnifiedInboxItem) => {
@@ -394,6 +395,7 @@ export function MobileAppShell() {
                 voiceCallbackRef.current = onResult;
                 setVoiceOpen(true);
               }}
+              onScopeChange={(scope) => { writeLayoutPreferences({ spaceScope: scope }); }}
             />
           }
         />
