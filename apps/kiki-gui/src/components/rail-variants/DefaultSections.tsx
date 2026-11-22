@@ -571,9 +571,34 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
 }
 
 /**
- * Mutable session-scoped environment & extension switches (session plugins,
- * optional system capabilities, session MCP servers). Kept separate from the
- * read-only Capabilities inspector and collapsed by default.
+ * Unfolded session-scoped environment & extension controls rendered directly
+ * inside the right rail's `Config` tab: system capabilities, session plugins,
+ * and MCP servers with zero outer wrapper fold.
+ */
+export function SessionEnvironmentControls({ sessionId }: { sessionId: string }) {
+  const { t } = useI18n();
+  const connection = useOptionalConnection();
+  if (connection === null) return null;
+
+  return (
+    <div data-rail-config-controls="" className="space-y-3">
+      <div data-rail-control-group="system">
+        <h4 className={`${INSPECTOR_HEAD} pb-1`}>{t('rail.capabilities.systemTitle')}</h4>
+        <OptionalCapabilityRows sessionId={sessionId} />
+      </div>
+      <div className="border-t border-hairline pt-3" data-rail-control-group="plugins">
+        <h4 className={`${INSPECTOR_HEAD} pb-1`}>{t('inspector.cap.plugins')}</h4>
+        <div className="-mx-2">
+          <SessionPluginsPanel sessionId={sessionId} showStoreActions={false} />
+        </div>
+      </div>
+      <SessionMcpRail sessionId={sessionId} />
+    </div>
+  );
+}
+
+/**
+ * Folded environment & extension wrapper preserved for direct unit coverage.
  */
 export function EnvironmentBlock({ sessionId }: { sessionId: string }) {
   const { t } = useI18n();

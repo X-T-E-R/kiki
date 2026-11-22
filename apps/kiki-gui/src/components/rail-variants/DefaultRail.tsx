@@ -212,9 +212,12 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
               >
                 {todo.status === 'done' ? <Icon name="check" size={12} /> : todo.status === 'in_progress' ? <Icon name="dot" size={12} /> : null}
               </span>
-              <span className={`text-[13px] leading-snug break-words ${
-                todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'
-              }`}>
+              <span
+                title={todo.title}
+                className={`line-clamp-2 text-[13px] leading-snug break-words ${
+                  todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'
+                }`}
+              >
                 <span className="sr-only">{t(todo.status === 'done' ? 'rail.todo.srDone' : todo.status === 'in_progress' ? 'rail.todo.srInProgress' : 'rail.todo.srPending')}</span>
                 {todo.title}
               </span>

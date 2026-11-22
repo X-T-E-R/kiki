@@ -188,15 +188,25 @@ export const InspectorOverview = memo(function InspectorOverview({
     toolCalls !== undefined && toolCalls > 0 ? tp('inspector.toolCalls', toolCalls) : undefined,
     !tree && shown.compactions !== undefined && shown.compactions > 0 ? tp('inspector.compactions', shown.compactions) : undefined,
   ].filter((part): part is string => part !== undefined);
-  // Where the session began is a question only asked while tracing it, so it
-  // rides the work line as its title and prints no line of its own.
   const startedTitle = startedAt === undefined ? undefined : t('inspector.sessionAgeTitle', { at: new Date(startedAt).toLocaleString() });
+  const contextDetailParts = [
+    pct !== undefined ? t('inspector.ofWindow', { pct }) : undefined,
+    compactPoint !== undefined ? t('inspector.compactAt', { point: compactTokens(compactPoint) }) : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const contextDetail = contextDetailParts.length > 0 ? contextDetailParts.join(' · ') : undefined;
+  const contextTitle = [
+    contextDetail,
+    compactPoint !== undefined ? t('inspector.compactAtTitle', { point: compactPoint.toLocaleString() }) : undefined,
+  ].filter((part): part is string => part !== undefined).join(' · ') || undefined;
+  const workTooltipParts = [...workLine, startedTitle].filter((part): part is string => part !== undefined && part !== '');
+  const workTooltip = workTooltipParts.length > 0 ? workTooltipParts.join(' · ') : undefined;
+  const hasFiguresRow = figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial;
   const body = (
-    <section data-inspector-overview className="space-y-2.5">
+    <section data-inspector-overview title={workTooltip} className="space-y-2.5">
       {renderLayout === undefined ? scopeSwitch : null}
 
       {contextUsed !== undefined ? (
-        <div data-overview-context={level} className="space-y-1.5">
+        <div data-overview-context={level} title={contextTitle} className="space-y-1.5">
           <div className="flex items-baseline gap-2 text-[12.5px]">
             <span className="text-ink-soft">{t('inspector.context')}</span>
             {/* Stable hook for the rail's context figure styling. */}
@@ -212,7 +222,8 @@ export const InspectorOverview = memo(function InspectorOverview({
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={pct}
-              aria-valuetext={t('inspector.ofWindow', { pct })}
+              aria-valuetext={contextDetail}
+              title={contextTitle}
               className="relative h-1.5 rounded-full bg-ink/[0.08]"
             >
               <div className={`h-full rounded-full transition-[width] duration-[var(--kiki-motion-base)] motion-reduce:transition-none ${barTone}`} style={{ width: `${pct}%` }} />
@@ -220,29 +231,21 @@ export const InspectorOverview = memo(function InspectorOverview({
                 <span
                   aria-hidden
                   data-overview-compact-mark
+                  title={compactPoint !== undefined ? t('inspector.compactAtTitle', { point: compactPoint.toLocaleString() }) : undefined}
                   className="absolute -top-[3px] -bottom-[3px] w-[2px] -translate-x-1/2 rounded-full bg-ink-faint"
                   style={{ left: `${pointPct}%` }}
                 />
               ) : null}
             </div>
           ) : null}
-          <p className="flex min-w-0 gap-1.5 overflow-hidden whitespace-nowrap text-[11.5px] text-ink-faint tabular-nums">
-            {pct !== undefined ? <span>{t('inspector.ofWindow', { pct })}</span> : null}
-            {compactPoint !== undefined ? (
-              <>
-                {pct !== undefined ? <span aria-hidden>·</span> : null}
-                <span title={t('inspector.compactAtTitle', { point: compactPoint.toLocaleString() })} className={level === 'ok' ? undefined : level === 'danger' ? 'text-danger' : 'text-amber-ink'}>
-                  {t('inspector.compactAt', { point: compactTokens(compactPoint) })}
-                </span>
-              </>
-            ) : null}
-          </p>
         </div>
       ) : null}
 
-      {figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial ? (
+      {hasFiguresRow ? (
         <div
           {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })}
+          title={workTooltip}
+          aria-label={workTooltip}
           className="flex flex-nowrap items-baseline gap-x-4 overflow-hidden"
         >
           {figureCells}
@@ -265,15 +268,9 @@ export const InspectorOverview = memo(function InspectorOverview({
         </div>
       ) : null}
 
-      {workLine.length > 0 ? (
-        <p data-overview-session className="truncate text-[12px] leading-[18px] text-ink-faint tabular-nums" title={startedTitle}>
-          {workLine.join(' · ')}
-        </p>
-      ) : startedTitle === undefined ? null : (
-        // A conversation with no turns, tool calls or compactions yet has no
-        // counters line to hang the start time on; screen readers still get it.
-        <p data-overview-started className="sr-only">{startedTitle}</p>
-      )}
+      {workTooltip !== undefined ? (
+        <p data-overview-started className="sr-only">{workTooltip}</p>
+      ) : null}
     </section>
   );
   return renderLayout === undefined ? body : renderLayout(body, scopeSwitch);

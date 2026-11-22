@@ -41,6 +41,7 @@ import { useConnection } from '../../state/connection';
 import { isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
 import { SidePanel } from '../SidePanel';
 import { FOCUS_RING } from '../rail-variants/shell';
+import { InspectorChevron } from '../agent-panel/InspectorSection';
 import { Spinner } from '../icons';
 import { Toggle } from '../controls';
 import type { PluginMarketplaceEntry } from '../../lib/client';
@@ -96,6 +97,7 @@ export function SessionPluginsPanel({
   const rowKey = useCallback((pluginId: string) => `${scopeKey(target)}/${pluginId}`, [target]);
   const [browse, setBrowse] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [showDisabled, setShowDisabled] = useState(false);
   // An install in flight remembers the session that opened it, because the
   // install itself is a home-scope fact and only the session `on` that
   // follows is session-scoped.
@@ -196,8 +198,39 @@ export function SessionPluginsPanel({
 
   const scope = scopeOf(read.data);
   const items = read.data?.plugins ?? [];
+  const { primaryItems, foldedDisabledItems } = useMemo(() => {
+    const enabled: PluginUsageItem[] = [];
+    const disabled: PluginUsageItem[] = [];
+    for (const item of items) {
+      const key = rowKey(item.id);
+      const pendingState = pending[key];
+      const effective = pendingState === undefined ? item.effective : pendingState === 'on';
+      if (effective || pendingState !== undefined || failures[key] !== undefined) {
+        enabled.push(item);
+      } else {
+        disabled.push(item);
+      }
+    }
+    if (disabled.length > 2) {
+      return { primaryItems: enabled, foldedDisabledItems: disabled };
+    }
+    return { primaryItems: [...enabled, ...disabled], foldedDisabledItems: [] as PluginUsageItem[] };
+  }, [failures, items, pending, rowKey]);
 
   if (unsupported) return null;
+
+  const renderRow = (item: PluginUsageItem) => (
+    <PluginUsageRow
+      key={item.id}
+      item={item}
+      pending={pending[rowKey(item.id)]}
+      failure={failures[rowKey(item.id)]}
+      busy={write.isPending && write.variables?.pluginId === item.id}
+      settingsSearch={location.search}
+      onToggle={onToggle}
+      onRestore={onRestore}
+    />
+  );
 
   return (
     <>
@@ -219,20 +252,35 @@ export function SessionPluginsPanel({
 
         <UsageStatus read={read} />
 
-        <ul className="space-y-px">
-          {items.map((item) => (
-            <PluginUsageRow
-              key={item.id}
-              item={item}
-              pending={pending[rowKey(item.id)]}
-              failure={failures[rowKey(item.id)]}
-              busy={write.isPending && write.variables?.pluginId === item.id}
-              settingsSearch={location.search}
-              onToggle={onToggle}
-              onRestore={onRestore}
-            />
-          ))}
-        </ul>
+        {primaryItems.length > 0 ? (
+          <ul className="space-y-px">
+            {primaryItems.map(renderRow)}
+          </ul>
+        ) : null}
+
+        {foldedDisabledItems.length > 0 ? (
+          <div data-rail-plugins-disabled-group="">
+            <button
+              type="button"
+              data-rail-plugins-disabled-toggle=""
+              aria-expanded={showDisabled}
+              onClick={() => { setShowDisabled((value) => !value); }}
+              className={`-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {showDisabled
+                  ? t('rail.plugins.disabledHide')
+                  : t('rail.plugins.disabledMore', { count: foldedDisabledItems.length })}
+              </span>
+              <InspectorChevron open={showDisabled} />
+            </button>
+            {showDisabled ? (
+              <ul data-rail-plugins-disabled-list="" className="space-y-px">
+                {foldedDisabledItems.map(renderRow)}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
 
         {items.length === 0 && read.isSuccess ? (
           <p className="pt-0.5 text-[12px] leading-relaxed text-ink-faint" data-rail-plugins-empty>{t('rail.plugins.empty')}</p>

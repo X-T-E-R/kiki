@@ -239,7 +239,7 @@ describe('AgentNotesSection', () => {
     await cleanup();
   });
 
-  it('preserves notes during a partial read and offers an icon-only retry in the header', async () => {
+  it('preserves notes during a partial read with a quiet status icon and no manual refresh button', async () => {
     const onRetry = vi.fn();
     const { container, cleanup } = await render({
       notes: { goal: 'Partial preserved goal', next: 'Partial next' },
@@ -248,22 +248,17 @@ describe('AgentNotesSection', () => {
       viewStatus: 'partial',
       onRetry,
     });
+    expect(container.querySelector('[data-icon="refresh"]')).toBeNull();
     await openSection(container);
     expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('partial');
     const partial = container.querySelector('[data-agent-notes-read-status="partial"]');
     expect(partial?.textContent).toBe('');
-    const refresh = partial?.querySelector('button');
-    expect(refresh?.getAttribute('aria-label')).toBe('Notes partly loaded · Retry');
-    expect(refresh?.getAttribute('title')).toBe('Notes partly loaded · Retry');
-    expect(refresh?.querySelector('[data-icon="refresh"]')).not.toBeNull();
+    expect(partial?.querySelector('button')).toBeNull();
+    expect(partial?.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(partial?.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Notes partly loaded');
     expect(container.querySelector('[data-agent-notes-part="goal"] dd')?.textContent).toBe('Partial preserved goal');
     expect(container.querySelector('[data-agent-notes-part="next"] dd')?.textContent).toBe('Partial next');
     expect(container.querySelector('[data-agent-notes-meta]')?.textContent).toContain('revision 4');
-
-    const retryBtn = container.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="partial"] button');
-    expect(retryBtn).not.toBeNull();
-    await act(async () => { retryBtn!.click(); });
-    expect(onRetry).toHaveBeenCalledTimes(1);
     await cleanup();
   });
 

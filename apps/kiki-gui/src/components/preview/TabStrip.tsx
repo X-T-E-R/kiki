@@ -112,7 +112,6 @@ export function PreviewTabStrip({
   railOpen,
   onToggleRail,
   onCollapse,
-  onOpenCockpit,
   onActivate,
   onClose,
   onMove,
@@ -416,18 +415,6 @@ export function PreviewTabStrip({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-0.5 border-l border-hairline/70 pl-1">
-        {onOpenCockpit !== undefined ? (
-          <button
-            type="button"
-            data-preview-open-cockpit
-            onClick={onOpenCockpit}
-            className={`hidden h-7 shrink-0 items-center rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-              isFullscreen ? 'lg:flex' : 'lg:flex min-[85rem]:hidden'
-            }`}
-          >
-            {t('rail.mode.cockpit')}
-          </button>
-        ) : null}
         {onToggleRail !== undefined ? (
           <button
             type="button"
