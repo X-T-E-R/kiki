@@ -1378,7 +1378,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
     );
 
-    it('CANCELLED TURN: detached background subagent wakes idle main even when its issuing turn was cancelled', async () => {
+    it.each([false, true])('CANCELLED TURN: holds a detached subagent receipt after its issuing turn is cancelled (newer cancellation: %s)', async (newerCancellation) => {
       const completion = createControlledPromise<{ result: string }>();
       let taskId = '';
       const hook = loop.hooks.onDidFinishStep.register('test.subagent-owner-cancel', async (_step, next) => {
@@ -1394,15 +1394,38 @@ describe('task notification → main agent (real Agent instance)', () => {
         await loop.settled();
         expect(loop.status().lastTurnResult).toBe('cancelled');
         expect(background.getTask(taskId)?.ownerTurnId).toBe(0);
+        if (newerCancellation) {
+          const cancelNext = loop.hooks.onDidFinishStep.register('test.next-cancelled-turn', async (_step, next) => {
+            loop.cancel();
+            await next();
+          });
+          try {
+            ctx.mockNextResponse({ type: 'text', text: 'cancel a later response' });
+            const ended = ctx.untilTurnEnd();
+            await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start another turn' }] });
+            await ended;
+            await loop.settled();
+            expect(loop.status().lastTurnResult).toBe('cancelled');
+          } finally {
+            await cancelNext.dispose();
+          }
+        }
+        const callsBeforeCompletion = newerCancellation ? 2 : 1;
         const enqueue = vi.spyOn(loop, 'enqueue');
-        ctx.mockNextResponse({ type: 'text', text: 'subagent completion received' });
         completion.resolve({ result: 'detached subagent finished after owner cancel' });
         await background.wait(taskId);
         await vi.waitFor(() => expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification')).toBe(true));
-        expect(enqueue.mock.calls.find(([r]) => r.kind === 'task_notification')![0].admission).toBe('activeOrNewTurn');
-        await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+        expect(enqueue.mock.calls.find(([r]) => r.kind === 'task_notification')![0].admission).toBe('activeOrNextTurn');
         await loop.settled();
-        expect(ctx.llmCalls).toHaveLength(2);
+        expect(notifiedCount(ctx)).toBe(0);
+        expect(ctx.llmCalls).toHaveLength(callsBeforeCompletion);
+        ctx.mockNextResponse({ type: 'text', text: 'subagent completion received' });
+        const ended = ctx.untilTurnEnd();
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Inspect the retained completion' }] });
+        await ended;
+        await loop.settled();
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(ctx.llmCalls).toHaveLength(callsBeforeCompletion + 1);
         expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('detached subagent finished after owner cancel');
       } finally {
         completion.resolve({ result: 'cleanup' });
@@ -1595,9 +1618,9 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-    it('readmits an unconsumed subagent notification after cancelled turn exit and wakes idle main', async () => {
+    it('readmits an unconsumed subagent notification after cancellation without waking idle main', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'first ack' });
-      ctx.mockNextResponse({ type: 'text', text: 'woken ack' });
+      ctx.mockNextResponse({ type: 'text', text: 'authorized ack' });
       let taskId = '';
       const enqueue = vi.spyOn(loop, 'enqueue');
       const hook = loop.hooks.onDidFinishStep.register('test.subagent-exit-race', async (_step, next) => {
@@ -1612,8 +1635,15 @@ describe('task notification → main agent (real Agent instance)', () => {
         const ended = ctx.untilTurnEnd();
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
         await ended;
-        await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+        await vi.waitFor(() => expect(enqueue.mock.calls.filter(([request]) => request.kind === 'task_notification')).toHaveLength(2));
         await loop.settled();
+        expect(notifiedCount(ctx)).toBe(0);
+        expect(ctx.llmCalls).toHaveLength(1);
+        const authorizedEnd = ctx.untilTurnEnd();
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Inspect the retained notification' }] });
+        await authorizedEnd;
+        await loop.settled();
+        expect(notifiedCount(ctx)).toBe(1);
         expect(ctx.llmCalls).toHaveLength(2);
         expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('unconsumed subagent report');
         expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);

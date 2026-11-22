@@ -1180,7 +1180,7 @@ describe('recoverable ACP broken resume', () => {
             expect(staleEnvelope.replayAbi).toBe(REPLAY_ABI_VERSION);
             const payload = decodeReplayCheckpointGraph(staleEnvelope.graph) as { states: { name: string; value: unknown }[] };
             const savedTurn = payload.states.find((entry) => entry.name === turnKey.name)!;
-            savedTurn.value = { nextTurnId: 1, cancelledTurnIds: [], anchorTurnIds: [], lastEnded: { turnId: 0, reason: 'completed' } };
+            savedTurn.value = { ...turnKey.initial(), nextTurnId: 1, lastEnded: { turnId: 0, reason: 'completed' } };
             staleEnvelope.graph = encodeReplayCheckpointGraph(payload);
             checkpointDocs.set(ckKey, staleEnvelope);
             const completedFastHost = makeCheckpointHost();
@@ -1192,7 +1192,7 @@ describe('recoverable ACP broken resume', () => {
               await completedFastHost.host.dispose();
             }
             records = [{ type: 'turn.ended', turnId: 0, reason: 'failed', time: 1 }];
-            savedTurn.value = { nextTurnId: 1, cancelledTurnIds: [], anchorTurnIds: [], lastEnded: { turnId: 0, reason: 'failed' } };
+            savedTurn.value = { ...turnKey.initial(), nextTurnId: 1, lastEnded: { turnId: 0, reason: 'failed' } };
             staleEnvelope.graph = encodeReplayCheckpointGraph(payload);
             checkpointDocs.set(ckKey, staleEnvelope);
             const errorlessFailedHost = makeCheckpointHost();
@@ -1216,7 +1216,7 @@ describe('recoverable ACP broken resume', () => {
               await errorlessFastHost.host.dispose();
             }
             records = [{ type: 'turn.ended', turnId: 0, reason: 'failed', error: { code: 'executor.protocol_error', message: networkError } as never, time: 1 }];
-            savedTurn.value = { nextTurnId: 1, cancelledTurnIds: [], anchorTurnIds: [], lastEnded: { turnId: 0, reason: 'failed' } };
+            savedTurn.value = { ...turnKey.initial(), nextTurnId: 1, lastEnded: { turnId: 0, reason: 'failed' } };
             staleEnvelope.graph = encodeReplayCheckpointGraph(payload);
             checkpointDocs.set(ckKey, staleEnvelope);
             const secondHost = makeCheckpointHost();

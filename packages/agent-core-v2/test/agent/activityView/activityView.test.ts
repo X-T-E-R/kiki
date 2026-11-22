@@ -109,6 +109,7 @@ function harness(
     agentState.set(turnKey, {
       nextTurnId: 1,
       cancelledTurnIds: [],
+      heldCancelledTurns: {},
       anchorTurnIds: [],
       lastEnded: ended,
     });
@@ -124,6 +125,7 @@ function harness(
   agentState.set(turnKey, {
     nextTurnId: 1,
     cancelledTurnIds: [],
+    heldCancelledTurns: {},
     anchorTurnIds: [],
     lastEnded,
   });

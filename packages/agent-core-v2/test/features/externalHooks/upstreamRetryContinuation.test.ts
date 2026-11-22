@@ -166,6 +166,7 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
   readonly agentId?: string;
   readonly parentAgentId?: string;
   readonly profileName?: string;
+  readonly messageThreads?: 'auto' | 'off';
 } = {}): Promise<Replay> {
   const home = await mkdtemp(join(tmpdir(), 'upstream-retry-continuation-'));
   const requests: Replay['requests'] = [];
@@ -212,7 +213,10 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
   expect(manager.get('argon-error-recovery')?.state).toBe('ok');
   const runner = makeHookRunner([], { cwd: home, pluginHooks: manager.enabledHooks() });
   const trigger = vi.spyOn(runner, 'trigger');
-  const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'YOUR_API_KEY', baseUrl: origin });
+  const provider = new AnthropicChatProvider({
+    model: 'example-model', apiKey: 'YOUR_API_KEY', baseUrl: origin,
+    anthropicMessageThreads: { mode: options.messageThreads ?? 'off' },
+  });
   class FixtureRegistry extends ProtocolAdapterRegistry {
     override createChatProvider(): ChatProvider { return provider; }
   }
@@ -508,6 +512,40 @@ describe('provider failures through the real Messages SDK', () => {
       .map((record) => record['event'] as { type: string; toolCallId?: string; result?: { output?: string } })
       .filter((event) => event.type === 'tool.result');
     expect(toolResults).toEqual([expect.objectContaining({ toolCallId: 'toolu_probe', result: { output: 'saved' } })]);
+  }, 60_000);
+
+  it('replays the complete history on a new Messages thread after a streamed continuation fails', async () => {
+    const failed = sse([
+      messageStart('msg_interrupted_tool'),
+      ...toolBlock('toolu_interrupted', '{}'),
+      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      gatewayTerminalEvent,
+    ]);
+    const replayed = await replay((requestNumber) => {
+      if (requestNumber === 1) return toolSse();
+      if (requestNumber === 2) return failed;
+      return terminalSse('Retried after the saved tool.');
+    }, { tool: true, modelAlias: argonModel, messageThreads: 'auto' });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
+    expect(replayed.tools).toBe(1);
+    expect(replayed.retryEvents).toEqual([]);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
+    expect(replayed.requests.map(({ body }) => body['thread'])).toEqual([
+      { type: 'create' },
+      { type: 'continue', previous_message_id: 'msg_tool' },
+      { type: 'create' },
+    ]);
+    const toolResult = replayed.requests[1]?.body['messages'];
+    expect(toolResult).toMatchObject([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_probe' }] }]);
+    const replayedMessages = replayed.requests[2]?.body['messages'];
+    expect(replayedMessages).toMatchObject([
+      { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_probe', name: 'SaveWork', input: {} }] },
+      ...(toolResult as unknown[]),
+    ]);
+    expect(JSON.stringify(replayedMessages)).not.toContain('toolu_interrupted');
   }, 60_000);
 
   it.each(['upstream-denied', 'retry-exhausted'] as const)('retains the final failed partial answer on a new message: %s', async (mode) => {

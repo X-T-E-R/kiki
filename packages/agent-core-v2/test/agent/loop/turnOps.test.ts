@@ -102,6 +102,22 @@ describe('turnKey lastEnded', () => {
   });
 });
 
+describe('turnKey task wake holds', () => {
+  it('keeps cancelled owners held through autonomous work and clears them after a successful authorized turn', () => {
+    let s = fold(turnKey.initial(), new TurnEnded({ turnId: 2, reason: 'cancelled' }));
+    expect(s.nextTurnId).toBe(3);
+    s = fold(s, new TurnPrompt({ input: [], origin: { kind: 'user' } }));
+    s = fold(s, new TurnEnded({ turnId: 3, reason: 'cancelled' }));
+    s = fold(s, new TurnPrompt({ input: [], origin: { kind: 'system_trigger', name: 'goal_continuation' } }));
+    s = fold(s, new TurnEnded({ turnId: 4, reason: 'completed' }));
+    expect(s.heldCancelledTurns).toEqual({ 2: true, 3: true });
+    s = fold(s, new TurnPrompt({ input: [], origin: { kind: 'user' } }));
+    s = fold(s, new ContextApplyCompaction({ summary: 'summary', compactedCount: 2 }));
+    s = fold(s, new TurnEnded({ turnId: 5, reason: 'completed' }));
+    expect(s.heldCancelledTurns).toEqual({});
+  });
+});
+
 describe('turnKey anchorTurnIds', () => {
   const cronOrigin = {
     kind: 'cron_job',

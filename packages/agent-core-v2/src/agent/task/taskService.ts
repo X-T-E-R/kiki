@@ -2358,11 +2358,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
-    const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
+    const ownerCancelled = info.ownerTurnId !== undefined && this.states.has(turnKey) &&
+      this.states.get(turnKey).heldCancelledTurns[info.ownerTurnId] === true;
     if ((this.sessionMetadata?.isArchived?.() ?? this.sessionMetadata?.snapshot().archived) === true ||
       (info.status === 'lost' && !this.isInterruptedBackgroundSubagent(info)) ||
-      (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId &&
-        !(this.scopeContext.parentAgentId === undefined && info.kind === 'agent' && info.detached !== false && info.status !== 'killed'))) {
+      ownerCancelled) {
       return 'activeOrNextTurn';
     }
     if (goal !== null && goal.status !== 'complete' &&

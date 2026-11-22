@@ -20,6 +20,8 @@ import type { TurnInterruptReason } from './turnEvents';
 export interface TurnModelState {
   readonly nextTurnId: number;
   readonly cancelledTurnIds: readonly number[];
+  readonly heldCancelledTurns: Readonly<Record<number, true>>;
+  readonly authorizedInputTurnId?: number;
   readonly anchorTurnIds: readonly number[];
   readonly lastEnded?: {
     readonly turnId: number;
@@ -116,10 +118,11 @@ export interface TurnEnded extends TurnEndedPayload {}
 
 export const turnKey = defineState(
   'turn',
-  (): TurnModelState => ({ nextTurnId: 0, cancelledTurnIds: [], anchorTurnIds: [] }),
+  (): TurnModelState => ({ nextTurnId: 0, cancelledTurnIds: [], heldCancelledTurns: {}, anchorTurnIds: [] }),
 ).replayable({
   schema: z.custom<TurnModelState>().refine(
-    (state) => state.lastEnded?.reason !== 'failed' || Object.hasOwn(state.lastEnded, 'error'),
+    (state) => Object.hasOwn(state, 'heldCancelledTurns') &&
+      (state.lastEnded?.reason !== 'failed' || Object.hasOwn(state.lastEnded, 'error')),
   ),
 })
   .on(ContextAppendLoopEvent, (s, e) => {
@@ -138,11 +141,13 @@ export const turnKey = defineState(
     const turnId = e.turnId ?? s.nextTurnId;
     const next = advanceTurnClock(s, Math.max(s.nextTurnId, turnId + 1));
     if (!isUndoAnchorOrigin(e.origin)) return next;
-    return { ...next, anchorTurnIds: [...s.anchorTurnIds, turnId] };
+    return { ...next, authorizedInputTurnId: turnId, anchorTurnIds: [...s.anchorTurnIds, turnId] };
   })
   .on(ExternalActivity, (s, e) => advanceTurnClock(s, Math.max(s.nextTurnId, e.turnId + 1)))
   .on(ExternalText, () => {})
-  .on(TurnSteer, () => {})
+  .on(TurnSteer, (s, e) => {
+    if (e.turnId !== undefined && isUndoAnchorOrigin(e.origin)) return { ...s, authorizedInputTurnId: e.turnId };
+  })
   .on(ContextUndo, (s, e) => {
     const firstRemoved = s.anchorTurnIds[s.anchorTurnIds.length - e.count];
     const lastEnded = s.lastEnded;
@@ -163,10 +168,18 @@ export const turnKey = defineState(
     if (e.turnId < s.nextTurnId) return;
     return advanceTurnClock(s, s.nextTurnId, [...s.cancelledTurnIds, e.turnId]);
   })
-  .on(TurnEnded, (s, e) => ({
-    ...s,
-    lastEnded: { turnId: e.turnId, reason: e.reason, error: e.error, durationMs: e.durationMs },
-  }));
+  .on(TurnEnded, (s, e) => {
+    const clock = e.turnId < s.nextTurnId ? s : advanceTurnClock(s, e.turnId + 1);
+    const authorized = e.turnId === s.authorizedInputTurnId;
+    return {
+      ...clock,
+      authorizedInputTurnId: authorized ? undefined : s.authorizedInputTurnId,
+      heldCancelledTurns: e.reason === 'cancelled'
+        ? { ...s.heldCancelledTurns, [e.turnId]: true }
+        : e.reason === 'completed' && authorized ? {} : s.heldCancelledTurns,
+      lastEnded: { turnId: e.turnId, reason: e.reason, error: e.error, durationMs: e.durationMs },
+    };
+  });
 
 function advanceTurnClock(
   state: TurnModelState,
