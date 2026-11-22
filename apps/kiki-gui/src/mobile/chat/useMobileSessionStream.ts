@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
 
-import type { ApprovalDecision, DeferredAppendTiming } from '@kiki/protocol';
+import type { ApprovalDecision, DeferredAppendTiming, QuestionAnswer } from '@kiki/protocol';
 import { SessionController, type SessionViewState } from '@kiki/session-core/session';
 import { sessionAttentionCursor } from '@kiki/session-core/sessions';
 
@@ -22,6 +22,8 @@ export interface MobileSessionStreamResult {
   }) => Promise<boolean>;
   readonly abort: () => Promise<void>;
   readonly resolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => Promise<void>;
+  readonly answerQuestion: (questionId: string, answers: Readonly<Record<string, QuestionAnswer>>) => Promise<void>;
+  readonly dismissQuestion: (questionId: string) => Promise<void>;
 }
 
 export function useMobileSessionStream(
@@ -125,5 +127,27 @@ export function useMobileSessionStream(
     [controller],
   );
 
-  return { state, loadingOlder, loadOlder, sendPrompt, abort, resolveApproval };
+  const answerQuestion = useCallback(
+    async (questionId: string, answers: Readonly<Record<string, QuestionAnswer>>) => {
+      try {
+        await controller.answerQuestion(questionId, { ...answers });
+      } catch (error) {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      }
+    },
+    [controller],
+  );
+
+  const dismissQuestion = useCallback(
+    async (questionId: string) => {
+      try {
+        await controller.dismissQuestion(questionId);
+      } catch (error) {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      }
+    },
+    [controller],
+  );
+
+  return { state, loadingOlder, loadOlder, sendPrompt, abort, resolveApproval, answerQuestion, dismissQuestion };
 }

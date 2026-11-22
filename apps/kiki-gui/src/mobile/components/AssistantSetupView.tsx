@@ -92,6 +92,7 @@ export function AssistantSetupView({
   const chosenPersona =
     personas.find((persona) => persona.id === selectedPersonaId) ?? personas[0];
   const hasDefaultAssistant = personas.some((persona) => persona.id === DEFAULT_ASSISTANT_ID);
+  const defaultAssistantStored = personasQuery.data?.some((persona) => persona.id === DEFAULT_ASSISTANT_ID) === true;
   const modelLabel =
     modelAlias === undefined
       ? t('mobile.assistant.modelDefault')
@@ -106,9 +107,21 @@ export function AssistantSetupView({
         personaId = DEFAULT_ASSISTANT_ID;
         const all = await client.listPersonas({ includeArchived: true });
         const existing = all.find((persona) => persona.id === DEFAULT_ASSISTANT_ID);
-        if (existing?.archived === true) {
-          await client.archivePersona(DEFAULT_ASSISTANT_ID, false);
-        } else if (existing === undefined) {
+        if (existing !== undefined) {
+          // Restoring keeps the saved definition; only what this screen offers changes.
+          if (existing.archived) await client.archivePersona(DEFAULT_ASSISTANT_ID, false);
+          if (existing.hidden === true) await client.updatePersona(DEFAULT_ASSISTANT_ID, { hidden: false });
+          if (modelAlias !== undefined) {
+            const snapshot = await client.getPersona(DEFAULT_ASSISTANT_ID);
+            if (snapshot.definition.modelAlias !== modelAlias) {
+              await client.putPersona({
+                definition: { ...snapshot.definition, modelAlias },
+                revision: snapshot.revision,
+                ...(snapshot.examples !== undefined ? { examples: snapshot.examples } : {}),
+              });
+            }
+          }
+        } else {
           // No `profile`: the computer's default main profile applies.
           const definition: PersonaDefinition = {
             id: DEFAULT_ASSISTANT_ID,
@@ -248,14 +261,14 @@ export function AssistantSetupView({
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center text-ink-faint">
                       <Icon name="plus" size={16} />
                     </span>
-                    <span className="text-[14.5px] font-medium">{t('mobile.assistant.createKiki')}</span>
+                    <span className="text-[14.5px] font-medium">{defaultAssistantStored ? t('mobile.assistant.restoreKiki') : t('mobile.assistant.createKiki')}</span>
                   </button>
                 )}
               </div>
             </div>
           )}
 
-          <div className={isPage ? 'pb-[calc(84px+var(--kiki-safe-bottom-inset))]' : 'pb-1'}>
+          <div className={`flex flex-col gap-2 ${isPage ? 'pb-[calc(84px+var(--kiki-safe-bottom-inset))]' : 'pb-1'}`}>
             {computer === undefined ? (
               <button
                 type="button"
@@ -277,6 +290,16 @@ export function AssistantSetupView({
                 {showDefaultSetup ? t('mobile.assistant.startKiki') : t('mobile.assistant.startChat')}
               </button>
             )}
+            {creatingDefault && personas.length > 0 ? (
+              <button
+                type="button"
+                data-mobile-setup-back
+                onClick={() => { setCreatingDefault(false); }}
+                className="flex min-h-11 w-full items-center justify-center rounded-full px-6 text-[14.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04]"
+              >
+                {t('mobile.assistant.backToList')}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

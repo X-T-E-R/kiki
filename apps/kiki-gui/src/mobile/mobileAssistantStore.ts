@@ -98,6 +98,16 @@ export function writeMobileAssistant(binding: MobileAssistantBinding): void {
   });
 }
 
+/**
+ * The space the global scope must move to after the assistant starts in
+ * `nextSpaceKey`, or undefined when the current scope already shows it. A
+ * concrete scope is what the Assistant tab reads its binding from, so leaving
+ * it on another computer would reopen the old chat.
+ */
+export function assistantScopeTarget(scopeSpaceKey: string | undefined, nextSpaceKey: string): string | undefined {
+  return scopeSpaceKey === undefined || scopeSpaceKey === nextSpaceKey ? undefined : nextSpaceKey;
+}
+
 export function clearMobileAssistant(spaceKey: string): void {
   const state = readState();
   const { [spaceKey]: _removed, ...rest } = state.bySpace;

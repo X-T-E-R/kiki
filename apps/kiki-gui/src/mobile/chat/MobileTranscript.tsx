@@ -10,6 +10,7 @@ import { isInlineDecidable, summarizeApproval } from '../approvalSummary';
 import { ApprovalHeadline, RejectReasonSheet } from '../components/ApprovalParts';
 import { MobileMarkdown } from '../mobileMarkdown';
 import { extractFileChanges, type HoodTab } from './LiftTheHoodSheet';
+import { MobileQuestionCard, type QuestionAnswers } from './MobileQuestionCard';
 
 interface MobileTranscriptProps {
   readonly blocks: readonly Block[];
@@ -25,6 +26,8 @@ interface MobileTranscriptProps {
   readonly onLoadOlder: () => void;
   readonly onOpenHood: (tab: HoodTab, changeId?: string) => void;
   readonly onResolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => void;
+  readonly onAnswerQuestion: (questionId: string, answers: QuestionAnswers) => Promise<void>;
+  readonly onDismissQuestion: (questionId: string) => Promise<void>;
   readonly onOpenWorkbench: () => void;
 }
 
@@ -179,6 +182,8 @@ export function MobileTranscript({
   onLoadOlder,
   onOpenHood,
   onResolveApproval,
+  onAnswerQuestion,
+  onDismissQuestion,
   onOpenWorkbench,
 }: MobileTranscriptProps) {
   const { t } = useI18n();
@@ -233,6 +238,17 @@ export function MobileTranscript({
           key={block.id}
           block={block}
           onResolve={onResolveApproval}
+          onOpenWorkbench={onOpenWorkbench}
+        />
+      );
+    }
+    if (block.kind === 'question') {
+      return (
+        <MobileQuestionCard
+          key={block.id}
+          block={block}
+          onAnswer={onAnswerQuestion}
+          onDismiss={onDismissQuestion}
           onOpenWorkbench={onOpenWorkbench}
         />
       );
