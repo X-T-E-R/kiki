@@ -205,11 +205,14 @@ export function promotedExecutorSession(
   const event = event2FromRecord(ExecutorSessionUpdated, record);
   if (!(event instanceof ExecutorSessionUpdated) || event.executionGeneration !== source.execution?.generation ||
     event.executorId !== binding.executorId || event.descriptorRevision !== binding.executorDescriptorRevision) return undefined;
-  return Object.assign(event, {
+  return new ExecutorSessionUpdated({
     executionGeneration: binding.execution?.generation,
+    executorId: event.executorId,
+    descriptorRevision: event.descriptorRevision,
     bindingFingerprint: agentExecutorBindingFingerprint(binding),
-    profileDeliveredSessionId: undefined,
-    profileDelivery: undefined,
+    sessionRef: event.sessionRef,
+    sessionEpoch: event.sessionEpoch,
+    lastCumulativeUsage: event.lastCumulativeUsage,
   });
 }
 
