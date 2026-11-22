@@ -215,7 +215,7 @@ export function emitAgentRunSpawned(
 
 export async function mirrorAgentRun(
   requester: IAgentScopeHandle,
-  run: Pick<AgentRunHandle, 'agentId' | 'completion'> & Partial<Pick<AgentRunHandle, 'turn'>>,
+  run: Pick<AgentRunHandle, 'agentId' | 'completion'> & { readonly turn?: AgentRunHandle['turn'] | Promise<AgentRunHandle['turn']> },
   options: MirrorAgentRunOptions,
 ): Promise<{ summary: string; usage?: TokenUsage; continued?: boolean }> {
   const dispatcher = requester.accessor.get(IEventDispatcher);
@@ -226,28 +226,38 @@ export async function mirrorAgentRun(
       new SubagentStarted({ subagentId: run.agentId, taskId: await options.resolveTaskId?.() }),
     );
   }
-  const child = run.turn === undefined || options.resolveTaskId === undefined ? undefined : agentLifecycle?.get(run.agentId);
-  const phaseSubscription = child?.accessor.get(IAgentLoopService)?.hooks.onWillBeginStep.register(
-    `subagent-phase:${run.agentId}:${run.turn!.id}`, async (step, next) => {
-      const phase = step.continuedParentPhase;
-      if (step.turnId === run.turn!.id && phase !== undefined) {
-        const id = await options.resolveTaskId!();
-        const tasks = requester.accessor.get(IAgentTaskService);
-        const task = id === undefined ? undefined : tasks.getTask(id);
-        if (task?.kind === 'agent' && task.status === 'running' && task.detached === true && task.terminalNotificationSuppressed !== true) {
-          const key = phase.stepId.replaceAll('-', '');
-          try {
-            await child.accessor.get(IWireService).flush();
-            await tasks.recordCompletedTask({ ...task, taskId: `agent-phase-${key.slice(0, -8)}-${key.slice(-8)}`, status: 'completed', continued: true, endedAt: Date.now(),
-              description: `${task.description} — phase completed; child already continued after AgentSend`,
-            }, `${AGENT_SEND_CONTINUED}\n\n${phase.summary}`);
-          } catch (error) {
-            requester.accessor.get(ILogService).error('failed to record continued AgentSend phase', { agentId: run.agentId, stepId: phase.stepId, error });
+  let finished = false;
+  let phaseSubscription: { dispose(): unknown } | undefined;
+  const attachPhase = (turn: AgentRunHandle['turn'] | undefined): void => {
+    const resolveTaskId = options.resolveTaskId;
+    const child = turn === undefined || resolveTaskId === undefined || finished ? undefined : agentLifecycle?.get(run.agentId);
+    if (turn === undefined || resolveTaskId === undefined || child === undefined) return;
+    phaseSubscription = child.accessor.get(IAgentLoopService)?.hooks.onWillBeginStep.register(
+      `subagent-phase:${run.agentId}:${turn.id}`, async (step, next) => {
+        const phase = step.continuedParentPhase;
+        if (step.turnId === turn.id && phase !== undefined) {
+          const id = await resolveTaskId();
+          const tasks = requester.accessor.get(IAgentTaskService);
+          const task = id === undefined ? undefined : tasks.getTask(id);
+          if (task?.kind === 'agent' && task.status === 'running' && task.detached === true && task.terminalNotificationSuppressed !== true) {
+            const key = phase.stepId.replaceAll('-', '');
+            try {
+              await child.accessor.get(IWireService).flush();
+              await tasks.recordCompletedTask({ ...task, taskId: `agent-phase-${key.slice(0, -8)}-${key.slice(-8)}`, status: 'completed', continued: true, endedAt: Date.now(),
+                description: `${task.description} — phase completed; child already continued after AgentSend`,
+              }, `${AGENT_SEND_CONTINUED}\n\n${phase.summary}`);
+            } catch (error) {
+              requester.accessor.get(ILogService).error('failed to record continued AgentSend phase', { agentId: run.agentId, stepId: phase.stepId, error });
+            }
           }
         }
-      }
-      await next();
-    });
+        await next();
+      });
+  };
+  if (!(run.turn instanceof Promise)) attachPhase(run.turn);
+  const turnReady = run.turn instanceof Promise
+    ? run.turn.then((turn) => { attachPhase(turn); return turn; }, () => undefined)
+    : Promise.resolve(run.turn);
   let hookFailed = false;
   try {
     if (options.prompt !== undefined) {
@@ -301,7 +311,8 @@ export async function mirrorAgentRun(
       agentName: options.profileName,
       response: result.summary,
     });
-    const continued = run.turn !== undefined && requester.accessor.get(IAgentCollaborationMessagingService)?.hasOwnedContinuation?.(run.agentId, run.turn.id);
+    const turn = await turnReady;
+    const continued = turn !== undefined && requester.accessor.get(IAgentCollaborationMessagingService)?.hasOwnedContinuation?.(run.agentId, turn.id);
     return continued === true ? { ...result, continued } : result;
   } catch (error) {
     if (requester.accessor.get(ISessionExecutionControl).isParked(run.agentId)) throw error;
@@ -328,6 +339,7 @@ export async function mirrorAgentRun(
     }
     throw error;
   } finally {
+    finished = true;
     await phaseSubscription?.dispose();
   }
 }

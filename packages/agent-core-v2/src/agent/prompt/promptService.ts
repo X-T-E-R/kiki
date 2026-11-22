@@ -2254,6 +2254,19 @@ export class AgentPromptService implements IAgentPromptService {
     void this.dispatcher.dispatch(new PromptMoved({ promptId: id, targetIndex, queuedPromptIds: order, movedAt: new Date().toISOString() }));
   }
 
+  private promoteSendNow(items: readonly Record[], promoted: ReadonlySet<string>): void {
+    const order = [...this.queueOrder].filter((candidate) => candidate.startsWith(MODEL_SWITCH_QUEUE_PREFIX) || this.pending.some((item) => item.id === candidate));
+    const moving = items.map(item => item.id).filter(id => order.includes(id));
+    if (moving.length === 0) return;
+    const rest = order.filter(id => !moving.includes(id));
+    let lead = 0;
+    while (lead < rest.length && promoted.has(rest[lead]!)) lead++;
+    const next = [...rest.slice(0, lead), ...moving, ...rest.slice(lead)];
+    if (next.every((id, index) => id === order[index])) return;
+    this.pending.sort((left, right) => next.indexOf(left.id) - next.indexOf(right.id));
+    void this.dispatcher.dispatch(new PromptMoved({ promptId: moving[0]!, targetIndex: lead, queuedPromptIds: next, movedAt: new Date().toISOString() }));
+  }
+
   private scheduleSwitchBoundary(selected: readonly Record[]): Promise<void> {
     const fresh = selected.filter(item => !this.boundaryPromptIds.has(item.id));
     if (fresh.length === 0) return Promise.resolve();
@@ -2511,6 +2524,7 @@ export class AgentPromptService implements IAgentPromptService {
       return selected.map(item => item.handle);
     }
     if (targetTurnId === undefined) {
+      this.promoteSendNow(selected, this.immediatePromptIds);
       for (const item of selected) {
         item.deliveryReason = 'no_active_turn';
         this.immediatePromptIds.add(item.id);
@@ -2724,6 +2738,7 @@ export class AgentPromptService implements IAgentPromptService {
         }));
         this.syncRecoveryHold();
       } else {
+        this.promoteSendNow(remaining, this.queuedExternalSteerIds);
         for (const item of remaining) {
           item.deliveryReason = this.active === undefined ? 'no_active_turn' : 'executor_deferred';
           this.queuedExternalSteerIds.add(item.id);

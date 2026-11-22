@@ -733,6 +733,7 @@ export const Rail = memo(function Rail({
         actions={backToMainAction}
       >
         <InspectorBranches
+          sessionId={state.sessionId}
           branches={sessionBranches}
           focusedAgentId={focusedAgentId}
           peekAgentId={peekAgentId}

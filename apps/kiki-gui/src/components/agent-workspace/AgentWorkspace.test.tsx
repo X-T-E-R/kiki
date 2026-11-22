@@ -3638,6 +3638,52 @@ it('inherits model and yolo permission on a branch bound to constrained profile:
   );
 });
 
+it('keeps a merged branch chat live and offers to split it into its own thread', async () => {
+  harness.promoteAvailable = true;
+  harness.promoteAgent.mockResolvedValue({ id: 'promoted-thread' });
+  harness.sendAgentMessage.mockResolvedValue(null);
+  const branchNode: AgentTreeNode = {
+    agentId: 'branch-merged', parentAgentId: 'main', name: 'agent', label: 'Retry jitter check',
+    status: 'completed', busy: false, isBranch: true, branchSealed: true, branchSeed: 'fresh',
+    executorId: 'native', toolCallCount: 0, childIds: [],
+  };
+  const mainNode: AgentTreeNode = {
+    agentId: 'main', name: 'main', label: 'Main session', status: 'completed', busy: false,
+    toolCallCount: 0, childIds: ['branch-merged'],
+  };
+  const forest: AgentForest = { roots: [mainNode], byId: { main: mainNode, 'branch-merged': branchNode } };
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'branch-merged' },
+    forest,
+    controller: controllerStub({
+      forest,
+      agentStates: { 'branch-merged': { ...createViewState('session'), loaded: true, transcriptReady: true } },
+    }),
+  });
+  await settle();
+
+  const sealedBar = dock.querySelector('[data-branch-sealed-bar]');
+  expect(sealedBar?.textContent).toContain(translate('en', 'transcript.branch.sealedContinue'));
+  expect(header.querySelector('[data-branch-fold-action]')).toBeNull();
+  const textarea = composerInput(dock);
+  expect(textarea.disabled).toBe(false);
+  expect(textarea.placeholder).not.toBe(translate('en', 'subagent.composerUnavailable'));
+
+  await typeText(textarea, 'Pick this back up');
+  await act(async () => {
+    composerInput(dock).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await settle();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session', 'branch-merged', 'Pick this back up', [{ type: 'text', text: 'Pick this back up' }], expect.any(String), undefined,
+  );
+
+  const promote = sealedBar?.querySelector<HTMLButtonElement>('[data-promote-branch-action]');
+  expect(promote?.textContent).toBe(translate('en', 'transcript.branch.promote'));
+  await act(async () => { promote?.click(); });
+  expect(harness.promoteAgent).toHaveBeenCalledExactlyOnceWith('session', 'branch-merged');
+});
+
 it.each([
   { label: 'subagent', agentId: 'child', isBranch: false },
   { label: 'branch', agentId: 'branch-1', isBranch: true },

@@ -623,6 +623,27 @@ describe('AgentPromptService', () => {
     await queued.completion;
   });
 
+  it('launches deferred external Send now clicks in click order rather than enqueue order', async () => {
+    const { prompt, setExecutor, externalSteer, externalTurns } = harness();
+    setExecutor('grok-acp');
+    externalSteer.mockResolvedValue(false);
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    const first = await prompt.enqueue({ id: 'first', message: message('first follow up') });
+    const second = await prompt.enqueue({ id: 'second', message: message('second follow up') });
+    await prompt.steer([second.id]);
+    await prompt.steer([first.id]);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['second', 'first']);
+    expect(prompt.list().pending.map((item) => item.queueIndex)).toEqual([0, 1]);
+    externalTurns[0]!.finish();
+    await active.completion;
+    expect((await second.launched)?.id).toBe(201);
+    externalTurns[1]!.finish();
+    await second.completion;
+    expect((await first.launched)?.id).toBe(202);
+    externalTurns[2]!.finish();
+    await first.completion;
+  });
+
   it('fails a deferred external steer whose launch fails even when the undelivered hint cannot be recorded', async () => {
     const { prompt, setExecutor, externalSteer, externalRun, externalTurns, dispatcher } = harness();
     const reported = vi.fn();

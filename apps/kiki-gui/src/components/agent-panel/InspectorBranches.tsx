@@ -14,6 +14,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode, type Block } from '@kiki/session-core/session';
 import { plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
+import { usePromoteAgent } from '../../lib/usePromoteAgent';
 import { displayUserMessageText } from '../message/messageSource';
 import { DisclosureChevron } from '../icons';
 import { plainFailure } from './failureText';
@@ -139,6 +140,7 @@ function branchPreviewText(
 }
 
 const BranchRow = memo(function BranchRow({
+  sessionId,
   node,
   state,
   focused,
@@ -146,6 +148,7 @@ const BranchRow = memo(function BranchRow({
   preview,
   onSelect,
 }: {
+  readonly sessionId: string | undefined;
   readonly node: AgentTreeNode;
   readonly state: BranchLifecycleState;
   readonly focused: boolean;
@@ -154,6 +157,7 @@ const BranchRow = memo(function BranchRow({
   readonly onSelect: (agentId: string) => void;
 }) {
   const { t, time } = useI18n();
+  const promote = usePromoteAgent(sessionId, node.agentId);
   const isMerged = state === 'merged';
   const isRunning = state === 'running';
   const isWaiting = state === 'waiting';
@@ -194,6 +198,7 @@ const BranchRow = memo(function BranchRow({
         : 'text-ink-faint';
 
   return (
+    <div className="group relative -mx-1.5 w-[calc(100%+0.75rem)] min-w-0">
     <button
       type="button"
       data-branch-row={node.agentId}
@@ -202,7 +207,7 @@ const BranchRow = memo(function BranchRow({
       aria-current={focused ? 'true' : undefined}
       title={tooltip}
       onClick={() => { onSelect(node.agentId); }}
-      className={`group -mx-1.5 flex h-7 w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+      className={`flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         focused
           ? 'bg-accent/[0.08] text-ink'
           : peeked
@@ -218,14 +223,28 @@ const BranchRow = memo(function BranchRow({
       >
         {node.label}
       </span>
-      <span className={`shrink-0 text-[11.5px] leading-4 ${statusClass}`}>
+      <span className={`shrink-0 text-[11.5px] leading-4 ${statusClass}${promote === undefined ? '' : promote.pending ? ' invisible' : ' group-has-[[data-promote-branch-action]:focus-visible]:invisible group-hover:invisible'}`}>
         {statusText}
       </span>
     </button>
+    {promote !== undefined ? (
+      <button
+        type="button"
+        data-promote-branch-action={node.agentId}
+        disabled={promote.pending}
+        title={t('transcript.branch.promote')}
+        onClick={promote.promote}
+        className={`absolute right-1 top-1/2 h-5 -translate-y-1/2 cursor-pointer rounded bg-panel px-1.5 text-[11.5px] leading-5 text-ink-soft shadow-[0_0_0_1px_rgb(var(--kiki-shadow-ink)/0.08)] transition-opacity hover:text-ink focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink group-hover:pointer-events-auto group-hover:opacity-100 disabled:cursor-not-allowed disabled:text-ink-faint ${promote.pending ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
+      >
+        {t(promote.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
+      </button>
+    ) : null}
+    </div>
   );
 });
 
 export const InspectorBranches = memo(function InspectorBranches({
+  sessionId,
   branches,
   focusedAgentId,
   peekAgentId,
@@ -233,6 +252,7 @@ export const InspectorBranches = memo(function InspectorBranches({
   foldSummaries,
   onSelect,
 }: {
+  readonly sessionId?: string;
   readonly branches: OrderedBranches;
   readonly focusedAgentId: string;
   readonly peekAgentId?: string;
@@ -276,6 +296,7 @@ export const InspectorBranches = memo(function InspectorBranches({
         return (
           <BranchRow
             key={node.agentId}
+            sessionId={sessionId}
             node={node}
             state={state}
             focused={focusedAgentId === node.agentId}
@@ -304,6 +325,7 @@ export const InspectorBranches = memo(function InspectorBranches({
       {visibleMerged.map((node) => (
         <BranchRow
           key={node.agentId}
+          sessionId={sessionId}
           node={node}
           state="merged"
           focused={focusedAgentId === node.agentId}

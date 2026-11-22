@@ -27,8 +27,10 @@ import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/me
 import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
 import { acknowledgeResumeOutcome } from '#/session/dispatch/resume';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAgentBranchGuardService } from '#/features/btw/agentBranchGuardService';
 import { BranchTurnMerged } from '#/features/btw/branchOps';
-import { SubagentCompleted, SubagentStarted } from './mirrorAgentRun';
+import { ISessionBranchService } from '#/features/btw/btw';
+import { SubagentCompleted, SubagentFailed, SubagentStarted } from './mirrorAgentRun';
 import { ISessionSubagentService } from './subagent';
 import { autonomousReceiptsKey, AutonomousReceiptDelivered, type AutonomousReceipt } from './autonomousReceiptOps';
 
@@ -89,6 +91,7 @@ export function observeAutonomousReceipts(
   let disposed = false;
   let workVersion = 0;
   let mailbox: IAgentCollaborationMessageStore | undefined;
+  let branches: ISessionBranchService | undefined;
   const recover = () => {
     workVersion++;
     if (scheduled || disposed) return;
@@ -109,11 +112,11 @@ export function observeAutonomousReceipts(
     for (const receipt of receipts) {
       if (pending.has(receipt.turnId)) continue;
       const superseded = branch && (receipt.turnId !== last || state.active !== undefined || receipt.turnId <= (state.mergedThrough ?? -1));
-      if (busy && (branch || receipt.userPrompt === true) && !superseded && receipt.outcome === undefined) continue;
+      if (busy && (branch || receipt.userPrompt === true) && !superseded) continue;
       pending.add(receipt.turnId);
       const drain = { requested: false };
       const version = workVersion;
-      const checkBranchQuiet = branch && receipt.outcome === undefined && !superseded ? async () => {
+      const checkBranchQuiet = branch && !superseded ? async () => {
         const session = child.accessor.get(ISessionContext);
         if (mailbox === undefined) {
           mailbox = child.accessor.get(IAgentCollaborationMessageStore);
@@ -121,6 +124,11 @@ export function observeAutonomousReceipts(
             if (event.sessionId === session.sessionId && contains(event.agentId)) workChanged();
           }));
         }
+        if (branches === undefined) {
+          branches = child.accessor.get(ISessionBranchService);
+          if (branches !== undefined) subscriptions.add(branches.onDidSettleFold((agentId) => { if (agentId === child.id) workChanged(); }));
+        }
+        if (branches?.isFolding(child.id) === true) return false;
         const queued = await mailbox.listPendingAgents(session.sessionId);
         return !queued.some(contains) && !hasReceiptWork(child) && !hasDescendantWork();
       } : undefined;
@@ -169,16 +177,18 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const receiptId = createHash('sha256').update(`${child.id}:${String(receipt.turnId)}`).digest('hex');
   const taskId = `agent-receipt-${receiptId.slice(0, 56)}-${receiptId.slice(56)}`;
   const metadata = child.accessor.get(ISessionMetadata);
-  const currentAgent = metadata.peekAgent !== undefined ? metadata.peekAgent(child.id) : metadata.snapshot().agents?.[child.id];
   if (checkBranchQuiet !== undefined && !await retry(checkBranchQuiet)) return;
+  await child.accessor.get(IAgentBranchGuardService)?.revived();
+  signal.throwIfAborted();
+  const currentAgent = metadata.peekAgent !== undefined ? metadata.peekAgent(child.id) : metadata.snapshot().agents?.[child.id];
   const merged = branch && receipt.turnId <= (child.accessor.get(IAgentStateService).get(autonomousReceiptsKey).mergedThrough ?? -1);
   const sealed = currentAgent?.labels?.['branchSealed'] === 'true';
-  if (branch) await retry(() => metadata.updateAgent(child.id, (current) => ({
+  if (currentAgent?.labels?.['branch'] === 'true') await retry(() => metadata.updateAgent(child.id, (current) => ({
     ...current,
     branchTurn: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, outcome: receipt.outcome ?? 'completed' },
   })));
   if (superseded || merged || sealed || (!branch && (currentAgent?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' ||
-    receipt.outcome !== undefined || receipt.summary.trim() === ''))) {
+    (receipt.userPrompt !== true && (receipt.outcome !== undefined || receipt.summary.trim() === ''))))) {
     const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
     await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
     return;
@@ -206,22 +216,27 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const usage = child.accessor.get(IAgentUsageService).status().total;
   const contextTokens = child.accessor.get(IAgentTokenCountingService)?.statusSize();
   const toolCallCount = child.accessor.get(IAgentActivityView)?.telemetry?.().toolCallCount;
+  const result = receipt.error ?? (receipt.summary.trim() === '' ? 'No final reply was recorded.' : receipt.summary);
+  const failure = receipt.outcome === 'cancelled' ? receipt.error ?? 'terminated' : receipt.outcome === 'failed' ? result : undefined;
   if (!branch) await retry(() => metadata.updateAgent(child.id, (current) => acknowledgeResumeOutcome({
-    ...current, status: 'completed', taskId, completedAt: receipt.endedAt, resultSummary: receipt.summary, usage,
+    ...current, status: receipt.outcome ?? 'completed', taskId, completedAt: receipt.endedAt,
+    resultSummary: failure === undefined ? result : undefined, usage,
     contextTokens: contextTokens ?? current.contextTokens,
     toolCallCount: toolCallCount ?? current.toolCallCount,
-    error: undefined,
+    error: failure,
     parentSteering: parentSteering ?? null,
     labels: { ...current.labels, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
   }, taskId, receipt.endedAt)));
   const dispatcher = requester.accessor.get(IEventDispatcher);
   const started = new SubagentStarted({ subagentId: child.id, taskId });
   if (!branch) await retry(() => dispatcher.dispatchDurably(started));
-  const completed = new SubagentCompleted({ subagentId: child.id, taskId, resultSummary: receipt.summary, usage, contextTokens });
-  if (!branch) await retry(() => dispatcher.dispatchDurably(completed));
+  const finished = failure === undefined
+    ? new SubagentCompleted({ subagentId: child.id, taskId, resultSummary: result, usage, contextTokens })
+    : new SubagentFailed({ subagentId: child.id, taskId, error: failure });
+  if (!branch) await retry(() => dispatcher.dispatchDurably(finished));
   const output = branch
-    ? `${description}.\n${receipt.error ?? (receipt.summary.trim() || 'No final reply was recorded.')}\nUse HistoryRead({ agent_id: "${child.id}", turn: ${receipt.turnId} }) to inspect this turn, or AgentSend({ target: "${child.id}", message }) to continue.`
-    : receipt.summary;
+    ? `${description}.\n${result}\nUse HistoryRead({ agent_id: "${child.id}", turn: ${receipt.turnId} }) to inspect this turn, or AgentSend({ target: "${child.id}", message }) to continue.`
+    : result;
   const info = {
     kind: 'agent' as const, status: receipt.outcome === 'failed' ? 'failed' as const : receipt.outcome === 'cancelled' ? 'killed' as const : 'completed' as const,
     stopReason: receipt.error,
@@ -249,5 +264,5 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   }
   const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
   await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
-  requester.accessor.get(ISessionSubagentService)?.notifyAgentTaskStopped({ agentName: profileName, response: receipt.summary });
+  requester.accessor.get(ISessionSubagentService)?.notifyAgentTaskStopped({ agentName: profileName, response: result });
 }

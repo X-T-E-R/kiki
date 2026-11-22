@@ -2338,19 +2338,68 @@ describe('SessionLifecycleService subagent promotion', () => {
     return { fx, sourceRecords, snapshot, read, readScopes, rewrite, createAgent, registerAgent, update, writes, materialize, announce };
   }
 
-  it('promotes a legacy titled branch using its persisted profile without branch execution locks', async () => {
+  it.each([
+    ['merged', { branchSealed: 'true' }, [{ type: 'agent.branch_sealed', sealed: true }]],
+    ['open', {}, []],
+    ['revived', {}, [{ type: 'agent.branch_sealed', sealed: true }, { type: 'agent.branch_turn_merged', turnId: 0 }, { type: 'agent.branch_sealed', sealed: false }]],
+  ] as const)('promotes a %s branch into a standalone main thread without branch execution locks', async (_state, sealLabels, sealRecords) => {
     const p = promotionFixture({ main: { type: 'main' }, 'agent-3': {
-      ...agentMeta, displayName: 'BTW', labels: { branch: 'true', branchSealed: 'true', toolsLocked: 'true' },
+      ...agentMeta, userLabel: undefined, displayName: 'BTW', labels: { branch: 'true', toolsLocked: 'true', ...sealLabels },
     } });
     p.sourceRecords[1] = { type: 'profile.bind', profileName: 'coder', time: 2 };
-    p.sourceRecords.push({ type: 'agent.branch_sealed', sealed: true }, { type: 'agent.tool_lock_changed', locked: true }, { type: 'branch.base', parentAgentId: 'main' });
+    p.sourceRecords.push(...sealRecords, { type: 'agent.tool_lock_changed', locked: true }, { type: 'branch.base', parentAgentId: 'main' });
     try {
       const source = await p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'agent-3' });
       await p.fx.service.materializePromotion(source, { sourceSessionId: 'session-1', agentId: 'agent-3', newSessionId: 'promoted' });
-      expect(p.createAgent).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ profile: 'coder' }) }));
+      expect(p.createAgent).toHaveBeenCalledWith({
+        agentId: 'main', copiedIdentity: true, binding: expect.objectContaining({ profile: 'coder' }),
+      });
       const copied = p.rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
-      expect(copied.some((record) => ['agent.branch_sealed', 'agent.tool_lock_changed', 'branch.base'].includes(String(record['type'])))).toBe(false);
+      expect(copied.some((record) => ['agent.branch_sealed', 'agent.branch_turn_merged', 'agent.tool_lock_changed', 'branch.base'].includes(String(record['type'])))).toBe(false);
       expect(copied.some((record) => record['type'] === 'executor.session.updated')).toBe(true);
+      expect(p.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'BTW', titleKind: 'generated' }));
+    } finally {
+      p.materialize.mockRestore();
+      p.announce.mockRestore();
+      await p.fx.service.dispose();
+    }
+  });
+
+  it('re-seals a revived descendant branch in wire when promoting its ancestor', async () => {
+    const p = promotionFixture({
+      main: { type: 'main' },
+      'agent-3': agentMeta,
+      'agent-branch': {
+        type: 'sub',
+        parentAgentId: 'agent-3',
+        forkedFrom: 'agent-3',
+        displayName: 'Revived side check',
+        labels: { parentAgentId: 'agent-3', branch: 'true', branchSeed: 'fresh' },
+      },
+    });
+    const wiresByScope: Record<string, Array<Record<string, unknown>>> = {
+      'workspace-1/session-1/agents/agent-3': p.sourceRecords,
+      'workspace-1/session-1/agents/agent-branch': [
+        { type: 'metadata', protocol_version: '1.5', created_at: 10 },
+        { type: 'branch.base', version: 1, parentAgentId: 'agent-3', seed: 'fresh', inheritedCount: 0, time: 10 },
+        { type: 'agent.branch_sealed', sealed: true, time: 11 },
+        { type: 'agent.branch_sealed', sealed: false, time: 12 },
+        { type: 'turn.ended', turnId: 1, reason: 'completed', time: 13 },
+      ],
+    };
+    p.read.mockImplementation(async function* (scope: string) {
+      p.readScopes.push(scope);
+      yield* (wiresByScope[scope] ?? []);
+    });
+    try {
+      const source = await p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'agent-3' });
+      await p.fx.service.materializePromotion(source, { sourceSessionId: 'session-1', agentId: 'agent-3', newSessionId: 'promoted' });
+      const writtenByScope = new Map(
+        p.rewrite.mock.calls.map(([scope, , records]) => [scope as string, records as Array<Record<string, unknown>>]),
+      );
+      const branchWritten = writtenByScope.get('workspace-1/promoted/agents/agent-branch')!;
+      const sealRecords = branchWritten.filter((record) => record['type'] === 'agent.branch_sealed');
+      expect(sealRecords.at(-1)).toMatchObject({ type: 'agent.branch_sealed', sealed: true });
     } finally {
       p.materialize.mockRestore();
       p.announce.mockRestore();

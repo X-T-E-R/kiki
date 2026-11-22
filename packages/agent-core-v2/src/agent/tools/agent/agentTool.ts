@@ -640,7 +640,7 @@ export class SubagentTool implements ISubagentTool {
           ));
     const admitted = await this.withAgentRunPhase(toolCallId, 'started', () => Promise.race([run.started, queued]));
     const started = admitted === 'queued'
-      ? { agentId: run.child.agentId, completion: run.started.then((handle) => handle.completion) }
+      ? { agentId: run.child.agentId, turn: run.started.then((handle) => handle.turn), completion: run.started.then((handle) => handle.completion) }
       : admitted;
     const prompt = run.request.kind === 'prompt' ? run.request.prompt : undefined;
     const mirrored = mirrorAgentRun(prepared.requester, started, {

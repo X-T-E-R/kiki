@@ -12,6 +12,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { TurnStarted } from '#/agent/loop/turnEvents';
 import { turnKey } from '#/agent/loop/turnOps';
 import { constrainPermissionMode } from '#/agent/permissionMode/permissionMode';
 import { permissionModeCeilingKey, PermissionSetModeCeiling } from '#/agent/permissionMode/permissionModeOps';
@@ -408,6 +409,26 @@ describe('SessionBranchService completion metadata', () => {
     }
   });
 
+  it('reports an in-flight fold until its merge watermark is recorded', async () => {
+    const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
+    let releaseParent: () => void = () => {};
+    harness.prompt.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseParent = resolve; }));
+    const settled: string[] = [];
+    const subscription = harness.service.onDidSettleFold((agentId) => { settled.push(agentId); });
+    try {
+      const folding = harness.service.foldBranch({ branchId: 'branch-1', summary: 'Interim update', done: false });
+      await vi.waitFor(() => expect(harness.prompt).toHaveBeenCalledOnce());
+      expect(harness.service.isFolding('branch-1')).toBe(true);
+      expect(settled).toEqual([]);
+      releaseParent();
+      await expect(folding).resolves.toMatchObject({ status: 'merged', done: false });
+      expect(harness.service.isFolding('branch-1')).toBe(false);
+      expect(settled).toEqual(['branch-1']);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
   it('serializes concurrent foldBranch calls on the same branch so only one seals and emits branch_fold', async () => {
     const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
     let releaseFirstMetadataRead: () => void = () => {};
@@ -638,7 +659,16 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         const dispatcher = registerTestEventDispatcher(ix);
         const agentState = ix.get(IAgentStateService);
         agentState.contributeState(permissionModeCeilingKey);
-        return { ix, dispatcher, agentState };
+        let branchMeta: AgentMeta = {
+          labels: { branch: 'true', branchSealed: 'true' },
+          status: 'completed',
+          completedAt: 1,
+          resultSummary: 'Earlier merged summary',
+          error: 'Earlier error',
+        };
+        const updateAgent = vi.fn(async (_agentId: string, update: (current: AgentMeta) => AgentMeta) => { branchMeta = update(branchMeta); });
+        ix.stub(ISessionMetadata, { updateAgent } as unknown as ISessionMetadata);
+        return { ix, dispatcher, agentState, updateAgent, branchMeta: () => branchMeta };
       };
 
       const executorEvents = stubToolExecutorEvents();
@@ -708,12 +738,59 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         formatDenyMessage: (msg: string) => msg,
       } as unknown as IAgentToolApprovalService);
       replayed.ix.set(IAgentBranchGuardService, new SyncDescriptor(AgentBranchGuardService));
-      replayed.ix.get(IAgentBranchGuardService);
+      const replayedGuard = replayed.ix.get(IAgentBranchGuardService);
       await replayed.dispatcher.restore();
 
       expect(replayed.agentState.get(permissionModeCeilingKey)).toBe('auto');
       expect(replayed.agentState.get(branchToolLockKey)).toBe(false);
       expect(replayed.agentState.get(branchSealedKey)).toBe(true);
+
+      let releaseMetadataUpdate: () => void = () => {};
+      const metadataGate = new Promise<void>((resolve) => { releaseMetadataUpdate = resolve; });
+      const origUpdate = replayed.updateAgent.getMockImplementation()!;
+      replayed.updateAgent.mockImplementationOnce(async (id, update) => {
+        await metadataGate;
+        return origUpdate(id, update);
+      });
+      let metaAtUnsealEvent: AgentMeta | undefined;
+      replayed.ix.get(IEventBus).subscribe(AgentBranchSealed, (event) => {
+        if (event.sealed === false) metaAtUnsealEvent = replayed.branchMeta();
+      });
+
+      await replayed.dispatcher.dispatch(new TurnStarted({ turnId: 3, origin: { kind: 'user' } }));
+      const pendingBash = replayedExecutorEvents.fireBeforeExecute({
+        turnId: 3,
+        signal: new AbortController().signal,
+        toolCall: bashCall,
+        toolCalls: [bashCall],
+        args: {},
+        execution: { approvalRule: 'Bash', execute: async () => ({ output: 'ok' }) },
+      });
+      releaseMetadataUpdate();
+      await replayedGuard.revived();
+      expect(metaAtUnsealEvent).toEqual({
+        labels: { branch: 'true' },
+        status: undefined,
+        completedAt: undefined,
+        resultSummary: undefined,
+        error: undefined,
+      });
+      expect(replayed.agentState.get(branchSealedKey)).toBe(false);
+      expect(replayed.branchMeta()).toEqual({
+        labels: { branch: 'true' },
+        status: undefined,
+        completedAt: undefined,
+        resultSummary: undefined,
+        error: undefined,
+      });
+      expect(await pendingBash).toBeUndefined();
+
+      const revivedAgain = buildWireHost();
+      revivedAgain.ix.stub(IAgentToolExecutorService, stubToolExecutorEvents().executor);
+      revivedAgain.ix.set(IAgentBranchGuardService, new SyncDescriptor(AgentBranchGuardService));
+      revivedAgain.ix.get(IAgentBranchGuardService);
+      await revivedAgain.dispatcher.restore();
+      expect(revivedAgain.agentState.get(branchSealedKey)).toBe(false);
     } finally {
       await disposables.dispose();
     }

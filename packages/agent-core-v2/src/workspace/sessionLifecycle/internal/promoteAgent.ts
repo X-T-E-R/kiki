@@ -78,6 +78,7 @@ const MAIN_DROPPED_TYPES: ReadonlySet<string> = new Set([
   'tools.policy_refreshed',
   'permission.set_mode',
   'agent.branch_sealed',
+  'agent.branch_turn_merged',
   'agent.tool_lock_changed',
   'branch.base',
   'turn.cancel',
@@ -262,7 +263,7 @@ export function settlePromotedWireRecords(
 
   const out: WireRecord[] = records.map((record) => {
     if (options.isDescendant === true) {
-      if (record.type === 'agent.branch_sealed' && record['sealed'] === true) branchSealedSeen = true;
+      if (record.type === 'agent.branch_sealed') branchSealedSeen = record['sealed'] === true;
       if (record.type === 'turn.prompt') {
         const turnId = parseTurnId(record['turnId']);
         activeAutonomous = record['parentReceiptManaged'] !== false || turnId === undefined ? undefined : { turnId, summary: '' };

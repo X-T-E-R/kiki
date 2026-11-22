@@ -501,6 +501,7 @@ function AgentWorkspaceHeader({
   }, [forest, target.agentId]);
   const canUnlockInMenu = isBranch && !branchSealed && branchToolsLocked && onUnlockBranchTools !== undefined;
   const hasActionsMenu = freshContextAvailable || onLocateSpawn !== undefined || promote !== undefined || canUnlockInMenu;
+  const hasDesktopMenuActions = freshContextAvailable || onLocateSpawn !== undefined || canUnlockInMenu || (promote !== undefined && !(isBranch && !branchSealed));
   useEffect(() => {
     if (!menuOpen) return;
     const unregister = registerOverlay('agent-actions-menu');
@@ -593,6 +594,17 @@ function AgentWorkspaceHeader({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
+        {isBranch && !branchSealed && promote !== undefined ? (
+          <button
+            type="button"
+            data-promote-branch-action
+            disabled={promote.pending}
+            onClick={promote.promote}
+            className="hidden h-7 shrink-0 cursor-pointer rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint sm:inline-flex sm:items-center"
+          >
+            {t(promote.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
+          </button>
+        ) : null}
         {isBranch && !branchSealed && onFoldBranch !== undefined ? (
           <button
             type="button"
@@ -608,7 +620,7 @@ function AgentWorkspaceHeader({
         ) : null}
         {showPreviewToggle ? <PreviewToggleButton sessionId={target.sessionId} workspaceId={workspaceId} /> : null}
         {hasActionsMenu ? (
-          <div className="relative shrink-0" data-agent-actions>
+          <div className={`relative shrink-0${hasDesktopMenuActions ? '' : ' sm:hidden'}`} data-agent-actions>
             <button
               type="button"
               onClick={() => { setMenuOpen((value) => !value); }}
@@ -665,7 +677,7 @@ function AgentWorkspaceHeader({
                     role="menuitem"
                     data-agent-promote
                     disabled={promote.pending}
-                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent"
+                    className={`${isBranch && !branchSealed ? 'flex sm:hidden' : 'flex'} h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent`}
                     onClick={() => { setMenuOpen(false); promote.promote(); }}
                   >
                     {t(promote.pending ? 'agent.promotePending' : 'agent.promote')}
@@ -1147,7 +1159,7 @@ function ChildAgentWorkspace({
       });
   }, [agentId, branchFoldPending, branchFolding, client, composerOwnerActive, controller, headerBusy, locale, navigation, sessionId]);
 
-  const composerDisabled = !agentKnown || executorId === undefined || branchSealed;
+  const composerDisabled = !agentKnown || executorId === undefined;
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -1799,7 +1811,7 @@ function ChildAgentWorkspace({
         onRetryFailedTurn: composerDisabled ? undefined : handleRetryFailedTurn,
         visible: transcriptVisible,
       }}
-      annotations={branchSealed ? undefined : annotationSurface}
+      annotations={annotationSurface}
       dock={<div className="space-y-2 pt-2">
         <ResyncStatusBanner
           resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
@@ -1812,17 +1824,30 @@ function ChildAgentWorkspace({
             innerClassName="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
           >
             <span className="min-w-0 truncate font-medium text-ink">
-              {t('transcript.branch.sealed')}
+              {t('transcript.branch.sealedContinue')}
             </span>
-            <button
-              type="button"
-              data-branch-sealed-back-to-main
-              onClick={() => { navigation.openSession(); }}
-              className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
-            >
-              <Icon name="arrowLeft" size={12} />
-              <span>{t('rail.branches.backToMain')}</span>
-            </button>
+            <span className="flex shrink-0 items-center gap-1">
+              {promoteAction !== undefined ? (
+                <button
+                  type="button"
+                  data-promote-branch-action
+                  disabled={promoteAction.pending}
+                  onClick={promoteAction.promote}
+                  className="inline-flex h-7 shrink-0 cursor-pointer items-center rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+                >
+                  {t(promoteAction.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                data-branch-sealed-back-to-main
+                onClick={() => { navigation.openSession(); }}
+                className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
+              >
+                <Icon name="arrowLeft" size={12} />
+                <span>{t('rail.branches.backToMain')}</span>
+              </button>
+            </span>
           </ConversationDockColumn>
         ) : null}
         {sendNotice?.scope === sendScope ? (
@@ -1852,7 +1877,7 @@ function ChildAgentWorkspace({
           delegationPosition={isBranch || branchIdentityPending ? 'main' : 'sub'}
           boundExecution={childExecution}
           engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
-          disabledPlaceholder={t('subagent.composerUnavailable')}
+          disabledPlaceholder={agentKnown ? undefined : t('subagent.composerUnavailable')}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={configuredDefaultModel ?? displayModel}
           modelSource="session" permissionMode={permissionMode}
           planMode={planMode} efforts={supportedEfforts} effort={displayEffort}
