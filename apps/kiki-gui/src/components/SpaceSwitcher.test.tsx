@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
 /**
- * Sidebar space switcher (§6.4, §9.4): the wordmark is always the menu
- * button (single-home users find New space… there), it lists
- * current / running / not started with other spaces' pending counts, enters a
- * space through the desktop, and Ctrl+Alt+N picks the Nth space.
+ * Two-Tier SpaceScopeControl + SpaceSwitchSheet tests:
+ *   - Window identity = local Kiki home (`Main space` or a local subspace).
+ *   - Paired remote computers = pure 0ms sidebar view filters (`layoutPrefs.spaceScope`),
+ *     never hijacking the root window connection or displaying `Another space`.
+ *   - Subtraction-first popover: zero `⌃⌥` badges, zero `Ctrl+Alt+0..9` hijack,
+ *     zero `Open window` inline text, zero defensive boundary prose, and metadata
+ *     strictly in `title` / `aria-label`.
  */
 
 import { act } from 'react';
@@ -20,7 +23,7 @@ import { PhoneRemoteSpaceLine } from './PageChrome';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { useConnection } from '../state/connection';
 import { resetLaunchWindowMode, useSpaces } from '../lib/spaces';
-import { ScopeRestoreError, registerScopeNavigation, type ScopeNavigationRequest } from '../lib/navScope';
+import { registerScopeNavigation } from '../lib/navScope';
 
 const list = vi.fn();
 const defaultClient = { klient: { rest: { homes: { list } } } };
@@ -31,7 +34,7 @@ const host = {
   openDesktopLogDirectory: vi.fn(async (): Promise<void> => undefined),
 };
 const navigate = vi.fn();
-/** Remote (SSH) connection state, toggleable per test. */
+
 const connection = vi.hoisted(() => ({
   sshLabel: null as string | null,
   connectionId: null as string | null,
@@ -41,17 +44,16 @@ const connection = vi.hoisted(() => ({
   localScopeId: 'local' as string,
   wsStatus: 'open' as 'open' | 'connecting' | 'closed',
   wsBannerSuppressed: false,
+  meta: { server_home_id: 'local-home-uuid' } as { server_home_id?: string },
   activateLocal: vi.fn(),
   restoreLocal: vi.fn<(...args: [AbortSignal?]) => Promise<void>>(),
   order: [] as string[],
-  /** The client the current connection serves; `null` is the default client. */
   client: null as { klient: { rest: { homes: { list: unknown }; connections?: unknown } }; baseUrl?: string } | null,
   localClient: undefined as { klient: { rest: { homes: { list: unknown }; connections?: unknown } }; baseUrl?: string } | null | undefined,
   pendingAction: null as (() => void | Promise<void>) | null,
   guardActions: false,
 }));
 
-/** Independent home directories; `h-shared` collides across hosts with different semantics. */
 const REMOTE_HOMES = {
   items: [
     { id: 'main', name: 'Main space', path: '/srv/kiki', primary: true },
@@ -79,14 +81,17 @@ vi.mock('../state/connection', () => {
     localScopeId: connection.localScopeId,
     wsStatus: connection.wsStatus,
     wsBannerSuppressed: connection.wsBannerSuppressed,
+    meta: connection.meta,
     activateLocal: connection.activateLocal,
     restoreLocal: connection.restoreLocal,
-    scopeAdapter: { prepare: async (scope: { homeId: string; scopeId: string }, signal: AbortSignal) => ({
-      scope,
-      validate: async () => { signal.throwIfAborted(); },
-      commit: async () => { signal.throwIfAborted(); connection.activateLocal(); },
-      dispose: async () => {},
-    }) },
+    scopeAdapter: {
+      prepare: async (scope: { homeId: string; scopeId: string }, signal: AbortSignal) => ({
+        scope,
+        validate: async () => { signal.throwIfAborted(); },
+        commit: async () => { signal.throwIfAborted(); connection.activateLocal(); },
+        dispose: async () => {},
+      }),
+    },
   });
   return {
     useConnection: read,
@@ -96,16 +101,18 @@ vi.mock('../state/connection', () => {
 vi.mock('../host', () => ({ useHost: () => host }));
 vi.mock('./dirtyGuard', () => ({
   useGuardedNavigate: () => navigate,
-  useDirtyGuard: () => ({ runAction: (action: () => void | Promise<void>, target?: string) => {
-    const execute = () => {
-      const result = action();
-      const go = () => { if (target !== undefined) navigate(target); };
-      if (result !== undefined) return result.then(go);
-      go();
-    };
-    if (connection.guardActions) connection.pendingAction = execute;
-    else return execute();
-  } }),
+  useDirtyGuard: () => ({
+    runAction: (action: () => void | Promise<void>, target?: string) => {
+      const execute = () => {
+        const result = action();
+        const go = () => { if (target !== undefined) navigate(target); };
+        if (result !== undefined) return result.then(go);
+        go();
+      };
+      if (connection.guardActions) connection.pendingAction = execute;
+      else return execute();
+    },
+  }),
 }));
 
 const env = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
@@ -117,8 +124,6 @@ beforeEach(() => {
   localStorage.removeItem('kiki.layout');
   resetLayoutPreferencesForTests();
   resetLaunchWindowMode();
-  // Native directory/SSH controls exercise the windows branch; the real
-  // single-seat switch-mode consumer is covered with NavScopeBoundary.
   writeDesktopPrefs({ windowMode: 'windows' });
   host.openSpace.mockReset().mockResolvedValue(undefined);
   navigate.mockClear();
@@ -130,6 +135,7 @@ beforeEach(() => {
   connection.localScopeId = 'local';
   connection.wsStatus = 'open';
   connection.wsBannerSuppressed = false;
+  connection.meta = { server_home_id: 'local-home-uuid' };
   connection.activateLocal.mockReset();
   connection.restoreLocal.mockReset().mockImplementation(async () => { connection.activateLocal(); });
   connection.order.length = 0;
@@ -171,14 +177,16 @@ async function render(domainQuery = false) {
   return { container, rerender, queryClient };
 }
 
-const TWO = { items: [
-  { id: 'main', name: 'Main space', path: 'C:/k', primary: true },
-  { id: 'h-a', name: 'ACME', color: '#295c58', path: 'D:/a', primary: false },
-  { id: 'h-b', name: 'Paper', path: 'D:/b', primary: false },
-] };
+const TWO = {
+  items: [
+    { id: 'main', name: 'Main space', path: 'C:/k', primary: true },
+    { id: 'h-a', name: 'ACME', color: '#295c58', path: 'D:/a', primary: false },
+    { id: 'h-b', name: 'Paper', path: 'D:/b', primary: false },
+  ],
+};
 
-describe('SpaceSwitcher', () => {
-  it('renders only the clean kiki. wordmark at rest in default local main space while keeping the menu clickable', async () => {
+describe('SpaceSwitcher (Two-Tier subtraction-first)', () => {
+  it('renders only the clean kiki. wordmark at rest in default single-computer main space and keeps the menu free of defensive prose', async () => {
     list.mockResolvedValue({ items: [TWO.items[0]] });
     await render();
     const trigger = document.querySelector<HTMLButtonElement>('[data-space-switcher="main"]');
@@ -188,26 +196,30 @@ describe('SpaceSwitcher', () => {
     expect(trigger?.querySelector('[data-space-dot]')).toBeNull();
     expect(trigger?.querySelector('[data-space-switcher-name]')).toBeNull();
     expect(trigger?.querySelector('[data-space-switcher-subtitle]')).toBeNull();
-    expect(trigger?.querySelector('[data-space-remote-tag]')).toBeNull();
-    const chevron = trigger?.querySelector('svg:last-of-type');
-    expect(chevron?.getAttribute('class')).toContain('opacity-0');
+    expect(document.querySelector('[data-space-scope-clear]')).toBeNull();
+
     await act(async () => { trigger!.click(); });
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
-    expect(document.querySelector('[data-space-single-hint]')).not.toBeNull();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-new-entry]')!.click(); });
-    expect(navigate).toHaveBeenCalledWith('/settings/spaces?new=1');
+    const menu = document.querySelector('[data-space-switcher-menu]')!;
+    expect(menu.textContent).not.toContain('⌃⌥');
+    expect(menu.textContent).not.toContain('Another space');
+    expect(menu.textContent).not.toContain('Open window');
+    expect(document.querySelector('[data-space-single-hint]')).toBeNull();
+    expect(document.querySelector('[data-space-browser-hint]')).toBeNull();
+    expect(document.querySelector('[data-space-new-entry]')).toBeNull();
+    expect(document.querySelector('[data-space-pair-entry]')?.textContent).toContain('Pair a computer');
+    expect(document.querySelector('[data-space-manage]')?.textContent).toContain('Spaces & pairing');
   });
 
-  it('still offers the menu with retry when the server cannot list spaces', async () => {
+  it('still offers retry and management when the server cannot list local spaces', async () => {
     list.mockRejectedValue(new Error('404'));
     await render();
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
     expect(document.querySelector('[data-space-local-error]')?.textContent).toContain('Couldn\u2019t read this list.');
-    expect(document.querySelector('[data-space-new-entry]')).not.toBeNull();
     expect(document.querySelector('[data-space-manage]')).not.toBeNull();
   });
 
-  it('shows other spaces’ pending count and per-space state', async () => {
+  it('shows local Spaces group with pending badge pill and quiet running dot in switch mode without verbose labels', async () => {
     writeDesktopPrefs({ windowMode: 'switch' });
     const scopeNavigate = vi.fn(async () => undefined);
     const unregister = registerScopeNavigation(scopeNavigate);
@@ -216,9 +228,10 @@ describe('SpaceSwitcher', () => {
       await render();
       expect(document.querySelector('[data-space-switcher-pending]')?.textContent).toBe('2');
       await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      expect(document.querySelector('[data-space-group-spaces]')?.textContent).toBe('Spaces');
       expect(document.querySelector('[data-space-switch-item="main"]')?.getAttribute('data-space-state')).toBe('current');
       expect(document.querySelector('[data-space-switch-item="h-a"]')?.getAttribute('data-space-state')).toBe('hot');
-      expect(document.querySelector('[data-space-switch-item="h-a"]')?.textContent).toContain('2 waiting');
+      expect(document.querySelector('[data-space-switch-item="h-a"] [data-space-local-pending="2"]')?.textContent).toBe('2');
       expect(document.querySelector('[data-space-switch-item="h-b"]')?.getAttribute('data-space-state')).toBe('cold');
       await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-b"]')!.click(); });
       expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({ homeId: 'h-b', scopeId: 'local', inPlace: true });
@@ -226,7 +239,7 @@ describe('SpaceSwitcher', () => {
     } finally { unregister(); }
   });
 
-  it('names the current space inside one and jumps with Ctrl+Alt+1', async () => {
+  it('does NOT hijack Ctrl+Alt+0..9 keyboard shortcuts (preserving AltGr and UU Remote)', async () => {
     configureSpaceStorage({ homeId: 'h-a', name: 'ACME', color: '#295c58' });
     list.mockResolvedValue(TWO);
     await render();
@@ -234,132 +247,198 @@ describe('SpaceSwitcher', () => {
     expect(trigger.querySelector('[data-space-switcher-name]')?.textContent).toBe('ACME');
     expect(trigger.querySelector('[data-space-dot]')).not.toBeNull();
     expect(trigger.getAttribute('aria-label')).toContain('kiki · ACME');
-    await act(async () => { trigger.click(); });
-    expect(document.querySelector('[data-space-new-entry]')).toBeNull();
-    expect(document.querySelector('[data-space-manage]')).not.toBeNull();
-    await act(async () => { trigger.click(); });
+
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit1', ctrlKey: true, altKey: true })); });
-    expect(host.openSpace).toHaveBeenCalledWith('main');
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0', ctrlKey: true, altKey: true })); });
+    expect(host.openSpace).not.toHaveBeenCalled();
   });
 
-  it('shows the remote identity and state on two lines without a remote tag', async () => {
+  it('uses pure 0ms sidebar filter for paired remote computers without calling requestScopeNavigation or mutating root connection', async () => {
+    const macId = '11111111-1111-4111-8111-111111111111';
+    const gpuId = '22222222-2222-4222-8222-222222222222';
+    const selfLoopId = '33333333-3333-4333-8333-333333333333';
+    const connectionsList = vi.fn().mockResolvedValue([
+      {
+        id: macId,
+        label: 'MacBook Air',
+        endpoint: 'http://192.0.2.10:59001',
+        target: { homeId: 'mac-home', hostId: 'host-mac', protocol: 1 },
+        credentialRef: macId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+        rttMs: 38,
+        summary: {
+          value: { online: true, busy_sessions: 1, needs_you_sessions: 2, revision: 'r1', as_of: Date.now(), platform: 'darwin' },
+          lastSeen: Date.now(),
+          stale: false,
+        },
+      },
+      {
+        id: gpuId,
+        label: 'Dorm 3090',
+        endpoint: 'http://192.0.2.11:59001',
+        target: { homeId: 'gpu-home', hostId: 'host-gpu', protocol: 1 },
+        credentialRef: gpuId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'offline',
+        activeLeases: 0,
+        rttMs: 10,
+        summary: {
+          value: { online: false, busy_sessions: 0, needs_you_sessions: 0, revision: 'r1', as_of: Date.now() - 120_000, platform: 'win32' },
+          lastSeen: Date.now() - 120_000,
+          stale: true,
+        },
+      },
+      // Self-loop record pointing back to this local server_home_id must be filtered out!
+      {
+        id: selfLoopId,
+        label: 'Self Loopback',
+        endpoint: 'http://127.0.0.1:58627',
+        target: { homeId: 'local-home-uuid', hostId: 'host-self', protocol: 1 },
+        credentialRef: selfLoopId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+      },
+    ]);
+    list.mockResolvedValue(TWO);
+    const localWithConnections = {
+      baseUrl: 'http://127.0.0.1:58627',
+      klient: { rest: { homes: { list }, connections: { list: connectionsList } } },
+    };
+    connection.client = localWithConnections;
+    connection.localClient = localWithConnections;
+
+    const scopeNavigate = vi.fn(async () => undefined);
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      // Default scope shows quiet `All computers` capsule + degraded dot (Dorm 3090 offline).
+      expect(document.querySelector('[data-space-scope-pill="all"]')?.textContent).toContain('All computers');
+      expect(document.querySelector('[data-space-scope-degraded]')).not.toBeNull();
+      expect(document.querySelector('[data-space-scope-clear]')).toBeNull();
+
+      const callsBeforeOpen = connectionsList.mock.calls.length;
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(connectionsList.mock.calls.length).toBeGreaterThan(callsBeforeOpen);
+
+      const menu = document.querySelector('[data-space-switcher-menu]')!;
+      // Zero clutter / zero shortcuts / zero defensive prose / zero self-loop.
+      expect(menu.textContent).not.toContain('⌃⌥');
+      expect(menu.textContent).not.toContain('Another space');
+      expect(menu.textContent).not.toContain('Open window');
+      expect(menu.textContent).not.toContain('Current');
+      expect(menu.textContent).not.toContain('Self Loopback');
+      expect(document.querySelector(`[data-space-remote-item="${selfLoopId}"]`)).toBeNull();
+
+      // Single-line remote row: label + needs-you pill; telemetry strictly in `title`.
+      const macRow = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${macId}"]`)!;
+      expect(macRow.textContent).toBe('MacBook Air2');
+      expect(macRow.getAttribute('title')).toContain('macOS');
+      expect(macRow.getAttribute('title')).toContain('38 ms');
+      expect(macRow.querySelector('[data-space-remote-needs="2"]')).not.toBeNull();
+
+      const gpuRow = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${gpuId}"]`)!;
+      expect(gpuRow.textContent).toBe('Dorm 3090');
+      expect(gpuRow.getAttribute('title')).toContain('Offline');
+
+      // Clicking MacBook Air updates layoutPrefs.spaceScope in 0ms without scope navigation!
+      await act(async () => { macRow.click(); });
+      expect(readLayoutPreferences().spaceScope).toBe(`remote:${macId}`);
+      expect(scopeNavigate).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-space-switcher-menu]')).toBeNull();
+      expect(document.querySelector('[data-space-switcher-name]')?.textContent).toBe('MacBook Air');
+      expect(document.querySelector('[data-space-scope-clear]')).toBeNull();
+
+      // Reopen and switch to This computer -> 0ms filter.
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-computer-local]')!.click(); });
+      expect(readLayoutPreferences().spaceScope).toBe('local:main');
+      expect(document.querySelector('[data-space-switcher-name]')?.textContent).toBe('This computer');
+
+      // Reopen and switch back to All computers -> 0ms filter.
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-scope-all]')!.click(); });
+      expect(readLayoutPreferences().spaceScope).toBe('all');
+      expect(scopeNavigate).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('keeps SSH remote back-to-local action and local space switching intact', async () => {
     connection.sshLabel = 'dev-server-gpu';
     list.mockResolvedValue(TWO);
     await render();
     const trigger = document.querySelector<HTMLElement>('[data-space-remote]');
     expect(trigger).not.toBeNull();
-    expect(trigger?.getAttribute('data-space-switcher')).toBeNull();
     expect(trigger?.querySelector('[data-space-switcher-name]')?.textContent).toBe('dev-server-gpu');
     expect(trigger?.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Connected');
-    expect(trigger?.querySelector('[data-space-remote-tag]')).toBeNull();
-    expect(trigger?.getAttribute('aria-label')).toContain('kiki · dev-server-gpu');
 
     await act(async () => { (trigger as HTMLButtonElement).click(); });
     expect(document.querySelector('[data-space-back-local]')?.textContent).toContain('Back to Main space');
-    expect(document.querySelector('[data-space-manage]')).not.toBeNull();
-    expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(3);
-    expect(document.querySelector('[data-space-switch-item][aria-current="true"]')).toBeNull();
-    expect(document.querySelector('[data-space-scope-all]')?.getAttribute('aria-current')).toBe('true');
-
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-back-local]')!.click(); });
     expect(connection.activateLocal).toHaveBeenCalledTimes(1);
   });
 
-  it('commits the local environment only after the independent window opens while remote', async () => {
-    connection.sshLabel = 'dev-server-gpu';
-    connection.activateLocal.mockImplementation(() => { connection.order.push('local'); });
-    host.openSpace.mockImplementation(async () => {
-      expect(connection.activateLocal).not.toHaveBeenCalled();
-      connection.order.push('open');
-    });
-    configureSpaceStorage({ homeId: 'main', name: 'Main space' });
+  it('keeps windows mode quiet (icon-only open window) and uses openSpace for another local space', async () => {
+    writeDesktopPrefs({ windowMode: 'windows' });
     list.mockResolvedValue(TWO);
     await render();
-
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
-    expect(host.openSpace).toHaveBeenCalledWith('h-a');
-    expect(connection.order).toEqual(['open', 'local']);
-    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(document.querySelector('[data-space-switcher-pending]')).toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+    const acmeRow = document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')!;
+    expect(acmeRow.textContent).not.toContain('Open window');
+    expect(acmeRow.getAttribute('title')).toContain('Open window');
+    await act(async () => { acmeRow.click(); });
+    expect(host.openSpace).toHaveBeenCalledExactlyOnceWith('h-a');
+    expect(connection.activateLocal).not.toHaveBeenCalled();
   });
 
-  // E4b: remote-only IDs and colliding IDs must never masquerade as local spaces.
-  it('targets the local homes list when the shortcut returns to local', async () => {
-    const remoteList = vi.fn().mockResolvedValue(REMOTE_HOMES);
-    const localList = vi.fn().mockResolvedValue(LOCAL_HOMES);
-    connection.sshLabel = 'dev-server-gpu';
-    connection.client = { klient: { rest: { homes: { list: remoteList } } } };
-    connection.localClient = { klient: { rest: { homes: { list: localList } } } };
-    connection.activateLocal.mockImplementation(() => {
-      connection.order.push('local');
-      connection.sshLabel = null;
-      connection.client = { klient: { rest: { homes: { list: localList } } } };
-    });
-    host.openSpace.mockImplementation(async () => { connection.order.push('open'); });
-    configureSpaceStorage({ homeId: 'main', name: 'Main space', color: '#295c58' });
-    const view = await render();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
-    const advertised = [...document.querySelectorAll('[data-space-switch-item]')].slice(1).map((item) => item.querySelector('span.flex-1')?.textContent);
-    expect(document.querySelector('[data-space-switch-item="h-remote-only"]')).toBeNull();
-    expect(document.querySelector('[data-space-switch-item="h-shared"]')?.textContent).not.toContain('Remote Paper');
-
-    const press = async (digit: number) => {
-      await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { code: `Digit${digit}`, ctrlKey: true, altKey: true }));
-      });
+  it('renders inline recovery for paused/broken remote pairings and local space start failure', async () => {
+    const connPaused = '55555555-5555-4555-8555-555555555555';
+    const connIdentity = '44444444-4444-4444-8444-444444444444';
+    const connNotApproved = '33333333-3333-4333-8333-333333333333';
+    const setEnabled = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const records = [
+      { id: connPaused, label: 'Epsilon Node', endpoint: 'http://127.0.0.1:59001', target: { homeId: connPaused, hostId: 'h1', protocol: 1 }, credentialRef: connPaused, enabled: false, purposes: ['gui'], backgroundSummary: true, state: 'disabled', activeLeases: 0 },
+      { id: connIdentity, label: 'Delta Host', endpoint: 'http://127.0.0.1:59001', target: { homeId: connIdentity, hostId: 'h2', protocol: 1 }, credentialRef: connIdentity, enabled: true, purposes: ['gui'], backgroundSummary: true, state: 'identity_changed', activeLeases: 0 },
+      { id: connNotApproved, label: 'Gamma Bench', endpoint: 'http://127.0.0.1:59001', target: { homeId: connNotApproved, hostId: 'h3', protocol: 1 }, credentialRef: connNotApproved, enabled: true, purposes: ['gui'], backgroundSummary: true, state: 'authentication_required', activeLeases: 0 },
+    ];
+    list.mockResolvedValue(TWO);
+    connection.localClient = {
+      baseUrl: 'http://127.0.0.1:58627',
+      klient: { rest: { homes: { list }, connections: { list: vi.fn(async () => records), setEnabled, remove } } },
     };
-    await press(2);
-    await view.rerender();
-    await press(3);
-    expect(remoteList).not.toHaveBeenCalled();
-    expect(localList).toHaveBeenCalledTimes(2);
-
-    const targets = host.openSpace.mock.calls.map((call) => (call as unknown[])[0]);
-    const localFor = targets.map((id) => LOCAL_HOMES.items.find((home) => home.id === id)?.name ?? null);
-    expect({ order: connection.order, targets, advertised, localFor }).toEqual({
-      order: ['open', 'local', 'open'],
-      targets: ['h-local-only', 'h-shared'],
-      advertised: ['Local GPU', 'Local Paper'],
-      localFor: ['Local GPU', 'Local Paper'],
-    });
-  });
-
-  it('keeps current-home selection actionable remotely and commits local before management', async () => {
-    connection.sshLabel = 'example-remote';
-    list.mockResolvedValue(TWO);
-    connection.activateLocal.mockImplementation(() => { connection.order.push('local'); });
-    host.openSpace.mockImplementation(async () => { connection.order.push('open'); });
     await render();
-    const open = async () => act(async () => { document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
-    await open();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="main"]')!.click(); });
-    expect(connection.order).toEqual(['local']);
-    expect(host.openSpace).not.toHaveBeenCalled();
-    await open();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-b"]')!.click(); });
-    expect(connection.order).toEqual(['local', 'open', 'local']);
-    await open();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-manage]')!.click(); });
-    expect(navigate).toHaveBeenCalledWith('/settings/spaces');
-    const managementCall = navigate.mock.calls.findIndex(([target]) => target === '/settings/spaces');
-    expect(managementCall).toBeGreaterThanOrEqual(0);
-    expect(connection.activateLocal.mock.invocationCallOrder.at(-1)).toBeLessThan(navigate.mock.invocationCallOrder[managementCall]!);
-  });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
 
-  it('does not guess a main ID while local control is unavailable and resumes after recovery', async () => {
-    connection.sshLabel = 'example-remote';
-    connection.localClient = null;
-    connection.client = { klient: { rest: { homes: { list: vi.fn().mockResolvedValue(REMOTE_HOMES) } } } };
-    list.mockResolvedValue(LOCAL_HOMES);
-    const view = await render();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
-    expect(document.querySelector('[data-space-directory-pending]')?.textContent).toContain('Loading');
-    expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(0);
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
-    expect(host.openSpace).not.toHaveBeenCalled();
-    connection.localClient = defaultClient;
-    await view.rerender();
-    expect(document.querySelector('[data-space-directory-pending]')).toBeNull();
-    expect(document.querySelector('[data-space-switch-item="h-local-only"]')?.textContent).toContain('Local GPU');
+    await act(async () => { document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${connIdentity}"]`)!.click(); });
+    expect(document.querySelector('[data-space-row-failure="remote-identity-changed"]')?.textContent).toContain('Identity changed');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="remove"]')!.click(); });
+    expect(remove).toHaveBeenCalledWith(connIdentity);
+
+    await act(async () => { document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${connPaused}"]`)!.click(); });
+    expect(document.querySelector('[data-space-row-failure="remote-paused"]')?.textContent).toContain('Paused');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="turn-on"]')!.click(); });
+    expect(setEnabled).toHaveBeenCalledWith(connPaused, true);
+    expect(readLayoutPreferences().spaceScope).toBe(`remote:${connPaused}`);
+
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+    host.openSpace.mockRejectedValueOnce(new Error('spawn failed'));
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')!.click(); });
+    expect(document.querySelector('[data-space-row-failure="local-start"]')?.textContent).toContain('Couldn\u2019t start ACME');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="view-log"]')!.click(); });
+    expect(host.openDesktopLogDirectory).toHaveBeenCalledTimes(1);
   });
 
   it('isolates local and remote query caches through rapid switches and a late remote response', async () => {
@@ -377,232 +456,53 @@ describe('SpaceSwitcher', () => {
     await act(async () => { finish(REMOTE_HOMES); });
     await view.rerender();
     expect(document.querySelector('[data-domain-query]')?.textContent).not.toContain('Remote');
-    connection.client = remoteClient;
-    connection.sshLabel = 'example-remote';
-    await view.rerender();
-    expect(document.querySelector('[data-domain-query]')?.textContent).toContain('Remote ACME');
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
-    expect(document.querySelector('[data-space-switcher-menu]')?.textContent).toContain('Local GPU');
-    expect(document.querySelector('[data-space-switcher-menu]')?.textContent).not.toContain('Remote ACME');
-    expect(remoteList).toHaveBeenCalledTimes(1);
-    expect(list).toHaveBeenCalledTimes(2);
   });
 
-  it('does not reuse old local directory data after the control client is replaced', async () => {
-    let finish!: (value: typeof LOCAL_HOMES) => void;
-    const oldList = vi.fn(() => new Promise<typeof LOCAL_HOMES>((resolve) => { finish = resolve; }));
-    connection.localClient = { klient: { rest: { homes: { list: oldList } } } };
-    const view = await render();
-    list.mockResolvedValue(TWO);
-    connection.localClient = defaultClient;
-    await view.rerender();
-    await act(async () => { finish(LOCAL_HOMES); });
-    await view.rerender();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-    expect(document.querySelector('[data-space-switch-item="h-a"]')?.textContent).toContain('ACME');
-    expect(document.querySelector('[data-space-switch-item="h-local-only"]')).toBeNull();
-  });
-
-  it('never turns browser/extension server homes into local desktop targets', async () => {
-    host.kind = 'browser';
-    connection.sshLabel = 'example-remote';
-    list.mockResolvedValue(REMOTE_HOMES);
+  it('opens the unified 1-stop PairSheet from Pair a computer…', async () => {
+    const localIdentity = { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 as const };
+    const tlsFingerprint = '0123456789abcdef'.repeat(4);
+    const inbound = vi.fn().mockResolvedValue({ enabled: false, configuredEnabled: false, identity: localIdentity, grants: [] });
+    const createPairCode = vi.fn().mockResolvedValue({
+      code: 'K9F2-7X4M',
+      expiresAt: Date.now() + 600_000,
+      target: localIdentity,
+      tlsFingerprint,
+      suggestedEndpoints: ['http://192.168.10.20:58627'],
+    });
+    list.mockResolvedValue({ items: [TWO.items[0]] });
+    connection.localClient = {
+      klient: { rest: { homes: { list }, connections: { list: vi.fn().mockResolvedValue([]), pair: vi.fn(), inbound, createPairCode } } },
+    };
     await render();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
-    expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(0);
-    expect(list).not.toHaveBeenCalled();
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
-    expect(host.openSpace).not.toHaveBeenCalled();
-    expect(connection.activateLocal).not.toHaveBeenCalled();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-pair-entry]')!.click(); });
+    expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
   });
 
-  it('lists shared remote Kikis in a browser client and switches into the selected remote space', async () => {
+  it('renders a bottom ActionSheet in phone touch mode', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse) and (max-width: 639px)' || query === '(pointer: coarse)',
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
     host.kind = 'browser';
-      const remoteConnId = '11111111-1111-4111-8111-111111111111';
-      const offlineConnId = '22222222-2222-4222-8222-222222222222';
-      const connectionsList = vi.fn().mockResolvedValue([
-        {
-          id: remoteConnId,
-          label: 'Shared Remote Alpha',
-          endpoint: 'http://192.0.2.10:59001',
-          target: { homeId: remoteConnId, hostId: 'host-alpha', protocol: 1 },
-          credentialRef: remoteConnId,
-          enabled: true,
-          purposes: ['gui'],
-          backgroundSummary: true,
-          state: 'online',
-          activeLeases: 0,
-          rttMs: 12,
-          summary: {
-            value: { online: true, busy_sessions: 0, needs_you_sessions: 0, revision: 'r1', as_of: Date.now(), platform: 'win32' },
-            lastSeen: Date.now(),
-            stale: false,
-          },
-        },
-        {
-          id: offlineConnId,
-          label: 'Offline Mac Studio',
-          endpoint: 'http://192.0.2.11:59001',
-          target: { homeId: offlineConnId, hostId: 'host-beta', protocol: 1 },
-          credentialRef: offlineConnId,
-          enabled: true,
-          purposes: ['gui'],
-          backgroundSummary: true,
-          state: 'offline',
-          activeLeases: 0,
-          rttMs: 25,
-          summary: {
-            value: { online: true, busy_sessions: 0, needs_you_sessions: 0, revision: 'r1', as_of: Date.now() - 120_000, platform: 'darwin' },
-            lastSeen: Date.now() - 120_000,
-            stale: true,
-          },
-        },
-      ]);
-      list.mockResolvedValue(TWO);
-      connection.client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes: { list }, connections: { list: connectionsList } } } } as unknown as typeof connection.client;
-      connection.localClient = null;
-      const scopeNavigate = vi.fn(async () => undefined);
-      const unregister = registerScopeNavigation(scopeNavigate);
-      try {
-        await render();
-        expect(list).not.toHaveBeenCalled();
-        await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-        await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-        expect(list).toHaveBeenCalledTimes(1);
-        expect(document.querySelector('[data-space-browser-hint]')?.textContent).toContain('Other spaces open only in the desktop app on that computer.');
-        expect(document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')?.disabled).toBe(true);
-        expect(document.querySelector('[data-space-new-entry]')).toBeNull();
-        expect(connectionsList).toHaveBeenCalledTimes(2);
-        const item = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteConnId}"]`);
-        expect(item).not.toBeNull();
-        expect(item?.textContent).toContain('Shared Remote Alpha');
-        expect(item?.textContent).not.toContain('192.0.2.10:59001');
-        expect(item?.querySelector('[data-space-remote-meta]')?.textContent).toBe('Windows · 12 ms');
-        const offlineItem = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${offlineConnId}"]`);
-        expect(offlineItem?.querySelector('[data-space-remote-meta]')?.textContent).toBe('macOS');
-        await act(async () => { item!.click(); });
-      expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({
-        homeId: `remote:${remoteConnId}`,
-        scopeId: `remote:${remoteConnId}`,
-        inPlace: true,
-      });
+    list.mockResolvedValue(TWO);
+    try {
+      await render();
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      expect(document.querySelector('.kiki-space-switch-sheet')).not.toBeNull();
     } finally {
-      unregister();
+      window.matchMedia = originalMatchMedia;
     }
   });
 
-  it('keeps windows mode status quiet and uses openSpace without changing its local target', async () => {
-    writeDesktopPrefs({ windowMode: 'windows' });
-    list.mockResolvedValue(TWO);
-    await render();
-    expect(document.querySelector('[data-space-switcher-pending]')).toBeNull();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-    expect(document.querySelector('[data-space-switch-item="h-a"]')?.textContent).toContain('Open window');
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')!.click(); });
-    expect(host.openSpace).toHaveBeenCalledExactlyOnceWith('h-a');
-    expect(connection.activateLocal).not.toHaveBeenCalled();
-  });
-
-  it('suppresses duplicate opens while entering and allows retry after a failed native open', async () => {
-    let fail!: (error: Error) => void;
-    host.openSpace.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
-    list.mockResolvedValue(TWO);
-    await render();
-    const press = () => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true }));
-    await act(async () => { press(); press(); });
-    expect(host.openSpace).toHaveBeenCalledTimes(1);
-    await act(async () => { fail(new Error('backend unavailable')); });
-    await act(async () => { press(); });
-    expect(host.openSpace).toHaveBeenCalledTimes(2);
-  });
-
-  it('guards shortcut side effects and rejects a queued target after local client replacement', async () => {
-    connection.sshLabel = 'example-remote';
-    connection.guardActions = true;
-    list.mockResolvedValue(TWO);
-    const view = await render();
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
-    expect(connection.activateLocal).not.toHaveBeenCalled();
-    expect(host.openSpace).not.toHaveBeenCalled();
-    connection.localClient = { klient: { rest: { homes: { list: vi.fn().mockResolvedValue(LOCAL_HOMES) } } } };
-    await view.rerender();
-    await act(async () => {
-      await expect(Promise.resolve().then(() => connection.pendingAction!())).rejects.toMatchObject({ name: 'AbortError', message: 'Space entry was superseded.' });
-    });
-    expect(connection.activateLocal).not.toHaveBeenCalled();
-    expect(host.openSpace).not.toHaveBeenCalled();
-  });
-
-  it('resolves browser computer name from handshake, hides routine subtitle in default main while surfacing drop notices, and never exposes raw remote: keys or UUIDs', async () => {
-    host.kind = 'browser';
-    const remoteConnId = '11111111-1111-4111-8111-111111111111';
-    const handshake = vi.fn().mockResolvedValue({ targetLabel: 'Office Mac Studio', homeId: 'main' });
-    const connectionsList = vi.fn().mockResolvedValue([]);
-    connection.client = {
-      baseUrl: 'http://127.0.0.1:58627',
-      klient: { rest: { homes: { list: vi.fn().mockResolvedValue(TWO) }, connections: { list: connectionsList, handshake } } },
-    };
-    connection.localClient = null;
-    const view = await render();
-    const trigger = document.querySelector<HTMLElement>('[data-space-switcher="main"]')!;
-    expect(trigger.querySelector('[data-space-dot]')).toBeNull();
-    expect(trigger.querySelector('[data-space-switcher-name]')).toBeNull();
-    expect(trigger.querySelector('[data-space-switcher-subtitle]')).toBeNull();
-
-    connection.wsStatus = 'connecting';
-    await view.rerender();
-    expect(trigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Office Mac Studio · Reconnecting…');
-
-    connection.wsStatus = 'closed';
-    await view.rerender();
-    expect(trigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Office Mac Studio · Disconnected');
-
-    // Non-default local space keeps space dot, space name, and machine subtitle when connected.
-    connection.wsStatus = 'open';
-    configureSpaceStorage({ homeId: 'h-a', name: 'ACME', color: '#295c58' });
-    await view.rerender();
-    const nonMainTrigger = document.querySelector<HTMLElement>('[data-space-switcher="h-a"]')!;
-    expect(nonMainTrigger.querySelector('[data-space-dot]')).not.toBeNull();
-    expect(nonMainTrigger.querySelector('[data-space-switcher-name]')?.textContent).toBe('ACME');
-    expect(nonMainTrigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Office Mac Studio');
-    configureSpaceStorage(null);
-
-    // Unlisted paired connection falls back to human label, never remote:<uuid> or UUID.
-    connection.connectionId = remoteConnId;
-    connection.spaceKey = `remote:${remoteConnId}`;
-    connection.localClient = connection.client;
-    connection.wsStatus = 'open';
-    await view.rerender();
-    const remoteTrigger = document.querySelector<HTMLElement>('[data-space-remote]')!;
-    expect(remoteTrigger.querySelector('[data-space-switcher-name]')?.textContent).toBe('Another space');
-    expect(remoteTrigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Connected');
-    expect(remoteTrigger.textContent).not.toContain('remote:');
-    expect(remoteTrigger.textContent).not.toContain(remoteConnId);
-
-    // Long name sets full title on line 1.
-    const longName = 'Studio Workstation Very Long Space Name Across Floors';
-    connectionsList.mockResolvedValue([
-      {
-        id: remoteConnId,
-        label: longName,
-        endpoint: 'http://127.0.0.1:59001',
-        target: { homeId: remoteConnId, hostId: 'host-alpha', protocol: 1 },
-        credentialRef: remoteConnId,
-        enabled: true,
-        purposes: ['gui'],
-        backgroundSummary: true,
-        state: 'online',
-        activeLeases: 0,
-      },
-    ]);
-    await view.queryClient.invalidateQueries();
-    await view.rerender();
-    const nameEl = document.querySelector<HTMLElement>('[data-space-switcher-name]')!;
-    expect(nameEl.textContent).toBe(longName);
-    expect(nameEl.getAttribute('title')).toBe(longName);
-  });
-
-  it('shows In {space} on phone touch mode when in a remote space and never exposes UUIDs', async () => {
+  it('never exposes raw remote: keys or UUIDs in PhoneRemoteSpaceLine', async () => {
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query === '(pointer: coarse) and (max-width: 639px)',
@@ -634,466 +534,10 @@ describe('SpaceSwitcher', () => {
       });
       await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
       const line = container.querySelector('[data-phone-space-line]');
-      expect(line?.textContent).toBe('In Another space');
       expect(line?.textContent).not.toContain('remote:');
       expect(line?.textContent).not.toContain(remoteConnId);
     } finally {
       window.matchMedia = originalMatchMedia;
-    }
-  });
-
-  it('keeps the panel open on remote and local switch failures and renders inline recovery actions', async () => {
-    const connUnreachable = '11111111-1111-4111-8111-111111111111';
-    const connClosed = '22222222-2222-4222-8222-222222222222';
-    const connNotApproved = '33333333-3333-4333-8333-333333333333';
-    const connIdentity = '44444444-4444-4444-8444-444444444444';
-    const connPaused = '55555555-5555-4555-8555-555555555555';
-    const connProtocol = '66666666-6666-4666-8666-666666666666';
-
-    const setEnabled = vi.fn().mockResolvedValue(undefined);
-    const remove = vi.fn().mockResolvedValue(undefined);
-    const makeRecord = (id: string, label: string, state: 'online' | 'offline' | 'disabled' | 'identity_changed' | 'authentication_required' = 'online') => ({
-      id,
-      label,
-      endpoint: 'http://127.0.0.1:59001',
-      target: { homeId: id, hostId: `host-${id.slice(0, 4)}`, protocol: 1 },
-      credentialRef: id,
-      enabled: state !== 'disabled',
-      purposes: ['gui'],
-      backgroundSummary: true,
-      state,
-      activeLeases: 0,
-    });
-    const records = [
-      makeRecord(connUnreachable, 'Alpha Lab', 'offline'),
-      makeRecord(connClosed, 'Beta Studio'),
-      makeRecord(connNotApproved, 'Gamma Bench', 'authentication_required'),
-      makeRecord(connIdentity, 'Delta Host', 'identity_changed'),
-      makeRecord(connPaused, 'Epsilon Node', 'disabled'),
-      makeRecord(connProtocol, 'Zeta Old'),
-    ];
-    remove.mockImplementation(async (id: string) => {
-      const idx = records.findIndex((item) => item.id === id);
-      if (idx >= 0) records.splice(idx, 1);
-    });
-    const connectionsList = vi.fn(async () => [...records]);
-    list.mockResolvedValue(TWO);
-    connection.localClient = {
-      baseUrl: 'http://127.0.0.1:58627',
-      klient: { rest: { homes: { list }, connections: { list: connectionsList, setEnabled, remove } } },
-    };
-
-    const scopeNavigate = vi.fn(async (req: ScopeNavigationRequest) => {
-      if (req.scopeId === `remote:${connUnreachable}`) throw new ScopeRestoreError('remote-unreachable');
-      if (req.scopeId === `remote:${connClosed}`) throw new ScopeRestoreError('remote-closed');
-      if (req.scopeId === `remote:${connNotApproved}`) throw new ScopeRestoreError('remote-not-approved');
-      if (req.scopeId === `remote:${connIdentity}`) throw new ScopeRestoreError('remote-identity-changed');
-      if (req.scopeId === `remote:${connPaused}`) throw new ScopeRestoreError('remote-paused');
-      if (req.scopeId === `remote:${connProtocol}`) throw new ScopeRestoreError('remote-protocol');
-    });
-    const unregister = registerScopeNavigation(scopeNavigate);
-    try {
-      await render();
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-
-      const clickRemote = async (id: string) => {
-        await act(async () => {
-          document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${id}"]`)!.click();
-        });
-      };
-
-      await clickRemote(connUnreachable);
-      expect(document.querySelector('[data-space-switcher-menu]')).not.toBeNull();
-      expect(document.querySelector('[data-space-row-failure="remote-unreachable"]')?.textContent).toContain('Can\u2019t reach it. That computer may be off or on another network.');
-      expect(document.querySelector('[data-space-row-action="retry"]')).not.toBeNull();
-
-      await clickRemote(connClosed);
-      expect(document.querySelector('[data-space-row-failure="remote-closed"]')?.textContent).toContain('Access is closed on that side.');
-
-      await clickRemote(connIdentity);
-      expect(document.querySelector('[data-space-row-failure="remote-identity-changed"]')?.textContent).toContain('That address now answers as a different space. Nothing was opened.');
-      const removeBtn = document.querySelector<HTMLButtonElement>('[data-space-row-action="remove"]')!;
-      removeBtn.focus();
-      await act(async () => {
-        removeBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      expect(remove).toHaveBeenCalledWith(connIdentity);
-      expect(document.querySelector('[data-space-switcher-menu]')).not.toBeNull();
-
-      await clickRemote(connPaused);
-      expect(document.querySelector('[data-space-row-failure="remote-paused"]')?.textContent).toContain('This pairing is paused.');
-      scopeNavigate.mockResolvedValueOnce(undefined);
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="turn-on"]')!.click(); });
-      expect(setEnabled).toHaveBeenCalledWith(connPaused, true);
-      expect(document.querySelector('[data-space-switcher-menu]')).toBeNull();
-
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-      await clickRemote(connProtocol);
-      expect(document.querySelector('[data-space-row-failure="remote-protocol"]')?.textContent).toContain('That side\u2019s version can\u2019t be opened from here.');
-      expect(document.querySelector('[data-space-row-action]')).toBeNull();
-
-      await clickRemote(connNotApproved);
-      expect(document.querySelector('[data-space-row-failure="remote-not-approved"]')?.textContent).toContain('That side no longer accepts this pairing.');
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="pair-again"]')!.click(); });
-      expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
-      await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click(); });
-
-      // Local space start failure shows inline error + Retry + View log…
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-      host.openSpace.mockRejectedValueOnce(new Error('spawn failed'));
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')!.click(); });
-      expect(document.querySelector('[data-space-row-failure="local-start"]')?.textContent).toContain('Couldn\u2019t start ACME.');
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="view-log"]')!.click(); });
-      expect(host.openDesktopLogDirectory).toHaveBeenCalledTimes(1);
-    } finally {
-      unregister();
-    }
-  });
-
-  it('renders a bottom ActionSheet in phone touch mode with a scrolling middle list and fixed bottom actions', async () => {
-    const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(pointer: coarse) and (max-width: 639px)' || query === '(pointer: coarse)',
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    }));
-    host.kind = 'browser';
-    list.mockResolvedValue(TWO);
-    try {
-      await render();
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-      const sheet = document.querySelector('.kiki-space-switch-sheet');
-      expect(sheet).not.toBeNull();
-      expect(sheet?.querySelector('[data-space-switch-scroll]')).not.toBeNull();
-      expect(sheet?.querySelector('[data-space-switch-footer]')).not.toBeNull();
-    } finally {
-      window.matchMedia = originalMatchMedia;
-    }
-  });
-
-  it('opens the unified 1-stop PairSheet from SpaceSwitcher and lets the user enable & show or immediately mint a pairing code for this computer', async () => {
-    const localIdentity = { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 as const };
-    const tlsFingerprint = '0123456789abcdef'.repeat(4);
-    let inboundEnabled = false;
-    const inbound = vi.fn().mockImplementation(async () => ({
-      enabled: inboundEnabled,
-      configuredEnabled: inboundEnabled,
-      identity: localIdentity,
-      grants: [],
-    }));
-    const createPairCode = vi.fn().mockImplementation(async () => {
-      inboundEnabled = true;
-      return {
-        code: 'K9F2-7X4M',
-        expiresAt: Date.now() + 600_000,
-        target: localIdentity,
-        tlsFingerprint,
-        suggestedEndpoints: ['http://192.168.10.20:58627', 'http://100.64.0.10:58627'],
-      };
-    });
-    list.mockResolvedValue({ items: [TWO.items[0]] });
-    connection.localClient = {
-      klient: {
-        rest: {
-          homes: { list },
-          connections: { list: vi.fn().mockResolvedValue([]), pair: vi.fn(), inbound, createPairCode },
-        },
-      },
-    };
-    await render();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-pair-entry]')!.click(); });
-    expect(document.querySelector('[data-space-switcher-menu]')).toBeNull();
-    expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
-    expect(document.querySelector('[data-pair-tab="inbound"]')).not.toBeNull();
-
-    // Switch to "Pair this computer" while inbound is OFF: shows 1-click "Enable & show pairing code".
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-pair-tab="inbound"]')!.click(); });
-    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(createPairCode).not.toHaveBeenCalled();
-    const enableBtn = document.querySelector<HTMLButtonElement>('[data-inbound-generate-code]')!;
-    expect(enableBtn.textContent).toBe('Enable & show pairing code');
-
-    // Click once -> enables & mints QR + code + LAN / Tailscale labeled pills.
-    await act(async () => { enableBtn.click(); });
-    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(createPairCode).toHaveBeenCalledTimes(1);
-    expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
-    expect(document.querySelector('[data-inbound-qr]')).not.toBeNull();
-    const pills = [...document.querySelectorAll<HTMLButtonElement>('[data-inbound-code-address]')];
-    expect(pills.map((pill) => pill.textContent)).toEqual([
-      'LAN·192.168.10.20:58627',
-      'Tailscale·100.64.0.10:58627',
-    ]);
-
-    // Switch back to "Connect to another" and then re-enter "Pair this computer" with inbound ON -> auto-mints immediately!
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-pair-tab="outbound"]')!.click(); });
-    expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-pair-tab="inbound"]')!.click(); });
-    await act(async () => { for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(createPairCode).toHaveBeenCalledTimes(2);
-    expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
-    expect(document.querySelector('[data-inbound-qr]')).not.toBeNull();
-  });
-
-  it('defaults to All spaces when paired remotes exist, refetches immediately on open, focuses single space with 1-click × reset, and supports Ctrl+Alt+0', async () => {
-    const remoteId = '11111111-1111-4111-8111-111111111111';
-    const remoteRecord = {
-      id: remoteId,
-      label: 'MacBook Air',
-      endpoint: 'http://100.69.108.120:58627',
-      target: { homeId: '22222222-2222-4222-8222-222222222222', hostId: 'mac-air', protocol: 1 },
-      purposes: ['gui'],
-      enabled: true,
-      state: 'online',
-      addedAt: 1_700_000_000_000,
-    };
-    const listConnections = vi.fn(async () => [remoteRecord]);
-    const remoteClient = { klient: { rest: { homes: { list }, connections: { list: listConnections } } }, baseUrl: 'http://127.0.0.1:58627' };
-    connection.client = remoteClient;
-    connection.localClient = remoteClient;
-    list.mockResolvedValue({ items: [TWO.items[0]] });
-
-    const scopeNavigate = vi.fn(async () => undefined);
-    const unregister = registerScopeNavigation(scopeNavigate);
-    try {
-      await render();
-      // Default scope is `all`, showing the compact `All spaces` capsule.
-      expect(document.querySelector('[data-space-scope-pill="all"]')?.textContent).toContain('All spaces');
-      const callsBeforeOpen = listConnections.mock.calls.length;
-
-      // Opening the popover triggers an immediate background refetch.
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click();
-      });
-      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      expect(listConnections.mock.calls.length).toBeGreaterThan(callsBeforeOpen);
-      expect(document.querySelector('[data-space-scope-all]')).not.toBeNull();
-
-      // Clicking the remote space focuses `spaceScope` onto that remote space in-place.
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteId}"]`)!.click();
-      });
-      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      expect(readLayoutPreferences().spaceScope).toBe(`remote:${remoteId}`);
-      expect(scopeNavigate).toHaveBeenCalledWith({
-        homeId: `remote:${remoteId}`,
-        scopeId: `remote:${remoteId}`,
-        inPlace: true,
-      });
-
-      // Focused pill shows space name + 1-click × reset back to All spaces.
-      const clearBtn = document.querySelector<HTMLButtonElement>('[data-space-scope-clear]');
-      expect(clearBtn).not.toBeNull();
-      expect(document.querySelector('[data-space-switcher-name]')?.textContent).toBe('MacBook Air');
-      await act(async () => { clearBtn!.click(); });
-      expect(readLayoutPreferences().spaceScope).toBe('all');
-
-      // Focusing again and pressing Ctrl+Alt+0 returns to All spaces cleanly.
-      await act(async () => { writeLayoutPreferences({ spaceScope: `remote:${remoteId}` }); });
-      expect(readLayoutPreferences().spaceScope).toBe(`remote:${remoteId}`);
-      await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0', ctrlKey: true, altKey: true }));
-      });
-      expect(readLayoutPreferences().spaceScope).toBe('all');
-    } finally {
-      unregister();
-    }
-  });
-
-  it('uses the real localScopeId (e.g. direct:<url>) when returning in-place to local from a remote space on non-desktop hosts', async () => {
-    host.kind = 'browser';
-    const remoteId = '33333333-3333-4333-8333-333333333333';
-    const directScopeId = 'direct:http://127.0.0.1:19918';
-    connection.connectionId = remoteId;
-    connection.spaceKey = `remote:${remoteId}`;
-    connection.localSpaceKey = 'main';
-    connection.localScopeId = directScopeId;
-    const listConnections = vi.fn().mockResolvedValue([
-      {
-        id: remoteId,
-        label: 'MacBook Air',
-        endpoint: 'http://192.0.2.20:59001',
-        target: { homeId: remoteId, hostId: 'host-mac', protocol: 1 },
-        credentialRef: remoteId,
-        enabled: true,
-        purposes: ['gui'],
-        backgroundSummary: true,
-        state: 'online',
-        activeLeases: 0,
-        rttMs: 11,
-      },
-    ]);
-    list.mockResolvedValue({
-      items: [{ id: 'main', name: 'Main space', path: 'C:/kiki', primary: true }],
-    });
-    connection.localClient = {
-      baseUrl: 'http://127.0.0.1:19918',
-      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
-    };
-    const scopeNavigate = vi.fn(async () => undefined);
-    const unregister = registerScopeNavigation(scopeNavigate);
-    try {
-      await render();
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click();
-      });
-      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-space-switch-item="main"]')!.click();
-      });
-      expect(scopeNavigate).toHaveBeenCalledWith({
-        homeId: 'main',
-        scopeId: directScopeId,
-        route: '/new',
-        inPlace: true,
-      });
-    } finally {
-      unregister();
-    }
-  });
-
-  it('discovers host space and paired remotes on Capacitor app-shell without rendering a dead Back to local space button', async () => {
-    host.kind = 'browser';
-    const remoteMacId = '44444444-4444-4444-8444-444444444444';
-    connection.connectionSource = 'app-shell';
-    connection.connectionId = null;
-    connection.sshLabel = null;
-    connection.localClient = null;
-    connection.localScopeId = 'direct:';
-    const listConnections = vi.fn().mockResolvedValue([
-      {
-        id: remoteMacId,
-        label: 'MacBook Air',
-        endpoint: 'http://192.0.2.30:59001',
-        target: { homeId: remoteMacId, hostId: 'host-mac', protocol: 1 },
-        credentialRef: remoteMacId,
-        enabled: true,
-        purposes: ['gui'],
-        backgroundSummary: true,
-        state: 'online',
-        activeLeases: 0,
-        rttMs: 9,
-      },
-    ]);
-    list.mockResolvedValue({
-      items: [{ id: 'main', name: 'Main space', path: '/srv/kiki', primary: true }],
-    });
-    connection.client = {
-      baseUrl: '',
-      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
-    };
-    const scopeNavigate = vi.fn(async () => undefined);
-    const unregister = registerScopeNavigation(scopeNavigate);
-    try {
-      await render();
-      // Top-level app-shell discovers paired remotes via host client -> All spaces pill appears.
-      expect(document.querySelector('[data-space-scope-pill="all"]')).not.toBeNull();
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click();
-      });
-      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      // Never renders a dead "← Back to local space" button at top-level app-shell.
-      expect(document.querySelector('[data-space-back-local]')).toBeNull();
-      expect(document.querySelector('[data-space-scope-all]')).not.toBeNull();
-      expect(document.querySelector('[data-space-switch-item="main"]')).not.toBeNull();
-      const remoteItem = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteMacId}"]`);
-      expect(remoteItem).not.toBeNull();
-      expect(remoteItem?.textContent).toContain('MacBook Air');
-
-      // Entering the paired remote space uses in-place scope navigation.
-      await act(async () => { remoteItem!.click(); });
-      expect(scopeNavigate).toHaveBeenCalledWith({
-        homeId: `remote:${remoteMacId}`,
-        scopeId: `remote:${remoteMacId}`,
-        inPlace: true,
-      });
-    } finally {
-      unregister();
-    }
-  });
-
-  it('degrades gracefully without error banners or dead Back to local button when app-shell peer token receives 40101 local_owner_required', async () => {
-    host.kind = 'browser';
-    connection.connectionSource = 'app-shell';
-    connection.connectionId = null;
-    connection.sshLabel = null;
-    connection.localClient = null;
-    connection.localScopeId = 'direct:';
-    const ownerOnlyErr = Object.assign(new Error('local_owner_required'), { code: 40101 });
-    const listConnections = vi.fn().mockRejectedValue(ownerOnlyErr);
-    list.mockRejectedValue(ownerOnlyErr);
-    connection.client = {
-      baseUrl: '',
-      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
-    };
-    await render();
-    await act(async () => {
-      document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click();
-    });
-    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(document.querySelector('[data-space-back-local]')).toBeNull();
-    expect(document.querySelector('[data-space-local-error]')).toBeNull();
-    expect(document.querySelector('[data-space-remote-error]')).toBeNull();
-    expect(document.querySelector('[data-space-switch-item="main"]')).not.toBeNull();
-  });
-
-  it('retains the app-shell host control client after entering a brokered remote space and returns cleanly to direct:', async () => {
-    host.kind = 'browser';
-    const remoteMacId = '55555555-5555-4555-8555-555555555555';
-    connection.connectionSource = 'remote';
-    connection.connectionId = remoteMacId;
-    connection.spaceKey = `remote:${remoteMacId}`;
-    connection.localSpaceKey = 'main';
-    connection.localScopeId = 'direct:';
-    const listConnections = vi.fn().mockResolvedValue([
-      {
-        id: remoteMacId,
-        label: 'MacBook Air',
-        endpoint: 'http://192.0.2.30:59001',
-        target: { homeId: remoteMacId, hostId: 'host-mac', protocol: 1 },
-        credentialRef: remoteMacId,
-        enabled: true,
-        purposes: ['gui'],
-        backgroundSummary: true,
-        state: 'online',
-        activeLeases: 0,
-        rttMs: 9,
-      },
-    ]);
-    list.mockResolvedValue({
-      items: [{ id: 'main', name: 'Main space', path: '/srv/kiki', primary: true }],
-    });
-    connection.localClient = {
-      baseUrl: '',
-      klient: { rest: { homes: { list }, connections: { list: listConnections } } },
-    };
-    const scopeNavigate = vi.fn(async () => undefined);
-    const unregister = registerScopeNavigation(scopeNavigate);
-    try {
-      await render();
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-space-remote]')!.click();
-      });
-      await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      expect(document.querySelector('[data-space-back-local]')).not.toBeNull();
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-space-switch-item="main"]')!.click();
-      });
-      expect(scopeNavigate).toHaveBeenCalledWith({
-        homeId: 'main',
-        scopeId: 'direct:',
-        route: '/new',
-        inPlace: true,
-      });
-    } finally {
-      unregister();
     }
   });
 });

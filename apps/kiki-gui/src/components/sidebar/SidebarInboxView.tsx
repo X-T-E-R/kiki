@@ -21,6 +21,7 @@ import { useI18n } from '../../i18n';
 import { isEditableTarget } from '../../lib/shortcuts';
 import { anyOverlayOpen } from '../../lib/uiBusy';
 import { useListFlip } from '../../lib/useListFlip';
+import type { MultiSpaceHealth } from '../../lib/useMultiSpaceSessions';
 import { DisclosureChevron, Icon } from '../icons';
 import { SidebarTriageRow } from './SidebarTriageRow';
 
@@ -28,6 +29,7 @@ export interface SidebarInboxViewProps {
   readonly inbox: UnifiedInboxModel;
   readonly activeConversationKey?: string;
   readonly showSpaceLabel: boolean;
+  readonly healthBySpace?: ReadonlyMap<string, MultiSpaceHealth>;
   readonly untitled: string;
   readonly resolveTitle?: (text: string) => string;
   readonly activeShortcutsEnabled?: boolean;
@@ -43,6 +45,7 @@ export function SidebarInboxView({
   inbox,
   activeConversationKey,
   showSpaceLabel,
+  healthBySpace,
   untitled,
   resolveTitle,
   activeShortcutsEnabled = true,
@@ -53,6 +56,7 @@ export function SidebarInboxView({
   onRestoreItem,
   onUndo,
 }: SidebarInboxViewProps) {
+  const isSpaceOffline = (spaceKey: string) => healthBySpace?.get(spaceKey)?.state === 'offline';
   const { t } = useI18n();
   const activeListRef = useRef<HTMLDivElement>(null);
   const [focusedKey, setFocusedKey] = useState<string | undefined>(undefined);
@@ -161,6 +165,7 @@ export function SidebarInboxView({
               active={item.encodedKey === activeConversationKey}
               focused={item.encodedKey === resolvedFocusedKey}
               showSpaceLabel={showSpaceLabel}
+              spaceOffline={isSpaceOffline(item.spaceKey)}
               untitled={untitled}
               resolveTitle={resolveTitle}
               onOpen={() => { onOpenItem(item); }}
@@ -212,6 +217,7 @@ export function SidebarInboxView({
                       bucket="working"
                       active={item.encodedKey === activeConversationKey}
                       showSpaceLabel={showSpaceLabel}
+                      spaceOffline={isSpaceOffline(item.spaceKey)}
                       untitled={untitled}
                       resolveTitle={resolveTitle}
                       onOpen={() => { onOpenItem(item); }}
@@ -245,6 +251,7 @@ export function SidebarInboxView({
                       bucket="snoozed"
                       active={item.encodedKey === activeConversationKey}
                       showSpaceLabel={showSpaceLabel}
+                      spaceOffline={isSpaceOffline(item.spaceKey)}
                       untitled={untitled}
                       resolveTitle={resolveTitle}
                       onOpen={() => { onOpenItem(item); }}
@@ -278,6 +285,7 @@ export function SidebarInboxView({
                       bucket="archived"
                       active={item.encodedKey === activeConversationKey}
                       showSpaceLabel={showSpaceLabel}
+                      spaceOffline={isSpaceOffline(item.spaceKey)}
                       untitled={untitled}
                       resolveTitle={resolveTitle}
                       onOpen={() => { onOpenItem(item); }}

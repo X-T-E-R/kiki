@@ -99,12 +99,12 @@ import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePaneResize, u
 import { requestScopeNavigation } from '../lib/navScope';
 import { enterSpace, launchWindowMode } from '../lib/spaces';
 import { clampOverlayPosition } from '../lib/overlayPosition';
-import { remoteSpaceScope } from '../lib/remoteConnections';
+import { parsePlaceConnectionId, placeHrefForSpaceKey, stripPlacePrefix } from '../lib/placeRoutes';
 import { unzoomedPoint, unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { readExternalClientMark } from '../lib/externalClients';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
 import { useInboxTriageState, type InboxTriageController } from '../lib/useInboxTriageState';
-import { ALL_SPACE_SCOPE, type MultiSpaceHealth } from '../lib/useMultiSpaceSessions';
+import { ALL_SPACE_SCOPE, matchesSpaceScope, type MultiSpaceHealth } from '../lib/useMultiSpaceSessions';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
@@ -116,6 +116,7 @@ import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/side
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { isEditableTarget, isImeKeyEvent } from '../lib/shortcuts';
 import { useConnection } from '../state/connection';
+import { useOptionalPlaceClientPool } from '../state/placeClients';
 import { RelativeTime, useElapsedSince } from './RelativeTime';
 import { useSessionSeen } from './ActivityPage';
 import { useSessionActivity } from './ActivityPanel';
@@ -765,6 +766,7 @@ export function Sidebar({
   healthBySpace,
   hasMultipleSpaces = false,
   localSpaceKey: localSpaceKeyProp,
+  onRefreshRemoteSpace,
   inboxTriage: externalInboxTriage,
   sidebarMode: sidebarModeOverride,
 }: {
@@ -817,6 +819,8 @@ export function Sidebar({
   hasMultipleSpaces?: boolean;
   /** Local control home key for returning from a remote space in `全部空间` mode. */
   localSpaceKey?: string;
+  /** Immediate refresh hook for a remote computer after sidebar mutations. */
+  onRefreshRemoteSpace?: (connectionId: string) => Promise<void>;
   /** Shared inbox triage controller from App (falls back to local instance when omitted). */
   inboxTriage?: InboxTriageController;
   /** Optional explicit mode override (primarily for focused unit tests). */
@@ -825,6 +829,7 @@ export function Sidebar({
   const host = useHost();
   const navigate = useGuardedNavigate();
   const { client, scopeId, wsStatus, spaceKey: connSpaceKey, localSpaceKey: connLocalSpaceKey, localScopeId: connLocalScopeId } = useConnection();
+  const placePool = useOptionalPlaceClientPool();
   const currentSpaceKey = connSpaceKey || 'main';
   const effectiveLocalSpaceKey = localSpaceKeyProp ?? connLocalSpaceKey ?? 'main';
   const effectiveLocalScopeId = connLocalScopeId ?? 'local';
@@ -1044,12 +1049,21 @@ export function Sidebar({
   const layoutPrefs = useLayoutPreferences();
   const activeSidebarMode: SidebarMode = sidebarModeOverride ?? layoutPrefs.sidebarMode ?? 'inbox';
   const spaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
-  const activeRoomMatch = /^\/rooms\/([^/?#]+)/.exec(location.pathname);
+  const activeRouteConnectionId = parsePlaceConnectionId(location.pathname);
+  const activeRouteSpaceKey = activeRouteConnectionId !== undefined
+    ? `remote:${activeRouteConnectionId}`
+    : currentSpaceKey;
+  const normalizedPathname = stripPlacePrefix(location.pathname);
+  const activeSessionMatch = /^\/s\/([^/?#]+)/.exec(normalizedPathname);
+  const activeRouteSessionId = activeSessionMatch?.[1] !== undefined
+    ? decodeURIComponent(activeSessionMatch[1])
+    : activeSessionId;
+  const activeRoomMatch = /^\/rooms\/([^/?#]+)/.exec(normalizedPathname);
   const activeRoomId = activeRoomMatch?.[1] !== undefined ? decodeURIComponent(activeRoomMatch[1]) : undefined;
-  const activeConversationKey = activeSessionId !== undefined
-    ? encodeConversationRef({ spaceKey: currentSpaceKey, kind: 'session', id: activeSessionId })
+  const activeConversationKey = activeRouteSessionId !== undefined
+    ? encodeConversationRef({ spaceKey: activeRouteSpaceKey, kind: 'session', id: activeRouteSessionId })
     : activeRoomId !== undefined
-      ? encodeConversationRef({ spaceKey: currentSpaceKey, kind: 'room', id: activeRoomId })
+      ? encodeConversationRef({ spaceKey: activeRouteSpaceKey, kind: 'room', id: activeRoomId })
       : undefined;
 
   const fallbackSources = useMemo<readonly SpaceConversationSource[]>(() => (
@@ -1089,7 +1103,7 @@ export function Sidebar({
     href: string,
     options?: { readonly pinItem?: UnifiedInboxItem },
   ) => {
-    const sameSpace = ref.spaceKey === currentSpaceKey;
+    const sameSpace = ref.spaceKey === currentSpaceKey || ref.spaceKey === effectiveLocalSpaceKey;
     const isRemoteTarget = ref.spaceKey.startsWith('remote:');
     const targetHomeId = ref.spaceKey !== '' ? ref.spaceKey : effectiveLocalSpaceKey;
     const isOtherLocalSubspace = !sameSpace && !isRemoteTarget && targetHomeId !== effectiveLocalSpaceKey;
@@ -1098,7 +1112,7 @@ export function Sidebar({
       && isOtherLocalSubspace
       && host.openSpace !== undefined
       && launchWindowMode(readDesktopPrefs().windowMode) === 'windows';
-    const handle = beginExplicitConversationOpen(ref, cursor, { syncLegacy: sameSpace });
+    const handle = beginExplicitConversationOpen(ref, cursor, { syncLegacy: sameSpace && !isRemoteTarget });
     if (options?.pinItem !== undefined && !opensSeparateWindow) {
       inboxTriage.pinViewingItem(options.pinItem);
     } else {
@@ -1110,20 +1124,15 @@ export function Sidebar({
         inboxTriage.clearViewingPin();
       }
     };
-    if (sameSpace) {
-      if (location.pathname === href) {
+    if (sameSpace || isRemoteTarget) {
+      // Two-Tier in-place routing: both local conversations (`/s/:id`) and
+      // paired remote computer conversations (`/p/:connectionId/s/:id`) open in
+      // 0ms via React Router without mutating the window's root connection.
+      const targetHref = isRemoteTarget ? placeHrefForSpaceKey(ref.spaceKey, href) : href;
+      if (location.pathname === targetHref) {
         handle.commit();
       }
-      void navigate(href, undefined, rollback);
-      return;
-    }
-    if (isRemoteTarget) {
-      const targetConnectionId = ref.spaceKey.slice('remote:'.length);
-      void requestScopeNavigation({
-        ...remoteSpaceScope(targetConnectionId),
-        route: href,
-        inPlace: true,
-      }).catch(rollback);
+      void navigate(targetHref, undefined, rollback);
       return;
     }
     if (opensSeparateWindow) {
@@ -1252,10 +1261,37 @@ export function Sidebar({
   );
   const deferredSearchInput = useDeferredValue(searchInput);
   const searchMounted = searchOpen || searchInput.trim() !== '' || deferredSearchInput.trim() !== '';
-  const searchableSessions = useMemo(
-    () => (!searchMounted ? EMPTY_SESSIONS : narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true)),
-    [searchMounted, narrowsBeyondWorkspace, visibleSessions, sessions],
-  );
+  const remoteSearchSpaceBySessionId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (multiSpaceSources === undefined) return map;
+    for (const src of multiSpaceSources) {
+      if (!src.isRemote || !matchesSpaceScope(spaceScope, src.spaceKey)) continue;
+      for (const s of src.sessions) {
+        if (!map.has(s.id)) map.set(s.id, src.spaceKey);
+      }
+    }
+    return map;
+  }, [multiSpaceSources, spaceScope]);
+  const searchableSessions = useMemo(() => {
+    if (!searchMounted) return EMPTY_SESSIONS;
+    const base = narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true);
+    const includeLocal = matchesSpaceScope(spaceScope, currentSpaceKey);
+    const merged: Session[] = includeLocal ? [...base] : [];
+    if (multiSpaceSources !== undefined) {
+      const seenIds = new Set(merged.map((s) => s.id));
+      for (const src of multiSpaceSources) {
+        if (!src.isRemote || !matchesSpaceScope(spaceScope, src.spaceKey)) continue;
+        for (const remoteSession of src.sessions) {
+          if (remoteSession.archived === true || remoteSession.private === true) continue;
+          if (!seenIds.has(remoteSession.id)) {
+            seenIds.add(remoteSession.id);
+            merged.push(remoteSession);
+          }
+        }
+      }
+    }
+    return merged;
+  }, [searchMounted, narrowsBeyondWorkspace, visibleSessions, sessions, spaceScope, currentSpaceKey, multiSpaceSources]);
   const search = useSessionSearch({
     text: deferredSearchInput,
     sessions: searchableSessions,
@@ -1323,11 +1359,32 @@ export function Sidebar({
       .finally(() => { setWorkspacePinBusy(false); });
   };
 
-  const togglePin = (session: Session) => {
+  const remoteConnIdOf = (itemSpaceKey?: string): string | undefined =>
+    itemSpaceKey !== undefined && itemSpaceKey.startsWith('remote:')
+      ? itemSpaceKey.slice('remote:'.length)
+      : undefined;
+
+  const clientForSpace = (itemSpaceKey?: string) => {
+    const connId = remoteConnIdOf(itemSpaceKey);
+    return connId !== undefined ? (placePool?.getOrCreateClient(connId) ?? client) : client;
+  };
+
+  const togglePin = (session: Session, itemSpaceKey?: string) => {
     setMenu(null);
     setActionError(null);
+    const remoteConnId = remoteConnIdOf(itemSpaceKey);
+    const targetClient = clientForSpace(itemSpaceKey);
     const next = togglePinned(isPinnedSession(session));
     const metadata = pinMetadataPatch(session, next);
+    if (remoteConnId !== undefined) {
+      void targetClient
+        .updateSessionProfile(session.id, { metadata })
+        .then(() => { void onRefreshRemoteSpace?.(remoteConnId); })
+        .catch((error: unknown) => {
+          setActionError(error instanceof Error ? error.message : String(error));
+        });
+      return;
+    }
     const applyPatch = (entry: Session, serverUpdated?: Session): Session => {
       const base =
         serverUpdated !== undefined && serverUpdated !== null && typeof serverUpdated === 'object' && 'id' in serverUpdated
@@ -1379,34 +1436,40 @@ export function Sidebar({
       });
   };
 
-  const togglePrivate = (session: Session) => {
+  const togglePrivate = (session: Session, targetSpaceKey?: string) => {
     setMenu(null);
     if (pendingPrivacyRef.current.has(session.id)) return;
     pendingPrivacyRef.current.add(session.id);
     setPendingPrivacy((current) => new Set(current).add(session.id));
     setActionError(null);
     const nextPrivate = session.private !== true;
-    void client
+    const remoteConnId = remoteConnIdOf(targetSpaceKey);
+    const targetClient = clientForSpace(targetSpaceKey);
+    void targetClient
       .updateSession(session.id, { private: nextPrivate })
       .then((updated) => {
-        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
-          old === undefined || !Array.isArray(old.pages)
-            ? old
-            : {
-                ...old,
-                pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
-                  ...page,
-                  items: page.items.map((item) => (item.id === session.id ? { ...item, ...updated, private: nextPrivate } : item)),
-                })),
-              },
-        );
-        if (queryClient.getQueryData(['session', session.id]) !== undefined) {
-          queryClient.setQueryData<Session>(['session', session.id], (old) =>
-            old === undefined ? old : { ...old, ...updated, private: nextPrivate },
+        if (remoteConnId !== undefined) {
+          void onRefreshRemoteSpace?.(remoteConnId);
+        } else {
+          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+            old === undefined || !Array.isArray(old.pages)
+              ? old
+              : {
+                  ...old,
+                  pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
+                    ...page,
+                    items: page.items.map((item) => (item.id === session.id ? { ...item, ...updated, private: nextPrivate } : item)),
+                  })),
+                },
           );
+          if (queryClient.getQueryData(['session', session.id]) !== undefined) {
+            queryClient.setQueryData<Session>(['session', session.id], (old) =>
+              old === undefined ? old : { ...old, ...updated, private: nextPrivate },
+            );
+          }
+          refreshSessions();
+          void queryClient.invalidateQueries({ queryKey: ['global-search'] });
         }
-        refreshSessions();
-        void queryClient.invalidateQueries({ queryKey: ['global-search'] });
         pushToast({ tone: 'success', text: t(nextPrivate ? 'private.madeToast' : 'private.exitedToast') });
       })
       .catch((error: unknown) => {
@@ -1570,16 +1633,30 @@ export function Sidebar({
     refreshRooms();
   };
 
-  const archive = (session: Session, key: string) => {
+  const archive = (session: Session, key: string, itemSpaceKey?: string) => {
     setMenu(null);
     setActionError(null);
+    const remoteConnId = remoteConnIdOf(itemSpaceKey);
+    const targetClient = clientForSpace(itemSpaceKey);
     // A worktree session asks once whether its checkout goes too.
-    if (session.worktree !== undefined) {
+    if (remoteConnId === undefined && session.worktree !== undefined) {
       setConfirmArchiveWorktree(session);
       return;
     }
     if (pendingArchives.has(key)) return;
     beginArchive(key);
+    if (remoteConnId !== undefined) {
+      void targetClient
+        .archiveSession(session.id, { include_attached: true })
+        .then(() => {
+          void onRefreshRemoteSpace?.(remoteConnId);
+          endArchive(key);
+        })
+        .catch((error: unknown) => {
+          endArchive(key, error instanceof Error ? error.message : String(error));
+        });
+      return;
+    }
     // Archiving a parent takes its attached conversations with it. The only
     // rows held back are the ones explicitly promoted to the top level — that
     // preference, read from this space's display memory, and nothing derived
@@ -1635,12 +1712,17 @@ export function Sidebar({
       });
   };
 
-  const restore = (session: Session) => {
+  const restore = (session: Session, itemSpaceKey?: string) => {
     setMenu(null);
     setActionError(null);
-    void client
+    const remoteConnId = remoteConnIdOf(itemSpaceKey);
+    const targetClient = clientForSpace(itemSpaceKey);
+    void targetClient
       .restoreSession(session.id)
-      .then(() => { refreshSessions(); })
+      .then(() => {
+        if (remoteConnId !== undefined) void onRefreshRemoteSpace?.(remoteConnId);
+        else refreshSessions();
+      })
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
@@ -1686,7 +1768,8 @@ export function Sidebar({
       });
     }
     for (const match of search.local.sessions) {
-      items.push({ key: `s:${match.session.id}`, open: () => { openSessionRow(match.session.source); } });
+      const targetSpaceKey = remoteSearchSpaceBySessionId.get(match.session.id) ?? currentSpaceKey;
+      items.push({ key: `s:${match.session.id}`, open: () => { openSessionRow(match.session.source, targetSpaceKey); } });
     }
     search.hits.forEach((hit, index) => {
       items.push({
@@ -1778,7 +1861,22 @@ export function Sidebar({
         }]),
   ];
   const filtersActive = hasActiveSessionFilters(filters);
-  const counts = { running: activity.model.running.length };
+  const visibleRunningCount = useMemo(() => {
+    if (multiSpaceSources === undefined || multiSpaceSources.length === 0) {
+      return activity.model.running.length;
+    }
+    let total = 0;
+    for (const source of multiSpaceSources) {
+      if (!matchesSpaceScope(spaceScope, source.spaceKey)) continue;
+      if (!source.isRemote && source.spaceKey === currentSpaceKey) {
+        total += activity.model.running.length;
+      } else {
+        total += source.sessions.filter((s) => s.busy && s.archived !== true && s.pending_interaction == null).length;
+      }
+    }
+    return total;
+  }, [multiSpaceSources, spaceScope, currentSpaceKey, activity.model.running.length]);
+  const counts = { running: visibleRunningCount };
   // The status filter offers only the states some session is in right now,
   // among the archived ones the list shows: an entry with nothing behind it
   // ("process cleanup unconfirmed" on a quiet day) is a choice nobody can use.
@@ -2457,6 +2555,7 @@ export function Sidebar({
           inbox={unifiedInbox}
           activeConversationKey={activeConversationKey}
           showSpaceLabel={spaceScope === ALL_SPACE_SCOPE && hasMultipleSpaces}
+          healthBySpace={healthBySpace}
           untitled={untitled}
           resolveTitle={resolveTitle}
           activeShortcutsEnabled={inert !== true && !isCollapsed && !search.active}
@@ -2717,8 +2816,11 @@ export function Sidebar({
                 const { node, nested, groupNamesWorkspace } = entry;
                 const item = node.item;
                 if (item.kind === 'room') {
+                  const rowSpaceKey = item.spaceKey ?? currentSpaceKey;
                   const roomLocation = workspaceNameById.get(item.workspace_id)
                     ?? (item.room.workspace === '' ? undefined : shortCwd(item.room.workspace));
+                  const remoteSpaceName = item.isRemote === true && spaceScope === ALL_SPACE_SCOPE ? item.spaceName : undefined;
+                  const remoteOffline = item.isRemote === true && healthBySpace?.get(rowSpaceKey)?.state === 'offline';
                   content = (
                     <div data-session-node="root" className="py-px">
                       <RoomConversationRow
@@ -2728,7 +2830,9 @@ export function Sidebar({
                         showLocation={!groupNamesWorkspace}
                         showPin={groupBy === 'none'}
                         location={roomLocation}
-                        onOpen={() => { openRoomRow(item.room, item.href); }}
+                        remoteSpaceName={remoteSpaceName}
+                        remoteOffline={remoteOffline}
+                        onOpen={() => { openRoomRow(item.room, item.href, rowSpaceKey); }}
                         onMenu={(x, y, toggle) => {
                           setMenu((current) =>
                             toggle && current?.item.key === item.key ? null : { item, x, y });
@@ -2742,6 +2846,13 @@ export function Sidebar({
                   );
                 } else {
                   const session = item.session;
+                  const rowSpaceKey = item.spaceKey ?? currentSpaceKey;
+                  const isRemoteRow = item.isRemote === true;
+                  const rowSeen = isRemoteRow
+                    ? { [session.id]: seenV2[encodeConversationRef({ spaceKey: rowSpaceKey, kind: 'session', id: session.id })]?.seq ?? 0 }
+                    : seen;
+                  const remoteSpaceName = isRemoteRow && spaceScope === ALL_SPACE_SCOPE ? item.spaceName : undefined;
+                  const remoteOffline = isRemoteRow && healthBySpace?.get(rowSpaceKey)?.state === 'offline';
                   content = (
                     <div data-session-node={nested ? 'thread' : 'root'} className="relative py-px">
                       {nested ? (
@@ -2749,28 +2860,30 @@ export function Sidebar({
                       ) : null}
                       <SessionRow
                         session={session}
-                        active={session.id === activeSessionId}
+                        active={session.id === activeSessionId && rowSpaceKey === activeRouteSpaceKey}
                         menuOpen={menu?.item.key === item.key}
                         untitled={untitled}
                         resolveTitle={resolveTitle}
-                        activity={activity.byId.get(session.id)}
+                        activity={isRemoteRow ? undefined : activity.byId.get(session.id)}
                         anchorFor={activity.anchorFor}
                         relation={node.relation}
                         nested={nested}
                         showLocation={!groupNamesWorkspace}
                         showPin={groupBy === 'none'}
+                        remoteSpaceName={remoteSpaceName}
+                        remoteOffline={remoteOffline}
                         parentTitle={node.relation === undefined
                           ? undefined
                           : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
-                        onOpen={() => { openSessionRow(session); }}
-                        selected={selected.has(session.id)}
-                        onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
+                        onOpen={() => { openSessionRow(session, rowSpaceKey); }}
+                        selected={!isRemoteRow && selected.has(session.id)}
+                        onToggleSelect={isRemoteRow || session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                         onMenu={(x, y, toggle) => {
                           setMenu((current) =>
                             toggle && current?.item.key === item.key ? null : { item, x, y });
                         }}
-                        onTogglePin={() => { togglePin(session); }}
-                        seen={seen}
+                        onTogglePin={() => { togglePin(session, rowSpaceKey); }}
+                        seen={rowSeen}
                         justRenamed={justRenamed?.key === item.key}
                         archiving={pendingArchives.has(item.key)}
                         archiveError={archiveErrors.get(item.key)}
@@ -2810,6 +2923,10 @@ export function Sidebar({
           const groupNamesWorkspace = collapsible && group.key !== 'pinned' && group.key !== WORKSPACE_UNGROUPED_KEY;
           const renderRow = (node: ConversationTreeNode, nested: boolean) => {
             const item = node.item;
+            const rowSpaceKey = item.spaceKey ?? currentSpaceKey;
+            const isRemoteRow = item.isRemote === true;
+            const remoteSpaceName = isRemoteRow && spaceScope === ALL_SPACE_SCOPE ? item.spaceName : undefined;
+            const remoteOffline = isRemoteRow && healthBySpace?.get(rowSpaceKey)?.state === 'offline';
             if (item.kind === 'room') {
               // Location line, like a thread row's cwd: the resolved workspace
               // name when registered, else the room's own root path shortened.
@@ -2824,7 +2941,9 @@ export function Sidebar({
                     showLocation={!groupNamesWorkspace}
                     showPin={groupBy === 'none'}
                     location={roomLocation}
-                    onOpen={() => { openRoomRow(item.room, item.href); }}
+                    remoteSpaceName={remoteSpaceName}
+                    remoteOffline={remoteOffline}
+                    onOpen={() => { openRoomRow(item.room, item.href, rowSpaceKey); }}
                     onMenu={(x, y, toggle) => {
                       setMenu((current) =>
                         toggle && current?.item.key === item.key ? null : { item, x, y });
@@ -2839,32 +2958,37 @@ export function Sidebar({
             }
             const session = item.session;
             const threads = node.children;
+            const rowSeen = isRemoteRow
+              ? { [session.id]: seenV2[encodeConversationRef({ spaceKey: rowSpaceKey, kind: 'session', id: session.id })]?.seq ?? 0 }
+              : seen;
             return (
               <div key={item.key} data-session-node={nested ? 'thread' : 'root'}>
                 <SessionRow
                   session={session}
-                  active={session.id === activeSessionId}
+                  active={session.id === activeSessionId && rowSpaceKey === activeRouteSpaceKey}
                   menuOpen={menu?.item.key === item.key}
                   untitled={untitled}
                   resolveTitle={resolveTitle}
-                  activity={activity.byId.get(session.id)}
+                  activity={isRemoteRow ? undefined : activity.byId.get(session.id)}
                   anchorFor={activity.anchorFor}
                   relation={node.relation}
                   nested={nested}
                   showLocation={!groupNamesWorkspace}
                   showPin={groupBy === 'none'}
+                  remoteSpaceName={remoteSpaceName}
+                  remoteOffline={remoteOffline}
                   parentTitle={node.relation === undefined
                     ? undefined
                     : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
-                  onOpen={() => { openSessionRow(session); }}
-                  selected={selected.has(session.id)}
-                  onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
+                  onOpen={() => { openSessionRow(session, rowSpaceKey); }}
+                  selected={!isRemoteRow && selected.has(session.id)}
+                  onToggleSelect={isRemoteRow || session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                   onMenu={(x, y, toggle) => {
                     setMenu((current) =>
                       toggle && current?.item.key === item.key ? null : { item, x, y });
                   }}
-                  onTogglePin={() => { togglePin(session); }}
-                  seen={seen}
+                  onTogglePin={() => { togglePin(session, rowSpaceKey); }}
+                  seen={rowSeen}
                   justRenamed={justRenamed?.key === item.key}
                   archiving={pendingArchives.has(item.key)}
                   archiveError={archiveErrors.get(item.key)}
@@ -2966,57 +3090,6 @@ export function Sidebar({
             </button>
           </div>
         ) : null}
-        {spaceScope === ALL_SPACE_SCOPE && multiSpaceSources !== undefined ? (
-          multiSpaceSources
-            .filter((src) => src.spaceKey !== currentSpaceKey && src.sessions.length > 0)
-            .map((src) => {
-              const remoteSeen: Record<string, number> = {};
-              for (const rs of src.sessions) {
-                const rec = seenV2[encodeConversationRef({ spaceKey: src.spaceKey, kind: 'session', id: rs.id })];
-                if (rec !== undefined) remoteSeen[rs.id] = rec.seq;
-              }
-              return (
-                <div
-                  key={`remote-space:${src.spaceKey}`}
-                  data-session-group-block={`space:${src.spaceKey}`}
-                  className="mt-3 flex flex-col gap-0.5"
-                  role="group"
-                  aria-label={src.spaceName}
-                >
-                  <p className="flex min-h-7 w-full shrink-0 items-center gap-1.5 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
-                    {src.isRemote ? (
-                      <Icon name="web" size={12} className="shrink-0 text-ink-faint" />
-                    ) : (
-                      <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-ink-faint" />
-                    )}
-                    <span className="min-w-0 truncate">{src.spaceName}</span>
-                  </p>
-                  {src.sessions
-                    .filter((s) => s.archived !== true && s.private !== true)
-                    .slice(0, 12)
-                    .map((remoteSession) => (
-                      <div key={`${src.spaceKey}:${remoteSession.id}`} data-session-node="root">
-                        <SessionRow
-                          session={remoteSession}
-                          active={false}
-                          menuOpen={false}
-                          untitled={untitled}
-                          resolveTitle={resolveTitle}
-                          activity={undefined}
-                          anchorFor={activity.anchorFor}
-                          showLocation
-                          temporary
-                          onOpen={() => { openSessionRow(remoteSession, src.spaceKey); }}
-                          onMenu={() => undefined}
-                          onTogglePin={() => undefined}
-                          seen={remoteSeen}
-                        />
-                      </div>
-                    ))}
-                </div>
-              );
-            })
-        ) : null}
         {sessionsQuery.hasNextPage ? (
           <button
             type="button"
@@ -3093,6 +3166,8 @@ export function Sidebar({
       {menuItem !== null && menuItem.kind === 'session' ? (
         <SessionMenu
           session={menuItem.session}
+          copyLinkHref={menuItem.href}
+          isRemote={menuItem.isRemote === true}
           title={resolveTitle(sessionLabel(menuItem.session, untitled))}
           topLevel={topLevelThreads.has(menuItem.id)}
           onToggleThreadDisplay={() => { toggleThreadDisplay(menuItem.id); }}
@@ -3105,16 +3180,16 @@ export function Sidebar({
             setRenaming(menuItem);
             setMenu(null);
           }}
-          onTogglePin={() => { togglePin(menuItem.session); }}
-          onTogglePrivate={() => { togglePrivate(menuItem.session); }}
+          onTogglePin={() => { togglePin(menuItem.session, menuItem.spaceKey); }}
+          onTogglePrivate={() => { togglePrivate(menuItem.session, menuItem.spaceKey); }}
           onCreateBranch={(seed) => { runCreateBranch(menuItem.session, seed); }}
           onForkSession={(seed) => { runForkSession(menuItem.session, seed); }}
           onAction={(action) => { runAction(menuItem.session, action); }}
-          onArchive={() => { archive(menuItem.session, menuItem.key); }}
-          onRestore={() => { restore(menuItem.session); }}
+          onArchive={() => { archive(menuItem.session, menuItem.key, menuItem.spaceKey); }}
+          onRestore={() => { restore(menuItem.session, menuItem.spaceKey); }}
           archiving={pendingArchives.has(menuItem.key)}
           privateBusy={pendingPrivacy.has(menuItem.id)}
-          threadCommsEnabled={threadCommsEnabled}
+          threadCommsEnabled={menuItem.isRemote === true ? false : threadCommsEnabled}
           onJoinRoom={() => {
             const ids = selected.has(menuItem.id) && selected.size >= 2 ? selected : new Set([menuItem.id]);
             setJoiningRoom(sessions.filter((item) => ids.has(item.id)));
@@ -3219,18 +3294,26 @@ export function Sidebar({
             patchSessionTitle(title);
             // A bare title patch omits `metadata`, so the server leaves the
             // stored custom document (and with it any client-local pin) untouched.
+            const remoteConnId = remoteConnIdOf(target.spaceKey);
+            const targetClient = clientForSpace(target.spaceKey);
             try {
-              const updated = await client.updateSessionProfile(target.id, { title });
+              const updated = await targetClient.updateSessionProfile(target.id, { title });
               if (renameSequences.current.get(target.key) !== sequence) return;
-              patchSessionTitle(title, updated);
+              if (remoteConnId !== undefined) {
+                void onRefreshRemoteSpace?.(remoteConnId);
+              } else {
+                patchSessionTitle(title, updated);
+              }
               setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
               setRenaming((current) => current === target ? null : current);
-              void queryClient.invalidateQueries({
-                queryKey: ['sessions'],
-                predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
-              });
-              if (target.session.agent_config?.persona !== undefined) {
-                invalidatePersonaSessionLists(queryClient);
+              if (remoteConnId === undefined) {
+                void queryClient.invalidateQueries({
+                  queryKey: ['sessions'],
+                  predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
+                });
+                if (target.session.agent_config?.persona !== undefined) {
+                  invalidatePersonaSessionLists(queryClient);
+                }
               }
             } catch (cause: unknown) {
               if (renameSequences.current.get(target.key) === sequence) {
@@ -3324,6 +3407,8 @@ function SessionRow({
   nested = false,
   showLocation = true,
   showPin = false,
+  remoteSpaceName,
+  remoteOffline = false,
   parentTitle,
   onOpen,
   onMenu,
@@ -3351,6 +3436,10 @@ function SessionRow({
   showLocation?: boolean;
   /** True only when no Pinned group exists to say it. */
   showPin?: boolean;
+  /** Subtle remote computer label shown only in `All computers` scope for remote rows. */
+  remoteSpaceName?: string;
+  /** True when the remote computer is offline (renders quiet hollow dot + hover title). */
+  remoteOffline?: boolean;
   parentTitle?: string;
   onOpen: () => void;
   onMenu: (x: number, y: number, toggle: boolean) => void;
@@ -3465,7 +3554,7 @@ function SessionRow({
     : undefined;
   const emphasis = active || rowState === 'needs-me' || rowState === 'unread';
   const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
-  const hasFacts = location !== undefined || fact !== undefined || archived || session.worktree !== undefined || externalSource !== undefined;
+  const hasFacts = location !== undefined || fact !== undefined || archived || session.worktree !== undefined || externalSource !== undefined || remoteSpaceName !== undefined;
   // Root rows with a ⋯ only: a temporary row keeps its time on the first line
   // (it has no actions), and a nested row stays one line.
   const touchTime = !nested && !temporary;
@@ -3581,7 +3670,13 @@ function SessionRow({
               ) : null}
               {(location === undefined && fact === undefined) || externalSource === undefined ? null : <span aria-hidden>·</span>}
               {location === undefined ? null : (
-                <span data-session-location className="min-w-0 flex-1 truncate" title={locationPath}>{location}</span>
+                <span
+                  data-session-location
+                  className={`min-w-0 truncate ${remoteSpaceName !== undefined && fact === undefined ? '' : 'flex-1'}`}
+                  title={locationPath}
+                >
+                  {location}
+                </span>
               )}
               {location === undefined || fact === undefined ? null : <span aria-hidden>·</span>}
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
@@ -3613,7 +3708,22 @@ function SessionRow({
                 <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
               ) : null}
               <WorktreeMark worktree={session.worktree} className={fact === undefined && location === undefined ? 'max-w-full' : 'max-w-[40%] shrink-0'} />
-              {archived ? <span className="shrink-0">{fact === undefined && location === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+              {remoteSpaceName !== undefined ? (
+                <>
+                  {fact === undefined && location === undefined && externalSource === undefined ? null : <span aria-hidden>·</span>}
+                  <span
+                    data-session-space-label
+                    title={remoteOffline ? t('sidebar.space.remoteOfflineTitle', { name: remoteSpaceName }) : remoteSpaceName}
+                    className="inline-flex min-w-0 shrink items-center gap-1 truncate text-ink-faint/90"
+                  >
+                    {remoteOffline ? (
+                      <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full border border-ink-faint/75" />
+                    ) : null}
+                    <span className="truncate">{remoteSpaceName}</span>
+                  </span>
+                </>
+              ) : null}
+              {archived ? <span className="shrink-0">{fact === undefined && location === undefined && remoteSpaceName === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
               {touchTime ? (
                 // Without hover the ⋯ covers the first line's time slot for
                 // good (it is the only way into the row menu on iOS), so on
@@ -3685,6 +3795,8 @@ function RoomConversationRow({
   showLocation = true,
   showPin = false,
   location,
+  remoteSpaceName,
+  remoteOffline = false,
   onOpen,
   onMenu,
   onTogglePin,
@@ -3701,6 +3813,10 @@ function RoomConversationRow({
   showPin?: boolean;
   /** Resolved workspace name or shortened root; omitted when unknown. */
   location?: string | undefined;
+  /** Subtle remote computer label shown only in `All computers` scope for remote rows. */
+  remoteSpaceName?: string;
+  /** True when the remote computer is offline. */
+  remoteOffline?: boolean;
   onOpen: () => void;
   onMenu: (x: number, y: number, toggle: boolean) => void;
   onTogglePin: () => void;
@@ -3738,7 +3854,7 @@ function RoomConversationRow({
       : state === 'running'
         ? { kind: 'running', text: t('sidebar.status.working') }
         : undefined;
-  const hasFacts = visibleLocation !== undefined || fact !== undefined || archived;
+  const hasFacts = visibleLocation !== undefined || fact !== undefined || archived || remoteSpaceName !== undefined;
   const markTitle =
     state === 'needs-me'
       ? needsYouText
@@ -3837,7 +3953,22 @@ function RoomConversationRow({
             ) : (
               <span data-room-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
             )}
-            {archived ? <span className="shrink-0">{visibleLocation === undefined && fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+            {remoteSpaceName !== undefined ? (
+              <>
+                {visibleLocation === undefined && fact === undefined ? null : <span aria-hidden>·</span>}
+                <span
+                  data-room-space-label
+                  title={remoteOffline ? t('sidebar.space.remoteOfflineTitle', { name: remoteSpaceName }) : remoteSpaceName}
+                  className="inline-flex min-w-0 shrink items-center gap-1 truncate text-ink-faint/90"
+                >
+                  {remoteOffline ? (
+                    <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full border border-ink-faint/75" />
+                  ) : null}
+                  <span className="truncate">{remoteSpaceName}</span>
+                </span>
+              </>
+            ) : null}
+            {archived ? <span className="shrink-0">{visibleLocation === undefined && fact === undefined && remoteSpaceName === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
             <span data-room-time-touch className="ml-auto hidden shrink-0 pl-1 tabular-nums [@media(hover:none)]:inline">
               <RelativeTime at={item.updated_at} />
             </span>
@@ -4029,19 +4160,51 @@ function RoomMenuEntries({ item, onClose, onTogglePin, onTogglePause, onRename, 
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const roomApi = useBotRoomApi();
+  const isRemote = item.isRemote === true;
+  const targetHref = isRemote && item.spaceKey !== undefined ? placeHrefForSpaceKey(item.spaceKey, item.href) : item.href;
   const archived = item.archived === true;
   const roomQuery = useQuery({
     queryKey: roomQueryKey(item.id),
     queryFn: () => roomApi.getRoom(item.id),
+    enabled: !isRemote,
     staleTime: 15_000,
     retry: false,
   });
   const paused = roomQuery.data?.paused;
   const openPanel = (focus: 'members' | 'budget') => {
     onClose();
-    void navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
+    void navigate(focus === 'budget' ? `${targetHref}?panel=members&focus=budget` : `${targetHref}?panel=members`);
   };
   const itemClass = ROW_MENU_ITEM;
+  if (isRemote) {
+    return (
+      <>
+        {!archived ? (
+          <>
+            <button type="button" role="menuitem" data-menu-item="members" className={itemClass} onClick={() => { openPanel('members'); }}>
+              {t('room.members')}
+            </button>
+            <button type="button" role="menuitem" data-menu-item="budget" className={itemClass} onClick={() => { openPanel('budget'); }}>
+              {t('room.adjustBudget')}
+            </button>
+            <div className="mx-1 my-1 border-t border-hairline" />
+          </>
+        ) : null}
+        <button
+          type="button"
+          role="menuitem"
+          data-menu-item="copy-link"
+          className={itemClass}
+          onClick={() => {
+            onClose();
+            runToastAction(t('menu.copyLink'), () => copyTextToClipboard(targetHref));
+          }}
+        >
+          {t('menu.copyLink')}
+        </button>
+      </>
+    );
+  }
   return (
     <>
       {archived ? (
@@ -5068,6 +5231,10 @@ const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compa
 
 interface SessionMenuProps {
   session: Session;
+  /** Copy-link href (supports `/p/:connectionId/s/:id` for remote sessions). */
+  copyLinkHref?: string;
+  /** True when the row belongs to a paired remote computer; suppresses local-only actions. */
+  isRemote?: boolean;
   /** The row's shown title, for the menu's accessible name. */
   title: string;
   topLevel: boolean;
@@ -5161,6 +5328,8 @@ function SessionMenu(props: SessionMenuProps) {
 /** The menu's first level, shared by the desktop menu and the phone sheet. */
 function SessionMenuEntries({
   session,
+  copyLinkHref,
+  isRemote = false,
   phone,
   topLevel,
   onToggleThreadDisplay,
@@ -5192,19 +5361,21 @@ function SessionMenuEntries({
   const host = useHost();
   const { t } = useI18n();
   const archived = session.archived === true;
-  const canBranchOrFork = session.ephemeral !== true && !isSubagentSession(session);
+  const canTogglePrivate = session.ephemeral !== true && !isSubagentSession(session);
+  const canBranchOrFork = !isRemote && canTogglePrivate;
   // The lightweight link is the in-app route (the protocol-level kiki:// deep
   // link is deliberately out of scope). Opening the folder rides the desktop
-  // opener commands, so the browser build and a phone get the copy only.
+  // opener commands, so the browser build, a phone, and remote computers get
+  // the copy only.
   const cwd = session.metadata.cwd;
-  const canReveal = !phone && !scopeId.startsWith('ssh:') && host.revealPath !== undefined && cwd !== '';
+  const canReveal = !phone && !isRemote && !scopeId.startsWith('ssh:') && host.revealPath !== undefined && cwd !== '';
   // A thread reference goes into the open conversation's composer: with
   // nothing open, or with this row being the open one, there is nowhere to
   // add it, so the entry is not offered.
-  const canAddToConversation = activeSessionId !== undefined && activeSessionId !== session.id;
+  const canAddToConversation = !isRemote && activeSessionId !== undefined && activeSessionId !== session.id;
   // Rooms need thread communication: switched off, the entry is not offered
   // at all. Still loading is not off, so it stays.
-  const canJoinRoom = !isSubagentSession(session) && threadCommsEnabled !== false;
+  const canJoinRoom = !isRemote && !isSubagentSession(session) && threadCommsEnabled !== false;
   const runAndClose = (label: string, action: () => Promise<void>) => {
     onClose();
     runToastAction(label, action);
@@ -5238,18 +5409,20 @@ function SessionMenuEntries({
           <button type="button" role="menuitem" data-menu-item="rename" className={ROW_MENU_ITEM} onClick={onRename}>
             {t('menu.rename')}
           </button>
+          {canTogglePrivate ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="private"
+              disabled={archiving || privateBusy}
+              className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
+              onClick={onTogglePrivate}
+            >
+              {t(session.private === true ? 'private.exitPrivate' : 'private.makePrivate')}
+            </button>
+          ) : null}
           {canBranchOrFork ? (
             <>
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-item="private"
-                disabled={archiving || privateBusy}
-                className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
-                onClick={onTogglePrivate}
-              >
-                {t(session.private === true ? 'private.exitPrivate' : 'private.makePrivate')}
-              </button>
               <div className="mx-1 my-1 border-t border-hairline" />
               <button
                 ref={branchRef}
@@ -5300,7 +5473,7 @@ function SessionMenuEntries({
             data-menu-item="copy-link"
             className={ROW_MENU_ITEM}
             onClick={() => {
-              runAndClose(t('menu.copyThreadLink'), () => copyTextToClipboard(`/s/${session.id}`));
+              runAndClose(t('menu.copyThreadLink'), () => copyTextToClipboard(copyLinkHref ?? `/s/${session.id}`));
             }}
           >
             {t('menu.copyThreadLink')}
@@ -5584,7 +5757,7 @@ function SessionPointerMenu(props: SessionMenuProps) {
         branchRef={branchRef}
         forkRef={forkRef}
       />
-      {archived ? null : (
+      {archived || props.isRemote === true ? null : (
         <>
           <div className="mx-1 my-1 border-t border-hairline" />
           <button

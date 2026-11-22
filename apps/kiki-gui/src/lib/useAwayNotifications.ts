@@ -44,6 +44,7 @@ import type { HostAdapter, HostNotification } from '../host';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { awayNotifier, notificationRoute } from './awayNotify';
+import { stripPlacePrefix } from './placeRoutes';
 import {
   commitPendingConversationOpen,
   hasPendingConversationOpen,
@@ -52,21 +53,23 @@ import { activeSpace } from './spaceStorage';
 import type { NavScopeIdentity } from './navHistory';
 import { useThreadTitleResolver } from './threadTitles';
 
-/** Matches `/s/:id` and `/s/:id/agent/:agentId`, never `/s/:id/tasks`. */
+/** Matches `/s/:id`, `/s/:id/agent/:agentId`, and `/p/:conn/s/:id...`, never `/s/:id/tasks`. */
 export function isViewingSessionPath(pathname: string, sessionId: string): boolean {
   if (sessionId === '') return false;
+  const normalized = stripPlacePrefix(pathname);
   const route = `/s/${encodeURIComponent(sessionId)}`;
-  if (pathname === route) return true;
-  if (!pathname.startsWith(`${route}/`)) return false;
-  const rest = pathname.slice(route.length + 1);
+  if (normalized === route) return true;
+  if (!normalized.startsWith(`${route}/`)) return false;
+  const rest = normalized.slice(route.length + 1);
   return rest.startsWith('agent/');
 }
 
-/** Matches `/rooms/:id` (with optional trailing slash). */
+/** Matches `/rooms/:id` and `/p/:conn/rooms/:id` (with optional trailing slash). */
 export function isViewingRoomPath(pathname: string, roomId: string): boolean {
   if (roomId === '') return false;
+  const normalized = stripPlacePrefix(pathname);
   const route = `/rooms/${encodeURIComponent(roomId)}`;
-  return pathname === route || pathname === `${route}/`;
+  return normalized === route || normalized === `${route}/`;
 }
 
 async function subscribeNativeWindowFocus(

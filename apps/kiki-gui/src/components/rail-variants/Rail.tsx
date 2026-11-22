@@ -33,6 +33,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useLayoutPreferences, usePaneResize } from '../../lib/layoutHooks';
+import { placeSessionPath } from '../../lib/placeRoutes';
 import { pushToast } from '../../lib/toasts';
 import { cssZoomFactor, unzoomedViewport } from '../../lib/uiZoom';
 import { usePromoteAgent } from '../../lib/usePromoteAgent';
@@ -150,6 +151,7 @@ const TasksSection = memo(function TasksSection({
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const connection = useOptionalConnection();
   const [settledOpen, setSettledOpen] = useState(false);
   const sorted = useMemo(() => sortTasks(tasks), [tasks]);
   const runningTasks = useMemo(() => sorted.filter((task) => task.status === 'running'), [sorted]);
@@ -237,7 +239,7 @@ const TasksSection = memo(function TasksSection({
         <div className="pt-1">
           <button
             type="button"
-            onClick={() => void navigate(`/s/${sessionId}/tasks`)}
+            onClick={() => void navigate(placeSessionPath(connection?.connectionId, sessionId, '/tasks'))}
             className={`${INSPECTOR_LINK} ml-2`}
           >
             {t('tasks.viewAll')}

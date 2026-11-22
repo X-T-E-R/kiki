@@ -46,21 +46,26 @@ export function useServerHandshake(client: KikiClient | null) {
 
 function resolveLocalSpace(
   here: ReturnType<typeof currentSpace>,
+  localSpaceKey: string | undefined,
   items: readonly SpaceListItem[],
   mainLabel: string,
   unnamedLabel: string,
 ): { name: string; color?: string } {
-  if (here === null || here.homeId === MAIN_SPACE_ID) {
+  const effectiveHomeId =
+    here !== null && !here.homeId.startsWith('remote:')
+      ? here.homeId
+      : (localSpaceKey !== undefined && !localSpaceKey.startsWith('remote:') ? localSpaceKey : MAIN_SPACE_ID);
+  if (effectiveHomeId === MAIN_SPACE_ID) {
     const matchedMain = items.find((item) => item.id === MAIN_SPACE_ID);
     const customMainName = matchedMain && matchedMain.name !== MAIN_SPACE_ID ? sanitizeHumanLabel(matchedMain.name) : undefined;
     return { name: customMainName ?? mainLabel, color: here?.color ?? matchedMain?.color };
   }
-  const matched = items.find((item) => item.id === here.homeId);
+  const matched = items.find((item) => item.id === effectiveHomeId);
   const resolvedName =
-    sanitizeHumanLabel(here.name) ??
+    (here !== null && here.homeId === effectiveHomeId ? sanitizeHumanLabel(here.name) : undefined) ??
     (matched && matched.name !== matched.id ? sanitizeHumanLabel(matched.name) : undefined) ??
     unnamedLabel;
-  return { name: resolvedName, color: here.color ?? matched?.color };
+  return { name: resolvedName, color: (here?.homeId === effectiveHomeId ? here.color : undefined) ?? matched?.color };
 }
 
 export function useSpaceLocation(options?: {
@@ -99,7 +104,7 @@ export function useSpaceLocation(options?: {
 
   const here = currentSpace();
   const items = spaces.data ?? [];
-  const localResolved = resolveLocalSpace(here, items, t('st.spaces.main'), t('sidebar.space.unnamed'));
+  const localResolved = resolveLocalSpace(here, conn?.localSpaceKey, items, t('st.spaces.main'), t('sidebar.space.unnamed'));
   const localSpaceName = localResolved.name;
   const localMachineName = sanitizeHumanLabel(handshake.data?.targetLabel);
   const localComputerName =

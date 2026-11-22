@@ -8,6 +8,7 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { createBotRoomApi } from '../lib/botRooms';
 import { isSessionNotFoundMessage } from '../lib/client';
+import { placeNewPath, stripPlacePrefix } from '../lib/placeRoutes';
 import { markSpaceViewRoute, writeSpaceViewRoute } from '../lib/spaceViewState';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 
@@ -26,7 +27,7 @@ export function SpaceViewMemory() {
   const { scopeId } = useConnection();
   const host = useHost();
   const location = useLocation();
-  const idRoute = /^\/(?:s|rooms|r)\//.test(location.pathname);
+  const idRoute = /^\/(?:s|rooms|r)\//.test(stripPlacePrefix(location.pathname));
   const route = `${location.pathname}${location.search}${location.hash}`;
   useEffect(() => {
     if (host.kind !== 'tauri' || idRoute) return;
@@ -38,15 +39,18 @@ export function SpaceViewMemory() {
 
 /** Check id-bearing routes before their controllers or task queries mount. */
 export function SpaceViewState({ children }: { readonly children: ReactNode }) {
-  const { client, scopeId } = useConnection();
+  const { client, scopeId, connectionId } = useConnection();
   const host = useHost();
   const { t } = useI18n();
   const location = useLocation();
   const sessionMatch = useMatch('/s/:id/*');
+  const placeSessionMatch = useMatch('/p/:connectionId/s/:id/*');
   const roomMatch = useMatch('/rooms/:id');
+  const placeRoomMatch = useMatch('/p/:connectionId/rooms/:id');
   const roomLinkMatch = useMatch('/r/:id');
-  const sessionId = sessionMatch?.params.id;
-  const roomId = roomMatch?.params.id ?? roomLinkMatch?.params.id;
+  const placeRoomLinkMatch = useMatch('/p/:connectionId/r/:id');
+  const sessionId = placeSessionMatch?.params.id ?? sessionMatch?.params.id;
+  const roomId = placeRoomMatch?.params.id ?? placeRoomLinkMatch?.params.id ?? roomMatch?.params.id ?? roomLinkMatch?.params.id;
   const targetId = sessionId ?? roomId;
   const route = `${location.pathname}${location.search}${location.hash}`;
   const queryClient = useQueryClient();
@@ -66,7 +70,12 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
       if (sessionId !== undefined) {
         for (let attempt = 0; ; attempt += 1) {
           try {
-            await client.getSession(sessionId);
+            const verifiedSession = await client.getSession(sessionId);
+            if (verifiedSession !== undefined && verifiedSession !== null) {
+              // Seed the place query cache with the verified session record so
+              // SessionView knows persistence ('saved' vs 'temporary') on frame 0.
+              queryClient.setQueryData(['session', sessionId], verifiedSession);
+            }
             return true;
           } catch (error) {
             if (!(error instanceof Error) || !isSessionNotFoundMessage(error.message)) throw error;
@@ -131,7 +140,7 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
     markSpaceViewRoute(route);
   }, [checking, missing, targetId, target.isError, sessionId, route, scopeId, host.kind]);
 
-  if (missing) return <Navigate to="/new" replace />;
+  if (missing) return <Navigate to={placeNewPath(connectionId)} replace />;
   if (checking) return <div className="p-8 text-[12.5px] text-ink-faint">{t('sidebar.loadingSessions')}</div>;
   return <>
     {target.isError ? <div role="alert" className="m-4 flex items-center gap-3 rounded-lg border border-danger/30 bg-danger/5 p-4 text-[13px] text-danger">

@@ -149,6 +149,8 @@ export interface ConnectionValue {
   readonly localSpaceKey?: string;
   /** The local home's scope ID (e.g. 'local' on desktop, 'direct:<url>' on web) even while viewing a remote space. */
   readonly localScopeId?: string;
+  /** The local Kiki server's own `server_home_id`, preserved inside PlaceClientProvider. */
+  readonly localServerHomeId?: string;
   readonly scopeId: string;
   readonly connectionRef?: string;
   readonly sshLabel: string | null;
@@ -1740,12 +1742,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           bootLocalSpaceRef.current = currentLocal;
         }
         configureSpaceStorage(bootLocalSpaceRef.current);
-      } else if (typeof next.scopeId === 'string' && next.scopeId.startsWith('remote:')) {
+      } else {
+        // Never overwrite local activeSpace() storage with a synthetic `remote:<id>` home:
+        // the window's local space identity remains anchored to its real Kiki home.
         const currentLocal = activeSpace();
         if (currentLocal !== null && !currentLocal.homeId.startsWith('remote:')) {
           bootLocalSpaceRef.current = currentLocal;
+        } else {
+          configureSpaceStorage(bootLocalSpaceRef.current);
         }
-        configureSpaceStorage({ homeId: next.scopeId });
       }
       const sourceClient = adapterActiveRef.current.client;
       if (
@@ -2098,7 +2103,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       ?? localSelectionRef.current?.scopeId
       ?? (selection?.source !== 'remote' && selection?.source !== 'ssh' ? scopeId : 'local');
     return {
-      connectionId, connectionSource: selection?.source ?? null, spaceKey, localSpaceKey: resolvedLocalSpaceKey, localScopeId: resolvedLocalScopeId, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
+      connectionId, connectionSource: selection?.source ?? null, spaceKey, localSpaceKey: resolvedLocalSpaceKey, localScopeId: resolvedLocalScopeId, localServerHomeId: selection?.source === 'remote' ? undefined : meta.server_home_id, scopeId, connectionRef: selection?.source === 'remote' ? selection.connectionId : selection?.source === 'ssh' ? selection.tunnelId : undefined, sshLabel: selection?.profile?.label ?? null,
       activateSshProfile, activateLocal, restoreLocal, scopeAdapter, needsScopeReload, clearScopeReload,
       config, client, localClient, klient, socket, meta, wsStatus, wsBannerSuppressed,
       recovery: activeRecovery === null || (activeRecovery.phase === 'checking' && wsBannerSuppressed)

@@ -4490,17 +4490,17 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     expect(container.querySelector('[data-session-row="s-old-read"]')).not.toBeNull();
   });
 
-  it('keeps clicked remote unread row pinned through async cross-space navigation while still on conversation A, and rolls back on cancel/reject', async () => {
+  it('opens a remote unread row in-place via /p/:connectionId/s/:id without scope handoff, keeps it pinned while viewing, and releases pin on navigation away', async () => {
     const localA = { ...session('s-a'), title: 'Local A', last_seq: 0, updated_at: '2026-10-06T11:00:00Z' };
     const remoteB = { ...session('s-remote-b'), title: 'Remote B done', last_turn_reason: 'completed' as const, last_seq: 11, updated_at: '2026-10-06T11:30:00Z' };
     const localC = { ...session('s-c'), title: 'Local C', last_seq: 0, updated_at: '2026-10-06T10:00:00Z' };
-    const remoteKey = 'remote:11111111-1111-4111-8111-111111111111';
+    const remoteConnId = '11111111-1111-4111-8111-111111111111';
+    const remoteKey = `remote:${remoteConnId}`;
     const sources = [
       { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [localA, localC], rooms: [], workspaces: [] },
       { spaceKey: remoteKey, spaceName: 'GPU Box', isRemote: true, sessions: [remoteB], rooms: [], workspaces: [] },
     ];
-    let resolveNav!: () => void;
-    const scopeNav = vi.fn(() => new Promise<void>((resolve) => { resolveNav = resolve; }));
+    const scopeNav = vi.fn(async () => undefined);
     const unregister = registerScopeNavigation(scopeNav);
     try {
       const mounted = await mount({
@@ -4512,66 +4512,49 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
         nowMs: FIXTURE_NOW_MS,
       });
 
-      // Click remote B while still viewing local A.
+      // Click remote B while viewing local A -> navigates in-place to /p/<id>/s/s-remote-b
+      // without invoking cross-space scopeNav handoff.
       await act(async () => {
         mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-remote-b"] button')!.click();
       });
       await settle();
 
-      // While async cross-space navigation is still in flight (activeSessionId === 's-a'),
-      // row B must stay pinned with cleared unread dot instead of vanishing under the cursor.
-      const inFlightRow = mounted.container.querySelector('[data-inbox-row="s-remote-b"]');
-      expect(inFlightRow).not.toBeNull();
-      expect(inFlightRow?.getAttribute('data-inbox-unread')).toBe('false');
-      expect(scopeNav).toHaveBeenCalledWith(expect.objectContaining({
-        homeId: remoteKey,
-        scopeId: remoteKey,
-        route: '/s/s-remote-b',
-        inPlace: true,
-      }));
+      expect(scopeNav).not.toHaveBeenCalled();
+      const pinnedRow = mounted.container.querySelector('[data-inbox-row="s-remote-b"]');
+      expect(pinnedRow).not.toBeNull();
+      expect(pinnedRow?.getAttribute('data-inbox-unread')).toBe('false');
 
-      // Navigation lands on remote B -> stays pinned while viewing B.
-      resolveNav();
-      connectionScope.spaceKey = remoteKey;
+      // Clicking another local conversation (local C) navigates away and releases the viewing pin cleanly.
+      const localCUnread = { ...localC, last_turn_reason: 'completed' as const, last_seq: 5 };
+      const nextSources = [
+        { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [localA, localCUnread], rooms: [], workspaces: [] },
+        { spaceKey: remoteKey, spaceName: 'GPU Box', isRemote: true, sessions: [remoteB], rooms: [], workspaces: [] },
+      ];
       await mounted.render({
         sidebarMode: 'inbox',
         activeSessionId: 's-remote-b',
-        sessions: [remoteB],
-        sessionGroups: [{ key: 'today', label: 'Today', items: [remoteB] }],
-        multiSpaceSources: sources,
+        sessions: [localA, localCUnread],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [localA, localCUnread] }],
+        multiSpaceSources: nextSources,
         nowMs: FIXTURE_NOW_MS,
       });
-      expect(mounted.container.querySelector('[data-inbox-row="s-remote-b"]')).not.toBeNull();
-
-      // Navigating away to local C releases the viewing pin cleanly.
-      connectionScope.spaceKey = 'main';
-      await mounted.render({
-        sidebarMode: 'inbox',
-        activeSessionId: 's-c',
-        sessions: [localA, localC],
-        sessionGroups: [{ key: 'today', label: 'Today', items: [localA, localC] }],
-        multiSpaceSources: sources,
-        nowMs: FIXTURE_NOW_MS,
+      await act(async () => {
+        mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-c"] button')!.click();
       });
+      await settle();
       expect(mounted.container.querySelector('[data-inbox-row="s-remote-b"]')).toBeNull();
     } finally {
       unregister();
     }
   });
 
-  it('passes real localScopeId when returning in-place from a remote space and rolls back optimistic read + pin on abort', async () => {
-    const remoteKey = 'remote:22222222-2222-4222-8222-222222222222';
-    const directScopeId = 'direct:http://127.0.0.1:19918';
-    connectionScope.id = remoteKey;
-    connectionScope.spaceKey = remoteKey;
-    connectionScope.localSpaceKey = 'main';
-    connectionScope.localScopeId = directScopeId;
-
-    const remoteA = { ...session('s-ra'), title: 'Remote A', last_seq: 0, updated_at: '2026-10-06T11:00:00Z' };
-    const localUnread = { ...session('s-local-unread'), title: 'Local unread', last_turn_reason: 'completed' as const, last_seq: 9, updated_at: '2026-10-06T11:20:00Z' };
+  it('routes another local subspace via scopeNav and rolls back optimistic read + pin on abort', async () => {
+    const otherLocalSpaceKey = 'h-nia';
+    const localA = { ...session('s-local-a'), title: 'Local A', last_seq: 0, updated_at: '2026-10-06T11:00:00Z' };
+    const subspaceUnread = { ...session('s-subspace-unread'), title: 'Subspace unread', last_turn_reason: 'completed' as const, last_seq: 9, updated_at: '2026-10-06T11:20:00Z' };
     const sources = [
-      { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [localUnread], rooms: [], workspaces: [] },
-      { spaceKey: remoteKey, spaceName: 'Remote Mac', isRemote: true, sessions: [remoteA], rooms: [], workspaces: [] },
+      { spaceKey: 'main', spaceName: 'Main space', isRemote: false, sessions: [localA], rooms: [], workspaces: [] },
+      { spaceKey: otherLocalSpaceKey, spaceName: 'Nia Space', isRemote: false, sessions: [subspaceUnread], rooms: [], workspaces: [] },
     ];
     let rejectNav!: (err: unknown) => void;
     const scopeNav = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectNav = reject; }));
@@ -4579,30 +4562,30 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     try {
       const mounted = await mount({
         sidebarMode: 'inbox',
-        activeSessionId: 's-ra',
-        sessions: [remoteA],
-        sessionGroups: [{ key: 'today', label: 'Today', items: [remoteA] }],
+        activeSessionId: 's-local-a',
+        sessions: [localA],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [localA] }],
         multiSpaceSources: sources,
         nowMs: FIXTURE_NOW_MS,
       });
       await act(async () => {
-        mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-local-unread"] button')!.click();
+        mounted.container.querySelector<HTMLButtonElement>('[data-inbox-row="s-subspace-unread"] button')!.click();
       });
       expect(scopeNav).toHaveBeenCalledWith({
-        homeId: 'main',
-        scopeId: directScopeId,
-        route: '/s/s-local-unread',
+        homeId: otherLocalSpaceKey,
+        scopeId: 'local',
+        route: '/s/s-subspace-unread',
         inPlace: true,
       });
       // Optimistically cleared while in flight.
-      expect(mounted.container.querySelector('[data-inbox-row="s-local-unread"]')?.getAttribute('data-inbox-unread')).toBe('false');
+      expect(mounted.container.querySelector('[data-inbox-row="s-subspace-unread"]')?.getAttribute('data-inbox-unread')).toBe('false');
 
       // DirtyGuard / abort rejects navigation -> optimistic read overlay rolls back so unread dot returns.
       await act(async () => {
         rejectNav(new DOMException('Navigation cancelled.', 'AbortError'));
       });
       await settle();
-      expect(mounted.container.querySelector('[data-inbox-row="s-local-unread"]')?.getAttribute('data-inbox-unread')).toBe('true');
+      expect(mounted.container.querySelector('[data-inbox-row="s-subspace-unread"]')?.getAttribute('data-inbox-unread')).toBe('true');
     } finally {
       unregister();
     }

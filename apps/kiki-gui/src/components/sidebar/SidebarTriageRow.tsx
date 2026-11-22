@@ -28,6 +28,7 @@ export interface SidebarTriageRowProps {
   readonly active: boolean;
   readonly focused?: boolean;
   readonly showSpaceLabel: boolean;
+  readonly spaceOffline?: boolean;
   readonly untitled: string;
   readonly resolveTitle?: (text: string) => string;
   readonly onOpen: () => void;
@@ -94,6 +95,7 @@ export function SidebarTriageRow({
   active,
   focused = false,
   showSpaceLabel,
+  spaceOffline = false,
   untitled,
   resolveTitle,
   onOpen,
@@ -113,6 +115,11 @@ export function SidebarTriageRow({
   const subdued = bucket === 'archived';
   const emphasis = active || (!subdued && (item.needsYou || item.unread));
   const stateWord = t(stateLabelKey(item.reason));
+  // Homogeneous `working` bucket already names the running state in its header;
+  // only show per-row state words where rows carry heterogeneous states.
+  const showStateWord = bucket !== 'working';
+  // Local rows never append "主空间"; only remote computer rows show their computer label.
+  const showRemoteComputerLabel = showSpaceLabel && item.isRemote && item.spaceName !== '';
   const stateToneClass = item.needsYou
     ? 'text-attention'
     : item.reason === 'failed' || item.reason === 'cancelled'
@@ -178,19 +185,30 @@ export function SidebarTriageRow({
             ) : (
               <RelativeTime at={item.at} className="shrink-0 tabular-nums" />
             )}
-            <span aria-hidden>·</span>
-            <span className={`shrink-0 ${stateToneClass}`}>{stateWord}</span>
+            {showStateWord ? (
+              <>
+                <span aria-hidden>·</span>
+                <span className={`shrink-0 ${stateToneClass}`}>{stateWord}</span>
+              </>
+            ) : null}
             {item.workspaceName !== undefined && item.workspaceName !== '' ? (
               <>
                 <span aria-hidden>·</span>
                 <span className="min-w-0 truncate">{item.workspaceName}</span>
               </>
             ) : null}
-            {showSpaceLabel && item.spaceName !== '' ? (
+            {showRemoteComputerLabel ? (
               <>
                 <span aria-hidden>·</span>
-                <span data-inbox-space-label className="min-w-0 shrink truncate text-ink-faint/90">
-                  {item.spaceName}
+                <span
+                  data-inbox-space-label
+                  title={spaceOffline ? t('sidebar.space.remoteOfflineTitle', { name: item.spaceName }) : item.spaceName}
+                  className="inline-flex min-w-0 shrink items-center gap-1 truncate text-ink-faint/90"
+                >
+                  {spaceOffline ? (
+                    <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full border border-ink-faint/75" />
+                  ) : null}
+                  <span className="truncate">{item.spaceName}</span>
                 </span>
               </>
             ) : null}

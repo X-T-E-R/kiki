@@ -1511,10 +1511,113 @@ class FixtureServer {
           if (found !== undefined) return this.envelope(res, structuredClone(found));
           return this.envelope(res, null, 40401, 'session.not_found');
         }
-        if (op === 'configRead') {
+        if (op === 'snapshot') {
+          const sid = body?.params?.sessionId ?? '';
+          const found = (remote.sessions ?? []).find((s) => s.id === sid);
+          if (found === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+          const msgs = structuredClone(remote.snapshots?.[sid]?.messages ?? []);
+          return this.envelope(res, {
+            as_of_seq: found.last_seq ?? msgs.length,
+            epoch: `remote-epoch-${sid}`,
+            session: structuredClone(found),
+            messages: { items: msgs, has_more: false },
+            in_flight_turn: null,
+            subagents: [],
+            pending_approvals: [],
+            pending_questions: [],
+          });
+        }
+        if (op === 'transcript') {
+          const sid = body?.params?.sessionId ?? '';
+          const found = (remote.sessions ?? []).find((s) => s.id === sid);
+          const msgs = remote.snapshots?.[sid]?.messages ?? [];
+          const items = msgs.map((m, idx) => ({
+            kind: 'turn',
+            turnId: `t-${idx + 1}`,
+            seq: idx + 1,
+            role: m.role,
+            messageId: m.id ?? `msg-${idx + 1}`,
+            createdAt: m.created_at ?? now(),
+            content: Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }],
+          }));
+          return this.envelope(res, {
+            agent_id: 'main',
+            session_id: sid,
+            items,
+            has_more: false,
+            tasks: [],
+            interactions: [],
+            attachments: [],
+            todos: [],
+            prompts: [],
+            meta: {},
+            agents: [{ agentId: 'main', type: 'main' }],
+            pending_interactions: [],
+            seq: found?.last_seq ?? items.length,
+            cursor: { seq: found?.last_seq ?? items.length, epoch: `remote-epoch-${sid}` },
+            coverage: { kind: 'full', hasMoreOlder: false },
+            transcript_coverage_version: 2,
+          });
+        }
+        if (op === 'bots' || op === 'personas') {
+          return this.envelope(res, []);
+        }
+        if (op === 'skills') {
+          return this.envelope(res, { skills: [], items: [] });
+        }
+        if (op === 'plugins' || op === 'plugin' || op === 'pluginUsage') {
+          return this.envelope(res, { plugins: [], items: [], panels: [], slots: [], capsules: [] });
+        }
+        if (op === 'procedure') {
+          const methodName = body?.body?.procedure?.method ?? '';
+          if (methodName === 'listModelSwitches') return this.envelope(res, []);
+          if (methodName === 'listModels') {
+            return this.envelope(res, [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' }]);
+          }
+          if (methodName === 'listProviders') {
+            return this.envelope(res, [{ id: 'fixture', type: 'openai', configured: true }]);
+          }
+          if (methodName === 'listPlugins') return this.envelope(res, { plugins: [] });
+          if (methodName === 'listMethods') return this.envelope(res, { methods: [] });
+          if (methodName === 'listMcpSessionCapabilities') return this.envelope(res, { servers: [] });
+          if (methodName === 'read') return this.envelope(res, { context: 'live', owner: { agent_id: 'main' }, available: false, targets: [] });
+          return this.envelope(res, { items: [] });
+        }
+        if (op === 'procedureBatch') {
+          const calls = Array.isArray(body?.body?.calls) ? body.body.calls : [];
+          return this.envelope(res, {
+            results: calls.map((call) => {
+              const methodName = call?.procedure?.method ?? '';
+              const result = methodName === 'listModelSwitches'
+                ? []
+                : methodName === 'listModels'
+                  ? [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' }]
+                  : methodName === 'listProviders'
+                    ? [{ id: 'fixture', type: 'openai', configured: true }]
+                    : methodName === 'listPlugins'
+                      ? { plugins: [] }
+                      : methodName === 'listMethods'
+                        ? { methods: [] }
+                        : methodName === 'listMcpSessionCapabilities'
+                          ? { servers: [] }
+                          : methodName === 'read'
+                            ? { context: 'live', owner: { agent_id: 'main' }, available: false, targets: [] }
+                            : { items: [] };
+              return { id: call.id, ok: true, result };
+            }),
+          });
+        }
+        if (op === 'goal') {
+          return this.envelope(res, null);
+        }
+        if (op === 'configRead' || op === 'personaSettings' || op === 'autoCompact' || op === 'contextStrategy' || op === 'outputLayerConfiguration') {
           return this.envelope(res, {});
         }
-        if (op === 'models' || op === 'providers' || op === 'tools' || op === 'auth' || op === 'worktrees') {
+        if (
+          op === 'models' || op === 'providers' || op === 'tools' || op === 'auth' || op === 'worktrees'
+          || op === 'profiles' || op === 'executors' || op === 'prompts' || op === 'approvals' || op === 'questions'
+          || op === 'taskList' || op === 'agentTaskList' || op === 'subagents' || op === 'terminals' || op === 'threadMessages'
+        ) {
           return this.envelope(res, { items: [] });
         }
       }
@@ -5960,7 +6063,9 @@ class FixtureServer {
 
   handleUpgrade(req, socket, head) {
     const path = new URL(req.url ?? '/', 'http://fixture').pathname;
-    if (path !== '/api/ws' && path !== '/api/klient/events') {
+    const remoteWsMatch = /^\/api\/remote-connections\/([^/]+)\/events$/.exec(path);
+    const remoteConnId = remoteWsMatch === null ? null : decodeURIComponent(remoteWsMatch[1]);
+    if (path !== '/api/ws' && path !== '/api/klient/events' && remoteConnId === null) {
       socket.destroy();
       return;
     }
@@ -5973,8 +6078,64 @@ class FixtureServer {
     }
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       ws.subprotocol = bearer;
-      if (path === '/api/klient/events') this.klient.connect(ws);
+      if (remoteConnId !== null) this.connectRemoteEvents(ws, remoteConnId);
+      else if (path === '/api/klient/events') this.klient.connect(ws);
       else this.onConnection(ws);
+    });
+  }
+
+  connectRemoteEvents(ws, connId) {
+    this.sockets.add(ws);
+    ws.on('close', () => { this.sockets.delete(ws); });
+    const send = (frame) => this.sendFrame(ws, frame);
+    ws.on('message', (raw) => {
+      let frame;
+      try { frame = JSON.parse(String(raw)); } catch { return; }
+      if (frame.type === 'pong' || frame.type === 'view_detach' || frame.type === 'unsubscribe') return;
+      if (frame.type === 'subscribe') {
+        send({ type: 'subscribed', id: frame.id });
+        return;
+      }
+      if (frame.type === 'view_attach') {
+        const remote = this.scenario?.data.remoteSpaces?.[connId];
+        const found = (remote?.sessions ?? []).find((s) => s.id === frame.sessionId);
+        if (found === undefined) {
+          send({ type: 'view_error', id: frame.id, code: 40401, msg: 'session not found' });
+          return;
+        }
+        const generation = frame.data?.generation ?? 1;
+        const epoch = `remote-epoch-${found.id}`;
+        const seq = found.last_seq ?? 0;
+        const currentSessionCursor = { seq, epoch };
+        const msgs = structuredClone(remote?.snapshots?.[found.id]?.messages ?? []);
+        const projector = new TranscriptProjector(found.id, new Map(), epoch);
+        if (msgs.length > 0) {
+          seedMessages(projector, msgs, { older: [], hasMore: false });
+        }
+        const resetEvent = projector.resetEvent('main', 'delta');
+        const emit = (signal) => send({
+          type: 'view_signal',
+          id: frame.id,
+          data: { ...signal, generation, transcript_coverage_version: 2 },
+        });
+        emit({ type: 'transcript', event: resetEvent });
+        if (frame.data?.input?.bootstrap === true) {
+          emit({
+            type: 'snapshot',
+            snapshot: {
+              as_of_seq: seq,
+              epoch,
+              session: structuredClone(found),
+              messages: { items: [], has_more: false },
+              in_flight_turn: null,
+              subagents: [],
+              pending_approvals: [],
+              pending_questions: [],
+            },
+          });
+        }
+        emit({ type: 'ready', currentSessionCursor, reconnected: frame.data?.reconnected === true });
+      }
     });
   }
 

@@ -11,10 +11,12 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { HostProvider, hostAdapter } from './host';
 import { installAppShellCredentialListener } from './lib/appShell';
 import { installDocumentVisibilityMotionGuard } from './lib/motion';
-import { initializeSpaceStorage, activeSpace, configureSpaceStorage } from './lib/spaceStorage';
+import { initializeSpaceStorage, activeSpace } from './lib/spaceStorage';
+import { placeHrefForSpaceKey } from './lib/placeRoutes';
 import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
 import { adoptWindowModeFromHost } from './lib/workModeStartup';
-import { applyColdNavigationIntent, beginNavWindow, consumeScopeReload, pendingScopeReloadScope, stageRemoteSpaceBoot } from './lib/navScope';
+import { applyColdNavigationIntent, beginNavWindow, consumeScopeReload, pendingScopeReloadScope } from './lib/navScope';
+import { writeLayoutPreferences } from '@kiki/session-core/settings';
 import { setWebAccessBootstrap, takeAccessCode } from './lib/webAccess';
 import './index.css';
 import './styles/motion.css';
@@ -77,10 +79,28 @@ async function start(): Promise<void> {
   }
   await initializeSpaceStorage(hostAdapter);
   const intent = await hostAdapter.takeNavigationIntent?.().catch(() => null);
-  const remoteBoot = intent !== undefined && intent !== null && 'connectionId' in intent && stageRemoteSpaceBoot(intent.connectionId);
   const pendingScope = pendingScopeReloadScope();
-  if (pendingScope !== null && pendingScope.homeId === pendingScope.scopeId && /^remote:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(pendingScope.scopeId)) {
-    configureSpaceStorage({ homeId: pendingScope.scopeId });
+  const pendingRemoteId =
+    pendingScope !== null && /^remote:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(pendingScope.scopeId)
+      ? pendingScope.scopeId.slice('remote:'.length)
+      : null;
+  const intentRemoteId =
+    intent !== undefined && intent !== null && 'connectionId' in intent && typeof intent.connectionId === 'string'
+      ? intent.connectionId
+      : null;
+  const normalizedRemoteId = intentRemoteId ?? pendingRemoteId;
+  let remoteBoot = false;
+  if (normalizedRemoteId !== null) {
+    // Recover gracefully from any legacy `remote:<id>` reload handoff or remote
+    // window launch: stay anchored on the local Kiki home and route in-place
+    // via `/p/<connectionId>/...` with the sidebar focused on that computer.
+    if (pendingRemoteId !== null) consumeScopeReload(`remote:${pendingRemoteId}`);
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const baseRoute = /^\/(?:s|rooms|r)\//.test(window.location.pathname) ? currentPath : '/new';
+    const targetRoute = placeHrefForSpaceKey(`remote:${normalizedRemoteId}`, baseRoute);
+    window.history.replaceState(null, '', targetRoute);
+    writeLayoutPreferences({ spaceScope: `remote:${normalizedRemoteId}` });
+    remoteBoot = true;
   }
   const homeId = activeSpace()?.homeId ?? 'main';
   // The mode this window was launched in must be known before the first route
