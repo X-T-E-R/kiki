@@ -265,6 +265,20 @@ const IMAGE_FORMAT_STATUS_MESSAGE_PATTERNS = [
 
 const MEDIA_TYPE_FIELD_PATTERN = /(?:media|mime)_?type/;
 
+const PROVIDER_INVALID_MEDIA_PATTERNS = [
+  /\binvalid_media\b/i,
+  /unable to process input:\s*the file or media data is empty,\s*corrupted,\s*or malformed/i,
+  /the file or media data is empty,\s*corrupted,\s*or malformed/i,
+  /could not (?:process|decode) (?:the |input )?(?:image|video|audio|media)/i,
+  /unable to process (?:the |input )?(?:image|video|audio|media)/i,
+  /failed to decode (?:the )?(?:image|video|audio|media)/i,
+  /invalid_(?:image|video|audio|media)_format/i,
+  /image data you provided does not represent a valid image/i,
+  /does not represent a valid (?:image|video|audio|media)/i,
+  /unsupported (?:image|video|audio|media) (?:url|format|type)/i,
+  /invalid (?:image|video|audio|media)(?: data| type| format)?/i,
+] as const;
+
 export function isImageFormatError(error: unknown): boolean {
   if (error instanceof APIStatusError) {
     if (error instanceof APIContextOverflowError) return false;
@@ -279,6 +293,46 @@ export function isImageFormatError(error: unknown): boolean {
   if (error instanceof ChatProviderError) {
     const lowerMessage = error.message.toLowerCase();
     return IMAGE_FORMAT_PROVIDER_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage));
+  }
+  return false;
+}
+
+/**
+ * Identifies HTTP 400 / `INVALID_ARGUMENT` provider rejections caused by empty,
+ * corrupted, malformed, or unsupported media payloads in the request.
+ */
+export function isProviderInvalidMediaError(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof APIContextOverflowError || current instanceof APIRequestTooLargeError) {
+      return false;
+    }
+    if (isImageFormatError(current)) return true;
+    const details = providerErrorMetadata(current);
+    const status = current instanceof APIStatusError
+      ? current.statusCode
+      : (details['statusCode'] ?? details['upstreamStatus']);
+    const message = current instanceof Error ? current.message : '';
+    let serializedDetails = '';
+    if (details['upstreamDetails'] !== undefined) {
+      try {
+        serializedDetails = JSON.stringify(details['upstreamDetails']);
+      } catch {
+      }
+    }
+    const combined = serializedDetails.length > 0 ? `${message} ${serializedDetails}` : message;
+    const hasInvalidArgument = status === 400 || /\bINVALID_ARGUMENT\b/i.test(combined);
+    if (
+      hasInvalidArgument &&
+      (PROVIDER_INVALID_MEDIA_PATTERNS.some((pattern) => pattern.test(combined)) ||
+        (MEDIA_TYPE_FIELD_PATTERN.test(combined.toLowerCase()) &&
+          /\b(?:image|video|audio|media)\b/i.test(combined)))
+    ) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
   }
   return false;
 }
@@ -525,7 +579,7 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
     if (mode === 'buffered' && current instanceof Error && /soft safety filter block|blocked by gemini's filters|safety filter blocks/i.test(current.message)) return false;
     if (mode === 'buffered') {
       if (current instanceof ChatProviderError &&
-        (current.code === PROVIDER_FILTERED_ERROR_CODE || current.code === PROVIDER_AUTH_ERROR_CODE || current instanceof APIProviderQuotaExhaustedError || current instanceof APIContextOverflowError || current instanceof APIRequestTooLargeError || isImageFormatError(current))) return false;
+        (current.code === PROVIDER_FILTERED_ERROR_CODE || current.code === PROVIDER_AUTH_ERROR_CODE || current instanceof APIProviderQuotaExhaustedError || current instanceof APIContextOverflowError || current instanceof APIRequestTooLargeError || isImageFormatError(current) || isProviderInvalidMediaError(current))) return false;
       const status = current instanceof APIStatusError ? current.statusCode : details['upstreamStatus'] ?? details['statusCode'];
       if (typeof status === 'number' && NON_OVERRIDABLE_CLIENT_STATUS_CODES.has(status)) return false;
       if (typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429) {
@@ -556,7 +610,8 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
       !NON_OVERRIDABLE_CLIENT_STATUS_CODES.has(error.statusCode) &&
       !(error instanceof APIContextOverflowError) &&
       !(error instanceof APIRequestTooLargeError) &&
-      !isImageFormatError(error)
+      !isImageFormatError(error) &&
+      !isProviderInvalidMediaError(error)
     ) {
       return true;
     }
@@ -572,7 +627,7 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
     if (tail === 'model_prefill' || tail === 'model_function_call') return false;
     const stop = error.details?.['google_stop'];
     if (stop === 'continuation_unsupported' || stop === 'think_snapshot_exhausted') return false;
-    return !isImageFormatError(error);
+    return !isImageFormatError(error) && !isProviderInvalidMediaError(error);
   }
   return false;
 }

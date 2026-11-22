@@ -50,7 +50,7 @@ export function registerDesktopCommand(program: Command): void {
     const command = process.platform === 'darwin' && desktop.endsWith('.app') ? 'open' : desktop;
     const args = command === 'open' ? ['-a', desktop] : [];
     await new Promise<void>((resolveLaunch, rejectLaunch) => {
-      const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+      const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
       child.once('error', rejectLaunch);
       child.once('spawn', () => {
         child.unref();

@@ -430,3 +430,55 @@ it('returns unsupported directions as validation envelopes and does not take inp
     expect(after).toMatchObject({ input_enabled: false, output_enabled: false });
   } finally { await app.close(); await bridge.close(); }
 });
+
+it('returns reply.send from async route handlers without triggering FST_ERR_REP_ALREADY_SENT across success and error branches', async () => {
+  const unexpectedErrors: unknown[] = [];
+  const bridge = {
+    snapshot: async () => snapshot,
+    updateBinding: async () => {
+      throw new ImIdentityAlreadyBoundError({
+        existing_binding_id: 'b1',
+        previous_session_id: 'old',
+        target_session_id: 'new',
+        variant_key: { provider_instance_id: 'inst', account_id: 'account', chat_id: 'chat', topic_id: 'topic', sender_id: 'sender' },
+      });
+    },
+    dismiss: async () => {
+      throw new Error('boom');
+    },
+  } as unknown as ImSessionBridge;
+  const app = Fastify();
+  let onSendCount = 0;
+  app.addHook('onSend', async (_req, _reply, payload) => {
+    onSendCount += 1;
+    await Promise.resolve();
+    return payload;
+  });
+  app.setErrorHandler((error, _req, reply) => {
+    unexpectedErrors.push(error);
+    return reply.status(500).send({ code: (error as { code?: string }).code });
+  });
+  registerImSessionRoutes(app, bridge);
+  try {
+    const okRes = await app.inject({ method: 'GET', url: '/im/sessions' });
+    expect(okRes.statusCode).toBe(200);
+    expect(okRes.json().code).toBe(0);
+
+    const zodRes = await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { target: { kind: 'session', session_id: 'a' }, session_id: 'b' } });
+    expect(zodRes.statusCode).toBe(200);
+    expect(zodRes.json().code).toBe(40001);
+
+    const conflictRes = await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { session_id: 'new' } });
+    expect(conflictRes.statusCode).toBe(200);
+    expect(conflictRes.json().code).toBe(40949);
+
+    const internalRes = await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/dismiss', payload: {} });
+    expect(internalRes.statusCode).toBe(200);
+    expect(internalRes.json()).toMatchObject({ code: 50001, msg: 'boom' });
+
+    expect(unexpectedErrors).toEqual([]);
+    expect(onSendCount).toBe(4);
+  } finally {
+    await app.close();
+  }
+});

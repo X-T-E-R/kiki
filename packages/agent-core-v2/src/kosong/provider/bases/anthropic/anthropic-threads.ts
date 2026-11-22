@@ -377,11 +377,24 @@ export function getAnthropicThreadErrorCode(error: unknown): string | undefined 
   return undefined;
 }
 
+const CONTINUE_ORPHANED_DELTA_PATTERNS: readonly RegExp[] = [
+  /function response turn comes immediately after a function call turn/iu,
+  /unexpected\s+`?tool_use_id`?/iu,
+  /each\s+`?tool_result`?\s+block\s+must\s+have\s+a\s+corresponding\s+`?tool_use`?/iu,
+  /\btool_result\b[\s\S]*\b(?:without|missing|no matching|no corresponding|must follow|preceding)\b[\s\S]*\btool_use\b/iu,
+  /\bmessages(?::\s*roles)?\s+must\s+alternate\b/iu,
+  /\bfirst message must use the "?user"? role\b/iu,
+  /\bfunction_?response\b[\s\S]*\bfunction_?call\b/iu,
+];
+
 /**
  * Classifies an Anthropic API rejection on a threaded request as replayable under a new thread,
  * permanently unsupported by the endpoint/request, or a normal error to surface to callers.
  */
-export function classifyAnthropicThreadError(error: unknown): AnthropicThreadErrorClassification {
+export function classifyAnthropicThreadError(
+  error: unknown,
+  attemptKind?: 'create' | 'continue',
+): AnthropicThreadErrorClassification {
   if (!(error instanceof AnthropicAPIError) || typeof error.status !== 'number') {
     return { kind: 'passthrough' };
   }
@@ -392,15 +405,22 @@ export function classifyAnthropicThreadError(error: unknown): AnthropicThreadErr
   if (errorCode === 'thread_unsupported_request') {
     return { kind: 'unsupported', errorCode };
   }
-  if (errorCode === undefined && (error.status === 400 || error.status === 422)) {
+  if (error.status === 400 || error.status === 422) {
     const body = error.error as { error?: { message?: unknown } } | undefined;
     const nestedMessage = typeof body?.error?.message === 'string' ? body.error.message : '';
     const combined = `${error.message} ${nestedMessage}`;
     if (
-      /\bthread\b/iu.test(combined) ||
-      /message-threads-2026-08-12/iu.test(combined) ||
-      (/anthropic-beta/iu.test(combined) &&
-        /invalid|unsupported|unexpected|unknown|unrecognized/iu.test(combined))
+      attemptKind === 'continue' &&
+      CONTINUE_ORPHANED_DELTA_PATTERNS.some((pattern) => pattern.test(combined))
+    ) {
+      return { kind: 'unsupported', errorCode };
+    }
+    if (
+      errorCode === undefined &&
+      (/\bthread\b/iu.test(combined) ||
+        /message-threads-2026-08-12/iu.test(combined) ||
+        (/anthropic-beta/iu.test(combined) &&
+          /invalid|unsupported|unexpected|unknown|unrecognized/iu.test(combined)))
     ) {
       return { kind: 'unsupported' };
     }

@@ -11,6 +11,8 @@ export interface IAgentMediaResolverService {
     signal?: AbortSignal,
     headers?: Readonly<Record<string, string>>,
   ): Promise<readonly Message[]>;
+
+  markMediaPoisoned?(urlsOrKeys: Iterable<string>): void;
 }
 
 export const IAgentMediaResolverService = createDecorator<IAgentMediaResolverService>(

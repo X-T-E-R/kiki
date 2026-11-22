@@ -166,7 +166,7 @@ export function createGitStatusCache(
         resolve(value);
       };
       try {
-        child = execFile(command, args, execOptions, (error, stdout) => {
+        child = execFile(command, args, { ...execOptions, windowsHide: true }, (error, stdout) => {
           if (error !== null || disposed) {
             finish(null);
             return;

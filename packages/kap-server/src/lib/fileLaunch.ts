@@ -142,6 +142,7 @@ function commandExists(command: string, platform: NodeJS.Platform): boolean {
     const result = spawnSync('command', ['-v', command], {
       stdio: 'ignore',
       shell: true,
+      windowsHide: true,
     });
     return result.status === 0;
   } catch {

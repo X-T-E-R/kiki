@@ -709,7 +709,7 @@ function buildMutationActions(before: ReadonlyMap<string, Buffer>, after: Readon
 
 async function launchEditor(directory: string, editor: string): Promise<void> {
   const code = await new Promise<number>((resolveCode, reject) => {
-    const child = spawn(`${editor} ${quoteShellArg(directory)}`, { shell: true, stdio: 'inherit' });
+    const child = spawn(`${editor} ${quoteShellArg(directory)}`, { shell: true, stdio: 'inherit', windowsHide: true });
     child.once('error', reject);
     child.once('exit', (exitCode) => resolveCode(exitCode ?? 1));
   });

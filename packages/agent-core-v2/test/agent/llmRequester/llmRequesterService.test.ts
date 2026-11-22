@@ -56,6 +56,7 @@ import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
+import { AgentMediaResolverService } from '#/agent/media/mediaResolverService';
 import {
   IAgentUsageService,
   type UsageRecordContext,
@@ -2665,6 +2666,284 @@ describe('AgentLLMRequesterService media-stripped resend', () => {
   });
 });
 
+describe('AgentLLMRequesterService 400 INVALID_MEDIA self-heal', () => {
+  function invalidMedia400(withRetryVeto = true): APIStatusError {
+    const error = normalizeAPIStatusError(
+      400,
+      '400 invalid_request_error: Unable to process input: the file or media data is empty, corrupted, or malformed. [details={"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INVALID_MEDIA","domain":"api.example.test","metadata":{"error_number":"2011"}}],"status":"INVALID_ARGUMENT"}]',
+      null,
+      null,
+      null,
+      {
+        error: {
+          type: 'invalid_request_error',
+          message: 'Unable to process input: the file or media data is empty, corrupted, or malformed.',
+        },
+        ...(withRetryVeto ? { retryable: false } : {}),
+      },
+    );
+    if (withRetryVeto) {
+      attachErrorDetails(error, { upstream_retryable: false });
+    }
+    return error;
+  }
+
+  function makePoisoningResolver(): IAgentMediaResolverService {
+    const poisoned = new Set<string>();
+    return {
+      _serviceBrand: undefined,
+      markMediaPoisoned(urlsOrKeys: Iterable<string>): void {
+        for (const key of urlsOrKeys) poisoned.add(key);
+      },
+      async resolve(messages) {
+        return messages.map((message) => ({
+          ...message,
+          content: message.content.map((part) => {
+            if (part.type === 'video_url' && poisoned.has(part.videoUrl.url)) {
+              return { type: 'text', text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]' };
+            }
+            if (part.type === 'image_url' && poisoned.has(part.imageUrl.url)) {
+              return { type: 'text', text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]' };
+            }
+            return part;
+          }),
+        }));
+      },
+    };
+  }
+
+  it('poisons rejected media, retries once even when upstream sets retryable=false, and keeps it poisoned on future turns', async () => {
+    const videoUrl = 'data:video/mp4;base64,AAAAIGZ0eXBpc29t';
+    const observedMessages: Array<readonly Message[]> = [];
+    const calls = { value: 0 };
+    const baseRequester = createRequester(calls, invalidMedia400());
+    const capturingRequester: ModelRequester = {
+      ...baseRequester,
+      async *request(input, signal, params) {
+        observedMessages.push(input.messages);
+        yield* baseRequester.request(input, signal, params);
+      },
+    };
+    const history: Message[] = [
+      {
+        role: 'user',
+        toolCalls: [],
+        content: [
+          { type: 'text', text: 'Inspect this clip' },
+          { type: 'video_url', videoUrl: { url: videoUrl } },
+        ],
+      },
+    ];
+    const { service } = createService(capturingRequester, undefined, {
+      contextMessages: history,
+      mediaResolver: makePoisoningResolver(),
+    });
+
+    const firstTurn = await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(firstTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(2);
+    expect(observedMessages[0]![0]!.content[1]).toEqual({ type: 'video_url', videoUrl: { url: videoUrl } });
+    expect(observedMessages[1]![0]!.content[1]).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+
+    const nextTurn = await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+    expect(nextTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(3);
+    expect(observedMessages[2]![0]!.content[1]).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+  });
+
+  it('stops after one self-heal retry if the provider still rejects and does not retry when no media was sent', async () => {
+    const calls = { value: 0 };
+    const { service: withMedia } = createService(
+      createRequester(calls, invalidMedia400(), [invalidMedia400()]),
+      undefined,
+      {
+        contextMessages: [
+          {
+            role: 'user',
+            toolCalls: [],
+            content: [{ type: 'video_url', videoUrl: { url: 'data:video/mp4;base64,AAAAIGZ0eXBpc29t' } }],
+          },
+        ],
+        mediaResolver: makePoisoningResolver(),
+      },
+    );
+    await expect(withMedia.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(calls.value).toBe(2);
+
+    const noMediaCalls = { value: 0 };
+    const { service: noMedia } = createService(
+      createRequester(noMediaCalls, invalidMedia400()),
+      undefined,
+      {
+        contextMessages: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'plain text only' }] }],
+        mediaResolver: makePoisoningResolver(),
+      },
+    );
+    await expect(noMedia.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(noMediaCalls.value).toBe(1);
+  });
+
+  it('does not loop under KIKI_INFINITE_RETRY when 400 INVALID_MEDIA lacks retryable=false', async () => {
+    const mediaCalls = { value: 0 };
+    const { service: withMedia } = createService(
+      createRequester(mediaCalls, invalidMedia400(false), [invalidMedia400(false)]),
+      undefined,
+      {
+        env: { KIKI_INFINITE_RETRY: '1' },
+        contextMessages: [
+          {
+            role: 'user',
+            toolCalls: [],
+            content: [{ type: 'video_url', videoUrl: { url: 'data:video/mp4;base64,AAAAIGZ0eXBpc29t' } }],
+          },
+        ],
+        mediaResolver: makePoisoningResolver(),
+      },
+    );
+    await expect(withMedia.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mediaCalls.value).toBe(2);
+
+    const textCalls = { value: 0 };
+    const { service: noMedia } = createService(
+      createRequester(textCalls, invalidMedia400(false)),
+      undefined,
+      {
+        env: { KIKI_INFINITE_RETRY: '1' },
+        contextMessages: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'plain text only' }] }],
+        mediaResolver: makePoisoningResolver(),
+      },
+    );
+    await expect(noMedia.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(textCalls.value).toBe(1);
+  });
+
+  it('only quarantines media actually submitted to the provider and preserves locally omitted video for later video-capable models', async () => {
+    const mp4Box = (type: string, payload: Buffer = Buffer.alloc(0)): Buffer => {
+      const buf = Buffer.alloc(8 + payload.length);
+      buf.writeUInt32BE(buf.length, 0);
+      buf.write(type, 4, 'latin1');
+      payload.copy(buf, 8);
+      return buf;
+    };
+    const validMp4Bytes = Buffer.concat([
+      mp4Box('ftyp', Buffer.from('isom\x00\x00\x02\x00isommp41', 'latin1')),
+      mp4Box('mdat', Buffer.alloc(16, 0xaa)),
+      mp4Box('moov', Buffer.alloc(8, 0xbb)),
+    ]);
+    const validPngDataUrl =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const videoHash = 'a'.repeat(64);
+    const blobMap = new Map<string, Uint8Array>([[`agents/main/blobs:${videoHash}`, validMp4Bytes]]);
+    const realResolver = new AgentMediaResolverService(
+      { get: async () => { throw new Error('missing'); } } as unknown as ConstructorParameters<typeof AgentMediaResolverService>[0],
+      {
+        get: async (scope: string, key: string) => blobMap.get(`${scope}:${key}`),
+        put: async (scope: string, key: string, bytes: Uint8Array) => { blobMap.set(`${scope}:${key}`, bytes); },
+      } as unknown as ConstructorParameters<typeof AgentMediaResolverService>[1],
+      { track2: () => undefined } as unknown as ConstructorParameters<typeof AgentMediaResolverService>[2],
+      new AgentStateService(),
+      { read: async () => undefined } as unknown as ConstructorParameters<typeof AgentMediaResolverService>[4],
+      undefined,
+      {
+        current: {
+          agentId: 'main',
+          scope: (sub: string) => `agents/main/${sub}`,
+        },
+        onDidChange: () => ({ dispose: () => undefined }),
+      } as never,
+    );
+
+    const observedMessages: Array<readonly Message[]> = [];
+    const calls = { value: 0 };
+    const baseRequester = createRequester(calls, invalidMedia400());
+    const noVideoRequester: ModelRequester = {
+      ...baseRequester,
+      model: {
+        ...baseRequester.model,
+        capabilities: { ...baseRequester.model.capabilities, image_in: true, video_in: false },
+      },
+      async *request(input, signal, params) {
+        observedMessages.push(input.messages);
+        yield* baseRequester.request(input, signal, params);
+      },
+    };
+    const mixedHistory: Message[] = [
+      {
+        role: 'assistant',
+        toolCalls: [],
+        content: [
+          {
+            type: 'think',
+            think: '',
+            encrypted: 'sig_foreign',
+            reasoningOrigin: 'anthropic:other-model',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        toolCalls: [],
+        content: [
+          { type: 'video_url', videoUrl: { url: `blobref:video/mp4;${videoHash}` } },
+          { type: 'image_url', imageUrl: { url: validPngDataUrl } },
+        ],
+      },
+    ];
+    const { service } = createService(noVideoRequester, undefined, {
+      contextMessages: mixedHistory,
+      mediaResolver: realResolver,
+    });
+
+    const result = await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(result.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(2);
+    expect(observedMessages[0]).toHaveLength(1);
+    expect(observedMessages[0]![0]!.content[0]).toEqual({
+      type: 'text',
+      text: '[video omitted: the current model does not support video input]',
+    });
+    expect(observedMessages[0]![0]!.content[1]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: validPngDataUrl },
+    });
+    expect(observedMessages[1]![0]!.content[1]).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+
+    const videoCapableRequester: ModelRequester = {
+      ...baseRequester,
+      model: {
+        ...baseRequester.model,
+        capabilities: { ...baseRequester.model.capabilities, image_in: true, video_in: true },
+      },
+    };
+    const resolvedLater = await realResolver.resolve([mixedHistory[1]!], videoCapableRequester);
+    expect(resolvedLater[0]!.content[0]).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${validMp4Bytes.toString('base64')}` },
+    });
+    expect(resolvedLater[0]!.content[1]).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+  });
+});
+
 describe('AgentLLMRequesterService media-degraded resend', () => {
   const BODY_TOO_LARGE_413 = new APIRequestTooLargeError(413, 'Request Entity Too Large');
 
@@ -4180,6 +4459,7 @@ describe('Agent requester Anthropic message-threads multi-step loop', () => {
       model: model.name,
       baseUrl,
       apiKey: 'YOUR_API_KEY',
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const requester = new ModelRequesterImpl(
       model,
@@ -4336,6 +4616,7 @@ describe('Agent requester Anthropic message-threads multi-step loop', () => {
       model: model.name,
       baseUrl,
       apiKey: 'YOUR_API_KEY',
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const requester = new ModelRequesterImpl(
       model,
@@ -4456,6 +4737,7 @@ describe('Agent requester Anthropic message-threads multi-step loop', () => {
       model: model.name,
       baseUrl,
       apiKey: 'YOUR_API_KEY',
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const requester = new ModelRequesterImpl(
       model,

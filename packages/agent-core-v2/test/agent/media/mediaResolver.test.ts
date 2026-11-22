@@ -14,7 +14,7 @@ import {
 import { LifecycleScope } from '#/app/scopes';
 import { createScopedTestHost, createServices, stubPair } from '#/_base/di/test';
 import { buildKimiFileUrl } from '#/agent/media/kimiFileUrl';
-import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { IAgentBlobService, MISSING_MEDIA_PLACEHOLDER } from '#/agent/blob/agentBlobService';
 import { AgentBlobServiceImpl } from '#/agent/blob/agentBlobServiceImpl';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { closeCpuPool } from '#/app/cpuWorker/runtime';
@@ -48,7 +48,32 @@ import { withPngChunk } from './pngFixtures';
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 const FILE_ID = 'file_abc';
-const VIDEO_BYTES = Buffer.from('tiny fake mp4 bytes');
+function makeValidMp4(extraMoovBytes = 0): Buffer {
+  const ftyp = Buffer.from([
+    0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
+    0x00, 0x00, 0x00, 0x00, 0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x31,
+  ]);
+  const moovSize = 8 + extraMoovBytes;
+  const moov = Buffer.alloc(moovSize);
+  moov.writeUInt32BE(moovSize, 0);
+  moov.write('moov', 4, 'latin1');
+  if (extraMoovBytes > 0) moov.fill(0x44, 8);
+  return Buffer.concat([ftyp, moov]);
+}
+const VIDEO_BYTES = makeValidMp4();
+const UNFINALIZED_MP4_BYTES = Buffer.concat([
+  Buffer.from([
+    0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
+    0x00, 0x00, 0x00, 0x00, 0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x31,
+  ]),
+  Buffer.from([0x00, 0x00, 0x00, 0x08, 0x66, 0x72, 0x65, 0x65]),
+  Buffer.from([0x00, 0x00, 0x00, 0x10, 0x6d, 0x64, 0x61, 0x74, 1, 2, 3, 4, 5, 6, 7, 8]),
+]);
+const VALID_WAV_BYTES = Buffer.concat([
+  Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt '),
+  Buffer.alloc(28),
+]);
+const VALID_MP3_BYTES = Buffer.from('ID3\x03\x00\x00\x00fake-mp3');
 const PNG_BYTES = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
@@ -262,7 +287,7 @@ function resolver(
 
 describe('AgentMediaResolverService audio strategy', () => {
   it('sends the WAV derivative to an audio model without changing the original playback reference', async () => {
-    const bytes = Buffer.from('RIFF\u0004\u0000\u0000\u0000WAVE');
+    const bytes = VALID_WAV_BYTES;
     const media = {
       ...stubMediaStore(),
       open: vi.fn(async (_id: string, variant?: 'wav') => variant === 'wav' ? {
@@ -299,8 +324,9 @@ describe('AgentMediaResolverService audio strategy', () => {
   });
 
   it('normalizes alias audio MIME types for daemon refs and inline data URLs, and degrades inline audio when audio_in is false', async () => {
-    const wavBytes = Buffer.from('RIFF\u0004\u0000\u0000\u0000WAVE');
+    const wavBytes = VALID_WAV_BYTES;
     const wavB64 = wavBytes.toString('base64');
+    const mp3B64 = VALID_MP3_BYTES.toString('base64');
     const media = {
       ...stubMediaStore(),
       open: async (_id: string, variant?: 'wav') => variant === 'wav' ? undefined : {
@@ -323,7 +349,7 @@ describe('AgentMediaResolverService audio strategy', () => {
     const canonicalInline: Message[] = [{
       role: 'user',
       toolCalls: [],
-      content: [{ type: 'audio_url', audioUrl: { url: `data:audio/mpeg;base64,${wavB64}`, name: 'song.mp3' } }],
+      content: [{ type: 'audio_url', audioUrl: { url: `data:audio/mpeg;base64,${mp3B64}`, name: 'song.mp3' } }],
     }];
     expect(await service.resolve(canonicalInline, requester({ audioIn: true }))).toBe(canonicalInline);
 
@@ -331,11 +357,11 @@ describe('AgentMediaResolverService audio strategy', () => {
       role: 'tool',
       toolCallId: 'call_audio_1',
       toolCalls: [],
-      content: [{ type: 'audio_url', audioUrl: { url: `data:audio/mp3;base64,${wavB64}`, name: 'song.mp3' } }],
+      content: [{ type: 'audio_url', audioUrl: { url: `data:audio/mp3;base64,${mp3B64}`, name: 'song.mp3' } }],
     };
     expect(firstPart(await service.resolve([aliasInline], requester({ audioIn: true })))).toEqual({
       type: 'audio_url',
-      audioUrl: { url: `data:audio/mpeg;base64,${wavB64}`, name: 'song.mp3' },
+      audioUrl: { url: `data:audio/mpeg;base64,${mp3B64}`, name: 'song.mp3' },
     });
     expect(firstPart(await service.resolve([aliasInline], requester({ audioIn: false })))).toEqual({
       type: 'text',
@@ -564,10 +590,10 @@ describe('AgentMediaResolverService video strategy', () => {
   });
 
   it('compresses oversized inline video and audio once, memoizes across turns and instances, and honors full_resolution=1', async () => {
-    const bigVideo = Buffer.concat([MP4_MAGIC_BYTES, Buffer.alloc(1024, 0x44)]);
-    const bigAudio = Buffer.concat([Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt '), Buffer.alloc(1024, 0x55)]);
-    const compressedVideo = Buffer.from('compressed-mp4');
-    const compressedAudio = Buffer.from('compressed-mp3');
+    const bigVideo = makeValidMp4(1024);
+    const bigAudio = Buffer.concat([VALID_WAV_BYTES, Buffer.alloc(1024, 0x55)]);
+    const compressedVideo = makeValidMp4(16);
+    const compressedAudio = VALID_MP3_BYTES;
     const runner = vi.fn<AvCompressRunner>(async (cmd, args) => {
       if (cmd.includes('ffprobe')) return { stdout: '1/1\n', stderr: '' };
       const outPath = args.at(-1)!;
@@ -629,6 +655,124 @@ describe('AgentMediaResolverService video strategy', () => {
       videoUrl: { url: `data:video/mp4;base64,${bigVideo.toString('base64')}` },
     });
     expect(runner.mock.calls.filter(([cmd]) => !cmd.includes('ffprobe')).length).toBe(2);
+  });
+
+  it('sanitizes inline video data/blobref parts, missing placeholders, unsupported models, and poisoned media', async () => {
+    const validHash = 'c'.repeat(64);
+    const corruptHash = 'd'.repeat(64);
+    const blobs = blobStore();
+    await blobs.put('agents/main/blobs', validHash, VIDEO_BYTES);
+    await blobs.put('agents/main/blobs', corruptHash, UNFINALIZED_MP4_BYTES);
+
+    const ix = createServices(disposables, {
+      base: [registerStateServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IFileService, fileService(new Map([[FILE_ID, { name: 'unfinalized.mp4', bytes: UNFINALIZED_MP4_BYTES }]])));
+        reg.defineInstance(IBlobStore, blobs);
+        reg.defineInstance(ITelemetryService, telemetry);
+        reg.defineInstance(IFlagService, { enabled: () => true } as never);
+        reg.defineInstance(ISessionMediaStore, stubMediaStore());
+        reg.definePartialInstance(IAgentScopeContext, { agentId: 'main', scope: (name) => `agents/main/${name}` });
+        reg.define(IAgentMediaResolverService, AgentMediaResolverService);
+      },
+    });
+    const service = ix.get(IAgentMediaResolverService);
+    const req = requester({ videoIn: true, audioIn: true, imageIn: true });
+
+    const validInline = [videoMessage(`data:video/mp4;base64,${VIDEO_BYTES.toString('base64')}`)];
+    expect(await service.resolve(validInline, req)).toBe(validInline);
+
+    const corruptInline = [videoMessage(`data:video/mp4;base64,${UNFINALIZED_MP4_BYTES.toString('base64')}`)];
+    expect(firstPart(await service.resolve(corruptInline, req))).toEqual({
+      type: 'text',
+      text: '[video omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    const octetStreamCorruptInline = [
+      videoMessage(`data:application/octet-stream;base64,${UNFINALIZED_MP4_BYTES.toString('base64')}`),
+    ];
+    expect(firstPart(await service.resolve(octetStreamCorruptInline, req))).toEqual({
+      type: 'text',
+      text: '[video omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    const mislabeledAviCorruptInline = [
+      videoMessage(`data:video/x-msvideo;base64,${UNFINALIZED_MP4_BYTES.toString('base64')}`),
+    ];
+    expect(firstPart(await service.resolve(mislabeledAviCorruptInline, req))).toEqual({
+      type: 'text',
+      text: '[video omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    const octetStreamValidMp4 = [
+      videoMessage(`data:application/octet-stream;base64,${VIDEO_BYTES.toString('base64')}`),
+    ];
+    expect(firstPart(await service.resolve(octetStreamValidMp4, req))).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${VIDEO_BYTES.toString('base64')}` },
+    });
+
+    const octetStreamAudioCorrupt = [{
+      role: 'user' as const,
+      toolCalls: [],
+      content: [{
+        type: 'audio_url' as const,
+        audioUrl: { url: `data:application/octet-stream;base64,${UNFINALIZED_MP4_BYTES.toString('base64')}` },
+      }],
+    }];
+    expect(firstPart(await service.resolve(octetStreamAudioCorrupt, req))).toEqual({
+      type: 'text',
+      text: '[audio omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    expect(firstPart(await service.resolve([videoMessage(`blobref:video/mp4;${validHash}`)], req))).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${VIDEO_BYTES.toString('base64')}` },
+    });
+
+    expect(firstPart(await service.resolve([videoMessage(`blobref:video/mp4;${corruptHash}`)], req))).toEqual({
+      type: 'text',
+      text: '[video omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    expect(firstPart(await service.resolve(validInline, requester({ videoIn: false })))).toEqual({
+      type: 'text',
+      text: '[video omitted: the current model does not support video input]',
+    });
+
+    expect(firstPart(await service.resolve([videoMessage(MISSING_MEDIA_PLACEHOLDER)], req))).toEqual({
+      type: 'text',
+      text: VIDEO_UNAVAILABLE_TEXT,
+    });
+    expect(firstPart(await service.resolve([imageMessage(MISSING_MEDIA_PLACEHOLDER)], req))).toEqual({
+      type: 'text',
+      text: IMAGE_UNAVAILABLE_TEXT,
+    });
+    expect(firstPart(await service.resolve([{
+      role: 'user',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: MISSING_MEDIA_PLACEHOLDER } }],
+    }], req))).toEqual({
+      type: 'text',
+      text: '[audio omitted: inline audio is unavailable for this model request]',
+    });
+
+    const upload = vi.fn();
+    expect(firstPart(await service.resolve([videoMessage(buildKimiFileUrl(FILE_ID))], requester({ uploadVideo: upload })))).toEqual({
+      type: 'text',
+      text: '[video omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+    expect(upload).not.toHaveBeenCalled();
+
+    service.markMediaPoisoned?.([`data:video/mp4;base64,${VIDEO_BYTES.toString('base64')}`]);
+    expect(firstPart(await service.resolve(validInline, req))).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+    expect(firstPart(await service.resolve([videoMessage(`blobref:video/mp4;${validHash}`)], req))).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
   });
 });
 
