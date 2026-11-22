@@ -26,14 +26,14 @@ function readLinuxProcStat(pid) {
   }
 }
 
-function listAllProcessesWithCmdline() {
+function listAllProcessesWithCmdlineChecked() {
   if (process.platform === 'linux') {
     const rows = [];
     let entries = [];
     try {
       entries = fs.readdirSync('/proc');
-    } catch {
-      return [];
+    } catch (error) {
+      return { ok: false, rows: [], error: String(error?.message ?? error) };
     }
     for (const entry of entries) {
       if (!/^\d+$/u.test(entry)) continue;
@@ -44,30 +44,36 @@ function listAllProcessesWithCmdline() {
       try {
         cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0+/gu, ' ').trim();
       } catch {}
-      rows.push({ pid, ppid: st.ppid, cmdline });
+      rows.push({ pid, ppid: st.ppid, name: '', cmdline });
     }
-    return rows;
+    return { ok: true, rows, error: null };
   }
 
   if (process.platform === 'win32') {
     try {
-      const ps = `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`;
+      const ps = `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress`;
       const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
         encoding: 'utf8',
-        timeout: 8_000,
+        timeout: 10_000,
       }).trim();
-      if (!out) return [];
+      if (!out) return { ok: false, rows: [], error: 'Win32_Process returned empty output' };
       const parsed = JSON.parse(out);
-      return (Array.isArray(parsed) ? parsed : [parsed]).map((r) => ({
+      const rows = (Array.isArray(parsed) ? parsed : [parsed]).map((r) => ({
         pid: Number(r.ProcessId),
         ppid: Number(r.ParentProcessId),
+        name: String(r.Name ?? ''),
         cmdline: String(r.CommandLine ?? ''),
       }));
-    } catch {
-      return [];
+      return { ok: true, rows, error: null };
+    } catch (error) {
+      return { ok: false, rows: [], error: String(error?.message ?? error) };
     }
   }
-  return [];
+  return { ok: false, rows: [], error: `Unsupported platform ${process.platform}` };
+}
+
+function listAllProcessesWithCmdline() {
+  return listAllProcessesWithCmdlineChecked().rows;
 }
 
 export function listDescendantProcesses(rootPid) {
@@ -129,12 +135,81 @@ export function isKnownInternalKikiHelper(cmdline) {
   return false;
 }
 
+export function listSurvivingWorkloadDescendantsChecked(serverRootPid) {
+  if (!Number.isInteger(serverRootPid) || serverRootPid <= 0) {
+    return { ok: false, survivors: [], error: 'Invalid serverRootPid' };
+  }
+  const scan = listAllProcessesWithCmdlineChecked();
+  if (!scan.ok) {
+    return { ok: false, survivors: [], error: scan.error };
+  }
+  const byParent = new Map();
+  for (const r of scan.rows) {
+    const arr = byParent.get(r.ppid) ?? [];
+    arr.push(r);
+    byParent.set(r.ppid, arr);
+  }
+  const descendants = [];
+  const queue = [...(byParent.get(serverRootPid) ?? [])];
+  const seen = new Set([serverRootPid]);
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (!cur || seen.has(cur.pid)) continue;
+    seen.add(cur.pid);
+    descendants.push(cur);
+    for (const next of byParent.get(cur.pid) ?? []) queue.push(next);
+  }
+  const internalPids = new Set([serverRootPid]);
+  for (const p of descendants) {
+    if (isKnownInternalKikiHelper(p.cmdline)) internalPids.add(p.pid);
+  }
+  const survivors = descendants.filter((p) => {
+    if (internalPids.has(p.pid)) return false;
+    if (process.platform === 'win32') {
+      const nameLower = String(p.name ?? '').toLowerCase();
+      const cmdLower = String(p.cmdline ?? '').toLowerCase();
+      if (
+        internalPids.has(p.ppid) &&
+        (nameLower === 'conhost.exe' || /\\system32\\conhost\.exe\b/u.test(cmdLower))
+      ) {
+        return false;
+      }
+      if (cmdLower === '' && (nameLower === 'conhost.exe' || nameLower === 'openconsole.exe')) {
+        return false;
+      }
+    }
+    return true;
+  });
+  return { ok: true, survivors, error: null };
+}
+
 export function listSurvivingWorkloadDescendants(serverRootPid) {
-  if (!Number.isInteger(serverRootPid) || serverRootPid <= 0) return [];
-  const descendants = listDescendantProcesses(serverRootPid);
-  // Exclude known internal Kiki helper processes (e.g. sqlite search indexer in SEA/dist/dev modes)
-  // while counting any lingering shell/bash/node/python/workload children spawned by tools.
-  return descendants.filter((p) => !isKnownInternalKikiHelper(p.cmdline));
+  return listSurvivingWorkloadDescendantsChecked(serverRootPid).survivors;
+}
+
+export function sampleProcessHandleCount(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'linux') {
+    try {
+      return fs.readdirSync(`/proc/${pid}/fd`).length;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === 'win32') {
+    try {
+      const ps = `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").HandleCount`;
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+        encoding: 'utf8',
+        timeout: 6_000,
+      }).trim();
+      const n = Number.parseInt(out, 10);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function samplePidCpuTicks(pids) {

@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildRankStratifiedSizes, EMPIRICAL_POPULATIONS } from '../fixtures/empirical-manifest.mjs';
 import { buildScreenshotPng } from '../fixtures/media.mjs';
+import { resolveS10MatrixConfig } from '../matrix/loader.mjs';
 import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from '../web-assets-bridge.mjs';
 import { findChildBrowserRootPid, startExternalHeartbeatWatchdog } from '../telemetry/process-tree.mjs';
 import { evaluateS10Verdict } from '../verify/verdict.mjs';
@@ -534,34 +536,13 @@ export async function runScenarioS10LiveStorm({
   corpus,
   WebSocket,
   tier = 'smoke',
+  matrix = null,
   runBrowser = false,
   keepBrowserAlive = false,
   progress = () => {},
 }) {
-  const isFull = tier === 'full';
-  const cfg = isFull
-    ? {
-        turns: 600,
-        seededSubagents: 600,
-        waves: [12, 24, 32, 64],
-        activeChildren: 32,
-        stepsPerChild: 6,
-        deltasPerStep: 110,
-        cadenceMs: 16,
-        workspaceFiles: 21_621,
-        promptRounds: 8,
-      }
-    : {
-        turns: 80,
-        seededSubagents: 80,
-        waves: [4],
-        activeChildren: 4,
-        stepsPerChild: 5,
-        deltasPerStep: 44,
-        cadenceMs: 25,
-        workspaceFiles: 120,
-        promptRounds: 4,
-      };
+  const cfg = resolveS10MatrixConfig(matrix ?? tier);
+  const isFull = cfg.tier === 'full';
 
   const startedAt = performance.now();
   const wallStartMs = Date.now();

@@ -514,6 +514,7 @@ export function stageCorpusSandbox({
   sandboxParentDir,
   isolateProcessEnv = true,
   extremeFullSize = false,
+  enableSearch = true,
 }) {
   const startedAt = performance.now();
   const { sandboxRoot, homeDir, osHomeDir } = createIsolatedSandboxDirs(sandboxParentDir ?? os.tmpdir(), 'kiki-perf-sandbox-');
@@ -533,9 +534,21 @@ export function stageCorpusSandbox({
   );
   const srcConfigPath = corpusHome ? path.join(corpusHome, 'config.toml') : null;
   if (extremeFullSize && srcConfigPath && fs.existsSync(srcConfigPath)) {
-    fs.copyFileSync(srcConfigPath, path.join(homeDir, 'config.toml'));
+    const rawConfig = fs.readFileSync(srcConfigPath, 'utf8');
+    const searchVal = enableSearch ? 'true' : 'false';
+    const sectionRe = /(\[search\][ \t]*\r?\n)([\s\S]*?)(?=\r?\n\[|$)/u;
+    const nextConfig = sectionRe.test(rawConfig)
+      ? rawConfig.replace(sectionRe, (_m, header, body) => {
+          const hasEnabled = /^[ \t]*enabled[ \t]*=/mu.test(body);
+          const nextBody = hasEnabled
+            ? body.replace(/^([ \t]*enabled[ \t]*=[ \t]*)(true|false)/mu, `$1${searchVal}`)
+            : `enabled = ${searchVal}\n${body}`;
+          return `${header}${nextBody}`;
+        })
+      : `${rawConfig.trimEnd()}\n\n[search]\nenabled = ${searchVal}\n`;
+    fs.writeFileSync(path.join(homeDir, 'config.toml'), nextConfig, 'utf8');
   } else {
-    fs.writeFileSync(path.join(homeDir, 'config.toml'), '[search]\nenabled = false\n', 'utf8');
+    fs.writeFileSync(path.join(homeDir, 'config.toml'), `[search]\nenabled = ${enableSearch ? 'true' : 'false'}\n`, 'utf8');
   }
 
   const tracker = createSourceImmutabilityTracker({ locksDir: corpusHome ? path.join(corpusHome, 'session-locks') : undefined });
