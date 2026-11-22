@@ -61,8 +61,6 @@ export type ConversationPhase = 'hero' | 'settling' | 'active';
 export interface ConversationSeat {
   readonly phase: ConversationPhase;
   readonly composer: ReactNode;
-  /** An open cockpit rail temporarily takes the preview's space. */
-  readonly cockpit?: boolean;
 }
 
 export interface ConversationPreviewPresentation {
@@ -88,7 +86,6 @@ export interface ConversationShellSlots {
 
 interface ConversationShellContextValue {
   readonly slots: ConversationShellSlots;
-  readonly cockpit?: boolean;
   readonly previewPresentation?: ConversationPreviewPresentation;
   readonly registerPreview?: (owner: object, presentation: ConversationPreviewPresentation) => void;
   readonly unregisterPreview?: (owner: object) => void;
@@ -287,7 +284,6 @@ export function ConversationShell() {
   const contextValue = useMemo<ConversationShellContextValue>(
     () => ({
       slots: { header, dock, heroFooter, rail, footer, preview },
-      cockpit: seat?.cockpit === true,
       previewPresentation,
       registerPreview,
       unregisterPreview,
@@ -301,7 +297,6 @@ export function ConversationShell() {
       rail,
       footer,
       preview,
-      seat?.cockpit,
       previewPresentation,
       registerPreview,
       unregisterPreview,

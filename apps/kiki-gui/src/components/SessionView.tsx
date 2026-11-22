@@ -42,7 +42,6 @@ import { AdmissionScope, filterIngressForAgent, useAdmissionScope, withAdmission
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext } from './model-switch/ModelSwitchNotice';
-import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { ActionSheet } from './overlays/ActionSheet';
@@ -2282,7 +2281,6 @@ export function SessionView({
   sessionPathRef.current = location.pathname;
   const agentMatch = useMatch('/s/:id/agent/:agentId');
   const selectedAgentId = agentMatch?.params.agentId;
-  const [railMode] = useRailMode();
   const selectedAgentIdRef = useRef(selectedAgentId);
   selectedAgentIdRef.current = selectedAgentId;
   const sessionIdRef = useRef(sessionId);
@@ -2355,9 +2353,8 @@ export function SessionView({
   // preference is untouched, so widening the window restores the inline rail.
   const [narrowRailOpen, setNarrowRailOpen] = useState(false);
 
-  const cockpit = !isNarrowScreen && userRailOpen && railMode === 'cockpit';
-  const previewOpen = previewPresentation?.open === true && !cockpit;
-  const previewMaximized = previewPresentation?.maximized === true && !cockpit;
+  const previewOpen = previewPresentation?.open === true;
+  const previewMaximized = previewPresentation?.maximized === true;
   // Docked rail yields automatically when preview maximizes or when viewport
   // is in the 1024–1359px preview-priority band with an open docked preview,
   // without mutating `layoutPrefs.railOpen`.
@@ -2376,13 +2373,6 @@ export function SessionView({
   });
   const yieldedRailOverlayOpen =
     dockedRailYielded && yieldedRailState.regime === railRegimeKey && yieldedRailState.open;
-
-  useEffect(() => {
-    if (yieldedRailOverlayOpen && railMode === 'cockpit') {
-      setYieldedRailState({ regime: railRegimeKey, open: false });
-      if (!userRailOpen) writeLayoutPreferences({ railOpen: true });
-    }
-  }, [yieldedRailOverlayOpen, railMode, railRegimeKey, userRailOpen]);
 
   const railOpen = isNarrowScreen
     ? narrowRailOpen
@@ -5692,7 +5682,6 @@ boundExecution,
     [startBranch],
   );
   const seat = useMemo<ConversationSeat>(() => ({
-    cockpit,
     phase: seatPhase,
     composer:
       selectedAgentId !== undefined ? null : externalClient !== undefined ? (
@@ -5781,7 +5770,6 @@ boundExecution,
     composerNeedsYou,
     composerStatusNotice,
     selectedAgentId,
-    cockpit,
     seatPhase,
     state.loaded,
     state.resyncing,

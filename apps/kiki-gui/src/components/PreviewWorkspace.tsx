@@ -92,7 +92,6 @@ export interface PreviewWorkspaceProps {
   readonly onCloseAll: () => void;
   readonly onMove: (key: string, targetIndex: number) => void;
   readonly onCollapse: () => void;
-  readonly onOpenCockpit?: () => void;
   readonly onWidthChange: (width: number, final: boolean) => void;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
@@ -139,7 +138,6 @@ export function PreviewWorkspace({
   onCloseAll,
   onMove,
   onCollapse,
-  onOpenCockpit,
   onWidthChange,
   onOpenImage,
   reportDirty,
@@ -370,7 +368,6 @@ export function PreviewWorkspace({
         railOpen={sharedRail?.open}
         onToggleRail={showStripRailToggle ? sharedRail.toggle : undefined}
         onCollapse={onCollapse}
-        onOpenCockpit={onOpenCockpit}
         onActivate={onActivate}
         onClose={onClose}
         onMove={onMove}

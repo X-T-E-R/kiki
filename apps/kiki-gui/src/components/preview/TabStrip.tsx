@@ -91,7 +91,6 @@ export interface PreviewTabStripProps {
   readonly railOpen?: boolean;
   readonly onToggleRail?: () => void;
   readonly onCollapse: () => void;
-  readonly onOpenCockpit?: () => void;
   readonly onActivate: (key: string) => void;
   readonly onClose: (key: string) => void;
   readonly onMove: (key: string, targetIndex: number) => void;

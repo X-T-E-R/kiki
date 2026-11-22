@@ -51,7 +51,6 @@ import type { AgentForest, SessionController, SessionViewState } from '@kiki/ses
 import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useOptionalConversationShell } from './ConversationShell';
-import { useRailMode } from './rail-variants/shell';
 import { locateInTimeline } from '../lib/timelineLocate';
 import { registerSessionPluginPanelOpener } from '../lib/pluginPanelPreview';
 import { useLayerHistory } from '../lib/layerHistory';
@@ -281,18 +280,15 @@ export function MediaPreviewProvider({
       setPositions(snapshot.positions);
     },
   });
-  const [, chooseMode] = useRailMode();
-  const cockpit = shell?.cockpit === true;
   const overlayStage = useMediaQuery('(max-width: 1023px)');
   const collapsePanel = useCallback(() => {
     setPanelOpen(false);
     setPreviewMaximized(false);
   }, []);
-  useLayerHistory('preview-workspace', panelOpen && !cockpit && tabsState.tabs.length > 0 && overlayStage, collapsePanel);
+  useLayerHistory('preview-workspace', panelOpen && tabsState.tabs.length > 0 && overlayStage, collapsePanel);
   const revealPreview = useCallback(() => {
-    if (cockpit) chooseMode('default');
     setPanelOpen(true);
-  }, [cockpit, chooseMode]);
+  }, []);
   const togglePreviewMaximized = useCallback(() => {
     setPreviewMaximized((current) => !current);
   }, []);
@@ -305,12 +301,12 @@ export function MediaPreviewProvider({
   }, [sessionId, snapshotAgentId]);
 
   useEffect(() => {
-    if (!panelOpen || cockpit || tabsState.tabs.length === 0 || overlayStage) {
+    if (!panelOpen || tabsState.tabs.length === 0 || overlayStage) {
       setPreviewMaximized(false);
     }
-  }, [panelOpen, cockpit, tabsState.tabs.length, overlayStage]);
+  }, [panelOpen, tabsState.tabs.length, overlayStage]);
 
-  const previewVisible = panelOpen && !cockpit && tabsState.tabs.length > 0;
+  const previewVisible = panelOpen && tabsState.tabs.length > 0;
   const effectiveMaximized = previewVisible && previewMaximized && !overlayStage;
   const shellPreviewOwner = useMemo(() => ({}), []);
   const ownsShellPreview =
@@ -402,15 +398,11 @@ export function MediaPreviewProvider({
   }, [cwd, revealPreview]);
 
   const togglePanel = useCallback(() => {
-    if (cockpit) {
-      revealPreview();
-      return;
-    }
     setPanelOpen((value) => {
       if (value) setPreviewMaximized(false);
       return !value;
     });
-  }, [cockpit, revealPreview]);
+  }, []);
 
   const reportDirty = useCallback((path: string, dirty: boolean) => {
     setDirtyPaths((previous) => {
@@ -492,7 +484,7 @@ export function MediaPreviewProvider({
         ) as { agentId: string } | undefined)?.agentId
       : undefined;
   const activePluginTab =
-    panelOpen && !cockpit && tabsState.active !== null
+    panelOpen && tabsState.active !== null
       ? tabsState.tabs.find(
           (tab): tab is Extract<PreviewTab, { kind: 'plugin' }> =>
             previewTabKey(tab, cwd) === tabsState.active && tab.kind === 'plugin',
@@ -564,7 +556,7 @@ export function MediaPreviewProvider({
       openAgentPanel,
       openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
-      previewPanelOpen: panelOpen && !cockpit,
+      previewPanelOpen: panelOpen,
       previewPanelWidth: panelOpen ? width : undefined,
       previewMaximized: effectiveMaximized,
       togglePreviewMaximized,
@@ -589,7 +581,6 @@ export function MediaPreviewProvider({
       openBuiltinSkill,
       tabsState.tabs.length,
       panelOpen,
-      cockpit,
       width,
       effectiveMaximized,
       togglePreviewMaximized,
@@ -608,7 +599,7 @@ export function MediaPreviewProvider({
     }
   }, [api, apiRef]);
 
-  const panelHidden = !panelOpen || cockpit;
+  const panelHidden = !panelOpen;
   const panelOverlay = shell?.slots.preview === null || shell?.slots.preview === undefined;
   const panel = tabsState.tabs.length > 0 ? (
     <PreviewLoadBoundary
@@ -647,18 +638,6 @@ export function MediaPreviewProvider({
           onCloseAll={() => { requestClose({ kind: 'all' }); }}
           onMove={handleMove}
           onCollapse={collapsePanel}
-          onOpenCockpit={shell?.slots.preview !== null && shell?.slots.preview !== undefined && workspaceNavigation?.sharedRail !== undefined ? () => {
-            setPreviewMaximized(false);
-            const sharedRail = workspaceNavigation.sharedRail;
-            if (sharedRail !== undefined) {
-              if (sharedRail.ensureDockedOpen !== undefined) {
-                sharedRail.ensureDockedOpen();
-              } else if (!sharedRail.open) {
-                sharedRail.toggle();
-              }
-            }
-            chooseMode('cockpit');
-          } : undefined}
           onWidthChange={handleWidthChange}
           onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
           reportDirty={reportDirty}

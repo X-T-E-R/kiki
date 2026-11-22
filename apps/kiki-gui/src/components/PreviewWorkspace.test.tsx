@@ -44,7 +44,6 @@ import { DEFAULT_PREVIEW_WIDTH, readWorkspaceTextViaSession } from './preview/sh
 import type { KikiClient } from '../lib/client';
 import { anyOverlayOpen } from '../lib/uiBusy';
 import { ConversationShell, useConversationShell, useRegisterSeat } from './ConversationShell';
-import { useRailMode } from './rail-variants/shell';
 
 const FILES: Record<string, string> = {
   '/work/src/server.ts': "import { boot } from './boot';\nboot(5801);\n",
@@ -253,32 +252,6 @@ function tabs(): string[] {
   );
 }
 
-function CockpitPreviewHarness() {
-  const [mode, choose] = useRailMode();
-  const [railOpen, setRailOpen] = useState(true);
-  const seat = useMemo(() => ({ phase: 'active' as const, composer: <textarea data-test-composer />, cockpit: railOpen && mode === 'cockpit' }), [railOpen, mode]);
-  useRegisterSeat(seat);
-  return <MediaPreviewProvider cwd="/work">
-    <div data-test-timeline />
-    <button data-cockpit-on onClick={() => { choose('cockpit'); }}>cockpit</button>
-    <button data-cockpit-off onClick={() => { choose('default'); }}>standard</button>
-    <button data-close-rail onClick={() => { setRailOpen(false); }}>close rail</button>
-    <button data-open-rail onClick={() => { setRailOpen(true); }}>open rail</button>
-    <PreviewToggleButton />
-    <OpenButton path="/work/src/server.ts" reference={{ path: '/work/src/server.ts', line: 2, column: 3 }} />
-    <OpenButton path="/work/docs/design.md" />
-  </MediaPreviewProvider>;
-}
-
-async function mountCockpitPreview() {
-  localStorage.setItem('kiki.railMode', 'default');
-  localStorage.setItem('kiki.previewPanelWidth', '460');
-  const probe = makeRoot();
-  await renderSettled(probe.root, <MemoryRouter><Routes>
-    <Route element={<ConversationShell />}><Route index element={<CockpitPreviewHarness />} /></Route>
-  </Routes></MemoryRouter>);
-  return probe;
-}
 async function pressPreviewControl(selector: string) {
   await act(async () => { document.querySelector<HTMLButtonElement>(selector)!.click(); });
 }
@@ -3707,7 +3680,6 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
 
   function ChoreographySessionHarness() {
     const { slots, previewPresentation } = useConversationShell();
-    const [mode, choose] = useRailMode();
     const [userRailOpen, setUserRailOpen] = useState(true);
     const previewMaximized = previewPresentation?.maximized === true;
     const [yieldedOverlay, setYieldedOverlay] = useState<{ regime: string; open: boolean }>({
@@ -3747,9 +3719,8 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
       () => ({
         phase: 'active' as const,
         composer: <textarea data-test-composer />,
-        cockpit: userRailOpen && mode === 'cockpit',
       }),
-      [userRailOpen, mode],
+      [],
     );
     useRegisterSeat(seat);
     const workspaceNavigation = useMemo(
@@ -3773,9 +3744,6 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
         <div data-test-timeline />
         <button type="button" data-close-docked-rail onClick={() => setUserRailOpen(false)}>
           close docked rail
-        </button>
-        <button type="button" data-cockpit-off onClick={() => choose('default')}>
-          standard
         </button>
         <PreviewToggleButton />
         <OpenButton path="/work/src/server.ts" />

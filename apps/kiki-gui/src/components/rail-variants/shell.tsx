@@ -1,7 +1,5 @@
 /**
  * Shared rail state marks, focus ring, and in-place approval actions.
- * `useRailMode` remains as a fixed `'default'` compatibility seam for callers
- * outside this slice while the inspector runs purely on Run | Config tabs.
  */
 
 import { useCallback, useState } from 'react';
@@ -10,15 +8,6 @@ import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
 import type { FleetState, PendingItem } from './model';
 import { pendingId } from './model';
-
-export type RailMode = 'default' | 'cockpit';
-
-const NOOP_CHOOSE = (_next: RailMode) => {};
-
-/** Compatibility seam: the cockpit mode is retired and the rail always reports `'default'`. */
-export function useRailMode(): [RailMode, (next: RailMode) => void] {
-  return ['default', NOOP_CHOOSE];
-}
 
 /** Live media query, for surfaces the rail hides below a width. */
 export { useMediaQuery } from '../../lib/layoutHooks';
