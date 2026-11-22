@@ -91,7 +91,7 @@ if (event.hook_event_name === 'UserPromptSubmit') {
 
 Preview lists the actual commands, events, sources and resource fingerprints. Installing a script-bearing package requires one explicit confirmation for that executable content. Scripts run as the Kiki server's OS user and can access that host's files and network; they are not sandboxed and do not change the agent's tool permissions. Previewing, opening an editor or cancelling installation runs nothing. A package without scripts needs no script confirmation, and an accepted binding or resumed session does not ask again on each trigger.
 
-The command runs in a managed directory containing the accepted resource snapshot, not in the author's live source directory. `KIKI_RECIPE_ROOT` names that resource directory; the event JSON's `cwd` still names the session workspace. Use your host's existing interpreter and quote shell paths normally. `matcher` and `timeout` retain the legacy fields below (timeout defaults to 30 seconds, integer range 1–600). Paths must stay relative to the package; each referenced text file is limited to 256 KiB. An optional `root` selects a package-relative directory for the listed `files`, which is useful for exported packages containing same-named inherited scripts.
+The command runs in a managed directory containing the accepted resource snapshot, not in the author's live source directory. `KIKI_RECIPE_ROOT` names that resource directory; the event JSON's `cwd` names the agent's effective working directory. Use your host's existing interpreter and quote shell paths normally. `matcher` and `timeout` retain the legacy fields below (timeout defaults to 30 seconds, integer range 1–600). Paths must stay relative to the package; each referenced text file is limited to 256 KiB. An optional `root` selects a package-relative directory for the listed `files`, which is useful for exported packages containing same-named inherited scripts.
 
 Parent and child hooks append; top-level `hooks = "off"` removes inherited scripts. Model and profile references contribute independently. Disabling a reference stops that layer on the next binding or context rebuild, leaving its package and saved configuration intact. Existing sessions keep their frozen scripts until an explicit rebuild, even after the installation accepts an update.
 
@@ -105,7 +105,7 @@ Everything below describes the legacy contract: a rule names an event, targets t
 
 On a match, the CLI passes the event details as JSON on **standard input** (stdin) — the trigger reason, tool name, command text and so on — and your script decides what to do. Its **exit code** carries the decision (`0` allows) and **standard output** (stdout) can carry explanation.
 
-A blocking event fails closed when the script fails or times out: the pending operation stops with a reason. An observation-only event never interrupts the main flow. The [return-value table](#return-values) covers both.
+A script failure or timeout blocks `PreToolUse` and `UserPromptSubmit`. `Stop` and `SubagentStop` allow the turn to end on failure or timeout. An observation-only event never interrupts the main flow. See the [return-value table](#return-values).
 
 A plugin manifest that declares no legacy hooks can report its own settings errors without blocking messages or tools. If Kiki cannot load or evaluate a required blocking hook, the error names the evaluation failure so you can distinguish it from a script denial.
 
@@ -142,7 +142,7 @@ Each legacy rule is one entry in the `[[hooks]]` array in the current `<home>/co
 
 **When multiple rules match the same event**, all matching hooks run in parallel; multiple rules with identical `command` values run only once.
 
-The working directory for hook commands is the current session's project directory. On non-Windows platforms, hook processes are placed in a separate process group; on timeout, a signal is sent first to give the process a chance to clean up, then it is forcibly terminated.
+Hook commands run locally. By default, agent events (including `SubagentStart` and `SubagentStop`) run in that agent's working directory, and session events such as `SessionStart` run in the session's working directory. If the agent runs over SSH, the command uses the local session working directory instead. A resource hook with its own working directory, such as a Recipe hook, runs there. On non-Windows platforms, hook processes are placed in a separate process group; on timeout, a signal is sent first to give the process a chance to clean up, then it is forcibly terminated.
 
 ### Event data format
 
@@ -173,7 +173,7 @@ Each time a hook triggers, the CLI passes the session, workspace, and active age
 }
 ```
 
-Subagents additionally include `parent_agent_id`, and file-backed profiles or named routes include `profile_path` and `route_id`. Session-scope events (`SessionStart`, `SessionEnd`, `SessionHeartbeat`, `SubagentStart`, `SubagentStop`) include the session and workspace fields (`SessionStart` also includes the default `model_alias`, `model_id`, `provider_id`, `provider_type`, and `profile_name`). Individual events add their own fields (tool name, command text, full `origin`, `channel`, and so on); see the event reference below. All field names are snake_case.
+For agent events, `cwd` in the JSON is the agent's effective working directory, even if the script runs in a skill directory or the agent runs over SSH. Session events such as `SessionStart` use the session's working directory. Subagent-bound events additionally include `parent_agent_id` when available, and file-backed profiles or named routes include `profile_path` and `route_id`. Session lifecycle events include the session and workspace fields (`SessionStart` also includes the default `model_alias`, `model_id`, `provider_id`, `provider_type`, and `profile_name`). Individual events add their own fields (tool name, command text, full `origin`, `channel`, and so on); see the event reference below. All field names are snake_case.
 
 ## Return values
 
@@ -183,18 +183,18 @@ After the script exits, the CLI reads its intent from the exit code:
 | --- | --- | --- |
 | `0` | Normal exit, allow | Continue execution; stdout content (if any) may be appended to context |
 | `2` | Intentional block | Stop the current operation; stderr content (printed via `console.error`) is used as the reason for blocking |
-| Other non-zero | Script error | Block the current operation for blocking events (fail-closed); notification-only events continue |
-| Timeout or crash | Script exception | Block the current operation for blocking events (fail-closed); notification-only events continue |
+| Other non-zero | Script error | Block `PreToolUse` or `UserPromptSubmit`; stop hooks and observations continue |
+| Timeout or crash | Script exception | Block `PreToolUse` or `UserPromptSubmit`; stop hooks and observations continue |
 
 ### JSON protocol detection
 
 For exit code `0`, the CLI classifies stdout like this:
 
-- **Valid JSON** is walked recursively. If any object at any depth has its own `message` or `hookSpecificOutput` key, the output counts as a protocol attempt and the top-level value must match the strict hook response object — a different top-level shape or an invalid protocol field blocks a blocking event. JSON with neither key stays unstructured and is allowed.
-- **Malformed object text** counts as a protocol attempt only when it contains a recognizable exact `message` or `hookSpecificOutput` key. Text starting with `[` is treated as array-shaped only when its first non-whitespace character could start a JSON value, so `[INFO]` and `[DEBUG]` logs stay unstructured. Single-quoted keys, missing separators and a missing colon are recognized as mistakes, while a prefix such as `messageCount` is not treated as a protocol key. A recognized malformed attempt blocks a blocking event.
+- **Valid JSON** is walked recursively. If any object at any depth has its own `message` or `hookSpecificOutput` key, the output counts as a protocol attempt and the top-level value must match the strict hook response object — a different top-level shape or an invalid protocol field blocks `PreToolUse` or `UserPromptSubmit`. JSON with neither key stays unstructured and is allowed.
+- **Malformed object text** counts as a protocol attempt only when it contains a recognizable exact `message` or `hookSpecificOutput` key. Text starting with `[` is treated as array-shaped only when its first non-whitespace character could start a JSON value, so `[INFO]` and `[DEBUG]` logs stay unstructured. Single-quoted keys, missing separators and a missing colon are recognized as mistakes, while a prefix such as `messageCount` is not treated as a protocol key. A recognized malformed attempt blocks `PreToolUse` or `UserPromptSubmit`.
 - **Everything else** — malformed text with no recognizable protocol key, such as a log line quoting the word "message" — stays unstructured and is allowed, because it cannot be told apart from an ordinary log.
 
-You can also return a JSON object via stdout to block:
+A stop hook only vetoes on an explicit block; malformed output does not stop the turn from ending. You can return a JSON object via stdout to block:
 
 ```json
 {
@@ -206,7 +206,7 @@ You can also return a JSON object via stdout to block:
 ```
 
 ::: info Which events can block?
-`PreToolUse`, `Stop` and `UserPromptSubmit` can block their pending operation. `StopFailure` is not a blocking hook, but it can request [bounded recovery after a model failure](#recovering-after-a-model-failure); a failed hook leaves the original model error unchanged. Other events are observation-only.
+`PreToolUse` and `UserPromptSubmit` can block their pending operation. `Stop` is the main agent's stop hook; native subagents use `SubagentStop` instead. Either stop hook can request one continuation per turn by explicitly blocking. A crash or timeout does not block either stop event. `StopFailure` is not a blocking hook, but it can request [bounded recovery after a model failure](#recovering-after-a-model-failure); a failed hook leaves the original model error unchanged. Other events are observation-only.
 :::
 
 ### Recovering after a model failure
@@ -251,7 +251,7 @@ A synchronous `StopFailure` invocation is not repeated as a turn-end notificatio
 | `UserPromptSubmit` | The text submitted by the user | ✓ | Triggered when the user sends a message; includes `prompt`, `prompt_text`, `prompt_id`, `user_message_id`, `origin`, `channel`, and `is_steer`; returned text is appended to context, and if blocked the model is not called for this turn while the message stays in place on the timeline with the block reason and **Send again** to restore it to the input box |
 | `UserPromptQueued` | The queued prompt text | — | Triggered when a message is queued while a turn is still running; includes `prompt_id`, `user_message_id`, `origin`, `channel`, `prompt`, `prompt_text`, and `queue_length` (observation only) |
 | `PreToolUse` | Tool name | ✓ | Triggered before a tool call (before permission checks); the tool will not execute if blocked |
-| `Stop` | Empty string | ✓ | Triggered when the model is about to end the current turn; if blocked, a message can be appended to let the model continue |
+| `Stop` | Empty string | ✓ | Triggered when the main agent is about to end its turn; if blocked, a message can be appended to let the model continue |
 | `TurnStarted` | Turn origin kind (e.g. `user`, `task`, `system_trigger`) | — | Triggered when a new turn begins; includes `turn_id`, `prompt_id`, `origin`, `origin_kind`, `origin_name`, `channel`, and `prompt` (observation only) |
 | `PostToolUse` | Tool name | — | Triggered after a tool executes successfully (observation only) |
 | `PostToolUseFailure` | Tool name | — | Triggered after a tool fails or is blocked (observation only) |
@@ -261,10 +261,10 @@ A synchronous `StopFailure` invocation is not repeated as a turn-end notificatio
 | `SessionEnd` | `exit` or `archive` | — | Triggered after a session closes; `archive` means the session was archived rather than exited |
 | `SessionHeartbeat` | Empty string | — | Triggered every 60 seconds while the session is alive; the timer only runs when this event is configured. The payload includes `uptime_ms` (observation only) |
 | `SubagentStart` | Sub-agent name | — | Triggered before a sub-agent starts running |
-| `SubagentStop` | Sub-agent name | — | Triggered after a sub-agent completes successfully (observation only) |
+| `SubagentStop` | Subagent name | Before a native stop only | Runs before a native subagent ends its turn. If not already evaluated before the stop, it runs after successful completion as an observation. |
 | `TaskStarted` | Task kind (`agent`, `process`, or `question`) | — | Triggered when a background task starts; the payload includes `task_id`, `description`, and `detached` (observation only) |
 | `StopFailure` | Error type | — | Observes failures and includes `has_partial_output`; eligible native model-request failures can request [bounded recovery](#recovering-after-a-model-failure) before the turn ends |
-| `Interrupt` | Empty string | — | Triggered when the user interrupts the current turn (e.g. pressing Esc); not fired for timeouts or other programmatic aborts. `Stop` does not fire on interrupts, so this event fires instead. The payload includes a `reason` field (observation only) |
+| `Interrupt` | Empty string | — | Triggered when the user interrupts the current turn (e.g. pressing Esc); not fired for timeouts or other programmatic aborts. `Stop` and `SubagentStop` do not fire on interrupts. The payload includes a `reason` field (observation only) |
 | `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; return values are completely ignored |
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |
 | `Notification` | Notification type (e.g. `task.completed`) | — | Triggered when a background task status changes (observation only) |

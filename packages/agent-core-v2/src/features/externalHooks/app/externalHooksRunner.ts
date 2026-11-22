@@ -7,8 +7,14 @@ export interface ExternalHooksRunnerTriggerArgs {
   readonly inputData?: Record<string, unknown>;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
+  readonly getDirectories?: () => ExternalHookDirectories;
   readonly sessionId?: string;
   readonly additionalHooks?: () => Promise<readonly import('../internal/types').HookDef[]>;
+}
+
+export interface ExternalHookDirectories {
+  readonly cwd: string;
+  readonly processCwd?: string;
 }
 
 export type ExternalHooksRunnerFailureMode = 'empty' | 'block';

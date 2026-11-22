@@ -48,6 +48,7 @@ export interface AgentTaskStartHookContext {
 
 export interface AgentTaskStopHookContext {
   readonly agentId?: string;
+  readonly autonomousTurnId?: number;
   readonly agentName: string;
   readonly response: string;
 }

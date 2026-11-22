@@ -54,7 +54,6 @@ export async function runMatchedHooks(
   callbacks: HookRunCallbacks = {},
 ): Promise<HookResult[]> {
   const matcherValue = matcherValueText(args.matcherValue);
-  const cwd = args.cwd ?? '';
   const matched: HookDef[] = [];
   const seen = new Set<string>();
   for (const indexed of byEvent.get(event) ?? []) {
@@ -66,6 +65,10 @@ export async function runMatchedHooks(
     matched.push(hook);
   }
   if (matched.length === 0) return [];
+
+  const directories = args.getDirectories?.();
+  const cwd = directories?.cwd ?? args.cwd ?? '';
+  const processCwd = directories?.processCwd ?? cwd;
 
   try {
     callbacks.onTriggered?.(event, matcherValue, matched.length);
@@ -83,7 +86,7 @@ export async function runMatchedHooks(
     matched.map((hook) =>
       runHook(hostProcess, hook.command, inputData, {
         timeout: hook.timeout ?? DEFAULT_HOOK_TIMEOUT_SECONDS,
-        cwd: hook.cwd ?? (cwd === '' ? undefined : cwd),
+        cwd: hook.cwd ?? (processCwd === '' ? undefined : processCwd),
         env: hook.env,
         signal: args.signal,
       }),
