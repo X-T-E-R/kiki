@@ -948,7 +948,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     });
     await this.retryLink(link.grant.id, input.signal);
     input.signal?.throwIfAborted();
-    const receipt = existing!.receipt;
+    const receipt = this.state.outbox.find((entry) => entry.receipt.id === id)?.receipt ?? existing!.receipt;
     return { messageId: receipt.messageId ?? receipt.id, targetSeq: receipt.targetSeq ?? 0, acceptedAt: receipt.acceptedAt ?? receipt.createdAt,
       deduplicated: duplicate, delivery: receipt.delivery === 'delivered' ? 'delivered' : ['rejected', 'undeliverable'].includes(receipt.delivery) ? 'undeliverable' : 'pending' };
   }
