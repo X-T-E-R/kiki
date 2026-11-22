@@ -1,17 +1,23 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
+  syncBundleImportInputSchema,
   syncBundleSchema,
   type EncryptedCredentialEnvelope,
+  type PortableSpaceSessionSelection,
   type ProjectIdentity,
   type SkillRootSyncPlan,
   type SyncBundle,
   type SyncBundleExportInput,
+  type SyncBundleImportInput,
   type SyncBundleImportReceipt,
   type SyncCredentialMergeReceipt,
   type SyncMemoryRecord,
+  type SyncMemoryScopeKind,
   type SyncPeerTransferInput,
+  type SyncSessionFileEntry,
   type SyncSkillFileEntry,
 } from '@kiki/protocol';
 import {
@@ -21,7 +27,6 @@ import {
   filterMemoriesForSync,
   isSkillSyncExcluded,
   isSyncConflictArtifact,
-  isValidProjectId,
   loadNativeAgeX25519Cipher,
   mergeCredentialEnvelopes,
   planSkillSync,
@@ -33,18 +38,27 @@ import {
   type AgeX25519Cipher,
   type AgeX25519Keypair,
   type CredentialsPoolSection,
+  type IBootstrapService,
   type IConfigRegistry,
   type IConfigService,
+  type IFileSystemStorageService,
   type IMemoryScopes,
   type IMemoryStore,
+  type ISessionIndex,
+  type ISessionManager,
+  type IWorkspaceService,
 } from '@kiki/agent-core-v2';
 
 import { mergePortableNotifications } from '@kiki/agent-core-v2/app/config/configLayers';
+import { MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from '@kiki/agent-core-v2/app/memory/memoryScopes';
+import type { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import type { IMemoryPersistence } from '@kiki/agent-core-v2/persistence/interface/memoryPersistence';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
+import { discoverMemoryScopes, exportSessionFiles, importSessionFiles } from '../portableSpace/liveSpace';
 
 export interface SyncPeerTransport {
   resolvePeerRecipient(peerId: string): Promise<string | undefined>;
-  pushBundle(peerId: string, bundle: SyncBundle): Promise<SyncBundleImportReceipt>;
+  pushBundle(peerId: string, bundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt>;
   pullBundle(peerId: string, input: SyncBundleExportInput): Promise<SyncBundle>;
 }
 
@@ -53,15 +67,24 @@ export interface SyncServiceOptions {
   readonly osHomeDir: string;
   readonly configService?: Pick<IConfigService, 'ready' | 'get' | 'inspect' | 'replace'>;
   readonly configRegistry?: Pick<IConfigRegistry, 'getSection' | 'listSections'>;
-  readonly memoryScopes?: Pick<IMemoryScopes, 'bindWorkspace' | 'listProjectBindings'>;
+  readonly memoryScopes?: Pick<IMemoryScopes, 'bindWorkspace' | 'listProjectBindings' | 'listWorkspaceIds'>;
   readonly memoryStore?: Pick<IMemoryStore, 'list' | 'put' | 'get'>;
+  readonly memoryPersistence?: Pick<IMemoryPersistence, 'namespaces'>;
+  readonly bootstrap?: Pick<IBootstrapService, 'sessionsDir' | 'scope'>;
+  readonly sessionManager?: Pick<ISessionManager, 'get' | 'isEphemeral'>;
+  readonly sessionIndex?: Pick<ISessionIndex, 'status' | 'prepare' | 'get' | 'listRecent' | 'reconcileNow'>;
+  readonly appendLogStore?: Pick<IAppendLogStore, 'flush'>;
+  readonly storage?: IFileSystemStorageService;
+  readonly workspaceService?: Pick<IWorkspaceService, 'createOrTouch'>;
   readonly peerTransport?: SyncPeerTransport;
   readonly cipher?: AgeX25519Cipher;
 }
 
 const EXCLUDED_SKILL_DIRS = new Set(['.git', 'node_modules']);
-const MAX_BUNDLE_SKILL_FILES = 512;
-const MAX_BUNDLE_SKILL_FILE_BYTES = 256 * 1024;
+const ALL_MEMORY_SCOPE_KINDS: readonly SyncMemoryScopeKind[] = ['global', 'persona', 'workspace', 'persona_workspace'];
+const CANONICAL_MEMORY_ID_PATTERN = /^m_[a-zA-Z0-9_]+$/;
+const MAX_SYNC_BUNDLE_WIRE_BYTES = 64 * 1024 * 1024;
+const MAX_SKILL_MD_PROBE_BYTES = 1024 * 1024;
 
 /** Coordinates device X25519 keys, per-entry credential envelopes, portable project identities, portable config/memory/skill bundles, and peer push/pull sync. */
 export class SyncService {
@@ -213,26 +236,49 @@ export class SyncService {
       credentialEnvelopes = [...sealed.envelopes];
     }
     const memories = input.includeMemories
-      ? await this.exportPortableMemories(input.projectIds)
+      ? await this.exportPortableMemories(input.projectIds, input.memoryScopes)
       : undefined;
     const skillPlans = input.includeSkills ? [...(await this.planSkillsSync(input.workDir))] : undefined;
+    const exportedAt = new Date().toISOString();
+    const baseEnvelopeBytes = Buffer.byteLength(
+      JSON.stringify({
+        format: 'kiki.sync-bundle.v1',
+        exportedAt,
+        portableConfig,
+        credentialEnvelopes,
+        memories,
+        skillPlans,
+      }),
+    );
+    if (baseEnvelopeBytes > MAX_SYNC_BUNDLE_WIRE_BYTES) {
+      throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+    }
+    const wireBudget = { remaining: MAX_SYNC_BUNDLE_WIRE_BYTES - baseEnvelopeBytes };
     const skills = input.includeSkills
-      ? await this.exportPortableSkills(input.workDir, input.targetPlatform)
+      ? await this.exportPortableSkills(input.workDir, input.targetPlatform, input.includeGitSkills === true, wireBudget)
+      : undefined;
+    const sessions = input.sessions !== undefined && input.sessions.mode !== 'none'
+      ? await this.exportPortableSessions(input.sessions, wireBudget)
       : undefined;
 
-    return syncBundleSchema.parse({
+    const bundle = syncBundleSchema.parse({
       format: 'kiki.sync-bundle.v1',
-      exportedAt: new Date().toISOString(),
-      ...(portableConfig === undefined ? {} : { portableConfig }),
-      ...(credentialEnvelopes === undefined ? {} : { credentialEnvelopes }),
-      ...(memories === undefined ? {} : { memories }),
-      ...(skills === undefined ? {} : { skills }),
-      ...(skillPlans === undefined ? {} : { skillPlans }),
+      exportedAt,
+      portableConfig,
+      credentialEnvelopes,
+      memories,
+      skills,
+      skillPlans,
+      sessions,
     });
+    if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_SYNC_BUNDLE_WIRE_BYTES) {
+      throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+    }
+    return bundle;
   }
 
-  async importSyncBundle(rawBundle: SyncBundle): Promise<SyncBundleImportReceipt> {
-    const bundle = syncBundleSchema.parse(rawBundle);
+  async importSyncBundle(rawBundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt> {
+    const bundle = syncBundleImportInputSchema.parse(rawBundle);
     const configDomainsApplied: string[] = [];
     if (bundle.portableConfig !== undefined && this.options.configService !== undefined) {
       await this.options.configService.ready;
@@ -248,57 +294,81 @@ export class SyncService {
 
     const credentials = await this.mergeIncomingCredentials(bundle.credentialEnvelopes ?? []);
 
+    if (bundle.targetWorkDir !== undefined) {
+      await this.options.workspaceService?.createOrTouch(bundle.targetWorkDir);
+    }
+    const resolvedTarget = bundle.targetWorkDir !== undefined
+      ? await this.resolveProjectIdentity(bundle.targetWorkDir, true)
+      : undefined;
+    const remappedMemoryWorkspaceId = bundle.targetProjectId !== undefined && MEMORY_WORKSPACE_ID_PATTERN.test(bundle.targetProjectId)
+      ? bundle.targetProjectId
+      : resolvedTarget?.projectId;
+    const remappedSessionWorkspaceId = resolvedTarget?.workDirKey
+      ?? (bundle.targetProjectId !== undefined && MEMORY_WORKSPACE_ID_PATTERN.test(bundle.targetProjectId)
+        ? bundle.targetProjectId
+        : undefined);
+
     let memoriesApplied = 0;
     let memoriesSkipped = 0;
     if (bundle.memories !== undefined && this.options.memoryStore !== undefined) {
       for (const item of bundle.memories) {
-        if (!isValidProjectId(item.projectId)) {
+        const scope = resolveIncomingMemoryScope(item, remappedMemoryWorkspaceId);
+        if (scope === undefined) {
           memoriesSkipped += 1;
           continue;
         }
-        const scope = { kind: 'workspace' as const, workspaceId: item.projectId };
-        let existing = await this.options.memoryStore.get(scope, item.id);
-        if (existing === undefined) {
-          const listed = await this.options.memoryStore.list(scope);
-          const normalizedTitle = item.title.trim().toLowerCase();
-          existing = listed.find(
-            (entry) => entry.status === 'active' && entry.title.trim().toLowerCase() === normalizedTitle,
-          );
-        }
-        if (existing !== undefined) {
-          if (
-            existing.applicability === 'machine-local' ||
-            existing.body === item.body ||
-            item.updated < existing.updated
-          ) {
-            memoriesSkipped += 1;
+        try {
+          let existing = await this.options.memoryStore.get(scope, item.id);
+          if (existing === undefined) {
+            const listed = await this.options.memoryStore.list(scope);
+            const normalizedTitle = item.title.trim().toLowerCase();
+            existing = listed.find(
+              (entry) => entry.status === 'active' && entry.title.trim().toLowerCase() === normalizedTitle,
+            );
+          }
+          if (existing !== undefined) {
+            if (
+              existing.applicability === 'machine-local' ||
+              (existing.type === item.type &&
+                existing.body === item.body &&
+                existing.title === item.title &&
+                existing.pinned === item.pinned &&
+                isDeepStrictEqual(existing.basis, item.basis) &&
+                isDeepStrictEqual(existing.validity, item.validity)) ||
+              item.updated < existing.updated
+            ) {
+              memoriesSkipped += 1;
+              continue;
+            }
+            await this.options.memoryStore.put({
+              action: 'update',
+              scope,
+              id: existing.id,
+              expectedRevision: existing.revision,
+              type: item.type,
+              title: item.title,
+              body: item.body,
+              pinned: item.pinned,
+              basis: item.basis,
+              validity: item.validity ?? null,
+              applicability: 'portable',
+              origin_host_id: item.origin_host_id,
+              reason: 'Cross-machine portable memory sync',
+              source: { writer: 'import' },
+            });
+            memoriesApplied += 1;
             continue;
           }
           await this.options.memoryStore.put({
-            action: 'update',
-            scope,
-            id: existing.id,
-            expectedRevision: existing.revision,
-            type: item.type,
-            title: item.title,
-            body: item.body,
-            pinned: item.pinned,
-            applicability: 'portable',
-            origin_host_id: item.origin_host_id,
-            reason: 'Cross-machine portable memory sync',
-            source: { writer: 'import' },
-          });
-          memoriesApplied += 1;
-          continue;
-        }
-        try {
-          await this.options.memoryStore.put({
             action: 'create',
             scope,
+            importedId: CANONICAL_MEMORY_ID_PATTERN.test(item.id) ? item.id : undefined,
             type: item.type,
             title: item.title,
             body: item.body,
             pinned: item.pinned,
+            basis: item.basis,
+            validity: item.validity,
             applicability: 'portable',
             origin_host_id: item.origin_host_id,
             reason: 'Cross-machine portable memory sync',
@@ -376,6 +446,26 @@ export class SyncService {
       }
     }
 
+    let sessionsApplied: number | undefined;
+    let sessionsSkipped: number | undefined;
+    if (bundle.sessions !== undefined) {
+      const liveSessions = this.sessionLiveServices();
+      if (liveSessions !== undefined) {
+        const result = await importSessionFiles(
+          liveSessions,
+          bundle.sessions,
+          remappedSessionWorkspaceId !== undefined || bundle.targetWorkDir !== undefined
+            ? { workspaceId: remappedSessionWorkspaceId, workDir: bundle.targetWorkDir }
+            : undefined,
+        );
+        sessionsApplied = result.sessionsApplied;
+        sessionsSkipped = result.sessionsSkipped;
+      } else {
+        sessionsApplied = 0;
+        sessionsSkipped = new Set(bundle.sessions.map((entry) => entry.sessionId)).size;
+      }
+    }
+
     return {
       configDomainsApplied: configDomainsApplied.toSorted(),
       credentials,
@@ -383,6 +473,8 @@ export class SyncService {
       memoriesSkipped,
       skillsApplied,
       skillsSkipped,
+      ...(sessionsApplied === undefined ? {} : { sessionsApplied }),
+      ...(sessionsSkipped === undefined ? {} : { sessionsSkipped }),
     };
   }
 
@@ -396,13 +488,20 @@ export class SyncService {
       recipients,
       credentialIds: input.credentialIds,
       projectIds: input.projectIds,
+      memoryScopes: input.memoryScopes,
       workDir: input.workDir,
       includeConfig: input.includeConfig,
       includeCredentials: input.includeCredentials && recipients.length > 0,
       includeMemories: input.includeMemories,
       includeSkills: input.includeSkills,
+      includeGitSkills: input.includeGitSkills,
+      sessions: input.sessions,
     });
-    return this.options.peerTransport.pushBundle(peerId, bundle);
+    return this.options.peerTransport.pushBundle(peerId, {
+      ...bundle,
+      targetWorkDir: input.targetWorkDir,
+      targetProjectId: input.targetProjectId,
+    });
   }
 
   async pullFromPeer(peerId: string, input: SyncPeerTransferInput): Promise<SyncBundleImportReceipt> {
@@ -414,38 +513,111 @@ export class SyncService {
       recipients: [localKey.recipient],
       credentialIds: input.credentialIds,
       projectIds: input.projectIds,
+      memoryScopes: input.memoryScopes,
       workDir: input.workDir,
       includeConfig: input.includeConfig,
       includeCredentials: input.includeCredentials,
       includeMemories: input.includeMemories,
       includeSkills: input.includeSkills,
+      includeGitSkills: input.includeGitSkills,
+      sessions: input.sessions,
       targetPlatform: process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux',
     });
-    return this.importSyncBundle(bundle);
+    return this.importSyncBundle({
+      ...bundle,
+      targetWorkDir: input.targetWorkDir,
+      targetProjectId: input.targetProjectId,
+    });
+  }
+
+  private sessionLiveServices() {
+    if (
+      this.options.bootstrap === undefined ||
+      this.options.sessionManager === undefined ||
+      this.options.sessionIndex === undefined ||
+      this.options.appendLogStore === undefined
+    ) {
+      return undefined;
+    }
+    return {
+      bootstrap: this.options.bootstrap,
+      sessions: this.options.sessionManager,
+      index: this.options.sessionIndex,
+      logs: this.options.appendLogStore,
+      storage: this.options.storage,
+    };
+  }
+
+  private async exportPortableSessions(
+    selection: PortableSpaceSessionSelection,
+    wireBudget: { remaining: number },
+  ): Promise<SyncSessionFileEntry[]> {
+    const live = this.sessionLiveServices();
+    if (live === undefined) return [];
+    const maxRawBytes = Math.floor((Math.max(0, wireBudget.remaining) * 3) / 4);
+    const exported = await exportSessionFiles(live, selection, maxRawBytes);
+    const entries: SyncSessionFileEntry[] = [];
+    for (const [key, bytes] of exported) {
+      const [, sessionId, ...tail] = key.split('/');
+      if (!sessionId || tail.length === 0) continue;
+      const relativePath = tail.join('/');
+      const wireCost = estimateBase64EntryWireBytes(bytes.byteLength, sessionId, relativePath);
+      if (wireCost > wireBudget.remaining) {
+        throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+      }
+      wireBudget.remaining -= wireCost;
+      entries.push({
+        sessionId,
+        relativePath,
+        contentBase64: bytes.toString('base64'),
+      });
+    }
+    return entries;
   }
 
   private async exportPortableMemories(
     explicitProjectIds?: readonly string[],
+    memoryScopes?: readonly SyncMemoryScopeKind[],
   ): Promise<SyncMemoryRecord[]> {
     if (this.options.memoryStore === undefined) return [];
-    const projectIds = new Set<string>();
+    const allowedKinds = new Set<SyncMemoryScopeKind>(memoryScopes ?? ALL_MEMORY_SCOPE_KINDS);
+    const discovered = await discoverMemoryScopes(
+      this.options.homeDir,
+      this.options.memoryScopes,
+      this.options.memoryPersistence,
+    );
+    const byKey = new Map<string, MemoryScope>();
+    for (const scope of discovered) byKey.set(memoryScopeKey(scope), scope);
+    let projectFilter: Set<string> | undefined;
     if (explicitProjectIds !== undefined) {
+      projectFilter = new Set<string>();
       for (const id of explicitProjectIds) {
-        if (isValidProjectId(id)) projectIds.add(id);
-      }
-    } else if (this.options.memoryScopes?.listProjectBindings !== undefined) {
-      for (const binding of await this.options.memoryScopes.listProjectBindings()) {
-        if (isValidProjectId(binding.projectId)) projectIds.add(binding.projectId);
+        if (MEMORY_WORKSPACE_ID_PATTERN.test(id)) {
+          projectFilter.add(id);
+          const wsScope: MemoryScope = { kind: 'workspace', workspaceId: id };
+          byKey.set(memoryScopeKey(wsScope), wsScope);
+        }
       }
     }
+    const scopes = [...byKey.entries()]
+      .toSorted((left, right) => left[0].localeCompare(right[0]))
+      .map(([, scope]) => scope)
+      .filter((scope) => {
+        if (!allowedKinds.has(scope.kind)) return false;
+        if (projectFilter !== undefined && (scope.kind === 'workspace' || scope.kind === 'persona_workspace')) {
+          return projectFilter.has(scope.workspaceId);
+        }
+        return true;
+      });
     const records: SyncMemoryRecord[] = [];
-    for (const projectId of [...projectIds].toSorted()) {
-      const listed = await this.options.memoryStore.list({ kind: 'workspace', workspaceId: projectId });
+    for (const scope of scopes) {
+      const listed = await this.options.memoryStore.list(scope);
       for (const entry of filterMemoriesForSync(listed)) {
         if (entry.status !== 'active') continue;
         records.push({
           id: entry.id,
-          projectId,
+          scope,
+          projectId: scope.kind === 'workspace' || scope.kind === 'persona_workspace' ? scope.workspaceId : undefined,
           type: entry.type,
           title: entry.title,
           body: entry.body,
@@ -453,7 +625,9 @@ export class SyncService {
           updated: entry.updated,
           revision: entry.revision,
           applicability: 'portable',
-          ...(entry.origin_host_id === undefined ? {} : { origin_host_id: entry.origin_host_id }),
+          origin_host_id: entry.origin_host_id,
+          basis: entry.basis,
+          validity: entry.validity,
         });
       }
     }
@@ -463,17 +637,22 @@ export class SyncService {
   private async exportPortableSkills(
     workDir?: string,
     targetPlatform?: 'win32' | 'darwin' | 'linux',
+    includeGitSkills = false,
+    wireBudget: { remaining: number } = { remaining: MAX_SYNC_BUNDLE_WIRE_BYTES },
   ): Promise<SyncSkillFileEntry[]> {
-    const kikiHomeSkills = resolve(join(this.options.homeDir, 'skills'));
-    const candidateRoots = [
-      { path: kikiHomeSkills, source: 'user' as const },
-      ...(workDir === undefined ? [] : await projectRoots(workDir)),
-    ];
+    const discoveredUserRoots = (await userRoots(this.options.homeDir, this.options.osHomeDir))
+      .filter((root) => root.scanMode !== 'commands');
+    const discoveredProjectRoots = workDir === undefined
+      ? []
+      : (await projectRoots(workDir)).filter((root) => root.scanMode !== 'commands');
+    const candidateRoots = [...discoveredUserRoots, ...discoveredProjectRoots];
     const plans = await planSkillSync(candidateRoots);
-    const fileTreeRoots = plans.filter((plan) => plan.transport === 'file_tree');
+    const selectedRoots = includeGitSkills
+      ? plans
+      : plans.filter((plan) => plan.transport === 'file_tree');
     const files: SyncSkillFileEntry[] = [];
     const seen = new Set<string>();
-    for (const root of fileTreeRoots) {
+    for (const root of selectedRoots) {
       let entries;
       try {
         entries = await readdir(root.path, { withFileTypes: true });
@@ -481,22 +660,27 @@ export class SyncService {
         continue;
       }
       for (const entry of entries) {
-        if (files.length >= MAX_BUNDLE_SKILL_FILES) return files;
-        if (!entry.isDirectory()) continue;
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
         if (EXCLUDED_SKILL_DIRS.has(entry.name)) continue;
         const skillDir = join(root.path, entry.name);
         const skillMdPath = join(skillDir, 'SKILL.md');
         let skillMdText: string;
         try {
+          const mdStat = await lstat(skillMdPath);
+          if (mdStat.isSymbolicLink() || !mdStat.isFile()) continue;
+          if (mdStat.size > MAX_SKILL_MD_PROBE_BYTES || estimateBase64EntryWireBytes(mdStat.size, entry.name, 'SKILL.md') > wireBudget.remaining) {
+            throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+          }
           skillMdText = await readFile(skillMdPath, 'utf8');
-        } catch {
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('64 MiB')) throw error;
           continue;
         }
         const fm = parseSkillFrontmatter(skillMdText);
         if (isSkillSyncExcluded({ name: entry.name, frontmatter: fm, targetPlatform })) {
           continue;
         }
-        await collectSkillFiles(skillDir, entry.name, files, seen);
+        await collectSkillFiles(skillDir, entry.name, files, seen, wireBudget);
       }
     }
     return files;
@@ -522,6 +706,46 @@ export class SyncService {
       localMachineIds: new Set(Object.keys(localPool)),
     };
   }
+}
+
+function memoryScopeKey(scope: MemoryScope): string {
+  switch (scope.kind) {
+    case 'global': return 'global';
+    case 'persona': return `persona/${scope.personaId}`;
+    case 'workspace': return `workspace/${scope.workspaceId}`;
+    case 'persona_workspace': return `persona_workspace/${scope.personaId}/${scope.workspaceId}`;
+  }
+}
+
+function resolveIncomingMemoryScope(
+  item: SyncMemoryRecord,
+  remappedWorkspaceId?: string,
+): MemoryScope | undefined {
+  if (item.scope !== undefined) {
+    switch (item.scope.kind) {
+      case 'global':
+        return { kind: 'global' };
+      case 'persona':
+        return MEMORY_PERSONA_ID_PATTERN.test(item.scope.personaId)
+          ? { kind: 'persona', personaId: item.scope.personaId }
+          : undefined;
+      case 'workspace': {
+        const workspaceId = remappedWorkspaceId ?? item.scope.workspaceId;
+        return MEMORY_WORKSPACE_ID_PATTERN.test(workspaceId)
+          ? { kind: 'workspace', workspaceId }
+          : undefined;
+      }
+      case 'persona_workspace': {
+        const workspaceId = remappedWorkspaceId ?? item.scope.workspaceId;
+        return MEMORY_WORKSPACE_ID_PATTERN.test(workspaceId) && MEMORY_PERSONA_ID_PATTERN.test(item.scope.personaId)
+          ? { kind: 'persona_workspace', workspaceId, personaId: item.scope.personaId }
+          : undefined;
+      }
+    }
+  }
+  const workspaceId = remappedWorkspaceId ?? item.projectId;
+  if (workspaceId === undefined || !MEMORY_WORKSPACE_ID_PATTERN.test(workspaceId)) return undefined;
+  return { kind: 'workspace', workspaceId };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -619,27 +843,42 @@ function parseSkillFrontmatter(content: string): Record<string, unknown> | undef
   return result;
 }
 
+function estimateBase64EntryWireBytes(rawBytes: number, ownerKey: string, relativePath: string): number {
+  return Math.ceil(rawBytes / 3) * 4 + Buffer.byteLength(ownerKey) + Buffer.byteLength(relativePath) + 96;
+}
+
 async function collectSkillFiles(
   skillDir: string,
   skillName: string,
   out: SyncSkillFileEntry[],
   seen: Set<string>,
+  wireBudget: { remaining: number },
 ): Promise<void> {
   const walk = async (dir: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
       if (EXCLUDED_SKILL_DIRS.has(entry.name) || isSyncConflictArtifact(entry.name)) continue;
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(fullPath);
       } else if (entry.isFile()) {
-        if (out.length >= MAX_BUNDLE_SKILL_FILES) return;
         const rel = relative(skillDir, fullPath).replaceAll('\\', '/');
         if (isSecretSkillSidecar(rel)) continue;
         const key = `${skillName}\0${rel}`;
         if (seen.has(key)) continue;
+        const info = await lstat(fullPath);
+        if (info.isSymbolicLink() || !info.isFile()) continue;
+        const statCost = estimateBase64EntryWireBytes(info.size, skillName, rel);
+        if (statCost > wireBudget.remaining) {
+          throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+        }
         const bytes = await readFile(fullPath);
-        if (bytes.byteLength > MAX_BUNDLE_SKILL_FILE_BYTES) continue;
+        const actualCost = estimateBase64EntryWireBytes(bytes.byteLength, skillName, rel);
+        if (actualCost > wireBudget.remaining) {
+          throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+        }
+        wireBudget.remaining -= actualCost;
         seen.add(key);
         out.push({
           skillName,

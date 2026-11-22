@@ -35,11 +35,21 @@ describe('pairing code', () => {
     expect(isDirectConnectionHost('100.63.1.1')).toBe(false);
   });
 
-  it('validates connectionPairInputSchema with optional requestBridge and rejects unknown keys', () => {
+  it('validates connectionPairInputSchema with optional requestBridge, includeGui, and rejects unknown keys', () => {
     const base = { endpoint: 'http://127.0.0.1:58627', code: 'K9F2-7X4M' };
     expect(connectionPairInputSchema.parse(base)).toEqual({
       ...base,
       backgroundSummary: true,
+    });
+    expect(connectionPairInputSchema.parse({ ...base, includeGui: false })).toEqual({
+      ...base,
+      includeGui: false,
+      backgroundSummary: false,
+    });
+    expect(connectionPairInputSchema.parse({ ...base, includeGui: false, backgroundSummary: true })).toEqual({
+      ...base,
+      includeGui: false,
+      backgroundSummary: false,
     });
     expect(connectionPairInputSchema.parse({ ...base, requestBridge: false })).toEqual({
       ...base,
@@ -57,13 +67,14 @@ describe('pairing code', () => {
     expect(() => connectionPairInputSchema.parse({ ...base, unknownKey: 'value' })).toThrow();
   });
 
-  it('validates optional TLS fingerprints on pair-code, handshake, and remote-connection contracts', () => {
+  it('validates optional TLS fingerprints and loopbackEndpoint on pair-code, handshake, and remote-connection contracts', () => {
     const fingerprint = '0123456789abcdef'.repeat(4);
     const identity = { homeId: '11111111-1111-4111-8111-111111111111', hostId: 'pair-host', protocol: 1 as const };
     const pairCode = {
       code: 'K9F2-7X4M', expiresAt: 1_800_000_000_000, target: identity, suggestedEndpoints: ['https://pair.example.test'],
     };
     expect(pairCodeCreateOutputSchema.parse(pairCode)).toEqual(pairCode);
+    expect(pairCodeCreateOutputSchema.parse({ ...pairCode, loopbackEndpoint: 'https://127.0.0.1:54321' })).toEqual({ ...pairCode, loopbackEndpoint: 'https://127.0.0.1:54321' });
     expect(pairCodeCreateOutputSchema.parse({ ...pairCode, tlsFingerprint: fingerprint })).toEqual({ ...pairCode, tlsFingerprint: fingerprint });
     expect(() => pairCodeCreateOutputSchema.parse({ ...pairCode, tlsFingerprint: 'A'.repeat(64) })).toThrow();
 

@@ -4,6 +4,7 @@ import type {
   SkillRootSyncPlan,
   SyncBundle,
   SyncBundleExportInput,
+  SyncBundleImportInput,
   SyncBundleImportReceipt,
   SyncCredentialMergeInput,
   SyncCredentialMergeReceipt,
@@ -24,7 +25,7 @@ export interface SyncFacade {
   exportPortableConfig(): Promise<Record<string, unknown>>;
   planSkillsSync(workDir?: string): Promise<readonly SkillRootSyncPlan[]>;
   exportBundle(input?: Partial<SyncBundleExportInput>): Promise<SyncBundle>;
-  importBundle(bundle: SyncBundle): Promise<SyncBundleImportReceipt>;
+  importBundle(bundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt>;
   pushToPeer(peerId: string, input?: Partial<SyncPeerTransferInput>, options?: HttpRestRequestOptions): Promise<SyncBundleImportReceipt>;
   pullFromPeer(peerId: string, input?: Partial<SyncPeerTransferInput>, options?: HttpRestRequestOptions): Promise<SyncBundleImportReceipt>;
 }

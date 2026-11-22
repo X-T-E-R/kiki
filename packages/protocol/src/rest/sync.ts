@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { portableSpaceSessionSelectionSchema } from './portable-space';
 
 export const credentialSyncPolicySchema = /* @__PURE__ */ z.enum(['machine', 'keyring', 'env', 'synced']);
 export type CredentialSyncPolicy = z.infer<typeof credentialSyncPolicySchema>;
@@ -72,9 +73,38 @@ export const syncProjectIdentityResolveInputSchema = /* @__PURE__ */ z.object({
 }).strict();
 export type SyncProjectIdentityResolveInput = z.infer<typeof syncProjectIdentityResolveInputSchema>;
 
+export const syncMemoryScopeKindSchema = /* @__PURE__ */ z.enum(['global', 'persona', 'workspace', 'persona_workspace']);
+export type SyncMemoryScopeKind = z.infer<typeof syncMemoryScopeKindSchema>;
+
+export const syncMemoryScopeSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('global') }).strict(),
+  z.object({ kind: z.literal('persona'), personaId: z.string().min(1).max(128) }).strict(),
+  z.object({ kind: z.literal('workspace'), workspaceId: z.string().min(1).max(128) }).strict(),
+  z.object({
+    kind: z.literal('persona_workspace'),
+    workspaceId: z.string().min(1).max(128),
+    personaId: z.string().min(1).max(128),
+  }).strict(),
+]);
+export type SyncMemoryScope = z.infer<typeof syncMemoryScopeSchema>;
+
+export const syncMemoryBasisSchema = /* @__PURE__ */ z.object({
+  kind: z.enum(['human', 'observed', 'derived', 'unknown']),
+  note: z.string().trim().min(1).max(500),
+  refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
+}).strict();
+export type SyncMemoryBasis = z.infer<typeof syncMemoryBasisSchema>;
+
+export const syncMemoryValiditySchema = /* @__PURE__ */ z.object({
+  check: z.string().trim().min(1).max(300),
+  until: z.string().datetime({ offset: true }).optional(),
+}).strict();
+export type SyncMemoryValidity = z.infer<typeof syncMemoryValiditySchema>;
+
 export const syncMemoryRecordSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1).max(128),
-  projectId: z.string().min(1).max(128),
+  scope: syncMemoryScopeSchema.optional(),
+  projectId: z.string().min(1).max(128).optional(),
   type: z.enum(['user', 'feedback', 'project', 'reference']),
   title: z.string().min(1).max(256),
   body: z.string(),
@@ -83,6 +113,8 @@ export const syncMemoryRecordSchema = /* @__PURE__ */ z.object({
   revision: z.string().min(1).max(128),
   applicability: z.literal('portable').optional(),
   origin_host_id: z.string().max(128).optional(),
+  basis: syncMemoryBasisSchema.optional(),
+  validity: syncMemoryValiditySchema.optional(),
 }).strict();
 export type SyncMemoryRecord = z.infer<typeof syncMemoryRecordSchema>;
 
@@ -93,26 +125,43 @@ export const syncSkillFileEntrySchema = /* @__PURE__ */ z.object({
 }).strict();
 export type SyncSkillFileEntry = z.infer<typeof syncSkillFileEntrySchema>;
 
+export const syncSessionFileEntrySchema = /* @__PURE__ */ z.object({
+  sessionId: z.string().min(1).max(256),
+  relativePath: z.string().min(1).max(512),
+  contentBase64: z.string(),
+}).strict();
+export type SyncSessionFileEntry = z.infer<typeof syncSessionFileEntrySchema>;
+
 export const syncBundleSchema = /* @__PURE__ */ z.object({
   format: z.literal('kiki.sync-bundle.v1'),
   exportedAt: z.string().datetime({ offset: true }),
   portableConfig: z.record(z.string(), z.unknown()).optional(),
   credentialEnvelopes: z.array(encryptedCredentialEnvelopeSchema).max(128).optional(),
-  memories: z.array(syncMemoryRecordSchema).max(2048).optional(),
-  skills: z.array(syncSkillFileEntrySchema).max(1024).optional(),
+  memories: z.array(syncMemoryRecordSchema).optional(),
+  skills: z.array(syncSkillFileEntrySchema).optional(),
   skillPlans: z.array(skillRootSyncPlanSchema).max(64).optional(),
+  sessions: z.array(syncSessionFileEntrySchema).optional(),
 }).strict();
 export type SyncBundle = z.infer<typeof syncBundleSchema>;
+
+export const syncBundleImportInputSchema = /* @__PURE__ */ syncBundleSchema.extend({
+  targetWorkDir: z.string().min(1).max(4096).optional(),
+  targetProjectId: z.string().min(1).max(128).optional(),
+}).strict();
+export type SyncBundleImportInput = z.infer<typeof syncBundleImportInputSchema>;
 
 export const syncBundleExportInputSchema = /* @__PURE__ */ z.object({
   recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).optional(),
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   projectIds: z.array(z.string().min(1).max(128)).max(128).optional(),
+  memoryScopes: z.array(syncMemoryScopeKindSchema).optional(),
   workDir: z.string().min(1).max(4096).optional(),
   includeConfig: z.boolean().default(true),
   includeCredentials: z.boolean().default(true),
   includeMemories: z.boolean().default(true),
   includeSkills: z.boolean().default(true),
+  includeGitSkills: z.boolean().optional(),
+  sessions: portableSpaceSessionSelectionSchema.optional(),
   targetPlatform: z.enum(['win32', 'darwin', 'linux']).optional(),
 }).strict();
 export type SyncBundleExportInput = z.infer<typeof syncBundleExportInputSchema>;
@@ -120,11 +169,16 @@ export type SyncBundleExportInput = z.infer<typeof syncBundleExportInputSchema>;
 export const syncPeerTransferInputSchema = /* @__PURE__ */ z.object({
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   projectIds: z.array(z.string().min(1).max(128)).max(128).optional(),
+  memoryScopes: z.array(syncMemoryScopeKindSchema).optional(),
   workDir: z.string().min(1).max(4096).optional(),
+  targetWorkDir: z.string().min(1).max(4096).optional(),
+  targetProjectId: z.string().min(1).max(128).optional(),
   includeConfig: z.boolean().default(true),
   includeCredentials: z.boolean().default(true),
   includeMemories: z.boolean().default(true),
   includeSkills: z.boolean().default(true),
+  includeGitSkills: z.boolean().optional(),
+  sessions: portableSpaceSessionSelectionSchema.optional(),
 }).strict();
 export type SyncPeerTransferInput = z.infer<typeof syncPeerTransferInputSchema>;
 
@@ -135,5 +189,7 @@ export const syncBundleImportReceiptSchema = /* @__PURE__ */ z.object({
   memoriesSkipped: z.number().int().nonnegative(),
   skillsApplied: z.number().int().nonnegative(),
   skillsSkipped: z.number().int().nonnegative(),
+  sessionsApplied: z.number().int().nonnegative().optional(),
+  sessionsSkipped: z.number().int().nonnegative().optional(),
 }).strict();
 export type SyncBundleImportReceipt = z.infer<typeof syncBundleImportReceiptSchema>;

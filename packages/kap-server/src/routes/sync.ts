@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   syncBundleExportInputSchema,
-  syncBundleSchema,
+  syncBundleImportInputSchema,
   syncCredentialMergeInputSchema,
   syncCredentialSealInputSchema,
   syncPeerTransferInputSchema,
@@ -78,9 +78,9 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
     ),
   );
 
-  app.post('/api/sync/bundle/import', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) =>
+  app.post('/api/sync/bundle/import', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) =>
     handle(req.id, reply, () =>
-      sync.importSyncBundle(syncBundleSchema.parse(req.body)),
+      sync.importSyncBundle(syncBundleImportInputSchema.parse(req.body)),
     ),
   );
 

@@ -139,7 +139,7 @@ export class RemoteConnectionManager {
     if (this.stopped || this.summaryPolling) return;
     this.summaryPolling = true;
     try {
-      const due = this.records.filter((r) => r.enabled && r.backgroundSummary && !['authentication_required', 'identity_changed'].includes(r.state) && Date.now() - (this.lastSummaryAttempt.get(r.id) ?? 0) >= (r.state === 'offline' ? 60000 : 5000));
+      const due = this.records.filter((r) => r.enabled && r.purposes.includes('gui') && r.backgroundSummary && !['authentication_required', 'identity_changed'].includes(r.state) && Date.now() - (this.lastSummaryAttempt.get(r.id) ?? 0) >= (r.state === 'offline' ? 60000 : 5000));
       for (let offset = 0; offset < due.length && !this.stopped; offset += 3) {
         await Promise.all(due.slice(offset, offset + 3).map(async (record) => {
           if (!this.records.includes(record) || this.replacing.has(record.id)) return;
@@ -267,13 +267,30 @@ export class RemoteConnectionManager {
       }
     }, signal);
   }
+  private async hasPeerCredential(record: RemoteConnection): Promise<boolean> {
+    try {
+      await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
   async storePeer(record: RemoteConnection, credential: Credential, label?: string): Promise<RemoteConnection> { return this.storeGui(record, credential, label, 'paired'); }
   private async storeGui(record: RemoteConnection, credential: Credential, label?: string, reason?: RemoteConnectionChange['reason']): Promise<RemoteConnection> {
     return this.serialize(async () => {
-      const existing = this.records.find((entry) => entry.purposes.includes('gui') && sameIdentity(entry.target, record.target));
+      let existing = this.records.find((entry) => entry.purposes.includes('gui') && sameIdentity(entry.target, record.target));
+      if (existing === undefined) {
+        for (const entry of this.records) {
+          if (entry.transport === undefined && sameIdentity(entry.target, record.target) && await this.hasPeerCredential(entry)) {
+            existing = entry;
+            break;
+          }
+        }
+      }
       if (existing?.pinnedFingerprint !== undefined && record.transport === undefined && record.pinnedFingerprint === undefined) throw new AdmissionError(409, 'connection_requires_tls');
       const saved = existing === undefined ? record : { ...record, id: existing.id, credentialRef: existing.credentialRef,
-        label: label?.trim() || existing.label, backgroundSummary: existing.backgroundSummary };
+        label: label?.trim() || existing.label, backgroundSummary: existing.purposes.includes('gui') === record.purposes.includes('gui') ? existing.backgroundSummary : record.backgroundSummary };
       const ref = { connectionId: saved.credentialRef, purpose: 'gui' } as const;
       const previous = existing === undefined ? undefined : await this.secrets.read<Credential>(ref).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'ENOENT') throw error;
@@ -328,7 +345,7 @@ export class RemoteConnectionManager {
   }
   async retry(id: string): Promise<RemoteConnection> {
     const record = this.get(id); if (!record.enabled) throw new AdmissionError(403, 'connection_disabled');
-    if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
+    if (!record.purposes.includes('gui') && (record.transport !== undefined || !(await this.hasPeerCredential(record)))) throw new AdmissionError(403, 'gui_connection_required');
     const epoch = this.credentialEpoch(id);
     this.stop(id, 'gui'); delete record.lastError;
     const lease = this.lease(id, AbortSignal.timeout(15000));
@@ -514,7 +531,7 @@ export class RemoteConnectionManager {
     const record = this.get(id); const epoch = this.credentialEpoch(id);
     this.requireEpoch(id, epoch);
     if (!record.enabled || record.state === 'identity_changed') throw new AdmissionError(409, record.lastError ?? 'connection_paused');
-    if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
+    if (!record.purposes.includes('gui') && record.transport !== undefined) throw new AdmissionError(403, 'gui_connection_required');
     try {
       const transport = await this.acquireTransport(id, signal, 'gui');
       this.requireEpoch(id, epoch);
@@ -538,7 +555,12 @@ export class RemoteConnectionManager {
       if (flight === undefined) {
         const startedAt = performance.now();
         flight = (async () => {
-          const loaded = await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
+          const loaded = await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' }).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT' && !record.purposes.includes('gui')) {
+              throw new AdmissionError(403, 'gui_connection_required');
+            }
+            throw error;
+          });
           await this.provePeer(transport.endpoint, record.target, loaded, AbortSignal.timeout(15_000), record.pinnedFingerprint);
           measuredRttMs = Math.max(1, Math.round(performance.now() - startedAt));
           return loaded;
@@ -570,7 +592,7 @@ export class RemoteConnectionManager {
     } catch (error) {
       if (!signal.aborted) {
         if (!deadlineSignal.aborted || isImmediateFailureError(error)) this.invalidateProof(id);
-        if (recordStrike && !deadlineSignal.aborted) this.recordTransportStrike(id, error, epoch);
+        if (recordStrike && !deadlineSignal.aborted && !(error instanceof AdmissionError && error.reason === 'gui_connection_required')) this.recordTransportStrike(id, error, epoch);
       }
       throw error;
     }

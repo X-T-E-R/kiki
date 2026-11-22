@@ -65,6 +65,7 @@ import {
   type KimiHostIdentity,
 } from '@kiki/oauth';
 import { createAsyncApiDocument, CONNECTION_PROTOCOL, peerBridgeAttachPayloadSchema, type ExternalDelegationState } from '@kiki/protocol';
+import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -307,6 +308,7 @@ export interface ServerStartOptions {
    */
   readonly skillDirs?: readonly string[];
   readonly userSkillDir?: string;
+  readonly osHomeDir?: string;
   /**
    * Directory of the built Kimi web UI. When set, `GET /` and the
    * `/*` SPA fallback serve these assets (auth-exempt, matching v1). Omit to run
@@ -624,6 +626,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const { app: core } = bootstrap(
     {
       homeDir,
+      osHomeDir: opts.osHomeDir,
       configPath,
       modelAccountHomeDir: opts.modelAccountHomeDir,
       configReadOnly: opts.configReadOnly,
@@ -1368,19 +1371,21 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   const peerTls = exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true ? await preparing(loadPeerTlsIdentity(homeDir)) : undefined;
   const bootstrapInfo = core.accessor.get(IBootstrapService);
-  const resolveOutboundConnection = (peerId: string) =>
-    remoteConnections
-      .list()
-      .find(
-        (record) =>
-          record.id === peerId ||
-          record.target.hostId === peerId ||
-          record.target.homeId === peerId ||
-          record.label === peerId,
-      );
+  const resolveOutboundConnection = (peerId: string) => {
+    const records = remoteConnections.list();
+    const byId = records.find((record) => record.id === peerId);
+    if (byId !== undefined) return byId;
+    const matches = records.filter(
+      (record) =>
+        record.target.hostId === peerId ||
+        record.target.homeId === peerId ||
+        record.label === peerId,
+    );
+    return matches.find((record) => record.transport?.kind !== 'peer_socket') ?? matches[0];
+  };
   const forwardPeerJson = async <T>(
     peerId: string,
-    operation: 'meshInboundExecute' | 'syncDeviceKey' | 'syncBundleExport' | 'syncBundleImport',
+    operation: 'meshInboundExecute' | 'syncDeviceKey' | 'syncBundleExport' | 'syncBundleImport' | 'syncCredentialsMerge',
     body?: unknown,
   ): Promise<{ readonly status: number; readonly envelope: { readonly code?: number; readonly msg?: string; readonly data?: T } }> => {
     const record = resolveOutboundConnection(peerId);
@@ -1390,7 +1395,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const lease = remoteConnections.lease(record.id);
     try {
       const response = await remoteConnections.forward(record.id, { operation, body }, lease.signal);
-      const parsed = (await response.json().catch(() => ({}))) as {
+      const parsed = (await readBoundedJsonBody(response, 64 * 1024 * 1024, lease.signal).catch(() => ({}))) as {
         readonly code?: number;
         readonly msg?: string;
         readonly data?: T;
@@ -1407,6 +1412,13 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     configRegistry: core.accessor.get(IConfigRegistry),
     memoryScopes: core.accessor.get(IMemoryScopes),
     memoryStore: core.accessor.get(IMemoryStore),
+    memoryPersistence: core.accessor.get(IMemoryPersistence),
+    bootstrap: bootstrapInfo,
+    sessionManager: core.accessor.get(ISessionManager),
+    sessionIndex: core.accessor.get(ISessionIndex),
+    appendLogStore: core.accessor.get(IAppendLogStore),
+    storage: core.accessor.get(IFileSystemStorageService),
+    workspaceService: core.accessor.get(IWorkspaceService),
     peerTransport: {
       resolvePeerRecipient: async (peerId) => {
         const stored = resolveOutboundConnection(peerId)?.x25519Recipient;
@@ -1558,10 +1570,11 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessions: core.accessor.get(ISessionManager),
     index: core.accessor.get(ISessionIndex),
     logs: core.accessor.get(IAppendLogStore),
+    storage: core.accessor.get(IFileSystemStorageService),
   }, syncService)), localOwnerToken);
   app.addHook('preClose', async () => { await meshService.close(); });
   const pairingHooks: { current?: PairingHooks } = {};
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => (peerListeners?.urls().length || peerListeners?.loopbackUrl() !== undefined) ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
   const pairedBridge = threadBridge;
   const connectionEvents = core.accessor.get(IEventService);
@@ -1593,6 +1606,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     retireBridges: (id, ids) => pairedBridge.retireConfirmedBridges(id, ids),
     enableThreads: () => pairedBridge.enableThreads(),
     x25519Recipient: () => syncService.peekDeviceRecipient(),
+    loopbackEndpoint: () => peerListeners?.loopbackUrl(),
     endpoints: async () => {
       const urls = [...await (peerListeners?.ensure() ?? Promise.resolve([]))];
       const status = web.status();
