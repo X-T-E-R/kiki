@@ -7,10 +7,9 @@ import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import type { PortableSpaceFormat } from '@kiki/protocol';
 import { domainForFile, FORK, PLAIN, RECIPIENTS, SEALED } from './treeProjection';
 import { safePortablePath } from './tarArchive';
-import { RECIPE_INSTALLATIONS, RECIPE_STORE } from './recipeStore';
+import { RECIPE_STORE } from './recipeStore';
 
 export const MAX_SPACE_BYTES = 64 * 1024 * 1024;
-const MAX_FILE_BYTES = 1024 * 1024;
 const exec = promisify(execFile);
 const SENSITIVE = /^(?:\.git|\.ssh|\.gnupg|credentials|sessions|secrets?|\.secrets?|\.env(?:\..*)?|config\.local\.toml|server[.-](?:local-owner|token)|.*\.(?:pem|key|pfx))$/i;
 
@@ -22,7 +21,7 @@ export async function missing<T>(work: Promise<T>): Promise<T | undefined> {
 
 export async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'protocol.ext.allow=never', '-c', 'protocol.file.allow=never', ...args], {
-    cwd, windowsHide: true, timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
   return stdout.trim();
 }
@@ -111,9 +110,7 @@ export async function readTree(root: string, live: boolean, include: (path: stri
         const alias = canonical.toLowerCase();
         if (names.has(alias)) throw new Error(`Portable Space paths overlap: ${canonical}`);
         names.add(alias);
-        const binary = path === SEALED || /\.(?:avif|gif|ico|jpe?g|mp[34]|otf|png|ttf|webm|webp|woff2?)$/i.test(path);
-        const limit = path.startsWith('sessions/') || path === RECIPE_INSTALLATIONS || path.startsWith(`${RECIPE_STORE}revisions/`) || binary ? MAX_SPACE_BYTES - total : Math.min(MAX_FILE_BYTES, MAX_SPACE_BYTES - total);
-        const bytes = await readBounded(current, limit);
+        const bytes = await readBounded(current, MAX_SPACE_BYTES - total);
         total += bytes.length;
         if (total > MAX_SPACE_BYTES) throw new Error('Portable Space tree exceeds 64 MiB');
         files.set(canonical, bytes);

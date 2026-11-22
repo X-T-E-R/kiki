@@ -19,8 +19,7 @@
  *   node scripts/visual-proof-mobile-rigor.mjs --only=iphone-landscape-safe-area,app-shell-spaces-contract
  */
 
-import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
@@ -28,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
 
-import { buildCacheKey } from '../proof/runner.mjs';
+import { ensureGuiBuild } from '../proof/runner.mjs';
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import {
   collectMobileDomSnapshot,
@@ -67,31 +66,6 @@ export function parseMobileRigorArgs(argv) {
   const reportJsonArg = argv.find((a) => a.startsWith('--out-json='));
   const reportJsonPath = reportJsonArg ? resolve(reportJsonArg.slice('--out-json='.length)) : join(outDir, 'mobile-rigor-report.json');
   return { reportFindings, strict, noBuild, only, outDir, reportJsonPath };
-}
-
-function ensureGuiBuild(distDir, noBuild) {
-  const cacheKey = buildCacheKey(ROOT);
-  const keyFile = join(distDir, '.kiki-build-key');
-  const cached =
-    cacheKey !== null
-    && existsSync(join(distDir, 'index.html'))
-    && existsSync(keyFile)
-    && readFileSync(keyFile, 'utf8') === cacheKey;
-
-  if ((noBuild && existsSync(join(distDir, 'index.html'))) || cached) {
-    console.log(`[mobile-rigor] reusing build in ${distDir}`);
-    return 0;
-  }
-  const t0 = Date.now();
-  console.log(`[mobile-rigor] building GUI -> ${distDir}`);
-  const res = spawnSync(
-    process.execPath,
-    [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--outDir', distDir, '--emptyOutDir', '--logLevel', 'warn'],
-    { cwd: ROOT, stdio: 'inherit', timeout: 180_000 },
-  );
-  if (res.status !== 0) throw new Error(`vite build failed with status ${res.status}`);
-  if (cacheKey !== null) writeFileSync(keyFile, cacheKey);
-  return Date.now() - t0;
 }
 
 /**
@@ -747,7 +721,7 @@ async function main() {
   if (selected.length === 0) throw new Error(`No scenarios matched --only=${opts.only?.join(',')}`);
 
   const needsGuiBuild = selected.some((s) => s.fixture !== null);
-  const buildMs = needsGuiBuild ? ensureGuiBuild(distDir, opts.noBuild) : 0;
+  const buildMs = needsGuiBuild ? ensureGuiBuild({ root: ROOT, distDir, noBuild: opts.noBuild, label: 'mobile-rigor' }) : 0;
 
   const browser = await chromium.launch({ args: ['--no-proxy-server'] });
   const startedAt = Date.now();

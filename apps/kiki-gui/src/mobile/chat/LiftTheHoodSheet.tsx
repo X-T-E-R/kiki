@@ -316,7 +316,7 @@ export function LiftTheHoodSheet({
                         ) : null}
                         {outputText !== '' ? (
                           <pre className="max-h-48 overflow-auto rounded-lg bg-panel p-2.5 font-mono text-[11.5px] text-ink">
-                            {outputText.slice(0, 4000)}
+                            {outputText}
                           </pre>
                         ) : null}
                       </div>
@@ -366,12 +366,12 @@ export function LiftTheHoodSheet({
                   <div className="max-h-[42dvh] overflow-auto p-3 font-mono text-[12px] leading-[1.5]">
                     {activeChange.oldText !== undefined ? (
                       <pre className="mb-2 whitespace-pre-wrap break-all rounded-lg bg-danger/10 p-2 text-danger">
-                        {activeChange.oldText.slice(0, 3000)}
+                        {activeChange.oldText}
                       </pre>
                     ) : null}
                     {activeChange.newText !== undefined ? (
                       <pre className="whitespace-pre-wrap break-all rounded-lg bg-success/10 p-2 text-success">
-                        {activeChange.newText.slice(0, 3000)}
+                        {activeChange.newText}
                       </pre>
                     ) : null}
                   </div>

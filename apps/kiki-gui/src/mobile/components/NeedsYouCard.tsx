@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ApprovalDecision, ApprovalRequest, QuestionRequest } from '@kiki/protocol';
+import type { ApprovalDecision } from '@kiki/protocol';
 import type { UnifiedInboxItem } from '@kiki/session-core/sessions';
 
 import { Icon } from '../../components/icons';
@@ -32,10 +32,10 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
     staleTime: 10_000,
     queryFn: async () => {
       if (item.reason === 'approval') {
-        const approvals = await client.listPendingApprovals(item.sessionId).catch(() => [] as ApprovalRequest[]);
+        const approvals = await client.listPendingApprovals(item.sessionId);
         return { kind: 'approval' as const, approvals };
       }
-      const questions = await client.listPendingQuestions(item.sessionId).catch(() => [] as QuestionRequest[]);
+      const questions = await client.listPendingQuestions(item.sessionId);
       return { kind: 'question' as const, questions };
     },
   });
@@ -120,6 +120,19 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
                 <span>{t('mobile.approval.reject')}</span>
               </button>
             </>
+          ) : detailQuery.isError ? (
+            <button
+              type="button"
+              data-mobile-needs-you-retry={item.sessionId}
+              disabled={detailQuery.isFetching}
+              title={detailQuery.error instanceof Error ? detailQuery.error.message : String(detailQuery.error)}
+              aria-label={t('mobile.space.retry')}
+              onClick={() => { void detailQuery.refetch(); }}
+              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
+            >
+              <Icon name="refresh" size={12} />
+              <span>{t('mobile.space.retry')}</span>
+            </button>
           ) : null}
 
           <button

@@ -9,7 +9,7 @@ import { formatRecipients, parseRecipients } from './ageCodec';
 import { endpointForPath, endpointKey, inspectTree, resealOptions, SpaceEndpoints, type LoadedSpaceTree } from './endpoints';
 import { writeLive } from './liveSpace';
 import { applyUnset, assignPath, isUnitId, modelDependencies, planChanges, reconcile, sameUnit, unitHashes, type Change, type VerifiedBase } from './mergeEngine';
-import { missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
+import { MAX_SPACE_BYTES, missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
 import { commonUnits, domainForFile, encodeToml, filesFromUnits, object, parseToml, platformUnits, PLAIN, putUnit, RECIPIENTS, SEALED, selectedUnits, toUnits, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
 
@@ -88,7 +88,7 @@ export class PortableSpaceService {
   private get baseRoot() { return join(this.endpoints.home, '.portable-space-bases'); }
   private async hashKey() { return (await this.endpoints.sync.ensureDeviceKeypair()).identity; }
   private async sources(): Promise<PortableSpaceSourceRecord[]> {
-    const bytes = await missing(readBounded(this.sourceFile, 1024 * 1024));
+    const bytes = await missing(readBounded(this.sourceFile));
     return bytes ? sourceListSchema.parse(JSON.parse(bytes.toString('utf8'))) : [];
   }
 
@@ -189,7 +189,7 @@ export class PortableSpaceService {
   }
 
   private async forkRecords(): Promise<Record<string, StoredFork>> {
-    const raw = await missing(readBounded(this.forkRegistry, 8 * 1024 * 1024));
+    const raw = await missing(readBounded(this.forkRegistry));
     return raw ? JSON.parse(raw.toString('utf8')) as Record<string, StoredFork> : {};
   }
 
@@ -201,7 +201,7 @@ export class PortableSpaceService {
 
   private async loadBase(id: string, expected?: Record<string, string>): Promise<VerifiedBase | undefined> {
     const root = join(this.baseRoot, id);
-    const raw = await missing(readBounded(join(root, 'hashes.json'), 8 * 1024 * 1024));
+    const raw = await missing(readBounded(join(root, 'hashes.json')));
     if (!raw) return;
     const hashes = JSON.parse(raw.toString('utf8')) as Record<string, string>;
     if (expected && !isDeepStrictEqual(hashes, expected)) return;
@@ -497,7 +497,7 @@ export class PortableSpaceService {
         } else if (action.op === 'writeFile') {
           const path = admit(action.path);
           const bytes = Buffer.from(action.contentBase64, 'base64');
-          if (bytes.length > 1024 * 1024 || bytes.toString('base64') !== action.contentBase64) throw new Error('Invalid portable file content');
+          if (bytes.length > MAX_SPACE_BYTES || bytes.toString('base64') !== action.contentBase64) throw new Error('Invalid portable file content');
           assign(path, bytes);
         } else {
           const from = await this.endpoints.load(action.from, { unlock: action.fromUnlock });

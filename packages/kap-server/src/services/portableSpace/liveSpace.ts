@@ -85,7 +85,7 @@ async function exportSessions(files: Map<string, Buffer>, live: LiveServices, se
     const root = join(live.bootstrap.sessionsDir, safePortablePath(session.workspaceId), safePortablePath(session.id));
     const scope = `${live.bootstrap.scope('sessions')}/${session.workspaceId}/${session.id}`;
     for (const entry of ['state.json', 'meta.json']) {
-      const file = await missing(readBounded(join(root, entry), 1024 * 1024));
+      const file = await missing(readBounded(join(root, entry)));
       if (file) files.set(`sessions/${session.id}/${entry}`, Buffer.from(JSON.stringify({ ...object(JSON.parse(file.toString('utf8'))), workspaceId: session.workspaceId })));
     }
     const agentRoot = join(root, 'agents');

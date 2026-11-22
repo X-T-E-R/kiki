@@ -4,7 +4,6 @@ const BLOCK_SIZE = 512;
 const MAX_CONTENT_BYTES = 64 * 1024 * 1024;
 const MAX_PATH_BYTES = 4096;
 const MAX_PAX_BYTES = 1024 * 1024;
-const MAX_ENTRIES = 32_768;
 const MAX_TAR_BYTES = 128 * 1024 * 1024;
 const USTAR_MAGIC = 'ustar\0';
 const USTAR_VERSION = '00';
@@ -62,7 +61,6 @@ export function safePortablePath(path: string): string {
 
 /** Packs portable files into deterministic gzip-compressed POSIX ustar bytes. */
 export function packTarGz(files: ReadonlyMap<string, Buffer>): Buffer {
-  if (files.size > MAX_ENTRIES) throw invalidArchiveInput();
   const entries: { readonly path: string; readonly bytes: Buffer }[] = [];
   const seen = new Set<string>();
   let contentBytes = 0;
@@ -129,7 +127,6 @@ export function unpackTarGz(bytes: Buffer): Map<string, Buffer> {
   const seen = new Set<string>();
   let offset = 0;
   let contentBytes = 0;
-  let entryCount = 0;
   let pendingPax: { readonly path?: string } | undefined;
   let pendingLongPath: string | undefined;
   let zeroBlocks = 0;
@@ -175,10 +172,6 @@ export function unpackTarGz(bytes: Buffer): Map<string, Buffer> {
       continue;
     }
     if (type !== '0' && type !== '5') {
-      throw invalidArchiveInput();
-    }
-    entryCount += 1;
-    if (entryCount > MAX_ENTRIES) {
       throw invalidArchiveInput();
     }
     const mode = readOctal(header, 100, 8);

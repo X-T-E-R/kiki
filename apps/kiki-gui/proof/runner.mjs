@@ -241,9 +241,31 @@ function build(root, distDir) {
   const result = spawnSync(process.execPath, [
     join(root, 'node_modules', 'vite', 'bin', 'vite.js'), 'build',
     '--outDir', distDir, '--emptyOutDir', '--logLevel', 'warn',
-  ], { cwd: root, stdio: 'inherit', timeout: 180_000 });
+  ], { cwd: root, stdio: 'inherit' });
   if (result.status !== 0) throw new Error(`vite build failed (status ${result.status})`);
   return Date.now() - started;
+}
+
+/** Build `apps/kiki-gui` into `distDir` unless `--no-build` or source cache matches. */
+export function ensureGuiBuild({ root, distDir, noBuild = false, label = 'proof' }) {
+  const cacheKey = buildCacheKey(root);
+  const keyFile = join(distDir, '.kiki-build-key');
+  const cached = cacheKey !== null
+    && existsSync(join(distDir, 'index.html'))
+    && existsSync(keyFile)
+    && readFileSyncText(keyFile) === cacheKey;
+  if (noBuild && existsSync(join(distDir, 'index.html'))) {
+    console.log(`[${label}] reusing build in ${distDir} (--no-build)`);
+    return 0;
+  }
+  if (cached) {
+    console.log(`[${label}] reusing build in ${distDir} (unchanged sources)`);
+    return 0;
+  }
+  console.log(`[${label}] building -> ${distDir}`);
+  const buildMs = build(root, distDir);
+  if (cacheKey !== null) writeFileSync(keyFile, cacheKey);
+  return buildMs;
 }
 
 /** Static SPA server over the build; `/__kiki/local-server` reports no local server. */
@@ -482,20 +504,7 @@ export async function runProof({
   heartbeat.unref();
 
   const startedAt = Date.now();
-  const cacheKey = buildCacheKey(root);
-  const cached = cacheKey !== null && existsSync(join(distDir, 'index.html'))
-    && existsSync(join(distDir, '.kiki-build-key'))
-    && readFileSyncText(join(distDir, '.kiki-build-key')) === cacheKey;
-  let buildMs = 0;
-  if (options.noBuild && existsSync(join(distDir, 'index.html'))) {
-    console.log(`[${label}] reusing build in ${distDir} (--no-build)`);
-  } else if (cached) {
-    console.log(`[${label}] reusing build in ${distDir} (unchanged sources)`);
-  } else {
-    console.log(`[${label}] building -> ${distDir}`);
-    buildMs = build(root, distDir);
-    if (cacheKey !== null) writeFileSync(join(distDir, '.kiki-build-key'), cacheKey);
-  }
+  const buildMs = ensureGuiBuild({ root, distDir, noBuild: options.noBuild, label });
 
   const web = await startStatic(distDir);
   const webUrl = `http://127.0.0.1:${web.address().port}`;

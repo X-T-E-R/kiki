@@ -100,7 +100,7 @@ export class SpaceEndpoints {
     const current = bootstrap.spaceId ?? 'main';
     if (spaceId === current) return { path: this.home, name: bootstrap.space?.name ?? 'main' };
     if (current !== 'main') throw new Error(`Connect to Space ${spaceId} before operating on its live Home`);
-    const records = await missing(readBounded(join(this.home, 'homes.json'), 1024 * 1024));
+    const records = await missing(readBounded(join(this.home, 'homes.json')));
     const record = records && z.array(spaceRecordSchema).parse(JSON.parse(records.toString('utf8'))).find((entry) => entry.id === spaceId);
     if (!record || !isAbsolute(record.path)) throw new Error(`Unknown registered Space: ${spaceId}`);
     const path = await realpath(record.path);
@@ -150,7 +150,7 @@ export class SpaceEndpoints {
     if (options.sessions && options.sessions.mode !== 'none') throw new Error('Connect to the registered Space to export its live sessions');
     const files = await readHomeFiles(path, this.live.bootstrap.osHomeDir, options.includeCredentials !== false);
     if (options.includeCredentials !== false) {
-      const [sidecar, legacy] = await Promise.all([PLAIN, LEGACY_CREDENTIALS_KEY].map(async (name) => missing(readBounded(await checkedPath(path, name), 1024 * 1024))));
+      const [sidecar, legacy] = await Promise.all([PLAIN, LEGACY_CREDENTIALS_KEY].map(async (name) => missing(readBounded(await checkedPath(path, name)))));
       if (sidecar && legacy && !sidecar.equals(legacy)) throw new Error('Old and new credentials.toml differ in registered Space');
       if (sidecar || legacy) files.set(PLAIN, encodeToml(mergeConfigCredentials(parseToml(sidecar ?? legacy), parseToml(files.get(PLAIN)))));
     }

@@ -59,7 +59,7 @@ export function NeedsYouSheet({ items, resolveClient, onClose, onOpenItem, onRes
         </button>
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-2">
-        {items.slice(0, 12).map((item) => (
+        {items.map((item) => (
           <NeedsYouCard
             key={item.encodedKey}
             item={item}
