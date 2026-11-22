@@ -412,6 +412,18 @@ export function readSubagentEndings(
       const set = taskIdsByAgent.get(node.subagentId);
       if (set === undefined) taskIdsByAgent.set(node.subagentId, new Set([node.taskId]));
       else set.add(node.taskId);
+    }
+    if (node.resultTaskId !== undefined && node.resultTaskId !== '' && !cardsByTaskId.has(node.resultTaskId)) {
+      cardsByTaskId.set(node.resultTaskId, { card: node, index });
+    }
+    if (node.absorbedTaskIds !== undefined) {
+      for (const absorbedId of node.absorbedTaskIds) {
+        if (absorbedId !== '' && !cardsByTaskId.has(absorbedId)) {
+          cardsByTaskId.set(absorbedId, { card: node, index });
+        }
+      }
+    }
+    if (node.taskId !== undefined && node.taskId !== '') {
       return;
     }
     const untaggedList = untaggedCardsByAgentId.get(node.subagentId);
@@ -493,6 +505,8 @@ export function readSubagentEndings(
   };
   const precomputedCardSummaries = new Map<string, string>();
   const precomputedCardTaskIds = new Map<string, string>();
+  const precomputedCardResultTaskIds = new Map<string, string>();
+  const absorbedContinuationCardIds = new Set<string>();
   const absorbedNoteIndices = new Set<number>();
   for (let index = 0; index < merged.length; index += 1) {
     const node = merged[index]!;
@@ -500,12 +514,33 @@ export function readSubagentEndings(
     if (node.kind !== 'system' || task === undefined || task.agent_id === undefined) continue;
     const turn = normTurn(node.turnId);
     const matchedCard = resolveMatchedCard(task);
+    const matchedTurn = matchedCard === undefined ? undefined : normTurn(matchedCard.card.parentTurnId);
+    const sameOrUnanchoredTurn =
+      matchedTurn === turn ||
+      (matchedTurn === undefined && matchedCard !== undefined && matchedCard.card.parentToolCallId === undefined);
+    const isPrimaryCardTask =
+      matchedCard !== undefined &&
+      (matchedCard.card.taskId === task.id || matchedCard.card.taskId === undefined || matchedCard.card.taskId === '');
+    const cardSummary = matchedCard === undefined
+      ? ''
+      : (matchedCard.card.summary ?? precomputedCardSummaries.get(matchedCard.card.id) ?? '').trim();
+    const notePreview = (task.output_preview ?? '').trim();
+    const continuationDisplayedByCard =
+      matchedCard !== undefined && (
+        matchedCard.card.resultTaskId === task.id ||
+        (!absorbedContinuationCardIds.has(matchedCard.card.id) && (
+          cardSummary === '' ||
+          (notePreview !== '' && cardSummary === notePreview)
+        ))
+      );
     const canAbsorbIntoCard =
       matchedCard !== undefined &&
-      normTurn(matchedCard.card.parentTurnId) === turn &&
-      isContiguousSameTurn(matchedCard.index, index, turn);
+      sameOrUnanchoredTurn &&
+      isContiguousSameTurn(matchedCard.index, index, turn) &&
+      (isPrimaryCardTask || continuationDisplayedByCard);
     if (canAbsorbIntoCard) {
       absorbedNoteIndices.add(index);
+      if (!isPrimaryCardTask) absorbedContinuationCardIds.add(matchedCard.card.id);
       if (
         (matchedCard.card.taskId === undefined || matchedCard.card.taskId === '') &&
         task.id !== '' &&
@@ -520,6 +555,14 @@ export function readSubagentEndings(
         task.output_preview !== ''
       ) {
         precomputedCardSummaries.set(matchedCard.card.id, task.output_preview);
+        if (
+          matchedCard.card.taskId !== undefined &&
+          matchedCard.card.taskId !== '' &&
+          task.id !== '' &&
+          task.id !== matchedCard.card.taskId
+        ) {
+          precomputedCardResultTaskIds.set(matchedCard.card.id, task.id);
+        }
       }
     }
   }
@@ -530,9 +573,18 @@ export function readSubagentEndings(
     if (node.kind === 'subagent') {
       const summary = precomputedCardSummaries.get(node.id);
       const taskId = precomputedCardTaskIds.get(node.id);
+      const resultTaskId = precomputedCardResultTaskIds.get(node.id);
       const nextSummary = summary !== undefined && (node.summary === undefined || node.summary === '') ? summary : node.summary;
       const nextTaskId = taskId !== undefined && (node.taskId === undefined || node.taskId === '') ? taskId : node.taskId;
-      out.push(nextSummary !== node.summary || nextTaskId !== node.taskId ? { ...node, summary: nextSummary, taskId: nextTaskId } : node);
+      const nextResultTaskId =
+        resultTaskId !== undefined && (node.resultTaskId === undefined || node.resultTaskId === '')
+          ? resultTaskId
+          : node.resultTaskId;
+      out.push(
+        nextSummary !== node.summary || nextTaskId !== node.taskId || nextResultTaskId !== node.resultTaskId
+          ? { ...node, summary: nextSummary, taskId: nextTaskId, resultTaskId: nextResultTaskId }
+          : node,
+      );
       continue;
     }
     const task = resolvedTasks[index];

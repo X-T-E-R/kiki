@@ -94,6 +94,9 @@ import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { PersistedModelSwitchReader } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
 import { ICpuWorkerService } from '@kiki/agent-core-v2/app/cpuWorker/cpuWorkerService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
+import { COLLABORATION_TASK_NAME_LABEL } from '@kiki/agent-core-v2/session/agentCollaboration/registry';
+import { latestAssistantText } from '@kiki/agent-core-v2/session/subagent/runAgentTurn';
+import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
 import { projectPromptContentParts } from '../services/messages/messageProjection';
@@ -242,13 +245,25 @@ async function admitPromptRun(
   const parent = await resolvePromptFromSession(core, session, parentId);
   const binding = resolved.profile.data();
   const profileName = binding.profileName ?? binding.routeId ?? meta?.displayName ?? resolved.agentId;
+  const taskName = meta?.labels?.[COLLABORATION_TASK_NAME_LABEL];
   const controller = new AbortController();
   let resolve!: (value: PromptCompletion | PromiseLike<PromptCompletion>) => void;
   let reject!: (error: unknown) => void;
   const completion = new Promise<PromptCompletion>((res, rej) => { resolve = res; reject = rej; });
+  const completedReplySummary = (settlement: PromptCompletion): string => {
+    const turnId = resolved.prompt.lookup(settlement.promptId)?.turnId;
+    if (turnId === undefined) return '';
+    try {
+      const messages = resolved.accessor.get(IAgentContextMemoryService).get();
+      return latestAssistantText(messages.filter((message) => message.source?.turnId === turnId));
+    } catch {
+      return '';
+    }
+  };
   const taskCompletion = completion.then((settlement) => {
     if (settlement.state === 'completed' || settlement.state === 'blocked') {
-      return { result: `Prompt ${settlement.state}` };
+      const summary = completedReplySummary(settlement);
+      return { result: summary !== '' ? summary : `Prompt ${settlement.state}` };
     }
     if (settlement.state === 'cancelled') {
       throw controller.signal.reason ?? new Error('terminated');
@@ -274,13 +289,18 @@ async function admitPromptRun(
       new SubagentTask(
         {
           agentId: resolved.agentId,
+          name: taskName,
           profileName,
           model: binding.modelAlias,
           thinkingEffort: binding.effectiveThinkingLevel ?? binding.thinkingLevel,
+          thinkingEffortExplicit: binding.thinkingEffortExplicit,
+          executorId: binding.executorId,
+          executorProtocol: binding.executorProtocol,
           completion: taskCompletion,
         },
         meta?.userLabel ?? profileName,
         controller,
+        taskName === undefined ? undefined : { taskName, agentType: profileName },
       ),
       { detached: true },
     );
@@ -289,9 +309,13 @@ async function admitPromptRun(
     signal.throwIfAborted();
     emitAgentRunSpawned(parent.agent, resolved.agentId, {
       profileName,
+      name: taskName,
       description: meta?.userLabel,
       runInBackground: true,
       model: binding.modelAlias,
+      thinkingEffortExplicit: binding.thinkingEffortExplicit,
+      executorId: binding.executorId,
+      executorProtocol: binding.executorProtocol,
       taskId,
     });
     await dispatcher.dispatch(new SubagentStarted({ subagentId: resolved.agentId, taskId }));
@@ -302,7 +326,7 @@ async function admitPromptRun(
           return dispatcher.dispatch(new SubagentCompleted({
             subagentId: resolved.agentId,
             taskId: admittedTaskId,
-            resultSummary: `Prompt ${settlement.state}`,
+            resultSummary: completedReplySummary(settlement),
           }));
         }
         const error = settlement.state === 'cancelled'

@@ -2195,7 +2195,13 @@ const SubagentCard = memo(function SubagentCard({
   const model = isLatestRun ? (node?.model ?? block.model) : (block.model ?? node?.model);
   const thinkingEffort = isLatestRun ? (node?.thinkingEffort ?? block.thinkingEffort) : (block.thinkingEffort ?? node?.thinkingEffort);
   const runError = runIsLive ? undefined : (isLatestRun ? (node?.error ?? block.error) : (block.error ?? node?.error));
-  const runSummary = isLatestRun ? (node?.summary ?? block.summary) : (block.summary ?? node?.summary);
+  const blockSummary = block.summary !== undefined && block.summary !== '' ? block.summary : undefined;
+  const continuationOwnedByEnding =
+    block.absorbedTaskIds !== undefined &&
+    block.absorbedTaskIds.length > 0 &&
+    block.resultTaskId === undefined;
+  const runSummary = blockSummary ?? (continuationOwnedByEnding ? undefined : node?.summary);
+  const resultTaskId = block.resultTaskId ?? block.taskId;
   // Only a genuinely active run owns the full card; a completed parent whose
   // child still runs stays compact — the child has its own card. A nested
   // card (a subagent's own subagent) follows the view's fold rule instead:
@@ -2211,7 +2217,7 @@ const SubagentCard = memo(function SubagentCard({
     : formOverride !== undefined ? formOverride === 'full' : active;
   const resultSummary = runIsLive ? undefined : runSummary;
   const invocation = useInvocationDetails(block.parentToolCallId, block.parentAgentId, !full, {
-    taskId: runIsLive ? undefined : block.taskId,
+    taskId: runIsLive ? undefined : resultTaskId,
     summary: resultSummary,
     toggleKey: block.id,
   });
@@ -2219,7 +2225,7 @@ const SubagentCard = memo(function SubagentCard({
   const [fullErrorOpen, setFullErrorOpen] = useState(false);
   const fullErrorDetailsId = useId();
   const hasFullError = runError !== undefined && runError.trim() !== '';
-  const fullTaskSource = runIsLive || block.taskId === undefined || block.taskId === '' ? undefined : { kind: 'task' as const, id: block.taskId };
+  const fullTaskSource = runIsLive || resultTaskId === undefined || resultTaskId === '' ? undefined : { kind: 'task' as const, id: resultTaskId };
   const fullTaskPending = useContentContinuation(full ? fullTaskSource : undefined, TASK_SUMMARY_ROOTS, block.parentAgentId).pending.length > 0;
   const showInlineFullResult = full && !invocation.open && ((resultSummary !== undefined && resultSummary.trim() !== '') || fullTaskPending);
   useEffect(() => {
@@ -2363,7 +2369,7 @@ const SubagentCard = memo(function SubagentCard({
         </div>
         {showInlineFullResult ? (
           <div className="mt-1 space-y-3 border-l border-hairline pl-3">
-            <SubagentResultSummary taskId={block.taskId} summary={resultSummary} callerAgentId={block.parentAgentId} />
+            <SubagentResultSummary taskId={resultTaskId} summary={resultSummary} callerAgentId={block.parentAgentId} />
           </div>
         ) : null}
         {invocation.body}
@@ -3715,7 +3721,7 @@ const CARD_ABSORBED_EVENTS: ReadonlySet<SubagentEventBlock['event']> = new Set([
     cards.add(node.subagentId);
     cardCountByAgent.set(node.subagentId, (cardCountByAgent.get(node.subagentId) ?? 0) + 1);
     if (node.taskId !== undefined && node.taskId !== '') cardTaskIds.add(node.taskId);
-    if (node.parentToolCallId !== undefined) dispatchCalls.add(node.parentToolCallId);
+    if (node.parentToolCallId !== undefined && node.parentToolCallId !== '') dispatchCalls.add(node.parentToolCallId);
   }
   if (cards.size === 0 && sentCalls.size === 0 && questionCalls.size === 0) return nodes;
   const absorbed = (node: DisplayNode): boolean => {

@@ -154,6 +154,7 @@ export function taskItemsFromTranscriptTasks(
         parentToolCallId: task.parentToolCallId,
         kind: task.kind,
         name: task.name ?? task.subagentName,
+        explicitName: task.name,
         description: task.description,
         status: task.state,
         model: task.model,
@@ -574,31 +575,122 @@ function snapshotAgentRefs(items: AgentTranscriptSnapshot['items']): readonly Sn
   return result;
 }
 
+function isSyntheticPhaseTaskId(taskId: string): boolean {
+  return taskId.startsWith('agent-phase-');
+}
+
+function isAutonomousReceiptTaskId(taskId: string): boolean {
+  return taskId.startsWith('agent-receipt-');
+}
+
+function parseSnapshotTaskTime(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function snapshotTaskStateRank(state: string): number {
+  if (state === 'completed' || state === 'failed' || state === 'killed' || state === 'timed_out' || state === 'lost') return 2;
+  if (state === 'running') return 1;
+  return 0;
+}
+
+function snapshotTaskIsNewer(
+  candidate: { readonly taskId: string; readonly state: string; readonly startedAt?: string; readonly endedAt?: string },
+  current: { readonly taskId: string; readonly state: string; readonly startedAt?: string; readonly endedAt?: string },
+): boolean {
+  const candStart = parseSnapshotTaskTime(candidate.startedAt);
+  const currStart = parseSnapshotTaskTime(current.startedAt);
+  const candEnd = parseSnapshotTaskTime(candidate.endedAt);
+  const currEnd = parseSnapshotTaskTime(current.endedAt);
+  if (candidate.taskId !== current.taskId) {
+    if (candStart !== undefined && currEnd !== undefined && candStart > currEnd) return true;
+    if (currStart !== undefined && candEnd !== undefined && currStart > candEnd) return false;
+    if (candEnd !== undefined && currEnd !== undefined && candEnd !== currEnd) {
+      return candEnd > currEnd;
+    }
+  }
+  if (candStart !== currStart) {
+    if (candStart === undefined) return false;
+    if (currStart === undefined) return true;
+    return candStart > currStart;
+  }
+  const candRank = snapshotTaskStateRank(candidate.state);
+  const currRank = snapshotTaskStateRank(current.state);
+  if (candRank !== currRank) return candRank > currRank;
+  if (candEnd !== currEnd) {
+    if (candEnd === undefined) return false;
+    if (currEnd === undefined) return true;
+    return candEnd > currEnd;
+  }
+  return candidate.taskId >= current.taskId;
+}
+
 export function liveSourcesFromAgentSnapshots(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
 ): readonly AgentLiveSource[] {
   const byId = new Map<string, AgentLiveSource>();
   for (const [parentAgentId, snapshot] of snapshots) {
     const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
+    const grouped = new Map<string, typeof tasks>();
     for (const task of tasks) {
       if (task.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
-      const existing = byId.get(task.agentId);
-      byId.set(task.agentId, {
-        subagentId: task.agentId,
+      const list = grouped.get(task.agentId);
+      if (list === undefined) grouped.set(task.agentId, [task]);
+      else list.push(task);
+    }
+    for (const [agentId, list] of grouped) {
+      const nonPhase = list.filter((task) => !isSyntheticPhaseTaskId(task.taskId));
+      const candidates = nonPhase.length > 0 ? nonPhase : list;
+      const activeCandidates = candidates.filter((task) => task.state === 'running');
+      const latestPool = activeCandidates.length > 0 ? activeCandidates : candidates;
+      let latest = latestPool[0]!;
+      let earliest = candidates[0]!;
+      let anchored: (typeof candidates)[number] | undefined;
+      let explicitName: string | undefined;
+      let profileName: string | undefined;
+      for (const task of latestPool) {
+        if (task !== latest && snapshotTaskIsNewer(task, latest)) latest = task;
+      }
+      for (const task of candidates) {
+        if (task !== earliest && snapshotTaskIsNewer(earliest, task)) earliest = task;
+        if (anchored === undefined && presentSnapshotText(task.parentToolCallId) !== undefined) anchored = task;
+        const nextExplicit = presentSnapshotText(task.name);
+        if (nextExplicit !== undefined) explicitName = nextExplicit;
+        const nextProfile = presentSnapshotText(task.subagentName);
+        if (nextProfile !== undefined) profileName = nextProfile;
+      }
+      const existing = byId.get(agentId);
+      const base = anchored ?? earliest;
+      const latestParentToolCallId = presentSnapshotText(latest.parentToolCallId);
+      const preserveBaseDescription =
+        base !== latest &&
+        presentSnapshotText(base.description) !== undefined &&
+        (isAutonomousReceiptTaskId(latest.taskId) || (latestParentToolCallId === undefined && anchored !== undefined));
+      const resolvedName =
+        explicitName ??
+        (existing?.name !== undefined && existing.name !== agentId ? existing.name : undefined) ??
+        profileName ??
+        agentId;
+      const resolvedDescription = preserveBaseDescription
+        ? base.description
+        : presentSnapshotText(latest.description) ?? presentSnapshotText(base.description) ?? existing?.description;
+      byId.set(agentId, {
+        subagentId: agentId,
         parentAgentId,
-        parentToolCallId: task.parentToolCallId ?? existing?.parentToolCallId,
-        name: task.name ?? task.subagentName ?? existing?.name ?? task.agentId,
-        model: task.model ?? existing?.model,
-        thinkingEffort: task.thinkingEffort ?? existing?.thinkingEffort,
-        thinkingEffortExplicit: task.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
-        executorId: task.executorId ?? existing?.executorId,
-        executorProtocol: task.executorProtocol ?? existing?.executorProtocol,
-        status: task.state,
-        description: task.description ?? existing?.description,
-        summary: task.resultSummary,
-        error: task.error,
-        startedAt: task.startedAt,
-        endedAt: task.endedAt,
+        parentToolCallId: latestParentToolCallId ?? presentSnapshotText(base.parentToolCallId) ?? existing?.parentToolCallId,
+        name: resolvedName,
+        model: latest.model ?? base.model ?? existing?.model,
+        thinkingEffort: latest.thinkingEffort ?? base.thinkingEffort ?? existing?.thinkingEffort,
+        thinkingEffortExplicit: latest.thinkingEffortExplicit ?? base.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
+        executorId: latest.executorId ?? base.executorId ?? existing?.executorId,
+        executorProtocol: latest.executorProtocol ?? base.executorProtocol ?? existing?.executorProtocol,
+        status: latest.state,
+        description: resolvedDescription,
+        summary: presentSnapshotText(latest.resultSummary) ?? presentSnapshotText(latest.outputTail) ?? existing?.summary,
+        error: latest.error ?? latest.stateReason,
+        startedAt: latest.startedAt ?? base.startedAt ?? existing?.startedAt,
+        endedAt: latest.endedAt,
         toolCallCount: existing?.toolCallCount,
         toolCallCountKnown: existing?.toolCallCountKnown,
         toolCallCountAuthoritative: existing?.toolCallCountAuthoritative,

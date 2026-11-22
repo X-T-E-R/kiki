@@ -245,7 +245,7 @@ function dedupeActivityBlocks(blocks: readonly Block[]): {
     cards.add(block.subagentId);
     cardCountByAgent.set(block.subagentId, (cardCountByAgent.get(block.subagentId) ?? 0) + 1);
     if (block.taskId !== undefined && block.taskId !== '') cardTaskIds.add(block.taskId);
-    if (block.parentToolCallId !== undefined) dispatchCalls.set(block.parentToolCallId, block.id);
+    if (block.parentToolCallId !== undefined && block.parentToolCallId !== '') dispatchCalls.set(block.parentToolCallId, block.id);
   }
   if (cards.size === 0 && sentCalls.size === 0 && resumedCalls.size === 0) {
     return { blocks, absorbedDurationByBlockId: new Map() };

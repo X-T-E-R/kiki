@@ -1275,7 +1275,7 @@ export class AgentTranscriptLiveAdapter {
       questionCount: info.questionCount ?? prev?.questionCount,
       exitCode: info.exitCode !== undefined ? info.exitCode : prev?.exitCode,
       taskKind: info.kind ?? prev?.taskKind,
-      description: info.description,
+      description: info.description || prev?.description,
       command: info.command ?? prev?.command,
       agentId: info.agentId ?? prev?.agentId,
       outputTail: event.outputTail ?? prev?.outputTail ?? '',
@@ -1441,6 +1441,7 @@ export class AgentTranscriptLiveAdapter {
     executorProtocol?: string;
   }): TranscriptOperation[] {
     const taskKey = event.taskId ?? event.subagentId;
+    const parentToolCallId = event.parentToolCallId === '' ? undefined : event.parentToolCallId;
     if (event.taskId !== undefined) {
       this.subagentTaskIds.set(event.subagentId, event.taskId);
     } else {
@@ -1448,7 +1449,9 @@ export class AgentTranscriptLiveAdapter {
     }
     const startedAt = epochMsToIso(event.time);
     const hit =
-      this.toolFrames.get(event.parentToolCallId) ?? this.adoptToolFrame(event.parentToolCallId);
+      parentToolCallId === undefined
+        ? undefined
+        : this.toolFrames.get(parentToolCallId) ?? this.adoptToolFrame(parentToolCallId);
     const inferredOwnerTurnId =
       turnOrdinalOf(hit?.turnId) ??
       (this.currentTurn?.state === 'running' ? this.currentTurn.ordinal : undefined);
@@ -1470,7 +1473,7 @@ export class AgentTranscriptLiveAdapter {
         thinkingEffortExplicit: event.thinkingEffortExplicit ?? previous.thinkingEffortExplicit,
         executorId: event.executorId ?? previous.executorId,
         executorProtocol: event.executorProtocol ?? previous.executorProtocol,
-        parentToolCallId: event.parentToolCallId ?? previous.parentToolCallId,
+        parentToolCallId: parentToolCallId ?? previous.parentToolCallId,
         description: event.description ?? previous.description,
       };
       const enriched = transcriptResidentValueEquals(previous, task) ? previous : task;
@@ -1492,7 +1495,7 @@ export class AgentTranscriptLiveAdapter {
         thinkingEffortExplicit: event.thinkingEffortExplicit,
         executorId: event.executorId,
         executorProtocol: event.executorProtocol,
-        parentToolCallId: event.parentToolCallId,
+        parentToolCallId,
         description: event.description,
         agentId: event.subagentId,
         outputTail: '',
@@ -1501,7 +1504,7 @@ export class AgentTranscriptLiveAdapter {
       this.tasks.set(taskKey, task);
       ops.push({ op: 'task.upsert', task });
     }
-    if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === event.subagentId)) {
+    if (parentToolCallId !== undefined && hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === event.subagentId)) {
       const ref: AgentRef = {
         agentId: event.subagentId,
         role: 'child',
@@ -1510,7 +1513,7 @@ export class AgentTranscriptLiveAdapter {
         ...hit.frame,
         agentRefs: [...(hit.frame.agentRefs ?? []), ref],
       };
-      this.toolFrames.set(event.parentToolCallId, { ...hit, frame });
+      this.toolFrames.set(parentToolCallId, { ...hit, frame });
       ops.push({ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame });
     }
     return ops;

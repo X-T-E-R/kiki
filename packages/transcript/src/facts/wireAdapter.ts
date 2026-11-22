@@ -1138,11 +1138,11 @@ export class TranscriptWireAdapter {
         stateReason: stopReason ?? previous?.stateReason,
       };
       this.#tasks.set(taskId, task);
-      if (task.kind === 'subagent' && agentId !== undefined) {
-        this.#subagentTaskIds.set(agentId, taskId);
-      }
       const operations: TranscriptOperation[] = [];
       if (record.type === 'task.started') {
+        if (task.kind === 'subagent' && agentId !== undefined) {
+          this.#subagentTaskIds.set(agentId, taskId);
+        }
         operations.push({
           op: 'taskref.upsert',
           item: {
@@ -1192,15 +1192,16 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'subagent.spawned') {
       const subagentId = stringOf(record['subagentId']);
-      const parentToolCallId = stringOf(record['parentToolCallId']);
+      const rawParentToolCallId = stringOf(record['parentToolCallId']);
       const detached = booleanOf(record['runInBackground']);
-      if (subagentId === undefined || parentToolCallId === undefined || detached === undefined) return [];
+      if (subagentId === undefined || rawParentToolCallId === undefined || detached === undefined) return [];
+      const parentToolCallId = rawParentToolCallId === '' ? undefined : rawParentToolCallId;
       const explicitTaskId = stringOf(record['taskId']);
       const taskId = explicitTaskId ?? subagentId;
       if (explicitTaskId === undefined) this.#subagentTaskIds.delete(subagentId);
       else this.#subagentTaskIds.set(subagentId, explicitTaskId);
       const startedAt = isoOf(record.time);
-      const hit = this.#tools.get(parentToolCallId) ?? this.lookups?.tool?.(parentToolCallId);
+      const hit = parentToolCallId === undefined ? undefined : this.#tools.get(parentToolCallId) ?? this.lookups?.tool?.(parentToolCallId);
       const current = this.#currentTurnId === undefined
         ? undefined
         : this.#turnHeaders.get(this.#currentTurnId) ?? this.lookups?.turn?.(this.#currentTurnId);
@@ -1254,7 +1255,7 @@ export class TranscriptWireAdapter {
         this.#tasks.set(taskId, task);
         operations.push({ op: 'task.upsert', task });
       }
-      if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === subagentId)) {
+      if (parentToolCallId !== undefined && hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === subagentId)) {
         const frame: ToolCallFrame = {
           ...hit.frame,
           agentRefs: [

@@ -144,11 +144,14 @@ export class SubagentRosterTracker {
           id: event.subagentId,
           session_id: sessionId,
           kind: 'subagent',
-          description: resolveSubagentDisplayName(
-            event.userLabel,
-            event.subagentName,
-            event.subagentId,
-          ),
+          description:
+            event.userLabel !== undefined && event.userLabel !== ''
+              ? event.userLabel
+              : existing?.description ?? resolveSubagentDisplayName(
+                event.userLabel,
+                event.subagentName,
+                event.subagentId,
+              ),
           live: acceptedRun ? true : existing?.live,
           status: acceptedRun
             ? restarted

@@ -1663,21 +1663,64 @@ function relevantSubagentToolFrames(step: ProjectionStep): readonly ProjectionTo
   return matched;
 }
 
+function isSyntheticPhaseTaskId(taskId: string | undefined): boolean {
+  return taskId !== undefined && taskId.startsWith('agent-phase-');
+}
+
+function isAutonomousReceiptTaskId(taskId: string | undefined): boolean {
+  return taskId !== undefined && taskId.startsWith('agent-receipt-');
+}
+
+function mergeAbsorbedTaskIds(
+  existing: readonly string[] | undefined,
+  ids: Iterable<string>,
+): readonly string[] | undefined {
+  let next: string[] | undefined;
+  const seen = new Set(existing);
+  for (const id of ids) {
+    if (id === '' || seen.has(id)) continue;
+    seen.add(id);
+    next ??= existing === undefined ? [] : [...existing];
+    next.push(id);
+  }
+  return next ?? existing;
+}
+
+function resolveSubagentBlockName(
+  task: { readonly name?: string; readonly subagentName?: string } | undefined,
+  existingName: string | undefined,
+  priorName: string | undefined,
+  agentId: string,
+): string {
+  const explicit = presentText(task?.name);
+  if (explicit !== undefined) return explicit;
+  if (existingName !== undefined && existingName !== '' && existingName !== agentId) return existingName;
+  if (priorName !== undefined && priorName !== '' && priorName !== agentId) return priorName;
+  return presentText(task?.subagentName) ?? agentId;
+}
+
 function subagentBlocksFromSnapshot(
   response: AgentTranscriptProjectionSource,
   parentAgentId: string,
+  pageBlocks?: readonly Block[],
 ): { blocks: SubagentBlock[]; events: SubagentEventBlock[] } {
   const tasks = response.tasks ?? [];
   const taskById = new Map(tasks.map((task) => [task.taskId, task]));
   // One agent can run several times (resume re-prompts spawn a fresh task each
   // run): keep the full per-agent task list so lifecycle history is not
-  // flattened into a single task. The card itself still reflects the latest run.
-  const tasksByAgent = new Map<string, NonNullable<typeof response.tasks>[number][]>();
+  // flattened into a single task. Synthetic mid-run phase checkpoints
+  // (`agent-phase-*`) are excluded from run selection when a real task exists.
+  const allSubagentTasksByAgent = new Map<string, NonNullable<typeof response.tasks>[number][]>();
   for (const task of tasks) {
     if (task.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
-    const list = tasksByAgent.get(task.agentId);
-    if (list === undefined) tasksByAgent.set(task.agentId, [task]);
+    const list = allSubagentTasksByAgent.get(task.agentId);
+    if (list === undefined) allSubagentTasksByAgent.set(task.agentId, [task]);
     else list.push(task);
+  }
+  const tasksByAgent = new Map<string, NonNullable<typeof response.tasks>[number][]>();
+  for (const [agentId, list] of allSubagentTasksByAgent) {
+    const nonPhase = list.filter((task) => !isSyntheticPhaseTaskId(task.taskId));
+    tasksByAgent.set(agentId, nonPhase.length > 0 ? nonPhase : list);
   }
   const taskByAgent = new Map(
     [...tasksByAgent.entries()].map(([agentId, list]) => [agentId, list.at(-1)!] as const),
@@ -1763,28 +1806,304 @@ function subagentBlocksFromSnapshot(
       else list.push(runKey);
     }
   };
-  const pendingResumeByAgent = new Map<string, { toolCallId: string; turnId: string; instruction?: string; at?: string }[]>();
+  type PageReceiptNote = { readonly taskId: string; readonly turnId?: string; readonly index: number };
+  const pageReceiptNotesByAgent = new Map<string, PageReceiptNote[]>();
+  const toolBlockIndexByCallId = new Map<string, number>();
+  const turnFirstIndexByTurnId = new Map<string, number>();
+  const blockCount = pageBlocks?.length ?? 0;
+  const breakerPrefix = new Int32Array(blockCount + 1);
+  if (pageBlocks !== undefined) {
+    for (let index = 0; index < pageBlocks.length; index += 1) {
+      const block = pageBlocks[index]!;
+      const isBreaker =
+        block.kind === 'user' || block.kind === 'assistant' || block.kind === 'message' || block.kind === 'question' || block.kind === 'approval' ||
+        (block.kind === 'notice' && (block.externalText !== undefined || block.tone !== 'neutral' || block.executor === undefined || block.executor.kind === 'compaction'));
+      breakerPrefix[index + 1] = breakerPrefix[index]! + (isBreaker ? 1 : 0);
+      const turnId = normalizeTurnId(blockTurnId(block));
+      if (turnId !== undefined && !turnFirstIndexByTurnId.has(turnId)) {
+        turnFirstIndexByTurnId.set(turnId, index);
+      }
+      if (block.kind === 'tool' && presentText(block.toolCallId) !== undefined) {
+        toolBlockIndexByCallId.set(block.toolCallId, index);
+      }
+      if (block.kind === 'system' && block.variant === 'task') {
+        const noteTaskId = presentText(block.taskId) ?? presentText(block.taskNotification?.sourceId);
+        if (noteTaskId === undefined || !isAutonomousReceiptTaskId(noteTaskId)) continue;
+        const noteTask = taskById.get(noteTaskId);
+        const noteAgentId = presentText(noteTask?.agentId) ?? presentText(block.taskNotification?.agentId);
+        if (noteAgentId === undefined) continue;
+        const list = pageReceiptNotesByAgent.get(noteAgentId);
+        const entry: PageReceiptNote = { taskId: noteTaskId, turnId: normalizeTurnId(block.turnId), index };
+        if (list === undefined) pageReceiptNotesByAgent.set(noteAgentId, [entry]);
+        else list.push(entry);
+      }
+    }
+  }
+  const isSeparateReceiptNote = (target: SubagentBlock, note: PageReceiptNote): boolean => {
+    const targetTurn = normalizeTurnId(target.parentTurnId);
+    if (targetTurn !== undefined && note.turnId !== undefined && !sameTurnId(targetTurn, note.turnId)) {
+      return true;
+    }
+    const anchorIndex =
+      presentText(target.parentToolCallId) !== undefined && toolBlockIndexByCallId.has(target.parentToolCallId!)
+        ? toolBlockIndexByCallId.get(target.parentToolCallId!)!
+        : targetTurn !== undefined
+          ? (turnFirstIndexByTurnId.get(targetTurn) ?? -1)
+          : -1;
+    if (anchorIndex >= 0) {
+      const start = Math.min(anchorIndex, note.index) + 1;
+      const end = Math.max(anchorIndex, note.index) - 1;
+      if (start <= end && breakerPrefix[end + 1]! - breakerPrefix[start]! > 0) return true;
+    }
+    return false;
+  };
+  const claimedReceiptNoteIds = new Set<string>();
+  const findMatchingReceiptNote = (
+    task: NonNullable<typeof response.tasks>[number],
+    notes: readonly PageReceiptNote[],
+  ): PageReceiptNote | undefined => {
+    const taskStatus = mapTaskState(task.state);
+    const taskSummary = presentText(task.resultSummary) ?? presentText(task.outputTail);
+    const taskError = presentText(task.error) ?? presentText(task.stateReason);
+    const taskStartMs = timestampMs(task.startedAt);
+    const taskEndMs = timestampMs(task.endedAt);
+    return notes.find((note) => {
+      if (claimedReceiptNoteIds.has(note.taskId)) return false;
+      const receiptTask = taskById.get(note.taskId);
+      if (receiptTask !== undefined && mapTaskState(receiptTask.state) !== taskStatus) return false;
+      const receiptStartMs = timestampMs(receiptTask?.startedAt);
+      const receiptEndMs = timestampMs(receiptTask?.endedAt);
+      if (taskStartMs !== undefined && receiptEndMs !== undefined && receiptEndMs < taskStartMs) return false;
+      if (taskEndMs !== undefined && receiptStartMs !== undefined && receiptStartMs > taskEndMs) return false;
+      const receiptSummary = presentText(receiptTask?.resultSummary) ?? presentText(receiptTask?.outputTail);
+      if (taskSummary !== undefined && receiptSummary !== undefined && taskSummary !== receiptSummary) return false;
+      if (taskStatus === 'failed') {
+        const receiptError = presentText(receiptTask?.error) ?? presentText(receiptTask?.stateReason);
+        if (taskError !== undefined && receiptError !== undefined && taskError !== receiptError) return false;
+      }
+      return true;
+    });
+  };
+  type ResumeCallHint = {
+    readonly toolCallId: string;
+    readonly turnId: string;
+    readonly instruction?: string;
+    readonly at?: string;
+    claimed: boolean;
+  };
+  const explicitlyClaimedToolCallIds = new Set<string>();
+  for (const agentTasks of tasksByAgent.values()) {
+    for (const candidate of agentTasks) {
+      const callId = presentText(candidate.parentToolCallId);
+      if (callId !== undefined) explicitlyClaimedToolCallIds.add(callId);
+    }
+  }
+  const nextTurnAfter = new Array<{ readonly turnId: string; readonly startedAt?: number } | undefined>(response.items.length);
+  {
+    let nextTurn: { readonly turnId: string; readonly startedAt?: number } | undefined;
+    for (let index = response.items.length - 1; index >= 0; index -= 1) {
+      const item = response.items[index]!;
+      nextTurnAfter[index] = nextTurn;
+      if (item.kind === 'turn') {
+        nextTurn = { turnId: item.turnId, startedAt: timestampMs(item.startedAt) };
+      }
+    }
+  }
+  const knownAgentIds = new Set(tasksByAgentKeySet);
+  const resumeHintsByAgent = new Map<string, ResumeCallHint[]>();
+  for (const item of response.items) {
+    if (item.kind !== 'turn') continue;
+    for (const step of item.steps) {
+      for (const frame of relevantSubagentToolFrames(step)) {
+        if (frame.agentRefs !== undefined) {
+          for (const ref of frame.agentRefs) knownAgentIds.add(ref.agentId);
+        }
+        if (
+          (frame.name !== 'AgentRun' && frame.name !== 'Agent') ||
+          frame.state === 'error' ||
+          frame.state === 'interrupted' ||
+          presentText(frame.error) !== undefined ||
+          presentText(frame.errorCode) !== undefined
+        ) {
+          continue;
+        }
+        const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
+        const seenTargets = new Set<string>();
+        for (const raw of resumeTargetsFromToolArgs(frame.input)) {
+          const targetId = resolveKnownAgentId(raw, latestByAgent, knownAgentIds, nameToAgentId);
+          if (targetId === undefined || seenTargets.has(targetId)) continue;
+          seenTargets.add(targetId);
+          const hint: ResumeCallHint = {
+            toolCallId: frame.toolCallId,
+            turnId: item.turnId,
+            instruction: spawnInstructionFromToolArgs(frame.input, targetId),
+            at: frameAt,
+            claimed: false,
+          };
+          const list = resumeHintsByAgent.get(targetId);
+          if (list === undefined) resumeHintsByAgent.set(targetId, [hint]);
+          else list.push(hint);
+        }
+      }
+    }
+  }
+  const claimResumeHint = (
+    agentId: string,
+    taskParentToolCallId: string | undefined,
+    task: NonNullable<typeof response.tasks>[number],
+    itemAt: string | undefined,
+    itemIndex: number,
+    previousTurnId: string | undefined,
+  ): ResumeCallHint | undefined => {
+    const hints = resumeHintsByAgent.get(agentId);
+    if (hints === undefined || hints.length === 0) return undefined;
+    if (taskParentToolCallId !== undefined) {
+      const exact = hints.find((hint) => !hint.claimed && hint.toolCallId === taskParentToolCallId);
+      if (exact !== undefined) exact.claimed = true;
+      return exact;
+    }
+    const explicitOwnerTurn = normalizeTurnId(task.ownerTurnId);
+    const timedTurn = eventTurn(itemAt ?? task.startedAt);
+    const nextTurn = nextTurnAfter[itemIndex];
+    const taskEndedMs = timestampMs(task.endedAt);
+    const endedBeforeNextTurn =
+      taskEndedMs !== undefined && nextTurn?.startedAt !== undefined && taskEndedMs < nextTurn.startedAt;
+    const match = hints.find((hint) => {
+      if (hint.claimed || explicitlyClaimedToolCallIds.has(hint.toolCallId)) return false;
+      const hintStartedMs = timestampMs(hint.at);
+      if (taskEndedMs !== undefined && hintStartedMs !== undefined && taskEndedMs < hintStartedMs) return false;
+      if (explicitOwnerTurn !== undefined) return sameTurnId(hint.turnId, explicitOwnerTurn);
+      if (timedTurn !== undefined && sameTurnId(hint.turnId, timedTurn)) return true;
+      if (!endedBeforeNextTurn && nextTurn !== undefined && sameTurnId(hint.turnId, nextTurn.turnId)) return true;
+      return timedTurn === undefined && sameTurnId(hint.turnId, previousTurnId);
+    });
+    if (match !== undefined) match.claimed = true;
+    return match;
+  };
   const rawEvents: RawSubagentEvent[] = [];
   const spawnMarked = new Set<string>();
   let previousTurnId: string | undefined;
-  for (const item of response.items) {
+  for (let itemIndex = 0; itemIndex < response.items.length; itemIndex += 1) {
+    const item = response.items[itemIndex]!;
     if (item.kind === 'taskref') {
       const task = taskById.get(item.taskId);
       if (task?.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
+      if (isSyntheticPhaseTaskId(task.taskId) && (tasksByAgent.get(task.agentId)?.some((candidate) => !isSyntheticPhaseTaskId(candidate.taskId)) ?? false)) {
+        continue;
+      }
+      const taskParentToolCallId = presentText(task.parentToolCallId);
       const priorAgentBlock = latestByAgent.get(task.agentId);
-      const pendingList = pendingResumeByAgent.get(task.agentId);
-      const pendingResume = pendingList?.shift();
+      const matchedResume = claimResumeHint(task.agentId, taskParentToolCallId, task, item.at, itemIndex, previousTurnId);
+      const agentTasks = tasksByAgent.get(task.agentId) ?? [];
+      const taskEndedMs = timestampMs(task.endedAt);
+      const hasConcurrentRunningTask = agentTasks.some((candidate) => {
+        if (candidate.taskId === task.taskId || candidate.state !== 'running') return false;
+        const candidateStartedMs = timestampMs(candidate.startedAt);
+        if (taskEndedMs === undefined || candidateStartedMs === undefined) return true;
+        return candidateStartedMs <= taskEndedMs;
+      });
+      const agentReceiptNotes = pageReceiptNotesByAgent.get(task.agentId) ?? [];
       const existingRun = runsByKey.get(`task:${task.taskId}`);
       const unanchoredKey = [`agent:${task.agentId}`, ...(runKeysByAgent.get(task.agentId) ?? [])].find((key) => {
         if (key === `task:${task.taskId}`) return false;
         const candidate = runsByKey.get(key);
         if (candidate === undefined) return false;
-        if (task.parentToolCallId !== undefined && candidate.parentToolCallId === task.parentToolCallId) return true;
-        return !admittedTaskIds.has(candidate.taskId ?? '') &&
-          candidate.parentToolCallId !== undefined &&
+        if (taskParentToolCallId !== undefined && candidate.parentToolCallId === taskParentToolCallId) return true;
+        return (candidate.taskId === undefined || candidate.taskId === task.taskId) &&
+          !admittedTaskIds.has(candidate.taskId ?? '') &&
+          presentText(candidate.parentToolCallId) !== undefined &&
           sameTurnId(candidate.parentTurnId, previousTurnId);
       });
       const unanchored = unanchoredKey === undefined ? undefined : runsByKey.get(unanchoredKey);
+      // An unanchored continuation (manual user prompt to a subagent, mailbox
+      // wakeup, or autonomous receipt without an AgentRun/resume tool call on
+      // this parent) updates the existing subagent card in place instead of
+      // cloning a duplicate card and stray completion event onto the timeline.
+      if (
+        existingRun === undefined &&
+        unanchored === undefined &&
+        priorAgentBlock !== undefined &&
+        taskParentToolCallId === undefined &&
+        matchedResume === undefined
+      ) {
+        const latestRunKey = runKeysByAgent.get(task.agentId)?.at(-1);
+        const target = latestRunKey === undefined ? undefined : runsByKey.get(latestRunKey);
+        if (latestRunKey !== undefined && target !== undefined) {
+          const nextStatus = mapTaskState(task.state);
+          const matchedReceiptNote =
+            nextStatus === 'running' ? undefined : findMatchingReceiptNote(task, agentReceiptNotes);
+          if (matchedReceiptNote !== undefined) claimedReceiptNoteIds.add(matchedReceiptNote.taskId);
+          const nextAbsorbed = mergeAbsorbedTaskIds(
+            target.absorbedTaskIds,
+            matchedReceiptNote === undefined ? [task.taskId] : [task.taskId, matchedReceiptNote.taskId],
+          );
+          const targetEndedMs = timestampMs(target.endedAt);
+          const supersededByLaterTarget =
+            nextStatus !== 'running' &&
+            targetEndedMs !== undefined &&
+            taskEndedMs !== undefined &&
+            taskEndedMs < targetEndedMs;
+          if (nextStatus !== 'running' && (target.status === 'running' || hasConcurrentRunningTask || supersededByLaterTarget)) {
+            recordRun(latestRunKey, {
+              ...target,
+              absorbedTaskIds: nextAbsorbed,
+            });
+            continue;
+          }
+          const separateReceipt =
+            matchedReceiptNote !== undefined && isSeparateReceiptNote(target, matchedReceiptNote);
+          const taskSummary = presentText(task.resultSummary) ?? presentText(task.outputTail);
+          const nextSummary =
+            nextStatus === 'running' || separateReceipt
+              ? target.summary
+              : (taskSummary ?? target.summary);
+          const nextResultTaskId =
+            nextStatus === 'running' || separateReceipt
+              ? target.resultTaskId
+              : (taskSummary !== undefined ? task.taskId : target.resultTaskId);
+          const nextError =
+            nextStatus === 'failed'
+              ? (separateReceipt ? target.error : (presentText(task.error) ?? presentText(task.stateReason)))
+              : nextStatus === 'running' || nextStatus === 'completed'
+                ? (separateReceipt ? target.error : undefined)
+                : (presentText(task.error) ?? presentText(task.stateReason) ?? target.error);
+          const resolvedStatus = separateReceipt && target.status !== 'running' ? target.status : nextStatus;
+          recordRun(latestRunKey, {
+            ...target,
+            absorbedTaskIds: nextAbsorbed,
+            resultTaskId: nextResultTaskId,
+            name: resolveSubagentBlockName(task, target.name, priorAgentBlock.name, task.agentId),
+            model: task.model ?? target.model,
+            thinkingEffort: task.thinkingEffort ?? target.thinkingEffort,
+            thinkingEffortExplicit: task.thinkingEffortExplicit ?? target.thinkingEffortExplicit,
+            executorId: task.executorId ?? target.executorId,
+            executorProtocol: task.executorProtocol ?? target.executorProtocol,
+            status: resolvedStatus,
+            summary: nextSummary,
+            error: nextError,
+            usage: task.usage ?? target.usage,
+            endedAt: resolvedStatus === 'running'
+              ? undefined
+              : (separateReceipt ? (target.endedAt ?? task.endedAt) : (task.endedAt ?? target.endedAt)),
+          });
+          continue;
+        }
+      }
+      if (
+        existingRun === undefined &&
+        unanchored === undefined &&
+        priorAgentBlock === undefined &&
+        taskParentToolCallId === undefined &&
+        matchedResume === undefined &&
+        earliestTaskIdByAgent.get(task.agentId) !== task.taskId &&
+        mapTaskState(task.state) !== 'running'
+      ) {
+        const matchedReceiptNote = findMatchingReceiptNote(task, agentReceiptNotes);
+        if (matchedReceiptNote !== undefined) {
+          claimedReceiptNoteIds.add(matchedReceiptNote.taskId);
+          continue;
+        }
+      }
       if (unanchoredKey !== undefined && unanchored !== undefined) {
         runsByKey.delete(unanchoredKey);
         const list = runKeysByAgent.get(task.agentId);
@@ -1796,12 +2115,12 @@ function subagentBlocksFromSnapshot(
       const base = existingRun ?? unanchored;
       const existingCount = runKeysByAgent.get(task.agentId)?.length ?? 0;
       const cardId = base?.id ?? (existingCount === 0 ? `subagent-${task.agentId}` : `subagent-${task.agentId}-${task.taskId}`);
-      const startedAt = item.at ?? task.startedAt ?? base?.startedAt ?? pendingResume?.at;
+      const startedAt = item.at ?? task.startedAt ?? base?.startedAt ?? matchedResume?.at;
       const isEarliestRun = earliestTaskIdByAgent.get(task.agentId) === task.taskId;
-      const parentToolCallId = task.parentToolCallId ?? base?.parentToolCallId ?? pendingResume?.toolCallId;
+      const parentToolCallId = taskParentToolCallId ?? presentText(base?.parentToolCallId) ?? matchedResume?.toolCallId;
       const parentTurnId =
         base?.parentTurnId ??
-        pendingResume?.turnId ??
+        matchedResume?.turnId ??
         normalizeTurnId(task.ownerTurnId) ??
         eventTurn(startedAt, previousTurnId);
       recordRun(`task:${task.taskId}`, {
@@ -1809,20 +2128,20 @@ function subagentBlocksFromSnapshot(
         id: cardId,
         subagentId: task.agentId,
         taskId: task.taskId,
-        resumed: !isEarliestRun || pendingResume !== undefined || base?.resumed === true ? true : undefined,
+        resumed: !isEarliestRun || matchedResume !== undefined || base?.resumed === true ? true : undefined,
         parentAgentId,
         parentToolCallId,
         parentTurnId,
-        name: task.name ?? task.subagentName ?? priorAgentBlock?.name ?? task.agentId,
-        description: base?.description ?? task.description ?? pendingResume?.instruction ?? priorAgentBlock?.description,
-        instruction: base?.instruction ?? pendingResume?.instruction ?? priorAgentBlock?.instruction,
+        name: resolveSubagentBlockName(task, base?.name, priorAgentBlock?.name, task.agentId),
+        description: base?.description ?? task.description ?? matchedResume?.instruction ?? priorAgentBlock?.description,
+        instruction: base?.instruction ?? matchedResume?.instruction ?? priorAgentBlock?.instruction,
         model: task.model ?? base?.model ?? priorAgentBlock?.model,
         thinkingEffort: task.thinkingEffort ?? base?.thinkingEffort ?? priorAgentBlock?.thinkingEffort,
         thinkingEffortExplicit: task.thinkingEffortExplicit ?? base?.thinkingEffortExplicit ?? priorAgentBlock?.thinkingEffortExplicit,
         executorId: task.executorId ?? base?.executorId ?? priorAgentBlock?.executorId,
         executorProtocol: task.executorProtocol ?? base?.executorProtocol ?? priorAgentBlock?.executorProtocol,
         status: mapTaskState(task.state),
-        summary: task.resultSummary ?? (task.outputTail === '' ? base?.summary : task.outputTail),
+        summary: presentText(task.resultSummary) ?? presentText(task.outputTail) ?? base?.summary,
         error: task.error ?? task.stateReason ?? base?.error,
         usage: task.usage ?? base?.usage,
         startedAt,
@@ -1833,7 +2152,7 @@ function subagentBlocksFromSnapshot(
       });
       admittedTaskIds.add(task.taskId);
       taskTurns.set(task.taskId, parentTurnId ?? previousTurnId);
-      const isResumedRun = !isEarliestRun || pendingResume !== undefined || base?.resumed === true;
+      const isResumedRun = !isEarliestRun || matchedResume !== undefined || base?.resumed === true;
       if (!spawnMarked.has(task.agentId) && !isResumedRun) {
         spawnMarked.add(task.agentId);
         rawEvents.push({
@@ -1852,11 +2171,16 @@ function subagentBlocksFromSnapshot(
       for (const frame of relevantSubagentToolFrames(step)) {
         const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
         const resumedTargets = new Set<string>();
-        const resumeTargets = frame.name === 'AgentRun' || frame.name === 'Agent'
-          ? resumeTargetsFromToolArgs(frame.input)
-          : [];
+        const resumeTargets =
+          (frame.name === 'AgentRun' || frame.name === 'Agent') &&
+          frame.state !== 'error' &&
+          frame.state !== 'interrupted' &&
+          presentText(frame.error) === undefined &&
+          presentText(frame.errorCode) === undefined
+            ? resumeTargetsFromToolArgs(frame.input)
+            : [];
         for (const raw of resumeTargets) {
-          const targetId = resolveKnownAgentId(raw, latestByAgent, tasksByAgentKeySet, nameToAgentId);
+          const targetId = resolveKnownAgentId(raw, latestByAgent, knownAgentIds, nameToAgentId);
           if (targetId === undefined || resumedTargets.has(targetId)) continue;
           resumedTargets.add(targetId);
           const instruction = spawnInstructionFromToolArgs(frame.input, targetId);
@@ -1878,11 +2202,6 @@ function subagentBlocksFromSnapshot(
               instruction: instruction ?? current.instruction,
               description: current.description ?? instruction,
             });
-          } else {
-            const list = pendingResumeByAgent.get(targetId);
-            const entry = { toolCallId: frame.toolCallId, turnId: item.turnId, instruction, at: frameAt };
-            if (list === undefined) pendingResumeByAgent.set(targetId, [entry]);
-            else list.push(entry);
           }
           rawEvents.push({
             id: `subagent-event-${targetId}-resume-${frame.toolCallId}`,
@@ -1919,13 +2238,13 @@ function subagentBlocksFromSnapshot(
         for (const ref of frame.agentRefs) {
           const priorAgentBlock = latestByAgent.get(ref.agentId);
           const agentTaskList = tasksByAgent.get(ref.agentId) ?? [];
-          const directTask = agentTaskList.find((candidate) => candidate.parentToolCallId === frame.toolCallId);
+          const directTask = agentTaskList.find((candidate) => presentText(candidate.parentToolCallId) === frame.toolCallId);
           const isResumeCall = resumeTargets.length > 0;
           const earliestTaskId = earliestTaskIdByAgent.get(ref.agentId);
           const task = directTask ?? (
             agentTaskList.length === 1 && !admittedTaskIds.has(agentTaskList[0]!.taskId)
               ? agentTaskList[0]
-              : !isResumeCall && earliestTaskId !== undefined && !admittedTaskIds.has(earliestTaskId)
+              : !isResumeCall && earliestTaskId !== undefined
                 ? taskById.get(earliestTaskId) ?? taskByAgent.get(ref.agentId)
                 : isResumeCall
                   ? agentTaskList.findLast((candidate) => !admittedTaskIds.has(candidate.taskId)) ?? taskByAgent.get(ref.agentId)
@@ -1937,8 +2256,8 @@ function subagentBlocksFromSnapshot(
             : (runKeysByAgent.get(ref.agentId) ?? []).find((key) => {
                 const candidate = runsByKey.get(key);
                 return candidate !== undefined && (
-                  candidate.parentToolCallId === frame.toolCallId ||
-                  (candidate.parentToolCallId === undefined && (task === undefined || candidate.taskId === undefined || candidate.taskId === task.taskId || !admittedTaskIds.has(task.taskId)))
+                  presentText(candidate.parentToolCallId) === frame.toolCallId ||
+                  (presentText(candidate.parentToolCallId) === undefined && (task === undefined || candidate.taskId === undefined || candidate.taskId === task.taskId || !admittedTaskIds.has(task.taskId)))
                 );
               });
           const runKey = existingRunKey ?? (task !== undefined ? `task:${task.taskId}` : `agent:${ref.agentId}`);
@@ -1954,7 +2273,7 @@ function subagentBlocksFromSnapshot(
             parentAgentId,
             parentToolCallId: frame.toolCallId,
             parentTurnId: item.turnId,
-            name: task?.name ?? task?.subagentName ?? existing?.name ?? priorAgentBlock?.name ?? ref.agentId,
+            name: resolveSubagentBlockName(task, existing?.name, priorAgentBlock?.name, ref.agentId),
             description: existing?.description ?? task?.description ?? instruction ?? priorAgentBlock?.description,
             instruction: instruction ?? existing?.instruction ?? priorAgentBlock?.instruction,
             model: task?.model ?? existing?.model ?? priorAgentBlock?.model,
@@ -1980,6 +2299,19 @@ function subagentBlocksFromSnapshot(
           });
         }
       }
+    }
+  }
+  for (const [agentId, runKeys] of runKeysByAgent) {
+    const latestRunKey = runKeys.at(-1);
+    const target = latestRunKey === undefined ? undefined : runsByKey.get(latestRunKey);
+    if (latestRunKey === undefined || target === undefined) continue;
+    const unAdmittedReceiptIds = (tasksByAgent.get(agentId) ?? [])
+      .filter((candidate) => isAutonomousReceiptTaskId(candidate.taskId) && !admittedTaskIds.has(candidate.taskId))
+      .map((candidate) => candidate.taskId);
+    if (unAdmittedReceiptIds.length === 0) continue;
+    const nextAbsorbed = mergeAbsorbedTaskIds(target.absorbedTaskIds, unAdmittedReceiptIds);
+    if (nextAbsorbed !== target.absorbedTaskIds) {
+      recordRun(latestRunKey, { ...target, absorbedTaskIds: nextAbsorbed });
     }
   }
   const terminalMarked = new Set<string>();
@@ -4422,7 +4754,7 @@ export function agentTranscriptToBlocks(
     }
     withTaskBlocks = taskInsertionList.materialize(timedTasks, compareTimedBlocks);
   }
-  const projectedSubagents = subagentBlocksFromSnapshot(response, response.agent_id);
+  const projectedSubagents = subagentBlocksFromSnapshot(response, response.agent_id, withTaskBlocks);
   const targetsByTool = new Map<string, Set<string>>();
   for (const event of projectedSubagents.events) {
     if (event.anchorToolCallId === undefined) continue;

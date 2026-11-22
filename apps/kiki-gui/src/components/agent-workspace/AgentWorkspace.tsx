@@ -1209,12 +1209,16 @@ function ChildAgentWorkspace({
     pendingSendRef.current = submission;
     try {
       const hasNonTextAttachment = content.some((part) => part.type !== 'text');
-      // Native text-only sends use the key as their prompt id, so the echo can
-      // hand over to the projected row; other sends drop it when they settle.
+      // Native text-only sends pass submission.key as their server prompt_id so
+      // the local echo hands over cleanly to the canonical projected row.
+      // Attachment and external sends receive a server-assigned id; skipping
+      // the unkeyed local echo avoids a two-bubble window if WS arrives first.
       const keyedEcho = !externalExecutor && !hasNonTextAttachment;
-      setSendEcho({ scope: sendScope, agentId, id: submission.key, text: submittedText, content, createdAt: new Date().toISOString(),
-        slow: false, preserved: false, retryable: false, status: 'sending' });
-      revealOwnSend(false);
+      if (keyedEcho) {
+        setSendEcho({ scope: sendScope, agentId, id: submission.key, text: submittedText, content, createdAt: new Date().toISOString(),
+          slow: false, preserved: false, retryable: false, status: 'sending' });
+        revealOwnSend(false);
+      }
       let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
       try {
         // The server already defaults to agent_idle; keep the ordinary six-arg
@@ -1381,8 +1385,6 @@ function ChildAgentWorkspace({
     if (content === null) return;
     if (controller === null) throw new Error(t('subagent.composerUnavailable'));
     const echoId = randomUuid();
-    const hasNonTextAttachment = content.some((part) => part.type !== 'text');
-    const keyedEcho = !externalExecutor && !hasNonTextAttachment;
     let resolveFlight!: () => void;
     const flightPromise = new Promise<void>((resolve) => {
       resolveFlight = resolve;
@@ -1405,18 +1407,6 @@ function ChildAgentWorkspace({
     if (carry.sentIds.size > 0) {
       setAnnotations((current) => current.filter((annotation) => !carry.sentIds.has(annotation.id)));
     }
-    setSendEcho({
-      scope: sendScope,
-      agentId,
-      id: echoId,
-      text: carry.quotedText,
-      content,
-      createdAt: new Date().toISOString(),
-      slow: false,
-      preserved: false,
-      retryable: false,
-      status: 'sending',
-    });
     revealOwnSend(true);
     try {
       const result = await controller.sendPromptNow({
@@ -1425,13 +1415,6 @@ function ChildAgentWorkspace({
         content,
         skills: externalExecutor ? undefined : skills,
       });
-      if (keyedEcho && result.promptId !== undefined) {
-        setSendEcho((current) =>
-          current?.id === echoId ? { ...current, id: result.promptId!, settledOnServer: true } : current,
-        );
-      } else {
-        clearSendEcho(echoId);
-      }
       settlePendingSubmission(draftKey, echoId, carry.sentIds);
       const notice = sendNowNotice(result.outcome, result.reason);
       if (notice !== undefined) pushToast({ tone: notice.tone, text: t(notice.key) });
@@ -1441,7 +1424,6 @@ function ChildAgentWorkspace({
         trackNowReceipt(result.promptId, null);
       }
     } catch (error) {
-      clearSendEcho(echoId);
       settlePendingSubmission(draftKey, echoId);
       const reason = error instanceof SendNowError ? error.reason : 'submit';
       if (reason !== 'unknown') {

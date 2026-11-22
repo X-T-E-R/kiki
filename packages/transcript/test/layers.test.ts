@@ -5663,3 +5663,66 @@ it('projects durable token_counting and model_switch records onto meta.agent.con
   feed({ type: 'token_counting.rebased', tokens: 0, time: 60 });
   expect(transcript.getMeta().agent?.contextTokens).toBe(0);
 });
+
+it('normalizes empty parentToolCallId on subagent.spawned and keeps active subagentTaskIds across terminal phase tasks', () => {
+  const transcript = new AgentTranscript('main');
+  const adapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    tool: (toolCallId) => transcript.getToolCall(toolCallId),
+    task: (taskId) => transcript.getTask(taskId),
+  });
+  const reducer = new TranscriptFactReducer(transcript);
+  const feed = (record: TranscriptWireRecord) => reducer.apply(adapter.add(record));
+  feed({
+    type: 'task.started',
+    time: 100,
+    info: {
+      taskId: 'task-live-1',
+      kind: 'agent',
+      agentId: 'agent-1',
+      profile: 'implementer',
+      collaborationTaskName: 'alice',
+      description: 'Audit auth',
+      status: 'running',
+      detached: true,
+      startedAt: 100,
+      endedAt: null,
+    },
+  });
+  feed({
+    type: 'subagent.spawned',
+    time: 101,
+    subagentId: 'agent-1',
+    subagentName: 'implementer',
+    name: 'alice',
+    parentToolCallId: '',
+    runInBackground: true,
+    taskId: 'task-live-1',
+  });
+  expect(transcript.getTask('task-live-1')?.parentToolCallId).toBeUndefined();
+  feed({
+    type: 'task.terminated',
+    time: 200,
+    info: {
+      taskId: 'agent-phase-0001-deadbeef',
+      kind: 'agent',
+      agentId: 'agent-1',
+      profile: 'implementer',
+      description: 'Audit auth — phase completed',
+      status: 'completed',
+      detached: true,
+      startedAt: 100,
+      endedAt: 200,
+    },
+  });
+  feed({
+    type: 'subagent.completed',
+    time: 300,
+    subagentId: 'agent-1',
+    resultSummary: 'Final result',
+  });
+  expect(transcript.getTask('task-live-1')).toMatchObject({
+    state: 'completed',
+    resultSummary: 'Final result',
+  });
+});

@@ -2217,4 +2217,225 @@ describe('live agent status during partial history recovery', () => {
     expect(forest.byId["agent-09999"]?.label).toBe("Worker 9999");
     expect(elapsedMs).toBeLessThan(250);
   });
+
+  it("preserves canonical subagent name and description across autonomous receipt tasks and ignores mid-run agent-phase checkpoints", () => {
+    const mainSnap = snapshot({
+      tasks: [
+        {
+          taskId: "task-initial",
+          kind: "subagent",
+          state: "completed",
+          detached: true,
+          agentId: "agent-1",
+          name: "alice",
+          subagentName: "implementer",
+          parentToolCallId: "call-1",
+          description: "Audit auth flow",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:00.000Z",
+          endedAt: "2026-11-22T01:01:00.000Z",
+          resultSummary: "Initial audit done.",
+        },
+        {
+          taskId: "agent-receipt-abc123",
+          kind: "subagent",
+          state: "completed",
+          detached: true,
+          agentId: "agent-1",
+          subagentName: "implementer",
+          description: "Continue implementer agent after task-initial (completed)",
+          outputTail: "",
+          startedAt: "2026-11-22T01:02:00.000Z",
+          endedAt: "2026-11-22T01:03:00.000Z",
+          resultSummary: "Manual follow-up complete.",
+        },
+        {
+          taskId: "task-running",
+          kind: "subagent",
+          state: "running",
+          detached: true,
+          agentId: "agent-2",
+          name: "bob",
+          subagentName: "researcher",
+          parentToolCallId: "call-2",
+          description: "Investigate cache",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:00.000Z",
+        },
+        {
+          taskId: "agent-phase-0001-deadbeef",
+          kind: "subagent",
+          state: "completed",
+          detached: true,
+          agentId: "agent-2",
+          name: "bob",
+          subagentName: "researcher",
+          description: "Investigate cache — phase completed; child already continued after AgentSend",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:00.000Z",
+          endedAt: "2026-11-22T01:00:30.000Z",
+          resultSummary: "Partial phase output.",
+        },
+      ],
+    });
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([["main", mainSnap]]));
+    expect(forest.byId["agent-1"]).toMatchObject({
+      name: "alice",
+      label: "alice",
+      description: "Audit auth flow",
+      parentToolCallId: "call-1",
+      status: "completed",
+      summary: "Manual follow-up complete.",
+    });
+    expect(forest.byId["agent-2"]).toMatchObject({
+      name: "bob",
+      label: "bob",
+      description: "Investigate cache",
+      status: "background",
+      busy: true,
+    });
+  });
+
+  it("picks the newest snapshot task regardless of task iteration order", () => {
+    const mainSnap = snapshot({
+      tasks: [
+        {
+          taskId: "task-newer",
+          kind: "subagent",
+          state: "completed",
+          detached: true,
+          agentId: "agent-9",
+          name: "carol",
+          subagentName: "worker",
+          description: "Follow-up",
+          outputTail: "",
+          startedAt: "2026-11-22T02:00:00.000Z",
+          endedAt: "2026-11-22T02:01:00.000Z",
+          resultSummary: "Second run succeeded.",
+        },
+        {
+          taskId: "task-older",
+          kind: "subagent",
+          state: "failed",
+          detached: true,
+          agentId: "agent-9",
+          name: "carol",
+          subagentName: "worker",
+          parentToolCallId: "call-old",
+          description: "Original job",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:00.000Z",
+          endedAt: "2026-11-22T01:01:00.000Z",
+          error: "Timed out",
+        },
+      ],
+    });
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([["main", mainSnap]]));
+    expect(forest.byId["agent-9"]).toMatchObject({
+      name: "carol",
+      description: "Original job",
+      parentToolCallId: "call-old",
+      status: "completed",
+      summary: "Second run succeeded.",
+      error: undefined,
+    });
+  });
+
+  it("keeps a running child active in the forest when a later queued follow-up task is killed", () => {
+    const mainSnap = snapshot({
+      tasks: [
+        {
+          taskId: "task-active",
+          kind: "subagent",
+          state: "running",
+          detached: true,
+          agentId: "agent-active",
+          name: "alice",
+          subagentName: "implementer",
+          parentToolCallId: "call-active",
+          description: "Active run",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:00.000Z",
+        },
+        {
+          taskId: "task-queued",
+          kind: "subagent",
+          state: "killed",
+          detached: true,
+          agentId: "agent-active",
+          subagentName: "implementer",
+          description: "Queued follow-up",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:10.000Z",
+          endedAt: "2026-11-22T01:00:12.000Z",
+          stateReason: "terminated",
+        },
+      ],
+    });
+    const childSnap = snapshot({
+      items: [
+        {
+          kind: "turn",
+          turnId: "t0",
+          ordinal: 0,
+          state: "running",
+          origin: { kind: "user" },
+          startedAt: "2026-11-22T01:00:00.000Z",
+          steps: [],
+        },
+      ],
+    });
+    const forest = sessionAgentForestFromAgentSnapshots(
+      new Map([["main", mainSnap], ["agent-active", childSnap]]),
+    );
+    expect(forest.byId["agent-active"]).toMatchObject({
+      name: "alice",
+      description: "Active run",
+      status: "background",
+      busy: true,
+    });
+
+    // Once the original run finishes later at 01:00:20, the earlier cancelled queued follow-up (01:00:10..01:00:12) must not override its completed outcome.
+    const settledMain = snapshot({
+      tasks: [
+        {
+          taskId: "task-active",
+          kind: "subagent",
+          state: "completed",
+          detached: true,
+          agentId: "agent-active",
+          name: "alice",
+          subagentName: "implementer",
+          parentToolCallId: "call-active",
+          description: "Active run",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:00.000Z",
+          endedAt: "2026-11-22T01:00:20.000Z",
+          resultSummary: "Active run succeeded.",
+        },
+        {
+          taskId: "task-queued",
+          kind: "subagent",
+          state: "killed",
+          detached: true,
+          agentId: "agent-active",
+          subagentName: "implementer",
+          description: "Queued follow-up",
+          outputTail: "",
+          startedAt: "2026-11-22T01:00:10.000Z",
+          endedAt: "2026-11-22T01:00:12.000Z",
+          stateReason: "terminated",
+        },
+      ],
+    });
+    const settledForest = sessionAgentForestFromAgentSnapshots(new Map([["main", settledMain]]));
+    expect(settledForest.byId["agent-active"]).toMatchObject({
+      name: "alice",
+      description: "Active run",
+      status: "completed",
+      busy: false,
+      summary: "Active run succeeded.",
+      error: undefined,
+    });
+  });
 });
