@@ -81,6 +81,7 @@ export const pairCodeCreateOutputSchema = /* @__PURE__ */ z.object({
   expiresAt: z.number().int().positive(),
   target: connectionIdentitySchema,
   suggestedEndpoints: z.array(z.string()),
+  loopbackEndpoint: z.string().optional(),
   tlsFingerprint: fingerprintSchema.optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
   trustTier: peerTrustTierSchema.optional(),
@@ -91,13 +92,18 @@ export const connectionPairInputSchema = /* @__PURE__ */ z.object({
   endpoint: z.string().min(1).max(2048),
   code: z.string().min(8).max(16),
   label: z.string().max(128).optional(),
-  backgroundSummary: z.boolean().default(true),
+  backgroundSummary: z.boolean().optional(),
+  includeGui: z.boolean().optional(),
   requestBridge: z.boolean().optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
   borrowTools: z.boolean().optional(),
   fingerprint: fingerprintSchema.optional(),
-}).strict();
+}).strict().transform((value) => ({
+  ...value,
+  backgroundSummary: value.includeGui === false ? false : (value.backgroundSummary ?? true),
+}));
 export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
+export type ConnectionPairRequest = z.input<typeof connectionPairInputSchema>;
 export const pairClaimInputSchema = /* @__PURE__ */ z.object({
   code: z.string().min(8).max(16),
   source: connectionIdentitySchema,

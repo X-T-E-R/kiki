@@ -58,7 +58,8 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     return respond(req.id, reply, async () => {
       const created = await admission.createPairCode(pairCodeCreateInputSchema.parse(req.body ?? {}));
       const extras = hooks.current === undefined ? [] : await hooks.current.endpoints();
-      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations, trustTier: created.trustTier, meshCapabilities: created.meshCapabilities };
+      const loopbackEndpoint = hooks.current?.loopbackEndpoint?.();
+      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), ...(loopbackEndpoint === undefined ? {} : { loopbackEndpoint }), bridgeOperations: created.bridgeOperations, trustTier: created.trustTier, meshCapabilities: created.meshCapabilities };
     });
   });
   app.post('/api/remote-connections/pair/claim', { bodyLimit: 16 * 1024 * 1024 }, async (req, reply) => {
@@ -211,6 +212,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         void batchReader?.cancel(err).catch(() => {});
         batchStream?.destroy(err);
       });
+      if (!manager.get(id).purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
       const reading = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps', 'subagents'].includes(input.operation);
       const lease = manager.lease(id, controller.signal); release = () => lease.release();
       if (input.operation === 'procedureBatch') {
@@ -318,6 +320,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       reply.raw.once('close', stop);
       try {
         detachWeb = attachWebSharedConnection(req, id, manager, web, () => controller.abort(new AdmissionError(403, 'connection_not_shared')));
+        if (!manager.get(id).purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
         const lease = manager.lease(id, controller.signal); release = () => lease.release();
         const chunks = req.raw[Symbol.asyncIterator]();
         const upload = Readable.from((async function* () {
@@ -354,6 +357,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         stream?.destroy(err);
         reply.raw.destroy();
       });
+      if (!manager.get(id).purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
       const lease = manager.lease(id, controller.signal); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
       for (const name of ['etag', 'content-range', 'accept-ranges', 'content-disposition', 'cache-control']) { const value = response.headers.get(name); if (value !== null) reply.header(name, value); }
@@ -396,6 +400,10 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     let record: ReturnType<RemoteConnectionManager['get']> | undefined;
     try { record = manager.get(id); } catch { record = undefined; }
     if (record === undefined || !isWebSharedRecord(record, web)) { local.close(1008, 'connection not shared'); return; }
+  } else {
+    let record: ReturnType<RemoteConnectionManager['get']> | undefined;
+    try { record = manager.get(id); } catch { record = undefined; }
+    if (record !== undefined && !record.purposes.includes('gui')) { local.close(1008, 'gui connection required'); return; }
   }
   const epoch = manager.credentialEpoch(id);
   const lease = manager.lease(id);

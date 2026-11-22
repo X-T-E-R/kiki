@@ -19,13 +19,23 @@ function compactFingerprint(value: string): string {
   return `${value.slice(0, 16)}…${value.slice(-8)}`;
 }
 
-export function registerConnectionsCommand(program: Command): void {
+export interface ConnectionsCommandDependencies {
+  readonly ensureServer?: typeof ensureServer;
+  readonly createKlient?: typeof createKlient;
+  readonly stdout?: { write(chunk: string): unknown };
+}
+
+export function registerConnectionsCommand(program: Command, dependencies: ConnectionsCommandDependencies = {}): void {
+  const stdout = dependencies.stdout ?? process.stdout;
+  const openClient = async (homeDir: string) => {
+    const connection = await (dependencies.ensureServer ?? ensureServer)({ homeDir });
+    return (dependencies.createKlient ?? createKlient)({ endpoint: connection.url, token: connection.token });
+  };
   const group = program.command('connections').description('Manage directed connections for this local Kiki home.').option('--home <dir>', 'Local source/provider home.');
   const run = async (command: Command, action: (connections: NonNullable<ReturnType<typeof createKlient>['rest']>['connections']) => Promise<unknown>) => {
     const homeDir = resolveKikiHome(command.optsWithGlobals()['home'] as string | undefined);
-    const connection = await ensureServer({ homeDir });
-    const client = createKlient({ endpoint: connection.url, token: connection.token });
-    try { process.stdout.write(JSON.stringify(await action(client.rest!.connections), null, 2) + '\n'); }
+    const client = await openClient(homeDir);
+    try { stdout.write(JSON.stringify(await action(client.rest!.connections), null, 2) + '\n'); }
     finally { await client.close(); }
   };
   group.command('status').description('Show source identity, inbound grants and outbound connection state.').action(async (_options, command: Command) => run(command, async (c) => ({ identity: (await c.handshake()).identity, inbound: await c.inbound(), outbound: await c.list() })));
@@ -44,30 +54,56 @@ export function registerConnectionsCommand(program: Command): void {
   ssh.command('execute <planId>').option('--ensure', 'Start remote Kiki only if needed; it stays running until explicitly stopped.').description('Attach to the planned server, or confirm a persistent background start with --ensure.').action(async (id: string, options: { ensure?: boolean }, command: Command) => run(command, (c) => c.sshExecute(id, { ensure: options.ensure === true })));
   ssh.command('register').requiredOption('--input <file>', 'JSON {purpose,planId,label}; gui also requires enableInbound and may set backgroundSummary.').description('Register the ready plan for one purpose; GUI credentials stay in this backend, bridge policy is approved separately.').action(async (options: { input: string }, command: Command) => run(command, async (c) => c.sshRegister(sshConnectionRegisterInputSchema.parse(await inputJson(options.input)))));
   ssh.command('status').description('Show only this source backend’s SSH lease state.').action(async (_options, command: Command) => run(command, (c) => c.sshStatus()));
-  program.command('pair [endpoint] [code]').description('Print a 10-minute pairing code, or connect to one with an address and that code.').option('--home <dir>', 'Local source/provider home.').option('--label <name>', 'Name for the connection on this Kiki.').action(async (endpoint: string | undefined, code: string | undefined, options: { label?: string; home?: string }, command: Command) => {
-    const homeDir = resolveKikiHome((options.home ?? command.optsWithGlobals()['home']) as string | undefined);
-    const connection = await ensureServer({ homeDir });
-    const client = createKlient({ endpoint: connection.url, token: connection.token });
-    try {
-      const connections = client.rest!.connections;
-      if (endpoint === undefined && code === undefined) {
-        const created = await connections.createPairCode({});
-        const minutes = Math.max(1, Math.round((created.expiresAt - Date.now()) / 60_000));
-        const addresses = created.suggestedEndpoints.length > 0 ? created.suggestedEndpoints.join('\n') : '(no direct address found)';
-        const fingerprintLine = created.tlsFingerprint === undefined ? '' : `TLS fingerprint: ${compactFingerprint(created.tlsFingerprint)}\n`;
-        process.stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n${fingerprintLine}`);
-        return;
-      }
-      const parsedUri = endpoint !== undefined && code === undefined ? parsePairingUri(endpoint) : undefined;
-      const targetEndpoint = parsedUri?.endpoint ?? endpoint;
-      const targetCode = parsedUri?.code ?? code;
-      if (targetEndpoint === undefined || targetCode === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
-      const record = await connections.pair(connectionPairInputSchema.parse({ endpoint: targetEndpoint, code: targetCode, ...options.label === undefined ? {} : { label: options.label }, backgroundSummary: true, fingerprint: parsedUri?.fingerprint }));
-      const tlsFingerprint = record.fingerprintToVerify ?? record.pinnedFingerprint;
-      const fingerprintLine = tlsFingerprint === undefined
-        ? ''
-        : `\n${record.fingerprintToVerify === undefined ? 'Pinned TLS fingerprint' : 'TLS fingerprint to verify'}: ${compactFingerprint(tlsFingerprint)}`;
-      process.stdout.write(`Connected to ${record.label} at ${record.endpoint}.${fingerprintLine}\n`);
-    } finally { await client.close(); }
-  });
+  program
+    .command('pair [endpoint] [code]')
+    .description('Print a 10-minute pairing code, or connect to one with an address and that code.')
+    .option('--home <dir>', 'Local source/provider home.')
+    .option('--label <name>', 'Name for the connection on this Kiki.')
+    .option('--bridge-only', 'Pair for thread bridge and sync without exposing this peer in the local GUI space list.')
+    .option('--trusted', 'Generate a pairing code with trusted_personal trust tier.')
+    .option('--fingerprint <sha256>', 'Expected peer TLS SPKI fingerprint.')
+    .option('--json', 'Output machine-readable JSON.')
+    .action(async (endpoint: string | undefined, code: string | undefined, options: { label?: string; home?: string; bridgeOnly?: boolean; trusted?: boolean; fingerprint?: string; json?: boolean }, command: Command) => {
+      const homeDir = resolveKikiHome((options.home ?? command.optsWithGlobals()['home']) as string | undefined);
+      const client = await openClient(homeDir);
+      try {
+        const connections = client.rest!.connections;
+        if (endpoint === undefined && code === undefined) {
+          const created = await connections.createPairCode(options.trusted ? { trustTier: 'trusted_personal' } : {});
+          if (options.json) {
+            stdout.write(JSON.stringify(created, null, 2) + '\n');
+            return;
+          }
+          const minutes = Math.max(1, Math.round((created.expiresAt - Date.now()) / 60_000));
+          const addresses = created.suggestedEndpoints.length > 0 ? created.suggestedEndpoints.join('\n') : '(no direct address found)';
+          const loopbackLine = created.loopbackEndpoint === undefined ? '' : `Loopback peer (for SSH -L): ${created.loopbackEndpoint}\n`;
+          const fingerprintLine = created.tlsFingerprint === undefined ? '' : `TLS fingerprint: ${compactFingerprint(created.tlsFingerprint)}\n`;
+          stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n${loopbackLine}${fingerprintLine}`);
+          return;
+        }
+        const parsedUri = endpoint !== undefined && code === undefined ? parsePairingUri(endpoint) : undefined;
+        const targetEndpoint = parsedUri?.endpoint ?? endpoint;
+        const targetCode = parsedUri?.code ?? code;
+        if (targetEndpoint === undefined || targetCode === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
+        const bridgeOnly = options.bridgeOnly === true;
+        const record = await connections.pair(connectionPairInputSchema.parse({
+          endpoint: targetEndpoint,
+          code: targetCode,
+          label: options.label,
+          includeGui: bridgeOnly ? false : undefined,
+          backgroundSummary: !bridgeOnly,
+          fingerprint: options.fingerprint ?? parsedUri?.fingerprint,
+        }));
+        if (options.json) {
+          stdout.write(JSON.stringify(record, null, 2) + '\n');
+          return;
+        }
+        const tlsFingerprint = record.fingerprintToVerify ?? record.pinnedFingerprint;
+        const fingerprintLine = tlsFingerprint === undefined
+          ? ''
+          : `\n${record.fingerprintToVerify === undefined ? 'Pinned TLS fingerprint' : 'TLS fingerprint to verify'}: ${compactFingerprint(tlsFingerprint)}`;
+        const modeNote = record.purposes.includes('gui') ? '' : ' (bridge-only)';
+        stdout.write(`Connected to ${record.label} at ${record.endpoint}${modeNote}.${fingerprintLine}\n`);
+      } finally { await client.close(); }
+    });
 }

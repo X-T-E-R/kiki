@@ -299,20 +299,29 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const link: Outbound = { connectionId: input.connectionId, grant: input.grant, enabled: true, connectionGrantId };
     await this.change(async () => {
       if (epoch !== this.connections.credentialEpoch(input.connectionId)) denied('connection_not_approved');
-      if (connectionGrantId !== undefined && !this.connections.get(input.connectionId).purposes.includes('gui') && !this.admission.approvedPeer(connectionGrantId)?.allowBridge) denied('connection_not_approved');
+      const record = this.connections.get(input.connectionId);
+      const outboundCredential = connectionGrantId === undefined || record.transport?.kind === 'peer_socket'
+        ? undefined
+        : await this.connections.secrets.read<{ grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        });
+      if (connectionGrantId !== undefined) {
+        if (outboundCredential !== undefined) {
+          if (outboundCredential.grantId !== connectionGrantId) denied('connection_not_approved');
+        } else if (record.purposes.includes('gui') || !this.admission.approvedPeer(connectionGrantId)?.allowBridge) {
+          denied('connection_not_approved');
+        }
+      }
       const previous = this.state.outbound.find((entry) => entry.grant.id === input.grant.id);
       const effectiveBorrowTools = borrowTools ?? previous?.borrowTools;
       if (effectiveBorrowTools !== undefined) link.borrowTools = effectiveBorrowTools;
       const idempotentPeerInstall = previous !== undefined && !previous.grant.revoked && connectionGrantId !== undefined && previous.connectionGrantId === connectionGrantId && input.grant.revision === previous.grant.revision;
       if (previous !== undefined && (previous.grant.revoked || (!idempotentPeerInstall && input.grant.revision <= previous.grant.revision))) throw new AdmissionError(409, 'bridge_revision_not_newer');
       if (input.grant.revoked || !input.grant.enabled || input.grant.expiresAt <= Date.now()) denied('bridge_operation_denied');
-      if (connectionGrantId !== undefined && this.connections.get(input.connectionId).purposes.includes('gui')) {
-        const credential = await this.connections.secrets.read<{ grantId: string }>({ connectionId: this.connections.get(input.connectionId).credentialRef, purpose: 'gui' });
-        if (credential.grantId !== connectionGrantId) denied('connection_not_approved');
-      }
       await this.connections.secrets.write({ connectionId: input.grant.id, purpose: 'bridge' }, { credential: input.credential });
       if (epoch !== this.connections.credentialEpoch(input.connectionId)) denied('connection_not_approved');
-      if (connectionGrantId !== undefined && !this.connections.get(input.connectionId).purposes.includes('gui') && !this.admission.approvedPeer(connectionGrantId)?.allowBridge) denied('connection_not_approved');
+      if (connectionGrantId !== undefined && outboundCredential === undefined && !this.admission.approvedPeer(connectionGrantId)?.allowBridge) denied('connection_not_approved');
       this.cancelOutgoing(input.grant.id);
       if (previous === undefined) this.state.outbound.push(link); else Object.assign(previous, link);
     });
@@ -431,7 +440,6 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   async syncConnection(connectionId: string, input: { operations?: readonly BridgeOperation[]; borrowTools?: boolean } = {}): Promise<ReturnType<SpaceThreadBridge['status']>> {
     const record = this.connections.get(connectionId);
     if (!record.enabled) throw new AdmissionError(403, 'connection_disabled');
-    if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
     const existingLink = this.state.outbound.find((entry) => entry.connectionId === connectionId && !entry.grant.revoked && entry.enabled);
     const lease = this.connections.lease(connectionId, AbortSignal.timeout(15000));
     try {
@@ -1179,9 +1187,14 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       const serializedBody = JSON.stringify(body);
       const responseLimit = operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'tools_call' ? 16 * 1024 * 1024 : operation === 'tools_list' ? 512 * 1024 : operation === 'list' ? PEER_BRIDGE_LIST_MAX_RESPONSE_BYTES : 16 * 1024;
       const sendOverHttp = async (): Promise<T> => {
-        if (record.purposes.includes('gui') && record.pinnedFingerprint === undefined) {
-          const { grant, grantId } = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
-          await this.connections.provePeer(transport.endpoint, record.target, { grant, grantId }, lease.signal, record.pinnedFingerprint);
+        if (record.pinnedFingerprint === undefined && record.transport?.kind !== 'peer_socket') {
+          const peerCredential = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' }).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT' && !record.purposes.includes('gui')) return undefined;
+            throw error;
+          });
+          if (peerCredential !== undefined) {
+            await this.connections.provePeer(transport.endpoint, record.target, { grant: peerCredential.grant, grantId: peerCredential.grantId }, lease.signal, record.pinnedFingerprint);
+          }
         }
         lease.signal.throwIfAborted();
         const response = await peerFetch(

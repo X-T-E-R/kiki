@@ -55,7 +55,7 @@ export interface SpaceCommandDependencies {
   readonly stdin?: NodeJS.ReadableStream;
   readonly confirm?: (message: string) => Promise<boolean>;
   readonly editor?: (directory: string, command: string) => Promise<void>;
-  readonly runRemote?: (program: string, args: string[], archive?: string) => Promise<string>;
+  readonly runRemote?: (program: string, args: string[], archive?: string, outputArchive?: string) => Promise<string>;
 }
 
 type SpaceOptions = {
@@ -765,49 +765,98 @@ async function runRekey(target: string, outputPath: string | undefined, command:
   outputReceipt(result, options, dependencies);
 }
 
-async function remoteCommand(program: string, args: string[], archive?: string): Promise<string> {
+const INSTALL_SCRIPT_URL = 'https://raw.githubusercontent.com/X-T-E-R/kiki/kiki/scripts/install.sh';
+
+async function remoteCommand(program: string, args: string[], archive?: string, outputArchive?: string): Promise<string> {
   const bashCcp = process.platform === 'win32' && program === 'ccp';
   const child = spawn(bashCcp ? 'bash.exe' : program, bashCcp ? ['-lc', 'exec ccp "$@"', 'ccp', ...args] : args, {
     stdio: [archive ? 'pipe' : 'ignore', 'pipe', 'inherit'], windowsHide: true,
   });
-  const result = new Promise<string>((resolveCommand, reject) => {
-    const stdout: Buffer[] = [];
-    child.stdout!.on('data', (chunk: Buffer) => {
-      stdout.push(chunk);
+  const exitPromise = new Promise<void>((resolveExit, rejectExit) => {
+    child.once('error', rejectExit);
+    child.once('close', (code, signal) => {
+      if (code === 0) resolveExit();
+      else rejectExit(new Error(`${program} exited with ${code ?? signal}`));
     });
-    child.once('error', reject);
-    child.once('close', (code, signal) => code === 0 ? resolveCommand(Buffer.concat(stdout).toString('utf8')) : reject(new Error(`${program} exited with ${code ?? signal}`)));
   });
-  const [stdout] = await Promise.all([result, archive ? pipeline(createReadStream(archive), child.stdin!) : undefined]);
+  const readStdout = outputArchive !== undefined
+    ? (async () => {
+      let size = 0;
+      const limit = new Transform({
+        transform(chunk: Buffer, _encoding, done) {
+          size += chunk.length;
+          if (size > 128 * 1024 * 1024) {
+            child.kill();
+            done(new Error('Remote archive output exceeds 128 MiB'));
+          } else {
+            done(null, chunk);
+          }
+        },
+      });
+      await pipeline(child.stdout!, limit, createWriteStream(outputArchive, { flags: 'wx', mode: 0o600 }));
+      return '';
+    })()
+    : new Promise<string>((resolveStdout, rejectStdout) => {
+      const stdout: Buffer[] = [];
+      let length = 0;
+      child.stdout!.on('data', (chunk: Buffer) => {
+        length += chunk.length;
+        if (length > 1024 * 1024) { child.kill(); rejectStdout(new Error('Remote command output exceeds 1 MiB')); }
+        else stdout.push(chunk);
+      });
+      child.stdout!.once('error', rejectStdout);
+      child.stdout!.once('end', () => { resolveStdout(Buffer.concat(stdout).toString('utf8')); });
+    });
+  const [, stdout] = await Promise.all([
+    exitPromise,
+    readStdout,
+    archive ? pipeline(createReadStream(archive), child.stdin!) : undefined,
+  ]);
   return stdout;
 }
 
-async function runClone(remote: string, command: Command, dependencies: SpaceCommandDependencies): Promise<void> {
-  const options = asOptions(command);
-  const run = dependencies.runRemote ?? remoteCommand;
-  const channel = options.channel ?? 'stable';
-  if (channel !== 'stable' && channel !== 'beta') throw new Error('Clone channel must be stable or beta');
-  let invoke: (script: string, archive?: string) => Promise<string>;
-  let ready: string;
+function isRemoteTarget(value: string | undefined): value is string {
+  return value !== undefined && (value.startsWith('ccp:') || value.startsWith('ssh://'));
+}
+
+async function resolveRemoteTarget(
+  remote: string,
+  run: (program: string, args: string[], archive?: string, outputArchive?: string) => Promise<string>,
+): Promise<{
+  readonly invoke: (script: string, archive?: string, outputArchive?: string) => Promise<string>;
+  readonly ready: string;
+}> {
   if (remote.startsWith('ccp:')) {
     const runtime = remote.slice(4);
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runtime)) throw new Error('Invalid CCP runtime ID');
     const result = JSON.parse(await run('ccp', ['ssh', 'prepare', runtime])) as { id?: string };
     const id = result.id;
     if (!id || !/^ssh_[A-Za-z0-9]+$/.test(id)) throw new Error('CCP did not return an SSH session ID');
-    invoke = (script, archive) => run('ccp', ['ssh', 'connect', id, '--command', script], archive);
-    ready = `ccp ssh connect ${id}`;
-  } else {
-    const target = new URL(remote);
-    if (target.protocol !== 'ssh:' || target.password || target.search || target.hash || !['', '/'].includes(target.pathname) || !/^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9a-fA-F:]+\])$/.test(target.hostname) || !/^[\w.-]*$/.test(target.username) || target.username.startsWith('-')) throw new Error('Clone expects ssh://[user@]host[:port] or ccp:<runtimeId>');
-    const host = `${target.username ? `${target.username}@` : ''}${target.hostname}`;
-    const args = [...target.port ? ['-p', target.port] : [], '--', host];
-    invoke = (script, archive) => run('ssh', ['-T', ...args, script], archive);
-    ready = `ssh -t ${args.join(' ')}`;
+    return {
+      invoke: (script, archive, outputArchive) => run('ccp', ['ssh', 'connect', id, '--command', script], archive, outputArchive),
+      ready: `ccp ssh connect ${id}`,
+    };
   }
+  const target = new URL(remote);
+  if (target.protocol !== 'ssh:' || target.password || target.search || target.hash || !['', '/'].includes(target.pathname) || !/^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9a-fA-F:]+\])$/.test(target.hostname) || !/^[\w.-]*$/.test(target.username) || target.username.startsWith('-')) {
+    throw new Error('Remote target expects ssh://[user@]host[:port] or ccp:<runtimeId>');
+  }
+  const host = `${target.username ? `${target.username}@` : ''}${target.hostname}`;
+  const args = [...target.port ? ['-p', target.port] : [], '--', host];
+  return {
+    invoke: (script, archive, outputArchive) => run('ssh', ['-T', ...args, script], archive, outputArchive),
+    ready: `ssh -t ${args.join(' ')}`,
+  };
+}
+
+async function runClone(remote: string, command: Command, dependencies: SpaceCommandDependencies): Promise<void> {
+  const options = asOptions(command);
+  const run = dependencies.runRemote ?? remoteCommand;
+  const channel = options.channel ?? 'beta';
+  if (channel !== 'stable' && channel !== 'beta') throw new Error('Clone channel must be stable or beta');
+  const { invoke, ready } = await resolveRemoteTarget(remote, run);
   const path = 'export PATH="$HOME/.local/bin:$PATH"; ';
-  const install = 'https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh';
-  const bootstrap = `${path}if ! command -v kiki >/dev/null 2>&1; then setup=$(mktemp) && curl -fsSL ${install} -o "$setup" && sh "$setup" --channel ${channel} >&2; status=$?; rm -f "$setup"; [ "$status" -eq 0 ] || exit "$status"; fi; exec kiki space key show --json`;
+  const bootstrap = `${path}if ! command -v kiki >/dev/null 2>&1; then setup=$(mktemp) && curl -fsSL ${INSTALL_SCRIPT_URL} -o "$setup" && sh "$setup" --channel ${channel} >&2; status=$?; rm -f "$setup"; [ "$status" -eq 0 ] || exit "$status"; fi; exec kiki space key show --json`;
   const keys = portableSpaceSourcesListResponseSchema.parse(JSON.parse(await invoke(bootstrap)));
   const root = await mkdtemp(join(tmpdir(), 'kiki-space-clone-'));
   try {
@@ -827,6 +876,47 @@ async function runClone(remote: string, command: Command, dependencies: SpaceCom
   } finally { await rm(root, { recursive: true, force: true, maxRetries: 3 }); }
 }
 
+function quotePosixShellArg(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function runRemotePull(remote: string, target: string | undefined, command: Command, dependencies: SpaceCommandDependencies): Promise<void> {
+  const options = asOptions(command);
+  const run = dependencies.runRemote ?? remoteCommand;
+  const localKeys = await withConnection(command, dependencies, (connection) =>
+    portableSpaceRequest(connection, 'sources', { parse: portableSpaceSourcesListResponseSchema, fetch: dependencies.fetch }),
+  );
+  if (!/^age1[a-z0-9]+$/.test(localKeys.deviceRecipient)) {
+    throw new Error('Local Kiki server did not return a valid age device recipient.');
+  }
+  const { invoke } = await resolveRemoteTarget(remote, run);
+  const path = 'export PATH="$HOME/.local/bin:$PATH"; ';
+  const exportArgs = ['kiki', 'space', 'export', '-', '--format', 'age', '--recipient', localKeys.deviceRecipient];
+  const domains = domainsOf(options);
+  if (domains !== undefined) {
+    for (const domain of domains) exportArgs.push('--only', domain);
+  }
+  const sessions = sessionSelection(options.includeSessions);
+  if (sessions.mode === 'recent') {
+    exportArgs.push('--include-sessions', `recent:${sessions.count}`);
+  }
+  if (options.memories === false || options.includeMemories === false) {
+    exportArgs.push('--no-memories');
+  }
+  if (options.credentials === false) {
+    exportArgs.push('--no-credentials');
+  }
+  const script = `${path}exec ${exportArgs.map(quotePosixShellArg).join(' ')}`;
+  const root = await mkdtemp(join(tmpdir(), 'kiki-space-pull-'));
+  try {
+    const archivePath = join(root, 'pull.kiki.age');
+    await invoke(script, undefined, archivePath);
+    await runApply([archivePath], target, command, dependencies);
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
 function addSourceOptions(command: Command): Command {
   return commonOptions(command)
     .option('--source <source>', 'Source endpoint; may be repeated.', collect, [])
@@ -842,7 +932,7 @@ function addSourceOptions(command: Command): Command {
     .option('--domain <domain>', 'Portable domain; may be repeated.', collect, [])
     .option('--pick <id>', 'Select one item; may be repeated.', collect, [])
     .option('--prefer <side>', 'Conflict preference: left or right.')
-    .option('--include-sessions', 'Include recent sessions.')
+    .option('--include-sessions [selection]', 'Include recent sessions; optionally use recent:<count>.')
     .option('--include-memories', 'Include memories.', true)
     .option('--git-init', 'Initialize a destination Git repository.')
     .option('--subpath <path>', 'Git repository subpath.');
@@ -904,7 +994,11 @@ export function registerSpaceCommand(program: Command, dependencies: SpaceComman
       return linked[0]!.endpoint;
     });
   }
-  addSourceOptions(space.command('pull [id] [target]').description('Pull a linked Space into the live Home.')).action(async (source: string | undefined, target: string | undefined, _options: SpaceOptions, command: Command) => {
+  addSourceOptions(space.command('pull [id] [target]').description('Pull a linked Space, or an SSH/CCP remote Space, into the live Home.')).action(async (source: string | undefined, target: string | undefined, _options: SpaceOptions, command: Command) => {
+    if (isRemoteTarget(source)) {
+      await runRemotePull(source, target, command, dependencies);
+      return;
+    }
     await runApply([source ?? await defaultLinked(command)], target, command, dependencies);
   });
   addSourceOptions(space.command('push [id] [source]').description('Push the live Home to a linked Space.')).option('--branch <branch>', 'Explicit Git branch for a Git push.').action(async (id: string | undefined, source: string | undefined, _options: SpaceOptions, command: Command) => {

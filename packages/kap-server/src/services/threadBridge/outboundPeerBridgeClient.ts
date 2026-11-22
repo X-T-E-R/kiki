@@ -222,7 +222,6 @@ function isEligiblePeerBridgeRecord(record: RemoteConnection): boolean {
   return (
     record.enabled &&
     record.transport === undefined &&
-    record.purposes.includes('gui') &&
     record.purposes.includes('bridge') &&
     record.state !== 'disabled' &&
     record.state !== 'identity_changed'
@@ -760,6 +759,7 @@ export class OutboundPeerBridgeClient {
       } catch (error) {
         if (connectController === controller) connectController = undefined;
         if (resumeCredentialChange() || !current()) return;
+        if (error instanceof AdmissionError && error.reason === 'gui_connection_required') return;
         if (error instanceof AdmissionError && error.reason === 'identity_changed') this.connections.failed(record.id, error, epoch);
         else if (error instanceof AdmissionError && error.status === 401) setAuthCooldown();
         else scheduleReconnect();
