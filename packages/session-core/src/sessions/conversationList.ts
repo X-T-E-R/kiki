@@ -1,6 +1,10 @@
 import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
 import { roomSeenKey, roomUnreadCount } from '../settings/roomReadState';
-import type { SessionSeenMap } from '../settings/sessionReadState';
+import {
+  encodeConversationRef,
+  type ConversationSeenMap,
+  type SessionSeenMap,
+} from '../settings/sessionReadState';
 import { buildInboxModel, type InboxSource, type UnifiedInboxEntry } from './inbox';
 import { roomRefLink } from './conversationLinks';
 import { filterSessions, groupSessionsByTime, groupSessionsByWorkspace, isPinnedSession, SESSION_PIN_META_KEY, sortSessionItems, type SessionFilterInput, type SessionGroup, type SessionListEntry, type SessionSortOrder, type TimeGroupLabels } from './sessionList';
@@ -13,6 +17,9 @@ type ConversationFields = SessionListEntry & {
   readonly needs_you: boolean;
   readonly failed: boolean;
   readonly pinned: boolean;
+  readonly spaceKey?: string;
+  readonly spaceName?: string;
+  readonly isRemote?: boolean;
 };
 
 export type ConversationListItem = ConversationFields & (
@@ -139,4 +146,81 @@ export function buildUnifiedConversationEntries(
     }
   }
   return entries;
+}
+
+/** Merge multi-space conversations (local + paired remote computers) into one sorted `ConversationListItem[]`. */
+export function mergeMultiSpaceConversationItems(
+  spaces: readonly SpaceConversationSource[],
+  seenV2: ConversationSeenMap,
+  order: SessionSortOrder = 'updated-desc',
+  fallbackLocalSpaceKey = 'main',
+  fallbackLocalSeen: SessionSeenMap = {},
+): ConversationListItem[] {
+  const out: ConversationListItem[] = [];
+  const seenKeys = new Set<string>();
+  for (const space of spaces) {
+    const workspaces = space.workspaces ?? [];
+    const connectionId = space.isRemote && space.spaceKey.startsWith('remote:')
+      ? space.spaceKey.slice('remote:'.length)
+      : undefined;
+    const prefix = connectionId !== undefined ? `/p/${encodeURIComponent(connectionId)}` : '';
+    const isLocalDefault = !space.isRemote && space.spaceKey === fallbackLocalSpaceKey;
+
+    for (const session of space.sessions) {
+      const itemKey = space.isRemote ? `${space.spaceKey}:session:${session.id}` : `session:${session.id}`;
+      if (seenKeys.has(itemKey)) continue;
+      seenKeys.add(itemKey);
+      const refKey = encodeConversationRef({ spaceKey: space.spaceKey, kind: 'session', id: session.id });
+      const seenSeq = seenV2[refKey]?.seq ?? (isLocalDefault ? (fallbackLocalSeen[session.id] ?? 0) : 0);
+      out.push({
+        ...session,
+        updated_at: session.own_updated_at ?? session.updated_at,
+        kind: 'session',
+        session,
+        key: itemKey,
+        href: `${prefix}/s/${encodeURIComponent(session.id)}`,
+        unread_count: Math.max(0, (session.attention_cursor?.seq ?? session.last_seq) - seenSeq),
+        needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
+        failed: session.last_turn_reason === 'failed',
+        pinned: isPinnedSession(session),
+        spaceKey: space.spaceKey,
+        spaceName: space.spaceName,
+        isRemote: space.isRemote,
+      });
+    }
+
+    for (const room of space.rooms ?? []) {
+      const baseRoomKey = roomSeenKey(room.id);
+      const itemKey = space.isRemote ? `${space.spaceKey}:${baseRoomKey}` : baseRoomKey;
+      if (seenKeys.has(itemKey)) continue;
+      seenKeys.add(itemKey);
+      const refKey = encodeConversationRef({ spaceKey: space.spaceKey, kind: 'room', id: room.id });
+      const seenSeq = seenV2[refKey]?.seq ?? (isLocalDefault ? (fallbackLocalSeen[baseRoomKey] ?? 0) : 0);
+      out.push({
+        kind: 'room',
+        room,
+        id: room.id,
+        key: itemKey,
+        href: `${prefix}${roomRefLink(room.id)}`,
+        title: room.title,
+        workspace_id: roomWorkspaceId(room.workspace, workspaces),
+        created_at: room.createdAt,
+        updated_at: room.updatedAt,
+        metadata: { cwd: '', [SESSION_PIN_META_KEY]: room.pinned },
+        archived: room.archived,
+        busy: room.busy,
+        pending_interaction: room.pendingInteraction,
+        last_seq: room.lastSeq,
+        unread_count: Math.max(0, room.lastSeq - seenSeq),
+        needs_you: room.needsYou,
+        failed: room.failed,
+        pinned: room.pinned,
+        member_count: room.memberCount,
+        spaceKey: space.spaceKey,
+        spaceName: space.spaceName,
+        isRemote: space.isRemote,
+      });
+    }
+  }
+  return sortSessionItems(out, order);
 }

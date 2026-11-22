@@ -305,10 +305,18 @@ export function ConversationShell() {
     ],
   );
 
-  const isNewRoute = useMatch('/new') !== null;
+  const isLocalNewRoute = useMatch('/new') !== null;
+  const isPlaceNewRoute = useMatch('/p/:connectionId/new') !== null;
+  const isNewRoute = isLocalNewRoute || isPlaceNewRoute;
   const sessionSubrouteMatch = useMatch('/s/:id/*');
   const sessionDirectMatch = useMatch('/s/:id');
-  const routeSessionId = sessionSubrouteMatch?.params.id ?? sessionDirectMatch?.params.id;
+  const placeSessionSubrouteMatch = useMatch('/p/:connectionId/s/:id/*');
+  const placeSessionDirectMatch = useMatch('/p/:connectionId/s/:id');
+  const routeSessionId =
+    placeSessionSubrouteMatch?.params.id
+    ?? placeSessionDirectMatch?.params.id
+    ?? sessionSubrouteMatch?.params.id
+    ?? sessionDirectMatch?.params.id;
   const prevPhaseRef = useRef<ConversationPhase | null>(null);
   const prevSessionIdRef = useRef<string | undefined>(undefined);
   const keepActiveAcrossTransition =

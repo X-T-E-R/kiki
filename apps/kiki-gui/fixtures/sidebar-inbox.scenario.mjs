@@ -7,9 +7,9 @@
 
 import { assistantMsg, sessionRecord, userMsg } from './helpers.mjs';
 
-const WS_CORE = 'wd_inbox_core_000001';
-const WS_GUI = 'wd_inbox_gui_000002';
-const WS_ML = 'wd_remote_ml_000001';
+const WS_CORE = 'wd_inbox_core_000000000001';
+const WS_GUI = 'wd_inbox_gui_000000000002';
+const WS_ML = 'wd_remote_ml_000000000001';
 
 const REMOTE_GPU_ID = '11111111-1111-4111-8111-111111111111';
 const REMOTE_MAC_ID = '22222222-2222-4222-8222-222222222222';
@@ -30,6 +30,12 @@ const minsAgoIso = (mins) => new Date(nowMs - mins * 60_000).toISOString();
 const daysAgoIso = (days) => new Date(nowMs - days * 24 * 60 * 60 * 1000).toISOString();
 
 export default {
+  spaces: {
+    mainPath: 'C:/Users/fixture/.kiki',
+    items: [
+      { id: 'h-nia', name: 'Nia Whisper Tavern', color: '#945439', path: 'C:/Users/fixture/.kiki-spaces/nia' },
+    ],
+  },
   workspaces: [
     { id: WS_CORE, root: 'C:/work/kiki-core', name: 'kiki-core', created_at: daysAgoIso(30), last_opened_at: minsAgoIso(4), session_count: 4, pinned: false },
     { id: WS_GUI, root: 'C:/work/kiki-gui', name: 'kiki-gui', created_at: daysAgoIso(25), last_opened_at: minsAgoIso(1), session_count: 4, pinned: false },
@@ -182,6 +188,14 @@ export default {
         }),
       ],
       rooms: [],
+      snapshots: {
+        [S_REMOTE_DONE]: {
+          messages: [
+            userMsg(S_REMOTE_DONE, 'Train LoRA checkpoint v4 on the 3090 rig and report eval loss.', 14),
+            assistantMsg(S_REMOTE_DONE, ['LoRA v4 finished 1,200 steps on GPU Workstation (eval loss 0.412, checkpoint saved to /srv/ml-lab/checkpoints/lora-v4.safetensors).'], 6),
+          ],
+        },
+      },
     },
   },
 };

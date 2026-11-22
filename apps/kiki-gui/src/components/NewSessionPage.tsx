@@ -61,10 +61,9 @@ import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useLayoutPreferences, useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
-import { requestScopeNavigation } from '../lib/navScope';
-import { browsableRemote, remoteSpaceScope, useRemoteConnections } from '../lib/remoteConnections';
+import { placeNewPath } from '../lib/placeRoutes';
+import { browsableRemote, useRemoteConnections } from '../lib/remoteConnections';
 import { MAIN_SPACE_ID } from '../lib/spaces';
-import { pushToast } from '../lib/toasts';
 import { ALL_SPACE_SCOPE } from '../lib/useMultiSpaceSessions';
 import { ActionSheet } from './overlays/ActionSheet';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
@@ -119,10 +118,10 @@ function useTypingEcho(draft: string): number {
 function HeroSpaceChip() {
   const { t } = useI18n();
   const isPhone = usePhoneMode();
+  const navigate = useNavigate();
   const layoutPrefs = useLayoutPreferences();
-  const { client, localClient, connectionId, connectionSource, sshLabel, localSpaceKey, localScopeId } = useConnection();
+  const { client, localClient, connectionId, connectionSource, sshLabel, localSpaceKey, localServerHomeId: connLocalServerHomeId, meta } = useConnection();
   const [open, setOpen] = useState(false);
-  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const inSshScope = typeof sshLabel === 'string' && sshLabel.length > 0;
@@ -130,9 +129,14 @@ function HeroSpaceChip() {
   const controlClient = localClient ?? (inBrokeredScope ? null : client);
   const hasRemoteApi = controlClient?.klient?.rest?.connections !== undefined;
   const remotesQuery = useRemoteConnections(hasRemoteApi ? controlClient : null, { poll: open });
+  const localServerHomeId = connLocalServerHomeId ?? (inBrokeredScope ? undefined : meta.server_home_id);
   const onlineRemotes = useMemo(
-    () => (remotesQuery.data ?? []).filter((record) => browsableRemote(record) && record.state === 'online'),
-    [remotesQuery.data],
+    () => (remotesQuery.data ?? []).filter((record) => (
+      browsableRemote(record)
+      && record.state === 'online'
+      && (localServerHomeId === undefined || record.target.homeId !== localServerHomeId)
+    )),
+    [remotesQuery.data, localServerHomeId],
   );
 
   const spaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
@@ -140,7 +144,6 @@ function HeroSpaceChip() {
   if (spaceScope !== ALL_SPACE_SCOPE && !inBrokeredScope) return null;
 
   const activeLocalId = localSpaceKey ?? MAIN_SPACE_ID;
-  const activeLocalScopeId = localScopeId ?? 'local';
   const activeRemote = connectionId !== null ? onlineRemotes.find((r) => r.id === connectionId) : undefined;
   const activeLabel = activeRemote !== undefined ? activeRemote.label : t('st.spaces.main');
   const activeColor = activeRemote !== undefined ? 'var(--color-success)' : 'var(--color-ink-faint)';
@@ -148,25 +151,13 @@ function HeroSpaceChip() {
   const selectLocal = () => {
     setOpen(false);
     if (connectionId === null) return;
-    setSwitchingTo(t('st.spaces.main'));
-    void requestScopeNavigation({ homeId: activeLocalId, scopeId: activeLocalScopeId, route: '/new', inPlace: true })
-      .catch((error: unknown) => {
-        if (error !== null && typeof error === 'object' && 'name' in error && (error as { name?: unknown }).name === 'AbortError') return;
-        pushToast({ tone: 'error', text: t('sidebar.space.backFailed') });
-      })
-      .finally(() => { setSwitchingTo(null); });
+    void navigate('/new');
   };
 
-  const selectRemote = (id: string, label: string) => {
+  const selectRemote = (id: string) => {
     setOpen(false);
     if (connectionId === id) return;
-    setSwitchingTo(label);
-    void requestScopeNavigation({ ...remoteSpaceScope(id), route: '/new', inPlace: true })
-      .catch((error: unknown) => {
-        if (error !== null && typeof error === 'object' && 'name' in error && (error as { name?: unknown }).name === 'AbortError') return;
-        pushToast({ tone: 'error', text: t('sidebar.space.remoteFailed', { name: label }) });
-      })
-      .finally(() => { setSwitchingTo(null); });
+    void navigate(placeNewPath(id));
   };
 
   const list = (
@@ -194,7 +185,7 @@ function HeroSpaceChip() {
             role="menuitemradio"
             aria-checked={current}
             data-hero-space-option={`remote:${record.id}`}
-            onClick={() => { selectRemote(record.id, record.label); }}
+            onClick={() => { selectRemote(record.id); }}
             className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper"
           >
             <SpaceDot color="var(--color-success)" />
@@ -215,7 +206,6 @@ function HeroSpaceChip() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t('new.targetSpaceAria')}
-        disabled={switchingTo !== null}
         onClick={() => {
           setOpen((prev) => {
             if (!prev && hasRemoteApi) void remotesQuery.refetch();
@@ -225,9 +215,7 @@ function HeroSpaceChip() {
         className="hero-workspace-chip motion-press flex h-8 max-w-[220px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60 pointer-coarse:h-11"
       >
         <SpaceDot color={activeColor} />
-        <span className="truncate">
-          {switchingTo !== null ? t('new.targetSpaceSwitching', { name: switchingTo }) : activeLabel}
-        </span>
+        <span className="truncate">{activeLabel}</span>
         <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open ? (

@@ -19,7 +19,10 @@ export function isSpaceViewRoute(route: unknown): route is string {
       /^\/work$/.test(url.pathname) ||
       /^\/settings(?:\/[^/]+)?$/.test(url.pathname) ||
       /^\/s\/[^/]+(?:\/.*)?$/.test(url.pathname) ||
-      /^\/(?:rooms|r)\/[^/]+$/.test(url.pathname);
+      /^\/(?:rooms|r)\/[^/]+$/.test(url.pathname) ||
+      /^\/p\/[^/]+\/new$/.test(url.pathname) ||
+      /^\/p\/[^/]+\/s\/[^/]+(?:\/.*)?$/.test(url.pathname) ||
+      /^\/p\/[^/]+\/(?:rooms|r)\/[^/]+$/.test(url.pathname);
   } catch {
     return false;
   }

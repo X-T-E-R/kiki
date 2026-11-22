@@ -20,6 +20,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { PhoneRemoteSpaceLine } from './PageChrome';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
+import { placeNewPath, placeRoutePrefix, placeSessionPath, stripPlacePrefix } from '../lib/placeRoutes';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -1371,10 +1372,11 @@ type ModelSource = ComposerModelSource;
 /** How long the not-found card stays before /s/:id falls back home. */
 export const NOT_FOUND_FALLBACK_MS = 3000;
 
-/** True when `pathname` is this session or one of its child routes. */
+/** True when `pathname` is this session or one of its child routes (local or `/p/:connectionId`). */
 export function sessionRouteOwnsSession(pathname: string, sessionId: string): boolean {
+  const normalized = stripPlacePrefix(pathname);
   const prefix = `/s/${sessionId}`;
-  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+  return normalized === prefix || normalized.startsWith(`${prefix}/`);
 }
 
 /** Leave for /new only when this session is definitely gone, the route is still its own, and no loaded roster row carries it. */
@@ -2186,8 +2188,8 @@ export function agentOlderErrorText(error: unknown): string {
   return error instanceof Error && error.message !== '' ? error.message : String(error);
 }
 
-export function agentDetailPath(sessionId: string, agentId: string): string {
-  return `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
+export function agentDetailPath(sessionId: string, agentId: string, connectionId?: string | null): string {
+  return `${placeRoutePrefix(connectionId)}/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
 }
 
 /**
@@ -2267,7 +2269,7 @@ export function SessionView({
   const host = useHost();
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
-  const { client, socket, meta, wsStatus, scopeId } = useConnection();
+  const { client, socket, meta, wsStatus, scopeId, connectionId } = useConnection();
   const { slots, previewPresentation } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
@@ -2279,8 +2281,9 @@ export function SessionView({
   const location = useLocation();
   const sessionPathRef = useRef(location.pathname);
   sessionPathRef.current = location.pathname;
-  const agentMatch = useMatch('/s/:id/agent/:agentId');
-  const selectedAgentId = agentMatch?.params.agentId;
+  const localAgentMatch = useMatch('/s/:id/agent/:agentId');
+  const placeAgentMatch = useMatch('/p/:connectionId/s/:id/agent/:agentId');
+  const selectedAgentId = placeAgentMatch?.params.agentId ?? localAgentMatch?.params.agentId;
   const selectedAgentIdRef = useRef(selectedAgentId);
   selectedAgentIdRef.current = selectedAgentId;
   const sessionIdRef = useRef(sessionId);
@@ -2535,12 +2538,33 @@ export function SessionView({
     document.querySelector<HTMLElement>('[data-composer]')?.focus();
   }, []);
 
-  const knownSession = sessions.find((item) => item.id === sessionId);
+  const queryClient = useQueryClient();
+  const cachedSessionRecord = useMemo(() => {
+    const fromProp = sessions.find((item) => item.id === sessionId);
+    if (fromProp !== undefined) return fromProp;
+    const direct = queryClient.getQueryData<Session>(['session', sessionId]);
+    if (direct !== undefined && direct !== null) return direct;
+    for (const [, data] of queryClient.getQueriesData<{ pages?: Array<{ items?: readonly Session[] }> }>({ queryKey: ['sessions'] })) {
+      if (!Array.isArray(data?.pages)) continue;
+      for (const page of data.pages) {
+        const hit = Array.isArray(page?.items) ? page.items.find((item) => item.id === sessionId) : undefined;
+        if (hit !== undefined) return hit;
+      }
+    }
+    return undefined;
+  }, [sessions, sessionId, queryClient]);
+  const sessionIdentityQuery = useQuery({
+    queryKey: ['session', sessionId],
+    queryFn: () => client.getSession(sessionId),
+    enabled: cachedSessionRecord === undefined && createHandoff.ephemeral === undefined && typeof client.getSession === 'function',
+    staleTime: 30_000,
+    retry: false,
+  });
+  const knownSession = cachedSessionRecord ?? sessionIdentityQuery.data;
   const persistenceHint = createHandoff.ephemeral !== undefined
     ? createHandoff.ephemeral ? 'temporary' : 'saved'
     : knownSession === undefined ? 'unknown' : knownSession.ephemeral === true ? 'temporary' : 'saved';
   const { controller, leaseReady } = useActiveController(sessionId, selectedAgentId, persistenceHint);
-  const queryClient = useQueryClient();
 
   const initialBindingIntentRef = useRef({ model: initialOptionsRef.current.model, thinking: initialOptionsRef.current.thinking });
   const skillBindingChangeRef = useRef<ComposerModelBindingChange | undefined>(undefined);
@@ -3040,10 +3064,10 @@ export function SessionView({
     const timer = setTimeout(() => {
       if (!sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current, sessionStillListed)) return;
       if (readLastSessionId() === sessionId) writeLastSessionId(undefined);
-      void navigate('/new', { replace: true });
+      void navigate(connectionId !== null ? placeNewPath(connectionId) : '/new', { replace: true });
     }, NOT_FOUND_FALLBACK_MS);
     return () => { clearTimeout(timer); };
-  }, [loadError, sessionId, navigate, t, sessionStillListed]);
+  }, [loadError, sessionId, navigate, t, sessionStillListed, connectionId]);
 
   // Demand for what this page shows. Focus is the routed timeline's `delta`
   // lease: main's on the main page, the agent's on an agent page (whose
@@ -3076,12 +3100,13 @@ export function SessionView({
   });
   useEffect(() => {
     if (controller === null) return;
-    const record = sessions.find((item) => item.id === controller.sessionId)
+    const record = knownSession
+      ?? sessions.find((item) => item.id === controller.sessionId)
       ?? (Array.isArray(ephemeralQuery.data?.pages)
         ? ephemeralQuery.data.pages.flatMap((page) => (Array.isArray(page?.items) ? page.items : [])).find((item) => item.id === controller.sessionId)
         : undefined);
     if (record !== undefined) controller.handleSessionRecord(record);
-  }, [controller, sessions, ephemeralQuery.data]);
+  }, [controller, knownSession, sessions, ephemeralQuery.data]);
 
   const serverDefaultModel = configQuery.data?.default_model;
 
@@ -4508,7 +4533,7 @@ boundExecution,
         queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
         invalidatePersonaSessionLists(queryClient);
         pushToast({ tone: 'success', text: t('action.forkDoneSession') });
-        void navigate(`/s/${fork.id}`);
+        void navigate(placeSessionPath(connectionId, fork.id));
       })()
         .catch((error: unknown) => {
           pushToast({
@@ -4521,7 +4546,7 @@ boundExecution,
           setForkingMessage(false);
         });
     },
-    [controller, resolveAssistantMessageId, queryClient, navigate, t, locale],
+    [controller, resolveAssistantMessageId, queryClient, navigate, connectionId, t, locale],
   );
 
   const transcriptRowActions = useMemo<TranscriptRowActions>(
@@ -4582,14 +4607,14 @@ boundExecution,
   // page" — returning via POP when main was the immediate previous visit keeps
   // main's exact scroll snapshot).
   const openSession = useCallback(() => {
-    const sessionPath = `/s/${sessionId}`;
+    const sessionPath = placeSessionPath(connectionId, sessionId);
     const back = getBackEntry();
     if (back !== null && back.pathname === sessionPath && back.search === '' && back.hash === '') {
       void navigate(-1);
       return;
     }
     void navigateVisits(sessionPath);
-  }, [navigate, navigateVisits, sessionId]);
+  }, [connectionId, navigate, navigateVisits, sessionId]);
 
   const openAgent = useCallback(
     (agentId: string) => {
@@ -4601,13 +4626,13 @@ boundExecution,
       const isBranch = node?.isBranch === true || node?.branchSealed === true;
       const mode = liveSettings.subagentPanelOpenMode;
       if (isBranch || mode === 'fullscreen' || previewRef.current === null) {
-        void navigateVisits(agentDetailPath(sessionId, agentId));
+        void navigateVisits(agentDetailPath(sessionId, agentId, connectionId));
         return;
       }
       const title = node?.label ?? agentId;
       previewRef.current.openAgentPanel(agentId, title);
     },
-    [forest, liveSettings.subagentPanelOpenMode, navigateVisits, openSession, sessionId],
+    [connectionId, forest, liveSettings.subagentPanelOpenMode, navigateVisits, openSession, sessionId],
   );
   // `/btw` and the header's "Side question": fork a tool-less side agent from
   // the main context and anchor a compact ephemeral floating card right above
@@ -4694,7 +4719,7 @@ boundExecution,
             previewRef.current.openAgentPanel(created.agent_id, title);
             focusAgentTabWhenMounted(created.agent_id);
           } else {
-            void navigateVisits(agentDetailPath(sessionId, created.agent_id));
+            void navigateVisits(agentDetailPath(sessionId, created.agent_id, connectionId));
           }
         } catch (error) {
           pushToast({ tone: 'error', text: t('branch.failed', { detail: sessionActionErrorText(locale, error) }) });
@@ -4703,22 +4728,22 @@ boundExecution,
         }
       })();
     },
-    [branchPending, client, controller, locale, navigateVisits, openForkPopover, sessionId, t],
+    [branchPending, client, connectionId, controller, locale, navigateVisits, openForkPopover, sessionId, t],
   );
   const openForkSession = useCallback(
     (targetSessionId: string) => {
       if (targetSessionId !== '' && targetSessionId !== sessionId) {
-        void navigateVisits(`/s/${targetSessionId}`);
+        void navigateVisits(placeSessionPath(connectionId, targetSessionId));
       }
     },
-    [navigateVisits, sessionId],
+    [connectionId, navigateVisits, sessionId],
   );
   const openAgentRoute = useCallback(
     (agentId: string) => {
-      const path = agentDetailPath(sessionId, agentId);
+      const path = agentDetailPath(sessionId, agentId, connectionId);
       if (location.pathname !== path) void navigateVisits(path);
     },
-    [location.pathname, navigateVisits, sessionId],
+    [connectionId, location.pathname, navigateVisits, sessionId],
   );
   const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
     () => ({

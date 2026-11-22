@@ -905,7 +905,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
     const sourceDraft = container.querySelector<HTMLInputElement>('[data-settings-draft]')!;
     const sourceVisit = getCurrentVisit();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-dirty-editor]')!.click(); });
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="local-only"]')!.click(); });
     await loseLocalConnection(localConfig.url);
     await settle();
     expect(container.querySelector('[data-local-control-url]')?.textContent).toBe('pending');
@@ -917,7 +917,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-settings-draft]')).toBe(sourceDraft);
     await act(async () => { beforeOpenRecovery.resolve({ config: localConfig, persist: false }); });
     await settle();
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="local-only"]')!.click(); });
     expect(opened).toEqual([]);
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
     await settle();
@@ -926,10 +927,10 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-settings-draft]')).toBe(sourceDraft);
     expect(sourceDraft.value).toBe('unsaved local routing draft');
     expect(container.querySelector('[data-guard-dirty]')?.textContent).toBe('true');
-    expect(container.querySelector('[data-restore-error]')?.textContent).toContain('Independent window failed to open');
     expect(getCurrentVisit()).toEqual(sourceVisit);
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'open_space')).toHaveLength(1);
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit2', ctrlKey: true, altKey: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="local-only"]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
     await settle();
     expect(opened).toEqual(['D:/local-gpu']);
@@ -946,7 +947,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(localController.closed).toBe(true);
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
     expect(document.querySelector('[data-space-directory-pending]')).not.toBeNull();
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit3', ctrlKey: true, altKey: true })); });
+    expect(document.querySelector('[data-space-switch-item="shared"]')).toBeNull();
     expect(opened).toHaveLength(1);
     await act(async () => recovery.resolve({ config: recoveredConfig, persist: false }));
     await settle();
@@ -990,7 +991,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
 
     const lateLocal = deferred<object>();
     mocks.meta.mockReturnValueOnce(lateLocal.promise);
-    await menuAction('[data-space-new-entry]');
+    await menuAction('[data-space-manage]');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-confirm-leave]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-cancel-leave]')!.click(); });
     await act(async () => { lateLocal.resolve({ server_id: 'server-local' }); });

@@ -3830,29 +3830,44 @@ async function scenarioSidebarInbox() {
     await page.locator('[data-inbox-drawer="snoozed"]').waitFor({ timeout: 5_000 });
   }
 
-  // 3. SpaceScopeControl popover showing All spaces + local + online/offline remote spaces.
+  // 3. SpaceScopeControl popover showing All computers + This computer + paired computers + Spaces.
   await page.locator('[data-space-scope-pill="all"]').click();
   await page.locator('[data-space-scope-all]').waitFor({ state: 'visible', timeout: 5_000 });
+  const menuText = (await page.locator('[data-space-switcher-menu]').textContent()) ?? '';
+  if (menuText.includes('⌃⌥') || menuText.includes('另一个空间') || menuText.includes('在新窗口打开')) {
+    throw new Error(`sidebar-inbox: forbidden legacy text leaked into SpaceSwitchSheet: ${menuText}`);
+  }
   await shot('sidebar-inbox-space-popover');
 
-  // 4. Focus local space (single-space pill with × clear button), then return to All spaces.
-  const firstLocal = page.locator('[data-space-switch-item]').first();
-  if (await firstLocal.count() > 0 && await firstLocal.isEnabled()) {
-    await firstLocal.click();
-    await page.locator('[data-space-scope-clear]').waitFor({ timeout: 5_000 });
+  // 4. Focus This computer (0ms filter), then return to All computers.
+  const localFilter = page.locator('[data-space-computer-local]');
+  if (await localFilter.count() > 0 && await localFilter.isEnabled()) {
+    await localFilter.click();
+    await page.locator('[data-space-scope-pill]:not([data-space-scope-pill="all"])').waitFor({ timeout: 5_000 });
     await shot('sidebar-inbox-space-focused');
-    await page.locator('[data-space-scope-clear]').click();
+    await page.locator('[data-space-switcher]').click();
+    await page.locator('[data-space-scope-all]').waitFor({ state: 'visible', timeout: 5_000 });
+    await page.locator('[data-space-scope-all]').click();
     await page.locator('[data-space-scope-pill="all"]').waitFor({ timeout: 5_000 });
   } else {
     await page.keyboard.press('Escape');
   }
 
-  // 5. Switch to Sessions view -> verify 72h cold fold ("Older · 2" / "更早 · 2").
+  // 5. Switch to Sessions view -> verify unified multi-computer rows + 72h cold fold ("Older · 2" / "更早 · 2").
   await page.locator('[data-sidebar-mode="sessions"]').click();
   await page.locator('[data-sidebar-cold-fold="collapsed"]').waitFor({ timeout: 8_000 });
+  await page.locator('[data-session-row="session_remote_done"]').waitFor({ timeout: 8_000 });
   await shot('sidebar-sessions-cold-fold');
 
+  // 5b. Open remote session in-place (`/p/:connectionId/s/:sessionId`) and verify active highlight.
+  await page.locator('[data-session-row="session_remote_done"] button').first().click();
+  await page.waitForURL(/\/p\/11111111-1111-4111-8111-111111111111\/s\/session_remote_done/, { timeout: 10_000 });
+  await page.locator('[data-composer-input][contenteditable="true"]').waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('sidebar-remote-session-inplace');
+
   // 6. Switch back to Inbox, clear remaining active items to verify Inbox-Zero empty state + bottom drawers.
+  await openDrawerIfNarrow();
   await page.locator('[data-sidebar-mode="inbox"]').click();
   await page.locator('[data-sidebar-inbox]').waitFor({ timeout: 5_000 });
   for (let i = 0; i < 6; i += 1) {

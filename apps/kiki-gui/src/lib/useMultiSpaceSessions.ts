@@ -20,6 +20,7 @@ import type { SpaceConversationSource } from '@kiki/session-core/sessions';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
+import { useOptionalPlaceClientPool } from '../state/placeClients';
 import { createRemoteSpaceClient, type KikiClient } from './client';
 import { hasGuiPurpose, remoteSpaceKey, useRemoteConnections } from './remoteConnections';
 import { MAIN_SPACE_ID, useSpaces, useSpaceStatuses } from './spaces';
@@ -90,8 +91,10 @@ export interface MultiSpaceSessionsResult {
   readonly localSpaceKey: string;
   readonly localSpaceName: string;
   readonly remoteConnections: readonly RemoteConnection[];
+  readonly remoteLoading: boolean;
   readonly hasMultipleSpaces: boolean;
   readonly refetchRemotes: () => Promise<void>;
+  readonly refreshRemoteSpace: (connectionId: string) => Promise<void>;
 }
 
 async function fetchSpaceHead(
@@ -145,12 +148,14 @@ export function useMultiSpaceSessions({
     client,
     localClient,
     config,
+    meta,
     connectionId,
     connectionSource,
     spaceKey,
     localSpaceKey: connLocalSpaceKey,
     sshLabel,
   } = useConnection();
+  const placePool = useOptionalPlaceClientPool();
 
   const inBrokeredScope =
     (typeof connectionId === 'string' && connectionId !== '') ||
@@ -174,9 +179,15 @@ export function useMultiSpaceSessions({
       ? t('st.spaces.main')
       : (localSpaceEntry?.name ?? (here !== null && !here.homeId.startsWith('remote:') ? here.name : undefined) ?? localSpaceKey);
 
+  // Self-loop guard: discard any paired remote connection whose target homeId
+  // matches this local server's own server_home_id.
+  const localServerHomeId = !inBrokeredScope ? meta?.server_home_id : undefined;
   const remoteRecords = useMemo(
-    () => (remoteQuery.data ?? []).filter(hasGuiPurpose),
-    [remoteQuery.data],
+    () => (remoteQuery.data ?? []).filter((record) =>
+      hasGuiPurpose(record) &&
+      (localServerHomeId === undefined || record.target.homeId !== localServerHomeId),
+    ),
+    [remoteQuery.data, localServerHomeId],
   );
   const onlineRemotes = useMemo(
     () => remoteRecords.filter((record) => record.enabled && record.state === 'online'),
@@ -187,7 +198,7 @@ export function useMultiSpaceSessions({
     [onlineRemotes],
   );
 
-  // Pool one lightweight remote client per online remote connection generation.
+  // Fallback local pool when rendered outside PlaceClientsProvider (e.g. unit tests).
   const poolRef = useRef(new Map<string, PooledRemoteEntry>());
   const [snapshots, setSnapshots] = useState<ReadonlyMap<string, CachedSpaceSnapshot>>(() => new Map());
 
@@ -202,6 +213,11 @@ export function useMultiSpaceSessions({
       if (!desiredIds.has(id) || entry.generationKey !== expectedGen || !hasRemoteApi) {
         pool.delete(id);
         void entry.client.dispose?.().catch?.(() => undefined);
+      }
+    }
+    if (placePool !== null) {
+      for (const record of remoteRecords) {
+        if (!record.enabled) placePool.revoke(record.id);
       }
     }
     // Also drop snapshots for removed/disabled remotes so revoked peers leave the stream cleanly.
@@ -224,7 +240,7 @@ export function useMultiSpaceSessions({
       }
       return next;
     });
-  }, [onlineRemotes, remoteRecords, controlBaseUrl, controlToken, hasRemoteApi, localSpaceKey]);
+  }, [onlineRemotes, remoteRecords, controlBaseUrl, controlToken, hasRemoteApi, localSpaceKey, placePool]);
 
   useEffect(() => {
     const pool = poolRef.current;
@@ -238,6 +254,9 @@ export function useMultiSpaceSessions({
 
   const getOrCreateRemoteClient = useCallback((recordId: string): KikiClient | null => {
     if (!hasRemoteApi || controlClient === null) return null;
+    if (placePool !== null) {
+      return placePool.getOrCreateClient(recordId);
+    }
     const generationKey = `${controlBaseUrl}|${controlToken}|${recordId}`;
     const existing = poolRef.current.get(recordId);
     if (existing !== undefined && existing.generationKey === generationKey) {
@@ -254,14 +273,49 @@ export function useMultiSpaceSessions({
     });
     poolRef.current.set(recordId, { generationKey, client: created });
     return created;
-  }, [hasRemoteApi, controlClient, controlBaseUrl, controlToken]);
+  }, [hasRemoteApi, controlClient, controlBaseUrl, controlToken, placePool]);
+
+  const isVerifiedActiveRemoteRecord = useCallback((record: RemoteConnection): boolean => {
+    if (!inBrokeredScope || connectionId !== record.id) return false;
+    return meta?.server_home_id !== undefined && meta.server_home_id === record.target.homeId;
+  }, [inBrokeredScope, connectionId, meta?.server_home_id]);
+
+  const refreshRemoteSpace = useCallback(async (recordId: string) => {
+    const targetClient = getOrCreateRemoteClient(recordId);
+    if (targetClient === null) return;
+    const controller = new AbortController();
+    try {
+      const head = await fetchSpaceHead(targetClient, controller.signal);
+      setSnapshots((prev) => {
+        const next = new Map(prev);
+        next.set(remoteSpaceKey(recordId), {
+          sessions: head.sessions,
+          rooms: head.rooms,
+          workspaces: head.workspaces,
+          lastSyncedAt: Date.now(),
+          stale: false,
+        });
+        return next;
+      });
+    } catch {
+      // Leave the last good snapshot intact on transient refresh errors.
+    }
+  }, [getOrCreateRemoteClient]);
+
+  // Immediately refresh a remote computer's sidebar snapshot when any mutation lands on it.
+  useEffect(() => {
+    if (placePool === null) return undefined;
+    return placePool.subscribeMutation((mutatedConnId) => {
+      void refreshRemoteSpace(mutatedConnId);
+    });
+  }, [placePool, refreshRemoteSpace]);
 
   const onlineRemotesRef = useRef(onlineRemotes);
   onlineRemotesRef.current = onlineRemotes;
 
   useEffect(() => {
     if (!enabled) return;
-    const needRemotePoll = onlineRemotesRef.current.some((r) => r.id !== connectionId);
+    const needRemotePoll = onlineRemotesRef.current.some((r) => !isVerifiedActiveRemoteRecord(r));
     const needLocalBackgroundPoll = inBrokeredScope && controlClient !== null;
     if (!needRemotePoll && !needLocalBackgroundPoll) return;
 
@@ -277,7 +331,7 @@ export function useMultiSpaceSessions({
           targets.push({ key: localSpaceKey, client: controlClient });
         }
         for (const record of onlineRemotesRef.current) {
-          if (record.id === connectionId) continue;
+          if (isVerifiedActiveRemoteRecord(record)) continue;
           const remoteClient = getOrCreateRemoteClient(record.id);
           if (remoteClient !== null) {
             targets.push({ key: remoteSpaceKey(record.id), client: remoteClient });
@@ -327,7 +381,7 @@ export function useMultiSpaceSessions({
   }, [
     enabled,
     onlineRemoteSignature,
-    connectionId,
+    isVerifiedActiveRemoteRecord,
     inBrokeredScope,
     controlClient,
     localSpaceKey,
@@ -360,11 +414,11 @@ export function useMultiSpaceSessions({
       color: localSpaceEntry?.color,
     });
 
-    // 2. Paired GUI remote spaces.
+    // 2. Paired GUI remote spaces — only reuse activeSessions on verified identity match.
     for (const record of remoteRecords) {
       if (!record.enabled) continue;
       const key = remoteSpaceKey(record.id);
-      const isActiveRemote = connectionId === record.id;
+      const isActiveRemote = isVerifiedActiveRemoteRecord(record);
       const snap = snapshots.get(key);
       const remoteSessions = isActiveRemote ? activeSessions : (snap?.sessions ?? []);
       const remoteRooms = isActiveRemote ? activeRooms : (snap?.rooms ?? []);
@@ -408,11 +462,12 @@ export function useMultiSpaceSessions({
     activeRooms,
     activeWorkspaces,
     remoteRecords,
-    connectionId,
+    isVerifiedActiveRemoteRecord,
   ]);
 
   const localSpaceCount = desktop ? Math.max(1, (localSpacesQuery.data ?? []).length) : 1;
   const hasMultipleSpaces = localSpaceCount > 1 || remoteRecords.length > 0;
+  const remoteLoading = hasRemoteApi && remoteQuery.isPending && remoteQuery.data === undefined;
 
   const refetchRemotes = useCallback(async () => {
     if (!hasRemoteApi) return;
@@ -425,7 +480,9 @@ export function useMultiSpaceSessions({
     localSpaceKey,
     localSpaceName,
     remoteConnections: remoteRecords,
+    remoteLoading,
     hasMultipleSpaces,
     refetchRemotes,
+    refreshRemoteSpace,
   };
 }

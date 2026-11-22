@@ -15,6 +15,7 @@ import { randomUuid } from '@kiki/session-core/util';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { UNSAFE_DataRouterContext } from 'react-router-dom';
+import { placeSessionPath } from '../lib/placeRoutes';
 import {
   ErrorCode,
   type AuthSummary,
@@ -1223,7 +1224,8 @@ export function useNewSessionDraft({
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
         queryClient.setQueryData(['space-view-target', scopeId, 'session', session.id], true);
-        const targetPath = `/s/${session.id}`;
+        queryClient.setQueryData(['session', session.id], session);
+        const targetPath = placeSessionPath(connectionId, session.id);
         const navigateToSession = (onCancel: () => void) => navigate(targetPath, {
           state: {
             createdSession: { id: session.id, scopeId },

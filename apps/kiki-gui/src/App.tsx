@@ -24,15 +24,17 @@ import { startTransition, Suspense, useCallback, useEffect, useLayoutEffect, use
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
-import type { WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
+import type { RemoteConnection, WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
 import {
   Navigate,
+  Outlet,
   Route,
   Routes,
   useLocation,
   useMatch,
   useNavigate,
   useNavigationType,
+  useParams,
   type NavigateOptions,
   type To,
 } from 'react-router-dom';
@@ -74,12 +76,14 @@ import {
   arrangePinnedFirst,
   dedupeSessions,
   groupConversationItems,
+  mergeMultiSpaceConversationItems,
   mergeSessionFirstPage,
   readAllSessionPages,
   readSessionFirstPage,
   sortWorkspacesByPinnedThenRecency,
   withPinnedSessions,
   type ConversationListItem,
+  type NamedConversationWorkspace,
   type SessionGroup,
   type SessionListData,
 } from '@kiki/session-core/sessions';
@@ -108,12 +112,20 @@ import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
 import { anyOverlayOpen, registerOverlay } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
+import { useConversationSeen } from './lib/conversationOpen';
+import { placeNewPath } from './lib/placeRoutes';
 import { useAwayNotifications } from './lib/useAwayNotifications';
 import { useInboxTriageState } from './lib/useInboxTriageState';
-import { ALL_SPACE_SCOPE, useMultiSpaceSessions } from './lib/useMultiSpaceSessions';
+import {
+  ALL_SPACE_SCOPE,
+  matchesSpaceScope,
+  spaceScopeToKey,
+  useMultiSpaceSessions,
+} from './lib/useMultiSpaceSessions';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
+import { PlaceClientProvider, PlaceClientsProvider } from './state/placeClients';
 import { useScopeRestore } from './components/NavScopeBoundary';
 import { isCrossScopeNavigation, recordNavigation, type NavScopeIdentity } from './lib/navHistory';
 import {
@@ -229,12 +241,35 @@ function RootRedirect() {
 
 export { isEditableTarget };
 
+function PlaceOutlet({
+  remoteConnections,
+  remoteLoaded,
+}: {
+  readonly remoteConnections: readonly RemoteConnection[];
+  readonly remoteLoaded: boolean;
+}) {
+  const { connectionId } = useParams<{ connectionId: string }>();
+  return (
+    <PlaceClientProvider
+      connectionId={connectionId}
+      remoteConnections={remoteConnections}
+      remoteLoaded={remoteLoaded}
+    >
+      <Outlet />
+    </PlaceClientProvider>
+  );
+}
+
 export function App() {
-  const { meta } = useConnection();
+  const { meta, scopeId } = useConnection();
   if (meta.storage_mode === 'maintenance') {
     return <StorageMigrationViewComponent onComplete={() => { window.location.reload(); }} />;
   }
-  return <NormalApp />;
+  return (
+    <PlaceClientsProvider key={scopeId}>
+      <NormalApp key={scopeId} />
+    </PlaceClientsProvider>
+  );
 }
 
 function ShellCatalogSync() {
@@ -341,7 +376,13 @@ function NormalApp() {
   const sessionsKey = privateFilter === 'hide'
     ? (['sessions', showArchived, workspaceFilter] as const)
     : (['sessions', showArchived, workspaceFilter, privateFilter] as const);
-  const newSessionPath = workspaceFilter === undefined ? '/new' : `/new?workspace=${encodeURIComponent(workspaceFilter)}`;
+  const focusedScopeKey = spaceScopeToKey(layoutPrefs.spaceScope);
+  const focusedRemoteConnId = focusedScopeKey?.startsWith('remote:')
+    ? focusedScopeKey.slice('remote:'.length)
+    : undefined;
+  const newSessionPath = focusedRemoteConnId !== undefined
+    ? placeNewPath(focusedRemoteConnId)
+    : (workspaceFilter === undefined ? '/new' : `/new?workspace=${encodeURIComponent(workspaceFilter)}`);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Work setup is one sheet, reached from the mode menu on any page and from
@@ -550,11 +591,23 @@ function NormalApp() {
     });
   }, [host, locale, t]);
 
-  const sessionMatch = useMatch('/s/:id/*');
-  const activeSessionId = sessionMatch?.params.id;
-  const composerAgentMatch = useMatch('/s/:id/agent/:agentId');
-  useNavigationComposerFocus(scopeId, activeSessionId, composerAgentMatch?.params.agentId);
-  const isNewRoute = useMatch('/new') !== null;
+  const localSessionMatch = useMatch('/s/:id/*');
+  const placeSessionMatch = useMatch('/p/:connectionId/s/:id/*');
+  const placeNewMatch = useMatch('/p/:connectionId/new');
+  const placeRoomMatch = useMatch('/p/:connectionId/rooms/:id');
+  const placeRoomLinkMatch = useMatch('/p/:connectionId/r/:id');
+  const activePlaceConnectionId =
+    placeSessionMatch?.params.connectionId
+    ?? placeNewMatch?.params.connectionId
+    ?? placeRoomMatch?.params.connectionId
+    ?? placeRoomLinkMatch?.params.connectionId;
+  const activeSessionId = placeSessionMatch?.params.id ?? localSessionMatch?.params.id;
+  const localComposerAgentMatch = useMatch('/s/:id/agent/:agentId');
+  const placeComposerAgentMatch = useMatch('/p/:connectionId/s/:id/agent/:agentId');
+  const composerAgentMatch = placeComposerAgentMatch ?? localComposerAgentMatch;
+  const activeComposerScopeId = activePlaceConnectionId !== undefined ? `remote:${activePlaceConnectionId}` : scopeId;
+  useNavigationComposerFocus(activeComposerScopeId, activeSessionId, composerAgentMatch?.params.agentId);
+  const isNewRoute = useMatch('/new') !== null || placeNewMatch !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
 
@@ -774,6 +827,7 @@ function NormalApp() {
   // session waiting on the user stays visible from the conversation the
   // drawer hides.
   const seen = useSessionSeen();
+  const seenV2 = useConversationSeen();
   const personaDirectoryState = usePersonaDirectory({ sessions: globalSessions, seen });
   const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
   const multiSpace = useMultiSpaceSessions({
@@ -782,17 +836,21 @@ function NormalApp() {
     activeWorkspaces: workspaceOptions,
     enabled: !drawerClosed,
   });
-  const activeRoomMatch = useMatch('/rooms/:id');
-  const activeRoomId = activeRoomMatch?.params.id;
+  const localRoomMatch = useMatch('/rooms/:id');
+  const activeRoomId = placeRoomMatch?.params.id ?? localRoomMatch?.params.id;
+  const activePlaceSpaceKey = activePlaceConnectionId !== undefined
+    ? `remote:${activePlaceConnectionId}`
+    : spaceKey;
   const activeConversationKey = activeSessionId !== undefined
-    ? encodeConversationRef({ spaceKey, kind: 'session', id: activeSessionId })
+    ? encodeConversationRef({ spaceKey: activePlaceSpaceKey, kind: 'session', id: activeSessionId })
     : activeRoomId !== undefined
-      ? encodeConversationRef({ spaceKey, kind: 'room', id: activeRoomId })
+      ? encodeConversationRef({ spaceKey: activePlaceSpaceKey, kind: 'room', id: activeRoomId })
       : undefined;
+  const activeSpaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
   const inboxTriage = useInboxTriageState({
     sources: multiSpace.sources,
     currentSpaceKey: spaceKey,
-    spaceScope: layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE,
+    spaceScope: activeSpaceScope,
     activeConversationKey,
   });
   const sidebarBadge = useMemo<SidebarBadge | undefined>(() => {
@@ -801,14 +859,47 @@ function NormalApp() {
       ? undefined
       : { total: current.total, needsYou: current.needsYouCount > 0, needsYouCount: current.needsYouCount };
   }, [inboxTriage.inbox]);
+  const activePlaceSessions = useMemo(() => {
+    if (activePlaceConnectionId === undefined) return sessions;
+    const src = multiSpace.sources.find((entry) => entry.spaceKey === `remote:${activePlaceConnectionId}`);
+    return src?.sessions ?? [];
+  }, [activePlaceConnectionId, multiSpace.sources, sessions]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
+    const scopedSources = multiSpace.sources.filter((src) => matchesSpaceScope(activeSpaceScope, src.spaceKey));
+    const hasRemoteSources = scopedSources.some((src) => src.isRemote);
+    const localOnlyMatching = !hasRemoteSources && scopedSources.length === 1 && scopedSources[0]?.spaceKey === spaceKey;
+    const rawItems = localOnlyMatching
+      ? conversations.items
+      : mergeMultiSpaceConversationItems(
+          scopedSources.map((src) => (
+            src.spaceKey === spaceKey && !src.isRemote
+              ? { ...src, sessions, rooms: conversations.rooms, workspaces: workspaceOptions }
+              : src
+          )),
+          seenV2,
+          layoutPrefs.sortBy,
+          spaceKey,
+          seen,
+        );
     // A Bot's active home and a room member's own session keep their single
     // address (the Persona rows above, the room's row); everything else lists here.
-    const items = conversations.items.filter((item) =>
-      item.kind === 'room' || !shouldHideFromSessionGroups(item.session, rawPersonaDirectory));
+    const items = rawItems.filter((item) =>
+      item.kind === 'room' || item.isRemote === true || !shouldHideFromSessionGroups(item.session, rawPersonaDirectory));
+    const mergedWorkspaces: NamedConversationWorkspace[] = [...workspaceOptions];
+    if (!localOnlyMatching) {
+      const seenWs = new Set(workspaceOptions.map((ws) => ws.id));
+      for (const src of scopedSources) {
+        for (const ws of src.workspaces ?? []) {
+          if (!seenWs.has(ws.id)) {
+            seenWs.add(ws.id);
+            mergedWorkspaces.push(ws);
+          }
+        }
+      }
+    }
     return groupConversationItems(items, {
       groupBy: layoutPrefs.groupBy,
-      workspaces: workspaceOptions,
+      workspaces: mergedWorkspaces,
       filters: listFilters,
       nowMs: Date.now(),
       order: layoutPrefs.sortBy,
@@ -822,7 +913,22 @@ function NormalApp() {
       },
       ungroupedLabel: t('sidebar.groupUngrouped'),
     });
-  }, [conversations.items, rawPersonaDirectory, workspaceOptions, listFilters, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
+  }, [
+    multiSpace.sources,
+    activeSpaceScope,
+    spaceKey,
+    conversations.items,
+    conversations.rooms,
+    sessions,
+    workspaceOptions,
+    seenV2,
+    seen,
+    rawPersonaDirectory,
+    listFilters,
+    layoutPrefs.groupBy,
+    layoutPrefs.sortBy,
+    t,
+  ]);
 
   // System notifications while the window is in the background, the taskbar
   // badge, and notification clicks back to their session.
@@ -1147,6 +1253,7 @@ function NormalApp() {
       healthBySpace={multiSpace.healthBySpace}
       hasMultipleSpaces={multiSpace.hasMultipleSpaces}
       localSpaceKey={multiSpace.localSpaceKey}
+      onRefreshRemoteSpace={multiSpace.refreshRemoteSpace}
       inboxTriage={inboxTriage}
     />
   );
@@ -1275,6 +1382,48 @@ function NormalApp() {
             path="/capabilities"
             element={<CapabilitiesPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
+          {/* In-place paired remote computer routes (`/p/:connectionId/...`):
+              mounts the center conversation / new-session / room canvas + Right
+              Inspector Rail inside PlaceClientProvider while keeping Left
+              Sidebar and Settings permanently bound to the local home. */}
+          <Route
+            path="/p/:connectionId"
+            element={
+              <PlaceOutlet
+                remoteConnections={multiSpace.remoteConnections}
+                remoteLoaded={!multiSpace.remoteLoading}
+              />
+            }
+          >
+            <Route element={<ConversationShell />}>
+              <Route
+                path="new"
+                element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+              />
+              <Route
+                path="s/:id/*"
+                element={
+                  <SpaceViewState>
+                    <SessionRouteView
+                      sessionId={activeSessionId}
+                      onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+                      sessions={activePlaceSessions}
+                      sidebarBadge={sidebarBadge}
+                    />
+                  </SpaceViewState>
+                }
+              />
+            </Route>
+            <Route
+              path="s/:id/tasks"
+              element={<SpaceViewState><TasksPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} /></SpaceViewState>}
+            />
+            <Route path="r/:id" element={<SpaceViewState><RoomLinkRedirect /></SpaceViewState>} />
+            <Route
+              path="rooms/:id"
+              element={<SpaceViewState><RoomPage sessions={activePlaceSessions} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} /></SpaceViewState>}
+            />
+          </Route>
           {/* More specific than the `/s/:id/*` splat, so the tasks browser wins
               over SessionRouteView while the sidebar keeps the session active. */}
           <Route
