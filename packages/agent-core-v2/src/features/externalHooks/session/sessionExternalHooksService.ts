@@ -11,6 +11,8 @@ import { IntervalTimer } from '#/_base/utils/timer';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -36,9 +38,11 @@ import {
   type SessionCreateSource,
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
+import { IAgentExternalHooksService } from '../agent/agentExternalHooks';
 import { HookResult } from '../agent/agentExternalHooksService';
 import { IExternalHooksRunnerService } from '../app/externalHooksRunner';
 import { HookDefSchema } from '../configSection';
+import { agentHookDirectories } from '../internal/bindingContext';
 import type { HookDef } from '../internal/types';
 import { renderHookContextResult, type RenderedHookResult } from '../internal/userPrompt';
 import { ISessionExternalHooksService, type SkillHookRegistration } from './sessionExternalHooks';
@@ -497,6 +501,14 @@ export class SessionExternalHooksService
     } catch {}
   }
 
+  private subagentHookDirectories(child: IAgentScopeHandle | undefined) {
+    return agentHookDirectories(
+      this.context.cwd,
+      child === undefined ? undefined : optionalFromHandle(child, IAgentRuntimeService),
+      child === undefined ? undefined : optionalFromHandle(child, IAgentRuntimeBindingService),
+    );
+  }
+
   private async runSubagentStart(ctx: AgentTaskStartHookContext): Promise<void> {
     ctx.signal.throwIfAborted();
     const childHandle = ctx.agentId === undefined ? undefined : this.agentLifecycleRef?.current?.get(ctx.agentId);
@@ -513,7 +525,7 @@ export class SessionExternalHooksService
     const results = await this.runner.trigger('SubagentStart', {
       matcherValue: ctx.agentName,
       signal: ctx.signal,
-      cwd: this.context.cwd,
+      getDirectories: () => this.subagentHookDirectories(childHandle),
       sessionId: this.context.sessionId,
       additionalHooks: () => this.getSkillHooks(),
       inputData: {
@@ -545,12 +557,15 @@ export class SessionExternalHooksService
   }
 
   private notifySubagentStop(ctx: AgentTaskStopHookContext): void {
-    if (ctx.agentId !== undefined && this.evaluatedSubagentStops.delete(ctx.agentId)) {
+    const child = ctx.agentId === undefined ? undefined : this.agentLifecycleRef?.current?.get(ctx.agentId);
+    if (ctx.autonomousTurnId === undefined) {
+      if (ctx.agentId !== undefined && this.evaluatedSubagentStops.delete(ctx.agentId)) return;
+    } else if (child !== undefined && optionalFromHandle(child, IAgentExternalHooksService)?.consumeAutonomousStop(ctx.autonomousTurnId)) {
       return;
     }
     void this.runner.fireAndForgetTrigger('SubagentStop', {
       matcherValue: ctx.agentName,
-      cwd: this.context.cwd,
+      getDirectories: () => this.subagentHookDirectories(child),
       sessionId: this.context.sessionId,
       additionalHooks: () => this.getSkillHooks(),
       inputData: {

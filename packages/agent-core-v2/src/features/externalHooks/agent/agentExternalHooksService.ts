@@ -25,6 +25,8 @@ import {
   type PromptSubmitContext,
 } from '#/agent/prompt/prompt';
 import { PromptQueued } from '#/agent/prompt/promptService';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { TaskNotified, TaskStarted } from '#/agent/task/taskOps';
 import {
@@ -42,6 +44,7 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { toKimiErrorPayload } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { autonomousReceiptsKey } from '#/session/subagent/autonomousReceiptOps';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentProfileService } from '#/agent/profile/profile';
 
@@ -50,7 +53,7 @@ import {
   IExternalHooksRunnerService,
   triggerBlockingResults,
 } from '../app/externalHooksRunner';
-import { resolveHookBinding } from '../internal/bindingContext';
+import { agentHookDirectories, resolveHookBinding } from '../internal/bindingContext';
 import { blockDecision } from '../internal/matchHooks';
 import { extractHookPromptText, extractHookTextParts, extractOriginChannel } from '../internal/rules';
 import type { HookDef, HookMatcherValue } from '../internal/types';
@@ -95,6 +98,8 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @ref(IAgentScopeContext) private readonly agentRef: LiveRef<IAgentScopeContext>,
+    @ref(IAgentRuntimeService) private readonly runtimeRef: LiveRef<IAgentRuntimeService>,
+    @ref(IAgentRuntimeBindingService) private readonly runtimeBindingRef: LiveRef<IAgentRuntimeBindingService>,
     @ref(IModelService) private readonly modelRef: LiveRef<IModelService>,
     @ref(IProviderService) private readonly providerRef: LiveRef<IProviderService>,
     @ref(IAgentPermissionModeService) private readonly permissionModeRef: LiveRef<IAgentPermissionModeService>,
@@ -129,10 +134,20 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   private disposed = false;
   private sessionTitle: string | undefined;
   private activeTurnId: number | undefined;
+  private activeTurnAutonomous = false;
+  private evaluatedAutonomousStop: number | undefined;
+  private readonly completedAutonomousStops = new Set<number>();
   private activeStep: number | undefined;
   private failureTurnId: number | undefined;
   private failureRecoveries = 0;
   private observedFailureTurnId: number | undefined;
+
+  consumeAutonomousStop(turnId: number): boolean {
+    return this.completedAutonomousStops.delete(turnId);
+  }
+
+  private readonly getHookDirectories = () =>
+    agentHookDirectories(this.sessionContext.cwd, this.runtimeRef.current, this.runtimeBindingRef.current);
 
   private withSessionFacts(inputData: Record<string, unknown>): Record<string, unknown> {
     const binding = resolveHookBinding({
@@ -196,7 +211,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       void this.runner.fireAndForgetTrigger(event, {
         matcherValue,
         signal,
-        cwd: this.sessionContext.cwd,
+        getDirectories: this.getHookDirectories,
         sessionId: this.sessionContext.sessionId,
         additionalHooks: () => this.getAdditionalHooks(),
         inputData: this.withSessionFacts(inputData),
@@ -309,6 +324,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
   private notifyTurnStarted(event: TurnStarted): void {
     this.activeTurnId = event.turnId;
+    this.activeTurnAutonomous = event.parentReceiptManaged !== true;
     this.activeStep = undefined;
     this.failureTurnId = event.turnId;
     this.failureRecoveries = 0;
@@ -447,7 +463,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     const results = await triggerBlockingResults(this.runner, 'PreToolUse', {
       matcherValue: ctx.toolCall.name,
       signal: ctx.signal,
-      cwd: this.sessionContext.cwd,
+      getDirectories: this.getHookDirectories,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
@@ -475,7 +491,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       void this.runner.fireAndForgetTrigger(event, {
         matcherValue: ctx.toolCall.name,
         signal: ctx.signal,
-        cwd: this.sessionContext.cwd,
+        getDirectories: this.getHookDirectories,
         sessionId: this.sessionContext.sessionId,
         additionalHooks: () => this.getAdditionalHooks(),
         inputData: this.withSessionFacts({
@@ -513,7 +529,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     const results = await triggerBlockingResults(this.runner, 'UserPromptSubmit', {
       matcherValue: input,
       signal,
-      cwd: this.sessionContext.cwd,
+      getDirectories: this.getHookDirectories,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
@@ -559,6 +575,12 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   }
 
   private notifyTurnEnded(event: TurnEnded): void {
+    if (this.evaluatedAutonomousStop === event.turnId) {
+      this.evaluatedAutonomousStop = undefined;
+      if (this.states.has(autonomousReceiptsKey) && this.states.get(autonomousReceiptsKey).pending[event.turnId] !== undefined) {
+        this.completedAutonomousStops.add(event.turnId);
+      }
+    }
     this.stopHookContinuationUsed = false;
     this.activeStep = undefined;
     if (event.reason === 'failed' && event.error !== undefined && this.observedFailureTurnId !== event.turnId) {
@@ -574,6 +596,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       this.fireAndForget('Interrupt', { turnId: event.turnId, reason: 'cancelled' });
     }
     this.activeTurnId = undefined;
+    this.activeTurnAutonomous = false;
     this.failureTurnId = undefined;
     this.failureRecoveries = 0;
     this.observedFailureTurnId = undefined;
@@ -604,7 +627,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       results = await this.runner.trigger('StopFailure', {
         matcherValue: payload.name,
         signal,
-        cwd: this.sessionContext.cwd,
+        getDirectories: this.getHookDirectories,
         sessionId: this.sessionContext.sessionId,
         additionalHooks: () => this.getAdditionalHooks(),
         inputData: this.withSessionFacts({
@@ -649,28 +672,29 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     ctx.signal.throwIfAborted();
     if (this.stopHookContinuationUsed) return undefined;
 
-    const block = await this.runner.triggerBlock('Stop', {
-      signal: ctx.signal,
-      cwd: this.sessionContext.cwd,
-      sessionId: this.sessionContext.sessionId,
-      additionalHooks: () => this.getAdditionalHooks(),
-      inputData: this.withSessionFacts({
-        turnId: ctx.turnId,
-        step: ctx.step,
-        stopHookActive: false,
-      }),
-    });
-    ctx.signal.throwIfAborted();
-    if (block !== undefined) return block.reason;
-
     const agent = this.agentRef.current;
-    if (agent?.parentAgentId === undefined) return undefined;
+    if (!agent?.parentAgentId) {
+      const block = await this.runner.triggerBlock('Stop', {
+        signal: ctx.signal,
+        getDirectories: this.getHookDirectories,
+        sessionId: this.sessionContext.sessionId,
+        additionalHooks: () => this.getAdditionalHooks(),
+        inputData: this.withSessionFacts({
+          turnId: ctx.turnId,
+          step: ctx.step,
+          stopHookActive: false,
+        }),
+      });
+      ctx.signal.throwIfAborted();
+      return block?.reason;
+    }
+
     const profileData = this.profile?.data?.();
     const targetName = profileData?.routeId ?? profileData?.profileName ?? agent.agentId;
     const subagentBlock = await this.runner.triggerBlock('SubagentStop', {
       matcherValue: targetName,
       signal: ctx.signal,
-      cwd: this.sessionContext.cwd,
+      getDirectories: this.getHookDirectories,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
@@ -682,7 +706,11 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       }),
     });
     ctx.signal.throwIfAborted();
-    this.sessionHooksRef?.current?.markSubagentStopEvaluated?.(agent.agentId);
+    if (this.activeTurnAutonomous) {
+      if (!agent.isBranch) this.evaluatedAutonomousStop = ctx.turnId;
+    } else {
+      this.sessionHooksRef?.current?.markSubagentStopEvaluated?.(agent.agentId);
+    }
     return subagentBlock?.reason;
   }
 
@@ -692,7 +720,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     await this.runner.trigger('PreCompact', {
       matcherValue: ctx.trigger,
       signal,
-      cwd: this.sessionContext.cwd,
+      getDirectories: this.getHookDirectories,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({
@@ -706,7 +734,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   private async runPostCompact(ctx: FullCompactionTask, result?: CompactionResult): Promise<void> {
     const results = await this.runner.trigger('PostCompact', {
       matcherValue: ctx.trigger,
-      cwd: this.sessionContext.cwd,
+      getDirectories: this.getHookDirectories,
       sessionId: this.sessionContext.sessionId,
       additionalHooks: () => this.getAdditionalHooks(),
       inputData: this.withSessionFacts({

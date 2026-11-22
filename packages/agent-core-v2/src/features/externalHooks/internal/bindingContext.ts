@@ -4,6 +4,9 @@ import type { IProviderService } from '#/kosong/provider/provider';
 import type { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { IAgentProfileService } from '#/agent/profile/profile';
 import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import type { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
+import type { ExternalHookDirectories } from '../app/externalHooksRunner';
 import type { HookBinding } from './rules';
 
 export interface HookBindingSources {
@@ -12,6 +15,19 @@ export interface HookBindingSources {
   readonly models?: IModelService;
   readonly providers?: IProviderService;
   readonly permissionMode?: IAgentPermissionModeService;
+}
+
+export function agentHookDirectories(
+  sessionCwd: string,
+  runtime: IAgentRuntimeService | undefined,
+  binding: IAgentRuntimeBindingService | undefined,
+): ExternalHookDirectories {
+  const roots = runtime?.workspaceRoots?.() ?? { workDir: sessionCwd };
+  if (runtime !== undefined && binding?.current.runtimeId.startsWith('ssh:')) {
+    const remote = runtime.inspect();
+    return { cwd: remote.path.resolve(remote.workspace.mapRoots(roots).workDir), processCwd: sessionCwd };
+  }
+  return { cwd: roots.workDir };
 }
 
 export function resolveHookBinding(sources: HookBindingSources): HookBinding {

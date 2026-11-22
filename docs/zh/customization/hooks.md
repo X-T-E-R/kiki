@@ -91,7 +91,7 @@ if (event.hook_event_name === 'UserPromptSubmit') {
 
 预览列出实际命令、事件、来源和资源指纹。含脚本的包安装时只需明确确认一次，授权这一份执行内容。脚本以 Kiki 服务端的操作系统用户运行，能访问该主机的文件和网络；它不是沙箱，也不改变 Agent 的工具权限。预览、打开编辑器或取消安装都不会运行脚本。无脚本的包不增加脚本确认，已接受的绑定或恢复的会话也不会每次触发都再问。
 
-命令的工作目录是已接受资源快照的受管目录，不是作者的实时源目录。`KIKI_RECIPE_ROOT` 指向这个资源目录，事件 JSON 的 `cwd` 仍指会话工作区。使用主机已有的解释器，并按 Shell 规则为路径加引号。`matcher` 和 `timeout` 沿用下文的 legacy 字段，超时默认 30 秒，接受 1–600 的整数秒。路径必须留在包内，每个引用文本文件最多 256 KiB。可选 `root` 指定包内的相对资源目录，`files` 相对于它；导出的包用此字段隔离继承链中同名的脚本。
+命令的工作目录是已接受资源快照的受管目录，不是作者的实时源目录。`KIKI_RECIPE_ROOT` 指向这个资源目录，事件 JSON 的 `cwd` 指 Agent 的实际工作目录。使用主机已有的解释器，并按 Shell 规则为路径加引号。`matcher` 和 `timeout` 沿用下文的 legacy 字段，超时默认 30 秒，接受 1–600 的整数秒。路径必须留在包内，每个引用文本文件最多 256 KiB。可选 `root` 指定包内的相对资源目录，`files` 相对于它；导出的包用此字段隔离继承链中同名的脚本。
 
 父子 hooks 追加，顶层 `hooks = "off"` 移除继承的脚本。模型和 profile 引用各自贡献；关闭某引用后，在下一次绑定或重建上下文时停止该层，包和原配置仍保留。已有会话继续使用冻结的脚本，安装包接受更新也不会暗中替换它，显式重建才采用新版本。
 
@@ -103,9 +103,9 @@ Recipe 脚本支持[事件一览](#事件一览)中的 Agent 绑定事件，不�
 
 以下都是 legacy 协议：一条规则写明触发事件、要匹配的目标，以及要执行的 Shell 命令。
 
-命中时，CLI 把事件详情（触发原因、工具名、命令内容等）打包成 JSON，通过**标准输入**（stdin，程序运行时接收外部数据的通道）传给脚本，由脚本决定怎么做。**退出码**（exit code，程序结束时向系统报告的状态数字）决定放行还是阻断——`0` 放行，非零值在阻断类事件上阻止原操作，纯观察事件则继续；**标准输出**（stdout，`console.log` 打印的内容）可以附带说明。
+命中时，CLI 把事件详情（触发原因、工具名、命令内容等）打包成 JSON，通过**标准输入**（stdin，程序运行时接收外部数据的通道）传给脚本，由脚本决定怎么做。**退出码**（exit code，程序结束时向系统报告的状态数字）决定放行还是阻断——`0` 通常放行，`2` 表示主动阻断；**标准输出**（stdout，`console.log` 打印的内容）可以附带说明。
 
-阻断类事件在脚本失败或超时时按 fail-closed 处理：尚未执行的操作停止并给出原因。纯观察事件不打断主流程。[返回值表](#返回值)列出两类行为。
+脚本失败或超时会阻断 `PreToolUse` 和 `UserPromptSubmit`，但不会阻止 `Stop` 和 `SubagentStop` 结束本轮。纯观察事件不打断主流程。详见[返回值表](#返回值)。
 
 插件清单未声明 legacy hook 时，插件仍会报告自身的设置错误，但不会因此拦住消息或工具。如果 Kiki 无法加载或判断必需的阻断 hook，报错会说明失败原因，便于与脚本主动拒绝区分。
 
@@ -142,7 +142,7 @@ command = "terminal-notifier -title Kimi -message 'Task done'"
 
 **同一事件匹配多条规则时**，所有命中的 hook 并行运行；`command` 完全相同的多条规则只运行一次。
 
-Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上，hook 进程放在独立进程组里，超时时先发信号让它有机会善后，之后才强制终止。
+Hook 命令在本机运行。默认情况下，Agent 事件（含 `SubagentStart` 和 `SubagentStop`）使用该 Agent 的工作目录；`SessionStart` 等会话事件使用会话的工作目录。Agent 通过 SSH 运行时，命令改用本地会话的工作目录。如果资源 hook 自带工作目录（例如 Recipe hook），命令就在该目录运行。非 Windows 平台上，hook 进程放在独立进程组里，超时时先发信号让它有机会善后，之后才强制终止。
 
 ### 事件数据格式
 
@@ -173,7 +173,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 }
 ```
 
-subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或命名路由还会附带 `profile_path` 与 `route_id`。会话级事件（`SessionStart`、`SessionEnd`、`SessionHeartbeat`、`SubagentStart`、`SubagentStop`）包含会话与工作区字段（其中 `SessionStart` 还会附带默认的 `model_alias`、`model_id`、`provider_id`、`provider_type` 和 `profile_name`）。具体事件会附带各自的字段（工具名、命令内容、完整 `origin`、`channel` 等），见下方事件一览。所有字段名使用下划线命名（snake_case）。
+Agent 事件的 JSON 字段 `cwd` 是该 Agent 的实际工作目录，即使脚本在资源目录运行，或 Agent 通过 SSH 运行。`SessionStart` 等会话事件使用会话的工作目录。与 subagent 绑定的事件在有父 Agent 信息时附带 `parent_agent_id`，基于文件加载的 profile 或命名路由还会附带 `profile_path` 与 `route_id`。会话生命周期事件包含会话与工作区字段（其中 `SessionStart` 还会附带默认的 `model_alias`、`model_id`、`provider_id`、`provider_type` 和 `profile_name`）。具体事件会附带各自的字段（工具名、命令内容、完整 `origin`、`channel` 等），见下方事件一览。所有字段名使用下划线命名（snake_case）。
 
 ## 返回值
 
@@ -183,18 +183,18 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 | --- | --- | --- |
 | `0` | 正常结束，放行 | 继续执行，若标准输出（stdout）有内容可附加到上下文 |
 | `2` | 主动阻断 | 停止当前操作；错误输出（stderr，`console.error` 打印的内容）作为阻断原因 |
-| 其他非零值 | 脚本出错 | 阻断类事件停止当前操作（fail-closed）；纯通知类事件继续 |
-| 超时或崩溃 | 脚本异常 | 阻断类事件停止当前操作（fail-closed）；纯通知类事件继续 |
+| 其他非零值 | 脚本出错 | 阻断 `PreToolUse` 或 `UserPromptSubmit`；结束事件和纯观察事件继续 |
+| 超时或崩溃 | 脚本异常 | 阻断 `PreToolUse` 或 `UserPromptSubmit`；结束事件和纯观察事件继续 |
 
 ### JSON 协议判定
 
 退出码为 `0` 时，CLI 这样判断标准输出：
 
-- **有效 JSON** 会被递归检查。任意深度的对象里出现 `message` 或 `hookSpecificOutput` 键，就认为这是协议输出，顶层必须符合严格的 hook 响应对象格式；顶层形态不同或协议字段非法时阻断该操作。两个键都没有的 JSON 仍是非结构化输出，放行。
-- **畸形的对象文本** 只有在含有可识别的精确 `message` 或 `hookSpecificOutput` 键时才算协议尝试。以 `[` 开头时，只有第一个非空白字符能作为 JSON 值开头才按数组处理，因此 `[INFO]`、`[DEBUG]` 这类日志保持非结构化。单引号、缺少分隔符、键值之间漏冒号都能识别，而 `messageCount` 这样的前缀不算协议键。识别出的畸形协议输出会阻断该操作。
+- **有效 JSON** 会被递归检查。任意深度的对象里出现 `message` 或 `hookSpecificOutput` 键，就认为这是协议输出，顶层必须符合严格的 hook 响应对象格式；顶层形态不同或协议字段非法时，阻断 `PreToolUse` 或 `UserPromptSubmit`。两个键都没有的 JSON 仍是非结构化输出，放行。
+- **畸形的对象文本** 只有在含有可识别的精确 `message` 或 `hookSpecificOutput` 键时才算协议尝试。以 `[` 开头时，只有第一个非空白字符能作为 JSON 值开头才按数组处理，因此 `[INFO]`、`[DEBUG]` 这类日志保持非结构化。单引号、缺少分隔符、键值之间漏冒号都能识别，而 `messageCount` 这样的前缀不算协议键。识别出的畸形协议输出会阻断 `PreToolUse` 或 `UserPromptSubmit`。
 - **其余内容** —— 没有可识别协议键的畸形文本，例如引用了 "message" 字样的日志行 —— 无法与普通日志区分，保持非结构化并放行。
 
-也可以通过标准输出返回一段 JSON 来阻断：
+结束 hook 只有主动阻断才生效；输出格式有误不会阻止本轮结束。可以通过标准输出返回一段 JSON 来阻断：
 
 ```json
 {
@@ -206,7 +206,7 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 ```
 
 ::: info 哪些事件可以阻断？
-`PreToolUse`、`Stop` 和 `UserPromptSubmit` 可以阻断待执行的操作。`StopFailure` 本身不是阻断型 hook，但可请求[模型失败后的有限恢复](#模型失败后恢复)；hook 自身失败时保留原模型错误。其余事件只供观察。
+`PreToolUse` 和 `UserPromptSubmit` 可以阻断待执行的操作。主 Agent 使用 `Stop`，原生 subagent 改用 `SubagentStop`。两种结束事件都可通过主动阻断，让本轮继续一次；脚本崩溃或超时不会阻止本轮结束。`StopFailure` 本身不是阻断型 hook，但可请求[模型失败后的有限恢复](#模型失败后恢复)；hook 自身失败时保留原模型错误。其余事件只供观察。
 :::
 
 ### 模型失败后恢复
@@ -251,7 +251,7 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 | `UserPromptSubmit` | 用户提交的文本内容 | ✓ | 用户发送消息时触发；附带 `prompt`、`prompt_text`、`prompt_id`、`user_message_id`、`origin`、`channel` 和 `is_steer`；返回文本会附加到上下文，若阻断则本轮不调用模型，原消息留在时间线原位置并显示阻断原因，可通过**重新发送**放回输入框 |
 | `UserPromptQueued` | 排队消息的文本内容 | — | 上一回合仍在运行、消息进入队列时触发；payload 含 `prompt_id`、`user_message_id`、`origin`、`channel`、`prompt`、`prompt_text` 和 `queue_length`（观察用） |
 | `PreToolUse` | 工具名 | ✓ | 工具调用前触发（权限检查前）；阻断后工具不会执行 |
-| `Stop` | 空字符串 | ✓ | 模型准备结束本轮时触发；阻断后可追加一条消息让模型继续 |
+| `Stop` | 空字符串 | ✓ | 主 Agent 准备结束本轮时触发；阻断后可追加一条消息让模型继续 |
 | `TurnStarted` | 回合来源类型（如 `user`、`task`、`system_trigger`） | — | 新回合开始时触发；payload 含 `turn_id`、`prompt_id`、`origin`、`origin_kind`、`origin_name`、`channel` 和 `prompt`（观察用） |
 | `PostToolUse` | 工具名 | — | 工具成功执行后触发（观察用） |
 | `PostToolUseFailure` | 工具名 | — | 工具失败或被阻断后触发（观察用） |
@@ -261,10 +261,10 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 | `SessionEnd` | `exit` 或 `archive` | — | 会话关闭后触发；`archive` 表示会话被归档而非退出 |
 | `SessionHeartbeat` | 空字符串 | — | 会话存活期间每 60 秒触发一次；仅当配置了本事件时计时器才会运行。payload 含 `uptime_ms`（观察用） |
 | `SubagentStart` | subagent 名称 | — | subagent 开始运行前触发 |
-| `SubagentStop` | subagent 名称 | — | subagent 成功完成后触发（观察用） |
+| `SubagentStop` | subagent 名称 | 仅限原生 subagent 结束前 | 原生 subagent 准备结束本轮时触发。如果结束前没有执行过该 hook，则在成功完成后触发，仅供观察。 |
 | `TaskStarted` | 任务类型（`agent`、`process` 或 `question`） | — | 后台任务启动时触发；payload 含 `task_id`、`description` 和 `detached`（观察用） |
 | `StopFailure` | 错误类型 | — | 观察失败并包含 `has_partial_output`；符合准入条件的原生模型请求失败可在本轮结束前请求[有限恢复](#模型失败后恢复) |
-| `Interrupt` | 空字符串 | — | 用户中断本轮时触发（例如按下 Esc）；超时或其他程序性中断不会触发。中断时 `Stop` 不会触发，由本事件替代。payload 含 `reason` 字段（观察用） |
+| `Interrupt` | 空字符串 | — | 用户中断本轮时触发（例如按下 Esc）；超时或其他程序性中断不会触发。中断时不触发 `Stop` 或 `SubagentStop`。payload 含 `reason` 字段（观察用） |
 | `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；返回值被完全忽略 |
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发（观察用） |
 | `Notification` | 通知类型（如 `task.completed`） | — | 后台任务状态变化时触发（观察用） |

@@ -1724,7 +1724,9 @@ describe('IExternalHooksRunnerService integration', () => {
     }
   });
 
-  it('delivers rich agent, model, workspace, turn, and origin context to script hooks on stdin JSON', async () => {
+  it.each(['root', 'subagent'] as const)('delivers rich %s context and routes only its stop event on stdin JSON', async (agentRole) => {
+    const agentId = agentRole === 'root' ? 'main' : 'agent-sub-7';
+    const parentAgentId = agentRole === 'root' ? undefined : 'main';
     const disposables = new DisposableStore();
     let ix: TestInstantiationService | undefined;
     const logPath = hookLogPath();
@@ -1750,6 +1752,7 @@ describe('IExternalHooksRunnerService integration', () => {
         { event: 'PreToolUse', command: recordCommand, timeout: 5 },
         { event: 'PostToolUse', command: recordCommand, timeout: 5 },
         { event: 'Stop', command: recordCommand, timeout: 5 },
+        { event: 'SubagentStop', command: recordCommand, timeout: 5 },
       ]);
 
       ix = createServices(disposables, {
@@ -1763,9 +1766,9 @@ describe('IExternalHooksRunnerService integration', () => {
           reg.defineInstance(
             IAgentScopeContext,
             makeAgentScopeContext({
-              agentId: 'agent-sub-7',
-              agentScope: 'agents/agent-sub-7',
-              parentAgentId: 'main',
+              agentId,
+              agentScope: `agents/${agentId}`,
+              parentAgentId,
             }),
           );
           reg.defineInstance(ISessionHookWorkspace, {
@@ -1927,9 +1930,9 @@ describe('IExternalHooksRunnerService integration', () => {
         workspace_id: 'ws-research',
         execution_target: 'local',
         cwd: process.cwd(),
-        agent_id: 'agent-sub-7',
-        parent_agent_id: 'main',
-        agent_role: 'subagent',
+        agent_id: agentId,
+        agent_role: agentRole,
+        ...(parentAgentId === undefined ? {} : { parent_agent_id: parentAgentId }),
         profile_id: 'builtin/researcher',
         profile_name: 'researcher',
         profile_path: '/profiles/researcher.md',
@@ -1987,7 +1990,9 @@ describe('IExternalHooksRunnerService integration', () => {
         tool_input: { path: 'README.md' },
         tool_output: 'fixture content',
       });
-      expect(byEvent.get('Stop')).toMatchObject({
+      const stopEvent = agentRole === 'root' ? 'Stop' : 'SubagentStop';
+      expect(byEvent.has(agentRole === 'root' ? 'SubagentStop' : 'Stop')).toBe(false);
+      expect(byEvent.get(stopEvent)).toMatchObject({
         ...expectedCommon,
         turn_id: 12,
         step: 3,

@@ -130,5 +130,10 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   }
   const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
   await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
-  requester.accessor.get(ISessionSubagentService)?.notifyAgentTaskStopped({ agentName: profileName, response: receipt.summary });
+  requester.accessor.get(ISessionSubagentService)?.notifyAgentTaskStopped({
+    agentId: child.id,
+    autonomousTurnId: receipt.turnId,
+    agentName: profileName,
+    response: receipt.summary,
+  });
 }

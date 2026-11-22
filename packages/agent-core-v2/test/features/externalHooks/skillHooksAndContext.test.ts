@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createControlledPromise } from '@antfu/utils';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -18,6 +19,14 @@ import { IAgentFullCompactionService, type FullCompactionTask } from '#/agent/fu
 import { IAgentLoopService, type AfterStepContext } from '#/agent/loop/loop';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentUsageService } from '#/agent/usage/usage';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { TurnStarted } from '#/agent/loop/turnEvents';
+import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { IAgentSkillService } from '#/agent/skill/skill';
@@ -61,6 +70,7 @@ import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -73,6 +83,8 @@ import {
   ISessionSubagentService,
 } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
+import { observeAutonomousReceipts, type ReceiptDelivery } from '#/session/subagent/autonomousReceipt';
+import { autonomousReceiptsKey, AutonomousReceiptDelivered } from '#/session/subagent/autonomousReceiptOps';
 import { SubagentFailed, SubagentSpawned } from '#/session/subagent/mirrorAgentRun';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ToolAccesses } from '#/tool/toolContract';
@@ -450,6 +462,8 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
   it('loads skill hooks, enforces workspace trust, and injects SubagentStart, SessionStart, and PostCompact context', async () => {
     const disposables = new DisposableStore();
     const cwd = mkdtempSync(join(tmpdir(), 'skill-hooks-e2e-'));
+    const childRoot = join(cwd, 'child-root');
+    mkdirSync(childRoot);
     const skillDir = join(cwd, '.kiki', 'skills', 'session-skill');
     const scriptsDir = join(skillDir, 'scripts');
     mkdirSync(scriptsDir, { recursive: true });
@@ -465,7 +479,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
         '  process.stdout.write(JSON.stringify({',
         '    hookSpecificOutput: {',
         '      hookEventName: "SubagentStart",',
-        '      additionalContext: `child=${ev.agent_id} role=${ev.agent_role} profile=${ev.profile_name} parent=${ev.parent_agent_id} session=${ev.session_id} cwd=${ev.cwd}`,',
+        '      additionalContext: `child=${ev.agent_id} role=${ev.agent_role} profile=${ev.profile_name} parent=${ev.parent_agent_id} session=${ev.session_id} cwd=${ev.cwd} process=${process.cwd()}`,',
         '    },',
         '  }));',
         '});',
@@ -565,6 +579,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
           [IAgentContextMemoryService, childContext],
           [IAgentSystemReminderService, childReminder],
           [IAgentExecutionService, childExecution],
+          [IAgentRuntimeService, { workspaceRoots: () => ({ workDir: childRoot }) }],
         ]),
       );
       agents.set('child-42', childHandle);
@@ -691,7 +706,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
         text: skillText,
       });
       const catalog = new InMemorySkillCatalog();
-      catalog.register(projectSkill);
+      catalog.register({ ...projectSkill, hooks: projectSkill.hooks?.map((hook) => ({ ...hook, cwd: skillDir })) });
       const sessionSkillCatalog: ISessionSkillCatalog = {
         _serviceBrand: undefined,
         catalog,
@@ -731,7 +746,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       });
       const childText = childContext.messages[0]?.content[0];
       expect(childText?.type === 'text' ? childText.text : '').toContain(
-        `child=child-42 role=subagent profile=implementer parent=main session=session-skill-hooks cwd=${cwd}`,
+        `child=child-42 role=subagent profile=implementer parent=main session=session-skill-hooks cwd=${childRoot} process=${skillDir}`,
       );
       const externalHints = externalPromptHints(childContext.messages, new Set());
       expect(externalHints).toHaveLength(1);
@@ -1159,9 +1174,25 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
     }
   });
 
-  it('matches SubagentStart by routeId, enforces real SubagentStop veto without duplicate fire, and emits SubagentFailed on init start failure', async () => {
+  it.each(['local', 'ssh:fixture'] as const)('keeps the child root through a %s resume and dedupes the autonomous stop receipt', { timeout: 20_000 }, async (runtimeId) => {
     const disposables = new DisposableStore();
     const cwd = mkdtempSync(join(tmpdir(), 'skill-hooks-subagent-veto-'));
+    const childRoot = runtimeId === 'local' ? join(cwd, 'child-root') : '/remote/child-root';
+    if (runtimeId === 'local') mkdirSync(childRoot);
+    const hookLog = join(cwd, 'hooks.jsonl');
+    const script = join(cwd, 'record-hook.cjs');
+    writeFileSync(script, [
+      'let raw = "";',
+      'process.stdin.on("data", (chunk) => { raw += chunk; });',
+      'process.stdin.on("end", () => {',
+      '  const { hook_event_name, cwd, work_dir } = JSON.parse(raw);',
+      `  require('node:fs').appendFileSync(${JSON.stringify(hookLog)}, JSON.stringify({ hook_event_name, cwd, work_dir, processCwd: process.cwd() }) + '\\n');`,
+      '  if (hook_event_name === "SubagentStart") process.stdout.write("route-matched-start");',
+      '  if (hook_event_name === "SubagentStop") { process.stderr.write("finish child checks"); process.exitCode = 2; }',
+      '});',
+    ].join('\n'));
+    const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`;
+    const readCalls = () => readFileSync(hookLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     let subagentStopCount = 0;
     let ix: TestInstantiationService | undefined;
     try {
@@ -1173,6 +1204,26 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       });
       const childReminder = new AgentSystemReminderService(childContext);
       const childLoop = stubLoopWithHooks();
+      const agentId = 'child-route-1';
+      const runtimeBinding = { current: { workspaceId: 'workspace-skill-hooks', runtimeId } };
+      const fixtureRuntime = disposables.add(new FakeRuntime({ ...runtimeBinding.current, generation: '1' }, {
+        mapWorkspaceRoots: () => ({ workDir: childRoot }),
+      }));
+      const runtime = {
+        workspaceRoots: () => ({ workDir: runtimeId === 'local' ? childRoot : cwd }),
+        inspect: () => fixtureRuntime,
+      };
+      const scope = makeAgentScopeContext({ agentId, agentScope: `agents/${agentId}`, parentAgentId: MAIN_AGENT_ID });
+      const metadata = stubSessionMetadata();
+      const receipt = { turnId: 0, startedAt: 10, endedAt: 12, summary: 'autonomous output' };
+      const receiptWrite = createControlledPromise<void>();
+      const recordCompletedTask = vi.fn(() => receiptWrite);
+      const dispatchDurably = vi.fn(async () => {});
+      const parentHandle = makeFakeAgentHandle(MAIN_AGENT_ID, new Map<unknown, unknown>([
+        [IAgentTaskService, { recordCompletedTask }],
+        [IEventDispatcher, { dispatchDurably }],
+        [ISessionSubagentService, { notifyAgentTaskStopped: (ctx: AgentTaskStopHookContext) => ix!.get(ISessionSubagentService).notifyAgentTaskStopped(ctx) }],
+      ]));
       const childExecution = {
         _serviceBrand: undefined,
         run: vi.fn(async () => ({
@@ -1182,16 +1233,20 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
         })),
       };
       const childHandle = makeFakeAgentHandle(
-        'child-route-1',
+        agentId,
         new Map<unknown, unknown>([
-          [
-            IAgentScopeContext,
-            makeAgentScopeContext({
-              agentId: 'child-route-1',
-              agentScope: 'agents/child-route-1',
-              parentAgentId: MAIN_AGENT_ID,
-            }),
-          ],
+          [IAgentScopeContext, scope],
+          [IAgentRuntimeService, runtime],
+          [IAgentRuntimeBindingService, runtimeBinding],
+          [IAgentUsageService, { status: () => ({ total: undefined }) }],
+          [IAgentTokenCountingService, { statusSize: () => 0 }],
+          [IAgentActivityView, { telemetry: () => ({ toolCallCount: 1 }) }],
+          [ISessionMetadata, { ...metadata, snapshot: metadata.current, updateAgent: vi.fn(async () => {}) }],
+          [IAgentLifecycleService, { get: (id: string) => id === MAIN_AGENT_ID ? parentHandle : undefined }],
+          [IEventDispatcher, { dispatch: async () => {}, dispatchDurably }],
+          [IAgentStateService, { get: () => ix!.get(IAgentStateService).get(autonomousReceiptsKey) }],
+          [IEventBus, { subscribe: () => ({ dispose: () => {} }) }],
+          [IAgentExternalHooksService, { consumeAutonomousStop: (turnId: number) => ix!.get(IAgentExternalHooksService).consumeAutonomousStop(turnId) }],
           [
             IAgentProfileService,
             {
@@ -1210,15 +1265,15 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
           {
             event: 'SubagentStart',
             matcher: 'fast-implementer',
-            command: nodeCommand('process.stdout.write("route-matched-start");'),
+            command,
             timeout: 5,
           },
           {
             event: 'SubagentStop',
-            matcher: 'fast-implementer',
-            command: nodeCommand('process.stderr.write("finish child checks"); process.exit(2);'),
+            command,
             timeout: 5,
           },
+          { event: 'PreToolUse', command, timeout: 5 },
         ],
         {
           onResolved: (event) => {
@@ -1244,7 +1299,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
             onWillCreate: Event.None as Event<IAgentScopeHandle>,
             onDidCreate: Event.None as Event<IAgentScopeHandle>,
             onDidDispose: Event.None as Event<string>,
-            get: (id: string) => (id === 'child-route-1' ? childHandle : undefined),
+            get: (id: string) => id === agentId ? childHandle : id === MAIN_AGENT_ID ? parentHandle : undefined,
           });
           reg.definePartialInstance(IFlagService, { enabled: () => false });
           reg.definePartialInstance(IAtomicDocumentStore, {});
@@ -1256,26 +1311,26 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
           reg.defineInstance(IAgentLoopService, childLoop);
           reg.define(IEventBus, EventBusService);
           reg.definePartialInstance(IAgentPromptService, { hooks: createHooks(['onBeforeSubmitPrompt']) });
-          reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.definePartialInstance(IAgentToolResultTruncationService, { truncateForModel: async (input) => input.result });
           reg.definePartialInstance(IAgentPermissionGate, {});
           reg.definePartialInstance(IAgentFullCompactionService, {
             hooks: createHooks(['onWillCompact', 'onDidCommit']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
-          reg.defineInstance(
-            IAgentScopeContext,
-            makeAgentScopeContext({
-              agentId: 'child-route-1',
-              agentScope: 'agents/child-route-1',
-              parentAgentId: MAIN_AGENT_ID,
-            }),
-          );
+          reg.defineInstance(IAgentScopeContext, scope);
+          reg.definePartialInstance(IAgentRuntimeService, runtime);
+          reg.definePartialInstance(IAgentRuntimeBindingService, runtimeBinding);
           reg.definePartialInstance(IAgentProfileService, {
             data: () => ({ profileName: 'implementer', routeId: 'fast-implementer', executorId: 'native' } as ReturnType<IAgentProfileService['data']>),
             getRecipeScriptHooks: async () => [],
           });
         },
       });
+      const fireAndForget = vi.spyOn(runner, 'fireAndForgetTrigger');
+      const observedStops = () => fireAndForget.mock.calls.flatMap(([event], index) =>
+        event === 'SubagentStop' ? [fireAndForget.mock.results[index]] : []);
       ix.set(IExternalHooksRunnerService, runner);
       ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
       ix.set(ISessionExternalHooksService, new SyncDescriptor(SessionExternalHooksService));
@@ -1285,11 +1340,25 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       ix.get(ISessionExternalHooksService);
       ix.get(IAgentExternalHooksService);
 
-      await subagents.run(
-        'child-route-1',
-        { kind: 'prompt', prompt: 'Do routed work' },
-        { signal: new AbortController().signal },
-      );
+      ix.get(IAgentToolRegistryService).register({
+        name: 'ReadFixture', description: 'Read fixture', parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'ReadFixture', accesses: ToolAccesses.none(), execute: async () => ({ output: 'fixture' }) }),
+      });
+      const runChildWithTool = async (prompt: string) => {
+        const signal = new AbortController().signal;
+        const run = await subagents.run(agentId, { kind: 'prompt', prompt }, { signal });
+        for await (const result of ix!.get(IAgentToolExecutorService).execute(
+          [{ id: prompt, name: 'ReadFixture', type: 'function', arguments: '{}' }], { turnId: run.turn.id, signal },
+        )) {
+          expect(result).toBeDefined();
+        }
+        return run;
+      };
+      const bus = ix.get(IEventBus);
+      const agentStates = ix.get(IAgentStateService);
+      agentStates.contributeState(autonomousReceiptsKey);
+      bus.publish(new TurnStarted({ turnId: 0, parentReceiptManaged: false, origin: { kind: 'user' } }));
+      await runChildWithTool('Do routed work');
       expect(childContext.messages.some((m) =>
         m.origin?.kind === 'injection' &&
         m.origin.variant === 'hook/SubagentStart' &&
@@ -1304,16 +1373,49 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
         content: [{ type: 'text', text: 'finish child checks' }],
       });
       expect(subagentStopCount).toBe(1);
-
-      subagents.notifyAgentTaskStopped({
-        agentId: 'child-route-1',
-        agentName: 'fast-implementer',
-        response: 'done',
-      });
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(childLoop.queue.takeNextBatch()?.driver.kind).toBe('stop_hook');
+      await childLoop.hooks.onDidFinishStep.run(makeAfterStep(new AbortController().signal));
+      expect(childLoop.hasPendingRequests()).toBe(false);
       expect(subagentStopCount).toBe(1);
-      await runner.dispose();
 
+      agentStates.set(autonomousReceiptsKey, { pending: { '0': receipt } });
+      bus.publish(new TurnEnded({ turnId: 0, reason: 'completed' }));
+      const deliveries: ReceiptDelivery[] = [];
+      disposables.add(observeAutonomousReceipts(childHandle, (delivery) => deliveries.push(delivery), new AbortController().signal));
+      expect(deliveries).toHaveLength(1);
+      const resumed = await runChildWithTool('Resume the child');
+      bus.publish(new TurnStarted({ turnId: 1, parentReceiptManaged: true, origin: { kind: 'user' } }));
+      await childLoop.hooks.onDidFinishStep.run({ ...makeAfterStep(new AbortController().signal), turnId: 1 });
+      expect(subagentStopCount).toBe(2);
+      receiptWrite.resolve();
+      await deliveries[0]!.settled;
+      expect(recordCompletedTask).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentId }), 'autonomous output');
+      expect(dispatchDurably).toHaveBeenCalledWith(expect.any(AutonomousReceiptDelivered));
+      expect(observedStops()).toHaveLength(0);
+
+      await expect(resumed.completion).resolves.toEqual({ summary: 'done' });
+      subagents.notifyAgentTaskStopped({ agentId, agentName: 'fast-implementer', response: 'done' });
+      expect(observedStops()).toHaveLength(0);
+      subagents.notifyAgentTaskStopped({ agentId, agentName: 'fast-implementer', response: 'unobserved completion' });
+      expect(observedStops()).toHaveLength(1);
+      await observedStops()[0]!.value;
+      expect(subagentStopCount).toBe(3);
+      const expectedCall = (hook_event_name: string) => ({ hook_event_name, cwd: childRoot, processCwd: runtimeId === 'local' ? childRoot : cwd });
+      expect(readCalls()).toEqual([
+        expectedCall('SubagentStart'), expectedCall('PreToolUse'), expectedCall('SubagentStop'),
+        expectedCall('SubagentStart'), expectedCall('PreToolUse'), expectedCall('SubagentStop'), expectedCall('SubagentStop'),
+      ]);
+      await runner.dispose();
+    } finally {
+      await ix?.dispose();
+      await disposables.dispose();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('emits SubagentFailed when the init subagent cannot start', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'skill-hooks-init-failure-'));
+    try {
       const dispatched: unknown[] = [];
       const initChildHandle = makeFakeAgentHandle(
         'init-child',
@@ -1355,8 +1457,6 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       expect(dispatched.some((event) => event instanceof SubagentSpawned && event.subagentId === 'init-child')).toBe(true);
       expect(dispatched.some((event) => event instanceof SubagentFailed && event.subagentId === 'init-child')).toBe(true);
     } finally {
-      await ix?.dispose();
-      await disposables.dispose();
       rmSync(cwd, { recursive: true, force: true });
     }
   });
