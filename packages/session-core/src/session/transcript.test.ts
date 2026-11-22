@@ -42,7 +42,7 @@ import { setSessionRecord } from './transcript/selectors';
 import { resolveItemCopies, resolveTurnCopies } from './transcript/window';
 
 import { buildAgentForest } from './agentTree';
-import { foldHistory, groupBlocks } from './grouping';
+import { foldHistory, groupBlocks, readSubagentEndings } from './grouping';
 import { mergeSessionQueueRows, resolveModelSwitchQueueIndex } from './modelSwitchQueue';
 
 import {
@@ -4555,6 +4555,600 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       const events = projected.blocks.filter((block) => block.kind === 'subagent-event');
       expect(events.some((block) => block.kind === 'subagent-event' && block.event === 'spawned')).toBe(false);
       expect(events.map((block) => block.id)).toEqual(['subagent-event-agent-1-completed-task-agent-1-run-2']);
+    });
+
+    it('keeps one canonical card on main when manual user messages or autonomous receipts continue an existing subagent', () => {
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn(
+            't1', 1,
+            [spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'implementer', name: 'alice', prompt: 'Audit auth flow' }, 'f-spawn-1')],
+            ts(0), 'dispatch alice',
+          ),
+          taskRefItem('ref-initial', 'task-initial', ts(1)),
+          taskRefItem('ref-manual-1', 'task-manual-1', ts(30)),
+          taskRefItem('ref-manual-2', 'task-manual-2', ts(50)),
+        ],
+        tasks: [
+          subagentTask('task-initial', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Audit auth flow',
+            startedAt: ts(1), endedAt: ts(20), resultSummary: 'Initial audit done.',
+          }),
+          subagentTask('task-manual-1', 'agent-1', {
+            state: 'completed', detached: true, subagentName: 'implementer',
+            parentToolCallId: '', description: 'implementer',
+            startedAt: ts(30), endedAt: ts(40), resultSummary: 'First manual follow-up done.',
+          }),
+          subagentTask('agent-receipt-1', 'agent-1', {
+            state: 'completed', detached: true, subagentName: 'implementer',
+            description: 'Continue implementer agent after task-initial (completed)',
+            startedAt: ts(30), endedAt: ts(41), resultSummary: 'First manual follow-up done.',
+          }),
+          subagentTask('task-manual-2', 'agent-1', {
+            state: 'running', detached: true, subagentName: 'implementer',
+            description: 'Continue implementer agent',
+            startedAt: ts(50),
+          }),
+        ],
+      }));
+      const cards = projected.blocks.filter((block) => block.kind === 'subagent');
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-initial',
+        resultTaskId: 'task-manual-1',
+        parentToolCallId: 'call-spawn-1',
+        name: 'alice',
+        description: 'Audit auth flow',
+        status: 'running',
+        summary: 'First manual follow-up done.',
+        endedAt: undefined,
+      });
+      const events = projected.blocks.filter((block) => block.kind === 'subagent-event');
+      expect(events.map((block) => block.id)).toEqual([
+        'subagent-event-agent-1-spawned-task-initial',
+        'subagent-event-agent-1-completed-task-initial',
+      ]);
+    });
+
+    it('gives manual prompt plus autonomous receipt a single display representation on-page (same turn and cross turn) and when paged out', () => {
+      const receiptNoticeXml = (taskId: string, body: string) =>
+        `<notification id="task:${taskId}:completed" category="task" type="task.completed" source_kind="subagent" source_id="${taskId}">\nTitle: Background agent completed\n${body}\n</notification>`;
+      const receiptTasks = [
+        { id: 'task-initial', agent_id: 'agent-1', status: 'completed', output_preview: 'Initial audit done.' },
+        { id: 'task-http-1', agent_id: 'agent-1', status: 'completed', output_preview: 'Manual reply' },
+        { id: 'agent-receipt-agent-1-1', agent_id: 'agent-1', status: 'completed', output_preview: 'Manual reply' },
+      ];
+      const baseTasks = [
+        subagentTask('task-initial', 'agent-1', {
+          state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+          parentToolCallId: 'call-spawn-1', description: 'Audit auth flow',
+          startedAt: ts(1), endedAt: ts(10), resultSummary: 'Initial audit done.',
+        }),
+        subagentTask('task-http-1', 'agent-1', {
+          state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+          description: 'Audit auth flow', startedAt: ts(20), endedAt: ts(25), resultSummary: 'Manual reply',
+        }),
+        subagentTask('agent-receipt-agent-1-1', 'agent-1', {
+          state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+          description: 'Continue implementer agent after task-initial (completed)',
+          startedAt: ts(20), endedAt: ts(26), resultSummary: 'Manual reply',
+        }),
+      ];
+
+      // 1. Same-turn on-page: notification is absorbed into the single card with resultTaskId pointing at the continuation task.
+      const sameTurnSnap = emptySnapshot({
+        items: [
+          makeTurn('t1', 1, {
+            prompt: 'dispatch alice',
+            startedAt: ts(0),
+            steps: [
+              makeStep('t1.1', 't1', 1, [
+                spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'implementer', name: 'alice', prompt: 'Audit auth flow' }, 'f-spawn-1'),
+                textFrame('f-note-1', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+              ], { startedAt: ts(1) }),
+            ],
+          }),
+          taskRefItem('ref-initial', 'task-initial', ts(1)),
+          taskRefItem('ref-http-1', 'task-http-1', ts(20)),
+        ],
+        tasks: baseTasks,
+      });
+      const sameTurnNodes = readSubagentEndings(projectMain(sameTurnSnap).blocks, receiptTasks);
+      const sameTurnCards = sameTurnNodes.filter((node) => node.kind === 'subagent');
+      const sameTurnEndings = sameTurnNodes.filter((node) => node.kind === 'subagent-ended');
+      expect(sameTurnCards).toHaveLength(1);
+      expect(sameTurnEndings).toHaveLength(0);
+      expect(sameTurnCards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-initial',
+        resultTaskId: 'task-http-1',
+        summary: 'Manual reply',
+      });
+
+      // 2. Cross-turn on-page: Turn 1 card keeps its own Turn 1 summary; Turn 2 EndedRow carries "Manual reply" once with dispatch link.
+      const crossTurnSnap = emptySnapshot({
+        items: [
+          makeTurn('t1', 1, {
+            prompt: 'dispatch alice',
+            startedAt: ts(0),
+            endedAt: ts(12),
+            steps: [
+              makeStep('t1.1', 't1', 1, [
+                spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'implementer', name: 'alice', prompt: 'Audit auth flow' }, 'f-spawn-1'),
+                textFrame('f-a1', 'Turn 1 done.'),
+              ], { startedAt: ts(1) }),
+            ],
+          }),
+          taskRefItem('ref-initial', 'task-initial', ts(1)),
+          taskRefItem('ref-http-1', 'task-http-1', ts(20)),
+          makeTurn('t2', 2, {
+            startedAt: ts(26),
+            endedAt: ts(30),
+            steps: [
+              makeStep('t2.1', 't2', 1, [
+                textFrame('f-note-2', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+                textFrame('f-a2', 'Noted manual reply.'),
+              ], { startedAt: ts(26) }),
+            ],
+          }),
+        ],
+        tasks: baseTasks,
+      });
+      const crossTurnNodes = readSubagentEndings(projectMain(crossTurnSnap).blocks, receiptTasks);
+      const crossTurnCards = crossTurnNodes.filter((node) => node.kind === 'subagent');
+      const crossTurnEndings = crossTurnNodes.filter((node) => node.kind === 'subagent-ended');
+      expect(crossTurnCards).toHaveLength(1);
+      expect(crossTurnCards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-initial',
+        resultTaskId: undefined,
+        summary: 'Initial audit done.',
+      });
+      expect(crossTurnEndings).toHaveLength(1);
+      expect(crossTurnEndings[0]).toMatchObject({
+        taskId: 'agent-receipt-agent-1-1',
+        dispatchOnPage: true,
+        dispatchCardId: 'subagent-agent-1',
+      });
+
+      // 3. Paged-out original spawn: no duplicate card alongside EndedRow.
+      const pagedOutSnap = emptySnapshot({
+        items: [
+          taskRefItem('ref-http-1', 'task-http-1', ts(20)),
+          makeTurn('t2', 2, {
+            startedAt: ts(26),
+            endedAt: ts(30),
+            steps: [
+              makeStep('t2.1', 't2', 1, [
+                textFrame('f-note-3', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+                textFrame('f-a3', 'Noted manual reply.'),
+              ], { startedAt: ts(26) }),
+            ],
+          }),
+        ],
+        tasks: baseTasks,
+      });
+      const pagedOutNodes = readSubagentEndings(projectMain(pagedOutSnap).blocks, receiptTasks);
+      expect(pagedOutNodes.filter((node) => node.kind === 'subagent')).toHaveLength(0);
+      const pagedOutEndings = pagedOutNodes.filter((node) => node.kind === 'subagent-ended');
+      expect(pagedOutEndings).toHaveLength(1);
+      expect(pagedOutEndings[0]).toMatchObject({
+        taskId: 'agent-receipt-agent-1-1',
+        dispatchOnPage: false,
+      });
+
+      // 4. Two distinct same-turn manual replies: both survive (Reply 1 as EndedRow, Reply 2 on the card).
+      const twoSameTurnTasks = [
+        ...receiptTasks,
+        { id: 'task-http-2', agent_id: 'agent-1', status: 'completed', output_preview: 'Second manual reply' },
+        { id: 'agent-receipt-agent-1-2', agent_id: 'agent-1', status: 'completed', output_preview: 'Second manual reply' },
+      ];
+      const twoSameTurnSnap = emptySnapshot({
+        items: [
+          makeTurn('t1', 1, {
+            prompt: 'dispatch alice',
+            startedAt: ts(0),
+            steps: [
+              makeStep('t1.1', 't1', 1, [
+                spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'implementer', name: 'alice', prompt: 'Audit auth flow' }, 'f-spawn-1'),
+                textFrame('f-note-1', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+                textFrame('f-note-2', receiptNoticeXml('agent-receipt-agent-1-2', 'Second manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-2' },
+                }),
+              ], { startedAt: ts(1) }),
+            ],
+          }),
+          taskRefItem('ref-initial', 'task-initial', ts(1)),
+          taskRefItem('ref-http-1', 'task-http-1', ts(20)),
+          taskRefItem('ref-http-2', 'task-http-2', ts(30)),
+        ],
+        tasks: [
+          ...baseTasks,
+          subagentTask('task-http-2', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Audit auth flow', startedAt: ts(30), endedAt: ts(35), resultSummary: 'Second manual reply',
+          }),
+          subagentTask('agent-receipt-agent-1-2', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Continue implementer agent after task-http-1 (completed)',
+            startedAt: ts(30), endedAt: ts(36), resultSummary: 'Second manual reply',
+          }),
+        ],
+      });
+      const twoSameTurnNodes = readSubagentEndings(projectMain(twoSameTurnSnap).blocks, twoSameTurnTasks);
+      expect(twoSameTurnNodes.filter((node) => node.kind === 'subagent')).toMatchObject([
+        { id: 'subagent-agent-1', taskId: 'task-initial', resultTaskId: 'task-http-2', summary: 'Second manual reply' },
+      ]);
+      expect(twoSameTurnNodes.filter((node) => node.kind === 'subagent-ended')).toMatchObject([
+        { taskId: 'agent-receipt-agent-1-1', dispatchOnPage: true, dispatchCardId: 'subagent-agent-1' },
+      ]);
+
+      // 5. Same-turn Reply 1 + cross-turn Reply 2: card displays Reply 1, Turn 2 EndedRow displays Reply 2.
+      const mixedTurnSnap = emptySnapshot({
+        items: [
+          makeTurn('t1', 1, {
+            prompt: 'dispatch alice',
+            startedAt: ts(0),
+            endedAt: ts(27),
+            steps: [
+              makeStep('t1.1', 't1', 1, [
+                spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'implementer', name: 'alice', prompt: 'Audit auth flow' }, 'f-spawn-1'),
+                textFrame('f-note-1', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+                textFrame('f-a1', 'Turn 1 done.'),
+              ], { startedAt: ts(1) }),
+            ],
+          }),
+          taskRefItem('ref-initial', 'task-initial', ts(1)),
+          taskRefItem('ref-http-1', 'task-http-1', ts(20)),
+          taskRefItem('ref-http-2', 'task-http-2', ts(30)),
+          makeTurn('t2', 2, {
+            startedAt: ts(36),
+            endedAt: ts(40),
+            steps: [
+              makeStep('t2.1', 't2', 1, [
+                textFrame('f-note-2', receiptNoticeXml('agent-receipt-agent-1-2', 'Second manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-2' },
+                }),
+                textFrame('f-a2', 'Turn 2 done.'),
+              ], { startedAt: ts(36) }),
+            ],
+          }),
+        ],
+        tasks: [
+          ...baseTasks,
+          subagentTask('task-http-2', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Audit auth flow', startedAt: ts(30), endedAt: ts(35), resultSummary: 'Second manual reply',
+          }),
+          subagentTask('agent-receipt-agent-1-2', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Continue implementer agent', startedAt: ts(30), endedAt: ts(36), resultSummary: 'Second manual reply',
+          }),
+        ],
+      });
+      const mixedTurnNodes = readSubagentEndings(projectMain(mixedTurnSnap).blocks, twoSameTurnTasks);
+      expect(mixedTurnNodes.filter((node) => node.kind === 'subagent')).toMatchObject([
+        { id: 'subagent-agent-1', taskId: 'task-initial', resultTaskId: 'task-http-1', summary: 'Manual reply' },
+      ]);
+      expect(mixedTurnNodes.filter((node) => node.kind === 'subagent-ended')).toMatchObject([
+        { taskId: 'agent-receipt-agent-1-2', dispatchOnPage: true, dispatchCardId: 'subagent-agent-1' },
+      ]);
+
+      // 6. Earlier completed receipt does not suppress a later failed continuation when paged out.
+      const pagedOutFailedSnap = emptySnapshot({
+        items: [
+          taskRefItem('ref-http-1', 'task-http-1', ts(20)),
+          makeTurn('t2', 2, {
+            startedAt: ts(26),
+            endedAt: ts(30),
+            steps: [
+              makeStep('t2.1', 't2', 1, [
+                textFrame('f-note-3', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+              ], { startedAt: ts(26) }),
+            ],
+          }),
+          taskRefItem('ref-http-fail', 'task-http-fail', ts(40)),
+        ],
+        tasks: [
+          ...baseTasks,
+          subagentTask('task-http-fail', 'agent-1', {
+            state: 'failed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Failed follow-up', startedAt: ts(40), endedAt: ts(42), error: 'boom',
+          }),
+        ],
+      });
+      const pagedOutFailedNodes = readSubagentEndings(projectMain(pagedOutFailedSnap).blocks, receiptTasks);
+      expect(pagedOutFailedNodes.filter((node) => node.kind === 'subagent')).toMatchObject([
+        { taskId: 'task-http-fail', status: 'failed', error: 'boom' },
+      ]);
+
+      // 7. Receipt-only notification filling an empty card summary also sets resultTaskId to the receipt task.
+      const receiptOnlySnap = emptySnapshot({
+        items: [
+          makeTurn('t1', 1, {
+            prompt: 'dispatch alice',
+            startedAt: ts(0),
+            steps: [
+              makeStep('t1.1', 't1', 1, [
+                spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'implementer', name: 'alice', prompt: 'Audit auth flow' }, 'f-spawn-1'),
+                textFrame('f-note-only', receiptNoticeXml('agent-receipt-agent-1-1', 'Manual reply'), 'user', {
+                  origin: { kind: 'task', taskId: 'agent-receipt-agent-1-1' },
+                }),
+              ], { startedAt: ts(1) }),
+            ],
+          }),
+          taskRefItem('ref-initial', 'task-initial', ts(1)),
+        ],
+        tasks: [
+          subagentTask('task-initial', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Audit auth flow', startedAt: ts(1), endedAt: ts(10),
+          }),
+          subagentTask('agent-receipt-agent-1-1', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Continue implementer agent', startedAt: ts(20), endedAt: ts(26), resultSummary: 'Manual reply',
+          }),
+        ],
+      });
+      const receiptOnlyNodes = readSubagentEndings(projectMain(receiptOnlySnap).blocks, receiptTasks);
+      expect(receiptOnlyNodes.filter((node) => node.kind === 'subagent-ended')).toHaveLength(0);
+      expect(receiptOnlyNodes.filter((node) => node.kind === 'subagent')).toMatchObject([
+        { id: 'subagent-agent-1', taskId: 'task-initial', resultTaskId: 'agent-receipt-agent-1-1', summary: 'Manual reply' },
+      ]);
+    });
+
+    it('keeps a still-running subagent card running when a concurrent queued follow-up prompt is cancelled', () => {
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-active', 'task-active', ts(1)),
+          taskRefItem('ref-queued', 'task-queued', ts(10)),
+        ],
+        tasks: [
+          subagentTask('task-active', 'agent-1', {
+            state: 'running', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Active run', startedAt: ts(1),
+          }),
+          subagentTask('task-queued', 'agent-1', {
+            state: 'killed', detached: true, subagentName: 'implementer',
+            description: 'Queued follow-up', startedAt: ts(10), endedAt: ts(12), stateReason: 'terminated',
+          }),
+        ],
+      }));
+      const cards = projected.blocks.filter((block) => block.kind === 'subagent');
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-active',
+        status: 'running',
+        endedAt: undefined,
+        error: undefined,
+      });
+
+      // Even after the original task completes later at ts(20), the earlier cancelled queued follow-up (ts(10)..ts(12)) must not overwrite its outcome.
+      const settledAfterCancel = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-active', 'task-active', ts(1)),
+          taskRefItem('ref-queued', 'task-queued', ts(10)),
+        ],
+        tasks: [
+          subagentTask('task-active', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Active run',
+            startedAt: ts(1), endedAt: ts(20), resultSummary: 'Active run succeeded.',
+          }),
+          subagentTask('task-queued', 'agent-1', {
+            state: 'killed', detached: true, subagentName: 'implementer',
+            description: 'Queued follow-up', startedAt: ts(10), endedAt: ts(12), stateReason: 'terminated',
+          }),
+        ],
+      }));
+      const settledCards = settledAfterCancel.blocks.filter((block) => block.kind === 'subagent');
+      expect(settledCards).toHaveLength(1);
+      expect(settledCards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-active',
+        status: 'completed',
+        summary: 'Active run succeeded.',
+        error: undefined,
+      });
+    });
+
+    it('ignores rejected AgentRun(resume) calls and preserves legitimate unanchored resumes whose taskref precedes the turn', () => {
+      // 1. Rejected resume in Turn 2 must NOT turn a later manual message in Turn 3 into a second dispatch card.
+      const rejectedResume = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-1', 'task-1', ts(1)),
+          delegateTurn('t2', 2, [
+            toolFrame('f-resume-rejected', 'call-resume-rejected', 'AgentRun', {
+              state: 'error',
+              error: 'agent is busy',
+              input: { resume: 'agent-1', prompt: 'retry now' },
+              startedAt: ts(15),
+            }),
+          ], ts(14)),
+          delegateTurn('t3', 3, [], ts(30)),
+          taskRefItem('ref-manual', 'task-manual', ts(31)),
+        ],
+        tasks: [
+          subagentTask('task-1', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Initial work', startedAt: ts(1), endedAt: ts(10), resultSummary: 'Done 1.',
+          }),
+          subagentTask('task-manual', 'agent-1', {
+            state: 'completed', detached: true, subagentName: 'implementer',
+            description: 'Manual follow-up', startedAt: ts(31), endedAt: ts(35), resultSummary: 'Manual done.',
+          }),
+        ],
+      }));
+      const rejectedCards = rejectedResume.blocks.filter((block) => block.kind === 'subagent');
+      expect(rejectedCards).toHaveLength(1);
+      expect(rejectedCards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-1',
+        parentToolCallId: 'call-spawn-1',
+        resultTaskId: 'task-manual',
+        summary: 'Manual done.',
+      });
+      expect(rejectedResume.blocks.filter((block) => block.kind === 'subagent-event' && block.event === 'resumed')).toHaveLength(0);
+
+      // 2. Legitimate unanchored resume whose taskref precedes Turn 2 still produces its resumed card.
+      const beforeTurnResume = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-1', 'task-1', ts(1)),
+          taskRefItem('ref-resume', 'task-resume', ts(20)),
+          delegateTurn('t2', 2, [
+            resumeTool('call-resume-ok', { resume: 'agent-1', prompt: 'second pass' }, ts(20), {}, 'f-resume-ok'),
+          ], ts(20)),
+        ],
+        tasks: [
+          subagentTask('task-1', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Initial work', startedAt: ts(1), endedAt: ts(10), resultSummary: 'Done 1.',
+          }),
+          subagentTask('task-resume', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Second pass', startedAt: ts(20), endedAt: ts(28), resultSummary: 'Done 2.',
+          }),
+        ],
+      }));
+      const beforeTurnCards = beforeTurnResume.blocks.filter((block) => block.kind === 'subagent');
+      expect(beforeTurnCards).toHaveLength(2);
+      expect(beforeTurnCards[0]).toMatchObject({ id: 'subagent-agent-1', taskId: 'task-1', summary: 'Done 1.' });
+      expect(beforeTurnCards[1]).toMatchObject({
+        id: 'subagent-agent-1-task-resume',
+        taskId: 'task-resume',
+        resumed: true,
+        parentToolCallId: 'call-resume-ok',
+        parentTurnId: 't2',
+        summary: 'Done 2.',
+      });
+
+      // 3. A manual reply that already ended BEFORE a later in-flight AgentRun(resume) call started must not be claimed by that resume call.
+      const manualBeforeInFlightResume = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [
+            spawnTool('call-spawn-1', 'agent-1', ts(1)),
+            toolFrame('f-resume-live', 'call-resume-live', 'AgentRun', {
+              state: 'running',
+              input: { resume: 'agent-1', prompt: 'third pass' },
+              startedAt: ts(30),
+            }),
+          ], ts(0)),
+          taskRefItem('ref-1', 'task-1', ts(1)),
+          taskRefItem('ref-manual', 'task-manual', ts(15)),
+        ],
+        tasks: [
+          subagentTask('task-1', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Initial work', startedAt: ts(1), endedAt: ts(10), resultSummary: 'Done 1.',
+          }),
+          subagentTask('task-manual', 'agent-1', {
+            state: 'completed', detached: true, subagentName: 'implementer',
+            description: 'Manual follow-up', startedAt: ts(15), endedAt: ts(20), resultSummary: 'Manual before resume.',
+          }),
+        ],
+      }));
+      const liveResumeCards = manualBeforeInFlightResume.blocks.filter((block) => block.kind === 'subagent');
+      expect(liveResumeCards).toHaveLength(1);
+      expect(liveResumeCards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-1',
+        parentToolCallId: 'call-spawn-1',
+        resultTaskId: 'task-manual',
+        summary: 'Manual before resume.',
+      });
+    });
+
+    it('merges AgentSend continuation wakeups in place without cloning a card, while explicit AgentRun resume still creates its resumed card', () => {
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-run-1', 'task-run-1', ts(1)),
+          delegateTurn('t2', 2, [sendTool('call-send-1', 'alice', 'check edge case', ts(25))], ts(24), 'nudge alice', ts(25)),
+          taskRefItem('ref-send-wake', 'task-send-wake', ts(26)),
+          delegateTurn('t3', 3, [resumeTool('call-resume-1', { resume: 'alice', prompt: 'run final pass' }, ts(40))], ts(39), 'explicit resume', ts(40)),
+          taskRefItem('ref-resume-1', 'task-resume-1', ts(40)),
+        ],
+        tasks: [
+          subagentTask('task-run-1', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Initial task',
+            startedAt: ts(1), endedAt: ts(15), resultSummary: 'Pass 1 done.',
+          }),
+          subagentTask('task-send-wake', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Continue alice agent',
+            startedAt: ts(26), endedAt: ts(32), resultSummary: 'Edge case verified.',
+          }),
+          subagentTask('task-resume-1', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-resume-1', description: 'run final pass',
+            startedAt: ts(40), endedAt: ts(50), resultSummary: 'Final pass done.',
+          }),
+        ],
+      }));
+      const cards = projected.blocks.filter((block) => block.kind === 'subagent');
+      expect(cards).toHaveLength(2);
+      expect(cards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        taskId: 'task-run-1',
+        name: 'alice',
+        description: 'Initial task',
+        summary: 'Edge case verified.',
+      });
+      expect(cards[1]).toMatchObject({
+        id: 'subagent-agent-1-task-resume-1',
+        taskId: 'task-resume-1',
+        resumed: true,
+        parentToolCallId: 'call-resume-1',
+        summary: 'Final pass done.',
+      });
+    });
+
+    it('ignores synthetic agent-phase checkpoint tasks when projecting a still-running subagent card', () => {
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-run-1', 'task-run-1', ts(1)),
+        ],
+        tasks: [
+          subagentTask('task-run-1', 'agent-1', {
+            state: 'running', detached: true, name: 'alice', subagentName: 'implementer',
+            parentToolCallId: 'call-spawn-1', description: 'Long investigation',
+            startedAt: ts(1),
+          }),
+          subagentTask('agent-phase-step1-00000001', 'agent-1', {
+            state: 'completed', detached: true, name: 'alice', subagentName: 'implementer',
+            description: 'Long investigation — phase completed; child already continued after AgentSend',
+            startedAt: ts(1), endedAt: ts(10), resultSummary: 'Phase 1 summary.',
+          }),
+        ],
+      }));
+      const cards = projected.blocks.filter((block) => block.kind === 'subagent');
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        id: 'subagent-agent-1',
+        status: 'running',
+        description: 'Long investigation',
+      });
     });
   });
 

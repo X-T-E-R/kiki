@@ -614,6 +614,51 @@ it('steers a busy native child on plain send (button and Enter) through the shar
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
 });
 
+it('does not render a duplicate optimistic user bubble when Send now already publishes a pending steer row', async () => {
+  const forest = testForest('running', true);
+  let childState = { ...createViewState('session'), loaded: true, transcriptReady: true, busy: true };
+  const listeners = new Set<() => void>();
+  let resolveSendNow!: (value: { promptId: string; outcome: 'steered' }) => void;
+  const sendPromptNow = vi.fn(({ text }: { agentId?: string; text: string }) => {
+    childState = {
+      ...childState,
+      blocks: [
+        ...childState.blocks,
+        {
+          kind: 'user',
+          id: 'user-steer-controller-1',
+          promptId: 'steer-controller-1',
+          text,
+          createdAt: '2026-11-22T01:00:00.000Z',
+          steerStatus: 'sending',
+        },
+      ],
+    };
+    for (const listener of listeners) listener();
+    return new Promise<{ promptId: string; outcome: 'steered' }>((resolve) => { resolveSendNow = resolve; });
+  });
+  const controller = {
+    ...controllerStub({ forest, agentStates: { child: childState } }),
+    getAgentState: (id: string) => (id === 'child' ? childState : createViewState('session')),
+    subscribeAgent: (id: string, listener: () => void) => {
+      if (id !== 'child') return () => {};
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    sendPromptNow,
+  } as unknown as SessionController;
+  await renderWorkspace({ forest, controller, sessionState: { ...createViewState('session'), loaded: true } });
+  await settle();
+  await typeText(composerInput(dock), 'steer once without echo dup');
+  await sendNowFromComposer();
+  await settle();
+  const timeline = container.querySelector('[data-timeline-agent="child"]')!;
+  expect(timeline.querySelectorAll('[data-timeline-user="steer once without echo dup"]')).toHaveLength(1);
+  await act(async () => { resolveSendNow({ promptId: 'steer-controller-1', outcome: 'steered' }); });
+  await settle();
+  expect(timeline.querySelectorAll('[data-timeline-user="steer once without echo dup"]')).toHaveLength(1);
+});
+
 it('sends a busy native child timing pick once, then returns to steering on the next plain send', async () => {
   harness.sendAgentMessage.mockResolvedValue(null);
   const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
@@ -4359,4 +4404,59 @@ it('opens a historical subagent cleanly when it is absent from a bounded forest 
 
   expect(header.textContent).toContain('Historic Auditor');
   expect(header.textContent).not.toContain('unknown');
+});
+
+it('does not render duplicate user bubbles when WS delivers an attachment send before HTTP settles', async () => {
+  let resolveSend!: (value: null) => void;
+  harness.sendAgentMessage.mockImplementation(() => new Promise((resolve) => { resolveSend = resolve; }));
+  harness.host = { kind: 'browser', pickFiles: async () => [{
+    name: 'shot.png', size: 1, type: 'image/png',
+    read: async () => new File(['x'], 'shot.png', { type: 'image/png' }),
+  }] };
+  const listeners = new Set<() => void>();
+  let childState = { ...createViewState('session'), loaded: true, transcriptReady: true, busy: false };
+  const controller = {
+    subscribeAgent: (_agentId: string, listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    getAgentState: () => childState,
+    getForest: () => testForest('completed', false),
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+  } as unknown as SessionController;
+  await renderWorkspace({ forest: testForest('completed', false), controller, sessionState: { ...createViewState('session'), loaded: true } });
+  await settle();
+
+  await typeText(composerInput(dock), 'inspect screenshot');
+  await clickAttach();
+  await settle();
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click();
+  });
+  await settle();
+
+  await act(async () => {
+    childState = {
+      ...childState,
+      blocks: [{
+        kind: 'user',
+        id: 'server-assigned-attachment-prompt-id',
+        promptId: 'server-assigned-attachment-prompt-id',
+        userMessageId: 'server-assigned-attachment-prompt-id',
+        text: 'inspect screenshot',
+        createdAt: '2026-01-01T00:00:00Z',
+        promptStatus: 'running',
+      }],
+    };
+    for (const listener of listeners) listener();
+  });
+  await settle();
+
+  const timeline = container.querySelector('[data-timeline-agent="child"]')!;
+  expect(timeline.querySelectorAll('[data-timeline-user="inspect screenshot"]')).toHaveLength(1);
+
+  await act(async () => { resolveSend(null); });
+  await settle();
+  expect(timeline.querySelectorAll('[data-timeline-user="inspect screenshot"]')).toHaveLength(1);
 });

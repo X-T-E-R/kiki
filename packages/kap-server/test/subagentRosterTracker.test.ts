@@ -112,6 +112,18 @@ describe('SubagentRosterTracker', () => {
     expect(t.get(SID)[0]?.parent_tool_call_id).toBeUndefined();
   });
 
+  it('preserves existing description when a follow-up subagent.spawned omits userLabel', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1', { userLabel: 'Audit auth flow', subagentName: 'implementer', taskId: 'task-1', time: 100 }));
+    t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'agent-1', taskId: 'task-1', resultSummary: 'done', time: 200 }));
+    t.apply(SID, spawn('agent-1', { userLabel: undefined, subagentName: 'implementer', parentToolCallId: '', taskId: 'task-2', time: 300 }));
+    expect(t.get(SID)[0]).toMatchObject({
+      description: 'Audit auth flow',
+      label: 'Audit auth flow',
+      parent_tool_call_id: 'tc_child_1',
+    });
+  });
+
   it('counts distinct child tool calls in the reconnect roster', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawn('agent-1'));

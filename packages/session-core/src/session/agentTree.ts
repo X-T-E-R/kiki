@@ -135,6 +135,7 @@ export interface AgentTaskItem {
   readonly kind?: string;
   readonly description?: string;
   readonly name?: string;
+  readonly explicitName?: string;
   readonly status?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
@@ -891,7 +892,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   draft.parentAgentId = draft.parentAgentId ?? cleanId(task.parentAgentId ?? task.parent_agent_id);
   draft.parentToolCallId =
     draft.parentToolCallId ?? cleanId(task.parentToolCallId ?? task.parent_tool_call_id);
-  draft.name = draft.name ?? firstPresent(task.name, task.description);
+  draft.name = draft.name ?? firstPresent(task.explicitName, task.name, task.description);
   draft.description = firstPresent(task.description) ?? draft.description;
   draft.taskKind = task.kind ?? draft.taskKind;
   const accepted =
@@ -1098,17 +1099,95 @@ function taskAgentId(task: AgentTaskItem): string | undefined {
   return cleanId(task.agentId);
 }
 
+function isSyntheticPhaseTask(task: AgentTaskItem): boolean {
+  const id = cleanId(task.id);
+  return id !== undefined && id.startsWith('agent-phase-');
+}
+
+function isAutonomousReceiptTask(task: AgentTaskItem): boolean {
+  const id = cleanId(task.id);
+  return id !== undefined && id.startsWith('agent-receipt-');
+}
+
 function latestTasksByAgent(tasks: readonly AgentTaskItem[]): readonly AgentTaskItem[] {
-  const latest = new Map<string, AgentTaskItem>();
+  const grouped = new Map<string, AgentTaskItem[]>();
   for (const task of tasks) {
     const agentId = taskAgentId(task);
     if (agentId === undefined) continue;
-    const current = latest.get(agentId);
-    if (current === undefined || taskRunIsNewer(task, current)) {
-      latest.set(agentId, task);
+    const list = grouped.get(agentId);
+    if (list === undefined) grouped.set(agentId, [task]);
+    else list.push(task);
+  }
+  const resolved: AgentTaskItem[] = [];
+  for (const list of grouped.values()) {
+    const nonPhase = list.filter((task) => !isSyntheticPhaseTask(task));
+    const rawCandidates = nonPhase.length > 0 ? nonPhase : list;
+    const dedupedById = new Map<string, AgentTaskItem>();
+    const unkeyed: AgentTaskItem[] = [];
+    for (const candidate of rawCandidates) {
+      const id = cleanId(candidate.id);
+      if (id === undefined) {
+        unkeyed.push(candidate);
+        continue;
+      }
+      const prev = dedupedById.get(id);
+      if (prev === undefined || taskRunIsNewer(candidate, prev)) {
+        dedupedById.set(id, candidate);
+      }
+    }
+    const candidates = [...dedupedById.values(), ...unkeyed];
+    const activeCandidates = candidates.filter((task) => {
+      const status = normalizeStatus(task.status, task.detached === true);
+      return status !== undefined && isActiveStatus(status);
+    });
+    const latestPool = activeCandidates.length > 0 ? activeCandidates : candidates;
+    let latest = latestPool[0]!;
+    let earliest = candidates[0]!;
+    let anchored: AgentTaskItem | undefined;
+    let explicitNamed: AgentTaskItem | undefined;
+    for (const candidate of latestPool) {
+      if (candidate !== latest && taskRunIsNewer(candidate, latest)) latest = candidate;
+    }
+    for (const candidate of candidates) {
+      if (candidate !== earliest && taskRunIsNewer(earliest, candidate)) earliest = candidate;
+      if (anchored === undefined && cleanId(candidate.parentToolCallId ?? candidate.parent_tool_call_id) !== undefined) {
+        anchored = candidate;
+      }
+      if (explicitNamed === undefined && present(candidate.explicitName)) {
+        explicitNamed = candidate;
+      }
+    }
+    const base = anchored ?? earliest;
+    const latestParentToolCallId = cleanId(latest.parentToolCallId ?? latest.parent_tool_call_id);
+    const preserveBaseDescription =
+      base !== latest &&
+      present(base.description) &&
+      (isAutonomousReceiptTask(latest) || (latestParentToolCallId === undefined && anchored !== undefined));
+    const mergedExplicitName = firstPresent(latest.explicitName, explicitNamed?.explicitName);
+    const mergedName = mergedExplicitName ?? firstPresent(latest.name, base.name);
+    const mergedParentToolCallId = latestParentToolCallId ?? cleanId(base.parentToolCallId ?? base.parent_tool_call_id);
+    const mergedParentAgentId = cleanId(latest.parentAgentId ?? latest.parent_agent_id) ?? cleanId(base.parentAgentId ?? base.parent_agent_id);
+    const mergedDescription = preserveBaseDescription ? base.description : firstPresent(latest.description, base.description);
+    if (
+      mergedExplicitName === latest.explicitName &&
+      mergedName === latest.name &&
+      mergedParentToolCallId === latestParentToolCallId &&
+      mergedParentAgentId === cleanId(latest.parentAgentId ?? latest.parent_agent_id) &&
+      mergedDescription === latest.description
+    ) {
+      resolved.push(latest);
+    } else {
+      resolved.push({
+        ...latest,
+        explicitName: mergedExplicitName,
+        name: mergedName,
+        parentToolCallId: mergedParentToolCallId,
+        parentAgentId: mergedParentAgentId,
+        description: mergedDescription,
+      });
     }
   }
-  return [...latest.values()];
+  return resolved;
 }
 
 function taskRunIsNewer(candidate: AgentTaskItem, current: AgentTaskItem): boolean {
@@ -1126,6 +1205,9 @@ function taskRunIsNewer(candidate: AgentTaskItem, current: AgentTaskItem): boole
     }
     if (currentStartedAt !== undefined && candidateEndedAt !== undefined && currentStartedAt > candidateEndedAt) {
       return false;
+    }
+    if (candidateEndedAt !== undefined && currentEndedAt !== undefined && candidateEndedAt !== currentEndedAt) {
+      return candidateEndedAt > currentEndedAt;
     }
   }
   if (candidateStartedAt !== currentStartedAt) {

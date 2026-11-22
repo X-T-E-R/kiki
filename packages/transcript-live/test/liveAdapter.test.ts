@@ -2821,3 +2821,54 @@ it('preserves subagent task effort and provenance through live spawn and attach 
   const seeded = new AgentTranscriptLiveAdapter('main').seedSubagentTask({ taskId: 'task', agentId: 'child', description: 'work', status: 'running', detached: true, startedAt: 1, ...facts });
   expect(seeded.find(op => op.op === 'task.upsert')).toMatchObject({ task: facts });
 });
+
+it('normalizes empty parentToolCallId on subagent.spawned and preserves description on empty task updates', () => {
+  const adapter = new AgentTranscriptLiveAdapter('main');
+  const tx = new AgentTranscript('main');
+  const feed = (event: LiveAdapterBusEvent): void => void tx.apply(adapter.map(event));
+
+  feed(ev({
+    type: 'task.started',
+    time: 100,
+    info: {
+      taskId: 'task-manual-1',
+      kind: 'agent',
+      agentId: 'child-1',
+      profile: 'implementer',
+      description: 'Audit auth flow',
+      status: 'running',
+      detached: true,
+      startedAt: 100,
+      endedAt: null,
+    },
+  }));
+  feed(ev({
+    type: 'subagent.spawned',
+    time: 101,
+    subagentId: 'child-1',
+    subagentName: 'implementer',
+    parentToolCallId: '',
+    runInBackground: true,
+    taskId: 'task-manual-1',
+  }));
+  feed(ev({
+    type: 'task.terminated',
+    time: 200,
+    info: {
+      taskId: 'task-manual-1',
+      kind: 'agent',
+      agentId: 'child-1',
+      profile: 'implementer',
+      description: '',
+      status: 'completed',
+      detached: true,
+      startedAt: 100,
+      endedAt: 200,
+    },
+  }));
+  expect(tx.getTask('task-manual-1')).toMatchObject({
+    parentToolCallId: undefined,
+    description: 'Audit auth flow',
+    state: 'completed',
+  });
+});

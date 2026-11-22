@@ -430,6 +430,8 @@ export interface SubagentBlock {
   readonly id: string;
   readonly subagentId: string;
   readonly taskId?: string;
+  readonly resultTaskId?: string;
+  readonly absorbedTaskIds?: readonly string[];
   readonly resumed?: boolean;
   readonly parentAgentId: string | undefined;
   readonly parentToolCallId: string | undefined;

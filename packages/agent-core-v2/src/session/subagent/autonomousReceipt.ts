@@ -24,7 +24,7 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
-import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
+import { COLLABORATION_LATEST_TASK_LABEL, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { acknowledgeResumeOutcome } from '#/session/dispatch/resume';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentBranchGuardService } from '#/features/btw/agentBranchGuardService';
@@ -251,6 +251,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
     taskId, description, detached: true, startedAt: receipt.startedAt, endedAt: receipt.endedAt, ownerAgentId: parentId,
     goalId: previous?.taskId === undefined ? undefined : tasks?.getTask(previous.taskId)?.goalId,
     agentId: child.id, profile: profileName,
+    collaborationTaskName: previous?.labels?.[COLLABORATION_TASK_NAME_LABEL],
     model: profile.modelAlias,
     thinkingEffort: profile.effectiveThinkingLevel,
     thinkingEffortExplicit: profile.thinkingEffortExplicit,
