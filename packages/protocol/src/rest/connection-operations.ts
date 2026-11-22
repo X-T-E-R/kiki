@@ -88,6 +88,7 @@ export const CONNECTION_OPERATIONS = {
   spacePreferences: ['GET', '/homes/{spaceId}/settings'],
   personas: ['GET', '/personas'], persona: ['GET', '/personas/{personaId}'], personaAvatar: ['GET', '/personas/{personaId}/avatar'],
   personaHome: ['POST', '/personas/{personaId}/home'], personaState: ['PATCH', '/personas/{personaId}/state'],
+  personaPut: ['PUT', '/personas/{personaId}'], personaArchive: ['POST', '/personas/{personaId}:archive'],
   bots: ['GET', '/bots'], botHome: ['POST', '/bots/{botId}/home'],
   rooms: ['GET', '/rooms'], roomItems: ['GET', '/rooms/items'], roomThreads: ['GET', '/rooms/threads'], room: ['GET', '/rooms/{roomId}'],
   roomLog: ['GET', '/rooms/{roomId}/log'], roomUsage: ['GET', '/rooms/{roomId}/usage'],

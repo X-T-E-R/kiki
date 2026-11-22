@@ -80,8 +80,17 @@ describe('whole-session agent task metadata and operation routes', () => {
     ['POST', '/api/sessions/session-example/document-preview', 'documentPreview', { sessionId: 'session-example' }],
     ['GET', '/api/sessions/session-example/document-preview/assets/page-1', 'documentPreviewAsset', { sessionId: 'session-example', assetId: 'page-1' }],
     ['PATCH', '/api/sessions/session-example/agents/agent-example/context-strategy', 'contextStrategyUpdate', { sessionId: 'session-example', agentId: 'agent-example' }],
+    ['PUT', '/api/personas/kiki', 'personaPut', { personaId: 'kiki' }],
+    ['POST', '/api/personas/kiki:archive', 'personaArchive', { personaId: 'kiki' }],
+    ['GET', '/api/personas/kiki', 'persona', { personaId: 'kiki' }],
   ] as const)('matches active session route %s %s', (method, path, operation, params) => {
     expect(matchConnectionOperation(method, path)).toEqual({ operation, params });
+  });
+
+  it('admits persona definition writes and archive for peers but not deletion or duplication', () => {
+    expect(matchConnectionOperation('DELETE', '/api/personas/kiki')).toBeUndefined();
+    expect(matchConnectionOperation('POST', '/api/personas/kiki:duplicate')).toBeUndefined();
+    expect(matchConnectionOperation('PUT', '/api/personas/kiki/avatar')).toBeUndefined();
   });
 
   it('requires owner provenance and distinguishes empty, progressing, and failed coverage', () => {

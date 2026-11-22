@@ -176,7 +176,9 @@ function isPeerScopedEmitterAllowed(frame: KlientFrame): boolean {
  *
  * Writes REST already refuses for a peer stay refused: credential and model
  * registration (`modelService`, `providerService`, `configService`,
- * `mcpManagementService`), persona mutation, workspace registration and
+ * `mcpManagementService`), persona deletion, import and avatar upload
+ * (REST admits only definition put and archive/restore, so a paired client
+ * can start or restore an assistant), workspace registration and
  * removal, plugin install/enable, and session deletion — `sessionManager`
  * grants `fork`/`createChild`, which only derive a session from an existing
  * one, but not `create`, which acquires a workspace lease. Model and provider
