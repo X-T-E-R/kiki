@@ -1,33 +1,19 @@
 /**
- * The right rail: one page per agent, the same component for the main agent
- * and every subagent. Top to bottom in standard mode:
+ * The right inspector rail: one page per agent, split cleanly into two hairline
+ * tabs (`Run` | `Config`).
  *
- *   head       who this page is about, the 标准 / 驾驶舱 switch, close  pinned
- *   现在        profile head, what it is doing, 等你处理               pinned
- *   概览        context, cost, tokens, cache                         scrolls
- *   待办        checklist, notes, hooks, plan                        open
- *   后台任务    running work, each with its stop                     open
- *   智能体      the team under this agent                            open
- *   定时任务    what this conversation scheduled                     open
- *   tail       能力 · 动态 · 记忆 · 通信 · 频道 · 角色 · 会话, one
- *               folded row each, never a fold inside a fold          folded
- *
- * What the reader checks most — who runs, what waits, how far, what it cost —
- * reads without a click; configuration sits at the end. Sections part with
- * one hairline each, no cards.
- *
- * The cockpit reorders the same sections: its subject is the whole session,
- * so the execution graph comes first, then the shared agent roster, then the
- * same work sections and tail. Every section is the same component it is in
- * standard mode, so the roster keeps its filtering and its actions and loses
- * nothing when the mode changes.
- *
- * Cockpit temporarily widens this rail into the preview's space. Standard
- * mode restores the original layout. `railVisibility` owns the differences
- * between a main-agent and a subagent rail.
+ *   Run        Live work & telemetry — Needs you, ProfileHead + Now, Usage,
+ *              Branches, Todos (+ Plan), active Background tasks (only while
+ *              running), Agents, and a bottom quiet history fold group
+ *              (Working notes, settled Background tasks, Activity, Thread comms).
+ *   Config     Live topology strip (0px when idle), unfolded session controls
+ *              (System capabilities, Session plugins, MCP, Channels, Cron,
+ *              Persona, Memory — strictly main-session scoped), and folded
+ *              agent foundation rows (Automatic rules, Capabilities, Session).
  */
 
-import { Fragment, memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { QueryClient, QueryClientContext, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
 import type { Task } from '@kiki/protocol';
@@ -51,6 +37,7 @@ import { pushToast } from '../../lib/toasts';
 import { cssZoomFactor, unzoomedViewport } from '../../lib/uiZoom';
 import { usePromoteAgent } from '../../lib/usePromoteAgent';
 import { usageSessionDeepLink } from '../../lib/usageV2';
+import { useOptionalConnection } from '../../state/connection';
 import { AgentPanelContainer } from '../AgentPanelContainer';
 import { InspectorComms } from '../comms/InspectorComms';
 import { AgentRoster, RAIL_MARK, RailCrumbs } from '../agent-panel/InspectorAgents';
@@ -68,22 +55,25 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
-import { useMediaPreview } from '../mediaPreviewContext';
 import { conversationCenterFloor } from '../preview/shared';
 import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
-import { FOCUS_RING, ModeSwitch, useMediaQuery, useRailMode } from './shell';
+import { FOCUS_RING } from './shell';
 import type { RailProps } from './types';
 import { readExternalClientMark } from '../../lib/externalClients';
-import { ActivityFeed, CapabilitiesBlock, EnvironmentBlock, NeedsYouList, ProfileHead } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, SessionEnvironmentControls } from './DefaultSections';
 import { RailTodos } from './DefaultRail';
+import { RailLiveTopology } from './RailLiveTopology';
 import { SessionCronSection } from './SessionCronSection';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 
-/**
- * One section of the scrolling page: a hairline above it, no card. The page
- * pulls up one pixel so its first rule lands on the pinned block's own.
- */
+export type RailTab = 'run' | 'config';
+
+const FALLBACK_QUERY_CLIENT = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+
+/** One section of the scrolling page: a hairline above it, no card. */
 const SECTION = 'border-t border-hairline py-3';
 /** The context meter stays neutral until the overview calls it near; near is amber, never the "needs you" accent. */
 const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context=danger]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context]_span.text-danger]:!text-amber-ink';
@@ -94,11 +84,6 @@ const ROSTER_QUIET_WAITING = '[&_[data-roster-waiting]]:!bg-transparent';
 
 const NO_PENDING: readonly (ApprovalBlock | QuestionBlock)[] = [];
 
-/**
- * Collapsible rail chapter — the shared InspectorSection shape (button +
- * aria-expanded + rotating chevron). Starts expanded unless `defaultOpen` is
- * false. `actions` renders beside the header row, outside the toggle button.
- */
 function RailSection({
   title,
   collapsible,
@@ -124,14 +109,6 @@ function RailSection({
   );
 }
 
-/**
- * The folder name the folded session row shows. A working directory is often
- * named after the thing that created it — a uuid, a hash, a generated slug —
- * and a 32-character id sitting in the rail's resident line says nothing a
- * reader can act on. Those are left out of the folded line (the full path is
- * one click away in the section's own detail) and only a name a person would
- * recognise gets the space.
- */
 const OPAQUE_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|^[0-9a-f]{24,}$|^[0-9a-z]{20,}$/i;
 
 function residentDirName(cwd: string | undefined): string | undefined {
@@ -141,7 +118,6 @@ function residentDirName(cwd: string | undefined): string | undefined {
   return OPAQUE_DIR.test(leaf) ? undefined : leaf;
 }
 
-/** The newest non-empty line of a task's output (or its command). */
 function lastLine(text: string | undefined): string | undefined {
   if (text === undefined) return undefined;
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
@@ -170,13 +146,11 @@ const TasksSection = memo(function TasksSection({
   sessionId?: string;
   ownerAgentId?: string;
   onCancel: (taskId: string, ownerAgentId?: string) => void;
-  /** Opens the terminal-style detail modal for one task. */
   onOpenTask: (task: Task) => void;
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [settledOpen, setSettledOpen] = useState(false);
-  // Running work stays expanded; settled tasks fold into one quiet summary row.
   const sorted = useMemo(() => sortTasks(tasks), [tasks]);
   const runningTasks = useMemo(() => sorted.filter((task) => task.status === 'running'), [sorted]);
   const settledTasks = useMemo(() => sorted.filter((task) => task.status !== 'running'), [sorted]);
@@ -185,7 +159,6 @@ const TasksSection = memo(function TasksSection({
   }
   const renderTaskRow = (task: Task) => (
     <li key={task.id} data-rail-item className="rail-task-row -mx-2 flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink/[0.04]">
-      {/* Name + the latest output line. The whole row opens the detail. */}
       <button
         type="button"
         data-task-open={task.id}
@@ -227,6 +200,7 @@ const TasksSection = memo(function TasksSection({
       ) : null}
     </li>
   );
+  const showDirectSettled = runningTasks.length === 0;
   return (
     <div data-tasks-scroll className="max-h-80 overflow-y-auto pr-1">
       {runningTasks.length > 0 ? (
@@ -235,23 +209,29 @@ const TasksSection = memo(function TasksSection({
         </ul>
       ) : null}
       {settledTasks.length > 0 ? (
-        <div className={runningTasks.length > 0 ? 'mt-1.5' : ''}>
-          <button
-            type="button"
-            data-tasks-settled-toggle
-            aria-expanded={settledOpen}
-            onClick={() => { setSettledOpen((open) => !open); }}
-            className="-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <InspectorChevron open={settledOpen} />
-            <span className="min-w-0 flex-1 truncate">{t('rail.tasks.settledSummary', { count: settledTasks.length })}</span>
-          </button>
-          {settledOpen ? (
-            <ul data-tasks-settled-list className="mt-0.5 space-y-0.5">
-              {settledTasks.map(renderTaskRow)}
-            </ul>
-          ) : null}
-        </div>
+        showDirectSettled ? (
+          <ul data-tasks-settled-list className="space-y-0.5">
+            {settledTasks.map(renderTaskRow)}
+          </ul>
+        ) : (
+          <div className="mt-1.5">
+            <button
+              type="button"
+              data-tasks-settled-toggle
+              aria-expanded={settledOpen}
+              onClick={() => { setSettledOpen((open) => !open); }}
+              className="-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <InspectorChevron open={settledOpen} />
+              <span className="min-w-0 flex-1 truncate">{t('rail.tasks.settledSummary', { count: settledTasks.length })}</span>
+            </button>
+            {settledOpen ? (
+              <ul data-tasks-settled-list className="mt-0.5 space-y-0.5">
+                {settledTasks.map(renderTaskRow)}
+              </ul>
+            ) : null}
+          </div>
+        )
       ) : null}
       {sessionId !== undefined ? (
         <div className="pt-1">
@@ -271,12 +251,14 @@ const TasksSection = memo(function TasksSection({
 
 /** Mounts its children only once the slot scrolls into the rail's view. */
 function useLazyPanelSlot() {
-  const slotRef = useRef<HTMLDivElement>(null);
+  const [slotNode, setSlotNode] = useState<HTMLElement | null>(null);
   const [visible, setVisible] = useState(false);
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
-    const slot = slotRef.current;
-    if (slot === null) return;
+    if (slotNode === null) {
+      setVisible(false);
+      return;
+    }
     if (typeof IntersectionObserver === 'undefined') {
       setVisible(true);
       setMounted(true);
@@ -286,11 +268,11 @@ function useLazyPanelSlot() {
       const next = entry?.isIntersecting === true;
       setVisible(next);
       if (next) setMounted(true);
-    }, { root: slot.closest('[data-agent-panel-scroll]') ?? slot.parentElement });
-    observer.observe(slot);
+    }, { root: slotNode.closest('[data-agent-panel-scroll]') ?? slotNode.parentElement });
+    observer.observe(slotNode);
     return () => observer.disconnect();
-  }, []);
-  return { slotRef, visible, mounted };
+  }, [slotNode]);
+  return { slotRef: setSlotNode, visible, mounted };
 }
 
 export const Rail = memo(function Rail({
@@ -314,8 +296,10 @@ export const Rail = memo(function Rail({
 }: RailProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const [mode, chooseMode] = useRailMode();
-  const preview = useMediaPreview();
+  const connection = useOptionalConnection();
+  const queryClient = useContext(QueryClientContext);
+  const [activeTab, setActiveTab] = useState<RailTab>('run');
+  const railTabIdPrefix = useId();
   const session = state.session;
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
@@ -323,18 +307,33 @@ export const Rail = memo(function Rail({
   const panelSlot = useLazyPanelSlot();
   const peekAgentId = useInspectorPeek();
   const focusedAgentId = selectedAgentId ?? MAIN_AGENT_ID;
+  const isMainAgent = focusedAgentId === MAIN_AGENT_ID;
   const sameAsCenter =
     onInspectMain === undefined || (focusedAgentId === MAIN_AGENT_ID && subagent === undefined);
   const isRoutedChildPage = focusedAgentId !== MAIN_AGENT_ID && sameAsCenter;
   const railScrollRef = useRef<HTMLDivElement>(null);
+
+  const personaAttentionQuery = useQuery(
+    {
+      queryKey: ['sessions', state.sessionId, 'persona-settings'] as const,
+      queryFn: () => connection!.client.getPersonaSettings(state.sessionId),
+      enabled:
+        queryClient !== undefined &&
+        isMainAgent &&
+        Boolean(state.sessionId) &&
+        typeof connection?.client?.getPersonaSettings === 'function',
+      staleTime: 15_000,
+      retry: false,
+    },
+    queryClient ?? FALLBACK_QUERY_CLIENT,
+  );
+  const hasConfigAttention = isMainAgent && personaAttentionQuery.data?.hasUpdate === true;
+
   const forest = useMemo(
     () => (isRoutedChildPage ? mergeAgentViewIntoForest(forestProp, focusedAgentId, state) : forestProp),
     [forestProp, focusedAgentId, isRoutedChildPage, state],
   );
-  // Defer heavy team/branch/feed derivations so first-turn transcript paint is
-  // never blocked by 10,000-subagent rail scans.
   const deferredForest = useDeferredValue(forest);
-  // A session driven from outside Kiki names that client instead of a model.
   const externalDriver = useMemo(
     () => readExternalClientMark(session?.metadata)?.clientName,
     [session?.metadata],
@@ -343,7 +342,6 @@ export const Rail = memo(function Rail({
   const focusedFallbackLabel = subagent?.block?.label ?? subagent?.block?.name;
   const focusedDisplayLabel = focusedNode?.label ?? (focusedFallbackLabel !== undefined && focusedFallbackLabel !== '' ? focusedFallbackLabel : focusedAgentId);
   const promote = usePromoteAgent(state.sessionId, subagent?.agentId);
-  // The routed agent page (no onInspectMain) is already this agent's timeline.
   const show = railVisibility(focusedAgentId, onInspectMain === undefined ? focusedAgentId : MAIN_AGENT_ID);
   const backgroundTasks = useMemo(() => {
     const nonSubagent = state.tasks.filter((task) => task.kind !== 'subagent');
@@ -366,15 +364,18 @@ export const Rail = memo(function Rail({
   runningSubagentTasksRef.current = runningSubagentTasks;
   const ownPending = useMemo(() => pendingBlocks(state.blocks), [state.blocks]);
   const pending = sessionPending ?? ownPending;
-  // Agents waiting on the user: a pending item's origin, plus the focused
-  // subagent when its own count says so. Their rows surface first.
   const waitingAgentIds = useMemo(() => {
     const ids = pendingOrigins(pending);
     if (subagent !== undefined && subagent.pendingInteractionCount > 0) ids.add(subagent.agentId);
     return ids;
   }, [pending, subagent]);
-  // Empty sections collapse entirely (header included) on every page.
-  // Main lists the whole team; a subagent lists the agents under it.
+  const topologyPendingCount = useMemo(() => {
+    if (isMainAgent) return pending.length;
+    const scopeIds = new Set<string>([focusedAgentId, ...descendantIds(deferredForest, focusedAgentId)]);
+    const scopedFromPending = pending.filter((item) => scopeIds.has(item.originAgentId ?? MAIN_AGENT_ID)).length;
+    const ownSubagentCount = subagent !== undefined && subagent.agentId === focusedAgentId ? subagent.pendingInteractionCount : 0;
+    return Math.max(scopedFromPending, ownSubagentCount);
+  }, [deferredForest, focusedAgentId, isMainAgent, pending, subagent]);
   const sessionBranches = useMemo(
     () => collectSessionBranches(deferredForest, waitingAgentIds),
     [deferredForest, waitingAgentIds],
@@ -429,7 +430,6 @@ export const Rail = memo(function Rail({
   );
   const viewingBranch = isSessionBranchNode(focusedNode);
   const showBranches = (!isRoutedChildPage || viewingBranch) && sessionBranches.all.length > 0;
-  const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
   const nodeStatus = focusedNode?.status;
   const nodeStatusKnown = focusedNode !== undefined && nodeStatus !== 'unknown';
@@ -439,36 +439,19 @@ export const Rail = memo(function Rail({
     ? sessionBusy
     : nodeStatusKnown ? (focusedNode?.busy ?? false) : (focusedNode?.busy === true || sessionBusy);
   const taskOwner = taskOwnerAgentId ?? show.taskOwner;
-  // Choosing cockpit lifts its overview into view when it sits outside the
-  // rail's scroll viewport; the standard mode never scrolls. The lift runs in
-  // a layout effect, once the cockpit body has replaced the standard figures
-  // and the block has its new height.
-  const liftIntoView = (slot: HTMLElement | null) => {
-    if (slot === null || typeof slot.scrollIntoView !== 'function') return;
-    const view = slot.closest('[data-agent-panel-scroll]')?.getBoundingClientRect();
-    const rect = slot.getBoundingClientRect();
-    const viewTop = view?.top ?? 0;
-    const viewBottom = view?.bottom ?? window.innerHeight;
-    if (rect.top < viewTop || rect.bottom > viewBottom) {
-      slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  };
 
-  useLayoutEffect(() => {
-    if (mode === 'cockpit') liftIntoView(panelSlot.slotRef.current);
-  }, [mode]);
-  // Turning a tab. Inside the session view the document-level focus tracker
-  // pins on click (inspectorFocus.ts); main is also handed back explicitly,
-  // and the routed agent page (no onInspectMain) navigates instead.
   const selectAgent = (agentId: string) => {
+    setActiveTab('run');
     if (agentId === focusedAgentId) return;
     if (agentId === MAIN_AGENT_ID && onInspectMain !== undefined) onInspectMain();
     else onOpenSubagent(agentId);
   };
+  const openAgentInRun = (agentId: string) => {
+    setActiveTab('run');
+    onOpenSubagent(agentId);
+  };
+
   const subBlock = subagent?.block;
-  // The timeline card can lag behind an authoritative runtime tree status;
-  // retain a settled block status (e.g. completed/failed) even when the
-  // historical node fell outside a bounded roster window.
   const subBlockIsLive = subBlock !== undefined && (subBlock.status === 'running' || subBlock.status === 'suspended');
   const subStatus = subagent === undefined
     ? undefined
@@ -535,18 +518,11 @@ export const Rail = memo(function Rail({
   useEffect(() => {
     setRailWidthValue(layoutPrefs.railWidth);
   }, [layoutPrefs.railWidth]);
-  const [cockpitWidth, setCockpitWidth] = useState<number | undefined>();
-  useEffect(() => { if (mode === 'default') setCockpitWidth(undefined); }, [mode]);
-  const effectiveWidth = mode === 'cockpit'
-    ? cockpitWidth ?? Math.min(760, Math.max(480, railWidthValue + (preview?.previewPanelWidth ?? 0)))
-    : railWidthValue;
   const railRef = useRef<HTMLElement>(null);
-  const baseMinWidth = mode === 'cockpit' ? 360 : RAIL_MIN_WIDTH;
-  const baseMaxWidth = mode === 'cockpit' ? 760 : RAIL_MAX_WIDTH;
   const { startResize, reset } = usePaneResize({
-    value: effectiveWidth,
-    min: baseMinWidth,
-    max: baseMaxWidth,
+    value: railWidthValue,
+    min: RAIL_MIN_WIDTH,
+    max: RAIL_MAX_WIDTH,
     direction: -1,
     resolveBounds: () => {
       const railEl = railRef.current;
@@ -562,8 +538,8 @@ export const Rail = memo(function Rail({
       const isOverlayRail = (railSlot?.querySelector('[data-rail-backdrop]') ?? null) !== null;
       if (isOverlayRail) {
         return {
-          min: baseMinWidth,
-          max: Math.max(baseMinWidth, Math.min(baseMaxWidth, Math.floor(rowWidth - 48))),
+          min: RAIL_MIN_WIDTH,
+          max: Math.max(RAIL_MIN_WIDTH, Math.min(RAIL_MAX_WIDTH, Math.floor(rowWidth - 48))),
           startValue,
         };
       }
@@ -580,27 +556,21 @@ export const Rail = memo(function Rail({
       const availableForRail =
         rowWidth - conversationCenterFloor(viewportWidth) - dockedPreviewWidth - totalGaps;
       return {
-        min: baseMinWidth,
-        max: Math.max(baseMinWidth, Math.min(baseMaxWidth, Math.floor(availableForRail))),
+        min: RAIL_MIN_WIDTH,
+        max: Math.max(RAIL_MIN_WIDTH, Math.min(RAIL_MAX_WIDTH, Math.floor(availableForRail))),
         startValue,
       };
     },
     onChange: (value, final) => {
-      if (mode === 'cockpit') { setCockpitWidth(value); return; }
       setRailWidthValue(value);
       if (final) writeLayoutPreferences({ railWidth: value });
     },
     onReset: () => {
-      if (mode === 'cockpit') { setCockpitWidth(undefined); return; }
       setRailWidthValue(RAIL_DEFAULT_WIDTH);
       writeLayoutPreferences({ railWidth: RAIL_DEFAULT_WIDTH });
     },
   });
 
-
-  // Turning the page remounts every control on it, so a press that turned it
-  // (opening an agent from a row or a Needs-you link) would leave focus on
-  // <body>. Keep keyboard users in place: the new page's heading takes it.
   const focusInRail = useRef(false);
   useLayoutEffect(() => {
     if (!focusInRail.current) return;
@@ -610,24 +580,11 @@ export const Rail = memo(function Rail({
   }, [focusedAgentId]);
 
   const agentPanelKey = `${state.sessionId}:${focusedAgentId}`;
-  // Which first-level branches the reader opened. The rail owns this rather
-  // than the overview body, so the graph comes back the way it was left after
-  // drilling into an agent's preview and coming back.
-  const [expandedBranches, setExpandedBranches] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleBranch = (branchId: string) => {
-    setExpandedBranches((current) => {
-      const next = new Set(current);
-      if (next.has(branchId)) next.delete(branchId);
-      else next.add(branchId);
-      return next;
-    });
-  };
-  const narrow = useMediaQuery('(max-width: 1023px)');
   const renderOverview = (body: React.ReactNode, scopeSwitch: React.ReactNode) => (
     <>
       <header data-rail-switchable-head className="flex h-9 min-w-0 flex-nowrap items-baseline gap-1.5 py-1">
         <h3 id="rail-overview-title" className={`${INSPECTOR_HEAD} whitespace-nowrap leading-7`}>
-          {mode === 'cockpit' ? t('rail.cockpit.title') : t('rail.usageSection')}
+          {t('rail.usageSection')}
         </h3>
         <button
           type="button"
@@ -650,17 +607,15 @@ export const Rail = memo(function Rail({
     [backgroundTasks],
   );
   const settledBackgroundCount = backgroundTasks.length - runningBackgroundCount;
-  // Running work behind the conversation stays open at the top with its live
-  // count; when only settled history remains, collapse to one summary line.
-  const tasksSection = showTasks ? (
+
+  const runningTasksSection = runningBackgroundCount > 0 ? (
     <div className={SECTION} data-rail-section="tasks">
       <RailSection
-        key={runningBackgroundCount > 0 ? 'tasks-running' : 'tasks-settled'}
+        key="tasks-running"
         title={t('rail.tasks')}
-        collapsible={runningBackgroundCount === 0}
-        defaultOpen={runningBackgroundCount > 0}
-        count={runningBackgroundCount > 0 ? runningBackgroundCount : undefined}
-        summary={runningBackgroundCount === 0 ? t('rail.tasks.settledSummary', { count: settledBackgroundCount }) : undefined}
+        collapsible={false}
+        defaultOpen
+        count={runningBackgroundCount}
       >
         <TasksSection
           tasks={backgroundTasks}
@@ -672,25 +627,37 @@ export const Rail = memo(function Rail({
       </RailSection>
     </div>
   ) : null;
-  // The focused agent's checklist, notes, hooks and plan. The section hides
-  // when every part of it is empty, so a fresh session shows no blank rule.
+
+  const settledTasksHistoryRow = runningBackgroundCount === 0 && settledBackgroundCount > 0 ? (
+    <RailSection
+      key="tasks-settled"
+      title={t('rail.tasks')}
+      collapsible
+      defaultOpen={false}
+      summary={t('rail.tasks.settledSummary', { count: settledBackgroundCount })}
+      data-rail-section="tasks"
+    >
+      <TasksSection
+        tasks={backgroundTasks}
+        sessionId={session?.id}
+        ownerAgentId={taskOwner}
+        onCancel={onCancelTask}
+        onOpenTask={setDetailTask}
+      />
+    </RailSection>
+  ) : null;
+
   const todosSection = (
     <div
       id="rail-todos"
       data-rail-section="todos"
-      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-rail-todos-loading]]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-notes-state=loading]]:hidden [&_[data-agent-notes-state=unknown]]:hidden [&_[data-agent-notes-state=partial]]:hidden [&_[data-agent-hooks-state=loading]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty],[data-agent-notes-state=loading],[data-agent-notes-state=unknown],[data-agent-notes-state=partial]):not(:has([data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty],[data-agent-notes-state=loading],[data-agent-notes-state=unknown],[data-agent-notes-state=partial]):not(:has([data-rail-todos]:not([data-rail-todos-loading]),[data-agent-hooks-section]:not([data-agent-hooks-state=loading]),[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
+      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-rail-todos-loading]]:hidden [&:has([data-rail-todos-loading]):not(:has([data-agent-plan],[data-agent-plan-error]))]:hidden`}
     >
       <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
-      <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} visible={panelSlot.visible} part="work" />
+      <AgentPanelContainer key={`plan:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} visible={panelSlot.visible} part="plan" />
     </div>
   );
-  // One entry for this conversation's schedule; it renders nothing when the
-  // conversation has none, and stays off routed child/branch pages.
-  const cronSection = !isRoutedChildPage ? (
-    <div className={`${SECTION} empty:hidden`} data-rail-section="cron">
-      <SessionCronSection sessionId={state.sessionId} />
-    </div>
-  ) : null;
+
   const terminateAllAction = showTerminateAll ? (
     <button
       type="button"
@@ -718,8 +685,6 @@ export const Rail = memo(function Rail({
   const branchesSummary = !hasOpenBranches && sessionBranches.merged.length > 0
     ? `${sessionBranches.merged.length} ${t('rail.branches.status.merged')}`
     : undefined;
-  // Parallel conversation branches sit right below overview. When only merged
-  // history remains, the chapter collapses to a single quiet line until opened.
   const branchesSection = showBranches ? (
     <div className={SECTION} data-rail-section="branches">
       <RailSection
@@ -739,13 +704,12 @@ export const Rail = memo(function Rail({
           peekAgentId={peekAgentId}
           waitingAgentIds={waitingAgentIds}
           foldSummaries={branchFoldSummaries}
-          onSelect={onOpenSubagent}
+          onSelect={openAgentInRun}
         />
       </RailSection>
     </div>
   ) : null;
-  // Who is on the team, open in both modes: the status chips filter in place,
-  // waiting and running agents lead, settled ones fold into their own group.
+
   const agentsSection = showRoster ? (
     <div className={`${SECTION} ${ROSTER_QUIET_WAITING}`} data-rail-section="agents">
       <RailSection
@@ -760,60 +724,27 @@ export const Rail = memo(function Rail({
           rootId={focusedAgentId}
           peekAgentId={peekAgentId}
           waitingAgentIds={waitingAgentIds}
-          onSelect={onOpenSubagent}
+          onSelect={openAgentInRun}
           agentCounts={rosterAgentCounts}
           onSearchSubagents={onSearchSubagents}
         />
       </RailSection>
     </div>
   ) : null;
-  // The low-frequency tail: what the agent can use, what happened, and this
-  // conversation's settings. One hairline above the group, then one folded
-  // row each, side by side — never a fold inside another fold.
-  const tailSection = (
-    <div data-inspector-tail className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [contain:layout_style]`}>
-      <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
-      {!isRoutedChildPage ? <EnvironmentBlock sessionId={state.sessionId} /> : null}
-      <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
-      {memory !== undefined ? (
-        <RailSection title={memory.title} count={memory.count} defaultOpen={false} data-inspector-memory="">
-          {memory.content}
-        </RailSection>
-      ) : null}
+
+  const historyTailSection = (
+    <div
+      data-inspector-tail
+      data-rail-section="history"
+      className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-quiet-empty]]:hidden [&_[data-agent-panel-part=notes]:not(:has([data-agent-notes-section]:not([data-agent-notes-quiet-empty])))]:hidden [contain:layout_style]`}
+    >
+      <AgentPanelContainer key={`notes:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} visible={panelSlot.visible} part="notes" />
+      {settledTasksHistoryRow}
+      <ActivityFeed blocks={state.blocks} forest={deferredForest} onOpenFile={onOpenFile} onOpenAgent={openAgentInRun} />
       {show.comms && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
-      {!isRoutedChildPage && session !== undefined ? (
-        <div className="empty:hidden">
-          <SessionChannelsRail
-            sessionId={state.sessionId}
-            sessionTitle={session.title}
-            personaId={session.agent_config?.persona?.name ? session.agent_config.profile : undefined}
-            personaName={session.agent_config?.persona?.name}
-            onOpenSettings={() => { void navigate('/settings/notifications'); }}
-          />
-        </div>
-      ) : null}
-      {!isRoutedChildPage ? (
-        <div className="empty:hidden">
-          <PersonaSettingsUpdate sessionId={state.sessionId} />
-        </div>
-      ) : null}
-      {session !== undefined ? (
-        <RailSection
-          title={t('rail.group.session')}
-          summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
-          defaultOpen={false}
-          data-rail-group="session"
-          data-inspector-session=""
-        >
-          <dl>
-            <InspectorRow label={t('rail.directory')} title={session.metadata.cwd}><span className="truncate" style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}>{session.metadata.cwd}</span></InspectorRow>
-            {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
-            <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
-          </dl>
-        </RailSection>
-      ) : null}
     </div>
   );
+
   const needsYouSection = sessionPending !== undefined && sessionPending.length > 0 ? (
     <div className="pt-1">
       <NeedsYouList
@@ -821,68 +752,137 @@ export const Rail = memo(function Rail({
         forest={forest}
         onResolveApproval={onResolveApproval}
         onReview={onReviewPending}
-        onInspect={onOpenSubagent}
+        onInspect={openAgentInRun}
       />
     </div>
   ) : null;
-  // The overview scrolls with the page in both modes: the pinned block keeps
-  // only who and what waits, so a tall figure block never squeezes the list.
+
   const overviewSection = (
     <section
       ref={panelSlot.slotRef}
       data-rail-agent-panel-slot
-      data-rail-switchable={mode}
       aria-labelledby="rail-overview-title"
       className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
     >
       <div data-rail-overview-well>
         {panelSlot.mounted ? (
           <AgentPanelContainer
-            key={`overview:${mode === 'cockpit' && !isRoutedChildPage ? state.sessionId : agentPanelKey}`}
+            key={`overview:${agentPanelKey}`}
             state={state}
             forest={deferredForest}
             agentId={focusedAgentId}
             visible={panelSlot.visible}
             part="overview"
-            overviewMode={mode}
             renderOverview={renderOverview}
-            waitingIds={waitingAgentIds}
-            onOpenAgent={onOpenSubagent}
-            expandedBranches={expandedBranches}
-            onToggleBranch={toggleBranch}
-            sessionPending={pending}
-            mainLabel={t('rail.ownerMain')}
             scopeRootId={isRoutedChildPage ? focusedAgentId : MAIN_AGENT_ID}
-            rootBusy={isRoutedChildPage ? busy : undefined}
-            rootTurnStartedAt={isRoutedChildPage ? runStartedAt : undefined}
-            rootLabel={isRoutedChildPage ? focusedDisplayLabel : undefined}
           />
         ) : renderOverview(null, null)}
       </div>
     </section>
   );
-  // Standard reads figures, then session branches, then the work in hand and
-  // team; the cockpit leads with the session graph, branches, and worker team.
-  const orderedSections = (mode === 'cockpit'
-    ? [
-      ['overview', overviewSection],
-      ['branches', branchesSection],
-      ['agents', agentsSection],
-      ['todos', todosSection],
-      ['tasks', tasksSection],
-      ['cron', cronSection],
-      ['tail', tailSection],
-    ] as const
-    : [
-      ['overview', overviewSection],
-      ['branches', branchesSection],
-      ['todos', todosSection],
-      ['tasks', tasksSection],
-      ['agents', agentsSection],
-      ['cron', cronSection],
-      ['tail', tailSection],
-    ] as const
-  ).filter(([, section]) => section !== null);
+
+  const runSections = ([
+    ['overview', overviewSection],
+    ['branches', branchesSection],
+    ['todos', todosSection],
+    ['tasks', runningTasksSection],
+    ['agents', agentsSection],
+    ['history', historyTailSection],
+  ] as const).filter(([, section]) => section !== null);
+
+  const railTabId = (tab: RailTab) => `${railTabIdPrefix}-tab-${tab}`;
+  const railPanelId = (tab: RailTab) => `${railTabIdPrefix}-panel-${tab}`;
+
+  const renderTabStrip = (heightClass: string) => (
+    <div
+      role="tablist"
+      aria-label={t('rail.tabs.aria')}
+      data-rail-tabs=""
+      className={`flex ${heightClass} min-w-0 items-stretch gap-4`}
+    >
+      {(['run', 'config'] as const).map((tab) => {
+        const selected = activeTab === tab;
+        const otherTab: RailTab = tab === 'run' ? 'config' : 'run';
+        return (
+          <button
+            key={tab}
+            id={railTabId(tab)}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            aria-controls={railPanelId(tab)}
+            tabIndex={selected ? 0 : -1}
+            data-rail-tab={tab}
+            onClick={() => { setActiveTab(tab); }}
+            onKeyDown={(event) => {
+              let next: RailTab | undefined;
+              if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') next = otherTab;
+              else if (event.key === 'Home') next = 'run';
+              else if (event.key === 'End') next = 'config';
+              if (next === undefined) return;
+              event.preventDefault();
+              setActiveTab(next);
+              const nextEl = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-rail-tab="${next}"]`);
+              nextEl?.focus();
+            }}
+            className={`relative flex h-full shrink-0 cursor-pointer items-center gap-1.5 text-[13px] transition-colors outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              selected ? 'font-medium text-ink' : 'font-normal text-ink-faint hover:text-ink-soft'
+            }`}
+          >
+            <span>{t(tab === 'run' ? 'rail.tab.run' : 'rail.tab.config')}</span>
+            {tab === 'config' && hasConfigAttention ? (
+              <span
+                aria-hidden
+                data-rail-config-attention=""
+                className="h-[5px] w-[5px] shrink-0 rounded-full bg-attention"
+              />
+            ) : null}
+            {selected ? (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-[1.5px] bg-ink"
+              />
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const railHeaderControls = (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {sessionPending !== undefined && sessionPending.length > 0 ? (
+        <button
+          type="button"
+          data-rail-pending-jump=""
+          title={t('inspector.needsYou')}
+          aria-label={`${t('inspector.needsYou')} (${sessionPending.length})`}
+          onClick={() => {
+            setActiveTab('run');
+            const scroller = railScrollRef.current;
+            if (scroller !== null) scroller.scrollTop = 0;
+          }}
+          className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-attention px-1.5 text-[11px] font-semibold tabular-nums text-on-accent transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+        >
+          <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-on-accent" />
+          <span>{sessionPending.length}</span>
+        </button>
+      ) : null}
+      {onClose === undefined ? null : (
+        <button
+          type="button"
+          onClick={onClose}
+          data-rail-close
+          title={t('sv.hidePanel')}
+          aria-label={t('sv.hidePanel')}
+          className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
+        >
+          <Icon name="close" size={16} />
+        </button>
+      )}
+    </span>
+  );
+
   return (
     <div className="app-rail-shell">
       <div
@@ -894,177 +894,242 @@ export const Rail = memo(function Rail({
         onDoubleClick={reset}
       />
       <aside
-        className={
-          className ?? 'app-rail'
-        }
-        style={{ '--kiki-rail-width': `${effectiveWidth}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
+        className={className ?? 'app-rail'}
+        style={{ '--kiki-rail-width': `${railWidthValue}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
         data-session-rail
-        data-rail-mode-active={mode}
+        data-rail-active-tab={activeTab}
         data-inspector-agent={focusedAgentId}
         ref={railRef}
         onFocus={() => { focusInRail.current = true; }}
-        // A removed control blurs with no related target; only a real move
-        // out of the rail clears the flag.
         onBlur={(event) => {
           if (event.relatedTarget !== null && !event.currentTarget.contains(event.relatedTarget as Node)) focusInRail.current = false;
         }}
       >
-      <div ref={railScrollRef} data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 [contain:layout_style]">
-      {/* Strict h-12 sticky bar aligning across all 3 panes. */}
-      <div data-rail-pinned className="sticky top-0 z-20 -mx-4 flex h-12 items-center justify-between gap-2 border-b border-hairline bg-panel px-4">
-      {(() => {
-        const railHeaderControls = (
-          <span className="flex shrink-0 items-center gap-1.5">
-            {sessionPending !== undefined && sessionPending.length > 0 ? (
-              <button
-                type="button"
-                data-rail-pending-jump=""
-                title={t('inspector.needsYou')}
-                aria-label={`${t('inspector.needsYou')} (${sessionPending.length})`}
-                onClick={() => {
-                  const scroller = railScrollRef.current;
-                  if (scroller !== null) scroller.scrollTop = 0;
-                }}
-                className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-attention px-1.5 text-[11px] font-semibold tabular-nums text-on-accent transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
-              >
-                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-on-accent" />
-                <span>{sessionPending.length}</span>
-              </button>
-            ) : null}
-            {narrow ? null : <ModeSwitch mode={mode} onChoose={chooseMode} />}
-            {onClose === undefined ? null : (
-              <button type="button" onClick={mode === 'cockpit' ? () => { chooseMode('default'); } : onClose} data-rail-close
-                title={t(mode === 'cockpit' ? 'rail.cockpit.close' : 'sv.hidePanel')} aria-label={t(mode === 'cockpit' ? 'rail.cockpit.close' : 'sv.hidePanel')}
-                className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
-                <Icon name="close" size={16} />
-              </button>
-            )}
-          </span>
-        );
-        if (sameAsCenter) {
-          return (
-            <div data-rail-owner className="flex h-full min-w-0 flex-1 items-center justify-between gap-2">
-              <h2
-                aria-current="page"
-                tabIndex={-1}
-                data-rail-owner-heading=""
-                className="min-w-0 truncate rounded text-[13px] font-medium text-ink-soft outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
-              >
-                {t(mode === 'cockpit' ? 'rail.mode.cockpit' : 'rail.ownerOverview')}
-              </h2>
-              {railHeaderControls}
-            </div>
-          );
-        }
-        return (
-          <RailCrumbs
-            forest={forest}
-            focusedAgentId={focusedAgentId}
-            fallbackLabel={focusedFallbackLabel}
-            onSelect={selectAgent}
-            close={railHeaderControls}
-          />
-        );
-      })()}
-      </div>
-
-      {/* One page per agent: NeedsYouList, ProfileHead, InspectorNow, then
-          ordered sections all scroll smoothly beneath the h-12 sticky bar. */}
-      <div key={focusedAgentId} className="rail-page flex flex-col pt-3">
-      {needsYouSection !== null ? <div className="pb-3">{needsYouSection}</div> : null}
-      <div data-rail-now-block className="space-y-3 pb-3">
-      <ProfileHead
-        sessionId={state.sessionId}
-        agentId={focusedAgentId}
-        label={focusedDisplayLabel}
-        fallbackModel={focusedNode?.model ?? subagent?.block?.model ?? (focusedAgentId === MAIN_AGENT_ID || isRoutedChildPage ? state.model : undefined)}
-        workspaceId={session?.workspace_id}
-        cwd={session?.metadata.cwd}
-        // Only the main is driven; a sub agent under it runs a real model.
-        externalDriver={focusedAgentId === MAIN_AGENT_ID ? externalDriver : undefined}
-      />
-      <InspectorNow
-        blocks={state.blocks}
-        busy={busy}
-        // With the session-wide block above, Now reports the agent's own
-        // run; its waiting state comes from the focused agent's own count.
-        pending={sessionPending === undefined ? pending : NO_PENDING}
-        listPending={sessionPending === undefined}
-        onReview={onReviewPending}
-        startedAt={runStartedAt}
-        subagent={(() => {
-          if (!show.subagentStory || subagent === undefined || subStatus === undefined) return undefined;
-          const rawBrief = subBlock?.description ?? subBlock?.instruction ?? focusedNode?.description;
-          const ownerLabel = (focusedNode?.label ?? '').trim();
-          const brief =
-            rawBrief !== undefined && rawBrief.trim() !== '' && rawBrief.trim() !== ownerLabel
-              ? rawBrief
-              : undefined;
-          return {
-            status: subStatus,
-            brief,
-            result: subBlock?.summary ?? focusedNode?.summary,
-            error: subBlock?.error ?? focusedNode?.error,
-            pendingCount: subagent.pendingInteractionCount,
-          };
-        })()}
-        actions={subagent === undefined || (!show.openAgent && !show.locateSpawn && promote === undefined) ? undefined : (() => {
-          const nowHasMark =
-            Math.max(sessionPending === undefined ? pending.length : 0, subagent.pendingInteractionCount) > 0
-            || busy
-            || subStatus === 'running'
-            || subStatus === 'background'
-            || subStatus === 'failed'
-            || subStatus === 'completed';
-          return (
-          <div data-subagent-context className={`-mt-1 ${nowHasMark ? 'ml-3 ' : ''}flex flex-wrap items-center gap-x-4 gap-y-1`}>
-            {show.openAgent ? (
-              <NowAction data-rail-open-agent="" icon="external" label={t('inspector.openAgent')} onClick={() => { onOpenSubagent(subagent.agentId); }} />
-            ) : null}
-            {show.locateSpawn && subagent.onJumpToSpawn !== undefined ? (
-              <NowAction data-rail-locate="" icon="arrowUp" label={t('inspector.locate')} onClick={subagent.onJumpToSpawn} />
-            ) : null}
-            {promote !== undefined ? (
-              <NowAction
-                data-rail-promote=""
-                icon="arrowUpRight"
-                label={t(promote.pending ? 'agent.promotePending' : (viewingBranch ? 'transcript.branch.promote' : 'agent.promote'))}
-                disabled={promote.pending}
-                onClick={promote.promote}
+        <div ref={railScrollRef} data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 [contain:layout_style]">
+          {/* Strict h-12 sticky bar aligning across all 3 panes. */}
+          <div data-rail-pinned className="sticky top-0 z-20 -mx-4 flex h-12 items-center justify-between gap-2 border-b border-hairline bg-panel px-4">
+            {sameAsCenter ? (
+              <div data-rail-owner className="flex h-full min-w-0 flex-1 items-center justify-between gap-2">
+                <h2
+                  aria-current="page"
+                  tabIndex={-1}
+                  data-rail-owner-heading=""
+                  className="sr-only"
+                >
+                  {t('rail.ownerOverview')}
+                </h2>
+                {renderTabStrip('h-full')}
+                {railHeaderControls}
+              </div>
+            ) : (
+              <RailCrumbs
+                forest={forest}
+                focusedAgentId={focusedAgentId}
+                fallbackLabel={focusedFallbackLabel}
+                onSelect={selectAgent}
+                close={railHeaderControls}
               />
-            ) : null}
+            )}
           </div>
-          );
-        })()}
-      />
-      </div>
-      {orderedSections.map(([key, section]) => (
-        <Fragment key={key}>{section}</Fragment>
-      ))}
-      </div>
-      </div>
 
-      {detailTask !== null && session !== undefined ? (
-        <TaskDetailModal
-          sessionId={session.id}
-          ownerAgentId={taskOwner}
-          task={detailTask}
-          onClose={() => { setDetailTask(null); }}
-          onCancelTask={onCancelTask}
+          {!sameAsCenter ? (
+            <div
+              data-rail-sub-tabs=""
+              className="sticky top-12 z-20 -mx-4 flex h-8 items-stretch border-b border-hairline bg-panel px-4"
+            >
+              {renderTabStrip('h-full')}
+            </div>
+          ) : null}
+
+          {activeTab === 'run' ? (
+            <div
+              key={`run:${focusedAgentId}`}
+              id={railPanelId('run')}
+              role="tabpanel"
+              aria-labelledby={railTabId('run')}
+              data-rail-panel="run"
+              className="rail-page flex flex-col pt-3"
+            >
+              {needsYouSection !== null ? <div className="pb-3">{needsYouSection}</div> : null}
+              <div data-rail-now-block className="space-y-3 pb-3">
+                <ProfileHead
+                  sessionId={state.sessionId}
+                  agentId={focusedAgentId}
+                  label={focusedDisplayLabel}
+                  fallbackModel={focusedNode?.model ?? subagent?.block?.model ?? (focusedAgentId === MAIN_AGENT_ID || isRoutedChildPage ? state.model : undefined)}
+                  workspaceId={session?.workspace_id}
+                  cwd={session?.metadata.cwd}
+                  externalDriver={focusedAgentId === MAIN_AGENT_ID ? externalDriver : undefined}
+                />
+                <InspectorNow
+                  blocks={state.blocks}
+                  busy={busy}
+                  pending={sessionPending === undefined ? pending : NO_PENDING}
+                  listPending={sessionPending === undefined}
+                  onReview={onReviewPending}
+                  startedAt={runStartedAt}
+                  subagent={(() => {
+                    if (!show.subagentStory || subagent === undefined || subStatus === undefined) return undefined;
+                    const rawBrief = subBlock?.description ?? subBlock?.instruction ?? focusedNode?.description;
+                    const ownerLabel = (focusedNode?.label ?? '').trim();
+                    const brief =
+                      rawBrief !== undefined && rawBrief.trim() !== '' && rawBrief.trim() !== ownerLabel
+                        ? rawBrief
+                        : undefined;
+                    return {
+                      status: subStatus,
+                      brief,
+                      result: subBlock?.summary ?? focusedNode?.summary,
+                      error: subBlock?.error ?? focusedNode?.error,
+                      pendingCount: subagent.pendingInteractionCount,
+                    };
+                  })()}
+                  actions={subagent === undefined || (!show.openAgent && !show.locateSpawn && promote === undefined) ? undefined : (() => {
+                    const nowHasMark =
+                      Math.max(sessionPending === undefined ? pending.length : 0, subagent.pendingInteractionCount) > 0
+                      || busy
+                      || subStatus === 'running'
+                      || subStatus === 'background'
+                      || subStatus === 'failed'
+                      || subStatus === 'completed';
+                    return (
+                      <div data-subagent-context className={`-mt-1 ${nowHasMark ? 'ml-3 ' : ''}flex flex-wrap items-center gap-x-4 gap-y-1`}>
+                        {show.openAgent ? (
+                          <NowAction data-rail-open-agent="" icon="external" label={t('inspector.openAgent')} onClick={() => { openAgentInRun(subagent.agentId); }} />
+                        ) : null}
+                        {show.locateSpawn && subagent.onJumpToSpawn !== undefined ? (
+                          <NowAction data-rail-locate="" icon="arrowUp" label={t('inspector.locate')} onClick={subagent.onJumpToSpawn} />
+                        ) : null}
+                        {promote !== undefined ? (
+                          <NowAction
+                            data-rail-promote=""
+                            icon="arrowUpRight"
+                            label={t(promote.pending ? 'agent.promotePending' : (viewingBranch ? 'transcript.branch.promote' : 'agent.promote'))}
+                            disabled={promote.pending}
+                            onClick={promote.promote}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+                />
+              </div>
+              {runSections.map(([key, section]) => (
+                <Fragment key={key}>{section}</Fragment>
+              ))}
+            </div>
+          ) : (
+            <div
+              key={`config:${focusedAgentId}`}
+              id={railPanelId('config')}
+              role="tabpanel"
+              aria-labelledby={railTabId('config')}
+              data-rail-panel="config"
+              className="rail-page flex flex-col pt-3"
+            >
+              <RailLiveTopology
+                busy={busy}
+                turnStartedAt={runStartedAt}
+                mainLabel={
+                  isMainAgent
+                    ? (focusedDisplayLabel === 'agent' || focusedDisplayLabel === MAIN_AGENT_ID
+                        ? t('rail.ownerMain')
+                        : focusedDisplayLabel)
+                    : focusedDisplayLabel
+                }
+                rootAgentId={focusedAgentId}
+                forest={deferredForest}
+                openBranches={sessionBranches.open}
+                runningSubagentTasks={runningSubagentTasks}
+                waitingAgentIds={waitingAgentIds}
+                pendingCount={topologyPendingCount}
+                onSwitchToRun={() => { setActiveTab('run'); }}
+                onOpenAgent={openAgentInRun}
+              />
+
+              {isMainAgent ? (
+                <>
+                  <div className="pb-3" data-rail-section="environment">
+                    <SessionEnvironmentControls sessionId={state.sessionId} />
+                  </div>
+                  <div
+                    data-rail-section="session-integrations"
+                    className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}
+                  >
+                    {session !== undefined ? (
+                      <div className="empty:hidden">
+                        <SessionChannelsRail
+                          sessionId={state.sessionId}
+                          sessionTitle={session.title}
+                          personaId={session.agent_config?.persona?.name ? session.agent_config.profile : undefined}
+                          personaName={session.agent_config?.persona?.name}
+                          onOpenSettings={() => { void navigate('/settings/notifications'); }}
+                        />
+                      </div>
+                    ) : null}
+                    <div className="empty:hidden" data-rail-section="cron">
+                      <SessionCronSection sessionId={state.sessionId} />
+                    </div>
+                    <div className="empty:hidden">
+                      <PersonaSettingsUpdate sessionId={state.sessionId} />
+                    </div>
+                    {memory !== undefined ? (
+                      <RailSection title={memory.title} count={memory.count} defaultOpen={false} data-inspector-memory="">
+                        {memory.content}
+                      </RailSection>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+
+              <div
+                data-rail-config-foundation=""
+                data-rail-section="foundation"
+                className={`${isMainAgent ? SECTION : 'space-y-0.5'} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-hooks-state=loading]]:hidden [&_[data-agent-panel-part=hooks]:not(:has([data-agent-hooks-section]:not([data-agent-hooks-state=loading])))]:hidden`}
+              >
+                <AgentPanelContainer key={`hooks:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} visible part="hooks" />
+                <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
+                {isMainAgent && session !== undefined ? (
+                  <RailSection
+                    title={t('rail.group.session')}
+                    summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
+                    defaultOpen={false}
+                    data-rail-group="session"
+                    data-inspector-session=""
+                  >
+                    <dl>
+                      <InspectorRow label={t('rail.directory')} title={session.metadata.cwd}><span className="truncate" style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}>{session.metadata.cwd}</span></InspectorRow>
+                      {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
+                      <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
+                    </dl>
+                  </RailSection>
+                ) : null}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {detailTask !== null && session !== undefined ? (
+          <TaskDetailModal
+            sessionId={session.id}
+            ownerAgentId={taskOwner}
+            task={detailTask}
+            onClose={() => { setDetailTask(null); }}
+            onCancelTask={onCancelTask}
+          />
+        ) : null}
+
+        <ConfirmDialog
+          open={terminateSnapshot !== null}
+          title={t('rail.terminateAllTitle')}
+          body={t('rail.terminateAllBody', { count: terminateSnapshot?.length ?? 0 })}
+          confirmLabel={t('rail.terminateAllConfirm')}
+          tone="danger"
+          busy={terminatingAll}
+          overlayId="confirm-terminate-subagents"
+          onConfirm={() => { void terminateAllSubagents(); }}
+          onCancel={() => { setTerminateSnapshot(null); }}
         />
-      ) : null}
-
-      <ConfirmDialog
-        open={terminateSnapshot !== null}
-        title={t('rail.terminateAllTitle')}
-        body={t('rail.terminateAllBody', { count: terminateSnapshot?.length ?? 0 })}
-        confirmLabel={t('rail.terminateAllConfirm')}
-        tone="danger"
-        busy={terminatingAll}
-        overlayId="confirm-terminate-subagents"
-        onConfirm={() => { void terminateAllSubagents(); }}
-        onCancel={() => { setTerminateSnapshot(null); }}
-      />
       </aside>
     </div>
   );

@@ -16,7 +16,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import type { AgentForest, ApprovalBlock, QuestionBlock, SessionController, SessionViewState } from '@kiki/session-core/session';
+import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID, snapshotSubagentAgentId } from '@kiki/session-core/session';
 import { panelTotalTokens, projectedAgentPanelMetrics, sumAgentTreeMetrics, UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import type { AgentPanelMetrics } from '@kiki/protocol';
@@ -25,9 +25,7 @@ import { useConnection, useOptionalControllerRegistry } from '../state/connectio
 import { useI18n } from '../i18n';
 import { useAutoCompact } from './useAutoCompact';
 import { InspectorOverview, type OverviewFigures } from './agent-panel/InspectorOverview';
-import { CockpitOverview } from './rail-variants/CockpitOverview';
 import { descendantIds } from './rail-variants/model';
-import type { RailMode } from './rail-variants/shell';
 import { agentUsageCacheHitRate, calculateCacheHitRate, aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 import type { AgentTokenUsage } from './agent-panel/types';
 import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
@@ -201,9 +199,6 @@ function usePanelSourceRevisions(
 }
 
 const noopSubscribe = (): (() => void) => () => {};
-const NO_BRANCHES: ReadonlySet<string> = new Set();
-const NO_PENDING_BLOCKS: readonly (ApprovalBlock | QuestionBlock)[] = [];
-const noopToggleBranch = () => {};
 
 /**
  * Live view state of the agent this panel belongs to, or `undefined` when no
@@ -263,33 +258,17 @@ function useAgentViewState(sessionId: string, agentId: string, visible: boolean)
  * usage slice). `all` keeps the historical single column for the preview
  * tab body.
  */
-export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'profile';
+export type AgentPanelPart = 'all' | 'work' | 'plan' | 'notes' | 'hooks' | 'usage' | 'overview' | 'profile';
 
-export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', renderOverview, onOpenAgent, expandedBranches, onToggleBranch, sessionPending, mainLabel, scopeRootId = MAIN_AGENT_ID, rootBusy, rootTurnStartedAt, rootLabel }: {
+export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', renderOverview, scopeRootId = MAIN_AGENT_ID }: {
   state: SessionViewState;
   forest: AgentForest;
   agentId: string;
   visible?: boolean;
   part?: AgentPanelPart;
-  /** The overview part's body: the standard figures or the cockpit instruments. */
-  overviewMode?: RailMode;
   renderOverview?: (body: React.ReactNode, scopeSwitch: React.ReactNode) => React.ReactNode;
-  /** Agents waiting on the user (cockpit lanes set them apart). */
-  waitingIds?: ReadonlySet<string>;
-  /** Cockpit lane rows open that agent. */
-  onOpenAgent?: (agentId: string) => void;
-  /** Cockpit graph: branches the reader opened, owned by the rail. */
-  expandedBranches?: ReadonlySet<string>;
-  onToggleBranch?: (branchId: string) => void;
-  /** Cockpit graph: every pending item in the session, any depth. */
-  sessionPending?: readonly (ApprovalBlock | QuestionBlock)[];
-  /** Cockpit graph: how the main agent's own lane reads. */
-  mainLabel?: string;
-  /** Tree root for overview/cockpit: `main` on the main session page, or the routed branch/subagent id on its own page. */
+  /** Tree root for overview: `main` on the main session page, or the routed branch/subagent id on its own page. */
   scopeRootId?: string;
-  rootBusy?: boolean;
-  rootTurnStartedAt?: number;
-  rootLabel?: string;
 }) {
   const connection = useConnection();
   const { klient } = connection;
@@ -316,6 +295,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const effectiveNotes = agentState?.todoNotes ?? (controller === undefined ? retainedNotes?.notes : undefined);
   const effectiveMeta = agentState?.todoNotesMeta ?? (controller === undefined ? retainedNotes?.meta : undefined);
   const readsTodos = visible && (part === 'all' || part === 'work');
+  const readsNotes = visible && (part === 'all' || part === 'work' || part === 'notes');
   const todoRead = useRef<ReturnType<SessionController['beginContentRead']> | undefined>(undefined);
   useEffect(() => {
     if (!readsTodos || controller === undefined) return;
@@ -331,10 +311,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   useEffect(() => {
     // A failed entity page stays on its retry button. Selecting the agent
     // must not start that read, or the next agent's retry is blamed for it.
-    if (readsTodos && agentState?.loaded && (todoCoverage?.hasMore || coldTodoUnchecked) && !todoEntitiesFailed) {
+    if ((readsTodos || readsNotes) && agentState?.loaded && (todoCoverage?.hasMore || coldTodoUnchecked) && !todoEntitiesFailed) {
       void controller?.loadTranscriptEntities(agentId, 'todo');
     }
-  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned, coldTodoUnchecked, todoEntitiesFailed]);
+  }, [controller, agentId, readsTodos, readsNotes, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned, coldTodoUnchecked, todoEntitiesFailed]);
   const todoRefs = agentState?.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [];
   const todoReadFailed = todoRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
     todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';
@@ -436,7 +416,6 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const data = part === 'all' ? catalog.data : capabilities.data;
   const profile = data?.profile;
   const [scope, setScope] = useState<'agent' | 'tree'>('agent');
-  const cockpit = part === 'overview' && overviewMode === 'cockpit';
   const isSessionRoot = scopeRootId === MAIN_AGENT_ID;
   const subtreeDescendants = useMemo(
     () => (agentId === MAIN_AGENT_ID ? [] : descendantIds(forest, agentId)),
@@ -444,11 +423,9 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   );
   const hasSubtree = subtreeDescendants.length > 0;
   const canShowTreeScope = agentId === MAIN_AGENT_ID || hasSubtree;
-  const showsTree = cockpit
-    ? (isSessionRoot || hasSubtree)
-    : (canShowTreeScope && (part === 'all' || part === 'usage' || (part === 'overview' && scope === 'tree')));
-  const isSessionTree = showsTree && isSessionRoot && (cockpit || agentId === MAIN_AGENT_ID);
-  const settleOwner = cockpit && isSessionRoot ? MAIN_AGENT_ID : agentId;
+  const showsTree = canShowTreeScope && (part === 'all' || part === 'usage' || (part === 'overview' && scope === 'tree'));
+  const isSessionTree = showsTree && isSessionRoot && agentId === MAIN_AGENT_ID;
+  const settleOwner = agentId;
   const spaceIdentity = `${connection.spaceKey}:${connection.scopeId}:${serverId}`;
   const metricsIdentity = `${spaceIdentity}:${state.sessionId}:${settleOwner}`;
   const headerMetrics = header.data?.metrics ?? EMPTY_PANEL_METRICS;
@@ -834,7 +811,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       notes={effectiveNotes} meta={effectiveMeta} status={agentState?.todoNotesStatus} loaded={loaded}
       viewStatus={notesStatus} loadError={agentState?.loadError}
       onRetry={controller !== undefined ? retryNotes : undefined}
-      beginRead={controller !== undefined && readsTodos ? beginNotesRead : undefined}
+      beginRead={controller !== undefined && readsNotes ? beginNotesRead : undefined}
       contentStatus={notesContentStatus} contentSignature={JSON.stringify(notesRefs)}
     />
   );
@@ -844,6 +821,27 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     ? <AgentHooksSection key={`hooks:${state.sessionId}:${agentId}`} sessionId={state.sessionId} agentId={agentId}
       refreshKey={JSON.stringify([visible, state.loaded, state.resyncing, state.busy, agentState.loaded, agentState.resyncing, active, agentState.profile, agentState.model])} />
     : null;
+  if (part === 'plan') {
+    return planSection === null ? null : (
+      <div data-agent-panel-container data-agent-panel-part="plan" className="empty:hidden">
+        {planSection}
+      </div>
+    );
+  }
+  if (part === 'notes') {
+    return (
+      <div data-agent-panel-container data-agent-panel-part="notes" className="empty:hidden">
+        {notesSection}
+      </div>
+    );
+  }
+  if (part === 'hooks') {
+    return hooksSection === null ? null : (
+      <div data-agent-panel-container data-agent-panel-part="hooks" className="empty:hidden">
+        {hooksSection}
+      </div>
+    );
+  }
   if (part === 'work') {
     return <div data-agent-panel-container data-agent-panel-part="work" className="space-y-4 empty:hidden">
       {todoSection}
@@ -908,50 +906,22 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     t, agentId, state, agentState: currentAgentState, forest, usage: displayUsage, metrics, ids, treeComplete, treeCounting, tree, treeCacheRate,
     compactPoint: autoCompact?.status?.tokens,
     canShowTreeScope,
-    cockpitUsesTree: isSessionRoot || hasSubtree,
   });
   if (part === 'overview') {
-    const cockpit = (
-      <CockpitOverview
-        sessionId={state.sessionId}
-        agentId={agentId}
-        rootAgentId={scopeRootId}
-        forest={forest}
-        blocks={state.blocks}
+    return <div data-agent-panel-container data-agent-panel-part="overview">
+      <InspectorOverview
         contextUsed={facts.contextUsed}
         contextLimit={facts.contextLimit}
         compactPoint={facts.compactPoint}
         figures={facts.figures}
-        treeFigures={facts.cockpitTreeFigures}
+        treeFigures={facts.treeFigures}
+        scope={scope}
+        onScope={setScope}
+        renderLayout={renderOverview}
+        startedAt={facts.startedAt}
         turns={facts.turns}
         toolCalls={facts.toolCalls}
-        onOpenAgent={onOpenAgent}
-        expandedBranches={expandedBranches ?? NO_BRANCHES}
-        onToggleBranch={onToggleBranch ?? noopToggleBranch}
-        sessionPending={sessionPending ?? NO_PENDING_BLOCKS}
-        mainBusy={rootBusy ?? state.busy}
-        turnStartedAt={rootTurnStartedAt ?? state.turnStartedAt}
-        mainLabel={rootLabel ?? mainLabel ?? t('rail.ownerMain')}
-        sessionTasks={state.tasks}
-        agentCounts={isSessionRoot ? state.agentCounts : undefined}
       />
-    );
-    return <div data-agent-panel-container data-agent-panel-part="overview" data-overview-mode={overviewMode}>
-      {overviewMode === 'cockpit' ? (renderOverview === undefined ? cockpit : renderOverview(cockpit, null)) : (
-        <InspectorOverview
-          contextUsed={facts.contextUsed}
-          contextLimit={facts.contextLimit}
-          compactPoint={facts.compactPoint}
-          figures={facts.figures}
-          treeFigures={facts.treeFigures}
-          scope={scope}
-          onScope={setScope}
-          renderLayout={renderOverview}
-          startedAt={facts.startedAt}
-          turns={facts.turns}
-          toolCalls={facts.toolCalls}
-        />
-      )}
       {settleError}
     </div>;
   }
@@ -1109,9 +1079,8 @@ function overviewFacts(input: {
   treeCacheRate: number | null;
   compactPoint: number | undefined;
   canShowTreeScope: boolean;
-  cockpitUsesTree: boolean;
 }) {
-  const { t, agentId, state, agentState, forest, usage, treeComplete, treeCounting, tree, canShowTreeScope, cockpitUsesTree } = input;
+  const { t, agentId, state, agentState, forest, usage, treeComplete, treeCounting, tree, canShowTreeScope } = input;
   const isMain = agentId === MAIN_AGENT_ID;
   const node = forest.byId[agentId];
   const contextUsed = agentState?.contextTokens ?? node?.contextTokens
@@ -1122,13 +1091,6 @@ function overviewFacts(input: {
   const contextLimit = reportedLimit !== undefined && reportedLimit > 0 ? reportedLimit : undefined;
   const figures = figuresFrom(usage, t);
   const treeFigures: OverviewFigures | undefined = canShowTreeScope ? {
-    costUsd: tree.totalCostUsd ?? undefined,
-    totalTokens: tree.totalTokens ?? undefined,
-    cacheRate: input.treeCacheRate ?? undefined,
-    incomplete: !treeComplete,
-    counting: treeCounting,
-  } : undefined;
-  const cockpitTreeFigures: OverviewFigures | undefined = cockpitUsesTree ? {
     costUsd: tree.totalCostUsd ?? undefined,
     totalTokens: tree.totalTokens ?? undefined,
     cacheRate: input.treeCacheRate ?? undefined,
@@ -1147,7 +1109,6 @@ function overviewFacts(input: {
       ? input.compactPoint : undefined,
     figures,
     treeFigures,
-    cockpitTreeFigures,
     startedAt,
     turns,
     toolCalls,

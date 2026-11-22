@@ -32,7 +32,7 @@ import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate, type I18nKey } from '@kiki/session-core/i18n';
 import { OptionalCapabilityRows, type OptionalCapabilityId } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
-import { ActivityFeed, CapabilitiesBlock, EnvironmentBlock, NeedsYouList, ProfileHead, profileEffortDisplay } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, EnvironmentBlock, NeedsYouList, ProfileHead, SessionEnvironmentControls, profileEffortDisplay } from './DefaultSections';
 
 const {
   readCapabilities,
@@ -1137,5 +1137,43 @@ describe('NeedsYouList subject truncation', () => {
     const pathEl = subject.querySelector('[data-path-text]')!;
     expect(pathEl.textContent).toContain('importantTargetFile.tsx');
     expect(subject.textContent).toContain('Edit');
+  });
+});
+
+describe('SessionEnvironmentControls & SessionPluginsPanel disabled folding', () => {
+  it('renders system capabilities and plugins directly unfolded, sorting enabled first and collapsing >2 disabled plugins', async () => {
+    getUsage.mockResolvedValue(pluginAnswer({
+      plugins: [
+        plugin({ id: 'off-1', displayName: 'Off One', effective: false }),
+        plugin({ id: 'on-1', displayName: 'Active One', effective: true }),
+        plugin({ id: 'off-2', displayName: 'Off Two', effective: false }),
+        plugin({ id: 'off-3', displayName: 'Off Three', effective: false }),
+      ],
+    }));
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <SessionEnvironmentControls sessionId="sess-1" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-environment]')).toBeNull();
+    expect(container.querySelector('[data-optional-capability="browser"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(1);
+    expect(container.querySelector('[data-rail-plugin="on-1"]')).not.toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('[data-rail-plugins-disabled-toggle]')!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('其余 3 个未启用');
+
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(4);
   });
 });

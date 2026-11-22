@@ -4,6 +4,7 @@ import { act, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '@kiki/protocol';
@@ -37,12 +38,19 @@ vi.mock('./persona/PersonaSettingsUpdate', () => ({
 }));
 
 vi.mock('./AgentPanelContainer', () => ({
-  AgentPanelContainer: ({ part = 'all', agentId, scopeRootId, overviewMode, renderOverview }: {
-    part?: string; agentId: string; scopeRootId?: string; overviewMode?: string;
+  AgentPanelContainer: ({ part = 'all', agentId, scopeRootId, visible, renderOverview }: {
+    part?: string; agentId: string; scopeRootId?: string; visible?: boolean;
     renderOverview?: (body: React.ReactNode, scopeSwitch: React.ReactNode) => React.ReactNode;
   }) => {
-    const body = <div data-panel-props={part} data-panel-agent={agentId} data-panel-scope-root={scopeRootId} data-panel-mode={overviewMode} />;
-    return renderOverview === undefined ? body : renderOverview(body, overviewMode === 'cockpit' ? null : <div data-usage-scope-switch />);
+    const body = (
+      <div
+        data-panel-props={part}
+        data-panel-agent={agentId}
+        data-panel-scope-root={scopeRootId}
+        data-panel-visible={visible === undefined ? undefined : String(visible)}
+      />
+    );
+    return renderOverview === undefined ? body : renderOverview(body, <div data-usage-scope-switch />);
   },
 }));
 
@@ -151,26 +159,29 @@ async function renderRail({
   document.body.append(container);
   const root = createRoot(container);
   mounts.push({ container, root });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
-      <MemoryRouter>
-        <I18nProvider>
-          <RightRail
-            state={{ ...createViewState('sess-1'), tasks: (empty ? [] : stateTasks) ?? tasks, ...stateOverrides }}
-            forest={agentForest ?? (empty ? buildAgentForest([], [{ agentId: 'main', name: 'Main' }]) : forest)}
-            selectedAgentId={subagent?.agentId}
-            subagent={subagent}
-            taskOwnerAgentId={ownerAgentId}
-            onCancelTask={() => {}}
-            onStopAgentTask={async () => {}}
-            onOpenSubagent={onOpenSubagent ?? (() => {})}
-            onClose={onClose}
-            onInspectMain={onInspectMain}
-            sessionPending={sessionPending}
-            onResolveApproval={onResolveApproval}
-          />
-        </I18nProvider>
-      </MemoryRouter>,
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{ ...createViewState('sess-1'), tasks: (empty ? [] : stateTasks) ?? tasks, ...stateOverrides }}
+              forest={agentForest ?? (empty ? buildAgentForest([], [{ agentId: 'main', name: 'Main' }]) : forest)}
+              selectedAgentId={subagent?.agentId}
+              subagent={subagent}
+              taskOwnerAgentId={ownerAgentId}
+              onCancelTask={() => {}}
+              onStopAgentTask={async () => {}}
+              onOpenSubagent={onOpenSubagent ?? (() => {})}
+              onClose={onClose}
+              onInspectMain={onInspectMain}
+              sessionPending={sessionPending}
+              onResolveApproval={onResolveApproval}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
   });
   return container;
@@ -264,127 +275,258 @@ it('treats a historical running card as unknown when the session says nothing is
   expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Status unknown');
 });
 
-describe('RightRail fixed and switchable parts', () => {
-  /** Every rail part outside the overview block, as data hooks, in page order. */
-  function fixedParts(rail: Element) {
-    const hooks = ['data-rail-owner', 'data-rail-profile-head', 'data-inspector-now', 'data-inspector-needs-you', 'data-inspector-agents', 'data-rail-capabilities'];
-    return hooks.filter((hook) => {
-      const node = rail.querySelector(`[${hook}]`);
-      return node !== null && node.closest('[data-rail-switchable]') === null;
+describe('RightRail Run | Config tabs and decluttered layout', () => {
+  async function selectTab(rail: Element, tab: 'run' | 'config') {
+    await act(async () => {
+      rail.querySelector<HTMLButtonElement>(`[data-rail-tab="${tab}"]`)!.click();
     });
   }
-  async function choose(rail: Element, mode: 'default' | 'cockpit') {
-    await act(async () => { rail.querySelector<HTMLButtonElement>(`[data-rail-mode="${mode}"]`)!.click(); });
-  }
-  afterEach(() => { localStorage.removeItem('kiki.railMode'); });
 
-  it('keeps every fixed part in both modes', async () => {
+  it('renders Run | Config hairline tabs in h-12 without cockpit switch and keeps Run reading order', async () => {
     const rail = await renderRail({ sessionPending: [pendingApproval] });
-    // What the reader checks most comes first and open: what waits (pinned),
-    // the figures, the work in hand, the team; the schedule and the folded
-    // reference tail follow.
-    const standardReadingOrder = [
+    // Cockpit mode switch is completely gone.
+    expect(rail.querySelector('[data-rail-mode-switch]')).toBeNull();
+    expect(rail.querySelector('[data-rail-mode]')).toBeNull();
+    const runTab = rail.querySelector<HTMLButtonElement>('[data-rail-pinned] [data-rail-tab="run"]')!;
+    const configTab = rail.querySelector<HTMLButtonElement>('[data-rail-pinned] [data-rail-tab="config"]')!;
+    expect(runTab).not.toBeNull();
+    expect(configTab).not.toBeNull();
+    expect(runTab.getAttribute('aria-selected')).toBe('true');
+    expect(configTab.getAttribute('aria-selected')).toBe('false');
+
+    const runReadingOrder = [
       '[data-inspector-needs-you]',
+      '[data-rail-now-block]',
       '[data-rail-agent-panel-slot]',
       '#rail-todos',
       '[data-tasks-scroll]',
       '[data-inspector-agents]',
-      '[data-rail-session-cron]',
       '[data-inspector-tail]',
     ].map((selector) => rail.querySelector(selector));
-    expect(standardReadingOrder.every((node) => node !== null)).toBe(true);
+    expect(runReadingOrder.every((node) => node !== null)).toBe(true);
     expect(rail.querySelector('[data-rail-pinned] [data-rail-pending-jump]')?.textContent).toContain('1');
     expect(rail.querySelector('[data-rail-pinned] [data-inspector-needs-you]')).toBeNull();
     expect(rail.querySelector('.rail-page [data-inspector-needs-you]')).not.toBeNull();
-    // The overview follows the page; the pinned block keeps only the h-12 bar.
     expect(rail.querySelector('[data-rail-pinned] [data-rail-agent-panel-slot]')).toBeNull();
-    // The team reads without a click.
     expect(rail.querySelector('[data-inspector-agents] [data-agent-tree]')).not.toBeNull();
-    // Every scrolling section parts from the one above by a hairline.
+    // Todos section holds only RailTodos + plan (notes live in bottom history tail; hooks live in Config).
+    expect(rail.querySelector('#rail-todos [data-panel-props="plan"]')).not.toBeNull();
+    expect(rail.querySelector('#rail-todos [data-panel-props="notes"]')).toBeNull();
+    expect(rail.querySelector('#rail-todos [data-panel-props="hooks"]')).toBeNull();
+    expect(rail.querySelector('[data-inspector-tail] [data-panel-props="notes"]')).not.toBeNull();
+    // Session config items (cron, persona, controls) stay out of Run tab.
+    expect(rail.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(rail.querySelector('[data-rail-persona-settings]')).toBeNull();
+
     for (const selector of ['[data-rail-agent-panel-slot]', '#rail-todos', '[data-inspector-tail]']) {
       expect(rail.querySelector(selector)?.classList.contains('border-t')).toBe(true);
     }
-    for (let index = 1; index < standardReadingOrder.length; index += 1) {
-      const before = standardReadingOrder[index - 1]!;
-      const after = standardReadingOrder[index]!;
+    for (let index = 1; index < runReadingOrder.length; index += 1) {
+      const before = runReadingOrder[index - 1]!;
+      const after = runReadingOrder[index]!;
       expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     }
-    const standard = fixedParts(rail);
-    expect(standard).toEqual(['data-rail-owner', 'data-rail-profile-head', 'data-inspector-now', 'data-inspector-needs-you', 'data-inspector-agents']);
-    await choose(rail, 'cockpit');
-    expect(fixedParts(rail)).toEqual(standard);
   });
 
-  it('widens only the cockpit rail and restores its standard width without changing layout preferences', async () => {
-    const rail = await renderRail();
-    const aside = rail.querySelector<HTMLElement>('[data-session-rail]')!;
-    const before = aside.style.getPropertyValue('--kiki-rail-width');
-    const saved = localStorage.getItem('kiki.layout');
-    for (let repeat = 0; repeat < 3; repeat += 1) {
-      await choose(rail, 'cockpit');
-      expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
-      expect(aside.style.getPropertyValue('--kiki-rail-width')).toBe('480px');
-      expect(rail.querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('cockpit');
-      await choose(rail, 'default');
-      expect(aside.style.getPropertyValue('--kiki-rail-width')).toBe(before);
-      expect(localStorage.getItem('kiki.layout')).toBe(saved);
+  it('demotes settled background tasks into the bottom history fold when no task is running', async () => {
+    const settledOnly: Task[] = [
+      {
+        id: 'bg-done-1', session_id: 'sess-1', kind: 'bash', description: 'Finished build',
+        status: 'completed', created_at: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+    const rail = await renderRail({ stateTasks: settledOnly });
+    const tasksSection = rail.querySelector('[data-rail-section="tasks"]')!;
+    const tail = rail.querySelector('[data-inspector-tail]')!;
+    expect(tasksSection).not.toBeNull();
+    expect(tail.contains(tasksSection)).toBe(true);
+    expect(tasksSection.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(tasksSection.textContent).toContain('1 settled');
+  });
+
+  it('switches to Config tab with live topology strip when active, 0px when idle, and switches back via pending jump', async () => {
+    const onOpenSubagent = vi.fn();
+    const activeForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Kiki', status: 'running', busy: true },
+      { agentId: 'branch-a', parentAgentId: 'main', name: 'branch-a', label: 'Refactor rail', isBranch: true, status: 'running', busy: true },
+      { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'running', busy: true },
+      { agentId: 'agent-2', parentAgentId: 'main', name: 'Reviewer', status: 'suspended', busy: false },
+    ]);
+    const rail = await renderRail({
+      agentForest: activeForest,
+      sessionPending: [pendingApproval],
+      onOpenSubagent,
+      stateOverrides: { busy: true },
+    });
+
+    await selectTab(rail, 'config');
+    expect(rail.querySelector('[data-rail-panel="config"]')).not.toBeNull();
+    expect(rail.querySelector('[data-rail-config-topology]')).not.toBeNull();
+    expect(rail.querySelector('[data-topology-connectors] svg, svg[data-topology-connectors]')).not.toBeNull();
+    expect(rail.querySelector('[data-topology-node="branch-a"]')?.getAttribute('data-topology-kind')).toBe('branch');
+    expect(rail.querySelector('[data-topology-node="agent-1"]')?.getAttribute('data-topology-kind')).toBe('subagent');
+    expect(rail.querySelector('[data-rail-session-cron]')).not.toBeNull();
+    expect(rail.querySelector('[data-rail-persona-settings]')).not.toBeNull();
+    expect(rail.querySelector('[data-rail-config-foundation] [data-panel-props="hooks"]')).not.toBeNull();
+
+    // Clicking a topology node opens that agent and switches back to Run.
+    await act(async () => {
+      rail.querySelector<HTMLButtonElement>('[data-topology-node="branch-a"]')!.click();
+    });
+    expect(onOpenSubagent).toHaveBeenCalledWith('branch-a');
+    expect(rail.querySelector('[data-rail-panel="run"]')).not.toBeNull();
+
+    // Pending jump button from Config switches back to Run.
+    await selectTab(rail, 'config');
+    expect(rail.querySelector('[data-rail-panel="config"]')).not.toBeNull();
+    await act(async () => {
+      rail.querySelector<HTMLButtonElement>('[data-rail-pending-jump]')!.click();
+    });
+    expect(rail.querySelector('[data-rail-panel="run"]')).not.toBeNull();
+
+    // Idle session renders zero topology strip in Config.
+    const idleRail = await renderRail({ empty: true, stateOverrides: { busy: false } });
+    await selectTab(idleRail, 'config');
+    expect(idleRail.querySelector('[data-rail-config-topology]')).toBeNull();
+  });
+
+  it('caps visible live topology nodes to 4 with a +N overflow node that returns to Run', async () => {
+    const manyForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Kiki', status: 'running', busy: true },
+      ...Array.from({ length: 6 }, (_, i) => ({
+        agentId: `worker-${i + 1}`,
+        parentAgentId: 'main',
+        name: `Worker ${i + 1}`,
+        status: 'running' as const,
+        busy: true,
+      })),
+    ]);
+    const rail = await renderRail({ agentForest: manyForest, stateTasks: [], stateOverrides: { busy: true } });
+    await selectTab(rail, 'config');
+    expect(rail.querySelectorAll('[data-topology-node]')).toHaveLength(4);
+    const overflow = rail.querySelector<HTMLButtonElement>('[data-topology-overflow="2"]')!;
+    expect(overflow).not.toBeNull();
+    await act(async () => { overflow.click(); });
+    expect(rail.querySelector('[data-rail-panel="run"]')).not.toBeNull();
+  });
+
+  it('isolates session-wide settings to main agent and renders compact sub-tabs when peeking a subagent', async () => {
+    const peeked = await renderRail({ subagent: context, onInspectMain: vi.fn() });
+    expect(peeked.querySelector('[data-rail-pinned] [data-rail-owner]')).not.toBeNull();
+    expect(peeked.querySelector('[data-rail-sub-tabs] [data-rail-tab="run"]')).not.toBeNull();
+    expect(peeked.querySelector('[data-rail-sub-tabs] [data-rail-tab="config"]')).not.toBeNull();
+
+    await selectTab(peeked, 'config');
+    expect(peeked.querySelector('[data-rail-section="environment"]')).toBeNull();
+    expect(peeked.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(peeked.querySelector('[data-rail-persona-settings]')).toBeNull();
+    expect(peeked.querySelector('[data-inspector-session]')).toBeNull();
+    expect(peeked.querySelector('[data-rail-config-foundation] [data-panel-props="hooks"]')).not.toBeNull();
+  });
+
+  it('re-attaches IntersectionObserver across Run -> Config -> Run so panelSlot.visible recovers', async () => {
+    const originalIO = globalThis.IntersectionObserver;
+    const instances: Array<{
+      cb: IntersectionObserverCallback;
+      observed: Element[];
+      disconnected: boolean;
+    }> = [];
+    class FakeIntersectionObserver {
+      readonly cb: IntersectionObserverCallback;
+      readonly observed: Element[] = [];
+      disconnected = false;
+      constructor(cb: IntersectionObserverCallback) {
+        this.cb = cb;
+        instances.push(this);
+      }
+      observe(el: Element) { this.observed.push(el); }
+      unobserve() {}
+      disconnect() { this.disconnected = true; }
+      takeRecords() { return []; }
+    }
+    globalThis.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+    try {
+      const rail = await renderRail();
+      expect(instances).toHaveLength(1);
+      const firstObserver = instances[0]!;
+      await act(async () => {
+        firstObserver.cb([{ isIntersecting: true } as IntersectionObserverEntry], firstObserver as unknown as IntersectionObserver);
+      });
+      expect(rail.querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-visible')).toBe('true');
+
+      await selectTab(rail, 'config');
+      expect(firstObserver.disconnected).toBe(true);
+
+      await selectTab(rail, 'run');
+      expect(instances).toHaveLength(2);
+      const secondObserver = instances[1]!;
+      expect(secondObserver.observed).toHaveLength(1);
+      await act(async () => {
+        secondObserver.cb([{ isIntersecting: true } as IntersectionObserverEntry], secondObserver as unknown as IntersectionObserver);
+      });
+      expect(rail.querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-visible')).toBe('true');
+      expect(rail.querySelector('[data-panel-props="notes"]')?.getAttribute('data-panel-visible')).toBe('true');
+    } finally {
+      globalThis.IntersectionObserver = originalIO;
     }
   });
 
-  it('exits cockpit with the close action and keeps the standard rail open', async () => {
-    const onClose = vi.fn();
-    const rail = await renderRail({ onClose });
-    await choose(rail, 'cockpit');
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[aria-label="Exit cockpit"]')!.click(); });
-    expect(localStorage.getItem('kiki.railMode')).toBe('default');
-    expect(onClose).not.toHaveBeenCalled();
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[aria-label="Hide panel"]')!.click(); });
-    expect(onClose).toHaveBeenCalledOnce();
+  it('counts only actively running subagents in topology summary without double-counting waiting ones', async () => {
+    const mixedForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Kiki', status: 'running', busy: true },
+      { agentId: 'w1', parentAgentId: 'main', name: 'Waiter 1', status: 'suspended', busy: false },
+      { agentId: 'w2', parentAgentId: 'main', name: 'Waiter 2', status: 'suspended', busy: false },
+      { agentId: 'r1', parentAgentId: 'main', name: 'Runner 1', status: 'running', busy: true },
+    ]);
+    const approvals: ApprovalBlock[] = [
+      { ...pendingApproval, id: 'a1', originAgentId: 'w1' },
+      { ...pendingApproval, id: 'a2', originAgentId: 'w2' },
+    ];
+    const rail = await renderRail({
+      agentForest: mixedForest,
+      stateTasks: [],
+      stateOverrides: { busy: true },
+      sessionPending: approvals,
+    });
+    await selectTab(rail, 'config');
+    const summary = rail.querySelector('[data-topology-summary]')?.textContent ?? '';
+    expect(summary).toContain('2');
+    expect(summary).toContain('1 Running');
+    expect(summary).not.toContain('3 Running');
   });
 
-  it('switches only the overview block, from a switch in the rail head', async () => {
-    const rail = await renderRail();
-    const switcher = rail.querySelector('[data-rail-mode-switch]')!;
-    // The switch heads the rail (always visible); the overview head carries
-    // no switch of its own, and the block below is still the only thing that
-    // follows the mode.
-    expect(switcher.closest('[data-rail-pinned]')).not.toBeNull();
-    expect(switcher.closest('[data-rail-owner]')).not.toBeNull();
-    expect(rail.querySelector('[data-rail-switchable-head] [data-rail-mode-switch]')).toBeNull();
-    const zone = () => rail.querySelector('[data-rail-switchable]')!;
-    // The cockpit deliberately reshapes the rail's own chapters (the roster
-    // opens full there), so what has to hold across the switch is the SET of
-    // chapters outside the switchable zone, not their sequence or inner
-    // state. Inside the zone is the only content the mode is allowed to swap.
-    const outside = () => [...rail.querySelectorAll('[data-agent-panel-scroll] > .rail-page > *')]
-      .filter((node) => !node.hasAttribute('data-rail-switchable'))
-      .map((node) => node.querySelector('[data-inspector-agents], [data-rail-capabilities], [data-rail-cron], [data-inspector-session]')?.tagName !== undefined ? node.className : node.className)
-      .sort();
-    expect(zone().getAttribute('data-rail-switchable')).toBe('default');
-    expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('default');
-    const before = outside();
-    await choose(rail, 'cockpit');
-    expect(zone().getAttribute('data-rail-switchable')).toBe('cockpit');
-    expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('cockpit');
-    expect(outside()).toEqual(before);
-    expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
+  it('scopes topology pendingCount to the peeked subagent so idle children collapse to 0px', async () => {
+    const idleChildForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Kiki', status: 'running', busy: true },
+      { agentId: 'agent-1', parentAgentId: 'main', name: 'Done Worker', status: 'completed', busy: false },
+      { agentId: 'other-agent', parentAgentId: 'main', name: 'Other Waiter', status: 'suspended', busy: false },
+    ]);
+    const otherApproval: ApprovalBlock[] = [
+      { ...pendingApproval, id: 'a-other', originAgentId: 'other-agent' },
+    ];
+    const idleSubagent: SubagentRailContext = {
+      ...context,
+      pendingInteractionCount: 0,
+      block: { ...context.block!, status: 'completed' },
+    };
+    const rail = await renderRail({
+      agentForest: idleChildForest,
+      subagent: idleSubagent,
+      stateTasks: [],
+      sessionPending: otherApproval,
+      onInspectMain: vi.fn(),
+    });
+    await selectTab(rail, 'config');
+    expect(rail.querySelector('[data-rail-config-topology]')).toBeNull();
   });
 
-  it('keeps the overview flat in both modes without removing the chapter spacing', async () => {
+  it('keeps the overview flat and places the scope switch beside its title and usage link', async () => {
     const rail = await renderRail();
-    for (const mode of ['default', 'cockpit'] as const) {
-      await choose(rail, mode);
-      const well = rail.querySelector('[data-rail-overview-well]')!;
-      expect(well.className).not.toMatch(/(?:^|\s)(?:rounded|bg|border|ring|shadow)(?:-|\s|$)/);
-      expect(well.querySelector('#rail-overview-title')).not.toBeNull();
-      expect(well.querySelector<HTMLElement>('[data-panel-props="overview"]')?.dataset['panelMode']).toBe(mode);
-      // The section itself carries the page's one hairline, in both modes.
-      expect(well.closest('[data-rail-switchable]')?.classList.contains('border-t')).toBe(true);
-    }
-  });
+    const well = rail.querySelector('[data-rail-overview-well]')!;
+    expect(well.className).not.toMatch(/(?:^|\s)(?:rounded|bg|border|ring|shadow)(?:-|\s|$)/);
+    expect(well.querySelector('#rail-overview-title')).not.toBeNull();
+    expect(well.closest('[data-rail-agent-panel-slot]')?.classList.contains('border-t')).toBe(true);
 
-  it('places the overview scope beside its title and usage link, outside the controlled body', async () => {
-    const rail = await renderRail();
     const head = rail.querySelector('[data-rail-switchable-head]')!;
     expect(head.querySelector('#rail-overview-title')).not.toBeNull();
     expect(head.querySelector('[data-rail-open-usage]')).not.toBeNull();
@@ -393,58 +535,23 @@ describe('RightRail fixed and switchable parts', () => {
     expect(head.classList.contains('flex-nowrap')).toBe(true);
     expect(head.querySelector('#rail-overview-title')?.classList.contains('whitespace-nowrap')).toBe(true);
     expect(rail.querySelector('#rail-overview-body [data-usage-scope-switch]')).toBeNull();
-    await choose(rail, 'cockpit');
-    expect(rail.querySelector('[data-rail-switchable-head] #rail-overview-title')).not.toBeNull();
-    expect(rail.querySelector('[data-usage-scope-switch]')).toBeNull();
-  });
-
-  it('lifts the overview into view only when cockpit is chosen with the block outside the viewport', async () => {
-    const rail = await renderRail();
-    const slot = rail.querySelector<HTMLElement>('[data-rail-agent-panel-slot]')!;
-    const scroller = rail.querySelector<HTMLElement>('[data-agent-panel-scroll]')!;
-    // jsdom has no scrollIntoView; the rail guards for that and calls it only
-    // when the block actually sits outside the rail's scroll viewport.
-    const scrollIntoView = vi.fn();
-    Object.assign(slot, { scrollIntoView });
-    // Zero rects in jsdom read as fully visible: choosing cockpit does not scroll.
-    await choose(rail, 'cockpit');
-    expect(scrollIntoView).not.toHaveBeenCalled();
-    // The slot is one node in both modes; give it a rect below the fold and
-    // the scroller a viewport.
-    const rect = (top: number, bottom: number) =>
-      ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
-    expect(rail.querySelector('[data-rail-agent-panel-slot]')).toBe(slot);
-    const slotRect = vi.spyOn(slot, 'getBoundingClientRect').mockReturnValue(rect(1200, 1500));
-    const scrollerRect = vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue(rect(0, 900));
-    // Choosing the standard mode never scrolls…
-    await choose(rail, 'default');
-    expect(scrollIntoView).not.toHaveBeenCalled();
-    // …but with the block below the fold, choosing cockpit lifts it into view.
-    await choose(rail, 'cockpit');
-    expect(scrollIntoView.mock.calls.length).toBe(1);
-    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
-    slotRect.mockRestore();
-    scrollerRect.mockRestore();
   });
 
   it('renders the main agent and a subagent with the same rail, each from its own agent', async () => {
     const main = await renderRail();
     const child = await renderRail({ subagent: context });
-    const shape = (rail: Element) => ['[data-rail-owner]', '[data-rail-now-block]', '#rail-todos', '[data-rail-switchable]', '[data-rail-capabilities]']
+    const shape = (rail: Element) => ['[data-rail-owner]', '[data-rail-now-block]', '#rail-todos', '[data-rail-agent-panel-slot]']
       .map((selector) => rail.querySelectorAll(selector).length);
-    // One component: the page is built from the same blocks. The capabilities
-    // fold renders nothing here because these fixtures have no connection.
-    expect(shape(child)).toEqual([1, 1, 1, 1, 0]);
+    expect(shape(child)).toEqual([1, 1, 1, 1]);
     expect(shape(main)).toEqual(shape(child));
     expect(main.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent')).toBe('main');
     expect(child.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent')).toBe('agent-1');
-    for (const part of ['work', 'overview']) {
+    for (const part of ['plan', 'notes', 'overview']) {
       expect(main.querySelector(`[data-panel-props="${part}"]`)?.getAttribute('data-panel-agent')).toBe('main');
       expect(child.querySelector(`[data-panel-props="${part}"]`)?.getAttribute('data-panel-agent')).toBe('agent-1');
     }
     expect(main.querySelector('[data-rail-profile-head]')?.textContent).toBe('Main');
     expect(child.querySelector('[data-rail-profile-head]')?.textContent).toBe('Researcher');
-    // Main-only and subagent-only parts follow railVisibility, not a second component.
     expect(main.querySelector('[data-terminate-all-subagents]')).not.toBeNull();
     expect(child.querySelector('[data-terminate-all-subagents]')).toBeNull();
     expect(main.querySelector('[data-rail-locate]')).toBeNull();
@@ -478,7 +585,7 @@ describe('RightRail shared chapters', () => {
       const rail = await renderRail();
       // Todo / plan read live state only and mount at once; the overview
       // (which starts the capability read) waits for its slot to scroll in.
-      expect(rail.querySelector('[data-panel-props="work"]')).not.toBeNull();
+      expect(rail.querySelector('[data-panel-props="plan"]')).not.toBeNull();
       expect(rail.querySelector('[data-panel-props="overview"]')).toBeNull();
       expect(rail.querySelectorAll('#rail-overview-title')).toHaveLength(1);
       expect(rail.querySelector('[data-rail-switchable-head] [data-rail-open-usage]')).not.toBeNull();
@@ -594,14 +701,16 @@ describe('RightRail shared chapters', () => {
     // (overview), then the record chapter with the agent's work and its tasks.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
-    // Session-level cron stays on main; a routed subagent page keeps its own record only.
+    // Session-level cron lives in main's Config tab and never leaks to a subagent rail.
+    expect(main.querySelector('[data-rail-session-cron]')).toBeNull();
+    await act(async () => { main.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click(); });
     expect(main.querySelector('[data-rail-session-cron]')).not.toBeNull();
     expect(scroll.querySelector('[data-rail-session-cron]')).toBeNull();
     const order = [
       scroll.querySelector('[data-rail-profile-head]'),
       now,
       scroll.querySelector('[data-rail-agent-panel-slot]'),
-      scroll.querySelector('[data-panel-props="work"]'),
+      scroll.querySelector('[data-panel-props="plan"]'),
       scroll.querySelector('[data-tasks-scroll]'),
     ];
     expect(order.every((node) => node !== null)).toBe(true);
@@ -650,23 +759,21 @@ describe('RightRail shared chapters', () => {
   });
 
   it('leads with the profile head and folds the session row without a fold inside it', async () => {
-    const rail = await renderRail({
-      subagent: context,
-      stateOverrides: {
-        session: {
-          id: 'sess-1',
-          workspace_id: 'ws-1',
-          metadata: { cwd: 'C:/work/workshop' },
-          agent_config: {},
-          message_count: 3,
-          updated_at: '2026-01-01T00:00:00.000Z',
-        } as NonNullable<SessionViewState['session']>,
-      },
-    });
-    const nowBlock = rail.querySelector('[data-rail-now-block]')!;
+    const sessionFixture = {
+      id: 'sess-1',
+      workspace_id: 'ws-1',
+      metadata: { cwd: 'C:/work/workshop' },
+      agent_config: {},
+      message_count: 3,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    } as NonNullable<SessionViewState['session']>;
+    const mainRail = await renderRail({ stateOverrides: { session: sessionFixture } });
+    const nowBlock = mainRail.querySelector('[data-rail-now-block]')!;
     expect(nowBlock.firstElementChild?.hasAttribute('data-rail-profile-head')).toBe(true);
-    expect(rail.querySelector('[data-inspector-setup]')).toBeNull();
-    const session = rail.querySelector('[data-inspector-session]')!;
+    expect(mainRail.querySelector('[data-inspector-setup]')).toBeNull();
+    expect(mainRail.querySelector('[data-inspector-session]')).toBeNull();
+    await act(async () => { mainRail.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click(); });
+    const session = mainRail.querySelector('[data-inspector-session]')!;
     expect(session).not.toBeNull();
     const button = session.querySelector<HTMLButtonElement>(':scope > div > button[aria-expanded="false"]')!;
     expect(button.textContent).toContain('Session');
@@ -674,6 +781,11 @@ describe('RightRail shared chapters', () => {
     await act(async () => { button.click(); });
     expect(session.querySelectorAll('[aria-expanded]')).toHaveLength(1);
     expect(session.querySelector('dl')?.textContent).toContain('C:/work/workshop');
+
+    // Session-scoped directory row must not leak onto a subagent rail.
+    const childRail = await renderRail({ subagent: context, stateOverrides: { session: sessionFixture } });
+    await act(async () => { childRail.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click(); });
+    expect(childRail.querySelector('[data-inspector-session]')).toBeNull();
   });
 
   it('keeps the resident overview in every state, idle and empty included', async () => {
@@ -1629,7 +1741,7 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     expect(openPluginPanel).not.toHaveBeenCalled();
   });
 
-  it('scopes a routed Branch page Right Rail to the branch itself in both default and cockpit modes and shows subagents spawned by the branch', async () => {
+  it('scopes a routed Branch page Right Rail to the branch itself and shows subagents spawned by the branch', async () => {
     const branchForest = buildAgentForest([], [
       { agentId: 'main', name: 'Main', status: 'idle', busy: false },
       {
@@ -1721,15 +1833,13 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     expect(container.querySelector('[data-inspector-agents]')).not.toBeNull();
     expect(container.textContent).toContain('Independent review');
 
-    // Switching to cockpit keeps branch-281 as the overview/scope root rather than falling back to main
+    // Switching to Config tab on a routed branch keeps session-wide controls hidden
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-rail-mode="cockpit"]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click();
     });
-    const overviewCockpit = container.querySelector('[data-panel-props="overview"]')!;
-    expect(overviewCockpit.getAttribute('data-panel-mode')).toBe('cockpit');
-    expect(overviewCockpit.getAttribute('data-panel-agent')).toBe('branch-281');
-    expect(overviewCockpit.getAttribute('data-panel-scope-root')).toBe('branch-281');
-    expect(container.querySelector('[data-rail-section="branches"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-persona-settings]')).toBeNull();
+    expect(container.querySelector('[data-rail-config-topology]')).not.toBeNull();
   });
 
   it('aligns Agents header and ended group counts when session branches are excluded from agentCounts', async () => {

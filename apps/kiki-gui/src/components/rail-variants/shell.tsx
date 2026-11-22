@@ -1,10 +1,10 @@
 /**
- * Shared mode switch, agent state marks and in-place approval actions.
- * The right-panel mode is a device preference kept in `kiki.railMode`;
- * with nothing stored the conversation opens in standard mode.
+ * Shared rail state marks, focus ring, and in-place approval actions.
+ * `useRailMode` remains as a fixed `'default'` compatibility seam for callers
+ * outside this slice while the inspector runs purely on Run | Config tabs.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
@@ -13,68 +13,17 @@ import { pendingId } from './model';
 
 export type RailMode = 'default' | 'cockpit';
 
-const STORAGE_KEY = 'kiki.railMode';
-const listeners = new Set<(mode: RailMode) => void>();
+const NOOP_CHOOSE = (_next: RailMode) => {};
 
-function readStored(): string | null {
-  try {
-    return localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-/** [mode, choose]; anything but a stored `cockpit` is the default mode. */
+/** Compatibility seam: the cockpit mode is retired and the rail always reports `'default'`. */
 export function useRailMode(): [RailMode, (next: RailMode) => void] {
-  const [stored, setStored] = useState(readStored);
-  const mode: RailMode = stored === 'cockpit' ? 'cockpit' : 'default';
-  useEffect(() => {
-    const sync = (next: RailMode) => { setStored(next); };
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === STORAGE_KEY || event.key === null) setStored(readStored());
-    };
-    listeners.add(sync);
-    window.addEventListener('storage', onStorage);
-    return () => { listeners.delete(sync); window.removeEventListener('storage', onStorage); };
-  }, []);
-  const choose = useCallback((next: RailMode) => {
-    try { localStorage.setItem(STORAGE_KEY, next); } catch { /* storage unavailable: this window only */ }
-    setStored(next);
-    for (const listener of listeners) listener(next);
-  }, []);
-  return [mode, choose];
+  return ['default', NOOP_CHOOSE];
 }
 
 /** Live media query, for surfaces the rail hides below a width. */
 export { useMediaQuery } from '../../lib/layoutHooks';
 
 export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink';
-
-const MODE_LABEL = { default: 'rail.mode.default', cockpit: 'rail.mode.cockpit' } as const;
-
-/**
- * Two-segment right-panel mode switch.
- */
-export function ModeSwitch({ mode, onChoose, controls }: { mode: RailMode; onChoose: (next: RailMode) => void; controls?: string }) {
-  const { t } = useI18n();
-  return (
-    <div role="radiogroup" aria-label={t('rail.mode.aria')} aria-controls={controls} data-rail-mode-switch className="flex shrink-0 items-center rounded-md bg-ink/[0.05] p-0.5">
-      {(['default', 'cockpit'] as const).map((value) => (
-        <button
-          key={value}
-          type="button"
-          role="radio"
-          aria-checked={mode === value}
-          data-rail-mode={value}
-          onClick={() => { onChoose(value); }}
-          className={`h-6 rounded-[5px] px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:h-8 ${mode === value ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink'} ${FOCUS_RING}`}
-        >
-          {t(MODE_LABEL[value])}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /**
  * Agent state as shape + colour, so the set still reads in greyscale.

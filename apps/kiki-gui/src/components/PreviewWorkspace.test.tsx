@@ -430,61 +430,6 @@ describe('PreviewWorkspace', () => {
     }
   });
 
-  it('parks the same preview editors for cockpit and restores selection, draft, citation and width', async () => {
-    const probe = await mountCockpitPreview();
-    await openFile(probe.container, '/work/docs/design.md');
-    await openFile(probe.container, '/work/src/server.ts');
-    const panel = workspace();
-    const editor = panel.querySelector<HTMLTextAreaElement>('[data-preview-tabpanel="/work/src/server.ts"] [data-testid="editor"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'draft kept through cockpit');
-      editor.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    editor.scrollTop = 72;
-    const composer = document.querySelector('[data-test-composer]');
-    const timeline = document.querySelector('[data-test-timeline]');
-    const width = panel.style.width;
-    for (let repeat = 0; repeat < 3; repeat += 1) {
-      await pressPreviewControl('[data-cockpit-on]');
-      expect(workspace()).toBe(panel);
-      expect(panel.hidden).toBe(true);
-      expect(panel.style.display).toBe('none');
-      expect(document.querySelector('[data-test-composer]')).toBe(composer);
-      expect(document.querySelector('[data-test-timeline]')).toBe(timeline);
-      await pressPreviewControl(repeat === 1 ? '[data-close-rail]' : '[data-cockpit-off]');
-      expect(panel.hidden).toBe(false);
-      expect(panel.style.width).toBe(width);
-      expect(panel.querySelector('[data-preview-tabpanel="/work/src/server.ts"] [data-testid="editor"]')).toBe(editor);
-      expect(editor.value).toBe('draft kept through cockpit');
-      expect(editor.scrollTop).toBe(72);
-      expect(editor.dataset['line']).toBe('2');
-      expect(editor.dataset['column']).toBe('3');
-      expect(panel.querySelector('[data-preview-tab="/work/src/server.ts"]')?.getAttribute('aria-selected')).toBe('true');
-      expect(localStorage.getItem('kiki.previewPanelWidth')).toBe('460');
-      await pressPreviewControl('[data-cockpit-off]');
-      await pressPreviewControl('[data-open-rail]');
-    }
-  });
-
-  it('restores an absent or collapsed preview as absent or collapsed', async () => {
-    const probe = await mountCockpitPreview();
-    await pressPreviewControl('[data-cockpit-on]');
-    await pressPreviewControl('[data-cockpit-off]');
-    expect(document.querySelector('[data-preview-workspace]')).toBeNull();
-    await openFile(probe.container, '/work/src/server.ts');
-    await pressPreviewControl('[data-preview-toggle]');
-    const panel = workspace();
-    expect(panel.hidden).toBe(true);
-    await pressPreviewControl('[data-cockpit-on]');
-    await pressPreviewControl('[data-cockpit-off]');
-    expect(workspace()).toBe(panel);
-    expect(panel.hidden).toBe(true);
-    await pressPreviewControl('[data-cockpit-on]');
-    await pressPreviewControl('[data-preview-toggle]');
-    expect(localStorage.getItem('kiki.railMode')).toBe('default');
-    expect(panel.hidden).toBe(false);
-  });
-
   it.each(['tool', 'media', 'markdown'] as const)('keeps coexisting literal-percent and space files distinct through %s', async (entry) => {
     const rawPath = 'C:/work/a%20b.ts';
     const spacedPath = 'C:/work/a b.ts';
@@ -3963,7 +3908,7 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
     }
   });
 
-  it('auto-resets maximize when collapsing, closing the last tab, or switching to Cockpit', async () => {
+  it('auto-resets maximize when collapsing or closing the last tab, and removes the retired cockpit button', async () => {
     const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
     try {
       const probe = await mountChoreography();
@@ -3972,6 +3917,7 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
       // 1. Collapse while maximized -> un-inerts center immediately and reopens docked.
       await pressPreviewControl('[data-preview-fullscreen-toggle]');
       expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      expect(workspace().querySelector('[data-preview-open-cockpit]')).toBeNull();
       await pressPreviewControl('[data-preview-collapse]');
       expect(workspace().hidden).toBe(true);
       expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
@@ -3990,26 +3936,7 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
       expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
       await openFile(probe.container, '/work/docs/design.md');
       expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
-
-      // 3. Switch to Cockpit from maximized preview even when docked rail had been closed earlier.
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-close-docked-rail]')!.click();
-      });
-      expect(document.querySelector('[data-session-rail]')).toBeNull();
-      await pressPreviewControl('[data-preview-fullscreen-toggle]');
-      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
-      const openCockpitBtn = workspace().querySelector<HTMLButtonElement>('[data-preview-open-cockpit]')!;
-      expect(openCockpitBtn).not.toBeNull();
-      await act(async () => { openCockpitBtn.click(); });
-      expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
-      expect(workspace().hidden).toBe(true);
-      expect(document.querySelector('[data-session-rail]')).not.toBeNull();
-      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
-      await act(async () => {
-        document.querySelector<HTMLButtonElement>('[data-cockpit-off]')!.click();
-      });
-      expect(workspace().hidden).toBe(false);
-      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+      expect(workspace().querySelector('[data-preview-open-cockpit]')).toBeNull();
     } finally {
       innerWidthSpy.mockRestore();
     }
@@ -4159,6 +4086,123 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
         Reflect.deleteProperty(window, 'matchMedia');
       }
       innerWidthSpy.mockRestore();
+    }
+  });
+});
+
+describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
+  const makePanelSlot = (pluginId: string, id: string, label: string, panelId = 'main'): PluginGuiSlotContribution => ({
+    slot: 'composer-toolbar',
+    pluginId,
+    id,
+    label: { default: label },
+    tone: 'neutral',
+    order: 10,
+    action: { kind: 'open_plugin_panel', panelId },
+  });
+
+  const makeCapsuleSlot = (pluginId: string): PluginGuiSlotContribution => ({
+    slot: 'status-capsule',
+    pluginId,
+    id: `${pluginId}-status`,
+    label: { default: 'Active' },
+    dotTone: 'active',
+    order: 10,
+  });
+
+  async function mountWithSlots(slots: readonly PluginGuiSlotContribution[]) {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ code: 0, data: { slots } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const prevConfig = connectionMock.config;
+    connectionMock.config = { url: 'http://127.0.0.1:19999', token: 'tok' } as typeof connectionMock.config;
+    const probe = makeRoot();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      probe.root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <I18nProvider>
+              <MediaPreviewProvider cwd="/work">
+                <PreviewToggleButton sessionId="sess-panels" />
+                <OpenButton path="/work/src/server.ts" />
+              </MediaPreviewProvider>
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 6; i += 1) {
+      await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    }
+    return {
+      probe,
+      cleanup: () => {
+        fetchSpy.mockRestore();
+        connectionMock.config = prevConfig;
+      },
+    };
+  }
+
+  it('renders <=4 open_plugin_panel slots directly inline without a popover and scopes status dots per plugin', async () => {
+    const { probe, cleanup } = await mountWithSlots([
+      makePanelSlot('kiki-v42', 'workbench', '远端工位', 'workbench'),
+      makePanelSlot('kiki-phone', 'screen', '手机预览', 'screen'),
+      makePanelSlot('kiki-uu-remote', 'uu', 'UU远程', 'uu'),
+      makeCapsuleSlot('kiki-phone'),
+    ]);
+    try {
+      // No secondary popover trigger when <= 4 slots.
+      expect(probe.container.querySelector('[data-workspace-panels-trigger]')).toBeNull();
+      const buttons = probe.container.querySelectorAll('[data-workspace-panel-item]');
+      expect(buttons).toHaveLength(3);
+
+      // Only kiki-phone gets the quiet bg-ink-soft indicator (never bg-accent, never global sum).
+      const v42Btn = probe.container.querySelector<HTMLButtonElement>('[data-workspace-panel-item="kiki-v42:workbench"]')!;
+      const phoneBtn = probe.container.querySelector<HTMLButtonElement>('[data-workspace-panel-item="kiki-phone:screen"]')!;
+      const uuBtn = probe.container.querySelector<HTMLButtonElement>('[data-workspace-panel-item="kiki-uu-remote:uu"]')!;
+      expect(v42Btn.getAttribute('data-plugin-composer-slot')).toBe('kiki-v42:workbench');
+      expect(v42Btn.querySelector('[data-workspace-panel-active]')).toBeNull();
+      expect(uuBtn.querySelector('[data-workspace-panel-active]')).toBeNull();
+      const dot = phoneBtn.querySelector<HTMLElement>('[data-workspace-panel-active="kiki-phone"]')!;
+      expect(dot).not.toBeNull();
+      expect(dot.className).toContain('bg-ink-soft');
+      expect(dot.className).not.toContain('bg-accent');
+
+      // Clicking opens the panel tab, highlights the button, and keeps [预览] independent.
+      await act(async () => { phoneBtn.click(); });
+      expect(phoneBtn.getAttribute('aria-pressed')).toBe('true');
+      expect(phoneBtn.className).toContain('bg-canvas');
+      expect(probe.container.querySelector('[data-preview-toggle]')).not.toBeNull();
+
+      // Clicking the active panel button toggles/collapses cleanly.
+      await act(async () => { phoneBtn.click(); });
+      expect(phoneBtn.getAttribute('aria-pressed')).toBe('false');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('overflows beyond 4 panel slots by keeping 3 inline and moving the rest into the overflow popover', async () => {
+    const { probe, cleanup } = await mountWithSlots([
+      makePanelSlot('p1', 's1', 'One'),
+      makePanelSlot('p2', 's2', 'Two'),
+      makePanelSlot('p3', 's3', 'Three'),
+      makePanelSlot('p4', 's4', 'Four'),
+      makePanelSlot('p5', 's5', 'Five'),
+    ]);
+    try {
+      expect(probe.container.querySelectorAll('[data-workspace-panel-item]')).toHaveLength(3);
+      const trigger = probe.container.querySelector<HTMLButtonElement>('[data-workspace-panels-trigger]')!;
+      expect(trigger).not.toBeNull();
+      await act(async () => { trigger.click(); });
+      expect(document.querySelector('[data-workspace-panel-item="p4:s4"]')).not.toBeNull();
+      expect(document.querySelector('[data-workspace-panel-item="p5:s5"]')).not.toBeNull();
+    } finally {
+      cleanup();
     }
   });
 });

@@ -82,16 +82,21 @@ export const AgentNotesSection = memo(function AgentNotesSection({
   const quietLabel = t(status !== undefined ? 'agentPanel.notes.stale' : 'agentPanel.notes.partial');
   const quietNotice = (
     <span role="status" data-agent-notes-read-status={status !== undefined ? 'stale' : 'partial'} className="inline-flex shrink-0 text-ink-faint">
-      {status === undefined && effectiveContentStatus === 'partial' && onRetry !== undefined ? (
-        <button type="button" title={`${quietLabel} · ${t('common.retry')}`} aria-label={`${quietLabel} · ${t('common.retry')}`}
-          onClick={onRetry} className="inline-flex transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
-          <Icon name="refresh" size={12} />
-        </button>
-      ) : (
-        <span role="img" title={quietLabel} aria-label={quietLabel} className="inline-flex"><Icon name="partial" size={12} /></span>
-      )}
+      <span role="img" title={quietLabel} aria-label={quietLabel} className="inline-flex"><Icon name="partial" size={12} /></span>
     </span>
   );
+  const errorRetryControl = !open && effectiveContentStatus === 'error' && (onRetry !== undefined || beginRead !== undefined) ? (
+    <button
+      type="button"
+      data-agent-notes-error-retry=""
+      title={`${t('agentPanel.notes.loadFailed')} · ${t('common.retry')}`}
+      aria-label={`${t('agentPanel.notes.loadFailed')} · ${t('common.retry')}`}
+      onClick={handleRetry}
+      className="inline-flex shrink-0 text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+    >
+      <Icon name="refresh" size={12} />
+    </button>
+  ) : null;
   if (!readable) {
     const isError = viewStatus === 'error' || (!loaded && loadError !== undefined);
     const isUnknown = viewStatus === 'unknown';
@@ -122,8 +127,26 @@ export const AgentNotesSection = memo(function AgentNotesSection({
                 ? t('agentPanel.notes.cleared', { rev: meta.rev })
                 : t('agentPanel.notes.empty');
     const isStatus = status !== undefined || isError || isUnknown || isPartial || isLoading;
+    const quietEmpty = state === 'empty' || state === 'loading' || state === 'unknown' || state === 'partial';
+    if (state === 'empty') {
+      return (
+        <section
+          data-agent-notes-section
+          data-agent-notes-state={state}
+          data-agent-notes-quiet-empty=""
+          className="flex h-8 items-center justify-between gap-2"
+        >
+          <h3 className={INSPECTOR_HEAD}>{t('agentPanel.notes')}</h3>
+          <span className="truncate text-[11.5px] text-ink-faint">{message}</span>
+        </section>
+      );
+    }
     return (
-      <section data-agent-notes-section data-agent-notes-state={state}>
+      <section
+        data-agent-notes-section
+        data-agent-notes-state={state}
+        data-agent-notes-quiet-empty={quietEmpty ? '' : undefined}
+      >
         <QuietHead>{state === 'partial' ? quietNotice : null}</QuietHead>
         {state === 'partial' ? null : <p role={isStatus ? 'status' : undefined} className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">
           {message}
@@ -186,6 +209,7 @@ export const AgentNotesSection = memo(function AgentNotesSection({
           </button>
         ) : null}
         {status !== undefined || effectiveContentStatus === 'partial' ? quietNotice : null}
+        {errorRetryControl}
       </div>
       {!open && effectiveContentStatus !== undefined && present.length === 0 ? <p className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.readOnOpen')}</p> : null}
       {open ? (

@@ -186,12 +186,11 @@ async function flushRender() {
 
 async function render(agentId: string, options: {
   routed?: SessionViewState; forest?: AgentForest; visible?: boolean;
-  part?: 'all' | 'work' | 'usage' | 'overview' | 'profile';
-  overviewMode?: 'default' | 'cockpit';
+  part?: 'all' | 'work' | 'plan' | 'notes' | 'hooks' | 'usage' | 'overview' | 'profile';
   renderOverview?: Parameters<typeof AgentPanelContainer>[0]['renderOverview'];
 } = {}) {
   await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter><I18nProvider>
-    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} part={options.part} overviewMode={options.overviewMode} renderOverview={options.renderOverview} />
+    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} part={options.part} renderOverview={options.renderOverview} />
   </I18nProvider></MemoryRouter></QueryClientProvider>));
   for (let i = 0; i < 5; i++) await act(async () => {
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
@@ -738,7 +737,7 @@ it('shows canonical session tokens as an incomplete tree subtotal while per-agen
   expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
 });
 
-it.each(['default', 'cockpit'] as const)('keeps canonical session total in %s mode when a partial per-agent subset arrives and updates when the tree exceeds or covers it', async (overviewMode) => {
+it('keeps canonical session total when a partial per-agent subset arrives and updates when the tree exceeds or covers it', async () => {
   const settles: Array<(value: unknown) => void> = [];
   getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => query.metrics_settle
     ? new Promise((resolve) => { settles.push(resolve); })
@@ -754,12 +753,10 @@ it.each(['default', 'cockpit'] as const)('keeps canonical session total in %s mo
     cost_usd_estimated: 0.08,
     cost_unknown: false,
   });
-  await render('main', { part: 'overview', overviewMode, forest: forestOf(['main', 'child']) });
-  if (overviewMode === 'default') {
-    await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
-  }
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child']) });
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
   await flushRender();
-  const tokenSelector = overviewMode === 'default' ? '[data-overview-fact="tokens"]' : '[data-cockpit-fact="tokens"]';
+  const tokenSelector = '[data-overview-fact="tokens"]';
   expect(element.querySelector(tokenSelector)?.textContent).toContain('16k');
   expect(element.querySelector(tokenSelector)?.textContent).not.toContain('100');
   expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
@@ -1241,20 +1238,6 @@ it('settles known agents before roster continuation and retains the complete pre
   expect(element.querySelector('[data-tree-metrics] [data-overview-fact="tokens"]')?.getAttribute('title')).toBe('1,309');
 });
 
-it('keeps Cockpit tree metrics across selected-agent focus changes', async () => {
-  const forest = forestOf(['main', 'child']);
-  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean; agent_id: string }) => Promise.resolve({ metrics: query.metrics_settle
-    ? { child: { ...countedMetrics(20, 0), usageComplete: true } }
-    : { [query.agent_id]: { ...countedMetrics(query.agent_id === 'main' ? 100 : 20, 0), usageComplete: true } } }));
-  await render('main', { part: 'overview', overviewMode: 'cockpit', forest });
-  expect(settleCalls()).toHaveLength(1);
-  await render('child', { part: 'overview', overviewMode: 'cockpit', forest });
-  expect(settleCalls()).toHaveLength(1);
-  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
-  await render('main', { part: 'overview', overviewMode: 'cockpit', forest });
-  expect(settleCalls()).toHaveLength(1);
-});
-
 it('does not keep the previous agent or space totals, or its retry', async () => {
   const pending: Array<(value: unknown) => void> = [];
   let failMain = true;
@@ -1362,19 +1345,15 @@ it('paints this agent, the whole tree, and a roster update from the current over
   } finally {
     await browser.close();
   }
-});
+}, 30_000);
 
-it('keeps the supplied overview header without a scope switch for children and cockpit mode', async () => {
+it('keeps the supplied overview header without a scope switch for children without subtrees', async () => {
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'child' }, available: true, targets: [], tools: [], skills: [], metrics: {},
   });
   await render('child', { part: 'overview', renderOverview: renderOverviewLayout });
   expect(element.querySelector('[data-overview-test-head] h3')).not.toBeNull();
   expect(element.querySelector('[role="radiogroup"]')).toBeNull();
-  await render('main', { part: 'overview', overviewMode: 'cockpit', renderOverview: renderOverviewLayout });
-  expect(element.querySelector('[data-overview-test-head] h3')).not.toBeNull();
-  expect(element.querySelector('[role="radiogroup"]')).toBeNull();
-  expect(element.querySelector('[data-cockpit-overview]')).not.toBeNull();
 });
 
 it('keeps the tree scope standing on main even when it has no children', async () => {
@@ -1830,7 +1809,7 @@ it('prioritizes todoRead over historyRead and keeps child notes state isolated',
   expect(element.textContent).not.toContain('Main goal');
 });
 
-it('calls session resync on explicit partial retry when entity page is exhausted and preserves notes content', async () => {
+it('preserves notes content on partial read without rendering a manual refresh button', async () => {
   harness.agents['main'] = {
     ...viewState({
       todoNotes: { goal: 'Partial goal' },
@@ -1848,13 +1827,8 @@ it('calls session resync on explicit partial retry when entity page is exhausted
   await act(async () => { toggle.click(); });
   expect(element.querySelector('[data-agent-notes-state="partial"]')).not.toBeNull();
   expect(element.textContent).toContain('Partial goal');
-
-  const retryBtn = element.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="partial"] button');
-  expect(retryBtn).not.toBeNull();
-  await act(async () => { retryBtn!.click(); });
-  expect(harness.resync).toHaveBeenCalledTimes(1);
-  expect(harness.resync).toHaveBeenCalledWith();
-  expect(element.textContent).toContain('Partial goal');
+  expect(element.querySelector('[data-agent-notes-read-status="partial"] button')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-read-status="partial"] [data-icon="partial"]')).not.toBeNull();
 });
 
 it('calls session resync instead of no-op retryOpen when selected child fails to load in an already loaded session', async () => {
@@ -2116,7 +2090,7 @@ it('updates the selected agent window through serialized subscription ops, inclu
     await publish('main', 'fixture', 262_144);
     expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('79.1k / 262k');
     expect(meter()?.getAttribute('aria-valuenow')).toBe('30');
-    expect(element.textContent).toContain('210k');
+    expect(meter()?.getAttribute('aria-valuetext')).toContain('210k');
     expect(Number.parseFloat(element.querySelector<HTMLElement>('[data-overview-compact-mark]')?.style.left ?? '')).toBeCloseTo(80, 3);
     capture('main-hot', 'main');
     expect(controller.getAgentState('child')?.maxContextTokens).toBe(64_000);
@@ -2124,16 +2098,12 @@ it('updates the selected agent window through serialized subscription ops, inclu
     expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('32k / 64k');
     await publish('child', 'child-model', 128_000);
     expect(meter()?.getAttribute('aria-valuenow')).toBe('25');
-    expect(element.textContent).toContain('102k');
+    expect(meter()?.getAttribute('aria-valuetext')).toContain('102k');
     capture('child-hot', 'child');
     expect(controller.getState().maxContextTokens).toBe(262_144);
     await publish('child', 'switched-model', 160_000);
     expect(meter()?.getAttribute('aria-valuenow')).toBe('20');
-    await render('child', { part: 'overview', overviewMode: 'cockpit', forest: forestOf(['main', 'child']) });
-    expect(element.querySelector('[data-cockpit-gauge="上下文"]')?.textContent).toContain('20%');
-    capture('child-cockpit-switched', 'child');
     await publish('child', 'unknown', 0);
-    expect(element.querySelector('[data-cockpit-gauge="上下文"]')?.textContent).toContain('—');
     await render('child', { part: 'overview', forest: forestOf(['main', 'child']) });
     expect(meter()).toBeNull();
     expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('32k');
@@ -2182,7 +2152,7 @@ it('loads the folded profile summary independently of metrics settlement', async
   expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
 });
 
-it.each(['default', 'cockpit'] as const)('continues successful partial %s metrics with backoff, keeps known numbers, and stops at complete', async (overviewMode) => {
+it('continues successful partial metrics with backoff, keeps known numbers, and stops at complete', async () => {
   vi.useFakeTimers();
   try {
     let attempts = 0;
@@ -2197,14 +2167,13 @@ it.each(['default', 'cockpit'] as const)('continues successful partial %s metric
         usagePartial: attempts !== 4,
       } } });
     });
-    const options = { part: 'overview' as const, overviewMode };
-    await render('main', options);
+    await render('main', { part: 'overview' });
     await act(async () => { await vi.advanceTimersByTimeAsync(5); });
     expect(attempts).toBe(1);
     const counting = element.querySelector<HTMLElement>('[data-metrics-counting]');
     expect(counting?.getAttribute('aria-label')).toBe('统计中');
     expect(counting?.textContent).toBe('');
-    const cost = () => element.querySelector(overviewMode === 'default' ? '[data-overview-fact="cost"]' : '[data-cockpit-fact="cost"]')?.textContent;
+    const cost = () => element.querySelector('[data-overview-fact="cost"]')?.textContent;
     expect(cost()).toContain('$0.05');
     for (const [delay, count] of [[1_000, 2], [2_000, 3], [4_000, 4]] as const) {
       const remaining = starts.at(-1)! + delay - Date.now();
@@ -2295,7 +2264,7 @@ it('renders cold overview context, turns and compactions from persisted panel an
   expect(element.querySelector('[data-metrics-counting]')).toBeNull();
 });
 
-it.each(['default', 'cockpit'] as const)('settles visible agents with an undrained roster ref and shows whole-session cost/cache in %s', async overviewMode => {
+it('settles visible agents with an undrained roster ref and shows whole-session cost/cache', async () => {
   const ref: ContentRef = { source: { kind: 'snapshot', id: '' }, path: ['subagents'], kind: 'array', offset: 2, total: 100, revision: 'cold-roster' };
   const session = { id: 'session', workspace_id: 'workspace_example', title: 'Cold tree', busy: false,
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', metadata: { cwd: 'C:/example' },
@@ -2309,12 +2278,11 @@ it.each(['default', 'cockpit'] as const)('settles visible agents with an undrain
   getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => Promise.resolve({ metrics: query.metrics_settle
     ? { main: countedMetrics(100, 0.01), child: countedMetrics(50, 0.01) }
     : { main: countedMetrics(100, 0.01), child: coldMetrics } }));
-  await render('main', { part: 'overview', overviewMode, routed: viewState({ session }), forest: forestOf(['main', 'child']) });
-  if (overviewMode === 'default') await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  await render('main', { part: 'overview', routed: viewState({ session }), forest: forestOf(['main', 'child']) });
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
   await flushRender();
   expect(getAgentCapabilities.mock.calls.some(([query]) => query.metrics_settle === true && query.metrics_agent_ids.includes('child'))).toBe(true);
-  const prefix = overviewMode === 'default' ? 'overview' : 'cockpit';
-  expect(element.querySelector(`[data-${prefix}-fact="tokens"]`)?.textContent).toContain(overviewMode === 'default' ? '5.2k' : '5k');
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('5.2k');
   expect(element.textContent).toContain('2.50');
   expect(element.textContent).toContain('60%');
   expect(element.querySelector('[data-metrics-counting]')).toBeNull();
@@ -2355,12 +2323,13 @@ it('defers metrics_settle on a non-main branch/subagent view until its first-scr
             agentId="branch-1"
             scopeRootId="branch-1"
             part="overview"
-            overviewMode="cockpit"
           />
         </I18nProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   ));
+  await flushRender();
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
   await flushRender();
 
   // While branch-1 first screen is still loading (`loaded: false`), heavy metrics_settle must wait.

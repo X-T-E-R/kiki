@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * The resident overview's reading order: what is happening now on the first
- * screen, what this conversation has been through on the line under it, and
- * when it started only when someone asks.
+ * The resident overview's reading order: context bar (with automatic-compaction
+ * tick mark) and one measured figures row. Secondary ratios, compaction copy,
+ * turn counts and session start time live in hover/aria tooltips instead of
+ * verbose standing captions.
  */
 
 import { act, createElement } from 'react';
@@ -24,7 +25,6 @@ afterEach(async () => {
 });
 
 const NOW = Date.now();
-/** Four days and two hours ago, so a relative age would be unmistakable. */
 const STARTED = new Date(NOW - ((4 * 24 + 2) * 60 * 60 * 1000)).toISOString();
 
 async function render(props: {
@@ -60,40 +60,44 @@ async function render(props: {
   return container;
 }
 
-function sessionLine(container: HTMLElement): HTMLElement | null {
-  return container.querySelector<HTMLElement>('[data-overview-session]');
-}
-
-describe('the overview separates the present from this conversation\'s history', () => {
-  it('does not print how old the session is beside the present figures', async () => {
+describe('the overview keeps standing telemetry compact and preserves details in tooltips', () => {
+  it('omits standing percentage/compaction/turns captions while preserving them in tooltips and aria attributes', async () => {
     const container = await render({
       contextUsed: 25_900, contextLimit: 262_000, compactPoint: 212_000,
-      figures: { costUsd: 0.04, totalTokens: 22_500, cacheRate: 39 },
+      figures: { costUsd: 0.04, totalTokens: 22_500, cacheRate: 39, compactions: 2 },
       startedAt: STARTED, turns: 4,
     });
 
-    // The working line keeps what this conversation has done …
-    const line = sessionLine(container)!;
-    expect(line.textContent).toContain('4');
-    // … and says nothing about how long ago it started.
+    // No standing caption paragraphs clutter the overview.
+    expect(container.querySelector('[data-overview-session]')).toBeNull();
+    expect(container.querySelector('[data-overview-context] p')).toBeNull();
     expect(container.textContent).not.toContain('前开始');
-    expect(line.textContent).not.toContain('前开始');
-    // The compaction point, the figures and the cache title are untouched.
-    expect(container.querySelector('[data-overview-compact-mark]')).not.toBeNull();
-    expect(container.textContent).toContain('到 212k 时压缩');
+    expect(container.textContent).not.toContain('占窗口');
+    expect(container.textContent).not.toContain('到 212k 时压缩');
+
+    // Context tick mark stays on the bar and preserves full ratio/compaction info in tooltips/aria.
+    const contextBlock = container.querySelector<HTMLElement>('[data-overview-context]')!;
+    const meter = container.querySelector<HTMLElement>('[role="meter"]')!;
+    const tick = container.querySelector<HTMLElement>('[data-overview-compact-mark]')!;
+    expect(tick).not.toBeNull();
+    expect(contextBlock.title).toContain('占窗口 10%');
+    expect(contextBlock.title).toContain('到 212k 时压缩');
+    expect(meter.getAttribute('aria-valuetext')).toContain('占窗口 10%');
+    expect(meter.getAttribute('aria-valuetext')).toContain('到 212k 时压缩');
+    expect(tick.title).toContain('212,000');
+
+    // Figures row carries turns, compactions and absolute start time in hover title and aria-label.
+    const usageRow = container.querySelector<HTMLElement>('[data-agent-usage]')!;
     expect(container.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.04');
+    expect(usageRow.title).toContain('4 轮');
+    expect(usageRow.title).toContain('压缩 2 次');
+    expect(usageRow.title).toContain(new Date(STARTED).toLocaleString());
+    expect(usageRow.getAttribute('aria-label')).toContain('4 轮');
   });
 
-  it('keeps the absolute start time as the hover on that line', async () => {
-    const container = await render({ startedAt: STARTED, turns: 4 });
-    expect(sessionLine(container)!.title).toContain(new Date(STARTED).toLocaleString());
-  });
-
-  it('leaves nothing empty when a fresh session has no counters yet', async () => {
+  it('keeps the absolute start time accessible even when a fresh session has no figures yet', async () => {
     const container = await render({ startedAt: STARTED });
-
-    // No dangling line and no hover target on nothing: the fact is still there.
-    expect(sessionLine(container)).toBeNull();
+    expect(container.querySelector('[data-overview-session]')).toBeNull();
     const carried = container.querySelector('[data-overview-started]')!;
     expect(carried).not.toBeNull();
     expect(carried.className).toContain('sr-only');
@@ -102,9 +106,9 @@ describe('the overview separates the present from this conversation\'s history',
 
   it('prints no start time at all when the session does not report one', async () => {
     const container = await render({ turns: 3 });
-    expect(sessionLine(container)!.textContent).toBeTruthy();
-    expect(sessionLine(container)!.title).toBe('');
-    expect(container.querySelector('[data-overview-started]')).toBeNull();
+    const carried = container.querySelector('[data-overview-started]')!;
+    expect(carried.textContent).toBe('3 轮');
+    expect(carried.textContent).not.toContain('会话开始于');
   });
 });
 
@@ -138,7 +142,6 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     expect(note.querySelector('[data-icon="partial"]')).not.toBeNull();
     expect(note.getAttribute('aria-label')).toContain('整棵树');
     expect(partial.querySelector('[data-metrics-counting]')).toBeNull();
-    // The agent scope is a full count; it claims nothing it cannot back.
     const agent = await render({
       figures: { totalTokens: 1_200 },
       treeFigures: { totalTokens: 1_200, incomplete: true },
@@ -160,7 +163,6 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     });
     const group = container.querySelector<HTMLElement>('[role="radiogroup"]')!;
     const tree = group.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')!;
-    // Measurable tree: no incomplete mark, and the control is live.
     expect(tree.disabled).toBe(false);
     expect(tree.hasAttribute('data-usage-scope-incomplete')).toBe(false);
     expect(tree.title).toBe('整棵智能体树');
@@ -170,9 +172,6 @@ describe('the overview owns the figures, and the scope that changes them', () =>
   });
 
   it('does not keep a permission mode, a model or any setup line of its own', async () => {
-    // The profile card already carries model / effort / window, and the
-    // composer's permission chip carries the mode. Restating either below the
-    // numbers is the duplication this component exists without.
     const container = await render({
       figures: { costUsd: 0.05, totalTokens: 1_200, cacheRate: 0 },
       contextUsed: 1_200, contextLimit: 100_000, turns: 1,
@@ -182,15 +181,12 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     expect(container.textContent).not.toContain('完全放行');
     expect(container.textContent).not.toContain('每步询问');
     expect(container.textContent).not.toContain('权限');
-    // The work line is still there, and it is the only quiet line.
-    expect(sessionLine(container)!.textContent).toContain('1');
+    expect(container.querySelector('[data-agent-usage]')?.getAttribute('title')).toContain('1 轮');
   });
 
   it('lays the figures out in one measured row, so an absent figure closes its gap', async () => {
     const full = await render({ figures: { costUsd: 0.05, totalTokens: 1_200, cacheRate: 12 } });
     const one = await render({ figures: { totalTokens: 1_200 } });
-    // A fixed three-column grid would hold two blank thirds open next to a
-    // single figure; the row is measured by its own content instead.
     for (const container of [full, one]) {
       const row = container.querySelector<HTMLElement>('[data-agent-usage]')!;
       expect(row).not.toBeNull();
@@ -214,9 +210,6 @@ describe('the overview owns the figures, and the scope that changes them', () =>
 describe('the overview keeps its restyle hooks addressable', () => {
   it('names the context figure for the rail to style', async () => {
     const container = await render({ contextUsed: 25_900, contextLimit: 262_000 });
-    // The rail restyles this figure as a mono reading, so it needs a name of
-    // its own rather than being reached for by whatever class it happens to
-    // carry today.
     const figure = container.querySelector<HTMLElement>('[data-overview-context-figures]');
     expect(figure).not.toBeNull();
     expect(figure?.textContent).toContain('25.9k');
@@ -228,7 +221,6 @@ describe('the overview keeps its restyle hooks addressable', () => {
     for (const name of ['cost', 'tokens', 'cache']) {
       const fact = container.querySelector<HTMLElement>(`[data-overview-fact="${name}"]`);
       expect(fact).not.toBeNull();
-      // The value is the element's first child: the rail sizes that one.
       expect(fact?.firstElementChild?.tagName).toBe('DIV');
     }
   });
