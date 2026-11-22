@@ -110,7 +110,7 @@ import {
 } from './Transcript';
 import { messageLinkHref, mergeLoadedAttachments } from './RowActions';
 import { composerInput, setComposerInputValue } from './composerInputTestUtils';
-import { ConversationShell } from './ConversationShell';
+import { ConversationSeatHeightContext, ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
 
@@ -11718,5 +11718,68 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     );
     await settleVirtualizer();
     expect(scroll.scrollTop).toBe(compensatedTop);
+  });
+
+  it('reserves measured tailSlot height plus composer seatHeight so failed TurnTailLine never clips behind Composer and follows bottom on growth', async () => {
+    const blocks = virtualBlocks(30, 'tail-seat');
+    const failedTail = turnTailFixture({
+      turnId: 't-fail',
+      state: 'failed',
+      error: '400 invalid_request_error: Unable to process input: the file or media data is empty, corrupted, or unsupported.',
+      durationMs: 8_700,
+    });
+    const seatHeight = 156;
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <ConversationSeatHeightContext.Provider value={seatHeight}>
+        {virtualTranscript({ ...transcriptState(blocks), busy: false, turnTail: failedTail })}
+      </ConversationSeatHeightContext.Provider>,
+    );
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const content = container.querySelector<HTMLElement>('[data-transcript-virtual-content]')!;
+    const tailSlot = container.querySelector<HTMLElement>('[data-transcript-tail-slot]')!;
+    expect(tailSlot).not.toBeNull();
+    await settleVirtualizer();
+
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')];
+    const lastRow = rows[rows.length - 1]!;
+    const lastItemEnd = virtualItemStart(lastRow) + lastRow.offsetHeight;
+
+    const initialTailHeight = 148;
+    await act(async () => {
+      resizeElement(tailSlot, initialTailHeight);
+    });
+    await settleVirtualizer();
+
+    const heightWithTail = Number.parseFloat(content.style.height);
+    const tailYMatch = /translate3d\(0px,\s*([0-9.]+)px,\s*0px\)|translate3d\(0,\s*([0-9.]+)px,\s*0\)/.exec(tailSlot.style.transform);
+    const tailY = Number(tailYMatch?.[1] ?? tailYMatch?.[2] ?? 'NaN');
+    expect(Math.abs(tailY - (lastItemEnd + 12))).toBeLessThanOrEqual(2);
+    expect(heightWithTail).toBeGreaterThanOrEqual(lastItemEnd + 12 + initialTailHeight + seatHeight);
+    expect(scroll.scrollTop).toBeGreaterThanOrEqual(scroll.scrollHeight - scroll.clientHeight - 2);
+
+    // Expanding the collapsible error detail grows the tail slot; scroll follows cleanly to reveal it.
+    const expandedTailHeight = 264;
+    await act(async () => {
+      resizeElement(tailSlot, expandedTailHeight);
+    });
+    await settleVirtualizer();
+    const heightExpanded = Number.parseFloat(content.style.height);
+    expect(heightExpanded).toBeGreaterThanOrEqual(lastItemEnd + 12 + expandedTailHeight + seatHeight);
+    expect(heightExpanded - heightWithTail).toBe(expandedTailHeight - initialTailHeight);
+    expect(scroll.scrollTop).toBeGreaterThanOrEqual(scroll.scrollHeight - scroll.clientHeight - 2);
+
+    // Clearing turnTail removes the tail slot and drops the extra tail reserve cleanly.
+    await renderSettled(
+      root,
+      <ConversationSeatHeightContext.Provider value={seatHeight}>
+        {virtualTranscript({ ...transcriptState(blocks), busy: false, turnTail: undefined })}
+      </ConversationSeatHeightContext.Provider>,
+    );
+    await settleVirtualizer();
+    expect(container.querySelector('[data-transcript-tail-slot]')).toBeNull();
+    const heightCleared = Number.parseFloat(content.style.height);
+    expect(heightCleared).toBeLessThan(heightWithTail - 100);
   });
 });

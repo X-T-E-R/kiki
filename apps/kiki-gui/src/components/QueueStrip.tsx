@@ -862,7 +862,7 @@ export function QueueStrip({
           <ol className="flex flex-col gap-0.5">{idleNodes}</ol>
         </div>
       ) : null}
-      <header className="flex min-h-7 items-center gap-2 pl-1.5">
+      <header className="flex min-h-7 items-center gap-1.5 pl-1.5">
         {/* The row already names the count; the header reads as drain order. */}
         <span className="min-w-0 flex-1 text-[12px] text-ink-faint">
           {sortMode ? t('queue.sortHint') : t('queue.drainOrder')}
@@ -880,7 +880,28 @@ export function QueueStrip({
             {sortMode ? t('queue.sortDone') : t('queue.sortMode')}
           </button>
         ) : null}
-        {sortMode ? null : (
+        {hasPromptContinuation && promptContinuation !== undefined ? (
+          <button
+            type="button"
+            data-content-continuation-action=""
+            disabled={promptContinuation.status?.status === 'loading'}
+            onClick={() => { promptContinuation.onRequest(); }}
+            title={
+              promptContinuation.status?.status === 'error'
+                ? t('queue.recordsFailed')
+                : promptContinuation.coverage.total > 0
+                  ? t('queue.recordsLoaded', { shown: promptContinuation.coverage.returned, total: promptContinuation.coverage.total })
+                  : t('queue.moreRecords')
+            }
+            aria-label={promptContinuation.status?.status === 'error' ? t('queue.recordsFailed') : t('queue.records')}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:h-9 pointer-coarse:w-9 ${
+              promptContinuation.status?.status === 'error' ? 'text-danger' : 'text-ink-faint hover:text-ink'
+            }`}
+          >
+            <Icon name="refresh" size={12} className={promptContinuation.status?.status === 'loading' ? 'spinner' : undefined} />
+          </button>
+        ) : null}
+        {sortMode || rows.length === 0 ? null : (
           <button
             type="button"
             onClick={onClearAll}
@@ -902,29 +923,6 @@ export function QueueStrip({
       <ol ref={listRef} className="flex flex-col gap-0.5 pb-1">
         {rowNodes}
       </ol>
-      {hasPromptContinuation && promptContinuation !== undefined ? (
-        <div className="flex items-center justify-end px-1.5 py-0.5" data-continuation-row="prompt">
-          <button
-            type="button"
-            data-content-continuation-action=""
-            disabled={promptContinuation.status?.status === 'loading'}
-            onClick={() => { promptContinuation.onRequest(); }}
-            title={
-              promptContinuation.status?.status === 'error'
-                ? t('queue.recordsFailed')
-                : promptContinuation.coverage.total > 0
-                  ? t('queue.recordsLoaded', { shown: promptContinuation.coverage.returned, total: promptContinuation.coverage.total })
-                  : t('queue.moreRecords')
-            }
-            aria-label={promptContinuation.status?.status === 'error' ? t('queue.recordsFailed') : t('queue.records')}
-            className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-50 ${
-              promptContinuation.status?.status === 'error' ? 'text-danger' : 'text-ink-faint hover:text-ink'
-            }`}
-          >
-            <Icon name="refresh" size={12} className={promptContinuation.status?.status === 'loading' ? 'spinner' : undefined} />
-          </button>
-        </div>
-      ) : null}
     </section>
     </AgentRefResolutionProvider>
   );

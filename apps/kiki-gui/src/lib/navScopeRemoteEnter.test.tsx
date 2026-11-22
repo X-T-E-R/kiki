@@ -17,7 +17,7 @@ import { createMemoryRouter, RouterProvider, useLocation, useNavigationType } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONNECTION_PROTOCOL, type RemoteConnection } from '@kiki/protocol';
 import { writeDesktopPrefs } from '@kiki/session-core/settings';
-import { NavScopeBoundary } from '../components/NavScopeBoundary';
+import { NavScopeBoundary, useScopeRestore } from '../components/NavScopeBoundary';
 import { useDirtyGuardState, type DirtyGuardState } from '../components/dirtyGuard';
 import type { HostAdapter } from '../host';
 import type { ConnectionSelection } from '../state/connectionConfig';
@@ -49,6 +49,7 @@ vi.mock('../host', () => {
 const connection = {
   spaceKey: 'main', scopeId: 'local', connectionId: null as string | null, meta: { server_home_id: 'source-home' },
   get needsScopeReload() { return mocks.reload; },
+  clearScopeReload: () => { mocks.reload = false; },
   scopeAdapter: { prepare: mocks.prepare },
 };
 vi.mock('../state/connection', () => ({ useConnection: () => connection }));
@@ -491,5 +492,140 @@ describe('a failed entry says why', () => {
     expect(surface()?.querySelector('input')).toBeNull();
     const retryButton = Array.from(surface()?.querySelectorAll('button') ?? []).find((btn) => btn.textContent === 'nav.scope.retry');
     expect(retryButton).toBeDefined();
+  });
+});
+
+describe('in-place cross-space navigation with App-style visit recording and recovery safety', () => {
+  function AppRecorderChild() {
+    const location = useLocation();
+    const action = useNavigationType();
+    const scopeRestore = useScopeRestore();
+    useLayoutEffect(() => {
+      if (scopeRestore?.transitioningInPlace === true || connection.needsScopeReload) return;
+      const home = connection.scopeId.startsWith('remote:') ? connection.scopeId : connection.spaceKey;
+      const activeScope: NavScopeIdentity = {
+        homeId: home,
+        scopeId: connection.scopeId,
+        serverHomeId: connection.meta.server_home_id,
+        connectionRef: connection.connectionId ?? undefined,
+      };
+      const entry = recordNavigation({ location, action, scope: activeScope });
+      const browserState = window.history.state;
+      if (browserState?.key === location.key || (location.key === 'default' && (browserState?.key === null || browserState?.key === undefined))) {
+        const userState = browserState?.usr ?? {};
+        window.history.replaceState({ ...browserState, usr: { ...userState, kikiNav: { ...userState.kikiNav, visitId: entry.visitId, scope: entry.scope } } }, '');
+      }
+    }, [location, action, connection.scopeId, connection.spaceKey, connection.meta.server_home_id, connection.connectionId, scopeRestore?.transitioningInPlace, connection.needsScopeReload]);
+    return <div data-source data-path={location.pathname} data-scope={connection.scopeId}>{location.pathname}</div>;
+  }
+
+  it('completes in-place remote session entry and round-trip back to main without aborting or stranding on a blank screen', async () => {
+    await act(async () => { root?.unmount(); });
+    router?.dispose();
+    container.remove();
+    clearNavHistory();
+
+    connection.spaceKey = 'main';
+    connection.scopeId = 'local';
+    connection.connectionId = null;
+    connection.meta = { server_home_id: 'source-home' };
+    mocks.reload = false;
+
+    const rerender = () => {
+      root!.render(<RouterProvider router={router} />);
+    };
+    mocks.prepare.mockReset().mockImplementation(async (target: NavScopeIdentity) => ({
+      scope: target.scopeId.startsWith('remote:')
+        ? { ...target, serverHomeId: REMOTE_HOME, connectionRef: CONNECTION }
+        : { ...target, serverHomeId: 'source-home', connectionRef: undefined },
+      validate: vi.fn(async () => {}),
+      commit: () => {
+        mocks.commit();
+        if (target.scopeId.startsWith('remote:')) {
+          connection.spaceKey = target.scopeId;
+          connection.scopeId = target.scopeId;
+          connection.connectionId = CONNECTION;
+          connection.meta = { server_home_id: REMOTE_HOME };
+        } else {
+          connection.spaceKey = 'main';
+          connection.scopeId = 'local';
+          connection.connectionId = null;
+          connection.meta = { server_home_id: 'source-home' };
+        }
+        // Trigger a synchronous React re-render while Router is still on the old pathname,
+        // reproducing ConnectionProvider.commit()'s setState intermediate render.
+        rerender();
+      },
+      dispose: () => { mocks.dispose(); },
+    }));
+
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    router = createMemoryRouter(
+      [{ path: '*', element: <NavScopeBoundary><AppRecorderChild /></NavScopeBoundary> }],
+      { initialEntries: ['/s/session-local'] },
+    );
+    await act(async () => { rerender(); });
+    expect(container.querySelector('[data-source]')?.getAttribute('data-path')).toBe('/s/session-local');
+
+    // Enter remote session in place.
+    await act(async () => {
+      await requestScopeNavigation({ ...scope, route: '/s/remote-session', inPlace: true });
+    });
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(surface()).toBeNull();
+    expect(router.state.location.pathname).toBe('/s/remote-session');
+    expect(container.querySelector('[data-source]')?.getAttribute('data-scope')).toBe(`remote:${CONNECTION}`);
+    expect(getCurrentVisit()?.pathname).toBe('/s/remote-session');
+    expect(getCurrentVisit()?.scope.scopeId).toBe(`remote:${CONNECTION}`);
+
+    // Round-trip back to main space in place.
+    await act(async () => {
+      await requestScopeNavigation({ homeId: 'main', scopeId: 'local', route: '/s/session-local', inPlace: true });
+    });
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(surface()).toBeNull();
+    expect(router.state.location.pathname).toBe('/s/session-local');
+    expect(container.querySelector('[data-source]')?.getAttribute('data-scope')).toBe('local');
+    expect(getCurrentVisit()?.pathname).toBe('/s/session-local');
+    expect(getCurrentVisit()?.scope.scopeId).toBe('local');
+  });
+
+  it('never leaves a blank screen when host.switchSpace rejects on inPlace switch, retries the failed destination on Retry, and recovers on Cancel', async () => {
+    mocks.hostSwitch
+      .mockRejectedValueOnce(new Error('Use open_space in multi-window mode'))
+      .mockRejectedValueOnce(new Error('Still unavailable'));
+    mocks.prepare.mockReset().mockResolvedValue({
+      scope: { homeId: 'sub-space', scopeId: 'local', serverHomeId: 'sub-home' },
+      validate: vi.fn(async () => {}),
+      commit: () => { mocks.commit(); mocks.reload = true; },
+      dispose: () => { mocks.dispose(); },
+    });
+
+    await act(async () => {
+      await requestScopeNavigation({ homeId: 'sub-space', scopeId: 'local', route: '/s/sub-session', inPlace: true });
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(mocks.hostSwitch).toHaveBeenCalledTimes(1);
+    expect(mocks.hostSwitch).toHaveBeenLastCalledWith('sub-space');
+    expect(mocks.reload).toBe(false);
+    expect(surface()).not.toBeNull();
+
+    // Clicking Retry genuinely retries the failed inPlace switchSpace destination.
+    const retryBtn = Array.from(surface()?.querySelectorAll('button') ?? []).find((btn) => btn.textContent === 'nav.scope.retry');
+    expect(retryBtn).toBeDefined();
+    await act(async () => { retryBtn!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.hostSwitch).toHaveBeenCalledTimes(2);
+    expect(mocks.hostSwitch).toHaveBeenLastCalledWith('sub-space');
+
+    // Clicking Cancel clears recovery and restores the active surface cleanly.
+    const exitBtn = surface()?.querySelector<HTMLButtonElement>('[data-nav-scope-exit]');
+    expect(exitBtn).not.toBeNull();
+    await act(async () => { exitBtn!.click(); });
+    expect(surface()).toBeNull();
+    expect(container.querySelector('[data-source]')).not.toBeNull();
   });
 });

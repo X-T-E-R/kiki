@@ -436,9 +436,10 @@ it('moves an unconfirmed send into the composer in one click, or drops it once t
 });
 
 
-it('hides idle partial prompt records from the composer footer when no queue or recovery item needs attention, and surfaces continuation in the queue bar or during held ingress', async () => {
+it('hides idle partial prompt records from the composer footer and ordinary 1-item queue, and surfaces inline header continuation during held ingress', async () => {
   fixture.queued = false;
   fixture.partialPrompts = true;
+  fixture.durableIngress = undefined;
   root = createRoot(container);
   await act(async () => root!.render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -452,6 +453,8 @@ it('hides idle partial prompt records from the composer footer when no queue or 
   expect(container.querySelector('[data-queue-count]')).toBeNull();
   expect(fixture.loadEntities).not.toHaveBeenCalled();
 
+  // Ordinary 1-item queue in a long session (`prompts: { returned: 8, total: 12, hasMore: true }`
+  // from completed history) must NOT show the continuation refresh button.
   await act(async () => { root!.unmount(); root = undefined; });
   fixture.queued = true;
   root = createRoot(container);
@@ -463,11 +466,37 @@ it('hides idle partial prompt records from the composer footer when no queue or 
     </QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(container.querySelector('[data-composer-status-line] [data-prompt-records-remainder]')).toBeNull();
+  const quietQueueToggle = container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]');
+  expect(quietQueueToggle).not.toBeNull();
+  await act(async () => quietQueueToggle!.click());
+  expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
+  expect(container.querySelector('[data-continuation-row="prompt"]')).toBeNull();
+
+  // When durableIngress has a held item (or queue saturates the returned window),
+  // continuation renders inline inside QueueStrip's header (never in a separate row below ol).
+  await act(async () => { root!.unmount(); root = undefined; });
+  fixture.durableIngress = [{
+    admission: 'held',
+    prompt_id: 'held-1',
+    user_message_id: 'msg-held-1',
+    status: 'queued',
+    content: [{ type: 'text', text: 'held prompt' }],
+    created_at: '2026-01-01T00:00:00Z',
+  }];
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   const queueToggle = container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]');
   expect(queueToggle).not.toBeNull();
   await act(async () => queueToggle!.click());
-  const action = container.querySelector<HTMLButtonElement>('[data-content-continuation-action]');
+  const action = container.querySelector<HTMLButtonElement>('[data-queue-strip] header [data-content-continuation-action]');
   expect(action).not.toBeNull();
+  expect(container.querySelector('[data-continuation-row="prompt"]')).toBeNull();
   expect(action?.getAttribute('title')).toContain('8 / 12 message records loaded');
   expect(container.textContent).not.toContain('8 / 12 message records loaded');
   await act(async () => action!.click());

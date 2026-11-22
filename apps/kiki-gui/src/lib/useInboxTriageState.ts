@@ -128,6 +128,7 @@ export function useInboxTriageState({
   const [clockTick, setClockTick] = useState(() => Date.now());
   const nowMs = fixedNowMs ?? clockTick;
   const [pinnedViewingKey, setPinnedViewingKey] = useState<string | undefined>(undefined);
+  const [dismissedActiveKey, setDismissedActiveKey] = useState<string | undefined>(undefined);
   const undoStackRef = useRef<UndoEntry[]>([]);
   const [undoDepth, setUndoDepth] = useState(0);
 
@@ -221,20 +222,50 @@ export function useInboxTriageState({
     }
   }, [activeConversationKey, pinnedViewingKey, pinnedEntryBusy]);
 
+  // Clear an explicit settle/snooze dismissal on the currently open conversation
+  // when navigating to another conversation or when the open conversation starts
+  // executing again.
+  const activeEntryBusy = useMemo(() => {
+    if (activeConversationKey === undefined) return false;
+    for (const entry of allEntries) {
+      const key = entry.kind === 'session'
+        ? encodeConversationRef({ spaceKey: entry.spaceKey, kind: 'session', id: entry.session.id })
+        : encodeConversationRef({ spaceKey: entry.spaceKey, kind: 'room', id: entry.room.id });
+      if (key === activeConversationKey) {
+        return entry.kind === 'session' ? entry.session.busy : entry.room.busy;
+      }
+    }
+    return false;
+  }, [allEntries, activeConversationKey]);
+
+  useEffect(() => {
+    if (dismissedActiveKey === undefined) return;
+    if (dismissedActiveKey !== activeConversationKey || activeEntryBusy) {
+      setDismissedActiveKey(undefined);
+    }
+  }, [activeConversationKey, activeEntryBusy, dismissedActiveKey]);
+
+  const visibleActiveKey =
+    activeConversationKey !== undefined && activeConversationKey !== dismissedActiveKey
+      ? activeConversationKey
+      : undefined;
+
   const inbox = useMemo<UnifiedInboxModel>(() => {
     if (scopedEntries.length === 0) return EMPTY_UNIFIED_INBOX;
     return buildUnifiedInbox(scopedEntries, effectiveSeen, triageMap, nowMs, {
       pinnedViewingKey,
+      activeConversationKey: visibleActiveKey,
     });
-  }, [scopedEntries, effectiveSeen, triageMap, nowMs, pinnedViewingKey]);
+  }, [scopedEntries, effectiveSeen, triageMap, nowMs, pinnedViewingKey, visibleActiveKey]);
 
   const allSpacesInbox = useMemo<UnifiedInboxModel>(() => {
     if (allEntries.length === 0) return EMPTY_UNIFIED_INBOX;
     if (scopedEntries.length === allEntries.length) return inbox;
     return buildUnifiedInbox(allEntries, effectiveSeen, triageMap, nowMs, {
       pinnedViewingKey,
+      activeConversationKey: visibleActiveKey,
     });
-  }, [allEntries, scopedEntries.length, inbox, effectiveSeen, triageMap, nowMs, pinnedViewingKey]);
+  }, [allEntries, scopedEntries.length, inbox, effectiveSeen, triageMap, nowMs, pinnedViewingKey, visibleActiveKey]);
 
   const pushUndo = useCallback((entry: UndoEntry) => {
     const next = [...undoStackRef.current, entry];
@@ -260,6 +291,8 @@ export function useInboxTriageState({
       archiveConversationTriage(top.ref, { epoch: top.prevRecord.epoch, seq: top.prevRecord.seq }, top.prevRecord.reason, top.prevRecord.t);
     }
 
+    const topKey = encodeConversationRef(top.ref);
+    setDismissedActiveKey((current) => (current === topKey ? undefined : current));
     if (top.restoreUnread) {
       cancelPendingConversationOpen(top.ref);
       markConversationUnread(top.ref, top.cursor);
@@ -293,6 +326,9 @@ export function useInboxTriageState({
       pinnedObservedActiveRef.current = false;
       setPinnedViewingKey(undefined);
     }
+    if (activeConversationKey === item.encodedKey) {
+      setDismissedActiveKey(item.encodedKey);
+    }
     settleConversation(item.ref, item.attentionCursor, item.reason, fixedNowMs ?? Date.now());
     commitPendingConversationOpen(item.ref, item.attentionCursor, item.spaceKey === currentSpaceKey);
     markConversationSeen(item.ref, item.attentionCursor);
@@ -313,13 +349,14 @@ export function useInboxTriageState({
       durationMs: UNDO_TOAST_MS,
       action: { label: t('sidebar.inbox.undo'), run: () => { undoLast(); } },
     });
-  }, [currentSpaceKey, fixedNowMs, pinnedViewingKey, pushUndo, t, undoLast]);
+  }, [activeConversationKey, currentSpaceKey, fixedNowMs, pinnedViewingKey, pushUndo, t, undoLast]);
 
   const snoozeItem = useCallback((item: UnifiedInboxItem, preset: SnoozePreset) => {
     const prevRecord = conversationTriageSnapshot()[item.encodedKey];
     const stamp = fixedNowMs ?? Date.now();
     const untilMs = computeSnoozeUntilMs(preset, new Date(stamp));
     if (pinnedViewingKey === item.encodedKey) setPinnedViewingKey(undefined);
+    if (activeConversationKey === item.encodedKey) setDismissedActiveKey(item.encodedKey);
     snoozeConversation(item.ref, item.attentionCursor, untilMs, item.reason, stamp);
     pushUndo({
       ref: item.ref,
@@ -334,7 +371,7 @@ export function useInboxTriageState({
       durationMs: UNDO_TOAST_MS,
       action: { label: t('sidebar.inbox.undo'), run: () => { undoLast(); } },
     });
-  }, [currentSpaceKey, fixedNowMs, locale, pinnedViewingKey, pushUndo, t, undoLast]);
+  }, [activeConversationKey, currentSpaceKey, fixedNowMs, locale, pinnedViewingKey, pushUndo, t, undoLast]);
 
   const archiveItem = useCallback((item: UnifiedInboxItem) => {
     if (item.needsYou) return;

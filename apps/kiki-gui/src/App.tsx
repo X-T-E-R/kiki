@@ -115,7 +115,7 @@ import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
 import { useScopeRestore } from './components/NavScopeBoundary';
-import { recordNavigation } from './lib/navHistory';
+import { isCrossScopeNavigation, recordNavigation, type NavScopeIdentity } from './lib/navHistory';
 import {
   desktopPluginFocusHandoff,
   pluginFocusPublication,
@@ -251,19 +251,40 @@ function NormalApp() {
   const rawNavigate = useNavigate();
   const location = useLocation();
   const navType = useNavigationType();
-  const { scopeId, spaceKey, meta, connectionRef, localClient, connectionSource } = useConnection();
+  const { scopeId, spaceKey, meta, connectionRef, localClient, connectionSource, needsScopeReload } = useConnection();
   const scopeRestore = useScopeRestore();
   const desktop = host.kind === 'tauri';
 
   // Commit the target visit before descendants' passive restoration effects.
   // A blocked transition never changes location and never advances this store.
   useLayoutEffect(() => {
+    // During an in-place scope handoff or pending scope reload, the connection
+    // has already moved to the target scope while Router is still on the old
+    // location. Recording the old pathname under the new scope would overwrite
+    // the browser history state and trip NavScopeBoundary's `assertCurrent()`.
+    if (scopeRestore?.transitioningInPlace === true || needsScopeReload) return;
     // A remote Kiki is not a local home: its scope key is its own home, the
     // same rule the scope boundary uses. Reading the local home here would
     // stamp every visit `main` beside a remote scope id, and the window that
     // boots into that visit would refuse its own entry as unreachable.
     const localHome = host.kind === 'tauri' ? (activeSpace()?.homeId ?? 'main') : 'main';
-    const home = scopeId.startsWith('remote:') ? scopeId : localHome;
+    const home = scopeId.startsWith('remote:')
+      ? scopeId
+      : (typeof spaceKey === 'string' && spaceKey !== '' ? spaceKey : localHome);
+    const activeScope: NavScopeIdentity = {
+      homeId: home,
+      scopeId,
+      serverHomeId: meta.server_home_id,
+      connectionRef,
+    };
+    const explicitScope = (location.state as { kikiNav?: { scope?: NavScopeIdentity } } | null)?.kikiNav?.scope;
+    if (
+      explicitScope !== undefined
+      && (isCrossScopeNavigation(activeScope, explicitScope)
+        || (explicitScope.serverHomeId !== undefined && explicitScope.serverHomeId !== activeScope.serverHomeId))
+    ) {
+      return;
+    }
     const label = location.pathname.startsWith('/settings')
       ? 'Settings'
       : location.pathname === '/discover'
@@ -279,7 +300,7 @@ function NormalApp() {
                 : undefined;
     const entry = recordNavigation({
       location,
-      scope: { homeId: home, scopeId, serverHomeId: meta.server_home_id, connectionRef },
+      scope: activeScope,
       label,
       action: navType === 'POP' ? 'POP' : navType === 'REPLACE' ? 'REPLACE' : 'PUSH',
     });
@@ -289,7 +310,7 @@ function NormalApp() {
       window.history.replaceState({ ...browserState, usr: { ...userState,
         kikiNav: { ...userState.kikiNav, visitId: entry.visitId, scope: entry.scope } } }, '');
     }
-  }, [location, navType, scopeId, host.kind, meta.server_home_id, connectionRef]);
+  }, [location, navType, scopeId, spaceKey, host.kind, meta.server_home_id, connectionRef, scopeRestore?.transitioningInPlace, needsScopeReload]);
   const [backgroundReady, setBackgroundReady] = useState(false);
   useEffect(() => afterPaint(() => { setBackgroundReady(true); }), []);
   const [sidebarOpen, setSidebarOpen] = useState(false);

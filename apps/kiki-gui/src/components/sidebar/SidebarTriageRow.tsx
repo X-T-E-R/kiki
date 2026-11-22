@@ -119,8 +119,8 @@ export function SidebarTriageRow({
       ? 'text-ink-soft'
       : 'text-ink-faint';
 
-  const showSettle = bucket === 'active' && !item.needsYou && onSettle !== undefined;
-  const showSnooze = bucket === 'active' && onSnooze !== undefined;
+  const showSettle = bucket === 'active' && !item.needsYou && !item.busy && onSettle !== undefined;
+  const showSnooze = bucket === 'active' && !item.busy && onSnooze !== undefined;
   const showArchive = (bucket === 'active' || bucket === 'working') && !item.needsYou && onArchive !== undefined;
   const showWake = bucket === 'snoozed' && onRestore !== undefined;
   const showRestore = bucket === 'archived' && onRestore !== undefined;

@@ -115,7 +115,7 @@ export function SidebarInboxView({
       if (event.key === 'Enter' && resolvedFocusedKey !== undefined) {
         event.preventDefault();
         onOpenItem(targetItem);
-      } else if (event.key === 'e' && !targetItem.needsYou) {
+      } else if (event.key === 'e' && !targetItem.needsYou && !targetItem.busy) {
         event.preventDefault();
         const idx = items.findIndex((i) => i.encodedKey === targetItem.encodedKey);
         const nextFocus = items[idx + 1]?.encodedKey ?? items[idx - 1]?.encodedKey;

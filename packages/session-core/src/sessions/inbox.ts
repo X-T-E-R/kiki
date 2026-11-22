@@ -433,6 +433,13 @@ export interface UnifiedInboxOptions {
    * `snoozed` / `archived`), resumes work, or the user navigates away.
    */
   readonly pinnedViewingKey?: string;
+  /**
+   * Encoded conversation key of the currently entered conversation route. Keeps
+   * the currently viewed conversation (including while actively executing or
+   * settled/idle) visible in `active` without duplicating it into `working` /
+   * `snoozed` or inflating `needsYouCount`, `unreadCount`, or `total`.
+   */
+  readonly activeConversationKey?: string;
 }
 
 export const EMPTY_UNIFIED_INBOX: UnifiedInboxModel = {
@@ -504,8 +511,17 @@ export function buildUnifiedInbox(
   const archived: UnifiedInboxItem[] = [];
   const seenKeys = new Set<string>();
   const pinnedViewingKey = options.pinnedViewingKey;
+  const activeConversationKey = options.activeConversationKey;
 
   const routeItem = (item: UnifiedInboxItem): void => {
+    if (
+      activeConversationKey !== undefined &&
+      item.encodedKey === activeConversationKey &&
+      item.triageClass !== 'archived'
+    ) {
+      active.push(item);
+      return;
+    }
     switch (item.triageClass) {
       case 'active':
         active.push(item);
@@ -656,8 +672,9 @@ export function buildUnifiedInbox(
   let needsYouCount = 0;
   let unreadCount = 0;
   for (const item of active) {
+    if (item.triageClass !== 'active') continue;
     if (item.needsYou) needsYouCount += 1;
-    else if (item.triageClass === 'active') unreadCount += 1;
+    else unreadCount += 1;
   }
 
   return {
