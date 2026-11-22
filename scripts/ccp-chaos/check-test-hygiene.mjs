@@ -23,19 +23,59 @@ export const LEGACY_DISABLED_TEST_ALLOWLIST = new Set([
   'packages/node-sdk/test/session-plan-compact-usage-resume.test.ts',
 ]);
 
-export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set([
-  'packages/kap-server/test/documentPreview.officeRender.test.ts',
-  'packages/kap-server/test/externalDelegationRouteProjection.test.ts',
-  'packages/kap-server/test/externalDelegationSeats.test.ts',
-  'packages/kap-server/test/notifications.integration.ts',
-  'packages/kap-server/test/pluginOutboundIm.test.ts',
-  'packages/kap-server/test/prompts.delivery.integration.ts',
-  'packages/kap-server/test/prompts.integration.ts',
-  'packages/kap-server/test/prompts.lifecycle.integration.ts',
-  'packages/kap-server/test/prompts.media.integration.ts',
-  'packages/kap-server/test/prompts.queue.integration.ts',
-  'packages/kap-server/test/services/imSession/visibleReply.test.ts',
-]);
+export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set(
+  JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'legacy-mock-allowlist.json'), 'utf8')),
+);
+
+function stripCommentsPreservingLines(src) {
+  let out = '';
+  let i = 0;
+  let quote = null;
+  while (i < src.length) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (quote !== null) {
+      out += ch;
+      if (ch === '\\' && i + 1 < src.length) {
+        out += src[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < src.length && src[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      out += '  ';
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
+        out += src[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < src.length) {
+        out += '  ';
+        i += 2;
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
 
 const TEST_FILE_RE = /\.(?:test|spec|integration|e2e)\.[cm]?[jt]sx?$/u;
 const INTEGRATION_TEST_FILE_RE = /\.integration\.[cm]?[jt]sx?$/u;
@@ -168,7 +208,8 @@ function isExemptMockCall(callExpr) {
   return false;
 }
 
-function findIntraMonorepoMocks(text, lineNumberAtOffset) {
+function findIntraMonorepoMocks(rawText, lineNumberAtOffset) {
+  const text = stripCommentsPreservingLines(rawText);
   const hits = [];
   INTRA_MONOREPO_MOCK_GLOBAL_RE.lastIndex = 0;
   let match;
@@ -484,7 +525,7 @@ export function scanIntraMonorepoMocks(
     const files = walkFiles(dir, (abs, name) => {
       if (!TEST_FILE_RE.test(name)) return false;
       const rel = toPosix(path.relative(repoRoot, abs));
-      return rel.startsWith('packages/kap-server/test/') || INTEGRATION_TEST_FILE_RE.test(name);
+      return rel !== 'scripts/ccp-chaos/ccp-chaos.test.mjs';
     });
     for (const abs of files) {
       const rel = toPosix(path.relative(repoRoot, abs));
@@ -500,10 +541,27 @@ export function scanIntraMonorepoMocks(
   return { violations, legacyExempted };
 }
 
+function resolveDefaultDiffArgs(repoRoot, baseRef) {
+  if (baseRef) {
+    const mb = spawnSync('git', ['merge-base', baseRef, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+    if (mb.status === 0 && mb.stdout.trim()) {
+      return ['diff', '-U0', mb.stdout.trim()];
+    }
+    return ['diff', '-U0', `${baseRef}...HEAD`];
+  }
+  for (const candidate of ['origin/kiki', 'origin/main']) {
+    const mb = spawnSync('git', ['merge-base', candidate, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+    if (mb.status === 0 && mb.stdout.trim()) {
+      return ['diff', '-U0', mb.stdout.trim()];
+    }
+  }
+  return ['diff', '-U0', 'HEAD'];
+}
+
 export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffText } = {}) {
   let rawDiff = diffText;
   if (rawDiff === undefined) {
-    const args = baseRef ? ['diff', '-U0', `${baseRef}...HEAD`] : ['diff', '-U0', 'HEAD'];
+    const args = resolveDefaultDiffArgs(repoRoot, baseRef);
     const res = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
     rawDiff = res.status === 0 ? res.stdout : '';
   }

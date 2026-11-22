@@ -3672,21 +3672,21 @@ function SessionRow({
               {location === undefined ? null : (
                 <span
                   data-session-location
-                  className={`min-w-0 truncate ${remoteSpaceName !== undefined && fact === undefined ? '' : 'flex-1'}`}
+                  className="min-w-0 shrink truncate"
                   title={locationPath}
                 >
                   {location}
                 </span>
               )}
-              {location === undefined || fact === undefined ? null : <span aria-hidden>·</span>}
+              {location === undefined || fact === undefined ? null : <span aria-hidden className="shrink-0">·</span>}
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
-                <span data-session-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
+                <span data-session-needs-you className="shrink-0 whitespace-nowrap font-medium text-attention">{fact.text}</span>
               ) : fact.kind === 'cleanup-pending' ? (
-                <span data-session-cleanup-pending className="min-w-0 truncate text-ink-soft">{fact.text}</span>
+                <span data-session-cleanup-pending className="shrink-0 whitespace-nowrap text-ink-soft">{fact.text}</span>
               ) : fact.kind === 'failed' ? (
                 <span
                   data-session-failed
-                  className="min-w-0 truncate text-ink-soft"
+                  className="shrink-0 whitespace-nowrap text-ink-soft"
                 >
                   {fact.text}
                 </span>
@@ -3710,7 +3710,7 @@ function SessionRow({
               <WorktreeMark worktree={session.worktree} className={fact === undefined && location === undefined ? 'max-w-full' : 'max-w-[40%] shrink-0'} />
               {remoteSpaceName !== undefined ? (
                 <>
-                  {fact === undefined && location === undefined && externalSource === undefined ? null : <span aria-hidden>·</span>}
+                  {fact === undefined && location === undefined && externalSource === undefined ? null : <span aria-hidden className="shrink-0">·</span>}
                   <span
                     data-session-space-label
                     title={remoteOffline ? t('sidebar.space.remoteOfflineTitle', { name: remoteSpaceName }) : remoteSpaceName}

@@ -1805,7 +1805,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(await tasks.readOutput(previous)).toContain('First phase result.');
       expect(await tasks.readOutput(previous)).toContain('continuing automatically');
       target.setRunning(false);
-      await vi.waitFor(() => expect(runNext).toHaveBeenCalledExactlyOnceWith('agent-target', expect.objectContaining({ kind: 'mailbox' }), expect.anything()));
+      await vi.waitFor(() => expect(runNext).toHaveBeenCalledExactlyOnceWith('agent-target', expect.objectContaining({ kind: 'mailbox' }), expect.any(Object)));
       await vi.waitFor(() => expect(tasks.list(false).filter(task => task.status === 'running')).toHaveLength(1));
       const next = tasks.list(false).find(task => task.status === 'running')!;
       ctx.mockNextResponse({ type: 'text', text: 'Noted the final result.' });

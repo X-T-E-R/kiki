@@ -6,6 +6,8 @@ import type { WorkspacePathSnapshot } from './workspacePathIndex';
 import type { WorkspacePathEntry } from './workspacePathInventory';
 
 const TRIGRAM_MIN_FILES = 1500;
+const TRIGRAM_MAX_FILES = 30_000;
+const TRIGRAM_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 const TRIGRAM_REBUILD_BATCH_SIZE = 64;
 const TRIGRAM_PATCH_BATCH_SIZE = 256;
 
@@ -76,10 +78,14 @@ export class WorkspaceTrigramIndex {
     patches: readonly (readonly [string, WorkspacePathEntry | undefined])[],
   ): void {
     let fileCount = 0;
+    let totalBytes = 0;
     for (const entry of snapshot.entries) {
-      if (entry.kind === 'file' && !entry.sensitive) fileCount += 1;
+      if (entry.kind === 'file' && !entry.sensitive) {
+        fileCount += 1;
+        totalBytes += entry.size;
+      }
     }
-    if (fileCount < TRIGRAM_MIN_FILES) {
+    if (fileCount < TRIGRAM_MIN_FILES || fileCount > TRIGRAM_MAX_FILES || totalBytes > TRIGRAM_MAX_TOTAL_BYTES) {
       this.reset();
       return;
     }
@@ -168,7 +174,9 @@ export class WorkspaceTrigramIndex {
 
   rebuild(snapshot: WorkspacePathSnapshot): void {
     const files = snapshot.entries.filter(entry => entry.kind === 'file' && !entry.sensitive);
-    if (files.length < TRIGRAM_MIN_FILES) {
+    let totalBytes = 0;
+    for (const file of files) totalBytes += file.size;
+    if (files.length < TRIGRAM_MIN_FILES || files.length > TRIGRAM_MAX_FILES || totalBytes > TRIGRAM_MAX_TOTAL_BYTES) {
       this.reset();
       return;
     }

@@ -39,6 +39,7 @@ const MAX_PAGE_SIZE = 100;
 const MESSAGE_HISTORY_CACHE_CAPACITY = 128;
 export const MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES = 8 << 20;
 export const MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES = 64 << 20;
+export const MESSAGE_HISTORY_SPILL_MAX_ENTRY_BYTES = 16 << 20;
 const MESSAGE_HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES = 256;
 const MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES = 32;
 const MESSAGE_HISTORY_ESTIMATE_TOOL_CALL_BYTES = 128;
@@ -581,7 +582,8 @@ async function loadSpilledMessageHistory(
   sessionId: string,
 ): Promise<MessageHistoryCacheEntry | undefined> {
   try {
-    const value = await core.accessor.get(IQueryStore).get<{
+    const store = core.accessor.get(IQueryStore);
+    const value = await store.get<{
       readonly messages: ContextMessage[];
       readonly createdAtMs: number[];
       readonly explicitIndexes: readonly [string, number][];
@@ -590,9 +592,12 @@ async function loadSpilledMessageHistory(
       readonly offset: number;
       readonly bytes: number;
     }>(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId);
-    return value === undefined
-      ? undefined
-      : { ...value, explicitIndexes: new Map(value.explicitIndexes) };
+    if (value === undefined) return undefined;
+    if (value.bytes > MESSAGE_HISTORY_SPILL_MAX_ENTRY_BYTES) {
+      await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
+      return undefined;
+    }
+    return { ...value, explicitIndexes: new Map(value.explicitIndexes) };
   } catch {
     return undefined;
   }
@@ -605,7 +610,7 @@ async function persistSpilledMessageHistory(
   spill: boolean,
 ): Promise<void> {
   const store = core.accessor.get(IQueryStore);
-  if (!spill) {
+  if (!spill || entry.bytes > MESSAGE_HISTORY_SPILL_MAX_ENTRY_BYTES) {
     await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
     return;
   }

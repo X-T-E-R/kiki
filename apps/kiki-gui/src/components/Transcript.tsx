@@ -6273,6 +6273,13 @@ export const Transcript = memo(function Transcript({
   const seatPaddingEnd = baseSeatPaddingEnd + (effectiveTailHeight > 0 ? effectiveTailHeight + 12 : 0);
   const seatPaddingEndRef = useRef(seatPaddingEnd);
   seatPaddingEndRef.current = seatPaddingEnd;
+  const computeTailSlotY = useCallback((instance: Virtualizer<HTMLDivElement, HTMLDivElement>): number => {
+    const appliedPaddingEnd = instance.options.paddingEnd ?? 0;
+    const virtualContentEnd = Math.max(0, instance.getTotalSize() - appliedPaddingEnd);
+    const lastIdx = virtualNodesRef.current.length - 1;
+    const lastItemEnd = lastIdx >= 0 ? (instance.measurementsCache[lastIdx]?.end ?? 0) : 0;
+    return Math.max(virtualContentEnd, lastItemEnd) + 12;
+  }, []);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
@@ -6316,6 +6323,10 @@ export const Transcript = memo(function Transcript({
       ) {
         rerenderVirtualWindow();
       }
+      if (tailSlotRef.current !== null) {
+        const tailY = computeTailSlotY(instance);
+        tailSlotRef.current.style.transform = `translate3d(0, ${tailY}px, 0)`;
+      }
       // A hidden (display:none) box reports scrollTop 0 on every tick, and a
       // pending transcript reset has not restored the pre-reset anchor yet.
       if (
@@ -6329,10 +6340,6 @@ export const Transcript = memo(function Transcript({
       const nextTotalSize = instance.getTotalSize();
       const prevTotalSize = lastTotalSizeRef.current;
       lastTotalSizeRef.current = nextTotalSize;
-      if (tailSlotRef.current !== null) {
-        const tailY = Math.max(0, nextTotalSize - seatPaddingEndRef.current + 12);
-        tailSlotRef.current.style.transform = `translate3d(0, ${tailY}px, 0)`;
-      }
       // Sync user-initiated scroll changes BEFORE checking `isFollowingBottom()`,
       // since virtualizer's scroll listener fires before component-level scroll effects.
       if (el !== null && el.isConnected && el.clientHeight > 0) {
@@ -6389,6 +6396,10 @@ export const Transcript = memo(function Transcript({
   });
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
+  useLayoutEffect(() => {
+    if (!hasTailContent || tailSlotRef.current === null) return;
+    tailSlotRef.current.style.transform = `translate3d(0, ${computeTailSlotY(virtualizer)}px, 0)`;
+  }, [hasTailContent, seatPaddingEnd, virtualNodes.length, state.transcriptResetVersion, visible, computeTailSlotY, virtualizer]);
   const prevSeatPaddingEndRef = useRef(seatPaddingEnd);
   useLayoutEffect(() => {
     const prev = prevSeatPaddingEndRef.current;
@@ -7954,7 +7965,7 @@ export const Transcript = memo(function Transcript({
               ref={handleTailSlotRef}
               data-transcript-tail-slot
               className="pointer-events-none absolute top-0 left-0 w-full"
-              style={{ transform: `translate3d(0, ${Math.max(0, virtualizer.getTotalSize() - seatPaddingEnd + 12)}px, 0)` }}
+              style={{ transform: `translate3d(0, ${computeTailSlotY(virtualizer)}px, 0)` }}
             >
               <div className="pointer-events-auto mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6">
                 {view === 'message' && presence !== undefined ? (

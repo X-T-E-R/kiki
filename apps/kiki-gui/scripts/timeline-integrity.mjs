@@ -61,6 +61,29 @@ const MONITOR = () => {
           px: Math.round(kind === 'overlap' ? -gap : gap - GAP),
         } });
       }
+      const tailSlot = scroll.querySelector('[data-transcript-tail-slot]');
+      if (tailSlot !== null && items.length > 0) {
+        const tailRect = tailSlot.getBoundingClientRect();
+        const last = items[items.length - 1];
+        if (tailRect.height > 0 && tailRect.width > 0) {
+          const pairInView = Math.max(last.rect.bottom, tailRect.bottom) > viewport.top
+            && Math.min(last.rect.top, tailRect.top) < viewport.bottom;
+          const tailGap = tailRect.top - last.rect.bottom;
+          if (pairInView && tailGap < -TOLERANCE) {
+            found.push({
+              kind: 'tail-overlap',
+              signature: `${host}|tail-overlap|${last.index}`,
+              detail: {
+                host,
+                index: last.index,
+                row: describe(last.element),
+                nextRow: '[data-transcript-tail-slot]',
+                px: Math.round(-tailGap),
+              },
+            });
+          }
+        }
+      }
     }
     return found;
   };

@@ -91,8 +91,8 @@ const LOCAL_WORKSPACES = [
 ];
 
 const MAC_WORKSPACES = [
-  { id: 'ws-mac-metal', name: 'MetalLab', root: '/Users/nailong/MetalLab', pinned: false },
-  { id: 'ws-mac-ios', name: 'XcodeApp', root: '/Users/nailong/XcodeApp', pinned: false },
+  { id: 'ws-mac-metal', name: 'MetalLab', root: '/Users/alice/MetalLab', pinned: false },
+  { id: 'ws-mac-ios', name: 'XcodeApp', root: '/Users/alice/XcodeApp', pinned: false },
 ];
 
 const GPU_WORKSPACES = [

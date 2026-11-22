@@ -22,7 +22,7 @@ interface ReviewerDraft {
   categories: Category[];
 }
 const DEFAULT_DRAFT: ReviewerDraft = {
-  timeoutS: '8', allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES],
+  timeoutS: '8', allowThreshold: '0.5', denyThreshold: '0.5', categories: [...CATEGORIES],
 };
 function timeoutMsToSeconds(ms: number): string {
   return Number.isInteger(ms / 1000) ? String(ms / 1000) : (ms / 1000).toFixed(1);
