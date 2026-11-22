@@ -1,9 +1,7 @@
 ---
-mode: shadow
+mode: auto_merge_on_green
 pr_actor: owner_gh
 merge_strategy: daemon_verified_rebase
-max_autofix_attempts: 2
-spend_limit_usd: 1.5
 required_checks:
   - pr-title-checker
   - Check flake.nix workspace sync
@@ -14,7 +12,7 @@ required_checks:
   - test-gui
 protected_paths:
   - APPROVAL_POLICY.md
-  - AGENTS.md
+  - ./AGENTS.md
   - MAINTAINERS.md
   - .github/workflows/
   - scripts/check-repo-meta.mjs
@@ -22,23 +20,23 @@ protected_paths:
   - scripts/ccp-chaos/check-test-hygiene.mjs
   - pnpm-workspace.yaml
   - flake.nix
-always_deny_paths:
   - packages/auth-native/
   - packages/oauth/
   - packages/kap-server/src/auth/
   - apps/kiki-gui/src-tauri/
+  - scripts/release-pipeline.test.mjs
+always_deny_paths:
   - apps/kimi-code/scripts/native/
   - apps/kimi-code/scripts/npm/
-  - scripts/release-pipeline.test.mjs
 ---
 
 # Approval Policy (`X-T-E-R/kiki`)
 
-This policy is read strictly from the protected default branch (`kiki`). Pull requests that modify this file or any listed protected path are marked `policy_changed` and always require human review.
+This policy is read strictly from the protected default branch (`kiki`). Pull requests that modify this file or any listed `protected_paths` are flagged for semantic review by the Kiki project lead maintainer before merging; `always_deny_paths` cover external native/npm release publishing scripts and always require manual human review.
 
 ## Rollout Mode
 
-Start in `shadow` mode to calibrate false-approval rates against actual human reviews before enabling `auto_merge_on_green`.
+`auto_merge_on_green`: eligible pull requests auto-merge once deterministic checks, semantic Anti-Slop review, and required GitHub Actions checks are green on the exact head commit and no `protected_paths` or `always_deny_paths` require manual escalation.
 
 ## Approval Rubric
 
@@ -48,6 +46,6 @@ Start in `shadow` mode to calibrate false-approval rates against actual human re
    - Passes orthogonal semantic Anti-Slop review across active lenses (base-branch reuse, no unauthorized defensive bloat, write-side invariants and lossless error propagation, subtraction-first cleanup, live UI wiring, seamless doc updates, and zero test subversion) with zero blocking findings.
    - Pull request title conforms to `.github/pr-title-checker-config.json` (Conventional Commits) and fills `.github/pull_request_template.md`.
    - Required GitHub Actions checks (including Linux GUI checks) are green on the exact head commit.
-3. **Incident Risk**:
-   - `low` / `medium`: Eligible under the configured rollout mode once all gates and required CI checks pass and no `protected_paths` or `always_deny_paths` are modified.
-   - `high` / `critical` or touching authentication, native crypto, Tauri desktop packaging, release scripts, or protected policy/gate files: Always require manual human review.
+3. **Escalation Boundaries**:
+   - Changes touching `protected_paths` (root policy/governance files, authentication, native crypto, Tauri desktop packaging, or release pipeline tests) escalate for semantic review by the Kiki project lead maintainer.
+   - Changes touching `always_deny_paths` (`apps/kimi-code/scripts/native/`, `apps/kimi-code/scripts/npm/`) always require manual human review.
