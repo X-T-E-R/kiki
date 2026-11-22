@@ -78,7 +78,6 @@ function stripCommentsPreservingLines(src) {
 }
 
 const TEST_FILE_RE = /\.(?:test|spec|integration|e2e)\.[cm]?[jt]sx?$/u;
-const INTEGRATION_TEST_FILE_RE = /\.integration\.[cm]?[jt]sx?$/u;
 const DISABLED_TEST_RE = /^\s*(?:it|test|describe)\.(?:skip|todo)\s*\(/u;
 const INTRA_MONOREPO_MOCK_GLOBAL_RE = /\b(?:vi\.(?:doM|m)ock|mock\.module)\s*\(\s*(?:import\s*\(\s*)?['"`]((?:#\/|@kiki\/|@nb-corp\/|\.\.?\/)[^'"`]+)['"`]/gu;
 const SPY_OPTION_RE = /,\s*\{\s*spy\s*:\s*true\s*\}\s*\)$/u;

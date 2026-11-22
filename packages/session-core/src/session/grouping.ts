@@ -432,7 +432,7 @@ export function readSubagentEndings(
   });
   const mergedLength = merged.length;
   const breakerPrefix = new Int32Array(mergedLength + 1);
-  const definedTurnAt = new Array<string | undefined>(mergedLength);
+  const definedTurnAt = Array.from<string | undefined>({ length: mergedLength });
   const prevDefinedTurnIdx = new Int32Array(mergedLength);
   const nextDefinedTurnIdx = new Int32Array(mergedLength);
   const turnChangePrefix = new Int32Array(mergedLength);

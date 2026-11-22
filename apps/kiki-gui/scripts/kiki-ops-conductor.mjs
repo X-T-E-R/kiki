@@ -85,11 +85,17 @@ export function writeJsonAtomic(filePath, value) {
 }
 
 function readJsonIfExists(filePath) {
-  if (!existsSync(filePath)) return null;
+  let raw;
   try {
-    return JSON.parse(readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''));
-  } catch {
-    return null;
+    raw = readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') return null;
+    throw new Error(`Failed to read JSON file ${filePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+  try {
+    return JSON.parse(raw.replace(/^\uFEFF/, ''));
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${filePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 }
 
@@ -192,23 +198,43 @@ export function callLocalApi({ port, token, path, method = 'GET', body, timeoutM
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           const status = res.statusCode ?? 0;
+          let parsed;
+          try {
+            parsed = text.length > 0 ? JSON.parse(text) : undefined;
+          } catch {
+            parsed = undefined;
+          }
           if (status < 200 || status >= 300) {
-            const err = new Error(`HTTP ${status} for ${method} ${path}: ${text.slice(0, 300)}`);
+            const envelopeMsg = parsed && typeof parsed === 'object'
+              ? (parsed.msg ?? parsed.error?.message ?? parsed.message)
+              : undefined;
+            const err = new Error(`HTTP ${status} for ${method} ${path}: ${envelopeMsg ?? text}`);
             err.statusCode = status;
+            err.rawBody = text;
+            if (parsed && typeof parsed === 'object') {
+              if ('code' in parsed) err.apiCode = parsed.code;
+              if ('details' in parsed) err.details = parsed.details;
+              if ('request_id' in parsed) err.requestId = parsed.request_id;
+              err.envelope = parsed;
+            }
             rejectRequest(err);
             return;
           }
-          let parsed;
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            rejectRequest(new Error(`Invalid JSON response for ${method} ${path}`));
+          if (parsed === undefined) {
+            const err = new Error(`Invalid JSON response for ${method} ${path}`);
+            err.statusCode = status;
+            err.rawBody = text;
+            rejectRequest(err);
             return;
           }
           if (parsed && typeof parsed === 'object' && 'code' in parsed) {
             if (parsed.code !== 0) {
               const err = new Error(`${path}: ${parsed.msg ?? 'error'} (${parsed.code})`);
+              err.statusCode = status;
               err.apiCode = parsed.code;
+              if ('details' in parsed) err.details = parsed.details;
+              if ('request_id' in parsed) err.requestId = parsed.request_id;
+              err.envelope = parsed;
               rejectRequest(err);
               return;
             }

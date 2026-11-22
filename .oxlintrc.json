@@ -105,7 +105,10 @@
         "packages/minidb/src/text-postings.ts",
         "packages/minidb/src/text-index/tokenize.ts",
         "packages/minidb/src/gen-codec.ts",
-        "packages/kap-server/src/search/match.ts"
+        "packages/kap-server/src/search/match.ts",
+        "packages/session-core/src/i18n/en.ts",
+        "packages/session-core/src/i18n/zh.ts",
+        "scripts/ccp-chaos/**/*.mjs"
       ],
       "rules": {
         "import/extensions": "off"

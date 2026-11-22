@@ -2798,7 +2798,7 @@ describe('cold session snapshot', () => {
     const existing = await docs.get<Record<string, unknown>>(scope, 'state.json');
     expect(existing).toBeDefined();
     const agents: Record<string, unknown> = {
-      ...((existing!['agents'] as Record<string, unknown> | undefined) ?? {}),
+      ...(existing!['agents'] as Record<string, unknown> | undefined),
     };
     const pad = 'x'.repeat(1600);
     for (let i = 0; i < 10_000; i += 1) {

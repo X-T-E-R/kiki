@@ -1898,7 +1898,7 @@ function subagentBlocksFromSnapshot(
       if (callId !== undefined) explicitlyClaimedToolCallIds.add(callId);
     }
   }
-  const nextTurnAfter = new Array<{ readonly turnId: string; readonly startedAt?: number } | undefined>(response.items.length);
+  const nextTurnAfter = Array.from<{ readonly turnId: string; readonly startedAt?: number } | undefined>({ length: response.items.length });
   {
     let nextTurn: { readonly turnId: string; readonly startedAt?: number } | undefined;
     for (let index = response.items.length - 1; index >= 0; index -= 1) {

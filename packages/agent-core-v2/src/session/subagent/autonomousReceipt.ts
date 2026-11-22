@@ -87,7 +87,7 @@ export function observeAutonomousReceipts(
   const contains = (agentId: string): boolean => {
     const agents = metadata.snapshot().agents;
     let id: string | null | undefined = agentId;
-    while (id != null) {
+    while (id !== null && id !== undefined) {
       if (id === child.id) return true;
       id = agents?.[id]?.parentAgentId;
     }
@@ -216,7 +216,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   let parent = meta.archived ? undefined : lifecycle.get(parentId);
   const parentMeta = meta.agents?.[parentId];
   if (parent === undefined && !meta.archived && receipt.userPrompt === true && parentMeta !== undefined && parentMeta.labels?.['branchSealed'] !== 'true') {
-    const delegator = parentMeta.delegator ?? (parentMeta.parentAgentId == null ? undefined : { kind: 'agent' as const, agentId: parentMeta.parentAgentId });
+    const delegator = parentMeta.delegator ?? (parentMeta.parentAgentId === null || parentMeta.parentAgentId === undefined ? undefined : { kind: 'agent' as const, agentId: parentMeta.parentAgentId });
     parent = await retry(() => lifecycle.create({ agentId: parentId, delegator }));
   }
   const tasks = parent?.accessor.get(IAgentTaskService);

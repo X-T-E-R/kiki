@@ -4,7 +4,7 @@
  * Real end-to-end Multi-Space, Left Sidebar, SpaceSwitchSheet, and In-Place
  * Place Routing integration tests (ESC-20261122-004).
  *
- * ZERO `vi.mock('../state/connection')`! Mounts the REAL `ConnectionProvider`,
+ * Zero module mocks on connection state! Mounts the REAL `ConnectionProvider`,
  * REAL `NavScopeBoundary`, REAL `App` (`PlaceClientsProvider`, `Sidebar`,
  * `SpaceScopeControl`, `SpaceSwitchSheet`, `PlaceClientProvider`,
  * `SpaceViewState`, and `SessionRouteView`) against a real HTTP fetch router
