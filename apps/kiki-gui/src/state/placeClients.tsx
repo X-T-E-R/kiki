@@ -33,6 +33,7 @@ import {
   ConnectionScope,
   refreshSessionAttention,
   useConnection,
+  useOptionalControllerRegistry,
   type ConnectionValue,
 } from './connection';
 
@@ -49,6 +50,7 @@ export interface PlaceClientPoolValue {
   readonly getOrCreateEntry: (connectionId: string) => PooledPlaceEntry | null;
   readonly getOrCreateClient: (connectionId: string) => KikiClient | null;
   readonly revoke: (connectionId: string) => void;
+  readonly retainOnly: (activeIds: ReadonlySet<string>) => void;
   readonly subscribeMutation: (listener: (connectionId: string, sessionId: string) => void) => () => void;
 }
 
@@ -60,6 +62,9 @@ export function useOptionalPlaceClientPool(): PlaceClientPoolValue | null {
 
 export function PlaceClientsProvider({ children }: { readonly children: ReactNode }) {
   const { client, localClient, config } = useConnection();
+  const controllerRegistry = useOptionalControllerRegistry();
+  const controllerRegistryRef = useRef(controllerRegistry);
+  controllerRegistryRef.current = controllerRegistry;
   const localSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -74,6 +79,7 @@ export function PlaceClientsProvider({ children }: { readonly children: ReactNod
   const mutationListenersRef = useRef(new Set<(connectionId: string, sessionId: string) => void>());
 
   const disposeEntry = useCallback((entry: PooledPlaceEntry) => {
+    controllerRegistryRef.current?.evictScope?.(entry.client);
     entry.queryClient.clear();
     entry.queryClient.unmount();
     void entry.client.dispose?.().catch?.(() => undefined);
@@ -84,6 +90,15 @@ export function PlaceClientsProvider({ children }: { readonly children: ReactNod
     if (existing === undefined) return;
     poolRef.current.delete(connectionId);
     disposeEntry(existing);
+  }, [disposeEntry]);
+
+  const retainOnly = useCallback((activeIds: ReadonlySet<string>) => {
+    for (const [id, entry] of Array.from(poolRef.current.entries())) {
+      if (!activeIds.has(id)) {
+        poolRef.current.delete(id);
+        disposeEntry(entry);
+      }
+    }
   }, [disposeEntry]);
 
   // Drop stale entries if the control server endpoint/token changes.
@@ -161,8 +176,9 @@ export function PlaceClientsProvider({ children }: { readonly children: ReactNod
     getOrCreateEntry,
     getOrCreateClient,
     revoke,
+    retainOnly,
     subscribeMutation,
-  }), [getOrCreateEntry, getOrCreateClient, revoke, subscribeMutation]);
+  }), [getOrCreateEntry, getOrCreateClient, revoke, retainOnly, subscribeMutation]);
 
   return (
     <PlaceClientPoolContext.Provider value={value}>

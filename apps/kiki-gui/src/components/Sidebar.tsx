@@ -1871,7 +1871,7 @@ export function Sidebar({
       if (!source.isRemote && source.spaceKey === currentSpaceKey) {
         total += activity.model.running.length;
       } else {
-        total += source.sessions.filter((s) => s.busy && s.archived !== true && s.pending_interaction == null).length;
+        total += source.sessions.filter((s) => s.archived !== true && s.private !== true && sessionStatusOf(s) === 'running').length;
       }
     }
     return total;
@@ -1880,12 +1880,17 @@ export function Sidebar({
   // The status filter offers only the states some session is in right now,
   // among the archived ones the list shows: an entry with nothing behind it
   // ("process cleanup unconfirmed" on a quiet day) is a choice nobody can use.
-  const presentStatuses = useMemo(() => new Set<SessionStatusFilter>(sessions
-    .filter((session) => (filters.archived === 'only' ? session.archived === true
-      : filters.archived === 'hide' ? session.archived !== true : true))
-    .filter((session) => (privateFilter === 'only' ? session.private === true
-      : privateFilter === 'hide' ? session.private !== true : true))
-    .map((session) => sessionStatusOf(session))), [sessions, filters.archived, privateFilter]);
+  const presentStatuses = useMemo(() => {
+    const candidateSessions = multiSpaceSources !== undefined && multiSpaceSources.length > 0
+      ? multiSpaceSources.flatMap((source) => (matchesSpaceScope(spaceScope, source.spaceKey) ? source.sessions : []))
+      : sessions;
+    return new Set<SessionStatusFilter>(candidateSessions
+      .filter((session) => (filters.archived === 'only' ? session.archived === true
+        : filters.archived === 'hide' ? session.archived !== true : true))
+      .filter((session) => (privateFilter === 'only' ? session.private === true
+        : privateFilter === 'hide' ? session.private !== true : true))
+      .map((session) => sessionStatusOf(session)));
+  }, [multiSpaceSources, spaceScope, sessions, filters.archived, privateFilter]);
 
   const toggleGroupCollapsed = (key: string) => {
     setCollapsedGroups((current) => {

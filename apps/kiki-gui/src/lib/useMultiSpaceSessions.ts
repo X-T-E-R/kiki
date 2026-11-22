@@ -216,9 +216,8 @@ export function useMultiSpaceSessions({
       }
     }
     if (placePool !== null) {
-      for (const record of remoteRecords) {
-        if (!record.enabled) placePool.revoke(record.id);
-      }
+      const enabledIds = new Set(remoteRecords.filter((r) => r.enabled).map((r) => r.id));
+      placePool.retainOnly(enabledIds);
     }
     // Also drop snapshots for removed/disabled remotes so revoked peers leave the stream cleanly.
     const validKeys = new Set<string>([

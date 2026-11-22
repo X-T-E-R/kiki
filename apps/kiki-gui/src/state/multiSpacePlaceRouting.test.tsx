@@ -56,7 +56,7 @@ function makeSession(overrides: Partial<Session> & { id: string; title: string; 
     busy: overrides.busy ?? false,
     executing: overrides.executing ?? overrides.busy ?? false,
     main_turn_active: overrides.main_turn_active ?? overrides.busy ?? false,
-    pending_interaction: overrides.pending_interaction,
+    pending_interaction: overrides.pending_interaction ?? 'none',
     last_seq: overrides.last_seq ?? 3,
     last_turn_reason: overrides.last_turn_reason ?? 'completed',
     agent_config: overrides.agent_config ?? {

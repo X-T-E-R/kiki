@@ -646,7 +646,7 @@ describe('SubagentToolInputSchema', () => {
   it('describes background notification without requiring root to keep its turn open', () => {
     const properties = agentSchemaProperties<{ description?: string }>();
     expect(properties['background']?.description).toContain('automatic completion notification');
-    expect(properties['background']?.description).toContain('main runs in background and receives an automatic completion notification; subagents wait in foreground');
+    expect(properties['background']?.description).toContain('main and branch agents run in background and receive an automatic completion notification; subagents wait in foreground');
     expect(properties['background']?.description).toContain('auto-detach to background after 15s');
     expect(properties['background']?.description).toContain('including resume and goal mode');
     expect(properties['background']?.description).not.toContain('Prefer false');

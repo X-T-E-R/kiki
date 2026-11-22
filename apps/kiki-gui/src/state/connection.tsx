@@ -203,6 +203,7 @@ export interface ControllerRegistry {
    * omission as "the transcript is gone".
    */
   hasRetained(sessionId: string, connectionScope: object): boolean;
+  evictScope?(connectionScope: object): void;
   [Symbol.iterator](): Iterator<SessionController>;
   subscribe(listener: () => void): () => void;
   snapshot(): number;
