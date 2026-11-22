@@ -27,9 +27,9 @@ import { executeTool } from '../../../tools/fixtures/execute-tool';
 
 const signal = new AbortController().signal;
 const disposables = new DisposableStore();
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
-  disposables.clear();
+  await disposables.clear();
 });
 
 function childMeta(options: {

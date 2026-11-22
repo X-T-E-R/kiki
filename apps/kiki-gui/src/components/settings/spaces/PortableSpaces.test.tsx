@@ -349,7 +349,8 @@ describe('PortableSpaces REST client', () => {
     expect(list.deviceRecipient).toBe(DEVICE_KEY);
     expect(list.items).toHaveLength(4);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe('http://127.0.0.1:58627/api/spaces/portable/sources');
+    const urlText = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+    expect(urlText).toBe('http://127.0.0.1:58627/api/spaces/portable/sources');
     expect((init?.headers as Record<string, string>)['authorization']).toBe('Bearer secret-bearer');
     await httpClient.dispose();
   });

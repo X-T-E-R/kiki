@@ -205,8 +205,7 @@ export function promotedExecutorSession(
   const event = event2FromRecord(ExecutorSessionUpdated, record);
   if (!(event instanceof ExecutorSessionUpdated) || event.executionGeneration !== source.execution?.generation ||
     event.executorId !== binding.executorId || event.descriptorRevision !== binding.executorDescriptorRevision) return undefined;
-  return new ExecutorSessionUpdated({
-    ...event,
+  return Object.assign(event, {
     executionGeneration: binding.execution?.generation,
     bindingFingerprint: agentExecutorBindingFingerprint(binding),
     profileDeliveredSessionId: undefined,
@@ -423,7 +422,7 @@ export function settlePromotedWireRecords(
       ? stringOf(run.record?.['resultSummary']) ?? ''
       : new TextDecoder().decode(task.output)) : undefined;
     const error = completed ? undefined : status === 'killed' || (info === undefined && run.state === 'running')
-      ? 'terminated' : stringOf(info?.['stopReason']) ?? stringOf(run.record?.['error']) ?? String(status ?? 'terminated');
+      ? 'terminated' : stringOf(info?.['stopReason']) ?? stringOf(run.record?.['error']) ?? stringOf(status) ?? 'terminated';
     const settlement: WireRecord = completed
       ? { ...run.record, type: 'subagent.completed', subagentId: run.subagentId, taskId: run.taskId, resultSummary, time: completedAt }
       : { type: 'subagent.failed', subagentId: run.subagentId, taskId: run.taskId, error, time: completedAt };

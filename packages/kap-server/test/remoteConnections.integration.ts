@@ -16,6 +16,7 @@ import { catalogChangedSchema, searchIndexStateSchema } from '@kiki/klient/contr
 import { startServer, type RunningServer } from '../src/start';
 import { rotateServerToken } from '../src/services/auth/persistentToken';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { rawDataToString } from './helpers/rawData';
 
 const servers: RunningServer[] = []; const homes: string[] = []; const sockets: WebSocket[] = [];
 afterEach(async () => {
@@ -693,7 +694,7 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
       let resolveAck!: () => void;
       const gotAck = new Promise<void>((resolve) => { resolveAck = resolve; });
       ws.on('message', (raw) => {
-        const parsed = JSON.parse(raw.toString()) as {
+        const parsed = JSON.parse(rawDataToString(raw)) as {
           type?: string;
           id?: string;
           payload?: { reason?: string; connection_id?: string };

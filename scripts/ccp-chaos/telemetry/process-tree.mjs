@@ -379,10 +379,10 @@ export function startExternalHeartbeatWatchdog({ url, headers = {}, intervalMs =
       if (timeoutMs > maxLatencyMs) maxLatencyMs = timeoutMs;
     } finally {
       clearTimeout(t);
-      if (!stopped) timer = setTimeout(tick, intervalMs);
+      if (!stopped) timer = setTimeout(() => { void tick(); }, intervalMs);
     }
   };
-  timer = setTimeout(tick, intervalMs);
+  timer = setTimeout(() => { void tick(); }, intervalMs);
 
   return {
     stop() {

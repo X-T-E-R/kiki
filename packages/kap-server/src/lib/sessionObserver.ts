@@ -93,7 +93,7 @@ export async function readSessionCursor(
   const store = getColdCursorStore(core, broadcaster as object);
   if (isLive) {
     store.values.delete(sessionId);
-    return await broadcaster.getCursor(sessionId, signal, indexed);
+    return broadcaster.getCursor(sessionId, signal, indexed);
   }
   const cached = store.values.get(sessionId);
   if (cached !== undefined) return cached;

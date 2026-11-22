@@ -178,6 +178,12 @@
       "rules": {
         "vitest/no-disabled-tests": "warn"
       }
+    },
+    {
+      "files": ["scripts/**/*.test.mjs"],
+      "rules": {
+        "typescript/no-floating-promises": "off"
+      }
     }
   ],
   "ignorePatterns": [

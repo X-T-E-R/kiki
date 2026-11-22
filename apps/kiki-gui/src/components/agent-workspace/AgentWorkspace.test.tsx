@@ -637,8 +637,7 @@ it('does not render a duplicate optimistic user bubble when Send now already pub
     for (const listener of listeners) listener();
     return new Promise<{ promptId: string; outcome: 'steered' }>((resolve) => { resolveSendNow = resolve; });
   });
-  const controller = {
-    ...controllerStub({ forest, agentStates: { child: childState } }),
+  const controller = Object.assign(controllerStub({ forest, agentStates: { child: childState } }), {
     getAgentState: (id: string) => (id === 'child' ? childState : createViewState('session')),
     subscribeAgent: (id: string, listener: () => void) => {
       if (id !== 'child') return () => {};
@@ -646,7 +645,7 @@ it('does not render a duplicate optimistic user bubble when Send now already pub
       return () => { listeners.delete(listener); };
     },
     sendPromptNow,
-  } as unknown as SessionController;
+  }) as unknown as SessionController;
   await renderWorkspace({ forest, controller, sessionState: { ...createViewState('session'), loaded: true } });
   await settle();
   await typeText(composerInput(dock), 'steer once without echo dup');

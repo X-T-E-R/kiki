@@ -1,5 +1,5 @@
 import type { SnapshotSubagent, Task } from '@kiki/protocol';
-import type { AgentState, AgentTranscriptSnapshot } from '@kiki/transcript';
+import type { AgentState, AgentTranscriptSnapshot, TranscriptTask } from '@kiki/transcript';
 
 import type { AgentTranscriptAgent, AgentTranscriptResponse, AgentTranscriptTask } from '../../transport';
 import {
@@ -646,7 +646,7 @@ export function liveSourcesFromAgentSnapshots(
       const latestPool = activeCandidates.length > 0 ? activeCandidates : candidates;
       let latest = latestPool[0]!;
       let earliest = candidates[0]!;
-      let anchored: (typeof candidates)[number] | undefined;
+      let anchored: TranscriptTask | undefined;
       let explicitName: string | undefined;
       let profileName: string | undefined;
       for (const task of latestPool) {

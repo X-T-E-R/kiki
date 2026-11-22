@@ -446,7 +446,7 @@ export class SessionEventBroadcaster {
     if (this.closed) return;
     const port = readBroadcasterExtensionPort(this.opts.core);
     if (port === this.attachedPluginPort) return;
-    this.pluginTopicSubscription?.dispose();
+    void this.pluginTopicSubscription?.dispose();
     this.pluginTopicSubscription = undefined;
     this.attachedPluginPort = port;
     if (port?.onDidPublishWsTopicEvent !== undefined) {
@@ -1531,7 +1531,7 @@ export class SessionEventBroadcaster {
     this.closed = true;
     for (const pending of this.pendingSubscriptions.values()) for (const controller of pending.values()) controller.abort();
     this.pendingSubscriptions.clear();
-    this.pluginTopicSubscription?.dispose();
+    void this.pluginTopicSubscription?.dispose();
     this.pluginTopicSubscription = undefined;
     this.attachedPluginPort = undefined;
     await this.coreEventSubscription.dispose();

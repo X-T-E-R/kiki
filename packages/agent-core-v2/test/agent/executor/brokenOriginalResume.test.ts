@@ -1892,7 +1892,7 @@ describe('recoverable ACP broken resume', () => {
         expect.objectContaining({ sessionId: 'remote-auto-1' }),
       ]);
 
-      childCtx.get(IConfigService).set(AGENT_EXECUTOR_OVERRIDES_SECTION, {
+      await childCtx.get(IConfigService).set(AGENT_EXECUTOR_OVERRIDES_SECTION, {
         'agy-cli': {
           quotaSource: 'plugin:magpie/agy',
           defaults: {
@@ -1947,7 +1947,7 @@ describe('recoverable ACP broken resume', () => {
         { accountId: 'acct-c', modelIds: ['model-a'], unit: 'percent' as const, remaining: undefined },
         { accountId: 'acct-diff', modelIds: ['model-a'], unit: 'percent' as const, remaining: 0 },
       ];
-      childCtx.get(IConfigService).set(AGENT_EXECUTOR_OVERRIDES_SECTION, {
+      await childCtx.get(IConfigService).set(AGENT_EXECUTOR_OVERRIDES_SECTION, {
         'agy-cli': {
           quotaSource: 'plugin:magpie/agy',
           defaults: {

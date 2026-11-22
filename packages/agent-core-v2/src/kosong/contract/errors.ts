@@ -320,7 +320,7 @@ export function isProviderInvalidMediaError(error: unknown): boolean {
       try {
         serializedDetails = JSON.stringify(details['upstreamDetails']);
       } catch {
-        serializedDetails = String(details['upstreamDetails']);
+        serializedDetails = Object.prototype.toString.call(details['upstreamDetails']);
       }
     }
     const combined = serializedDetails.length > 0 ? `${message} ${serializedDetails}` : message;

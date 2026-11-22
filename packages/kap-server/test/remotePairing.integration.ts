@@ -21,6 +21,7 @@ import { rotateServerToken } from '../src/services/auth/persistentToken';
 import { isPeerFrameAllowed } from '../src/services/connections/audience';
 import { WS_BEARER_PROTOCOL_PREFIX } from '../src/transport/ws/bearerProtocol';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { rawDataToString } from './helpers/rawData';
 
 const servers: RunningServer[] = []; const homes: string[] = [];
 afterEach(async () => {
@@ -173,11 +174,11 @@ describe('short-code pairing on two real servers', () => {
       const klientEvents: string[] = []; const legacyEvents: string[] = [];
       const subscribed = Promise.withResolvers<void>();
       klientSocket.on('message', (raw) => {
-        const frame = JSON.parse(raw.toString());
+        const frame = JSON.parse(rawDataToString(raw));
         if (frame.type === 'subscribed' && frame.id === 'core-events') subscribed.resolve();
         if (frame.type === 'event' && frame.id === 'core-events') klientEvents.push(frame.data.type);
       });
-      legacySocket.on('message', (raw) => legacyEvents.push(JSON.parse(raw.toString()).type));
+      legacySocket.on('message', (raw) => legacyEvents.push(JSON.parse(rawDataToString(raw)).type));
       await Promise.all([once(klientSocket, 'open'), once(legacySocket, 'open')]);
       klientSocket.send(JSON.stringify({ type: 'subscribe', id: 'core-events', scope: 'core', event: 'events' }));
       await subscribed.promise;
@@ -212,7 +213,7 @@ describe('short-code pairing on two real servers', () => {
     const legacy = new WebSocket(`${endpoint(target).replace(/^http:/, 'ws:')}/api/ws`, `${WS_BEARER_PROTOCOL_PREFIX}${target.localOwnerToken}`);
     const legacyEvents: unknown[] = [];
     legacy.on('message', (raw) => {
-      const event = JSON.parse(raw.toString());
+      const event = JSON.parse(rawDataToString(raw));
       if (event.type === 'event.remote_connections.changed') legacyEvents.push(event.payload);
     });
     try {
@@ -290,7 +291,7 @@ describe('short-code pairing on two real servers', () => {
       await once(ws, 'open');
       const ready = new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('No broker subscription acknowledgement')), 15000);
-        ws!.on('message', (raw) => { if (raw.toString().includes(body)) { clearTimeout(timer); resolve(); } });
+        ws!.on('message', (raw) => { if (rawDataToString(raw).includes(body)) { clearTimeout(timer); resolve(); } });
       });
       ws.send(JSON.stringify({ type: 'subscribe', id: body, scope: 'core', service: 'modelService', event: 'onDidChangeModels' })); await ready;
       const oldClosed = once(ws, 'close');
@@ -728,7 +729,7 @@ describe('short-code pairing on two real servers', () => {
       openSockets.push(bridgeSocket);
       const attached = new Promise<void>((resolve, reject) => {
         bridgeSocket.on('message', (raw) => {
-          const frame = JSON.parse(String(raw)) as { type: string; id?: string; data?: Record<string, unknown> };
+          const frame = JSON.parse(rawDataToString(raw)) as { type: string; id?: string; data?: Record<string, unknown> };
           if (frame.type === 'ping') {
             bridgeSocket.send(JSON.stringify({ type: 'pong', data: frame.data }));
             return;

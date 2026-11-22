@@ -19,6 +19,7 @@ import { IWireService } from '@kiki/agent-core-v2/wire/wire';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import { unknownToString } from './helpers/rawData';
 
 interface Envelope<T> {
   code: number;
@@ -342,10 +343,10 @@ describe('relay-v1 REST and cold wire contract', () => {
       const agent = caller.accessor.get(IAgentLifecycleService).get(agentId)!;
       const tool = agent.accessor.get(IHistoryListTool);
       const execution = await tool.resolveExecution({ kind: 'agents', session_id: sessionId });
-      if (!('execute' in execution)) throw new Error(String(execution.output));
+      if (!('execute' in execution)) throw new Error(unknownToString(execution.output));
       const result = await execution.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'branch-directory' });
-      expect(result.isError, String(result.output)).not.toBe(true);
-      return JSON.parse(String(result.output)) as { source: string; agents: Array<{ agent_id: string }> };
+      expect(result.isError, unknownToString(result.output)).not.toBe(true);
+      return JSON.parse(unknownToString(result.output)) as { source: string; agents: Array<{ agent_id: string }> };
     };
     const open = (agentId: string) => lifecycle.get(agentId)!.accessor.get(IAgentPromptService).enqueue({
       message: { ...text('user', 'Run example work.'), origin: { kind: 'user' } }, waitForLaunch: false,

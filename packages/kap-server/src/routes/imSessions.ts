@@ -36,8 +36,10 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
   });
   app.addHook('onClose', async () => { setup.clear(); });
   const respond = async (req: FastifyRequest, reply: FastifyReply, operation: () => Promise<unknown>): Promise<FastifyReply> => {
-    try { return reply.send(okEnvelope(await operation(), req.id)); }
-    catch (error) {
+    try {
+      const data = await operation();
+      return await Promise.resolve(reply.send(okEnvelope(data, req.id)));
+    } catch (error) {
       if (error instanceof z.ZodError) {
         return reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.issues.map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; '), req.id));
       }

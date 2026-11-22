@@ -573,7 +573,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
         expect(alive(child!.pid)).toBe(false);
         expect(alive((child as unknown as { child: { pid: number } }).child.pid)).toBe(false);
       }
-    } finally { spawn.mockRestore(); runtime.dispose(); }
+    } finally { spawn.mockRestore(); await runtime.dispose(); }
   });
 
   it('preserves binary stdin/stdout/stderr, EOF, cwd, env, argv and actual exit status', async () => {

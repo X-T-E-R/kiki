@@ -197,11 +197,13 @@ async function callAndroidBridge(
     return bridge.readClipboard();
   }
   if (method === 'writeClipboard' && typeof bridge.writeClipboard === 'function') {
-    const result = bridge.writeClipboard(String(params['text'] ?? ''));
+    const text = params['text'];
+    const result = bridge.writeClipboard(typeof text === 'string' ? text : '');
     return result !== false;
   }
   if (method === 'openPermission' && typeof bridge.openPermission === 'function') {
-    bridge.openPermission(String(params['kind'] ?? ''));
+    const kind = params['kind'];
+    bridge.openPermission(typeof kind === 'string' ? kind : '');
     return undefined;
   }
   if (method === 'openNativeSettings' || method === 'openPhoneSettings') {

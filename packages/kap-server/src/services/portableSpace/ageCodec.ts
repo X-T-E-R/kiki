@@ -67,7 +67,7 @@ export async function decodeAge(
     }
     if (header.modes.has('x25519')) {
       const keypair = await sync.ensureDeviceKeypair().catch(() => undefined);
-      const identity = keypair === undefined ? undefined : await resolveInlineIdentity(keypair.identity);
+      const identity = keypair === undefined ? undefined : resolveInlineIdentity(keypair.identity);
       if (identity !== undefined && !seenIdentities.has(identity)) {
         const plaintext = await tryDecryptIdentity(native, ciphertext, identity);
         if (plaintext !== undefined) return { bytes: plaintext, mode: 'x25519' };

@@ -146,7 +146,7 @@ function normTurn(turnId: string | undefined): string | undefined {
 }
 
 /** An agent status whose run is still active or waiting on user input. */
-export function isLiveSubagentStatus(status: AgentStatus | SubagentBlock['status'] | string): boolean {
+export function isLiveSubagentStatus(status: string): boolean {
   return status === 'running' || status === 'background' || status === 'suspended';
 }
 

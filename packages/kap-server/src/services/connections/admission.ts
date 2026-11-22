@@ -72,7 +72,7 @@ export class ConnectionAdmission {
       reason: change.reason ?? (change.kind === 'revoked' ? 'deleted' : 'updated'),
       grantId: change.grantId ?? this.pendingChange?.grantId,
     };
-    await Promise.allSettled([...this.changeListeners].map((listener) => listener(change)));
+    await Promise.allSettled([...this.changeListeners].map((listener) => Promise.resolve(listener(change))));
   }
   constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly unavailableReason?: 'dangerous_auth_bypass') { this.path = join(homeDir, 'server', 'inbound-connections.json'); }
   private requireEnabled(): void {

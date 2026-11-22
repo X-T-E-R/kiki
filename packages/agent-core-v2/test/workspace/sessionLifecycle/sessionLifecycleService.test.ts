@@ -2224,7 +2224,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       expect(events).toEqual(['acquire', 'drain', 'release', 'rewrite']);
       const afterFork = liveMain.accessor.get(IAgentLoopService).tryAcquireQuiescence({ pendingSteps: 'preserve' });
       expect(afterFork).toBeDefined();
-      afterFork?.dispose();
+      await afterFork?.dispose();
     } finally {
       releaseReadGate();
       materialize.mockRestore();

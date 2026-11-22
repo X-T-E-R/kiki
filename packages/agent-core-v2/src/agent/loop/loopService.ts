@@ -185,7 +185,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const holds = this.turnHolds.get(turn);
     if (holds === undefined) return;
     this.turnHolds.delete(turn);
-    for (const hold of holds) hold.dispose();
+    for (const hold of holds) void hold.dispose();
   }
 
   private holdTurnAdmission(turn: Turn): void {

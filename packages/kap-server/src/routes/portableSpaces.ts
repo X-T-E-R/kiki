@@ -20,8 +20,10 @@ export function registerPortableSpaceRoutes(app: FastifyInstance, service: Porta
     const match = /^Bearer (.+)$/.exec(authenticatedAuthorization(request) ?? '');
     reply.header('cache-control', 'no-store');
     if (!match || !matchesLocalOwner(match[1]!, ownerToken)) return reply.code(403).send(errEnvelope(40301, 'Local owner required for Portable Spaces', request.id));
-    try { return reply.send(okEnvelope(await run(), request.id)); }
-    catch (error) {
+    try {
+      const data = await run();
+      return await Promise.resolve(reply.send(okEnvelope(data, request.id)));
+    } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') return reply.code(404).send(errEnvelope(40401, 'Portable Space endpoint not found', request.id));
       if (error instanceof z.ZodError) return reply.code(400).send(errEnvelope(40001, 'Invalid Portable Space input or document', request.id));
