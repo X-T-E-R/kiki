@@ -1119,6 +1119,49 @@ describe('TaskWait tool', () => {
     expect(tasks.waitDeliveries).toEqual([]);
   });
 
+  it('applies mainOutsideGoal subagent protection to in-session branches without calling getGoal and releases waits on steer', async () => {
+    const tasks = new FakeTaskService();
+    const agentId = tasks.add(agentTaskInfo({ status: 'running' }));
+    const procId = tasks.add(processTask({ status: 'running' }));
+    const branchScope = makeAgentScopeContext({
+      agentId: 'branch-1', parentAgentId: 'main', agentScope: 'agents/branch-1', isBranch: true,
+    });
+    const ix = createServices(waitToolDisposables, {
+      strict: true,
+      additionalServices: (reg) => {
+        reg.defineInstance(IAgentTaskService, tasks);
+        reg.defineInstance(ITelemetryService, recordingTelemetry([]));
+        reg.defineInstance(IFlagService, stubFlag(true));
+        reg.defineInstance(IAgentScopeContext, branchScope);
+        reg.definePartialInstance(IAgentGoalService, {
+          getGoal: () => { throw new Error('Goals are only supported by the main agent'); },
+        });
+        reg.define(ITaskWaitTool, TaskWaitTool);
+      },
+    });
+    const waitTool = ix.get(ITaskWaitTool);
+
+    const refused = await executeTool(waitTool, context('branch_wait_agent', { timeout: 60, task_id: agentId }));
+    expect(refused.isError).toBe(true);
+    expect(outputString(refused)).toContain('automatic completion notification');
+
+    tasks.waitDelegate = async (_id, _timeout, waitSignal) => new Promise((_resolve, reject) => {
+      waitSignal?.addEventListener('abort', () => reject(waitSignal.reason), { once: true });
+    });
+    const steered = new AbortController();
+    const pending = executeTool(waitTool, {
+      ...context('branch_wait_any', { timeout: 60 }),
+      steerSignal: steered.signal,
+    });
+    await vi.waitFor(() => expect(tasks.waitCalls.map((call) => call.taskId)).toEqual([procId]));
+    steered.abort(abortError('Steered by new input'));
+    const interrupted = await pending;
+    expect(interrupted.isError).toBe(false);
+    expect(outputString(interrupted)).toContain('wait_status: interrupted');
+    expect(outputString(interrupted)).toContain('reason: steer');
+    expect(outputString(interrupted)).toContain(`Not waited for: subagent task ${agentId}.`);
+  });
+
   it.each(['running', 'completed'] as const)('applies the main wait-any guard to a checkpointed %s subagent', async (status) => {
     const tasks = new FakeTaskService();
     const taskId = tasks.add(agentTaskInfo({ status }));

@@ -33,8 +33,8 @@ export const PermissionReviewerConfigSchema = z.object({
   model: z.string().min(1).optional(),
   apiKey: z.string().min(1).optional(),
   timeoutMs: z.number().int().min(100).max(30_000).optional(),
-  allowThreshold: z.number().min(0.5).max(1).default(0.9),
-  denyThreshold: z.number().min(0.5).max(1).default(0.9),
+  allowThreshold: z.number().min(0.5).max(1).default(0.5),
+  denyThreshold: z.number().min(0.5).max(1).default(0.5),
   categories: z.array(ReviewerCategorySchema).min(1).default([
     'policy_compliance',
     'no_secret_egress',

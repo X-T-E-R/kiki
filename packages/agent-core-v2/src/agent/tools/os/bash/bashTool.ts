@@ -217,8 +217,8 @@ export class BashTool implements IBashTool {
       sessionApprovalRule: JSON.stringify(['Bash', shellContext.runtimeId, cwd, args.command]),
       shellContext,
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
-      execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
-        const result = await this.execution(input, signal, onUpdate, onForegroundTaskStart);
+      execute: async ({ signal, steerSignal, onUpdate, onForegroundTaskStart }) => {
+        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart);
         const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints === true;
         const hint = target.host === undefined && !this.runtime.inspect().identity.runtimeId.startsWith('ssh:')
           ? bashFileToolHint(args.command, this.ctx, enabled) : undefined;
@@ -263,6 +263,7 @@ export class BashTool implements IBashTool {
   private async execution(
     args: BashInput,
     signal: AbortSignal,
+    steerSignal?: AbortSignal,
     onUpdate?: (update: ToolUpdate) => void,
     onForegroundTaskStart?: (taskId: string) => void,
   ): Promise<ExecutableToolResult> {
@@ -270,6 +271,7 @@ export class BashTool implements IBashTool {
     if (validationError !== undefined) return validationError;
 
     const startsInBackground = args.run_in_background === true;
+    const steer = !startsInBackground && this.allowBackground() ? steerSignal : undefined;
     const foregroundTimeoutMs = normalizeTimeoutMs(args.timeout, false);
     const description = taskDescription(args);
     const timeoutMs = startsInBackground
@@ -285,12 +287,38 @@ export class BashTool implements IBashTool {
     const isLocalForeground = !startsInBackground && lease.runtime.identity.runtimeId === 'local';
     let releaseBashSlot: () => void = () => {};
     if (isLocalForeground) {
-      const acquired = await acquireLocalForegroundBashSlot(signal);
+      const slotSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
+      const acquired = await acquireLocalForegroundBashSlot(slotSignal);
       if (acquired === undefined) {
         lease.dispose();
+        if (!signal.aborted && steer?.aborted === true) {
+          return {
+            isError: false,
+            output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
+          };
+        }
         return { isError: true, output: 'Aborted before command started' };
       }
       releaseBashSlot = acquired;
+      if (signal.aborted) {
+        releaseBashSlot();
+        lease.dispose();
+        return { isError: true, output: 'Aborted before command started' };
+      }
+      if (steer?.aborted === true) {
+        releaseBashSlot();
+        lease.dispose();
+        return {
+          isError: false,
+          output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
+        };
+      }
+    } else if (!startsInBackground && !signal.aborted && steer?.aborted === true) {
+      lease.dispose();
+      return {
+        isError: false,
+        output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
+      };
     }
     let proc: IHostProcess;
     let command: string;
@@ -369,32 +397,44 @@ export class BashTool implements IBashTool {
       });
     }
 
+    const detachOnSteer = (): void => {
+      if (!signal.aborted) this.tasks.detach(taskId);
+    };
+    steer?.addEventListener('abort', detachOnSteer, { once: true });
     try {
+      if (steer?.aborted === true) detachOnSteer();
       const release = await this.tasks.waitForForegroundRelease(taskId);
       if (release === 'detached' || release === 'timeout_detached') {
         collectForegroundOutput = false;
+        const steered = release === 'detached' && steer?.aborted === true;
         const labels =
           release === 'timeout_detached'
             ? {
                 title: 'Command timed out and moved to background',
                 brief: `Backgrounded ${taskId} after timeout`,
               }
-            : {
-                title: 'Task moved to background',
-                brief: `Backgrounded ${taskId}`,
-              };
+            : steered
+              ? {
+                  title: 'New input moved task to background',
+                  brief: `Backgrounded ${taskId} on new input`,
+                }
+              : {
+                  title: 'Task moved to background',
+                  brief: `Backgrounded ${taskId}`,
+                };
         return this.backgroundStartedResult(
           taskId,
           proc,
           description,
           labels,
           builder,
-          'foreground_detached',
+          steered ? 'steer_detached' : 'foreground_detached',
         );
       }
 
       return await this.foregroundCompletionResult(taskId, proc, builder, foregroundTimeoutMs);
     } finally {
+      steer?.removeEventListener('abort', detachOnSteer);
       collectForegroundOutput = false;
       releaseBashSlot();
     }
@@ -487,7 +527,7 @@ export class BashTool implements IBashTool {
     description: string,
     labels: { title: string; brief: string },
     builder = new ToolOutputAccumulator(),
-    scenario: 'background_started' | 'foreground_detached' = 'background_started',
+    scenario: 'background_started' | 'foreground_detached' | 'steer_detached' = 'background_started',
   ): ExecutableToolResult {
     const status = this.tasks.getTask(taskId)?.status ?? 'running';
     const metadata =
@@ -515,8 +555,11 @@ export class BashTool implements IBashTool {
   }
 
   private nextStepLines(
-    scenario: 'background_started' | 'foreground_detached',
+    scenario: 'background_started' | 'foreground_detached' | 'steer_detached',
   ): string {
+    if (scenario === 'steer_detached') {
+      return 'next_step: New input ended this foreground wait. Read the new input before deciding what to do next; the command continues in the background and completion arrives automatically.\n';
+    }
     if (scenario === 'foreground_detached') {
       return 'next_step: Continue your current work; completion arrives automatically.\n';
     }

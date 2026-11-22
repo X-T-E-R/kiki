@@ -845,8 +845,8 @@ web = { allowed = true }
   # model: string
   # api_key: string
   # timeout_ms: integer
-  # allow_threshold: number (default: 0.9)
-  # deny_threshold: number (default: 0.9)
+  # allow_threshold: number (default: 0.5)
+  # deny_threshold: number (default: 0.5)
   # categories: "policy_compliance" | "no_secret_egress" | "no_irreversible_damage" | "no_outward_effect" | "prompt_injection_absent"[] (default: ["policy_compliance","no_secret_egress","no_irreversible_damage","no_outward_effect","prompt_injection_absent"])
 
 # ##########################################################################

@@ -168,7 +168,9 @@ export class SubagentTool implements ISubagentTool {
     @ref(IAgentGoalService) private readonly goals?: LiveRef<IAgentGoalService>,
   ) {
     this.callerAgentId = scopeContext.agentId;
-    this.isMainCaller = scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined;
+    this.isMainCaller =
+      (scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined) ||
+      scopeContext.isBranch === true;
     this.canRunInBackground = () =>
       this.toolPolicy.isToolActive('TaskList') &&
       this.toolPolicy.isToolActive('TaskOutput') &&
@@ -872,8 +874,10 @@ export class SubagentTool implements ISubagentTool {
         if (resumeRecord !== undefined && allocatedTaskId !== undefined) {
           await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId: allocatedTaskId });
         }
-        const mainOutsideGoal =
-          this.isMainCaller && this.goals?.current?.getGoal().goal?.status !== 'active';
+        const hasActiveGoal =
+          this.callerAgentId === MAIN_AGENT_ID &&
+          this.goals?.current?.getGoal().goal?.status === 'active';
+        const mainOutsideGoal = this.isMainCaller && !hasActiveGoal;
         const autoBackgroundMainWait = mainOutsideGoal && !runInBackground && allowBackground;
         const foregroundTimeoutMs = autoBackgroundMainWait
           ? timeoutMs > 0
@@ -981,7 +985,7 @@ export class SubagentTool implements ISubagentTool {
   private async waitForAgent(wait: Extract<import('#/tool/toolContract').ExecutionTaskWait, { kind: 'agent' }>, ctx: ExecutableToolContext): Promise<ExecutableToolResult> {
     const { taskId, handle, runLabel, timeoutMs } = wait;
     const pause = ctx.executionPauseSignal;
-    const steer = this.isMainCaller ? ctx.steerSignal : undefined;
+    const steer = this.isMainCaller || this.canRunInBackground() ? ctx.steerSignal : undefined;
     const detach = (): void => { if (!ctx.signal.aborted && pause?.aborted !== true) this.tasks.detach(taskId); };
     const cancelForeground = (): void => {
       const current = this.tasks.getTask(taskId);

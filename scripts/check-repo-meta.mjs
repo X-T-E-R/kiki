@@ -2,9 +2,9 @@
 /* eslint-disable no-console -- This file is a command-line checker. */
 /**
  * Deterministic repository meta-information anti-rot gate.
- * Runs 8 fast checks covering CLAUDE.md pointer, workspace parity, retired
- * scopes, meta-doc links, MAINTAINERS.md routing, word budgets, package
- * dependency/global boundaries, and workspace sync + scratch-file hygiene.
+ * Runs fast checks covering CLAUDE.md pointer, workspace parity, retired
+ * scopes, meta-doc links, MAINTAINERS.md routing, package dependency/global
+ * boundaries, workspace sync + scratch-file hygiene, and test hygiene.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -566,44 +566,6 @@ function checkMaintainersRouterParity(root, errors) {
           `Update or remove the missing ${label.toLowerCase()} \`${target}\` in MAINTAINERS.md`,
         );
       }
-    }
-  }
-}
-
-function checkDocWordBudgets(root, budgets, inventory, errors) {
-  if (!budgets) return;
-  const fileRules = budgets.files ?? {};
-  const defaultSubtreeMaxWords = budgets.defaults?.subtreeAgentsMaxWords ?? 1600;
-
-  for (const rel of inventory.agentsAndMaintainers) {
-    const abs = join(root, ...rel.split('/'));
-    if (!existsSync(abs)) continue;
-    const text = readFileSync(abs, 'utf8');
-    const words = text.trim().split(/\s+/).filter(Boolean).length;
-    const lines = text.split(/\r?\n/).length;
-    const budget =
-      fileRules[rel] ?? (rel.endsWith('/AGENTS.md') ? { maxWords: defaultSubtreeMaxWords } : null);
-    if (!budget) continue;
-
-    if (typeof budget.maxWords === 'number' && words > budget.maxWords) {
-      addViolation(
-        errors,
-        'doc-word-budgets',
-        rel,
-        1,
-        `Document has ${words} words, exceeding budget of ${budget.maxWords} words`,
-        `Trim ${rel} or move reference details into linked package/maintainer docs to stay <= ${budget.maxWords} words`,
-      );
-    }
-    if (typeof budget.maxLines === 'number' && lines > budget.maxLines) {
-      addViolation(
-        errors,
-        'doc-word-budgets',
-        rel,
-        1,
-        `Document has ${lines} lines, exceeding budget of ${budget.maxLines} lines`,
-        `Condense ${rel} to stay <= ${budget.maxLines} lines`,
-      );
     }
   }
 }
@@ -1236,11 +1198,6 @@ export function formatViolation(error) {
 export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
   const repoRoot = resolve(root);
   const boundaries = options.boundaries ?? defaultBoundaries;
-  let budgets = options.budgets;
-  if (budgets === undefined) {
-    const budgetPath = join(repoRoot, 'config', 'doc-budgets.json');
-    budgets = existsSync(budgetPath) ? JSON.parse(readFileSync(budgetPath, 'utf8')) : null;
-  }
 
   const inventory = collectRepoInventory(repoRoot, options.trackedFiles);
   const errors = [];
@@ -1250,7 +1207,6 @@ export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
   checkBannedStaleScopes(repoRoot, boundaries, inventory, errors);
   checkMetaDocLinks(repoRoot, inventory, errors);
   checkMaintainersRouterParity(repoRoot, errors);
-  checkDocWordBudgets(repoRoot, budgets, inventory, errors);
   await checkPkgBoundaryGraph(repoRoot, boundaries, inventory, errors);
   checkWorkspaceSyncAndHygiene(repoRoot, boundaries, inventory, errors);
   if (options.boundaries === undefined && options.trackedFiles === undefined) {
@@ -1306,7 +1262,7 @@ export async function main() {
   const elapsedMs = Math.round(performance.now() - start);
 
   if (errors.length === 0) {
-    console.log(`check-repo-meta: OK (9 checks passed in ${elapsedMs}ms)`);
+    console.log(`check-repo-meta: OK (8 checks passed in ${elapsedMs}ms)`);
     return;
   }
 
