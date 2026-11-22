@@ -1276,7 +1276,7 @@ export class AnthropicChatProvider implements ChatProvider {
     this._acceptedImageMimes =
       options.acceptedImageMimes ?? providerImagePolicy().acceptedMimes;
     this._audioIn = options.audioIn ?? false;
-    this._messageThreadsMode = options.anthropicMessageThreads?.mode ?? 'auto';
+    this._messageThreadsMode = options.anthropicMessageThreads?.mode ?? 'off';
     this._threadTracker = new AnthropicThreadTracker(options.threadTrackerOptions);
     this._apiKey =
       options.apiKey === undefined || options.apiKey.length === 0 ? undefined : options.apiKey;
@@ -1604,7 +1604,7 @@ export class AnthropicChatProvider implements ChatProvider {
         if (options?.signal?.aborted === true) {
           throw convertAnthropicError(error, this._hooks?.convertError);
         }
-        const classified = classifyAnthropicThreadError(error);
+        const classified = classifyAnthropicThreadError(error, currentAttempt.kind);
         if (classified.kind === 'replay' && currentAttempt.kind === 'continue' && !replayedAsCreate) {
           this._threadTracker.delete(threadScopeKey);
           if (classified.errorCode === 'thread_not_found' && currentAttempt.replacesLostThread) {

@@ -25,6 +25,7 @@ import {
   detectFileType,
   sniffImageDimensions,
 } from '#/agent/media/file-type';
+import { validateMediaBytesIntegrity } from '#/agent/media/mediaIntegrity';
 import {
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_DECODE_BYTES,
@@ -268,6 +269,16 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       };
     }
     const compressed = await compressVideoForModel(data, mimeType, { signal });
+    if (compressed.changed && !validateMediaBytesIntegrity(compressed.data, compressed.mimeType).valid) {
+      return {
+        part: inlineVideoPart(data, mimeType),
+        avDelivery: {
+          kind: 'untouched',
+          byteLength: data.length,
+          mimeType,
+        },
+      };
+    }
     return {
       part: inlineVideoPart(compressed.data, compressed.mimeType),
       avDelivery: {
@@ -491,6 +502,17 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       }
 
       const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+      if (fileType.kind === 'video' || fileType.kind === 'audio') {
+        const integrity = validateMediaBytesIntegrity(mediaData, fileType.mimeType);
+        if (!integrity.valid) {
+          return {
+            isError: true,
+            output:
+              `"${args.path}" is empty, truncated, or unfinalized (${integrity.reason}). ` +
+              'If an encoder or writer is still producing this file, wait until it finishes before calling ReadMediaFile again.',
+          };
+        }
+      }
       let dimensions = fileType.kind === 'image' ? sniffImageDimensions(mediaData) : null;
       let mediaPart: ContentPart;
       let delivery: ImageDelivery | undefined;
@@ -605,16 +627,20 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         };
       } else {
         const compressed = await compressAudioForModel(mediaData, fileType.mimeType, { signal });
+        const useCompressed =
+          compressed.changed && validateMediaBytesIntegrity(compressed.data, compressed.mimeType).valid;
+        const finalAudioBytes = useCompressed ? compressed.data : mediaData;
+        const finalAudioMime = useCompressed ? compressed.mimeType : fileType.mimeType;
         mediaPart = {
           type: 'audio_url',
           audioUrl: {
-            url: `data:${compressed.mimeType};base64,${Buffer.from(compressed.data).toString('base64')}`,
+            url: `data:${finalAudioMime};base64,${Buffer.from(finalAudioBytes).toString('base64')}`,
           },
         };
         avDelivery = {
-          kind: compressed.changed ? 'compressed' : 'untouched',
-          byteLength: compressed.finalByteLength,
-          mimeType: compressed.mimeType,
+          kind: useCompressed ? 'compressed' : 'untouched',
+          byteLength: finalAudioBytes.length,
+          mimeType: finalAudioMime,
         };
       }
 

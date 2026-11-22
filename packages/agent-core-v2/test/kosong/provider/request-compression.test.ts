@@ -385,15 +385,17 @@ describe('request compression system default', () => {
 });
 
 describe('anthropic message threads system default and provider override', () => {
-  it('registers an absent system table, defaults to auto, and round-trips TOML and wire shapes', () => {
+  it('registers an absent system table, defaults to off, and round-trips TOML and wire shapes', () => {
     expect(new ConfigRegistry().getSection(ANTHROPIC_MESSAGE_THREADS_SECTION)).toMatchObject({
       domain: ANTHROPIC_MESSAGE_THREADS_SECTION,
       defaultValue: undefined,
     });
-    expect(resolveAnthropicMessageThreads(undefined, undefined)).toEqual({ mode: 'auto' });
+    expect(resolveAnthropicMessageThreads(undefined, undefined)).toEqual({ mode: 'off' });
     expect(resolveAnthropicMessageThreads({ mode: 'off' }, undefined)).toEqual({ mode: 'off' });
     expect(resolveAnthropicMessageThreads({ mode: 'off' }, { mode: 'auto' })).toEqual({ mode: 'auto' });
     expect(resolveAnthropicMessageThreads({ mode: 'auto' }, { mode: 'off' })).toEqual({ mode: 'off' });
+    expect(resolveAnthropicMessageThreads({ mode: 'auto' }, undefined)).toEqual({ mode: 'auto' });
+    expect(resolveAnthropicMessageThreads(undefined, { mode: 'auto' })).toEqual({ mode: 'auto' });
     expect(resolveAnthropicMessageThreads(undefined, { mode: 'off' })).toEqual({ mode: 'off' });
 
     const raw = { synthetic: { anthropic_message_threads: { mode: 'off' } } };

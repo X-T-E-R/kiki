@@ -196,15 +196,18 @@ describe('HostProcessService Windows taskkill settlement', () => {
   let disposables: DisposableStore;
   let service: IHostProcessService;
   let commands: string[];
+  let spawnOptionsList: Array<import('node:child_process').SpawnOptions | undefined>;
 
   beforeEach(async () => {
     platform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32' });
     commands = [];
+    spawnOptionsList = [];
     vi.doMock('node:child_process', async (importOriginal) => ({
       ...(await importOriginal<typeof import('node:child_process')>()),
-      spawn: (command: string, args: readonly string[]) => {
+      spawn: (command: string, args: readonly string[], options?: import('node:child_process').SpawnOptions) => {
         commands.push([command, ...args].join(' '));
+        spawnOptionsList.push(options);
         const child = Object.assign(new EventEmitter(), {
           pid: 4242, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
           kill: vi.fn(() => true), unref: vi.fn(),
@@ -303,6 +306,31 @@ describe('HostProcessService Windows taskkill settlement', () => {
     expect(killer.unref).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     await process.dispose();
+  });
+
+  it('passes windowsHide: true for HostProcessService spawns, taskkill, and windowsProcessTree helper launches', async () => {
+    const proc = await service.spawn('node', ['-e', 'owned-test']);
+    expect(spawnOptionsList[0]?.windowsHide).toBe(true);
+    const killPromise = proc.kill();
+    killer.emit('close', 0);
+    await killPromise;
+    expect(spawnOptionsList[1]?.windowsHide).toBe(true);
+    await proc.dispose();
+
+    const { spawnWindowsProcessTree } = await import('#/os/backends/node-local/windowsProcessTree');
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', process.execPath);
+    try {
+      const before = spawnOptionsList.length;
+      const launch = spawnWindowsProcessTree('node', ['-v'], { windowsHide: false }, false);
+      queueMicrotask(() => {
+        root.emit('error', new Error('helper-stop'));
+      });
+      await expect(launch).rejects.toThrow(/Windows Bash process helper|helper-stop/);
+      expect(spawnOptionsList.length).toBeGreaterThan(before);
+      expect(spawnOptionsList[before]?.windowsHide).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

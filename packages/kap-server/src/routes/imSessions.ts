@@ -35,20 +35,18 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     return bridge.paste({ instanceId, text: [`platform=${provider}`, ...Object.entries(fields).map(([key, value]) => `${key}=${value}`)].join('\n') });
   });
   app.addHook('onClose', async () => { setup.clear(); });
-  const respond = async (req: FastifyRequest, reply: FastifyReply, operation: () => Promise<unknown>): Promise<void> => {
-    try { reply.send(okEnvelope(await operation(), req.id)); }
+  const respond = async (req: FastifyRequest, reply: FastifyReply, operation: () => Promise<unknown>): Promise<FastifyReply> => {
+    try { return reply.send(okEnvelope(await operation(), req.id)); }
     catch (error) {
       if (error instanceof z.ZodError) {
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.issues.map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; '), req.id));
-        return;
+        return reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.issues.map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; '), req.id));
       }
       if (error instanceof ImIdentityAlreadyBoundError) {
-        reply.send({ ...errEnvelope(ErrorCode.IM_IDENTITY_ALREADY_BOUND, error.message, req.id), details: error.details });
-        return;
+        return reply.send({ ...errEnvelope(ErrorCode.IM_IDENTITY_ALREADY_BOUND, error.message, req.id), details: error.details });
       }
       const message = error instanceof Error ? error.message : String(error);
       const validation = /^(?:paste_unrecognized|unknown_|unsupported_|home_session_missing|instance_required|group_binding_scope_required|topic_scope_unavailable|input_unsupported|output_unsupported|setup_|matrix_|discord_|slack_|oauth_)/u.test(message);
-      reply.send(errEnvelope(validation ? ErrorCode.VALIDATION_FAILED : ErrorCode.INTERNAL_ERROR, message, req.id));
+      return reply.send(errEnvelope(validation ? ErrorCode.VALIDATION_FAILED : ErrorCode.INTERNAL_ERROR, message, req.id));
     }
   };
   app.get('/im/sessions', (req, reply) => respond(req, reply, () => bridge.snapshot()));

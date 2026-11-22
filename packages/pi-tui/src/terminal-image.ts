@@ -55,6 +55,7 @@ function probeTmuxHyperlinks(): boolean {
 			encoding: "utf8",
 			timeout: 250,
 			stdio: ["ignore", "pipe", "ignore"],
+			windowsHide: true,
 		});
 		return termfeatures
 			.split(",")

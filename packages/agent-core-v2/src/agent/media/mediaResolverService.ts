@@ -6,6 +6,7 @@ import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MISSING_MEDIA_PLACEHOLDER } from '#/agent/blob/agentBlobService';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IFileService } from '#/app/file/fileService';
 import { LifecycleScope } from '#/app/scopes';
@@ -25,7 +26,8 @@ import {
   compressVideoForModel,
   resolveAvInlineByteBudget,
 } from './av-compress';
-import { detectFileType, MEDIA_SNIFF_BYTES } from './file-type';
+import { detectFileType, MEDIA_SNIFF_BYTES, sniffMediaFromMagic } from './file-type';
+import { validateMediaBytesIntegrity } from './mediaIntegrity';
 import {
   compressImageForModel,
   IMAGE_BYTE_BUDGET,
@@ -48,6 +50,8 @@ import {
   type DaemonFileRef,
   daemonFileRefFromPart,
   matchSingleMediaPathTag,
+  type MediaBlobRef,
+  parseMediaBlobRef,
 } from './mediaRef';
 import { ISessionMediaStore } from './sessionMediaStore';
 import { IAgentMediaResolverService } from './mediaResolver';
@@ -65,10 +69,18 @@ const AV_COMPRESS_CACHE_SCOPE = 'av-compress-cache';
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const VIDEO_UNAVAILABLE_TEXT =
   '[video omitted: the uploaded file is no longer available]';
+const VIDEO_UNSUPPORTED_TEXT =
+  '[video omitted: the current model does not support video input]';
+const VIDEO_CORRUPT_TEXT =
+  '[video omitted: the file or media data is empty, corrupted, or incomplete]';
 const IMAGE_UNAVAILABLE_TEXT =
   '[image omitted: the uploaded file is no longer available]';
 const AUDIO_UNAVAILABLE_TEXT =
   '[audio omitted: inline audio is unavailable for this model request]';
+const AUDIO_CORRUPT_TEXT =
+  '[audio omitted: the file or media data is empty, corrupted, or incomplete]';
+const POISONED_MEDIA_TEXT =
+  '[media omitted: rejected by model provider as empty, corrupted, or unsupported]';
 const AUDIO_BLOBREF_RE = /^blobref:(audio\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u;
 const AUDIO_MIME_ALIASES: Readonly<Record<string, string>> = {
   'audio/x-wav': 'audio/wav',
@@ -116,6 +128,19 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
   >();
   private imageMemoBytes = 0;
   private readonly imageUploadUnsupported = new WeakSet<ModelRequester>();
+  private readonly poisonedMedia = new Set<string>();
+
+  markMediaPoisoned(urlsOrKeys: Iterable<string>): void {
+    for (const urlOrKey of urlsOrKeys) {
+      if (urlOrKey.length === 0) continue;
+      this.poisonedMedia.add(poisonKey(urlOrKey));
+    }
+  }
+
+  private isPoisoned(url: string): boolean {
+    if (this.poisonedMedia.size === 0) return false;
+    return this.poisonedMedia.has(poisonKey(url));
+  }
 
   async resolve(
     messages: readonly Message[],
@@ -134,8 +159,14 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       }
       const content: ContentPart[] = [];
       for (const part of message.content) {
+        const rawUrl = mediaPartUrl(part);
+        if (rawUrl !== undefined && this.isPoisoned(rawUrl)) {
+          content.push({ type: 'text', text: POISONED_MEDIA_TEXT });
+          changed = true;
+          continue;
+        }
         const daemonPart = daemonFileRefFromPart(part);
-        const resolved =
+        let resolved =
           daemonPart?.kind === 'video'
             ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
             : daemonPart?.kind === 'image'
@@ -144,9 +175,15 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
                 ? await this.resolveAudioPart(daemonPart.ref, requester, signal)
                 : part.type === 'image_url'
                   ? await this.resolveInlineImagePart(part, requester, signal)
-                  : part.type === 'audio_url'
-                    ? await this.resolveInlineAudioPart(part, requester, signal)
-                    : part;
+                  : part.type === 'video_url'
+                    ? await this.resolveInlineVideoPart(part, requester, signal)
+                    : part.type === 'audio_url'
+                      ? await this.resolveInlineAudioPart(part, requester, signal)
+                      : part;
+        const resolvedUrl = mediaPartUrl(resolved);
+        if (resolvedUrl !== undefined && this.isPoisoned(resolvedUrl)) {
+          resolved = { type: 'text', text: POISONED_MEDIA_TEXT };
+        }
         content.push(resolved);
         changed ||= resolved !== part;
       }
@@ -185,6 +222,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           chunks.push(chunk);
         }
         const rawBytes = Buffer.concat(chunks);
+        if (!validateMediaBytesIntegrity(rawBytes, type).valid) {
+          return { type: 'text', text: AUDIO_CORRUPT_TEXT };
+        }
         const prepared = ref.fullResolution === true
           ? { data: rawBytes, mimeType: type }
           : await this.prepareInlineAv('audio', rawBytes, type, signal);
@@ -213,6 +253,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
     }
     const url = part.audioUrl.url;
+    if (url === MISSING_MEDIA_PLACEHOLDER) {
+      return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+    }
     if (url.startsWith('blobref:')) {
       const match = AUDIO_BLOBREF_RE.exec(url);
       if (match === null) {
@@ -229,6 +272,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       if (bytes === undefined) {
         return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
       }
+      if (!validateMediaBytesIntegrity(bytes, mime).valid) {
+        return { type: 'text', text: AUDIO_CORRUPT_TEXT };
+      }
       return {
         type: 'audio_url',
         audioUrl: {
@@ -237,18 +283,85 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
         },
       };
     }
-    if (url.startsWith('data:')) {
-      const withoutScheme = url.slice(5);
-      const parts = withoutScheme.split(';base64,', 2);
-      if (parts.length === 2 && parts[0] !== undefined && parts[1] !== undefined) {
-        const mime = normalizeAudioMime(parts[0]);
-        if (mime !== parts[0] && SUPPORTED_AUDIO_MIMES.has(mime)) {
-          return {
-            type: 'audio_url',
-            audioUrl: { ...part.audioUrl, url: `data:${mime};base64,${parts[1]}` },
-          };
-        }
+    if (isDataUrl(url)) {
+      const decoded = decodeValidatedBase64DataUrl(url);
+      if (decoded === null) {
+        return { type: 'text', text: AUDIO_CORRUPT_TEXT };
       }
+      const mime = normalizeAudioMime(decoded.mimeType);
+      const effectiveMime = resolveInlineAvIntegrityMime('audio', mime, decoded.bytes);
+      if (effectiveMime === undefined || !validateMediaBytesIntegrity(decoded.bytes, effectiveMime).valid) {
+        return { type: 'text', text: AUDIO_CORRUPT_TEXT };
+      }
+      const emittedMime = effectiveMime !== 'audio/octet-stream' ? effectiveMime : mime;
+      if (emittedMime !== decoded.mimeType && SUPPORTED_AUDIO_MIMES.has(emittedMime)) {
+        return {
+          type: 'audio_url',
+          audioUrl: { ...part.audioUrl, url: `data:${emittedMime};base64,${decoded.base64}` },
+        };
+      }
+    }
+    return part;
+  }
+
+  private async resolveInlineVideoPart(
+    part: Extract<ContentPart, { type: 'video_url' }>,
+    requester: ModelRequester,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    if (!requester.model.capabilities.video_in) {
+      return { type: 'text', text: VIDEO_UNSUPPORTED_TEXT };
+    }
+    const url = part.videoUrl.url;
+    if (url === MISSING_MEDIA_PLACEHOLDER) {
+      return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+    }
+    if (url.startsWith('blobref:')) {
+      const ref = parseMediaBlobRef(url);
+      if (ref === undefined || (ref.kind === 'mime' && !ref.mime.startsWith('video/'))) {
+        return { type: 'text', text: VIDEO_CORRUPT_TEXT };
+      }
+      signal?.throwIfAborted();
+      const scope = resolveBlobScope(this.agentScope?.current, ref);
+      const bytes = await this.blobs.get(scope, ref.hash).catch(() => undefined);
+      signal?.throwIfAborted();
+      if (bytes === undefined) {
+        return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+      }
+      let mimeType: string | undefined;
+      if (ref.kind === 'mime') {
+        mimeType = ref.mime;
+      } else {
+        const sniffed = sniffMediaFromMagic(bytes);
+        mimeType = sniffed?.kind === 'video' ? sniffed.mimeType : undefined;
+      }
+      if (mimeType === undefined || !validateMediaBytesIntegrity(bytes, mimeType).valid) {
+        return { type: 'text', text: VIDEO_CORRUPT_TEXT };
+      }
+      return {
+        type: 'video_url',
+        videoUrl: {
+          ...part.videoUrl,
+          url: `data:${mimeType};base64,${Buffer.from(bytes).toString('base64')}`,
+        },
+      };
+    }
+    if (isDataUrl(url)) {
+      const decoded = decodeValidatedBase64DataUrl(url);
+      if (decoded === null) {
+        return { type: 'text', text: VIDEO_CORRUPT_TEXT };
+      }
+      const effectiveMime = resolveInlineAvIntegrityMime('video', decoded.mimeType, decoded.bytes);
+      if (effectiveMime === undefined || !validateMediaBytesIntegrity(decoded.bytes, effectiveMime).valid) {
+        return { type: 'text', text: VIDEO_CORRUPT_TEXT };
+      }
+      if (effectiveMime !== 'video/octet-stream' && effectiveMime !== decoded.mimeType.trim().toLowerCase()) {
+        return {
+          type: 'video_url',
+          videoUrl: { ...part.videoUrl, url: `data:${effectiveMime};base64,${decoded.base64}` },
+        };
+      }
+      return part;
     }
     return part;
   }
@@ -341,6 +454,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
   ): Promise<ContentPart> {
     if (!requester.model.capabilities.image_in) {
       return { type: 'text', text: '[Image omitted: the current model does not support image input.]' };
+    }
+    if (part.imageUrl.url === MISSING_MEDIA_PLACEHOLDER) {
+      return { type: 'text', text: IMAGE_UNAVAILABLE_TEXT };
     }
     const policy = imagePolicyFor(
       requester,
@@ -491,6 +607,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     const fileType = detectFileType(filename, bytes.subarray(0, MEDIA_SNIFF_BYTES), 'media');
     if (fileType.kind !== 'video') return { part: videoTag(tagPath), memoize: true };
     const mimeType = fileType.mimeType;
+    if (!validateMediaBytesIntegrity(bytes, mimeType).valid) {
+      return { part: { type: 'text', text: VIDEO_CORRUPT_TEXT }, memoize: false };
+    }
 
     const model = requester.model;
     const inlineSupported = inlineVideoSupportedForProtocol(model.protocol);
@@ -564,12 +683,17 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     const digest = createHash('sha256').update(bytes).digest('hex');
     const cacheKey = `${kind}\0${mimeType}\0${digest}\0${String(budget)}`;
     const cached = await this.readCachedCompressedAv(cacheKey);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && validateMediaBytesIntegrity(cached.data, cached.mimeType).valid) {
+      return cached;
+    }
     const compressed =
       kind === 'video'
         ? await compressVideoForModel(bytes, mimeType, { byteBudget: budget, signal })
         : await compressAudioForModel(bytes, mimeType, { byteBudget: budget, signal });
     if (compressed.changed) {
+      if (!validateMediaBytesIntegrity(compressed.data, compressed.mimeType).valid) {
+        return { data: bytes, mimeType };
+      }
       await this.writeCachedCompressedAv(cacheKey, compressed.mimeType, compressed.data);
     }
     return { data: compressed.data, mimeType: compressed.mimeType };
@@ -616,13 +740,97 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
 
 function hasResolvableMediaPart(message: Message): boolean {
   return message.content.some(
-    (part) => part.type === 'image_url' || part.type === 'audio_url' || daemonFileRefFromPart(part) !== undefined,
+    (part) =>
+      part.type === 'image_url' ||
+      part.type === 'video_url' ||
+      part.type === 'audio_url' ||
+      daemonFileRefFromPart(part) !== undefined,
   );
+}
+
+function mediaPartUrl(part: ContentPart): string | undefined {
+  if (part.type === 'image_url') return part.imageUrl.url;
+  if (part.type === 'video_url') return part.videoUrl.url;
+  if (part.type === 'audio_url') return part.audioUrl.url;
+  return undefined;
+}
+
+function poisonKey(urlOrKey: string): string {
+  if (urlOrKey.length <= 256) return urlOrKey;
+  return `sha256:${createHash('sha256').update(urlOrKey).digest('hex')}`;
+}
+
+function resolveBlobScope(
+  agentScope: IAgentScopeContext | undefined,
+  ref: MediaBlobRef,
+): string {
+  if (ref.kind === 'mime') {
+    return agentScope?.scope('blobs') ?? 'blobs';
+  }
+  if (agentScope !== undefined) {
+    if (agentScope.agentId === ref.agentId) return agentScope.scope('blobs');
+    const current = agentScope.scope('blobs');
+    const suffix = `/agents/${agentScope.agentId}/blobs`;
+    if (current.endsWith(suffix)) {
+      return `${current.slice(0, -suffix.length)}/agents/${ref.agentId}/blobs`;
+    }
+    if (current === `agents/${agentScope.agentId}/blobs`) {
+      return `agents/${ref.agentId}/blobs`;
+    }
+  }
+  return `agents/${ref.agentId}/blobs`;
+}
+
+function decodeValidatedBase64DataUrl(
+  url: string,
+): { readonly mimeType: string; readonly base64: string; readonly bytes: Buffer } | null {
+  const match = /^data:([^;,]+)(?:;[^;,]+)*?;base64,(.*)$/si.exec(url);
+  if (match === null) return null;
+  const mimeType = match[1]!.trim();
+  const base64 = match[2]!;
+  if (base64.length === 0 || base64.length % 4 === 1) return null;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) return null;
+  if (base64.includes('=') && base64.length % 4 !== 0) return null;
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length === 0) return null;
+  return { mimeType, base64, bytes };
 }
 
 function normalizeAudioMime(raw: string): string {
   const base = (raw.split(';', 1)[0] ?? '').trim().toLowerCase();
   return AUDIO_MIME_ALIASES[base] ?? base;
+}
+
+function resolveInlineAvIntegrityMime(
+  kind: 'audio' | 'video',
+  declaredMime: string,
+  bytes: Uint8Array,
+): string | undefined {
+  const normalized = (declaredMime.split(';', 1)[0] ?? '').trim().toLowerCase();
+  const sniffed = sniffMediaFromMagic(bytes);
+  if (sniffed !== null) {
+    if (sniffed.kind === kind) return sniffed.mimeType;
+    if (kind === 'audio' && sniffed.mimeType === 'video/mp4') return 'audio/mp4';
+    if (kind === 'audio' && sniffed.mimeType === 'video/webm') return 'audio/webm';
+    if (kind === 'video' && sniffed.mimeType === 'audio/mp4') return 'video/mp4';
+    return undefined;
+  }
+  if (bytes.length >= 8) {
+    const boxType = Buffer.from(bytes.subarray(4, 8)).toString('latin1');
+    if (boxType === 'ftyp' || boxType === 'styp') {
+      return kind === 'video' ? 'video/mp4' : 'audio/mp4';
+    }
+  }
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x1a &&
+    bytes[1] === 0x45 &&
+    bytes[2] === 0xdf &&
+    bytes[3] === 0xa3
+  ) {
+    return kind === 'video' ? 'video/webm' : 'audio/webm';
+  }
+  return normalized.startsWith(`${kind}/`) ? normalized : `${kind}/octet-stream`;
 }
 
 function imagePolicyFor(

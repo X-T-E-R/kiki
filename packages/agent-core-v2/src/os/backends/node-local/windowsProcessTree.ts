@@ -406,7 +406,7 @@ async function launchWindowsProcessTreeOnce(
   ownerLifetime: boolean,
 ): Promise<WindowsProcessTree> {
   const name = `kiki-owned-${randomUUID()}`;
-  const child = spawn(helper, [name], { ...options, stdio: 'ignore', shell: false });
+  const child = spawn(helper, [name], { ...options, stdio: 'ignore', shell: false, windowsHide: true });
   if (child.pid !== undefined) {
     try {
       setPriority(child.pid, osConstants.priority.PRIORITY_ABOVE_NORMAL);

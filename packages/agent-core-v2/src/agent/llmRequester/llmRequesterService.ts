@@ -65,6 +65,7 @@ import {
   requestDeliveryProvenance,
   readProviderEventErrorCode,
   isImageFormatError,
+  isProviderInvalidMediaError,
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
@@ -640,6 +641,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     let attemptStartedAt = Date.now();
     let attemptTraceId: string | undefined;
     let malformedFunctionCallRetry = 0;
+    let lastAttemptMediaUrls = new Set<string>();
+    let poisonedMediaRetryAttempted = false;
     const run = async (
       policy: ProjectionPolicy | undefined,
       params: ModelRequestParams,
@@ -687,20 +690,22 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         projectedMessages,
       });
       const unmarkedOpaquePolicy = this.unmarkedOpaquePolicyFor(request.model);
+      const resolvedMessages = await this.mediaResolver.resolve(
+        projected,
+        request.requester,
+        signal,
+        params.headers,
+      );
       const targetMessages = projectMessagesForModelTarget(
         projectDynamicToolSchemas(
-          await this.mediaResolver.resolve(
-            projected,
-            request.requester,
-            signal,
-            params.headers,
-          ),
+          resolvedMessages,
           request.model.protocol,
           usesKimiToolSchema(request.model.providerType),
         ),
         request.model,
         { unmarkedOpaquePolicy },
       );
+      lastAttemptMediaUrls = collectSentMediaUrls(projected, resolvedMessages, targetMessages);
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
@@ -934,9 +939,16 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           raw instanceof APIRequestTooLargeError &&
           requestDeliveryProvenance(error) !== 'executed' &&
           (policy?.media === undefined || policy?.media === 'degraded');
+        const canSelfHealInvalidMedia =
+          !poisonedMediaRetryAttempted &&
+          lastAttemptMediaUrls.size > 0 &&
+          typeof this.mediaResolver.markMediaPoisoned === 'function' &&
+          requestDeliveryProvenance(error) !== 'executed' &&
+          !attemptObservedOutput &&
+          isProviderInvalidMediaError(error);
         if (source?.type === 'operation' && retryPolicy?.retry === false) attachErrorDetails(error, { retry_policy_veto: true });
         if (retry === 'never' || retryPolicy?.retry === false ||
-          (hasExplicitRetryVeto(error) && !discardRetry && !canDegradeOrStripMedia) ||
+          (hasExplicitRetryVeto(error) && !discardRetry && !canDegradeOrStripMedia && !canSelfHealInvalidMedia) ||
           isAbortError(error) || signal?.aborted === true) throw error;
         const retryAfterExceeded = check429RetryAfterExceeded(raw, retryConfig, retryPolicy);
         if (retryAfterExceeded !== undefined) {
@@ -1005,6 +1017,18 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           }
         }
         params = { ...params, googleContinuationToken: undefined };
+        if (canSelfHealInvalidMedia) {
+          poisonedMediaRetryAttempted = true;
+          this.mediaResolver.markMediaPoisoned?.(lastAttemptMediaUrls);
+          this.log.warn('provider rejected media payload as invalid; poisoning media and retrying once', {
+            model: request.model.name,
+            mediaCount: lastAttemptMediaUrls.size,
+            ...request.logFields,
+          });
+          onAttemptRetry?.('discard');
+          await refreshIdentityParams();
+          continue;
+        }
         if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error) && !uncommittedOverload && !canDegradeOrStripMedia) ||
           readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
@@ -1024,7 +1048,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error) && !uncommittedOverload) ||
           !this.infiniteRetryEnabled ||
           isRequestGovernanceError(error) ||
-          raw instanceof APIContextOverflowError
+          raw instanceof APIContextOverflowError ||
+          isProviderInvalidMediaError(error)
         ) {
           throw error;
         }
@@ -1972,6 +1997,54 @@ function apiTraceId(error: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function extractMediaPartUrl(
+  part: Message['content'][number] | undefined,
+): { readonly kind: 'image_url' | 'video_url' | 'audio_url'; readonly url: string } | undefined {
+  if (part === undefined) return undefined;
+  if (part.type === 'image_url') return { kind: 'image_url', url: part.imageUrl.url };
+  if (part.type === 'video_url') return { kind: 'video_url', url: part.videoUrl.url };
+  if (part.type === 'audio_url') return { kind: 'audio_url', url: part.audioUrl.url };
+  return undefined;
+}
+
+function collectSentMediaUrls(
+  projected: readonly Message[],
+  resolvedMessages: readonly Message[],
+  targetMessages: readonly Message[],
+): Set<string> {
+  const sourceByResolvedUrl = new Map<string, Set<string>>();
+  for (let messageIndex = 0; messageIndex < resolvedMessages.length; messageIndex += 1) {
+    const resolvedMessage = resolvedMessages[messageIndex]!;
+    const sourceMessage = projected[messageIndex];
+    for (let partIndex = 0; partIndex < resolvedMessage.content.length; partIndex += 1) {
+      const resolvedMedia = extractMediaPartUrl(resolvedMessage.content[partIndex]);
+      if (resolvedMedia === undefined) continue;
+      const sourceMedia = extractMediaPartUrl(sourceMessage?.content[partIndex]);
+      if (sourceMedia !== undefined && sourceMedia.kind === resolvedMedia.kind) {
+        let sources = sourceByResolvedUrl.get(resolvedMedia.url);
+        if (sources === undefined) {
+          sources = new Set<string>();
+          sourceByResolvedUrl.set(resolvedMedia.url, sources);
+        }
+        sources.add(sourceMedia.url);
+      }
+    }
+  }
+  const sentUrls = new Set<string>();
+  for (const targetMessage of targetMessages) {
+    for (const part of targetMessage.content) {
+      const targetMedia = extractMediaPartUrl(part);
+      if (targetMedia === undefined) continue;
+      sentUrls.add(targetMedia.url);
+      const sources = sourceByResolvedUrl.get(targetMedia.url);
+      if (sources !== undefined) {
+        for (const sourceUrl of sources) sentUrls.add(sourceUrl);
+      }
+    }
+  }
+  return sentUrls;
 }
 
 registerScopedService(

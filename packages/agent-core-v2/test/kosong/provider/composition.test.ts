@@ -50,6 +50,7 @@ import {
 } from '#/kosong/provider/bases/anthropic/anthropic';
 import {
   bindThreadMessageDigestKey,
+  classifyAnthropicThreadError,
   hashThreadMessages,
 } from '#/kosong/provider/bases/anthropic/anthropic-threads';
 import '#/kosong/provider/bases/google-genai/index';
@@ -683,7 +684,7 @@ describe('request identity final fetch projection', () => {
     const body = await request.clone().json() as Record<string, unknown>;
     expect(request.headers.get('user-agent')).toBe('kiki-cli/1.2.3');
     expect(body['metadata']).toEqual({ user_id: 'session_11111111-1111-4111-8111-111111111111' });
-    expect(body).toEqual({ ...kimiWireFixture.anthropic, thread: { type: 'create' } });
+    expect(body).toEqual(kimiWireFixture.anthropic);
     expect(body['system']).toEqual([
       expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
     ]);
@@ -4657,6 +4658,25 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
     vi.unstubAllGlobals();
   });
 
+  it('defaults anthropicMessageThreads to off when omitted', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_default_off', 'Stateless reply'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+
+    await generate(provider, 'Be terse.', [sampleTool], [userMsg('Hello')], undefined, {
+      threadScopeKey: 'sess-default-off\0main',
+    });
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.body).not.toHaveProperty('thread');
+    expect(recorded[0]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+  });
+
   it('creates a thread on turn 1, continues with delta messages omitting system/tools on turn 2, and preserves createBetas', async () => {
     const recorded = stubAnthropicFetch([
       () => okStreamResponse('msg_1', 'First reply'),
@@ -4666,6 +4686,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
 
     const history: Message[] = [userMsg('Hello')];
@@ -4710,6 +4731,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
 
     const mainHistory: Message[] = [userMsg('Main start')];
@@ -4754,6 +4776,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
 
     const history: Message[] = [userMsg('U1')];
@@ -4796,6 +4819,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const scope = { threadScopeKey: 'sess-nocommit\0main' };
 
@@ -4846,6 +4870,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const history: Message[] = [userMsg('Long task')];
     const r1 = await generate(provider, 'Sys', [], history, undefined, {
@@ -4878,6 +4903,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
         model: 'claude-sonnet-4-6',
         apiKey: 'YOUR_API_KEY',
         baseUrl: 'https://api.example.test',
+        anthropicMessageThreads: { mode: 'auto' },
       });
       const history: Message[] = [userMsg('One')];
       const r1 = await generate(provider, 'Sys', [sampleTool], history, undefined, {
@@ -4911,6 +4937,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const history: Message[] = [userMsg('U1')];
     const r1 = await generate(provider, 'Sys', [], history, undefined, {
@@ -4959,6 +4986,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
         model: 'claude-sonnet-4-6',
         apiKey: 'YOUR_API_KEY',
         baseUrl: 'https://proxy.example.test',
+        anthropicMessageThreads: { mode: 'auto' },
         threadTrackerOptions: { unsupportedTtlMs: 60_000, now: () => nowMs },
       });
 
@@ -5014,6 +5042,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       defaultMaxTokens: 1024,
       stream: false,
       betaApi: true,
+      anthropicMessageThreads: { mode: 'auto' },
     });
     const history: Message[] = [userMsg('Hi')];
     const b1 = await generate(betaProvider, 'Sys', [], history, undefined, {
@@ -5054,6 +5083,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
 
     const history: Message[] = [];
@@ -5167,6 +5197,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl: 'https://api.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
     });
 
     const history: Message[] = [userMsg('U1')];
@@ -5275,6 +5306,7 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       model: 'claude-sonnet-4-6',
       apiKey: 'YOUR_API_KEY',
       baseUrl,
+      anthropicMessageThreads: { mode: 'auto' },
       requestCompression: {
         encoding: 'zstd',
         dictionary: true,
@@ -5331,5 +5363,104 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       previous_message_id: 'msg_dcz_3',
     });
     expect(observed[4]!.body['messages']).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'Gemini orphaned function response',
+      'INVALID_ARGUMENT: Please ensure that function response turn comes immediately after a function call turn.',
+      undefined,
+    ],
+    [
+      'Anthropic unexpected tool_use_id without code',
+      'messages.0.content.0: unexpected `tool_use_id` found in `tool_result` blocks: toolu_1.',
+      undefined,
+    ],
+    [
+      'Anthropic unexpected tool_use_id with invalid_request_error code',
+      'messages.0.content.0: unexpected `tool_use_id` found in `tool_result` blocks: toolu_1.',
+      'invalid_request_error',
+    ],
+    [
+      'Alternating role phrasing',
+      'Messages must alternate between user and assistant.',
+      undefined,
+    ],
+  ] as const)(
+    'disables threads and retries full unthreaded history when a proxy ignores thread on step 1 and fails step 2 continue with %s',
+    async (_label, errorMessage, errorCode) => {
+      const recorded = stubAnthropicFetch([
+        () =>
+          okStreamResponse('msg_step1', '', {
+            stopReason: 'tool_use',
+            toolUse: { id: 'toolu_1', name: 'lookup', inputJson: '{"q":"status"}' },
+          }),
+        () => threadErrorResponse(400, errorMessage, errorCode),
+        () => okStreamResponse('msg_step2_ok', 'Recovered full history'),
+        () => okStreamResponse('msg_step3_ok', 'Still unthreaded'),
+      ]);
+      const provider = new AnthropicChatProvider({
+        model: 'claude-sonnet-4-6',
+        apiKey: 'YOUR_API_KEY',
+        baseUrl: 'https://proxy.example.test',
+        anthropicMessageThreads: { mode: 'auto' },
+      });
+
+      const history: Message[] = [userMsg('Check status')];
+      const r1 = await generate(provider, 'Sys', [sampleTool], history, undefined, {
+        threadScopeKey: 'sess-proxy-ignore\0main',
+      });
+      history.push(r1.message, {
+        role: 'tool',
+        toolCallId: 'toolu_1',
+        content: [{ type: 'text', text: 'ok' }],
+        toolCalls: [],
+      });
+      const r2 = await generate(provider, 'Sys', [sampleTool], history, undefined, {
+        threadScopeKey: 'sess-proxy-ignore\0main',
+      });
+      history.push(r2.message, userMsg('Next question'));
+      const r3 = await generate(provider, 'Sys', [sampleTool], history, undefined, {
+        threadScopeKey: 'sess-proxy-ignore\0main',
+      });
+
+      expect(r2.message.content).toEqual([{ type: 'text', text: 'Recovered full history' }]);
+      expect(r3.message.content).toEqual([{ type: 'text', text: 'Still unthreaded' }]);
+      expect(recorded).toHaveLength(4);
+      expect(recorded[0]!.body['thread']).toEqual({ type: 'create' });
+      expect(recorded[1]!.body['thread']).toEqual({ type: 'continue', previous_message_id: 'msg_step1' });
+      expect(recorded[2]!.body).not.toHaveProperty('thread');
+      expect(recorded[2]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+      expect((recorded[2]!.body['messages'] as unknown[]).length).toBe(3);
+      expect(recorded[2]!.body['system']).toBeDefined();
+      expect(recorded[2]!.body['tools']).toBeDefined();
+      expect(recorded[3]!.body).not.toHaveProperty('thread');
+      expect(recorded[3]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+    },
+  );
+
+  it('does not trigger orphaned-delta fallback on create requests', async () => {
+    const recorded = stubAnthropicFetch([
+      () =>
+        threadErrorResponse(
+          400,
+          'messages.0.content.0: unexpected `tool_use_id` found in `tool_result` blocks: toolu_1.',
+          'invalid_request_error',
+        ),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://proxy.example.test',
+      anthropicMessageThreads: { mode: 'auto' },
+    });
+    await expect(
+      generate(provider, 'Sys', [sampleTool], [userMsg('Check status')], undefined, {
+        threadScopeKey: 'sess-create-err\0main',
+      }),
+    ).rejects.toThrow(/unexpected `tool_use_id`/);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.body['thread']).toEqual({ type: 'create' });
+    expect(classifyAnthropicThreadError(new Error('non-api'), 'create')).toEqual({ kind: 'passthrough' });
   });
 });

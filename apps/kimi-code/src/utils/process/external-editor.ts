@@ -46,6 +46,7 @@ export async function editInExternalEditor(
       const child = spawn(shellCmd, {
         stdio: 'inherit',
         shell: true,
+        windowsHide: true,
       });
       child.on('exit', (c) => { resolve(c ?? 0); });
       child.on('error', reject);

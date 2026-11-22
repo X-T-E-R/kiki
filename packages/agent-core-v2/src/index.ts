@@ -916,6 +916,7 @@ import '#/agent/media/sessionMediaStoreService';
 export * from '#/agent/media/kimiFileUrl';
 export * from '#/agent/media/videoUpload';
 import '#/agent/media/flag';
+export * from '#/agent/media/mediaIntegrity';
 export * from '#/agent/media/mediaResolver';
 export * from '#/agent/media/mediaResolverService';
 import '#/agent/media/configSection';

@@ -113,13 +113,13 @@ export function resolveResponsesWebSocket(
 
 /**
  * Whole-object override for Anthropic Message Threads.
- * An omitted provider layer inherits the system layer; when both are absent, defaults to `'auto'`.
+ * An omitted provider layer inherits the system layer; when both are absent, defaults to `'off'`.
  */
 export function resolveAnthropicMessageThreads(
   system: AnthropicMessageThreadsLayer | undefined,
   provider: AnthropicMessageThreadsLayer | undefined,
 ): AnthropicMessageThreadsConfig {
-  const mode = provider?.mode ?? system?.mode ?? 'auto';
+  const mode = provider?.mode ?? system?.mode ?? 'off';
   return { mode };
 }
 

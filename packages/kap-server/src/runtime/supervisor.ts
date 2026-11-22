@@ -96,7 +96,7 @@ export function createRuntimeProcessDriver(homeDir: string, options?: { readonly
       if (target.buildChannel !== undefined) childEnv['KIKI_BUILD_CHANNEL'] = target.buildChannel;
       else delete childEnv['KIKI_BUILD_CHANNEL'];
       const child = spawn(target.executable, [...target.args, 'serve', '--home', homeDir, '--idle-exit', target.idleExit ?? '0ms', '--port', String(target.port ?? 0), '--json'], {
-        detached: true, stdio: 'ignore', windowsHide: true, ...options?.spawnOptions,
+        detached: true, stdio: 'ignore', ...options?.spawnOptions, windowsHide: true,
         env: childEnv,
       });
       let spawnError: Error | undefined;

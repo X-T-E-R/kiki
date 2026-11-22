@@ -18,7 +18,7 @@ async function runScript(input: string, context: UsageExportAdapterContext, host
   if (context.signal.aborted) return { outcome: 'retry', errorCategory: 'generic' };
   const target = context.target;
   let proc: IHostProcess;
-  try { proc = await host.spawn(target.command, [], { shell: true }); }
+  try { proc = await host.spawn(target.command, [], { shell: true, windowsHide: true }); }
   catch { return { outcome: 'retry', errorCategory: 'script_spawn_failed' }; }
   return new Promise<CommandResult>((resolve) => {
     const chunks: Buffer[] = [];

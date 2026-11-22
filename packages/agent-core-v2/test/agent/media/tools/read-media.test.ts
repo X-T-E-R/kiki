@@ -92,14 +92,35 @@ function pngBuffer(width = PNG_WIDTH, height = PNG_HEIGHT): Buffer {
   return buf;
 }
 
-function mp4Buffer(): Buffer {
-  return Buffer.concat([
+function mp4Buffer(extraPayloadBytes = 0): Buffer {
+  const ftyp = Buffer.concat([
     Buffer.from([0x00, 0x00, 0x00, 0x18]),
     Buffer.from('ftyp'),
     Buffer.from('mp42'),
     Buffer.from([0x00, 0x00, 0x00, 0x00]),
     Buffer.from('mp42isom'),
   ]);
+  const moovSize = 8 + extraPayloadBytes;
+  const moov = Buffer.alloc(moovSize);
+  moov.writeUInt32BE(moovSize, 0);
+  moov.write('moov', 4, 'latin1');
+  if (extraPayloadBytes > 0) moov.fill(0x22, 8);
+  return Buffer.concat([ftyp, moov]);
+}
+
+function unfinalizedMp4Buffer(): Buffer {
+  const ftyp = Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x18]),
+    Buffer.from('ftyp'),
+    Buffer.from('isom'),
+    Buffer.from([0x00, 0x00, 0x00, 0x00]),
+    Buffer.from('isommp41'),
+  ]);
+  const free = Buffer.from([0x00, 0x00, 0x00, 0x08, 0x66, 0x72, 0x65, 0x65]);
+  const mdat = Buffer.alloc(64);
+  mdat.writeUInt32BE(64, 0);
+  mdat.write('mdat', 4, 'latin1');
+  return Buffer.concat([ftyp, free, mdat]);
 }
 
 function wavBuffer(): Buffer {
@@ -108,7 +129,7 @@ function wavBuffer(): Buffer {
     Buffer.from([0x24, 0x00, 0x00, 0x00]),
     Buffer.from('WAVE'),
     Buffer.from('fmt '),
-    Buffer.alloc(24),
+    Buffer.alloc(28),
   ]);
 }
 
@@ -801,7 +822,7 @@ describe('ReadMediaFileTool', () => {
   });
 
   it('rejects region for videos while honoring full_resolution to skip local pre-compression', async () => {
-    const bigVideo = Buffer.concat([mp4Buffer(), Buffer.alloc(512, 0x22)]);
+    const bigVideo = mp4Buffer(512);
     setConfiguredAvInlineByteBudget(128);
     const runner = vi.fn<AvCompressRunner>(async () => ({ stdout: '', stderr: '' }));
     setConfiguredAvCompressRunner(runner);
@@ -913,15 +934,18 @@ describe('ReadMediaFileTool', () => {
   it('pre-compresses oversized inline video and audio and falls back gracefully when ffmpeg is missing', async () => {
     expect(AV_INLINE_BYTE_BUDGET).toBe(12 * 1024 * 1024);
     const smallVideo = mp4Buffer();
+    const pass1Mp4 = mp4Buffer(568);
+    const pass2Mp4 = mp4Buffer(48);
+    const compressedMp3 = Buffer.concat([Buffer.from('ID3\x03\x00\x00'), Buffer.alloc(58, 0xcc)]);
     const runner = vi.fn<AvCompressRunner>(async (cmd, args) => {
       if (cmd.includes('ffprobe')) return { stdout: '30/1\n', stderr: '' };
       const outPath = args.at(-1)!;
       if (outPath.endsWith('out-pass1.mp4')) {
-        await writeFile(outPath, Buffer.alloc(600, 0xaa));
+        await writeFile(outPath, pass1Mp4);
       } else if (outPath.endsWith('out-pass2.mp4')) {
-        await writeFile(outPath, Buffer.alloc(80, 0xbb));
+        await writeFile(outPath, pass2Mp4);
       } else if (outPath.endsWith('.mp3')) {
-        await writeFile(outPath, Buffer.alloc(64, 0xcc));
+        await writeFile(outPath, compressedMp3);
       }
       return { stdout: '', stderr: '' };
     });
@@ -934,7 +958,7 @@ describe('ReadMediaFileTool', () => {
     expect(smallResult.isError).toBe(false);
     expect(runner).not.toHaveBeenCalled();
 
-    const bigVideo = Buffer.concat([mp4Buffer(), Buffer.alloc(1024, 0x11)]);
+    const bigVideo = mp4Buffer(1024);
     const videoResult = await execute(makeTool({ '/workspace/big.mp4': { data: bigVideo } }), {
       path: '/workspace/big.mp4',
     });
@@ -942,7 +966,7 @@ describe('ReadMediaFileTool', () => {
     expect(noteText(videoResult)).toContain('pre-compressed to video/mp4');
     expect(outputParts(videoResult)[1]).toEqual({
       type: 'video_url',
-      videoUrl: { url: `data:video/mp4;base64,${Buffer.alloc(80, 0xbb).toString('base64')}` },
+      videoUrl: { url: `data:video/mp4;base64,${pass2Mp4.toString('base64')}` },
     });
     const ffmpegCalls = runner.mock.calls.filter(([cmd]) => !cmd.includes('ffprobe'));
     expect(ffmpegCalls).toHaveLength(2);
@@ -958,7 +982,7 @@ describe('ReadMediaFileTool', () => {
     expect(noteText(audioResult)).toContain('pre-compressed to audio/mpeg');
     expect(outputParts(audioResult)[1]).toEqual({
       type: 'audio_url',
-      audioUrl: { url: `data:audio/mpeg;base64,${Buffer.alloc(64, 0xcc).toString('base64')}` },
+      audioUrl: { url: `data:audio/mpeg;base64,${compressedMp3.toString('base64')}` },
     });
 
     const missingFfmpeg: AvCompressRunner = async () => {
@@ -1071,6 +1095,28 @@ describe('ReadMediaFileTool', () => {
       type: 'video_url',
       videoUrl: { url: `data:video/mp4;base64,${mp4Buffer().toString('base64')}` },
     });
+  });
+
+  it('rejects unfinalized MP4 missing moov and truncated WAV before admitting media into history', async () => {
+    const videoUploader = vi.fn<VideoUploader>();
+    const unfinalized = await execute(
+      makeTool({ '/workspace/recording.mp4': { data: unfinalizedMp4Buffer() } }, capabilities(), videoUploader),
+      { path: '/workspace/recording.mp4' },
+    );
+    expect(unfinalized.isError).toBe(true);
+    expect(unfinalized.output).toContain('moov');
+    expect(unfinalized.output).toContain('unfinalized');
+    expect(videoUploader).not.toHaveBeenCalled();
+
+    const truncatedWav = await execute(
+      makeTool(
+        { '/workspace/truncated.wav': { data: Buffer.from('RIFF\x04\x00\x00\x00WAVE') } },
+        capabilities({ audio_in: true }),
+      ),
+      { path: '/workspace/truncated.wav' },
+    );
+    expect(truncatedWav.isError).toBe(true);
+    expect(truncatedWav.output).toContain('truncated');
   });
 
   it('rejects empty files', async () => {

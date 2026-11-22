@@ -38,6 +38,7 @@ function readTmuxOptionFromProcess(option: string): Promise<string | undefined> 
   return new Promise((resolve) => {
     const proc = spawn('tmux', ['show', '-gv', option], {
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     let stdout = '';
     let settled = false;
