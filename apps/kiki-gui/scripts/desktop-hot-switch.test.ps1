@@ -156,15 +156,19 @@ internal static class Program
 {
     private const string BuildId = "__BUILD_ID__";
     private const int FailLaunch = __FAIL_LAUNCH__;
+    private const int FailServer = __FAIL_SERVER__;
     private const string ServerHomeId = "22222222-2222-4222-8222-222222222222";
     private const string RunningSessionId = "session-running";
     private const string PriorPausedSessionId = "session-prior-paused";
+    private const string FailedSessionId = "session-failed";
+    private const string ResumingSessionId = "session-resuming";
     private const string PriorPauseId = "prior-paused-operation";
     private const string TaskId = "fixture-task-running";
     private const string TerminalReceiptId = "terminal-receipt-running";
     private const string NotificationId = "task-notification-running";
     private static readonly object Gate = new object();
     private static readonly Dictionary<string, SessionState> Sessions = new Dictionary<string, SessionState>(StringComparer.Ordinal);
+    private static int resumingReads = 0;
     private static string home;
     private static string serverId;
     private static string instancePath;
@@ -262,6 +266,11 @@ internal static class Program
 
     private static void RunServer()
     {
+        if (FailServer != 0)
+        {
+            Environment.Exit(FailServer);
+            return;
+        }
         home = Environment.GetEnvironmentVariable("KIKI_HOME");
         if (String.IsNullOrWhiteSpace(home)) throw new InvalidOperationException("KIKI_HOME is missing.");
         token = File.ReadAllText(Path.Combine(home, "server.local-owner")).Trim();
@@ -447,6 +456,8 @@ internal static class Program
             }
         }
         if (File.Exists(Path.Combine(home, "fixture-block-exit")) && !pending.Contains(RunningSessionId)) pending.Add(RunningSessionId);
+        if (File.Exists(Path.Combine(home, "fixture-failed-pending")) && !pending.Contains(FailedSessionId)) pending.Add(FailedSessionId);
+        if (File.Exists(Path.Combine(home, "fixture-resuming-pending")) && !pending.Contains(ResumingSessionId)) pending.Add(ResumingSessionId);
         StringBuilder ids = new StringBuilder();
         for (int index = 0; index < pending.Count; index++)
         {
@@ -468,6 +479,24 @@ internal static class Program
         SessionState session;
         lock (Gate)
         {
+            if (sessionId == FailedSessionId && method == "read")
+            {
+                Send(context, 200, Envelope(0, "ok", "{\"phase\":\"failed\",\"pauseOperationId\":null,\"agents\":[]}"));
+                return;
+            }
+            if (sessionId == ResumingSessionId && method == "read")
+            {
+                resumingReads++;
+                if (resumingReads < 3)
+                {
+                    Send(context, 200, Envelope(0, "ok", "{\"phase\":\"resuming\",\"pauseOperationId\":null,\"agents\":[]}"));
+                    return;
+                }
+                string resumingFlag = Path.Combine(home, "fixture-resuming-pending");
+                if (File.Exists(resumingFlag)) { try { File.Delete(resumingFlag); } catch {} }
+                Send(context, 200, Envelope(0, "ok", "{\"phase\":\"idle\",\"pauseOperationId\":null,\"agents\":[]}"));
+                return;
+            }
             if (!Sessions.TryGetValue(sessionId, out session))
             {
                 Send(context, 200, Envelope(40404, "Fixture session is missing", "null"));
@@ -650,9 +679,10 @@ internal static class Program
 }
 '@
 
-function Compile-Fixture([string]$BuildId, [bool]$FailLaunch, [string]$OutputPath) {
+function Compile-Fixture([string]$BuildId, [bool]$FailLaunch, [string]$OutputPath, [bool]$FailServer = $false) {
     $failCode = if ($FailLaunch) { '23' } else { '0' }
-    $source = $fixtureSource.Replace('__BUILD_ID__', $BuildId).Replace('__FAIL_LAUNCH__', $failCode)
+    $failServerCode = if ($FailServer) { '42' } else { '0' }
+    $source = $fixtureSource.Replace('__BUILD_ID__', $BuildId).Replace('__FAIL_LAUNCH__', $failCode).Replace('__FAIL_SERVER__', $failServerCode)
     [IO.File]::WriteAllText($fixtureSourcePath, $source, (New-Object Text.UTF8Encoding($false)))
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -668,11 +698,11 @@ function Compile-Fixture([string]$BuildId, [bool]$FailLaunch, [string]$OutputPat
     }
 }
 
-function New-Candidate([string]$Name, [string]$BuildId, [bool]$FailLaunch) {
+function New-Candidate([string]$Name, [string]$BuildId, [bool]$FailLaunch, [bool]$FailServer = $false) {
     $candidate = Join-Path $testRoot $Name
     [IO.Directory]::CreateDirectory($candidate) | Out-Null
     $fixtureBinary = Join-Path $testRoot ($Name + '.exe')
-    Compile-Fixture $BuildId $FailLaunch $fixtureBinary
+    Compile-Fixture $BuildId $FailLaunch $fixtureBinary $FailServer
     Copy-Item -LiteralPath $fixtureBinary -Destination (Join-Path $candidate 'kiki-desktop.exe')
     Copy-Item -LiteralPath $fixtureBinary -Destination (Join-Path $candidate 'kiki-server.exe')
     Write-Receipt $candidate $BuildId
@@ -927,10 +957,11 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     $initialLifecycle = Invoke-Fixture $oldServer 'desktop-lifecycle'
     Assert-True (@($initialLifecycle.data.work_pending) -contains $runningSessionId) 'The active task was missing from initial lifecycle work_pending.'
 
-    $oldShellPath = Join-Path (Join-Path $runtimeRoot 'releases') (Join-Path $oldReleaseId 'kiki-desktop.exe')
+    $oldShellPath = Join-Path (Join-Path $runtimeRoot 'active') 'kiki-desktop.exe'
     $oldShells = @(Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $oldShellPath })
-    Assert-Equal 1 $oldShells.Count 'The fixture launcher did not leave its desktop window running.'
+    Assert-Equal 1 $oldShells.Count 'The fixture launcher did not leave its active desktop window running.'
     Assert-True ($oldShells[0].MainWindowHandle -ne 0) 'The fixture desktop did not expose its close target.'
+    Assert-Equal (Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe') $oldServer.process.Path 'Initial launch did not run kiki-server.exe from active\.'
 
     $continuedPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
     Invoke-Fixture $oldServer 'klient/call' @{
@@ -959,6 +990,13 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-Equal $goodReleaseId ([string]$successManifest.releaseId) 'Successful hot switch did not promote the good release.'
     $goodServer = Wait-ForFixtureServer $goodCommit
     Assert-Equal $goodCommit ([string]$goodServer.meta.build_id) 'Successful hot switch did not start the good build.'
+    Assert-Equal (Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe') $goodServer.process.Path 'Hot switch did not launch new kiki-server.exe from active\.'
+    $switchReportPath = Join-Path $runtimeRoot 'hot-switch-report.json'
+    Assert-True (Test-Path -LiteralPath $switchReportPath -PathType Leaf) 'Hot switch did not write hot-switch-report.json.'
+    $switchReport = Get-Content -LiteralPath $switchReportPath -Raw | ConvertFrom-Json
+    Assert-Equal 'succeeded' ([string]$switchReport.outcome) 'hot-switch-report.json did not record succeeded outcome.'
+    Assert-Equal 'active' ([string]$switchReport.postServerMeta.layout) 'hot-switch-report.json did not record active postServerMeta layout.'
+    Assert-True (@($switchReport.resumedSessions) -contains $runningSessionId) 'hot-switch-report.json did not record resumedSessions.'
     Assert-NotEqual $oldPid ([int]$goodServer.process.Id) 'Successful hot switch reused the old backend PID.'
     Assert-True ($oldShells[0].HasExited) 'The original shell did not exit automatically.'
     Assert-True (!$unrelated.HasExited) 'The switch stopped an unrelated service.'
@@ -1335,8 +1373,188 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
         if (Test-Path -LiteralPath $blockedExit) { Remove-Item -LiteralPath $blockedExit -Force }
     }
 
+    # 8. -InspectOnly + -CanaryCheck (passing and failing) + failed/resuming sessions + legacy releases\<id>\ -> active\ transition
+    $failedServerCommit = -join (1..40 | ForEach-Object { '4' })
+    $failedServerCandidate = New-Candidate 'candidate-failed-server' $failedServerCommit $false $true
+
+    $inspectJsonRaw = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-CandidateRoot', $oldCandidate,
+        '-ExpectedCommit', $oldCommit,
+        '-InspectOnly',
+        '-CanaryCheck'
+    )
+    $inspectObj = $inspectJsonRaw | ConvertFrom-Json
+    Assert-Equal $goodCommit ([string]$inspectObj.liveServer.build_id) '-InspectOnly did not report live build_id.'
+    Assert-Equal 'active' ([string]$inspectObj.liveServer.layout) '-InspectOnly did not report active layout.'
+    Assert-True ([bool]$inspectObj.candidate.valid) '-InspectOnly did not validate good candidate receipt.'
+    Assert-True ([bool]$inspectObj.canary.passed) '-InspectOnly -CanaryCheck did not pass for healthy candidate.'
+
+    # Failing -CanaryCheck aborts BEFORE reconciling stale hot-switch.json or touching live desktop or current.json!
+    $liveBeforeCanaryFail = Wait-ForFixtureServer $goodCommit 10
+    $manifestBeforeCanaryFail = [string](Read-CurrentManifest).releaseId
+    $preCanaryPauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+    Invoke-Fixture $liveBeforeCanaryFail 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'pause' }
+        params = @(@{ operationId = $preCanaryPauseId })
+    } | Out-Null
+    $preCanaryStaleState = [ordered]@{
+        schemaVersion = 1; phase = 'stopping'; kikiHome = $homePath; oldReleaseId = $oldReleaseId; oldBuildId = $oldCommit
+        oldServerId = 'stale-before-canary'; serverHomeId = $serverHomeId; spaceId = 'main'
+        priorPointerReleaseId = $oldReleaseId; targetReleaseId = $goodReleaseId; targetBuildId = $goodCommit; hadDesktop = $true
+        sessions = @(@{ id = $runningSessionId; pauseId = $preCanaryPauseId })
+    }
+    [IO.File]::WriteAllText($switchStatePath, ($preCanaryStaleState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    $canaryFailOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-CandidateRoot', $failedServerCandidate,
+        '-ExpectedCommit', $failedServerCommit,
+        '-CanaryCheck',
+        '-SettleSeconds', '10',
+        '-StartupSeconds', '10'
+    ) 1
+    Assert-Contains 'Canary check failed; live desktop was not modified' $canaryFailOut 'Failing -CanaryCheck did not abort cleanly.'
+    $liveAfterCanaryFail = Wait-ForFixtureServer $goodCommit 10
+    Assert-Equal ([int]$liveBeforeCanaryFail.process.Id) ([int]$liveAfterCanaryFail.process.Id) 'Failing -CanaryCheck disturbed the live server PID.'
+    Assert-Equal $manifestBeforeCanaryFail ([string](Read-CurrentManifest).releaseId) 'Failing -CanaryCheck mutated current.json.'
+    Assert-Equal 'paused' ([string](Read-FixtureExecution $liveAfterCanaryFail $runningSessionId).phase) 'Failing -CanaryCheck reconciled stale state and mutated live session pause!'
+    Assert-Equal 'stopping' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Failing -CanaryCheck overwrote stale hot-switch.json!'
+    $canaryFailReport = Get-Content -LiteralPath $switchReportPath -Raw | ConvertFrom-Json
+    Assert-Equal $false ([bool]$canaryFailReport.canaryPassed) 'hot-switch-report.json did not record canaryPassed=false.'
+    # Clean up the pre-canary test pause before continuing.
+    Invoke-Fixture $liveAfterCanaryFail 'klient/call' @{
+        procedure = @{ scope = 'session'; sessionId = $runningSessionId; service = 'sessionExecutionControl'; method = 'resume' }
+        params = @(@{ operationId = "$preCanaryPauseId`:resume"; pauseOperationId = $preCanaryPauseId })
+    } | Out-Null
+    $preCanaryStaleState.phase = 'complete'
+    [IO.File]::WriteAllText($switchStatePath, ($preCanaryStaleState | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+
+    # Multi-home guard: if another Kiki home is running from active\kiki-server.exe, abort BEFORE draining and do NOT kill the other home!
+    $secondHome = Join-Path $testRoot 'second-home-active'
+    [IO.Directory]::CreateDirectory($secondHome) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $secondHome 'server.local-owner'), $fixtureToken)
+    $env:KIKI_HOME = $secondHome
+    $secondActiveServer = $null
+    try {
+        $secondActiveServer = Start-Process -FilePath (Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe') -ArgumentList 'serve' -WindowStyle Hidden -PassThru
+        Start-Sleep -Milliseconds 400
+    } finally {
+        $env:KIKI_HOME = $homePath
+    }
+    try {
+        $multiHomeOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $oldCandidate,
+            '-ExpectedCommit', $oldCommit,
+            '-SettleSeconds', '10',
+            '-StartupSeconds', '10'
+        ) 1
+        Assert-Contains 'Another Kiki home/instance is running from active\kiki-server.exe' $multiHomeOut 'Multi-home active guard did not block switch before draining.'
+        Assert-True (-not $secondActiveServer.HasExited) 'Multi-home guard killed another home''s active\kiki-server.exe!'
+        $stillAlivePrimary = Wait-ForFixtureServer $goodCommit 5
+        Assert-Equal ([int]$liveAfterCanaryFail.process.Id) ([int]$stillAlivePrimary.process.Id) 'Multi-home guard drained primary server.'
+    } finally {
+        if ($null -ne $secondActiveServer -and (-not $secondActiveServer.HasExited)) {
+            try { $secondActiveServer.Kill(); $null = $secondActiveServer.WaitForExit(5000) } catch {}
+        }
+    }
+
+    # Stale instance registration pointing to an unrelated live PID with mismatched start time must NOT cause cleanup to kill it.
+    $staleReusedFile = Join-Path (Join-Path $homePath 'server\instances') 'stale-reused-pid.json'
+    [IO.File]::WriteAllText($staleReusedFile, (@{
+        server_id = 'stale-reused-pid'
+        pid = [int]$unrelated.Id
+        host = '127.0.0.1'
+        port = 1
+        started_at = 1000
+        heartbeat_at = 1000
+        build_id = $oldCommit
+    } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+
+    # Transition compatibility: start a legacy instance directly from releases\<oldReleaseId>\,
+    # seed a persistent failed session AND a resuming session in work_pending:
+    # (a) with -NoInterruptAfterSettle, failed session does NOT abort immediately and honors -NoInterruptAfterSettle at deadline;
+    # (b) with default InterruptAfterSettle, failed + resuming switch cleanly with -CanaryCheck -> active\ without killing $unrelated.
+    Stop-FixtureDesktopAndServer
+    $legacyOldDir = Join-Path (Join-Path $runtimeRoot 'releases') $oldReleaseId
+    $legacyLauncher = Start-Process -FilePath (Join-Path $legacyOldDir 'kiki-desktop.exe') -WorkingDirectory $legacyOldDir -PassThru
+    $legacyServer = Wait-ForFixtureServer $oldCommit 15
+    Assert-Equal (Join-Path $legacyOldDir 'kiki-server.exe') $legacyServer.process.Path 'Legacy fixture did not start from releases\<oldId>\.'
+
+    $failedPendingFlag = Join-Path $homePath 'fixture-failed-pending'
+    [IO.File]::WriteAllText($failedPendingFlag, '1')
+    try {
+        $noIntFailedOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $goodCandidate,
+            '-ExpectedCommit', $goodCommit,
+            '-NoInterruptAfterSettle',
+            '-SettleSeconds', '1',
+            '-StartupSeconds', '15'
+        ) 1
+        Assert-Contains 'Session session-failed is failed; no pause needed.' $noIntFailedOut 'Failed session did not log non-aborting path.'
+        Assert-Contains 'Still settling: session-failed' $noIntFailedOut '-NoInterruptAfterSettle did not honor server work_pending blocker.'
+        Assert-True (-not $legacyServer.process.HasExited) '-NoInterruptAfterSettle stopped live server while work_pending was non-empty.'
+
+        [IO.File]::WriteAllText((Join-Path $homePath 'fixture-resuming-pending'), '1')
+        $migrateOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $goodCandidate,
+            '-ExpectedCommit', $goodCommit,
+            '-CanaryCheck',
+            '-SettleSeconds', '2',
+            '-StartupSeconds', '15'
+        )
+    } finally {
+        if (Test-Path -LiteralPath $failedPendingFlag) { Remove-Item -LiteralPath $failedPendingFlag -Force }
+        if (Test-Path -LiteralPath $staleReusedFile) { Remove-Item -LiteralPath $staleReusedFile -Force }
+    }
+    Assert-Contains 'Canary check passed' $migrateOut 'Legacy->active migration did not run canary check.'
+    Assert-Contains 'Session session-failed is failed; no pause needed.' $migrateOut 'Failed session in work_pending did not take the non-aborting path.'
+    Assert-Contains 'Session session-resuming is resuming; waiting up to settle deadline.' $migrateOut 'Resuming session in work_pending did not wait cleanly.'
+    Assert-True (-not $unrelated.HasExited) 'Cleanup terminated an unrelated process referenced by a stale instance registration!'
+    $migratedServer = Wait-ForFixtureServer $goodCommit 15
+    Assert-Equal (Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe') $migratedServer.process.Path 'Legacy->active migration did not launch new server from active\.'
+    $migrateReport = Get-Content -LiteralPath $switchReportPath -Raw | ConvertFrom-Json
+    Assert-Equal 'releases' ([string]$migrateReport.preSnapshot.server.layout) 'Migration report did not capture preSnapshot releases layout.'
+    Assert-Equal 'active' ([string]$migrateReport.postServerMeta.layout) 'Migration report did not capture postServerMeta active layout.'
+    Assert-Equal $true ([bool]$migrateReport.canaryPassed) 'Migration report did not record canaryPassed=true.'
+
+    # Same-build legacy migration: running releases\<goodReleaseId>\ and switching to $goodCandidate MUST migrate to active\ (not no-op).
+    Stop-FixtureDesktopAndServer
+    $legacyGoodDir = Join-Path (Join-Path $runtimeRoot 'releases') $goodReleaseId
+    $null = Start-Process -FilePath (Join-Path $legacyGoodDir 'kiki-desktop.exe') -WorkingDirectory $legacyGoodDir -PassThru
+    $legacyGoodServer = Wait-ForFixtureServer $goodCommit 15
+    Assert-Equal (Join-Path $legacyGoodDir 'kiki-server.exe') $legacyGoodServer.process.Path 'Same-build legacy fixture did not start from releases\<goodId>\.'
+    $sameBuildMigrateOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-CandidateRoot', $goodCandidate,
+        '-ExpectedCommit', $goodCommit,
+        '-SettleSeconds', '15',
+        '-StartupSeconds', '15'
+    )
+    Assert-True (-not $sameBuildMigrateOut.Contains('Already running')) 'Same-build legacy migration wrongly short-circuited as Already running.'
+    $migratedGoodServer = Wait-ForFixtureServer $goodCommit 15
+    Assert-Equal (Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe') $migratedGoodServer.process.Path 'Same-build legacy migration did not move process to active\.'
+
+    # 9. Out-of-band kiki-ops-conductor.mjs end-to-end switch against live compiled fixture
+    $conductorScript = Join-Path $PSScriptRoot 'kiki-ops-conductor.mjs'
+    $conductorRaw = & node $conductorScript switch --runtime-root $runtimeRoot --kiki-home $homePath --candidate-root $oldCandidate --expected-commit $oldCommit --settle-seconds 15 --startup-seconds 15 --json 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "kiki-ops-conductor.mjs switch exited with $LASTEXITCODE.`n$conductorRaw" }
+    $conductorObj = $conductorRaw | ConvertFrom-Json
+    Assert-True ([bool]$conductorObj.ok) 'kiki-ops-conductor.mjs switch did not return ok=true.'
+    Assert-Equal $oldCommit ([string]$conductorObj.postSwitch.build_id) 'kiki-ops-conductor.mjs switch did not verify post-switch build_id.'
+    Assert-Equal 'active' ([string]$conductorObj.postSwitch.layout) 'kiki-ops-conductor.mjs switch did not verify active layout.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $runtimeRoot 'hot-switch-ledger.json') -PathType Leaf) 'kiki-ops-conductor.mjs did not write hot-switch-ledger.json.'
+
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, and clean UTF-8 detached logging.'
+    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, clean UTF-8 detached logging, inspect/canary, failed/resuming fix, legacy->active migration, and kiki-ops-conductor.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome
