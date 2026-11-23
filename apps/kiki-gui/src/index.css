@@ -1130,7 +1130,7 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   }
 }
 
-@media (min-width: 1360px) {
+@media (min-width: 1400px) {
   .app-sheet > .conversation-shell .conversation-center {
     min-width: 480px;
   }
