@@ -705,4 +705,96 @@ describe('WorkspacePathIndex demand start and coalesced mutations', () => {
       await index.dispose();
     }
   });
+
+  it('coalesces burst trigram updates behind a 200ms timer and flushes cleanly before candidates queries', async () => {
+    const dir = await makeTempDir();
+    const root = join(dir, 'repo');
+    await mkdir(root, { recursive: true });
+
+    const baseEntries: WorkspacePathEntry[] = Array.from({ length: 1_550 }, (_, i) => ({
+      path: `src/file-${i}.ts`,
+      name: `file-${i}.ts`,
+      kind: 'file',
+      mtimeMs: 100 + i,
+      ctimeMs: 100 + i,
+      size: 64,
+      ino: i + 1,
+    }));
+    const calls: Array<{ type: string; entries?: number; removed?: number }> = [];
+    let releaseBlockedUpdate: (() => void) | undefined;
+    let blockNextUpdate = false;
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as {
+          readonly type: string;
+          readonly entries?: readonly WorkspacePathEntry[];
+          readonly removed?: readonly string[];
+        };
+        if (op.type === 'workspace.paths') return { overflow: false, entries: baseEntries } as T;
+        if (op.type === 'workspace.trigram.begin' || op.type === 'workspace.trigram.finish') return true as T;
+        if (op.type === 'workspace.trigram.update') {
+          calls.push({ type: op.type, entries: op.entries?.length ?? 0, removed: op.removed?.length ?? 0 });
+          if (blockNextUpdate) {
+            blockNextUpdate = false;
+            await new Promise<void>((resolve) => { releaseBlockedUpdate = resolve; });
+          }
+          return true as T;
+        }
+        if (op.type === 'workspace.trigram.query') {
+          calls.push({ type: op.type });
+          return ['src/file-0.ts'] as T;
+        }
+        return undefined as T;
+      },
+    };
+
+    const index = new WorkspacePathIndex(root, cpu, join(dir, 'cache'));
+    try {
+      await index.refresh();
+      await index.trigram!.whenReady();
+      calls.length = 0;
+
+      const snap = index.snapshot()!;
+      const nextSnap = { ...snap, revision: snap.revision + 1 };
+      for (let i = 0; i < 5; i += 1) {
+        index.trigram!.patch(nextSnap, `src/file-${i}.ts`, { ...baseEntries[i]!, mtimeMs: 999 + i });
+      }
+      expect(calls).toEqual([]);
+
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      expect(calls).toEqual([{ type: 'workspace.trigram.update', entries: 5, removed: 0 }]);
+
+      calls.length = 0;
+      const snap2 = { ...nextSnap, revision: nextSnap.revision + 1 };
+      index.trigram!.patch(snap2, 'src/file-1.ts', { ...baseEntries[1]!, mtimeMs: 2000 });
+      expect(calls).toEqual([]);
+      const hit = await index.trigram!.candidates(snap2, 'needle', true, false);
+      expect(hit).toEqual(['src/file-0.ts']);
+      expect(calls).toEqual([
+        { type: 'workspace.trigram.update', entries: 1, removed: 0 },
+        { type: 'workspace.trigram.query' },
+      ]);
+
+      calls.length = 0;
+      const snap3 = { ...snap2, revision: snap2.revision + 1 };
+      blockNextUpdate = true;
+      index.trigram!.patch(snap3, 'src/file-2.ts', { ...baseEntries[2]!, mtimeMs: 3000 });
+      const supersededQuery = index.trigram!.candidates(snap3, 'needle', true, false);
+      const snap4 = { ...snap3, revision: snap3.revision + 1 };
+      index.trigram!.patch(snap4, 'src/file-3.ts', { ...baseEntries[3]!, mtimeMs: 4000 });
+      expect(await supersededQuery).toBeUndefined();
+      releaseBlockedUpdate?.();
+      await index.trigram!.whenReady();
+
+      calls.length = 0;
+      const snap5 = { ...snap4, revision: snap4.revision + 1 };
+      index.trigram!.patch(snap5, 'src/file-4.ts', { ...baseEntries[4]!, mtimeMs: 5000 });
+      index.trigram!.reset();
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      expect(calls).toEqual([]);
+    } finally {
+      await index.dispose();
+    }
+  });
 });

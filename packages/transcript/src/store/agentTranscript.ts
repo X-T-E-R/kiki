@@ -82,6 +82,7 @@ function stableMapValues<K, V>(map: ReadonlyMap<K, V>): readonly V[] {
 export class AgentTranscript {
   #state: AgentState = EMPTY_AGENT_STATE;
   #trimmedTurns = 0;
+  #tailEvicted = false;
   readonly #listeners = new Set<TranscriptListener>();
   readonly #appendDirty = new Set<string>();
   readonly #toolCalls = new Map<string, TranscriptToolCallLookup>();
@@ -142,6 +143,7 @@ export class AgentTranscript {
       if (op.op === 'append' && key !== undefined) this.#appendDirty.add(key);
       else if (key !== undefined) this.#appendDirty.delete(key);
       else if (op.op === 'reset' || op.op === 'items.remove') this.#appendDirty.clear();
+      if (op.op === 'reset') this.#tailEvicted = false;
       index = run.nextIndex;
     }
     this.#state = state;
@@ -353,6 +355,11 @@ export class AgentTranscript {
     };
   }
 
+  /** Whether durable residency trimming evicted the newest tail or left an older unreleasable turn before an evicted newer turn. */
+  get hasEvictedTail(): boolean {
+    return this.#tailEvicted;
+  }
+
   /** Release only completed entities reproduced from durable history; this is residency, not a logical deletion. */
   releaseDurableHistory(durable: AgentTranscriptSnapshot, limits: TranscriptResidentLimits): readonly string[] {
     const durableTurns = new Map(
@@ -414,7 +421,19 @@ export class AgentTranscript {
     }
     if (released.length === 0) return released;
     const ids = new Set(released);
+    let maxReleasedOrdinal = -1;
+    for (const item of this.#state.items) {
+      if (item.kind === 'turn' && ids.has(item.turnId) && item.ordinal > maxReleasedOrdinal) {
+        maxReleasedOrdinal = item.ordinal;
+      }
+    }
     const items = this.#state.items.filter((item) => item.kind !== 'turn' || !ids.has(item.turnId));
+    if (
+      (newest !== undefined && ids.has(newest.turnId)) ||
+      (maxReleasedOrdinal >= 0 && items.some((item) => item.kind === 'turn' && item.ordinal < maxReleasedOrdinal))
+    ) {
+      this.#tailEvicted = true;
+    }
     const selected = windowGlobals(this.#state, items, {
       taskLimit: limits.tailTurns,
       attachmentLimit: limits.tailTurns,

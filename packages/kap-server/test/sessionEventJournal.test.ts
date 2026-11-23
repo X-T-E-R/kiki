@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type EventEnvelope,
+  pruneExpiredEventJournals,
   SessionEventJournal,
 } from '../src/transport/ws/v1/sessionEventJournal';
 
@@ -68,7 +69,7 @@ describe('SessionEventJournal', () => {
   it('persists the published epoch on close even when it has no events', async () => {
     const journal = await SessionEventJournal.open(filePath);
     await journal.close();
-    expect(await SessionEventJournal.peekWatermark(filePath)).toEqual({ seq: 0, epoch: journal.epoch });
+    expect(await SessionEventJournal.peekWatermark(filePath)).toEqual({ seq: 0, epoch: journal.epoch, attentionSeq: 0 });
   });
 
   it('recovers a large monotonic journal using bounded edge reads', async () => {
@@ -499,5 +500,121 @@ describe('SessionEventJournal', () => {
       attentionSeq: 1,
     });
     await large.close();
+  });
+
+  it('enforces maxRetainedBytes while retaining at least the newest event and compacting oversized pre-existing files', async () => {
+    const capBytes = 4096;
+    const journal = await SessionEventJournal.open(filePath, undefined, 1000, capBytes);
+    const pad = 'a'.repeat(1800);
+    for (let seq = 1; seq <= 8; seq += 1) {
+      journal.append(journal.nextSeq(), { ...envelope(seq), payload: { seq, pad } });
+    }
+    await journal.flush();
+    const afterFlushLines = (await readFile(filePath, 'utf8')).trim().split('\n');
+    expect(afterFlushLines.length).toBeLessThanOrEqual(3);
+    expect((await journal.readSince(0, 10)).length).toBeLessThanOrEqual(2);
+    await journal.close();
+    const lines = (await readFile(filePath, 'utf8')).trim().split('\n');
+    expect(lines.length).toBeLessThanOrEqual(3);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ kind: 'journal_header', last_seq: 8 });
+    expect(JSON.parse(lines.at(-1)!).seq).toBe(8);
+
+    const oversizedPayload = 'z'.repeat(capBytes * 2);
+    const reopened = await SessionEventJournal.open(filePath, undefined, 1000, capBytes);
+    reopened.append(reopened.nextSeq(), { ...envelope(9), payload: oversizedPayload });
+    await reopened.close();
+    const afterOversized = (await readFile(filePath, 'utf8')).trim().split('\n');
+    expect(afterOversized).toHaveLength(2);
+    expect(JSON.parse(afterOversized[1]!).seq).toBe(9);
+    expect((await reopened.readSince(8, 10))[0]?.envelope.payload).toBe(oversizedPayload);
+
+    const oldHeader = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_bytes', created_at: 1 });
+    const bigRow = (seq: number) => JSON.stringify({ kind: 'event', seq, envelope: { ...envelope(seq), payload: 'm'.repeat(3000) } });
+    const oldPath = join(dir, 'oversized_old.jsonl');
+    await writeFile(oldPath, `${oldHeader}\n` + Array.from({ length: 20 }, (_, i) => bigRow(i + 1)).join('\n') + '\n');
+    const compacting = await SessionEventJournal.open(oldPath, undefined, 1000, capBytes);
+    expect(compacting.seq).toBe(20);
+    compacting.append(compacting.nextSeq(), { ...envelope(21), payload: 'short' });
+    await compacting.close();
+    const compactedLines = (await readFile(oldPath, 'utf8')).trim().split('\n');
+    expect(compactedLines.length).toBeLessThanOrEqual(3);
+    expect(JSON.parse(compactedLines.at(-1)!).seq).toBe(21);
+  });
+
+  it('coalesces background appends without per-append fsync and flushes immediately on readSince/flush/close', async () => {
+    const probe = await open(filePath, 'w');
+    const syncSpy = vi.spyOn(Object.getPrototypeOf(probe), 'sync');
+    await probe.close();
+    try {
+      const journal = await SessionEventJournal.open(filePath);
+      journal.append(journal.nextSeq(), envelope(1));
+      journal.append(journal.nextSeq(), envelope(2));
+      journal.append(journal.nextSeq(), envelope(3));
+      const entries = await journal.readSince(0, 10);
+      expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3]);
+      expect(syncSpy).not.toHaveBeenCalled();
+      await journal.close();
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      syncSpy.mockRestore();
+    }
+  });
+
+  it('prunes expired inactive session journals and stale temp files while preserving active and global journals', async () => {
+    const oldTime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const staleJournal = join(dir, 'sess_expired.jsonl');
+    const activeJournal = join(dir, 'sess_active.jsonl');
+    const globalJournal = join(dir, '_global.jsonl');
+    const freshJournal = join(dir, 'sess_fresh.jsonl');
+    const staleTemp = join(dir, 'sess_x.jsonl.tmp.abc');
+    await Promise.all([
+      writeFile(staleJournal, '{}\n'),
+      writeFile(activeJournal, '{}\n'),
+      writeFile(globalJournal, '{}\n'),
+      writeFile(freshJournal, '{}\n'),
+      writeFile(staleTemp, '{}\n'),
+    ]);
+    await Promise.all([
+      utimes(staleJournal, oldTime, oldTime),
+      utimes(activeJournal, oldTime, oldTime),
+      utimes(globalJournal, oldTime, oldTime),
+      utimes(staleTemp, oldTime, oldTime),
+    ]);
+    const removed = await pruneExpiredEventJournals(dir, {
+      activeSessionIds: new Set(['sess_active']),
+    });
+    expect(removed).toBe(2);
+    const remaining = (await readdir(dir)).toSorted();
+    expect(remaining).toEqual(['_global.jsonl', 'sess_active.jsonl', 'sess_fresh.jsonl']);
+  });
+
+  it('settles close() cleanly on persistent sync failure and skips pruning when session activates before unlink', async () => {
+    const probe = await open(filePath, 'w');
+    const syncSpy = vi.spyOn(Object.getPrototypeOf(probe), 'sync').mockRejectedValue(new Error('EIO sync'));
+    await probe.close();
+    const warn = vi.fn();
+    try {
+      const journal = await SessionEventJournal.open(filePath, { warn });
+      journal.append(journal.nextSeq(), envelope(1));
+      await journal.close();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    const lateActive = join(dir, 'sess_race.jsonl');
+    await writeFile(lateActive, '{}\n');
+    const oldTime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    await utimes(lateActive, oldTime, oldTime);
+    let becameActive = false;
+    const removed = await pruneExpiredEventJournals(dir, {
+      isSessionActive: () => becameActive,
+      beforeUnlink: () => {
+        becameActive = true;
+        return undefined;
+      },
+    });
+    expect(removed).toBe(0);
+    expect(await readdir(dir)).toContain('sess_race.jsonl');
   });
 });

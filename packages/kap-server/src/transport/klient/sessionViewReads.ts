@@ -9,6 +9,7 @@ import {
   type TranscriptGrade,
   type TranscriptResetEvent,
   type TranscriptAttachment,
+  type TranscriptCursor,
   type TranscriptDetailListResponse,
   type TranscriptOpsCatchupResponse,
   type TranscriptPrompt,
@@ -450,6 +451,177 @@ export function sessionViewSnapshotHistoryCursor(snapshot: AgentTranscriptSnapsh
   return encodePageCursor(itemKey(first), agentId, source, epoch, undefined, first.turnId, undefined, first.turnId);
 }
 
+/** Reconstruct a tail-fresh transcript and its atomically paired live cursor when durable residency trimming evicted newer tail turns. */
+export async function resolveFreshTailResetBaseline(
+  service: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  transcript: AgentTranscript,
+  signal?: AbortSignal,
+): Promise<{ readonly transcript: AgentTranscript; readonly cursor: TranscriptCursor }> {
+  if (!transcript.hasEvictedTail || typeof service.readColdPageSnapshot !== 'function') {
+    return { transcript, cursor: service.getTranscriptCursor(sessionId, agentId) };
+  }
+  let source: AgentTranscriptSnapshot | undefined;
+  let cursor = service.getTranscriptCursor(sessionId, agentId);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const cursorBefore = service.getTranscriptCursor(sessionId, agentId);
+    source = await service.readColdPageSnapshot(
+      sessionId,
+      agentId,
+      (snapshot) => boundedTranscriptPageSource(snapshot, agentId, 'tail'),
+      signal,
+      false,
+      undefined,
+      false,
+      true,
+    );
+    signal?.throwIfAborted();
+    cursor = service.getTranscriptCursor(sessionId, agentId);
+    if (!transcript.hasEvictedTail) {
+      return { transcript, cursor };
+    }
+    if (cursor.epoch === cursorBefore.epoch) break;
+  }
+  if (source === undefined) return { transcript, cursor };
+  const live = transcript.snapshot();
+  let minColdOrdinal = Number.POSITIVE_INFINITY;
+  let maxColdOrdinal = -1;
+  for (const item of source.items) {
+    if (item.kind === 'turn') {
+      if (item.ordinal < minColdOrdinal) minColdOrdinal = item.ordinal;
+      if (item.ordinal > maxColdOrdinal) maxColdOrdinal = item.ordinal;
+    }
+  }
+  const liveTurnsById = new Map<string, TranscriptTurn>();
+  let hasOlderResidentTurn = false;
+  for (const item of live.items) {
+    if (item.kind === 'turn') {
+      liveTurnsById.set(item.turnId, item);
+      if (item.ordinal < minColdOrdinal) hasOlderResidentTurn = true;
+    }
+  }
+  const liveTaskOwnerOrdinalById = new Map<string, number>();
+  for (const task of live.tasks) {
+    if (task.ownerTurnId !== undefined) liveTaskOwnerOrdinalById.set(task.taskId, task.ownerTurnId);
+  }
+  const coldItemKeys = new Set<string>(source.items.map((item) => itemKey(item)));
+  const coldTurnIds = new Set<string>(
+    source.items.filter((item): item is TranscriptTurn => item.kind === 'turn').map((turn) => turn.turnId),
+  );
+  const coldTurnIdByOrdinal = new Map<number, string>();
+  for (const item of source.items) {
+    if (item.kind === 'turn') coldTurnIdByOrdinal.set(item.ordinal, item.turnId);
+  }
+  const liveNonTurnsAfterTurn = new Map<string, TranscriptItem[]>();
+  const trailingLiveItems: TranscriptItem[] = [];
+  let lastAnchorTurnId: string | undefined;
+  let inTailRegion = !hasOlderResidentTurn;
+  for (const item of live.items) {
+    if (item.kind === 'turn') {
+      if (coldTurnIds.has(item.turnId)) {
+        lastAnchorTurnId = item.turnId;
+        inTailRegion = true;
+      } else if (item.ordinal > maxColdOrdinal || item.state === 'running') {
+        lastAnchorTurnId = undefined;
+        inTailRegion = true;
+        trailingLiveItems.push(item);
+      } else if (item.ordinal >= minColdOrdinal) {
+        inTailRegion = true;
+      }
+    } else {
+      const key = itemKey(item);
+      if (coldItemKeys.has(key)) continue;
+      const ownerOrdinal = item.kind === 'taskref' ? liveTaskOwnerOrdinalById.get(item.taskId) : undefined;
+      const ownerTurnId = ownerOrdinal !== undefined ? coldTurnIdByOrdinal.get(ownerOrdinal) : undefined;
+      if (ownerTurnId !== undefined) {
+        const bucket = liveNonTurnsAfterTurn.get(ownerTurnId) ?? [];
+        bucket.push(item);
+        liveNonTurnsAfterTurn.set(ownerTurnId, bucket);
+      } else if (lastAnchorTurnId !== undefined) {
+        const bucket = liveNonTurnsAfterTurn.get(lastAnchorTurnId) ?? [];
+        bucket.push(item);
+        liveNonTurnsAfterTurn.set(lastAnchorTurnId, bucket);
+      } else if (inTailRegion) {
+        trailingLiveItems.push(item);
+      }
+    }
+  }
+  const mergedItems: TranscriptItem[] = [];
+  const seenItemKeys = new Set<string>();
+  for (const item of source.items) {
+    if (item.kind === 'turn') {
+      const chosen = liveTurnsById.get(item.turnId) ?? item;
+      mergedItems.push(chosen);
+      seenItemKeys.add(itemKey(chosen));
+      const attached = liveNonTurnsAfterTurn.get(chosen.turnId);
+      if (attached !== undefined) {
+        for (const extra of attached) {
+          const extraKey = itemKey(extra);
+          if (!seenItemKeys.has(extraKey)) {
+            mergedItems.push(extra);
+            seenItemKeys.add(extraKey);
+          }
+        }
+      }
+    } else {
+      const key = itemKey(item);
+      if (!seenItemKeys.has(key)) {
+        mergedItems.push(item);
+        seenItemKeys.add(key);
+      }
+    }
+  }
+  for (const item of trailingLiveItems) {
+    const key = itemKey(item);
+    if (!seenItemKeys.has(key)) {
+      mergedItems.push(item);
+      seenItemKeys.add(key);
+    }
+  }
+  const mergeById = <T>(coldList: readonly T[], liveList: readonly T[], keyOf: (entry: T) => string): T[] => {
+    const map = new Map<string, T>();
+    for (const entry of coldList) map.set(keyOf(entry), entry);
+    for (const entry of liveList) map.set(keyOf(entry), entry);
+    return [...map.values()];
+  };
+  const verified = source.toolCallCountKnown === true;
+  const baseSnapshot: AgentTranscriptSnapshot = {
+    ...source,
+    items: mergedItems,
+    tasks: mergeById(source.tasks, live.tasks, (entry) => entry.taskId),
+    interactions: mergeById(source.interactions, live.interactions, (entry) => entry.interactionId),
+    attachments: mergeById(source.attachments, live.attachments, (entry) => entry.attachmentId),
+    todos: mergeById(source.todos, live.todos, (entry) => entry.todoId),
+    prompts: mergeById(source.prompts, live.prompts, (entry) => entry.promptId),
+    meta: {
+      ...source.meta,
+      ...live.meta,
+      agent: source.meta.agent !== undefined || live.meta.agent !== undefined
+        ? { ...source.meta.agent, ...live.meta.agent }
+        : undefined,
+    },
+    hasMoreOlder: verified ? (source.hasMoreOlder ?? transcript.hasMoreOlder) : true,
+  };
+  const reconciled = typeof service.reconcileQuestionSnapshot === 'function'
+    ? service.reconcileQuestionSnapshot(sessionId, baseSnapshot)
+    : baseSnapshot;
+  const fresh = new AgentTranscript(agentId);
+  fresh.apply([{ op: 'reset', agentId, snapshot: reconciled }]);
+  return { transcript: fresh, cursor };
+}
+
+/** Reconstruct a tail-fresh transcript when durable residency trimming evicted the newest tail turns. */
+export async function resolveFreshTailTranscript(
+  service: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  transcript: AgentTranscript,
+  signal?: AbortSignal,
+): Promise<AgentTranscript> {
+  return (await resolveFreshTailResetBaseline(service, sessionId, agentId, transcript, signal)).transcript;
+}
+
 export async function readColdSessionViewBaseline(
   service: TranscriptService,
   sessionId: string,
@@ -543,16 +715,19 @@ async function readSessionViewTranscriptPageRaw(
   const tailFirst = true;
   const store = transcriptService.forSessionLive(sessionId, { tailFirst });
   if (store !== undefined) {
-    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst, signal: input.signal });
-    if (transcript === undefined) return undefined;
+    const rawTranscript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst, signal: input.signal });
+    if (rawTranscript === undefined) return undefined;
+    const transcript = !anchored && rawTranscript.hasEvictedTail
+      ? await resolveFreshTailTranscript(transcriptService, sessionId, input.agentId, rawTranscript, input.signal)
+      : rawTranscript;
     const liveVerified = transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId);
     if (!liveVerified) void transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId).catch(() => {});
     const liveItems = transcript.getItems();
     const firstResidentTurn = liveItems.find(item => item.kind === 'turn');
-    const singleBeforeInResident = singleBeforeTurn && input.beforeItem === undefined &&
+    const singleBeforeInResident = !rawTranscript.hasEvictedTail && singleBeforeTurn && input.beforeItem === undefined &&
       firstResidentTurn?.kind === 'turn' && compareTurnIds(input.beforeTurn!, firstResidentTurn.turnId) > 0 &&
       liveItems.some(item => item.kind === 'turn' && item.turnId === input.beforeTurn);
-    if (transcript.hasMoreOlder && ((anchored && !singleBeforeInResident) || firstResidentTurn === undefined)) {
+    if ((transcript.hasMoreOlder || rawTranscript.hasEvictedTail) && ((anchored && !singleBeforeInResident) || firstResidentTurn === undefined)) {
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
       const query = loaded.query;

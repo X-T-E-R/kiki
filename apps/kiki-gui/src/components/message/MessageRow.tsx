@@ -38,6 +38,7 @@ import { isOnKikiComputer, isRemoteConnection } from '../imageActions';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { MediaPart, useSessionMedia, useVisibleOnce } from '../mediaParts';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
+import { inlineMediaCleanupRef, notifyInlineMediaPlay, unregisterInlineMediaElement } from '../inlineMediaCoordinator';
 import { PersonaAvatar, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { RelativeTime } from '../RelativeTime';
 import { DisclosureChevron, Icon, type IconName } from '../icons';
@@ -410,10 +411,16 @@ function AudioAttachment({ attachment, voice }: { readonly attachment: MessageAt
   if (activeSrc !== undefined) {
     body = (
       <audio
+        ref={inlineMediaCleanupRef}
         controls
-        preload="metadata"
+        preload="none"
         src={activeSrc}
-        onError={playback.status === 'ready' ? playback.fail : undefined}
+        onPlay={(event) => { notifyInlineMediaPlay(event.currentTarget); }}
+        onEnded={(event) => { unregisterInlineMediaElement(event.currentTarget); }}
+        onError={(event) => {
+          unregisterInlineMediaElement(event.currentTarget);
+          if (playback.status === 'ready') playback.fail();
+        }}
         aria-label={caption}
         className="h-10 w-full max-w-[320px]"
       />

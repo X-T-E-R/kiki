@@ -41,6 +41,7 @@ import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
 import { cssZoomFactor } from '../lib/uiZoom';
 import type { TimelineOffshootItem } from './fork/forkLineageModel';
 import { TimelineOffshootRail } from './fork/TimelineOffshootRail';
+import { ActiveTranscriptMediaPill, useActiveTranscriptMedia } from './ActiveTranscriptMediaPill';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -5803,6 +5804,13 @@ export const Transcript = memo(function Transcript({
   const lastKey = virtualNodeKey(virtualNodes.at(-1));
   useLayoutEffect(() => { previousLastKeyRef.current = loaded ? lastKey : undefined; });
   const [editingBlockIds, setEditingBlockIds] = useState<readonly string[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const activeTranscriptMedia = useActiveTranscriptMedia({
+    scrollElement,
+    nodeIndexes,
+    scopeKey: `${sessionIdForLocate ?? ''}\0${agentId}`,
+  });
   const pinnedIndexes = useMemo(() => {
     const indexes = new Set<number>();
     virtualNodes.forEach((node, index) => {
@@ -5817,16 +5825,18 @@ export const Transcript = memo(function Transcript({
       const index = nodeIndexes.get(blockId);
       if (index !== undefined) indexes.add(index);
     }
+    for (const rowKey of activeTranscriptMedia.pinnedRowKeys) {
+      const index = nodeIndexes.get(rowKey);
+      if (index !== undefined) indexes.add(index);
+    }
     return [...indexes].sort((left, right) => left - right);
-  }, [editingBlockIds, nodeIndexes, virtualNodes]);
+  }, [activeTranscriptMedia.pinnedRowKeys, editingBlockIds, nodeIndexes, virtualNodes]);
   const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
     if (pinnedIndexes.length === 0) return defaultRangeExtractor(range);
     const indexes = new Set(defaultRangeExtractor(range));
     for (const index of pinnedIndexes) indexes.add(index);
     return [...indexes].sort((left, right) => left - right);
   }, [pinnedIndexes]);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const stickToBottom = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
@@ -6379,6 +6389,9 @@ export const Transcript = memo(function Transcript({
   });
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
+  useEffect(() => {
+    activeTranscriptMedia.updateVisibleRange(virtualizer.range);
+  }, [activeTranscriptMedia.updateVisibleRange, virtualizer.range?.startIndex, virtualizer.range?.endIndex]);
   const prevSeatPaddingEndRef = useRef(seatPaddingEnd);
   useLayoutEffect(() => {
     const prev = prevSeatPaddingEndRef.current;
@@ -8042,6 +8055,18 @@ export const Transcript = memo(function Transcript({
         scrollRef={scrollRef}
         virtualizer={virtualizer}
         onLocateBlock={locateFloorBlock}
+      />
+      <ActiveTranscriptMediaPill
+        media={activeTranscriptMedia.activeMedia}
+        offscreen={activeTranscriptMedia.offscreen}
+        onToggle={activeTranscriptMedia.togglePlayback}
+        onLocate={(rowKey) => {
+          const index = nodeIndexes.get(rowKey);
+          if (index === undefined) return;
+          stickToBottomRef.current.stopScroll();
+          virtualizer.scrollToIndex(index, { align: 'center' });
+        }}
+        onDismiss={activeTranscriptMedia.dismissPaused}
       />
       <JumpToBottom
         virtualizer={virtualizer}
