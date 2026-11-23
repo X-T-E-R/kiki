@@ -25,6 +25,7 @@ export const IAgentBranchGuardService = createDecorator<IAgentBranchGuardService
 export class AgentBranchGuardService extends Service implements IAgentBranchGuardService {
   declare readonly _serviceBrand: undefined;
   private reviving: Promise<void> | undefined;
+  private revivalError: unknown;
 
   constructor(
     @IAgentStateService private readonly agentState: IAgentStateService,
@@ -71,30 +72,41 @@ export class AgentBranchGuardService extends Service implements IAgentBranchGuar
   }
 
   revived(): Promise<void> {
-    return this.reviving ?? Promise.resolve();
+    if (this.reviving !== undefined) return this.reviving;
+    if (this.revivalError !== undefined && this.agentState.get(branchSealedKey) === true) {
+      return Promise.reject(this.revivalError);
+    }
+    return Promise.resolve();
   }
 
   private revive(): void {
     if (this.reviving !== undefined) return;
+    this.revivalError = undefined;
     const agentId = this.scopeContext.agentId;
     const reviving = (async () => {
-      await this.metadata.updateAgent(agentId, (current) => {
-        const { branchSealed: _sealed, ...labels } = current.labels ?? {};
-        return {
-          ...current,
-          status: undefined,
-          completedAt: undefined,
-          resultSummary: undefined,
-          error: undefined,
-          labels,
-        };
-      });
-      await this.dispatcher.dispatchDurably(new AgentBranchSealed({ sealed: false }));
-    })().catch((error: unknown) => {
-      this.log?.error('failed to revive merged branch', { agentId, error });
-    }).finally(() => {
+      try {
+        await this.metadata.updateAgent(agentId, (current) => {
+          const { branchSealed: _sealed, ...labels } = current.labels ?? {};
+          return {
+            ...current,
+            status: undefined,
+            completedAt: undefined,
+            resultSummary: undefined,
+            error: undefined,
+            labels,
+          };
+        });
+        await this.dispatcher.dispatchDurably(new AgentBranchSealed({ sealed: false }));
+        this.revivalError = undefined;
+      } catch (error) {
+        this.revivalError = error;
+        this.log?.error('failed to revive merged branch', { agentId, error });
+        throw error;
+      }
+    })().finally(() => {
       if (this.reviving === reviving) this.reviving = undefined;
     });
+    void reviving.catch(() => {});
     this.reviving = reviving;
   }
 }

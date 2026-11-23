@@ -6,8 +6,6 @@ import type { WorkspacePathSnapshot } from './workspacePathIndex';
 import type { WorkspacePathEntry } from './workspacePathInventory';
 
 const TRIGRAM_MIN_FILES = 1500;
-const TRIGRAM_MAX_FILES = 30_000;
-const TRIGRAM_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 const TRIGRAM_REBUILD_BATCH_SIZE = 64;
 const TRIGRAM_PATCH_BATCH_SIZE = 256;
 
@@ -78,14 +76,12 @@ export class WorkspaceTrigramIndex {
     patches: readonly (readonly [string, WorkspacePathEntry | undefined])[],
   ): void {
     let fileCount = 0;
-    let totalBytes = 0;
     for (const entry of snapshot.entries) {
       if (entry.kind === 'file' && !entry.sensitive) {
         fileCount += 1;
-        totalBytes += entry.size;
       }
     }
-    if (fileCount < TRIGRAM_MIN_FILES || fileCount > TRIGRAM_MAX_FILES || totalBytes > TRIGRAM_MAX_TOTAL_BYTES) {
+    if (fileCount < TRIGRAM_MIN_FILES) {
       this.reset();
       return;
     }
@@ -139,7 +135,7 @@ export class WorkspaceTrigramIndex {
         const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.update', path: this.path, epoch, root: this.root,
           entries: updates.flatMap(([, entry]) => entry === undefined ? [] : [entry]),
           removed: updates.flatMap(([path, entry]) => entry === undefined ? [path] : []) },
-          { signal: this.controller.signal, timeoutMs: 30_000, priority: 'low' });
+          { signal: this.controller.signal, priority: 'low' });
         if (generation !== this.generation || this.controller.signal.aborted) return;
         if (!accepted) {
           this.revision = -1;
@@ -174,9 +170,7 @@ export class WorkspaceTrigramIndex {
 
   rebuild(snapshot: WorkspacePathSnapshot): void {
     const files = snapshot.entries.filter(entry => entry.kind === 'file' && !entry.sensitive);
-    let totalBytes = 0;
-    for (const file of files) totalBytes += file.size;
-    if (files.length < TRIGRAM_MIN_FILES || files.length > TRIGRAM_MAX_FILES || totalBytes > TRIGRAM_MAX_TOTAL_BYTES) {
+    if (files.length < TRIGRAM_MIN_FILES) {
       this.reset();
       return;
     }
@@ -194,7 +188,7 @@ export class WorkspaceTrigramIndex {
     const generation = ++this.generation;
     const epoch = randomUUID();
     this.pending = (async () => {
-      const options = { signal: this.controller.signal, timeoutMs: 120_000, priority: 'low' as const };
+      const options = { signal: this.controller.signal, priority: 'low' as const };
       const started = await this.cpu.request<boolean>({ type: 'workspace.trigram.begin', path: this.path, epoch, owner: this.owner }, options);
       if (!started || generation !== this.generation || this.controller.signal.aborted) return;
       for (let offset = 0; offset < files.length; offset += TRIGRAM_REBUILD_BATCH_SIZE) {

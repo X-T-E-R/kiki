@@ -16,6 +16,7 @@ import {
   defineTestContract,
   extractInlineContracts,
   runTestHygieneCheck,
+  scanDisabledTests,
   scanIntraMonorepoMocks,
   validateSunsetTrigger,
 } from './check-test-hygiene.mjs';
@@ -823,6 +824,17 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
         path.join(otherIntegDir, 'bad.integration.ts'),
         "vi.doMock('#/app/sessionIndex/sessionIndexService', () => ({}));\n",
       );
+      fs.writeFileSync(
+        path.join(kapTestDir, 'regex-quote.test.ts'),
+        [
+          "const apostrophe = /'/;",
+          'const fake = `',
+          '  test.skip("inside-template", () => {});',
+          '`;',
+          'test.skip("after-regex-apostrophe", () => {});',
+          '',
+        ].join('\n'),
+      );
       const scanned = scanIntraMonorepoMocks(tmpRepo, { allowlist: new Set() });
       assert.equal(scanned.violations.length, 2);
       assert.deepEqual(
@@ -832,6 +844,10 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
           'packages/kap-server/test/bad.test.ts',
         ],
       );
+      const disabledScan = scanDisabledTests(tmpRepo, { allowlist: new Set() });
+      assert.equal(disabledScan.violations.length, 1);
+      assert.equal(disabledScan.violations[0].file, 'packages/kap-server/test/regex-quote.test.ts');
+      assert.equal(disabledScan.violations[0].line, 5);
     } finally {
       fs.rmSync(tmpRepo, { recursive: true, force: true });
     }

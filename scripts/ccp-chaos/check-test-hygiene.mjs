@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 const DEFAULT_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
@@ -27,92 +28,94 @@ export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set(
   JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'legacy-mock-allowlist.json'), 'utf8')),
 );
 
-function lexCommentsAndStrings(src) {
-  let text = '';
+function lexCommentsAndStrings(src, filePath = 'test.ts') {
+  const lower = filePath.toLowerCase();
+  const scriptKind = lower.endsWith('.tsx')
+    ? ts.ScriptKind.TSX
+    : lower.endsWith('.jsx')
+      ? ts.ScriptKind.JSX
+      : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(filePath, src, ts.ScriptTarget.Latest, false, scriptKind);
   const insideString = new Uint8Array(src.length);
-  const templateBraceStack = [];
+  const tokenMask = new Uint8Array(src.length);
+  const markSpan = (start, end, isStringInterior, quoteLead, quoteTrail) => {
+    const hi = Math.min(end, src.length);
+    for (let idx = Math.max(0, start); idx < hi; idx += 1) {
+      tokenMask[idx] = 1;
+    }
+    if (isStringInterior) {
+      const sHi = Math.min(end - quoteTrail, src.length);
+      for (let idx = Math.max(0, start + quoteLead); idx < sHi; idx += 1) {
+        insideString[idx] = 1;
+      }
+    }
+  };
+  const visit = (node) => {
+    const kind = node.kind;
+    if (kind === ts.SyntaxKind.StringLiteral || kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral) {
+      const start = node.getStart(sf, false);
+      const closed = node.end > start + 1 && src[node.end - 1] === src[start];
+      markSpan(start, node.end, true, 1, closed ? 1 : 0);
+    } else if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) {
+      const start = node.getStart(sf, false);
+      const closed = node.end >= start + 3 && src[node.end - 2] === '$' && src[node.end - 1] === '{';
+      markSpan(start, node.end, true, 1, closed ? 2 : 0);
+    } else if (kind === ts.SyntaxKind.TemplateTail) {
+      const start = node.getStart(sf, false);
+      const closed = node.end > start + 1 && src[node.end - 1] === '`';
+      markSpan(start, node.end, true, 1, closed ? 1 : 0);
+    } else if (kind === ts.SyntaxKind.RegularExpressionLiteral) {
+      const start = node.getStart(sf, false);
+      markSpan(start, node.end, false, 0, 0);
+    } else if (kind === ts.SyntaxKind.JsxText) {
+      markSpan(node.pos, node.end, true, 0, 0);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+
+  const chars = Array.from({ length: src.length });
   let i = 0;
-  let quote = null;
+  if (src.startsWith('#!')) {
+    while (i < src.length && src[i] !== '\n') {
+      chars[i] = src[i] === '\r' ? '\r' : ' ';
+      i += 1;
+    }
+  }
   while (i < src.length) {
-    const ch = src[i];
-    const next = src[i + 1];
-    if (quote !== null) {
-      if (ch === '\\' && i + 1 < src.length) {
-        insideString[i] = 1;
-        insideString[i + 1] = 1;
-        text += ch + src[i + 1];
-        i += 2;
-        continue;
-      }
-      if (quote === '`' && ch === '$' && next === '{') {
-        templateBraceStack.push(0);
-        quote = null;
-        text += '${';
-        i += 2;
-        continue;
-      }
-      if (ch === quote) {
-        quote = null;
-        text += ch;
-        i += 1;
-        continue;
-      }
-      insideString[i] = 1;
-      text += ch;
-      i += 1;
-      continue;
-    }
-    if (templateBraceStack.length > 0) {
-      if (ch === '{') {
-        templateBraceStack[templateBraceStack.length - 1] += 1;
-      } else if (ch === '}') {
-        if (templateBraceStack[templateBraceStack.length - 1] === 0) {
-          templateBraceStack.pop();
-          quote = '`';
-          text += ch;
-          i += 1;
-          continue;
-        }
-        templateBraceStack[templateBraceStack.length - 1] -= 1;
-      }
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      quote = ch;
-      text += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === '/' && next === '/') {
+    if (tokenMask[i] === 0 && src[i] === '/' && src[i + 1] === '/') {
       while (i < src.length && src[i] !== '\n') {
-        text += ' ';
+        chars[i] = src[i] === '\r' ? '\r' : ' ';
         i += 1;
       }
       continue;
     }
-    if (ch === '/' && next === '*') {
-      text += '  ';
+    if (tokenMask[i] === 0 && src[i] === '/' && src[i + 1] === '*') {
+      chars[i] = ' ';
+      chars[i + 1] = ' ';
       i += 2;
       while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
-        text += src[i] === '\n' ? '\n' : ' ';
+        chars[i] = src[i] === '\n' || src[i] === '\r' ? src[i] : ' ';
         i += 1;
       }
       if (i < src.length) {
-        text += '  ';
+        chars[i] = ' ';
+        chars[i + 1] = ' ';
         i += 2;
       }
       continue;
     }
-    text += ch;
+    chars[i] = src[i];
     i += 1;
   }
-  return { text, insideString };
+  return { text: chars.join(''), insideString, tokenMask };
 }
 
-function stripStringsAndCommentsPreservingLines(src) {
-  const { text, insideString } = lexCommentsAndStrings(src);
+function stripStringsAndCommentsPreservingLines(src, filePath = 'test.ts') {
+  const { text, insideString } = lexCommentsAndStrings(src, filePath);
   let out = '';
   for (let i = 0; i < text.length; i += 1) {
-    out += insideString[i] === 1 && text[i] !== '\n' ? ' ' : text[i];
+    out += insideString[i] === 1 && text[i] !== '\n' && text[i] !== '\r' ? ' ' : text[i];
   }
   return out;
 }
@@ -127,26 +130,11 @@ const PURE_SPY_ON_EXPR_RE = /^vi\.spyOn\s*\(/u;
 const WEAK_ASSERTION_RE = /\bexpect\.anything\s*\(\s*\)/u;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 
-function extractBalancedCall(text, openParenIndex) {
+function extractBalancedCallMasked(text, openParenIndex, tokenMask) {
   let depth = 0;
-  let quote = null;
-  let escaped = false;
   for (let i = openParenIndex; i < text.length; i += 1) {
+    if (tokenMask[i] === 1) continue;
     const ch = text[i];
-    if (quote !== null) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      quote = ch;
-      continue;
-    }
     if (ch === '(') depth += 1;
     else if (ch === ')') {
       depth -= 1;
@@ -247,15 +235,15 @@ function isExemptMockCall(callExpr) {
   return false;
 }
 
-function findIntraMonorepoMocks(rawText, lineNumberAtOffset) {
-  const { text, insideString } = lexCommentsAndStrings(rawText);
+function findIntraMonorepoMocks(rawText, lineNumberAtOffset, filePath = 'test.ts') {
+  const { text, insideString, tokenMask } = lexCommentsAndStrings(rawText, filePath);
   const hits = [];
   INTRA_MONOREPO_MOCK_GLOBAL_RE.lastIndex = 0;
   let match;
   while ((match = INTRA_MONOREPO_MOCK_GLOBAL_RE.exec(text)) !== null) {
     if (insideString[match.index] === 1) continue;
     const openParen = text.indexOf('(', match.index);
-    const callExpr = openParen >= 0 ? extractBalancedCall(text, openParen) : match[0];
+    const callExpr = openParen >= 0 ? extractBalancedCallMasked(text, openParen, tokenMask) : match[0];
     if (isExemptMockCall(callExpr)) continue;
     hits.push({
       line: lineNumberAtOffset(match.index),
@@ -543,7 +531,7 @@ export function scanDisabledTests(repoRoot = DEFAULT_ROOT, { allowlist = LEGACY_
       const rel = toPosix(path.relative(repoRoot, abs));
       const raw = fs.readFileSync(abs, 'utf8');
       const rawLines = raw.split(/\r?\n/u);
-      const codeLines = stripStringsAndCommentsPreservingLines(raw).split(/\r?\n/u);
+      const codeLines = stripStringsAndCommentsPreservingLines(raw, rel).split(/\r?\n/u);
       for (let i = 0; i < codeLines.length; i += 1) {
         if (DISABLED_TEST_RE.test(codeLines[i])) {
           const hit = { file: rel, line: i + 1, text: rawLines[i].trim() };
@@ -569,7 +557,7 @@ export function scanIntraMonorepoMocks(
       const rel = toPosix(path.relative(repoRoot, abs));
       const content = fs.readFileSync(abs, 'utf8');
       const lineNumberAtOffset = (offset) => content.slice(0, offset).split('\n').length;
-      for (const found of findIntraMonorepoMocks(content, lineNumberAtOffset)) {
+      for (const found of findIntraMonorepoMocks(content, lineNumberAtOffset, rel)) {
         const hit = { file: rel, line: found.line, target: found.target, text: found.text };
         if (allowlist.has(rel)) legacyExempted.push(hit);
         else violations.push(hit);
@@ -631,7 +619,7 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
       }
       return line;
     };
-    for (const found of findIntraMonorepoMocks(hunkText, lineNumberAtOffset)) {
+    for (const found of findIntraMonorepoMocks(hunkText, lineNumberAtOffset, currentFile)) {
       mockViolations.push({
         file: currentFile,
         line: found.line,
@@ -639,7 +627,7 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
         text: found.text,
       });
     }
-    const strippedHunkLines = stripStringsAndCommentsPreservingLines(hunkText).split('\n');
+    const strippedHunkLines = stripStringsAndCommentsPreservingLines(hunkText, currentFile).split('\n');
     for (let idx = 0; idx < addedHunk.length; idx += 1) {
       const codeLine = strippedHunkLines[idx] ?? '';
       const rawEntry = addedHunk[idx];

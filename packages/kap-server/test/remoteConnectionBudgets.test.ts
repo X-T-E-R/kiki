@@ -297,23 +297,36 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     expect(() => manager.lease(record.id, undefined, 'bridge')).toThrow(AdmissionError);
   });
 
-  it('gives prompt broker calls the 120s lease ceiling instead of aborting at the 30s default', async () => {
+  it('keeps broker calls alive without arbitrary wall-clock cutoffs while connected and aborts on caller disconnect', async () => {
     const f = await fixture();
+    let remoteAborted = false;
+    let releaseCompact = () => {};
+    let remoteEntered = false;
+    f.target.post('/api/sessions/:sessionId::compact', async (_req, reply) => {
+      remoteEntered = true;
+      reply.raw.once('close', () => {
+        if (!reply.raw.writableEnded) remoteAborted = true;
+      });
+      await new Promise<void>((resolve) => {
+        releaseCompact = resolve;
+        reply.raw.once('close', resolve);
+      });
+      return { code: 0, msg: 'success', data: { compacted: true } };
+    });
     f.target.post('/api/sessions/:sessionId/prompts', async () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 150));
       return { code: 0, msg: 'success', data: { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hi' }], created_at: new Date().toISOString() } };
     });
     f.target.get('/api/meta', async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 150));
       return { code: 0, msg: 'success', data: { ok: true } };
     });
     const { call } = await f.start();
+    expect((await call('call', { operation: 'meta' })).status).toBe(200);
+
     const seenTimeouts: number[] = [];
     const origTimeout = AbortSignal.timeout.bind(AbortSignal);
     const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
       seenTimeouts.push(ms);
-      if (ms === 30_000) return origTimeout(60);
-      if (ms === 120_000) return origTimeout(2_000);
       return origTimeout(ms);
     });
     try {
@@ -323,13 +336,23 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
         body: { content: [{ type: 'text', text: 'hi' }] },
       });
       expect(promptRes.status).toBe(200);
-      expect(seenTimeouts).toContain(120_000);
-
-      const metaRes = await call('call', { operation: 'meta' });
-      expect(metaRes.status).toBeGreaterThanOrEqual(500);
-      expect(seenTimeouts).toContain(30_000);
+      expect(seenTimeouts).toEqual([]);
     } finally {
       spy.mockRestore();
     }
+
+    const abortCaller = new AbortController();
+    const pendingCompact = call(
+      'call',
+      { operation: 'compact', params: { sessionId: 'fixture' }, body: {} },
+      abortCaller.signal,
+    ).catch((err: unknown) => err);
+    await expect.poll(() => remoteEntered).toBe(true);
+    expect(f.manager.list()[0]?.activeLeases).toBe(1);
+    abortCaller.abort();
+    await expect.poll(() => remoteAborted).toBe(true);
+    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0);
+    releaseCompact();
+    await pendingCompact;
   });
 });

@@ -745,6 +745,11 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       expect(replayed.agentState.get(branchToolLockKey)).toBe(false);
       expect(replayed.agentState.get(branchSealedKey)).toBe(true);
 
+      replayed.updateAgent.mockRejectedValueOnce(new Error('metadata_disk_full'));
+      await replayed.dispatcher.dispatch(new TurnStarted({ turnId: 2, origin: { kind: 'user' } }));
+      await expect(replayedGuard.revived()).rejects.toThrow('metadata_disk_full');
+      expect(replayed.agentState.get(branchSealedKey)).toBe(true);
+
       let releaseMetadataUpdate: () => void = () => {};
       const metadataGate = new Promise<void>((resolve) => { releaseMetadataUpdate = resolve; });
       const origUpdate = replayed.updateAgent.getMockImplementation()!;

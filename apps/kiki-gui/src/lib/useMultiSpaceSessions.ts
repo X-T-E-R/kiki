@@ -97,23 +97,46 @@ export interface MultiSpaceSessionsResult {
   readonly refreshRemoteSpace: (connectionId: string) => Promise<void>;
 }
 
+interface SpaceHeadResult {
+  readonly sessions: readonly Session[];
+  readonly rooms?: readonly RoomListItem[];
+  readonly workspaces?: readonly WorkspaceCatalogEntry[];
+  readonly partialFailure: boolean;
+}
+
 async function fetchSpaceHead(
   targetClient: KikiClient,
   signal: AbortSignal,
-): Promise<{
-  readonly sessions: readonly Session[];
-  readonly rooms: readonly RoomListItem[];
-  readonly workspaces: readonly WorkspaceCatalogEntry[];
-}> {
-  const [sessionsPage, workspacesRes, roomsRes] = await Promise.all([
+): Promise<SpaceHeadResult> {
+  const roomsPromise = targetClient.klient.rest?.rooms !== undefined
+    ? targetClient.klient.rest.rooms.listItems()
+    : undefined;
+  const [sessionsPage, workspacesOutcome, roomsOutcome] = await Promise.all([
     targetClient.listSessions({ page_size: 50 }, { signal }),
-    targetClient.listWorkspaceCatalog().catch(() => ({ items: [] as WorkspaceCatalogEntry[] })),
-    targetClient.klient.rest?.rooms.listItems().catch(() => [] as RoomListItem[]) ?? Promise.resolve([] as RoomListItem[]),
+    Promise.allSettled([targetClient.listWorkspaceCatalog()]).then(([r]) => r),
+    roomsPromise !== undefined
+      ? Promise.allSettled([roomsPromise]).then(([r]) => r)
+      : Promise.resolve({ status: 'fulfilled' as const, value: [] as RoomListItem[] }),
   ]);
   return {
     sessions: sessionsPage.items ?? [],
-    rooms: roomsRes ?? [],
-    workspaces: workspacesRes.items ?? [],
+    rooms: roomsOutcome.status === 'fulfilled' ? (roomsOutcome.value ?? []) : undefined,
+    workspaces: workspacesOutcome.status === 'fulfilled' ? (workspacesOutcome.value.items ?? []) : undefined,
+    partialFailure: workspacesOutcome.status === 'rejected' || roomsOutcome.status === 'rejected',
+  };
+}
+
+function mergeSpaceSnapshot(
+  existing: CachedSpaceSnapshot | undefined,
+  head: SpaceHeadResult,
+  now: number,
+): CachedSpaceSnapshot {
+  return {
+    sessions: head.sessions,
+    rooms: head.rooms ?? existing?.rooms ?? [],
+    workspaces: head.workspaces ?? existing?.workspaces ?? [],
+    lastSyncedAt: head.partialFailure ? (existing?.lastSyncedAt ?? now) : now,
+    stale: head.partialFailure,
   };
 }
 
@@ -283,21 +306,23 @@ export function useMultiSpaceSessions({
     const targetClient = getOrCreateRemoteClient(recordId);
     if (targetClient === null) return;
     const controller = new AbortController();
+    const key = remoteSpaceKey(recordId);
     try {
       const head = await fetchSpaceHead(targetClient, controller.signal);
       setSnapshots((prev) => {
         const next = new Map(prev);
-        next.set(remoteSpaceKey(recordId), {
-          sessions: head.sessions,
-          rooms: head.rooms,
-          workspaces: head.workspaces,
-          lastSyncedAt: Date.now(),
-          stale: false,
-        });
+        next.set(key, mergeSpaceSnapshot(prev.get(key), head, Date.now()));
         return next;
       });
     } catch {
-      // Leave the last good snapshot intact on transient refresh errors.
+      if (controller.signal.aborted) return;
+      setSnapshots((prev) => {
+        const existing = prev.get(key);
+        if (existing === undefined || existing.stale) return prev;
+        const next = new Map(prev);
+        next.set(key, { ...existing, stale: true });
+        return next;
+      });
     }
   }, [getOrCreateRemoteClient]);
 
@@ -343,13 +368,7 @@ export function useMultiSpaceSessions({
             if (controller.signal.aborted) return;
             setSnapshots((prev) => {
               const next = new Map(prev);
-              next.set(target.key, {
-                sessions: head.sessions,
-                rooms: head.rooms,
-                workspaces: head.workspaces,
-                lastSyncedAt: Date.now(),
-                stale: false,
-              });
+              next.set(target.key, mergeSpaceSnapshot(prev.get(target.key), head, Date.now()));
               return next;
             });
           } catch {
