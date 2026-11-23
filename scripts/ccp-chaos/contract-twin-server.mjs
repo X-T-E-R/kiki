@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import http from 'node:http';
 import http2 from 'node:http2';
+import { performance } from 'node:perf_hooks';
 import {
   checkRequiredToolSchemas,
   detectS10Directive,
@@ -389,6 +390,26 @@ function detectToolProfile(promptText) {
   return { profile: last[1], arg: last[2] ?? '' };
 }
 
+function detectCoupledTickLoop(text) {
+  const m = /\[COUPLED_TICK_LOOP:id=([A-Za-z0-9_.-]+)(?:,maxSteps=(\d{1,4}))?\]/u.exec(String(text ?? ''));
+  if (!m) return null;
+  return {
+    id: m[1],
+    maxSteps: m[2] ? Math.max(1, Number.parseInt(m[2], 10)) : 250,
+  };
+}
+
+function extractSystemPromptSnippet(body) {
+  if (typeof body?.system === 'string') return body.system.slice(0, 24_000);
+  if (Array.isArray(body?.system)) {
+    return body.system
+      .map((part) => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : ''))
+      .join('\n')
+      .slice(0, 24_000);
+  }
+  return '';
+}
+
 function detectBarrierId(promptText) {
   const matches = [...promptText.matchAll(/\[CHAOS_BARRIER:([A-Za-z0-9_.-]+)\]/gu)];
   return matches.length > 0 ? matches.at(-1)[1] : null;
@@ -578,7 +599,49 @@ export async function createContractTwinServer(options = {}) {
   const scopeAttemptTimestamps = new Map();
   const toolIdToName = new Map();
   const barriers = new Map();
+  const tickLoops = new Map();
+  const requestTrace = [];
   const violations = [];
+
+  function ensureTickLoop(loopId) {
+    let entry = tickLoops.get(loopId);
+    if (!entry) {
+      entry = {
+        id: loopId,
+        stopped: false,
+        offeredTicks: [],
+        consumedTicks: [],
+        missedOffers: 0,
+        waiter: null,
+      };
+      tickLoops.set(loopId, entry);
+    }
+    return entry;
+  }
+
+  function waitForNextTick(loopId, res) {
+    const entry = ensureTickLoop(loopId);
+    if (entry.offeredTicks.length > 0) {
+      const tick = entry.offeredTicks.shift();
+      entry.consumedTicks.push({ ...tick, consumedAtMs: performance.now() });
+      return Promise.resolve(tick);
+    }
+    if (entry.stopped) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const onClose = () => {
+        if (res?.writableFinished) return;
+        if (entry.waiter === finish) entry.waiter = null;
+        resolve(null);
+      };
+      const finish = (tick) => {
+        res?.off?.('close', onClose);
+        if (tick) entry.consumedTicks.push({ ...tick, consumedAtMs: performance.now() });
+        resolve(tick);
+      };
+      entry.waiter = finish;
+      res?.once?.('close', onClose);
+    });
+  }
 
   function ensureBarrier(barrierId) {
     let entry = barriers.get(barrierId);
@@ -842,7 +905,13 @@ export async function createContractTwinServer(options = {}) {
       if (!entry.released) {
         await Promise.race([
           entry.promise,
-          new Promise((resolve) => req.once('close', resolve)),
+          new Promise((resolve) => {
+            const onAbort = () => {
+              if (!res.writableFinished) resolve();
+            };
+            res.once('close', onAbort);
+            entry.promise.finally(() => res.off('close', onAbort));
+          }),
         ]);
       }
     }
@@ -1215,11 +1284,16 @@ export async function createContractTwinServer(options = {}) {
     if (faultKind === 'slow_drip') {
       res.write(': slow-drip-start\n\n');
       await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 60);
-        req.once('close', () => {
+        const onAbort = () => {
+          if (res.writableFinished) return;
           clearTimeout(timer);
           resolve();
-        });
+        };
+        const timer = setTimeout(() => {
+          res.off('close', onAbort);
+          resolve();
+        }, 60);
+        res.once('close', onAbort);
       });
       if (!res.writableEnded && !res.destroyed) {
         await sendAnthropicSuccess(res, req, { model, replyText: 'Recovered after slow drip.', messageId, stream: true, barrierId: null });
@@ -1487,10 +1561,94 @@ export async function createContractTwinServer(options = {}) {
             const toolSpec = detectToolProfile(effectivePromptText || promptText);
             const s10Directive = detectS10Directive(latestTurn.text || effectivePromptText || promptText);
             const v23Plan = detectV23ToolPlan(latestTurn.text);
+            const coupledTickLoop = detectCoupledTickLoop(latestTurn.text);
             const declaredToolNames = new Set(
               effectiveTools.map((t) => (t && typeof t === 'object' ? t.name : null)).filter(Boolean),
             );
             const prevStep = scopeToolStep.get(effectiveScopeKey) ?? 0;
+
+            if (requestTrace.length >= 20_000) {
+              requestTrace.shift();
+            }
+            requestTrace.push({
+                seq: msgSeq,
+                messageId,
+                receivedAtMonotonicMs: performance.now(),
+                receivedAtWallMs: Date.now(),
+                scopeKey: effectiveScopeKey,
+                turnToolRound: latestTurn.turnToolRound,
+                hasToolResults: latestUser.toolResults.length > 0,
+                latestUserText: latestUser.text.slice(0, 600),
+                latestTurnText: latestTurn.text.slice(0, 600),
+                systemPromptSnippet: extractSystemPromptSnippet(body),
+              });
+
+            if (coupledTickLoop !== null) {
+              const tick =
+                latestTurn.turnToolRound < coupledTickLoop.maxSteps
+                  ? await waitForNextTick(coupledTickLoop.id, res)
+                  : null;
+              if (tick !== null) {
+                const tickToolName = declaredToolNames.has('Read')
+                  ? 'Read'
+                  : declaredToolNames.has('Glob')
+                    ? 'Glob'
+                    : declaredToolNames.has('TodoList')
+                      ? 'TodoList'
+                      : null;
+                if (tickToolName) {
+                  const callId = `coupled_tick_${coupledTickLoop.id}_${tick.seq}_${msgSeq}`;
+                  const modIdx = String(((tick.seq - 1) % 120) + 1).padStart(3, '0');
+                  const toolInput =
+                    tickToolName === 'Read'
+                      ? { path: `src/mod-${modIdx}.ts`, line_offset: 1, n_lines: 4 }
+                      : tickToolName === 'Glob'
+                        ? { pattern: `src/mod-${modIdx}.ts` }
+                        : { todos: [{ title: `Coupled tick ${tick.seq}`, status: 'in_progress' }] };
+                  toolIdToName.set(callId, tickToolName);
+                  if (!toolStats[tickToolName]) toolStats[tickToolName] = { invoked: 0, resultsOk: 0, resultsError: 0 };
+                  toolStats[tickToolName].invoked += 1;
+                  const calls = [{ id: callId, name: tickToolName, input: toolInput }];
+                  threadStore.set(messageId, {
+                    messages: [
+                      ...effectiveMessages,
+                      {
+                        role: 'assistant',
+                        content: [
+                          { type: 'text', text: `[COUPLED_TICK:${String(tick.seq).padStart(4, '0')}]` },
+                          { type: 'tool_use', id: callId, name: tickToolName, input: toolInput },
+                        ],
+                      },
+                    ],
+                    tools: effectiveTools,
+                    createdAt: Date.now(),
+                  });
+                  await streamPacedAnthropicResponse(res, req, {
+                    model: body.model,
+                    messageId,
+                    replyText: `[COUPLED_TICK:${String(tick.seq).padStart(4, '0')}] live stream step`,
+                    toolCalls: calls,
+                    targetDeltas: 3,
+                    cadenceMs: 2,
+                  });
+                  return;
+                }
+              }
+              const doneText = `COUPLED_TICK_LOOP_DONE [${coupledTickLoop.id}] steps=${latestTurn.turnToolRound}`;
+              threadStore.set(messageId, {
+                messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: doneText }] }],
+                tools: effectiveTools,
+                createdAt: Date.now(),
+              });
+              await streamPacedAnthropicResponse(res, req, {
+                model: body.model,
+                messageId,
+                replyText: doneText,
+                targetDeltas: 3,
+                cadenceMs: 2,
+              });
+              return;
+            }
 
             if (v23Plan !== null) {
               const lastToolText = extractToolResultText(latestUser.toolResults);
@@ -1541,6 +1699,21 @@ export async function createContractTwinServer(options = {}) {
                   tools: effectiveTools,
                   createdAt: Date.now(),
                 });
+                if (step.barrierId) {
+                  const bEntry = noteBarrierArrival(step.barrierId);
+                  if (!bEntry.released) {
+                    await Promise.race([
+                      bEntry.promise,
+                      new Promise((resolve) => {
+                        const onAbort = () => {
+                          if (!res.writableFinished) resolve();
+                        };
+                        res.once('close', onAbort);
+                        bEntry.promise.finally(() => res.off('close', onAbort));
+                      }),
+                    ]);
+                  }
+                }
                 await streamPacedAnthropicResponse(res, req, {
                   model: body.model,
                   messageId,
@@ -1963,6 +2136,47 @@ export async function createContractTwinServer(options = {}) {
         },
       };
     },
+    createTickLoop: (loopId) => {
+      const entry = ensureTickLoop(loopId);
+      return {
+        offerTick: (seq) => {
+          if (entry.stopped) return false;
+          const tick = { seq, offeredAtMs: performance.now() };
+          if (entry.waiter) {
+            const w = entry.waiter;
+            entry.waiter = null;
+            w(tick);
+            return true;
+          }
+          if (entry.offeredTicks.length >= 4) {
+            entry.missedOffers += 1;
+            entry.offeredTicks.shift();
+          }
+          entry.offeredTicks.push(tick);
+          return true;
+        },
+        stop: () => {
+          entry.stopped = true;
+          if (entry.waiter) {
+            const w = entry.waiter;
+            entry.waiter = null;
+            w(null);
+          }
+        },
+        getStats: () => ({
+          id: entry.id,
+          stopped: entry.stopped,
+          pendingOffers: entry.offeredTicks.length,
+          consumedCount: entry.consumedTicks.length,
+          missedOffers: entry.missedOffers,
+          consumedTicks: [...entry.consumedTicks],
+        }),
+      };
+    },
+    getRequestTrace: () => [...requestTrace],
+    clearRequestTrace: () => {
+      requestTrace.length = 0;
+    },
     getStats: () => ({
       seed,
       mode,
@@ -1989,6 +2203,14 @@ export async function createContractTwinServer(options = {}) {
       for (const k of Object.keys(counters)) counters[k] = 0;
     },
     close: async () => {
+      for (const tl of tickLoops.values()) {
+        tl.stopped = true;
+        if (tl.waiter) {
+          const w = tl.waiter;
+          tl.waiter = null;
+          w(null);
+        }
+      }
       for (const b of barriers.values()) {
         if (!b.released) {
           b.released = true;

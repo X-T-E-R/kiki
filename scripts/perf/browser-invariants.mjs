@@ -1,6 +1,8 @@
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
 
+import { trustedWheelScrollUp } from './trusted-scroll.mjs';
+
 export const REACT_ERROR_PATTERNS = [
   /Minified React error #\d+/i,
   /Rendered (?:more|fewer) hooks/i,
@@ -371,25 +373,47 @@ export async function verifyAddMenuSecondaryScrollable(page) {
       return { foundScroller: false, overflowed: false, moved: false, clipsViewport };
     }
     const overflowed = bestScroller.scrollHeight > bestScroller.clientHeight + 2;
-    let moved = true;
-    if (overflowed) {
-      const before = bestScroller.scrollTop;
-      bestScroller.scrollTop = Math.min(bestScroller.scrollHeight - bestScroller.clientHeight, 120);
-      moved = bestScroller.scrollTop > before;
-      bestScroller.scrollTop = before;
-    }
-    return { foundScroller: true, overflowed, moved, clipsViewport };
+    const scrollerRect = bestScroller.getBoundingClientRect();
+    return {
+      foundScroller: true,
+      overflowed,
+      beforeScrollTop: bestScroller.scrollTop,
+      hoverX: scrollerRect.left + scrollerRect.width * 0.5,
+      hoverY: scrollerRect.top + scrollerRect.height * 0.5,
+      clipsViewport,
+    };
   });
+
+  let moved = true;
+  if (check.foundScroller && check.overflowed) {
+    await page.mouse.move(check.hoverX, check.hoverY);
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(120);
+    const afterScrollTop = await page.evaluate(() => {
+      const candidates = [
+        ...document.querySelectorAll('[data-add-menu] *, [role="menu"] *, [role="dialog"] *, [data-add-menu], [role="menu"]'),
+      ];
+      let best = null;
+      for (const el of candidates) {
+        const st = getComputedStyle(el);
+        if ((st.overflowY === 'auto' || st.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 2) {
+          if (!best || el.scrollHeight > best.scrollHeight) best = el;
+        }
+      }
+      return best ? best.scrollTop : 0;
+    });
+    moved = afterScrollTop > (check.beforeScrollTop ?? 0);
+  }
 
   await page.keyboard.press('Escape').catch(() => undefined);
   await page.waitForTimeout(100);
-  const ok = !check.clipsViewport && (!check.overflowed || (check.foundScroller && check.moved));
+  const ok = !check.clipsViewport && (!check.overflowed || (check.foundScroller && moved));
   return {
     applicable: true,
     ok,
     reason: ok ? null : check.clipsViewport ? 'panel_clips_viewport' : 'secondary_view_not_scrollable',
     view: pickedView,
-    scrollable: check.foundScroller && check.moved,
+    scrollable: check.foundScroller && moved,
     overflowed: check.overflowed,
   };
 }
@@ -419,9 +443,32 @@ export async function verifyCapabilitiesToggleNoJumpNoOverlap(page) {
     };
     const scroller = findScroller();
     const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    if (maxScroll > 80) {
-      scroller.scrollTop = Math.min(maxScroll, 200);
-    }
+    const rect = scroller.getBoundingClientRect();
+    return {
+      maxScroll,
+      x: rect.left + Math.min(200, Math.max(24, rect.width * 0.5)),
+      y: rect.top + Math.min(200, Math.max(24, rect.height * 0.5)),
+    };
+  });
+  if (beforeState.maxScroll > 80) {
+    await page.mouse.move(beforeState.x, beforeState.y);
+    await page.mouse.wheel(0, Math.min(beforeState.maxScroll, 200));
+    await page.waitForTimeout(80);
+  }
+  const resolvedBeforeState = await page.evaluate(() => {
+    const findScroller = () => {
+      const marked = document.querySelector('[data-settings-scroll]');
+      if (marked) return marked;
+      const pageEl = document.querySelector('[data-capabilities-page]');
+      for (let el = pageEl; el; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 20) {
+          return el;
+        }
+      }
+      return document.scrollingElement || document.documentElement;
+    };
+    const scroller = findScroller();
     const switches = Array.from(document.querySelectorAll('button[role="switch"]:not([disabled])'));
     const targetIdx = switches.findIndex((el) => {
       const r = el.getBoundingClientRect();
@@ -434,7 +481,7 @@ export async function verifyCapabilitiesToggleNoJumpNoOverlap(page) {
   });
 
   await page.waitForTimeout(120);
-  const toggleBtn = page.locator('button[role="switch"]:not([disabled])').nth(beforeState.targetIdx);
+  const toggleBtn = page.locator('button[role="switch"]:not([disabled])').nth(resolvedBeforeState.targetIdx);
   await toggleBtn.click();
   await page.waitForTimeout(300);
 
@@ -471,7 +518,7 @@ export async function verifyCapabilitiesToggleNoJumpNoOverlap(page) {
   await toggleBtn.click().catch(() => undefined);
   await page.waitForTimeout(150);
 
-  const scrollDeltaPx = Math.round(Math.abs(afterState.scrollTop - beforeState.scrollTop));
+  const scrollDeltaPx = Math.round(Math.abs(afterState.scrollTop - resolvedBeforeState.scrollTop));
   const ok = scrollDeltaPx <= 48 && afterState.overlapCount === 0;
   return {
     applicable: true,
@@ -508,40 +555,30 @@ export async function verifyRightRailMergedBranchesFolded(page) {
   return result;
 }
 
-export async function verifyScrollUpNoSnapBack(page, { settleMs = 700 } = {}) {
-  const setup = await page.evaluate(() => {
-    const scroller = document.querySelector('[data-transcript-scroll]');
-    if (!scroller) return { applicable: false, reason: 'no_transcript_scroller' };
-    const maxScroll = scroller.scrollHeight - scroller.clientHeight;
-    if (maxScroll < 400) return { applicable: false, reason: 'short_transcript' };
-    const targetTop = Math.floor(maxScroll * 0.25);
-    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
-    scroller.scrollTop = targetTop;
-    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-    return { applicable: true, targetTop, maxScroll, scrollTopImmediately: scroller.scrollTop };
+export async function verifyScrollUpNoSnapBack(page, { settleMs = 700, requireApplicable = false } = {}) {
+  const outcome = await trustedWheelScrollUp(page, {
+    deltaY: -1200,
+    steps: 4,
+    pauseMs: 90,
+    settleMs,
   });
-  if (!setup.applicable) {
-    return { applicable: false, ok: true, reason: setup.reason, snappedToBottom: false, distanceFromBottomPx: null };
+  if (!outcome.applicable) {
+    return {
+      applicable: requireApplicable,
+      ok: !requireApplicable,
+      reason: outcome.reason,
+      snappedToBottom: false,
+      olderTurnsLoaded: false,
+      distanceFromBottomPx: null,
+    };
   }
-
-  await page.waitForTimeout(settleMs);
-  const settled = await page.evaluate(() => {
-    const scroller = document.querySelector('[data-transcript-scroll]');
-    if (!scroller) return null;
-    const distanceFromBottomPx = Math.round(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
-    return { scrollTop: Math.round(scroller.scrollTop), distanceFromBottomPx };
-  });
-
-  if (settled === null) {
-    return { applicable: true, ok: false, reason: 'scroller_unmounted', snappedToBottom: true, distanceFromBottomPx: 0 };
-  }
-  const snappedToBottom = settled.distanceFromBottomPx < 120;
   return {
     applicable: true,
-    ok: !snappedToBottom,
-    reason: snappedToBottom ? `snapped_back_distance_${settled.distanceFromBottomPx}px` : null,
-    snappedToBottom,
-    distanceFromBottomPx: settled.distanceFromBottomPx,
+    ok: outcome.ok,
+    reason: outcome.reason,
+    snappedToBottom: outcome.snappedToBottom,
+    olderTurnsLoaded: outcome.olderTurnsLoaded,
+    distanceFromBottomPx: outcome.distanceFromBottomPx,
   };
 }
 

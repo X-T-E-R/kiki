@@ -1072,7 +1072,9 @@ describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
       drill1: {
         roundsSucceeded: 10,
         composerUsableAfterAllRounds: true,
-        upwardScrollSnapBackCheck: { ok: true, skipped: false, settledScrollTop: 420 },
+        steerWhileBusyVerified: true,
+        steerModeUsed: 'send-now',
+        upwardScrollSnapBackCheck: { ok: true, skipped: false, olderTurnsLoaded: true, distanceFromBottomPx: 420 },
         composerPopupSweep: { triggersClicked: 4, breachCount: 0 },
       },
       drill2: {
@@ -1101,11 +1103,20 @@ describe('Scenario S9 Full-Stack Browser Flight Recorder Contracts', () => {
         subagentCount: 250,
         giantMainWireGiB: 0.02,
       },
-      serverHealth: { unhandledRejections: 0, uncaughtExceptions: 0 },
+      serverHealth: { unhandledRejections: 0, uncaughtExceptions: 0, eldSamples: 40, eldMaxMs: 35 },
       tierConfig: resolveS9TierConfig('smoke'),
     });
 
     assert.equal(evaluateS9Verdict(cleanInput()).passed, true);
+
+    const withFakeSteer = cleanInput();
+    withFakeSteer.drill1.steerWhileBusyVerified = false;
+    withFakeSteer.drill1.steerModeUsed = 'enter';
+    assert.equal(evaluateS9Verdict(withFakeSteer).passed, false);
+
+    const withUnsampledEld = cleanInput();
+    withUnsampledEld.serverHealth.eldSamples = 0;
+    assert.equal(evaluateS9Verdict(withUnsampledEld).passed, false);
 
     const withZeroRecorderFrames = cleanInput();
     withZeroRecorderFrames.flightRecorder.frameCount = 0;

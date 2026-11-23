@@ -33,11 +33,13 @@ import { runScenarioS13ChaosFaults } from './scenarios/s13-chaos-faults.mjs';
 import { runScenarioS14IdleCpu } from './scenarios/s14-idle-cpu.mjs';
 import { runScenarioS16MobileHeavySession } from './scenarios/s16-mobile-heavy-session.mjs';
 import { prepopulateS17SqliteStores, runScenarioS17WorkstationCliff } from './scenarios/s17-workstation-cliff.mjs';
+import { resolveS18Config, runScenarioS18CoupledWorkstationGate } from './scenarios/s18-coupled-workstation-gate.mjs';
 import { listDescendantPids } from './telemetry/process-tree.mjs';
 import { validateMatrixThresholdParity } from './verify/verdict.mjs';
 import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
 import { ensureGuiStaticBuild } from '../perf/browser-runner.mjs';
 import { buildIsolatedPerfEnv } from '../perf/sandbox-stager.mjs';
+import { trustedWheelScrollUp } from '../perf/trusted-scroll.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const isCliMain = Boolean(process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename);
@@ -358,7 +360,7 @@ if (isServerWorker) {
     port: 0,
     homeDir,
     userSkillDir: path.join(osHomeDir, 'skills'),
-    userAgentProfileHomeDir: path.join(osHomeDir, 'agents'),
+    userAgentProfileHomeDir: homeDir,
     logLevel: 'silent',
     runtimeManaged: false,
     ...(process.env.KIKI_CHAOS_WEB_ASSETS_DIR ? { webAssetsDir: process.env.KIKI_CHAOS_WEB_ASSETS_DIR } : {}),
@@ -391,8 +393,10 @@ if (isServerWorker) {
         : {}),
       writeBytes: proc.writeBytes,
       fdCount: proc.fdCount,
-      eldP99Ms: eld.count > 0 ? roundMs(Math.max(0, eld.percentile(99) / 1e6 - 10)) : 0,
-      eldMaxMs: eld.count > 0 ? roundMs(Math.max(0, eld.max / 1e6 - 10)) : 0,
+      eldSamples: eld.count,
+      eldP99Ms: eld.count > 0 ? roundMs(eld.percentile(99) / 1e6) : null,
+      eldMaxMs: eld.count > 0 ? roundMs(eld.max / 1e6) : null,
+      eldRawMaxMs: eld.count > 0 ? eld.max / 1e6 : null,
       maxSingleTickStallMs: roundMs(maxSingleTickStallMs),
       eventLoopUtilization: Number(elu.utilization.toFixed(4)),
       unhandledRejections,
@@ -403,6 +407,27 @@ if (isServerWorker) {
         server.core.accessor.get(ISessionManager).residencyReport?.()?.liveSessions ??
         server.core.accessor.get(ISessionManager).listLive?.().length ??
         null,
+      liveSessionIds: (() => {
+        const mgr = server.core.accessor.get(ISessionManager);
+        if (typeof mgr.listLive === 'function') {
+          return mgr.listLive().map((entry) => (typeof entry === 'string' ? entry : entry?.id ?? entry?.sessionId ?? null)).filter(Boolean);
+        }
+        if (mgr.sessions instanceof Map) {
+          return [...mgr.sessions.keys()];
+        }
+        return [];
+      })(),
+      restoreQueueSnapshot: (() => {
+        const mgr = server.core.accessor.get(ISessionManager);
+        const cfg = typeof mgr.residencyConfig === 'function' ? mgr.residencyConfig() : null;
+        return {
+          activeRestores: typeof mgr.activeRestores === 'number' ? mgr.activeRestores : null,
+          queuedRestores: Array.isArray(mgr.restoreQueue) ? mgr.restoreQueue.length : null,
+          maxLiveSessions: cfg?.maxLiveSessions ?? null,
+          maxConcurrentRestores: cfg?.maxConcurrentRestores ?? null,
+          maxQueuedRestores: cfg?.maxQueuedRestores ?? null,
+        };
+      })(),
     };
   };
 
@@ -556,8 +581,8 @@ async function spawnManagedServer({ homeDir, osHomeDir, maxOldSpaceMb = 2048, we
 
   const readyMsg = await new Promise((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`Managed server boot timed out after 120s. stderr=${stderrLines.join(' | ')}`)),
-      120_000,
+      () => reject(new Error(`Managed server boot timed out after 240s. stderr=${stderrLines.join(' | ')}`)),
+      240_000,
     );
     child.once('message', (m) => {
       if (m?.ready) {
@@ -1834,16 +1859,13 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
     result.cdpMemory.afterGiantOpen = await readCdpMetrics();
 
     await page.evaluate(() => window.__chaosUxProbe?.reset?.());
-    await page.evaluate(async () => {
-      const scroller = document.querySelector('[data-transcript-scroll]');
-      if (!scroller) return;
-      for (const ratio of [0.7, 0.4, 0.15, 0.0, 0.85, 1.0]) {
-        scroller.scrollTop = Math.floor(scroller.scrollHeight * ratio);
-        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 90));
-      }
-      await new Promise((r) => setTimeout(r, 200));
+    result.scrollWheelOutcome = await trustedWheelScrollUp(page, {
+      deltaY: -1200,
+      steps: 6,
+      pauseMs: 90,
+      settleMs: 250,
     });
+    result.scrollMoved = Boolean(result.scrollWheelOutcome?.moved);
     result.scrollLongTasks = await page.evaluate(() => window.__chaosUxProbe?.drain?.() ?? null);
 
     await page.evaluate(() => window.__chaosUxProbe?.reset?.());
@@ -1931,6 +1953,7 @@ async function runScenarioS5BrowserUx({ server, corpus, progress }) {
     [!result.stuckPreparingDetected, 'transcript stuck on "History is preparing"'],
     [result.coldOpenFirstTurnMs !== null && result.coldOpenFirstTurnMs < S5.coldOpenFirstTurnMs, `coldOpenFirstTurnMs=${result.coldOpenFirstTurnMs} >= ${S5.coldOpenFirstTurnMs}`],
     [(result.coldOpenLongTasks?.maxLongTaskMs ?? Infinity) < S5.coldOpenMaxLongTaskMs, `coldOpen maxLongTaskMs=${result.coldOpenLongTasks?.maxLongTaskMs} >= ${S5.coldOpenMaxLongTaskMs}`],
+    [result.scrollMoved !== false, 'trusted wheel scroll did not move transcript viewport'],
     [(result.scrollLongTasks?.maxLongTaskMs ?? Infinity) < S5.scrollMaxLongTaskMs, `scroll maxLongTaskMs=${result.scrollLongTasks?.maxLongTaskMs} >= ${S5.scrollMaxLongTaskMs}`],
     [result.subagentSwitchMs !== null && result.subagentSwitchMs < S5.agentSwitchMs, `subagentSwitchMs=${result.subagentSwitchMs} >= ${S5.agentSwitchMs}`],
     [(result.subagentSwitchLongTasks?.maxLongTaskMs ?? Infinity) < S5.agentSwitchMaxLongTaskMs, `subagentSwitch maxLongTaskMs=${result.subagentSwitchLongTasks?.maxLongTaskMs} >= ${S5.agentSwitchMaxLongTaskMs}`],
@@ -1970,6 +1993,8 @@ export async function runChaosScaleSuite(options = {}) {
   const s14Only = Boolean(options.s14Only);
   const s16Only = Boolean(options.s16Only);
   const s17Only = Boolean(options.s17Only || options.workstationCliff);
+  const s18Only = Boolean(options.s18Only || options.coupledRelease);
+  const quickVerify = Boolean(options.quickVerify);
   const v23Smoke = Boolean(options.v23Smoke);
   const v23Full = Boolean(options.v23Full);
   const runS7S8 = Boolean(options.runS7S8);
@@ -1990,6 +2015,7 @@ export async function runChaosScaleSuite(options = {}) {
     s14Only ||
     s16Only ||
     s17Only ||
+    s18Only ||
     v23Smoke ||
     v23Full ||
     runS7S8 ||
@@ -2006,7 +2032,8 @@ export async function runChaosScaleSuite(options = {}) {
         options.runS13 ||
         options.runS14 ||
         options.runS16 ||
-        options.runS17,
+        options.runS17 ||
+        options.runS18,
     );
   const matrixModeOnly = Boolean(explicitMatrixInput && !explicitScenarioFlags);
 
@@ -2046,6 +2073,7 @@ export async function runChaosScaleSuite(options = {}) {
     s14Only ||
     s16Only ||
     s17Only ||
+    s18Only ||
     matrixModeOnly ||
     v23Smoke ||
     v23Full ||
@@ -2062,25 +2090,34 @@ export async function runChaosScaleSuite(options = {}) {
   const runS14 = s14Only || v23Smoke || v23Full || runAll || Boolean(options.runS14);
   const runS16 = s16Only || v23Smoke || v23Full || runAll || Boolean(options.runS16);
   const runS17 = s17Only || matrixModeOnly || v23Smoke || v23Full || runAll || Boolean(options.runS17);
+  const runS18 = s18Only || Boolean(options.runS18);
+  const s18Mode = quickVerify || options.tier === 'smoke' ? 'smoke' : 'coupled-release';
+  const s18Config = resolveS18Config(s18Mode);
 
   const useS17CorpusDefaults = s17Only || matrixModeOnly;
   const giantGiB =
     options.giantGiB ??
-    (useS17CorpusDefaults
+    (s18Only
+      ? Number(((s18Config.fixture.minWireBytes + 4 * 1024 * 1024) / (1024 * 1024 * 1024)).toFixed(4))
+      : useS17CorpusDefaults
       ? Number((s17Config.corpus.giantMainWireMiB / 1024).toFixed(4))
       : effectiveTier === 'smoke'
         ? s9TierConfig.giantGiB
         : 3.1);
   const subagentCount =
     options.subagentCount ??
-    (useS17CorpusDefaults
+    (s18Only
+      ? 24
+      : useS17CorpusDefaults
       ? s17Config.corpus.maxSubagentsPerSession
       : effectiveTier === 'smoke'
         ? 80
         : 1520);
   const backgroundSessionCount =
     options.backgroundSessionCount ??
-    (runS17
+    (s18Only
+      ? 4
+      : runS17
       ? s17Config.corpus.coldSessions
       : effectiveTier === 'smoke'
         ? 12
@@ -2088,7 +2125,15 @@ export async function runChaosScaleSuite(options = {}) {
   const workspaceCount =
     options.workspaceCount ??
     (runS17 ? s17Config.corpus.workspaces : 1);
-  const sessionResidencyConfig = runS17
+  const sessionResidencyConfig = runS18
+    ? {
+        maxLiveSessions: s18Config.residency.maxLiveSessions,
+        maxConcurrentRestores: s18Config.residency.maxConcurrentRestores,
+        idleTtlMs: s18Config.residency.idleTtlMs,
+        minIdleMs: s18Config.residency.minIdleMs,
+        sweepIntervalMs: s18Config.residency.sweepIntervalMs,
+      }
+    : runS17
     ? {
         maxLiveSessions: s17Config.residencyEviction.maxLiveSessions,
         idleTtlMs: 2_000,
@@ -2134,8 +2179,9 @@ export async function runChaosScaleSuite(options = {}) {
     : generateChaosCorpus({
         dir,
         giantGiB,
+        minMainTurns: runS18 ? s18Config.fixture.minDistinctTurns + 20 : undefined,
         subagentCount,
-        heavySubagentMiB: options.heavySubagentMiB ?? (effectiveTier === 'smoke' ? 1 : 16),
+        heavySubagentMiB: options.heavySubagentMiB ?? (effectiveTier === 'smoke' || s18Only ? 1 : 16),
         backgroundSessionCount,
         workspaceCount,
         anthropicBaseUrl: twin.httpBaseUrl,
@@ -2312,7 +2358,7 @@ export async function runChaosScaleSuite(options = {}) {
   };
 
   const needsGuiWebAssets =
-    runBrowser && (!isolatedOnly || runS6 || runS7 || runS8 || runS9 || runS10 || (runP01 && !matrixModeOnly) || runS16);
+    runBrowser && (!isolatedOnly || runS6 || runS7 || runS8 || runS9 || runS10 || (runP01 && !matrixModeOnly) || runS16 || runS18);
   const guiDistBuild = needsGuiWebAssets
     ? ensureGuiStaticBuild(path.join(REPO_ROOT, '.tmp', 'chaos-gui-dist'))
     : null;
@@ -2320,6 +2366,23 @@ export async function runChaosScaleSuite(options = {}) {
   if (guiDistBuild) {
     progress(
       `Prepared real kiki-gui webAssetsDir=${guiDistBuild.distDir} (reusedCache=${guiDistBuild.reusedCache}, buildMs=${guiDistBuild.buildMs}ms)`,
+    );
+  }
+  if (runS18) {
+    const canaryDir = path.join(corpus.homeDir, 'agents');
+    fs.mkdirSync(canaryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(canaryDir, 'canary-home-a.md'),
+      [
+        '---',
+        'name: canary_home_a',
+        'description: Public canary profile owned exclusively by Home A.',
+        '---',
+        '',
+        'You are the Home A public canary profile. Marker: HOME_A_CANARY_PROFILE_ONLY.',
+        '',
+      ].join('\n'),
+      'utf8',
     );
   }
 
@@ -2652,6 +2715,32 @@ export async function runChaosScaleSuite(options = {}) {
       persistCheckpoint();
     }
 
+    if (runS18) {
+      if (runBrowser) {
+        const s18Res = await runScenarioS18CoupledWorkstationGate({
+          server: mainServer,
+          spawnServer: spawnManagedServer,
+          twin,
+          corpus,
+          workRoot: dir,
+          mode: s18Mode,
+          webAssetsDir,
+          progress,
+        });
+        report.scenarios.S18_coupledWorkstationGate = s18Res;
+        report.scenarios.s18 = s18Res;
+        report.verdictClass = s18Res.verdictClass;
+        report.releaseEligible = s18Res.releaseEligible;
+      } else {
+        recordSkipped('S18_coupledWorkstationGate', 'skipped by --no-browser flag');
+        report.scenarios.s18 = report.scenarios.S18_coupledWorkstationGate;
+        report.verdictClass = 'ineligible';
+        report.releaseEligible = false;
+      }
+      t0LastTerminalReceiptAt = Date.now();
+      persistCheckpoint();
+    }
+
     if (sharedBrowserHandle) {
       await sharedBrowserHandle.close().catch(() => undefined);
       sharedBrowserHandle = null;
@@ -2685,6 +2774,7 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
       if (runS16) checks.push(recordCheck(report.scenarios.S16_mobileHeavySession));
       if (runS17) checks.push(recordCheck(report.scenarios.S17_workstationCliff));
+      if (runS18) checks.push(recordCheck(report.scenarios.S18_coupledWorkstationGate));
       report.overallPassed = report.skipped === 0 && checks.length > 0 && checks.every(Boolean);
     } else {
       const checks = [
@@ -2706,6 +2796,7 @@ export async function runChaosScaleSuite(options = {}) {
       if (runS14) checks.push(recordCheck(report.scenarios.S14_idleCpu));
       if (runS16) checks.push(recordCheck(report.scenarios.S16_mobileHeavySession));
       if (runS17) checks.push(recordCheck(report.scenarios.S17_workstationCliff));
+      if (runS18) checks.push(recordCheck(report.scenarios.S18_coupledWorkstationGate));
       report.overallPassed = report.skipped === 0 && checks.every(Boolean);
     }
     report.exitCode = report.overallPassed ? 0 : exitCodes.includes(2) ? 2 : 1;
@@ -2747,6 +2838,9 @@ if (isCliMain && !isServerWorker) {
     s14Only: false,
     s16Only: false,
     s17Only: false,
+    s18Only: false,
+    coupledRelease: false,
+    quickVerify: false,
     workstationCliff: false,
     matrix: undefined,
     v23Smoke: false,
@@ -2770,6 +2864,7 @@ if (isCliMain && !isServerWorker) {
     runS14: false,
     runS16: false,
     runS17: false,
+    runS18: false,
     runId: undefined,
     buildId: undefined,
     s7Cycles: 200,
@@ -2801,6 +2896,9 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--s14-only') opts.s14Only = true;
     else if (args[i] === '--s16-only') opts.s16Only = true;
     else if (args[i] === '--s17-only') opts.s17Only = true;
+    else if (args[i] === '--s18-only') opts.s18Only = true;
+    else if (args[i] === '--coupled-release') opts.coupledRelease = true;
+    else if (args[i] === '--quick-verify') opts.quickVerify = true;
     else if (args[i] === '--workstation-cliff') opts.workstationCliff = true;
     else if (args[i] === '--matrix' && args[i + 1]) opts.matrix = args[++i];
     else if (args[i] === '--v23-smoke') opts.v23Smoke = true;
@@ -2824,6 +2922,7 @@ if (isCliMain && !isServerWorker) {
     else if (args[i] === '--run-s14') opts.runS14 = true;
     else if (args[i] === '--run-s16') opts.runS16 = true;
     else if (args[i] === '--run-s17') opts.runS17 = true;
+    else if (args[i] === '--run-s18') opts.runS18 = true;
     else if (args[i] === '--manifest' && args[i + 1]) {
       const manifestFile = args[++i];
       const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));

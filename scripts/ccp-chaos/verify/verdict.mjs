@@ -1523,6 +1523,15 @@ export function evaluateS16MobileVerdict(report) {
     if (typeof scroll.frameCount !== 'number' || scroll.frameCount <= 0) {
       harnessFailures.push(`S16 touchScroll observed ${scroll.frameCount ?? 0} frames (must be > 0)`);
     }
+    if (
+      scroll.moved === false ||
+      scroll.touchScrollMoved === false ||
+      (typeof scroll.scrollTopDelta === 'number' && Math.abs(scroll.scrollTopDelta) === 0)
+    ) {
+      harnessFailures.push(
+        `S16 touchScroll produced zero scroll movement (moved=${scroll.moved}, touchScrollMoved=${scroll.touchScrollMoved}, delta=${scroll.scrollTopDelta})`,
+      );
+    }
     if (typeof scroll.frameP95Ms !== 'number' || !Number.isFinite(scroll.frameP95Ms)) {
       harnessFailures.push('S16 missing touchScroll.frameP95Ms');
     } else if (scroll.frameP95Ms > T.scrollFrameP95MaxMs) {
@@ -1896,9 +1905,16 @@ export function evaluateS17WorkstationCliffVerdict(report, matrixOrTierOverride 
     }
   }
 
-  // 8. Server Event Loop Health (required finite evidence)
-  if (!Number.isFinite(report.eld?.p99Ms) || !Number.isFinite(report.eld?.maxMs)) {
-    harnessFailures.push(`S17 missing finite server ELD telemetry (p99=${report.eld?.p99Ms}, max=${report.eld?.maxMs})`);
+  // 8. Server Event Loop Health (required finite evidence with positive samples; omitted samples fails closed)
+  if (
+    !Number.isFinite(report.eld?.p99Ms) ||
+    !Number.isFinite(report.eld?.maxMs) ||
+    !Number.isFinite(report.eld?.samples) ||
+    report.eld.samples <= 0
+  ) {
+    harnessFailures.push(
+      `S17 missing finite/sampled server ELD telemetry (p99=${report.eld?.p99Ms}, max=${report.eld?.maxMs}, samples=${report.eld?.samples})`,
+    );
   } else {
     if (report.eld.p99Ms > T.eldP99MaxMs) {
       productFailures.push(`S17 ELD p99 ${report.eld.p99Ms}ms > ${T.eldP99MaxMs}ms`);
@@ -1917,6 +1933,408 @@ export function evaluateS17WorkstationCliffVerdict(report, matrixOrTierOverride 
 
   return {
     passed: exitCode === EXIT_PASS,
+    exitCode,
+    status: exitCode === EXIT_PASS ? 'PASS' : exitCode === EXIT_PRODUCT_FAIL ? 'PRODUCT_FAIL' : 'HARNESS_FAIL',
+    productFailures,
+    harnessFailures,
+  };
+}
+
+/**
+ * Evaluates Scenario S18 (Coupled Workstation Stress Gate) across all 7
+ * coupled invariants. Zero fail-open pardons: missing preconditions, zero
+ * samples, or skipped actions produce EXIT_HARNESS_FAIL; any product breach
+ * (overflow, overlap, >500ms pagination/admission, >100ms raw ELD, profile leak,
+ * steer/queue misrouting, duplicate row) produces EXIT_PRODUCT_FAIL.
+ * A `smoke` (`--quick-verify`) run can never satisfy `requireCoupledRelease`.
+ */
+export function evaluateS18CoupledWorkstationVerdict(report, cfg = null, options = {}) {
+  const productFailures = [];
+  const harnessFailures = [];
+  const requireCoupledRelease = Boolean(options.requireCoupledRelease);
+
+  if (!report || typeof report !== 'object') {
+    return {
+      passed: false,
+      releaseEligible: false,
+      verdictClass: 'ineligible',
+      exitCode: EXIT_HARNESS_FAIL,
+      status: 'HARNESS_FAIL',
+      productFailures,
+      harnessFailures: ['S18 missing report object'],
+    };
+  }
+
+  const rawMode = report.mode;
+  const mode = rawMode === 'coupled-release' || rawMode === 'smoke' ? rawMode : 'ineligible';
+  if (mode === 'ineligible') {
+    harnessFailures.push(`S18 missing or invalid explicit mode="${String(rawMode)}" (must be "coupled-release" or "smoke")`);
+  }
+  const releaseEligible = mode === 'coupled-release' && report.releaseEligible !== false;
+  if (requireCoupledRelease && !releaseEligible) {
+    harnessFailures.push(`S18 mode="${mode}" is NOT interchangeable with a coupled-release verdict`);
+  }
+
+  if (report.fatalError) {
+    harnessFailures.push(`S18 fatalError: ${String(report.fatalError).slice(0, 300)}`);
+  }
+
+  const minWireBytes = cfg?.fixture?.minWireBytes ?? (mode === 'smoke' ? 12 * 1024 * 1024 : 256 * 1024 * 1024);
+  const minDistinctTurns = cfg?.fixture?.minDistinctTurns ?? (mode === 'smoke' ? 150 : 300);
+  const maxLiveCap = cfg?.residency?.maxLiveSessions ?? 16;
+  const maxRestoresCap = cfg?.residency?.maxConcurrentRestores ?? 4;
+  const minMaterialized = cfg?.residency?.materializedSessions ?? 24;
+  const requiredPages = cfg?.pagination?.requiredPages ?? 3;
+  const pageBudgetMs = cfg?.pagination?.pageBudgetMs ?? 500;
+  const fgTrialsRequired = cfg?.foregroundService?.trials ?? 2;
+  const fgBudgetMs = cfg?.foregroundService?.admissionBudgetMs ?? 500;
+  const eldBudgetMs = cfg?.eld?.rawMaxBudgetMs ?? 100;
+
+  // 1. Fixture Qualification
+  const fx = report.fixture;
+  if (!fx || typeof fx !== 'object') {
+    harnessFailures.push('S18 missing fixture qualification evidence');
+  } else {
+    if (fx.ok !== true) {
+      harnessFailures.push(`S18 fixture failed qualification: ${(fx.failures ?? []).join('; ') || 'unknown'}`);
+    }
+    if ((fx.actualBytes ?? 0) < minWireBytes) {
+      harnessFailures.push(`S18 fixture actualBytes=${fx.actualBytes ?? 0} < ${minWireBytes}`);
+    }
+    if ((fx.distinctTurnCount ?? 0) < minDistinctTurns) {
+      harnessFailures.push(`S18 fixture distinctTurnCount=${fx.distinctTurnCount ?? 0} < ${minDistinctTurns}`);
+    }
+    if ((fx.duplicateTurnCount ?? 0) > 0) {
+      harnessFailures.push(`S18 fixture contains ${fx.duplicateTurnCount} duplicate turn IDs`);
+    }
+    if ((fx.tallReminderCount ?? 0) <= 0) {
+      harnessFailures.push('S18 fixture lacks tall scrollable <system-reminder>');
+    }
+  }
+
+  // 2. Residency & Background Restore Contention
+  const res = report.residency;
+  if (!res || typeof res !== 'object') {
+    harnessFailures.push('S18 missing residency evidence');
+  } else {
+    if ((res.materializedCount ?? 0) < minMaterialized) {
+      harnessFailures.push(`S18 materializedCount=${res.materializedCount ?? 0} < ${minMaterialized}`);
+    }
+    if (res.effectiveMaxLiveSessions !== maxLiveCap) {
+      harnessFailures.push(`S18 effectiveMaxLiveSessions=${res.effectiveMaxLiveSessions} != ${maxLiveCap}`);
+    }
+    if (res.effectiveMaxConcurrentRestores !== maxRestoresCap) {
+      harnessFailures.push(`S18 effectiveMaxConcurrentRestores=${res.effectiveMaxConcurrentRestores} != ${maxRestoresCap}`);
+    }
+    if ((res.evictionSuccesses ?? 0) <= 0 || (res.evictedSessionCount ?? 0) < fgTrialsRequired) {
+      productFailures.push(
+        `S18 automatic residency eviction failed (successes=${res.evictionSuccesses ?? 0}, evictedCount=${res.evictedSessionCount ?? 0}, postEvictLive=${res.postEvictLiveSessions})`,
+      );
+    }
+    const bw = res.backgroundRestoreWitness;
+    if (
+      !bw ||
+      (bw.cronFiresTriggered ?? 0) <= 0 ||
+      (bw.threadReadsTriggered ?? 0) <= 0 ||
+      (bw.cronFiresSucceeded ?? 0) <= 0 ||
+      (bw.threadReadsSucceeded ?? 0) <= 0
+    ) {
+      harnessFailures.push(
+        `S18 background restore contention not driven/confirmed (cron=${bw?.cronFiresSucceeded ?? 0}/${bw?.cronFiresTriggered ?? 0}, threadRead=${bw?.threadReadsSucceeded ?? 0}/${bw?.threadReadsTriggered ?? 0})`,
+      );
+    } else if (bw.witnessedActiveAndWaiting !== true) {
+      harnessFailures.push(
+        `S18 restore queue never observed concurrent active+waiting contention (maxActive=${bw.maxObservedActiveRestores ?? 0}, maxQueued=${bw.maxObservedQueuedRestores ?? 0})`,
+      );
+    }
+  }
+
+  // 3. Simultaneity (100ms independent producer clock + wire growth + giant-scoped browser WS transcript.ops)
+  const sim = report.simultaneity;
+  if (!sim || typeof sim !== 'object') {
+    harnessFailures.push('S18 missing simultaneity live-stream evidence');
+  } else {
+    if ((sim.ticksOffered ?? 0) < 10 || (sim.ticksCommitted ?? 0) < 4) {
+      harnessFailures.push(
+        `S18 live 100ms writer underproduced (offered=${sim.ticksOffered ?? 0}, committed=${sim.ticksCommitted ?? 0})`,
+      );
+    }
+    if (sim.grewBeforeInteractions !== true || sim.grewDuringInteractions !== true || (sim.wireGrowthBytes ?? 0) <= 0) {
+      productFailures.push(
+        `S18 giant wire did not grow continuously via product writer (before=${sim.grewBeforeInteractions}, during=${sim.grewDuringInteractions}, growth=${sim.wireGrowthBytes ?? 0}B)`,
+      );
+    }
+    if ((sim.wsOpsFramesTotal ?? 0) < 4) {
+      productFailures.push(`S18 browser socket received too few giant-session incremental transcript.ops frames (${sim.wsOpsFramesTotal ?? 0})`);
+    }
+    if (mode === 'coupled-release' && (sim.wsOpsDuringPagination ?? 0) <= 0) {
+      harnessFailures.push(`S18 zero giant-session WS transcript.ops frames observed during pagination (${sim.wsOpsDuringPagination ?? 0})`);
+    }
+    if (
+      mode === 'coupled-release' &&
+      Number.isFinite(sim.maxInterTickGapMs) &&
+      sim.maxInterTickGapMs > 10_000
+    ) {
+      productFailures.push(
+        `S18 live 100ms stream stalled for ${sim.maxInterTickGapMs}ms (> 10000ms gap, missedOffers=${sim.missedOffers ?? 0})`,
+      );
+    }
+  }
+
+  // 4. Simultaneous 4-Column Desktop + 1.25 CSS Zoom + Bar Overflow + Live Reminder Timeline Integrity
+  const lt = report.layoutAndTimeline;
+  if (!lt || typeof lt !== 'object') {
+    harnessFailures.push('S18 missing layoutAndTimeline evidence');
+  } else {
+    if (lt.zoomCheck?.ok !== true || lt.zoomCheck?.productApplied === false) {
+      harnessFailures.push(
+        `S18 CSS root zoom/xl precondition unmet (effectiveZoom=${lt.zoomCheck?.effectiveZoom}, xlMatches=${lt.zoomCheck?.xlMatches}, productApplied=${lt.zoomCheck?.productApplied})`,
+      );
+    }
+    if (lt.fourColumnsInitial?.ok !== true) {
+      productFailures.push(
+        `S18 4-column desktop layout failed: ${(lt.fourColumnsInitial?.failures ?? ['unknown']).join(', ')}`,
+      );
+    }
+    if (lt.runModeResult?.ok !== true) {
+      productFailures.push(`S18 Plan/Goal mode activation failed: ${lt.runModeResult?.reason ?? 'not_active'}`);
+    }
+    const audits = Array.isArray(lt.widthAudits) ? lt.widthAudits : [];
+    if (audits.length < 2) {
+      harnessFailures.push(`S18 widthAudits incomplete (${audits.length} < 2 required widths 480px & 360px)`);
+    }
+    for (const wa of audits) {
+      if (wa.fourColumnsOk !== true) {
+        productFailures.push(
+          `S18 4-column invariants broken at center=${wa.targetLayoutWidthPx}px (achieved=${wa.achievedLayoutWidthPx}px): ${(wa.fourColumnsFailures ?? []).join(', ')}`,
+        );
+      }
+      const effectiveTargetWidthPx = Math.max(
+        wa.targetLayoutWidthPx,
+        Number.isFinite(wa.cssMinWidthPx) ? wa.cssMinWidthPx : 0,
+      );
+      if (
+        !Number.isFinite(wa.achievedLayoutWidthPx) ||
+        Math.abs(wa.achievedLayoutWidthPx - effectiveTargetWidthPx) > 45
+      ) {
+        harnessFailures.push(
+          `S18 center width did not reach target=${effectiveTargetWidthPx}px (requested=${wa.targetLayoutWidthPx}px, cssMin=${wa.cssMinWidthPx ?? 'none'}, achieved=${wa.achievedLayoutWidthPx}px, tolerance=45px)`,
+        );
+      }
+      if (wa.barAudit?.ok !== true) {
+        const first = wa.barAudit?.firstOffending;
+        productFailures.push(
+          `S18 bar horizontal overflow/clipped control at center=${wa.targetLayoutWidthPx}px (achieved=${wa.achievedLayoutWidthPx}px): topOverflow=${wa.barAudit?.topBar?.overflowPx}px bottomOverflow=${wa.barAudit?.bottomBar?.overflowPx}px first=${JSON.stringify(first)}`,
+        );
+      }
+    }
+    if (lt.reminderExpandCollapse?.ok !== true) {
+      if (lt.reminderExpandCollapse?.found !== true) {
+        harnessFailures.push(`S18 tall system-reminder not found: ${lt.reminderExpandCollapse?.reason ?? 'missing'}`);
+      } else {
+        productFailures.push(`S18 tall system-reminder expand/collapse failed: ${lt.reminderExpandCollapse?.reason}`);
+      }
+    }
+    const checkTimeline = (tl, label) => {
+      if (!tl || tl.installed !== true || (tl.frames ?? 0) <= 0) {
+        harnessFailures.push(`S18 ${label} timeline monitor missing or sampled 0 frames`);
+        return;
+      }
+      if ((tl.rowPairSamples ?? 0) <= 0) {
+        harnessFailures.push(`S18 ${label} timeline monitor recorded 0 rowPairSamples`);
+      }
+      if (label === 'live-burst' && (tl.observedHeightChanges ?? 0) <= 0) {
+        harnessFailures.push('S18 live-burst timeline monitor recorded 0 observedHeightChanges');
+      }
+      if (Array.isArray(tl.failures) && tl.failures.length > 0) {
+        productFailures.push(
+          `S18 ${label} timeline geometry violation(s) (${tl.failures.length}): ${JSON.stringify(tl.failures[0])}`,
+        );
+      }
+    };
+    checkTimeline(lt.liveTimelineIntegrity, 'live-burst');
+    checkTimeline(lt.postWheelTimeline, 'post-wheel');
+    const totalTailPairSamples =
+      (lt.liveTimelineIntegrity?.tailPairSamples ?? 0) + (lt.postWheelTimeline?.tailPairSamples ?? 0);
+    if (totalTailPairSamples <= 0 && mode === 'coupled-release') {
+      harnessFailures.push('S18 timeline monitor recorded 0 tailPairSamples across live-burst & post-wheel windows');
+    }
+    if ((lt.pageErrors?.length ?? 0) > 0) {
+      productFailures.push(`S18 browser pageErrors (${lt.pageErrors.length}): ${lt.pageErrors[0]}`);
+    }
+  }
+
+  // 5. Trusted Upward Wheel Pagination (3 successive unloaded older pages < 500ms)
+  const pg = report.pagination;
+  if (!pg || typeof pg !== 'object') {
+    harnessFailures.push('S18 missing upward wheel pagination evidence');
+  } else if ((pg.pages?.length ?? 0) === 0) {
+    harnessFailures.push(`S18 upward wheel pagination executed 0 pages: ${(pg.failures ?? []).join('; ')}`);
+  } else {
+    const failedPages = pg.pages.filter(
+      (p) => p?.ok !== true || !Number.isFinite(p?.elapsedMs) || p.elapsedMs >= pageBudgetMs,
+    );
+    if (
+      pg.ok !== true ||
+      (pg.completedPages ?? 0) < requiredPages ||
+      pg.pages.length < requiredPages ||
+      failedPages.length > 0
+    ) {
+      productFailures.push(
+        `S18 live upward wheel pagination failed (${pg.completedPages ?? 0}/${requiredPages} pages < ${pageBudgetMs}ms, failedPages=${failedPages.length}): ${(pg.failures ?? []).join('; ')}`,
+      );
+    }
+  }
+
+  // 6. Foreground Interactive Prompt Service Under Eviction Pressure + Raw Server A ELD (<100ms) + Heartbeat
+  const fg = report.foregroundService;
+  if (!fg || typeof fg !== 'object' || !Array.isArray(fg.trials) || fg.trials.length < fgTrialsRequired) {
+    harnessFailures.push(`S18 foregroundService missing required ${fgTrialsRequired} evicted-session trials (got ${fg?.trials?.length ?? 0})`);
+  } else {
+    for (const tr of fg.trials) {
+      if (tr.verifiedEvictedBeforeSubmit !== true) {
+        harnessFailures.push(`S18 foreground trial #${tr.trial} (${tr.sessionId}) was NOT evicted before submit`);
+      } else if (!tr.durablePromptId) {
+        productFailures.push(`S18 foreground trial #${tr.trial} (${tr.sessionId}) missing durable prompt receipt ID`);
+      } else if (!Number.isFinite(tr.interactiveAdmissionMs)) {
+        productFailures.push(`S18 foreground trial #${tr.trial} (${tr.sessionId}) never reached interactive execution admission`);
+      } else if (tr.interactiveAdmissionMs >= fgBudgetMs) {
+        productFailures.push(
+          `S18 foreground trial #${tr.trial} (${tr.sessionId}) interactive admission ${tr.interactiveAdmissionMs}ms >= ${fgBudgetMs}ms (durableReceipt=${tr.durableReceiptMs}ms, queuePos=${tr.durableQueuePos})`,
+        );
+      }
+      if (!Number.isFinite(tr.firstOutputMs) || tr.freshOutputVerified === false) {
+        productFailures.push(`S18 foreground trial #${tr.trial} (${tr.sessionId}) produced no verified fresh displayed output`);
+      }
+    }
+  }
+
+  const checkRawEld = (eld, label) => {
+    if (!eld || typeof eld !== 'object' || !Number.isFinite(eld.samples) || eld.samples <= 0 || !Number.isFinite(eld.rawMaxMs)) {
+      harnessFailures.push(`S18 ${label} missing sampled raw 10ms ELD histogram (samples=${eld?.samples}, rawMaxMs=${eld?.rawMaxMs})`);
+      return;
+    }
+    if (eld.rawMaxMs >= eldBudgetMs) {
+      productFailures.push(`S18 ${label} raw ELD max ${eld.rawMaxMs.toFixed(2)}ms >= ${eldBudgetMs}ms (p99=${eld.p99Ms}ms, samples=${eld.samples})`);
+    }
+    if ((eld.unhandledRejections ?? 0) > 0 || (eld.uncaughtExceptions ?? 0) > 0) {
+      productFailures.push(`S18 ${label} uncaught/unhandled errors (${eld.unhandledRejections}/${eld.uncaughtExceptions})`);
+    }
+  };
+  checkRawEld(report.serverAEld, 'HomeA');
+
+  if (!report.heartbeatWatchdog || (report.heartbeatWatchdog.samples ?? 0) < 5) {
+    harnessFailures.push(`S18 external /api/healthz watchdog recorded too few samples (${report.heartbeatWatchdog?.samples ?? 0})`);
+  } else if ((report.heartbeatWatchdog.failures ?? 0) > 0) {
+    productFailures.push(`S18 external /api/healthz watchdog recorded ${report.heartbeatWatchdog.failures} failure(s)`);
+  }
+
+  // 6b. High-Contention <Composer /> Enter Send Latency & Subagent Status Sync Gate (t853 + t852)
+  const cs = report.composerSendAndSubagentSync;
+  const clearBudgetMs = cfg?.composerSendAndSubagentSync?.composerClearOrEchoP95Ms ?? 100;
+  const ackBudgetMs = cfg?.composerSendAndSubagentSync?.promptHttpAckP95Ms ?? 500;
+  const syncBudgetMs = cfg?.composerSendAndSubagentSync?.subagentStatusSyncP95Ms ?? 500;
+  if (!cs || typeof cs !== 'object') {
+    harnessFailures.push('S18 missing composerSendAndSubagentSync coupled-storm probe evidence');
+  } else {
+    const storm = cs.storm ?? {};
+    if (
+      (storm.largeThreadReadTargetCount ?? 0) < 4 ||
+      (storm.threadReadDispatched ?? 0) < 4 ||
+      (storm.bgSubagentWavesDispatched ?? 0) < 1 ||
+      (storm.fileChurnOps ?? 0) <= 0
+    ) {
+      harnessFailures.push(
+        `S18 composer coupled storm under-exercised (largeTargets=${storm.largeThreadReadTargetCount ?? 0}, threadReads=${storm.threadReadDispatched ?? 0}, bgSubWaves=${storm.bgSubagentWavesDispatched ?? 0}, fileChurnOps=${storm.fileChurnOps ?? 0})`,
+      );
+    }
+    const sends = Array.isArray(cs.sends) ? cs.sends : [];
+    if (sends.length < 4 || (cs.queueSendCount ?? 0) < 1 || (cs.steerNowSendCount ?? 0) < 1) {
+      harnessFailures.push(
+        `S18 composer send probe incomplete (sends=${sends.length}, queue=${cs.queueSendCount ?? 0}, steerNow=${cs.steerNowSendCount ?? 0})`,
+      );
+    } else {
+      const clearP95 = cs.composerClearOrEchoMs?.p95;
+      const ackP95 = cs.promptHttpAckMs?.p95;
+      const missingClear = sends.filter((s) => !Number.isFinite(s?.composerClearOrEchoMs)).length;
+      const failedAck = sends.filter(
+        (s) => s?.httpStatus !== 200 || !Number.isFinite(s?.promptHttpAckMs) || (!s?.durablePromptId && s?.admissionField !== 'durable'),
+      ).length;
+      if (missingClear > 0 || !Number.isFinite(clearP95) || clearP95 > clearBudgetMs) {
+        productFailures.push(
+          `S18 composer_clear_or_echo_ms failed under coupled storm (p95=${clearP95}ms > ${clearBudgetMs}ms, missing=${missingClear}, max=${cs.composerClearOrEchoMs?.max}ms)`,
+        );
+      }
+      if (failedAck > 0 || !Number.isFinite(ackP95) || ackP95 > ackBudgetMs) {
+        productFailures.push(
+          `S18 prompt_http_ack_ms (durable) failed under coupled storm (p95=${ackP95}ms > ${ackBudgetMs}ms, failedAck=${failedAck}, max=${cs.promptHttpAckMs?.max}ms)`,
+        );
+      }
+    }
+    const subSync = Array.isArray(cs.subagentSync) ? cs.subagentSync : [];
+    const syncP95 = cs.subagentStatusSyncMs?.p95;
+    const incompleteSync = subSync.filter(
+      (s) => !s?.backendReachedTerminal || !Number.isFinite(s?.railSyncMs) || !Number.isFinite(s?.timelineSyncMs),
+    ).length;
+    if (subSync.length < 2) {
+      harnessFailures.push(`S18 subagent_status_sync probe tracked too few children (${subSync.length} < 2)`);
+    } else if (incompleteSync > 0 || !Number.isFinite(syncP95) || syncP95 > syncBudgetMs) {
+      productFailures.push(
+        `S18 subagent_status_sync_ms failed under coupled storm (p95=${syncP95}ms > ${syncBudgetMs}ms, incomplete=${incompleteSync}, max=${cs.subagentStatusSyncMs?.max}ms)`,
+      );
+    }
+  }
+
+  // 7. Secondary Isolated --home Space B (inherit.agents=false + ./_private/worker.md) + Child Send-Now vs Queue + A->B->A
+  const hb = report.isolatedHomeB;
+  if (!hb || typeof hb !== 'object') {
+    harnessFailures.push('S18 missing isolatedHomeB evidence');
+  } else {
+    if (hb.distinctHomeIds !== true) {
+      harnessFailures.push(`S18 Home A and Home B do not have distinct home IDs (${hb.homeBId})`);
+    }
+    const pi = hb.profileIsolation;
+    if (!pi || pi.ok !== true) {
+      if (pi?.homeAHasCanary !== true || pi?.homeBHasPublicOwner !== true) {
+        harnessFailures.push(`S18 profile isolation setup incomplete: ${JSON.stringify(pi)}`);
+      } else {
+        productFailures.push(`S18 isolated Home B profile/private-child boundary failed: ${JSON.stringify(pi)}`);
+      }
+    }
+    const sq = hb.childSteerVsQueue;
+    if (!sq || sq.ok !== true) {
+      if (sq?.childArrivedAtBarrier !== true) {
+        productFailures.push(`S18 Home B private child did not launch/arrive at step boundary: ${JSON.stringify(sq)}`);
+      } else {
+        productFailures.push(
+          `S18 running child Send-Now vs agent_idle Queue contract failed: mode=(${sq.steerSendModeUsed}/${sq.queueSendModeUsed}) turn1=(N:${sq.steerConsumedInTurn1Count},Q:${sq.queueLeakedToTurn1Count}) turn2=(N:${sq.steerLeakedToTurn2Count},Q:${sq.queueConsumedInTurn2Count}) liveRows=(N:${sq.liveDomRowsN},Q:${sq.liveDomRowsQ}) reopenRows=(N:${sq.reopenDomRowsN},Q:${sq.reopenDomRowsQ})`,
+        );
+      }
+    }
+    if (hb.homeSwitchABA?.ok !== true) {
+      productFailures.push(`S18 A->B->A home switch identity check failed: ${JSON.stringify(hb.homeSwitchABA?.checks)}`);
+    }
+    if (hb.homeBHeartbeatWatchdog) {
+      if ((hb.homeBHeartbeatWatchdog.samples ?? 0) < 3) {
+        harnessFailures.push(`S18 Home B /api/healthz watchdog recorded too few samples (${hb.homeBHeartbeatWatchdog.samples ?? 0})`);
+      } else if ((hb.homeBHeartbeatWatchdog.failures ?? 0) > 0) {
+        productFailures.push(`S18 Home B /api/healthz watchdog recorded ${hb.homeBHeartbeatWatchdog.failures} failure(s)`);
+      }
+    }
+    checkRawEld(hb.serverBEld, 'HomeB');
+  }
+
+  const exitCode =
+    harnessFailures.length > 0
+      ? EXIT_HARNESS_FAIL
+      : productFailures.length > 0
+        ? EXIT_PRODUCT_FAIL
+        : EXIT_PASS;
+
+  return {
+    passed: exitCode === EXIT_PASS,
+    releaseEligible: releaseEligible && exitCode === EXIT_PASS,
+    verdictClass: mode,
     exitCode,
     status: exitCode === EXIT_PASS ? 'PASS' : exitCode === EXIT_PRODUCT_FAIL ? 'PRODUCT_FAIL' : 'HARNESS_FAIL',
     productFailures,

@@ -22,6 +22,11 @@ import { extractWireLoopEvent, resolveTerminatingTimeoutStatus } from './scenari
 import { generateSyntheticMp4 } from './scenario-soak-and-media-weaknet.mjs';
 import { isKnownInternalKikiHelper } from './telemetry/process-tree.mjs';
 import {
+  collectTimelineIntegrity,
+  TIMELINE_MAX_TRANSIENT_FRAMES,
+} from '../../apps/kiki-gui/scripts/timeline-integrity.mjs';
+import { qualifyGiantWireFixture, writeGiantWireFile } from './corpus-generator.mjs';
+import {
   computeScopedHmac,
   domainDigest,
   evaluateCcpRunVerdict,
@@ -34,6 +39,7 @@ import {
   evaluateS10Verdict,
   evaluateS16MobileVerdict,
   evaluateS17WorkstationCliffVerdict,
+  evaluateS18CoupledWorkstationVerdict,
   EXIT_HARNESS_FAIL,
   EXIT_PASS,
   EXIT_PRODUCT_FAIL,
@@ -1209,6 +1215,32 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(s16Fast.passed, true);
     assert.equal(s16Fast.exitCode, EXIT_PASS);
 
+    const s16NoMove = evaluateS16MobileVerdict({
+      emulation: mobileEmulation,
+      coldBoot: { coldBootToShellMs: 1400, totalBlockingTimeMs: 180, maxLongTaskMs: 160 },
+      webAssetsAudit: {
+        servedByKapServer: true,
+        jsChunkCount: 6,
+        compressedJsChunkCount: 6,
+        uncompressedJsChunkCount: 0,
+        jsTotalEncodedMiB: 0.42,
+      },
+      heavyOpen: {
+        firstMessagePaintMs: 520,
+        totalBlockingTimeMs: 120,
+        maxLongTaskMs: 110,
+        httpRpcRequestCount: 6,
+        httpRpcTransferBytes: 48_000,
+        errorToastsOnOpen: 0,
+      },
+      touchScroll: { frameCount: 30, frameP95Ms: 22, maxLongTaskMs: 40, moved: false, scrollTopDelta: 0 },
+      rapidSwitch: { count: 5, latencyMs: { p95: 380 }, stickyUnreadCount: 0 },
+      pageErrors: [],
+      consoleErrorCount: 0,
+    });
+    assert.equal(s16NoMove.passed, false);
+    assert.equal(s16NoMove.exitCode, EXIT_HARNESS_FAIL);
+
     // Item 5: vacuous S16 report (0 jsChunks, 0 scroll frames, missing TBT/LongTask, missing rapidSwitch p95) fails harness
     const s16Vacuous = evaluateS16MobileVerdict({
       emulation: mobileEmulation,
@@ -1392,7 +1424,7 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
         burstLatencyMs: { p95: 4200 },
         survivingDescendants: 0,
       },
-      eld: { p99Ms: 35, maxMs: 180 },
+      eld: { samples: 120, p99Ms: 35, maxMs: 180 },
     });
 
     const ok = evaluateS17WorkstationCliffVerdict(cleanS17(), 'smoke');
@@ -1558,5 +1590,350 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     const leakedHandles = cleanS17();
     leakedHandles.residencyEviction.postEvictHandleCount = 999_999;
     assert.equal(evaluateS17WorkstationCliffVerdict(leakedHandles, 'smoke').exitCode, EXIT_PRODUCT_FAIL);
+
+    const zeroSampleEld = cleanS17();
+    zeroSampleEld.eld = { samples: 0, p99Ms: 0, maxMs: 0 };
+    assert.equal(evaluateS17WorkstationCliffVerdict(zeroSampleEld, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+
+    const omittedSampleEld = cleanS17();
+    omittedSampleEld.eld = { p99Ms: 12, maxMs: 25 };
+    assert.equal(evaluateS17WorkstationCliffVerdict(omittedSampleEld, 'smoke').exitCode, EXIT_HARNESS_FAIL);
+  });
+
+  void it('S18 Coupled Workstation Stress Gate: rejects fake-green cheats, smoke-as-release, duplicate turns, 1-frame tail-overlap, bar overflow, & slow admission', async () => {
+    // 1. Timeline integrity monitor: zero multi-frame pardon, live tail-overlap fails, missing/0 frames fails closed
+    assert.equal(TIMELINE_MAX_TRANSIENT_FRAMES, 0);
+    const makeFakePage = (restViolations, drainReport) => ({
+      async evaluate(fn) {
+        const src = String(fn);
+        if (src.includes('requestAnimationFrame')) {
+          return { installed: drainReport.installed, violations: restViolations };
+        }
+        return drainReport;
+      },
+    });
+    const missingMonitorRes = await collectTimelineIntegrity(
+      makeFakePage([], { installed: false, frames: 0, counts: {}, samples: [], longest: {} }),
+    );
+    assert.equal(missingMonitorRes.failures.length > 0, true);
+    assert.equal(missingMonitorRes.failures[0].kind, 'monitor-missing');
+
+    const zeroFrameRes = await collectTimelineIntegrity(
+      makeFakePage([], { installed: true, frames: 0, counts: {}, samples: [], longest: {} }),
+    );
+    assert.equal(zeroFrameRes.failures.length > 0, true);
+    assert.equal(zeroFrameRes.failures[0].kind, 'zero-frames');
+
+    const oneFrameTailOverlapRes = await collectTimelineIntegrity(
+      makeFakePage([], {
+        installed: true,
+        frames: 20,
+        rowPairSamples: 40,
+        tailPairSamples: 20,
+        observedHeightChanges: 2,
+        counts: { 'burst|tail-overlap|transient': 1 },
+        samples: [],
+        longest: { 'tail-overlap': { frames: 1, label: 'burst', px: 2.3 } },
+      }),
+    );
+    assert.equal(oneFrameTailOverlapRes.failures.length, 1);
+    assert.equal(oneFrameTailOverlapRes.failures[0].at, 'live');
+    assert.equal(oneFrameTailOverlapRes.failures[0].kind, 'tail-overlap');
+
+    // 2. Giant wire generator produces strictly distinct addressable turns + tall scrollable reminder, and qualifier rejects duplicate IDs
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-s18-wire-'));
+    try {
+      const wirePath = path.join(tmp, 'wire.jsonl');
+      const gen = writeGiantWireFile(wirePath, {
+        targetBytes: 2 * 1024 * 1024,
+        spikeLineBytes: 64 * 1024,
+        baseTime: 1_760_000_000_000,
+        minTurns: 70,
+      });
+      assert.ok(gen.distinctTurns >= 70);
+      assert.ok(gen.tallRemindersWritten >= 2);
+      const qOk = qualifyGiantWireFixture(wirePath, { minBytes: 2 * 1024 * 1024, minDistinctTurns: 70 });
+      assert.equal(qOk.ok, true, `Expected qualified wire, got failures: ${qOk.failures.join('; ')}`);
+      assert.equal(qOk.duplicateTurnIds.length, 0);
+
+      // Append a duplicate turnId=1 to prove independent qualifier catches duplicate-ID cheat
+      fs.appendFileSync(
+        wirePath,
+        `${JSON.stringify({ type: 'turn.prompt', turnId: 1, promptId: 'dup-1', input: [{ type: 'text', text: 'dup' }], time: 1 })}\n`,
+        'utf8',
+      );
+      const qDup = qualifyGiantWireFixture(wirePath, { minBytes: 2 * 1024 * 1024, minDistinctTurns: 70 });
+      assert.equal(qDup.ok, false);
+      assert.ok(qDup.duplicateTurnIds.includes(1));
+
+      // Duplicate turn.ended + repeated promptId/marker + short reminder + empty tail must all fail qualification
+      const forgedWire = path.join(tmp, 'forged-wire.jsonl');
+      const forgedLines = [];
+      for (let t = 1; t <= 72; t += 1) {
+        forgedLines.push(
+          JSON.stringify({ type: 'turn.prompt', turnId: t, promptId: 'same-prompt', userMessageId: 'same-msg', input: [{ type: 'text', text: 'TURN_MARKER_000001 forged' }], time: t * 100 }),
+          JSON.stringify({ type: 'turn.ended', turnId: t, reason: 'completed', time: t * 100 + 50 }),
+        );
+      }
+      forgedLines.push(
+        JSON.stringify({ type: 'turn.ended', turnId: 72, reason: 'completed', time: 99999 }),
+        JSON.stringify({ type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>short</system-reminder>' }], origin: { kind: 'user' } }, time: 100000 }),
+      );
+      fs.writeFileSync(forgedWire, `${forgedLines.join('\n')}\n`, 'utf8');
+      const qForged = qualifyGiantWireFixture(forgedWire, { minBytes: 1024, minDistinctTurns: 70 });
+      assert.equal(qForged.ok, false);
+      assert.ok(qForged.duplicateEndedTurnIds.includes(72));
+      assert.ok(qForged.duplicatePromptIds.includes('same-prompt'));
+      assert.ok(qForged.duplicateMarkers.includes('TURN_MARKER_000001'));
+      assert.equal(qForged.tallReminderCount, 0);
+      assert.equal(qForged.nonemptyTailSlot, false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+
+    // 3. S18 Verdict Evaluator negative meta-gates
+    const cleanS18 = () => ({
+      runId: 's18_test_clean',
+      mode: 'coupled-release',
+      releaseEligible: true,
+      fixture: {
+        ok: true,
+        actualBytes: 268_435_456,
+        distinctTurnCount: 340,
+        duplicateTurnCount: 0,
+        tallReminderCount: 12,
+      },
+      residency: {
+        materializedCount: 24,
+        effectiveMaxLiveSessions: 16,
+        effectiveMaxConcurrentRestores: 4,
+        evictionSuccesses: 8,
+        evictedSessionCount: 8,
+        postEvictLiveSessions: 16,
+        backgroundRestoreWitness: {
+          cronFiresTriggered: 6,
+          cronFiresSucceeded: 6,
+          threadReadsTriggered: 4,
+          threadReadsSucceeded: 4,
+          maxObservedActiveRestores: 2,
+          maxObservedQueuedRestores: 2,
+          witnessedActiveAndWaiting: true,
+        },
+      },
+      simultaneity: {
+        ticksOffered: 50,
+        ticksCommitted: 32,
+        wireGrowthBytes: 120_000,
+        grewBeforeInteractions: true,
+        grewDuringInteractions: true,
+        wsOpsFramesTotal: 28,
+        wsOpsDuringPagination: 6,
+      },
+      layoutAndTimeline: {
+        zoomCheck: { ok: true, productApplied: true, effectiveZoom: 1.25, xlMatches: true },
+        fourColumnsInitial: { ok: true, failures: [] },
+        runModeResult: { ok: true, mode: 'plan' },
+        widthAudits: [
+          { targetLayoutWidthPx: 480, achievedLayoutWidthPx: 480, fourColumnsOk: true, barAudit: { ok: true, topBar: { overflowPx: 0 }, bottomBar: { overflowPx: 0 } } },
+          { targetLayoutWidthPx: 360, achievedLayoutWidthPx: 360, fourColumnsOk: true, barAudit: { ok: true, topBar: { overflowPx: 0 }, bottomBar: { overflowPx: 0 } } },
+        ],
+        reminderExpandCollapse: { ok: true, found: true, hasOverflowingScrollBody: true, expandDeltaPx: 420, collapseDeltaPx: 420 },
+        liveTimelineIntegrity: { installed: true, frames: 90, rowPairSamples: 200, tailPairSamples: 90, observedHeightChanges: 2, failures: [] },
+        postWheelTimeline: { installed: true, frames: 45, rowPairSamples: 120, tailPairSamples: 10, observedHeightChanges: 0, failures: [] },
+        pageErrors: [],
+      },
+      pagination: {
+        ok: true,
+        requiredPages: 3,
+        completedPages: 3,
+        pages: [
+          { pageIndex: 1, ok: true, elapsedMs: 140 },
+          { pageIndex: 2, ok: true, elapsedMs: 185 },
+          { pageIndex: 3, ok: true, elapsedMs: 210 },
+        ],
+        failures: [],
+      },
+      foregroundService: {
+        trialsAttempted: 2,
+        trialsPassed: 2,
+        trials: [
+          { trial: 1, sessionId: 'ev1', verifiedEvictedBeforeSubmit: true, durablePromptId: 'p1', durableReceiptMs: 18, interactiveAdmissionMs: 140, firstOutputMs: 210, freshOutputVerified: true, ok: true },
+          { trial: 2, sessionId: 'ev2', verifiedEvictedBeforeSubmit: true, durablePromptId: 'p2', durableReceiptMs: 22, interactiveAdmissionMs: 165, firstOutputMs: 245, freshOutputVerified: true, ok: true },
+        ],
+      },
+      serverAEld: { samples: 180, p99Ms: 28, maxMs: 52, rawMaxMs: 52.4, unhandledRejections: 0, uncaughtExceptions: 0 },
+      heartbeatWatchdog: { samples: 40, failures: 0, maxLatencyMs: 14, ok: true },
+      composerSendAndSubagentSync: {
+        storm: {
+          largeThreadReadTargetCount: 4,
+          largeThreadReadTotalMiB: 96,
+          threadReadDispatched: 12,
+          threadReadCompleted: 10,
+          bgSubagentWavesDispatched: 3,
+          bgSubagentWavesCompleted: 2,
+          bgSubagentConcurrency: 5,
+          trackedSubagentCount: 2,
+          fileChurnOps: 45,
+        },
+        sends: [
+          { index: 1, kind: 'queue', composerClearOrEchoMs: 18, promptHttpAckMs: 95, httpStatus: 200, admissionField: 'durable', durablePromptId: 'p-q1', ok: true },
+          { index: 2, kind: 'steer_now', composerClearOrEchoMs: 22, promptHttpAckMs: 112, httpStatus: 200, admissionField: 'durable', durablePromptId: 'p-s1', ok: true },
+          { index: 3, kind: 'queue', composerClearOrEchoMs: 25, promptHttpAckMs: 130, httpStatus: 200, admissionField: 'durable', durablePromptId: 'p-q2', ok: true },
+          { index: 4, kind: 'steer_now', composerClearOrEchoMs: 28, promptHttpAckMs: 140, httpStatus: 200, admissionField: 'durable', durablePromptId: 'p-s2', ok: true },
+        ],
+        queueSendCount: 2,
+        steerNowSendCount: 2,
+        durableAdmissionCount: 4,
+        composerClearOrEchoMs: { count: 4, p50: 23.5, p95: 28, max: 28 },
+        promptHttpAckMs: { count: 4, p50: 121, p95: 140, max: 140 },
+        subagentSync: [
+          { agentId: 'child-1', name: 's18_sync_child_1', backendReachedTerminal: true, railSyncMs: 120, timelineSyncMs: 140, subagentStatusSyncMs: 140, ok: true },
+          { agentId: 'child-2', name: 's18_sync_child_2', backendReachedTerminal: true, railSyncMs: 180, timelineSyncMs: 210, subagentStatusSyncMs: 210, ok: true },
+        ],
+        subagentStatusSyncMs: { count: 2, p50: 175, p95: 210, max: 210 },
+        ok: true,
+        failures: [],
+      },
+      isolatedHomeB: {
+        distinctHomeIds: true,
+        homeBHeartbeatWatchdog: { samples: 12, failures: 0, maxLatencyMs: 18, ok: true },
+        profileIsolation: { homeAHasCanary: true, homeBLeakedCanary: false, homeBGloballyListedPrivate: false, homeBHasPublicOwner: true, privateChildLaunchedWithMarker: true, ok: true },
+        childSteerVsQueue: {
+          childArrivedAtBarrier: true,
+          steerSendModeUsed: 'now',
+          queueSendModeUsed: 'agent_idle',
+          steerConsumedInTurn1Count: 1,
+          steerLeakedToTurn2Count: 0,
+          queueLeakedToTurn1Count: 0,
+          queueConsumedInTurn2Count: 1,
+          liveDomRowsN: 1,
+          liveDomRowsQ: 1,
+          reopenDomRowsN: 1,
+          reopenDomRowsQ: 1,
+          ok: true,
+        },
+        homeSwitchABA: { ok: true, checks: [{ ok: true }, { ok: true }, { ok: true }] },
+        serverBEld: { samples: 60, p99Ms: 19, maxMs: 34, rawMaxMs: 34.1, unhandledRejections: 0, uncaughtExceptions: 0 },
+      },
+    });
+
+    const passRes = evaluateS18CoupledWorkstationVerdict(cleanS18(), null, { requireCoupledRelease: true });
+    assert.equal(passRes.passed, true, `Clean S18 failed unexpectedly: ${JSON.stringify(passRes)}`);
+    assert.equal(passRes.releaseEligible, true);
+
+    // Smoke mode cannot pass when coupled-release is required
+    const smokeAsRelease = cleanS18();
+    smokeAsRelease.mode = 'smoke';
+    smokeAsRelease.releaseEligible = false;
+    assert.equal(
+      evaluateS18CoupledWorkstationVerdict(smokeAsRelease, null, { requireCoupledRelease: true }).exitCode,
+      EXIT_HARNESS_FAIL,
+    );
+
+    // 4-column bar overflow at 360px fails as EXIT_PRODUCT_FAIL
+    const barOverflow = cleanS18();
+    barOverflow.layoutAndTimeline.widthAudits[1].barAudit = {
+      ok: false,
+      topBar: { overflowPx: 28.5 },
+      bottomBar: { overflowPx: 0 },
+      firstOffending: { bar: 'center-top-bar', control: 'railToggle', overflowPx: 28.5 },
+    };
+    assert.equal(evaluateS18CoupledWorkstationVerdict(barOverflow).exitCode, EXIT_PRODUCT_FAIL);
+
+    // Raw ELD >= 100ms fails as EXIT_PRODUCT_FAIL; 0 samples fails as EXIT_HARNESS_FAIL
+    const highEld = cleanS18();
+    highEld.serverAEld.rawMaxMs = 104.2;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(highEld).exitCode, EXIT_PRODUCT_FAIL);
+
+    const zeroEld = cleanS18();
+    zeroEld.serverAEld.samples = 0;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(zeroEld).exitCode, EXIT_HARNESS_FAIL);
+
+    // Fast durable 200 receipt (18ms) with slow interactive admission (740ms) fails as EXIT_PRODUCT_FAIL
+    const queuedMailboxOnly = cleanS18();
+    queuedMailboxOnly.foregroundService.trials[0].interactiveAdmissionMs = 740;
+    queuedMailboxOnly.foregroundService.trials[0].ok = false;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(queuedMailboxOnly).exitCode, EXIT_PRODUCT_FAIL);
+
+    // Home A canary leaking into Home B fails as EXIT_PRODUCT_FAIL
+    const leakedCanary = cleanS18();
+    leakedCanary.isolatedHomeB.profileIsolation.homeBLeakedCanary = true;
+    leakedCanary.isolatedHomeB.profileIsolation.ok = false;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(leakedCanary).exitCode, EXIT_PRODUCT_FAIL);
+
+    // Duplicate logical user row on child reopen fails as EXIT_PRODUCT_FAIL
+    const dupChildRow = cleanS18();
+    dupChildRow.isolatedHomeB.childSteerVsQueue.reopenDomRowsN = 2;
+    dupChildRow.isolatedHomeB.childSteerVsQueue.ok = false;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(dupChildRow).exitCode, EXIT_PRODUCT_FAIL);
+
+    // Missing explicit mode fails closed (cannot silently default to release)
+    const missingMode = cleanS18();
+    delete missingMode.mode;
+    const missingModeRes = evaluateS18CoupledWorkstationVerdict(missingMode, null, { requireCoupledRelease: true });
+    assert.equal(missingModeRes.exitCode, EXIT_HARNESS_FAIL);
+    assert.equal(missingModeRes.releaseEligible, false);
+
+    // Zero restore contention or failed page inside pagination fails closed
+    const noContention = cleanS18();
+    noContention.residency.backgroundRestoreWitness.witnessedActiveAndWaiting = false;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(noContention).exitCode, EXIT_HARNESS_FAIL);
+
+    const hiddenFailedPage = cleanS18();
+    hiddenFailedPage.pagination.pages[2].ok = false;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(hiddenFailedPage).exitCode, EXIT_PRODUCT_FAIL);
+
+    // Achieved width 620px for 360px target, fallback-injected zoom, and zero tailPairSamples fail closed
+    const wrongWidth = cleanS18();
+    wrongWidth.layoutAndTimeline.widthAudits[1].achievedLayoutWidthPx = 620;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(wrongWidth).exitCode, EXIT_HARNESS_FAIL);
+
+    const injectedZoom = cleanS18();
+    injectedZoom.layoutAndTimeline.zoomCheck.productApplied = false;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(injectedZoom).exitCode, EXIT_HARNESS_FAIL);
+
+    const zeroTailSamples = cleanS18();
+    zeroTailSamples.layoutAndTimeline.liveTimelineIntegrity.tailPairSamples = 0;
+    zeroTailSamples.layoutAndTimeline.postWheelTimeline.tailPairSamples = 0;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(zeroTailSamples).exitCode, EXIT_HARNESS_FAIL);
+
+    const zeroPaginationWs = cleanS18();
+    zeroPaginationWs.simultaneity.wsOpsDuringPagination = 0;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(zeroPaginationWs).exitCode, EXIT_HARNESS_FAIL);
+
+    // Missing durablePromptId or unverified fresh output fails foreground trial
+    const missingPromptId = cleanS18();
+    missingPromptId.foregroundService.trials[0].durablePromptId = null;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(missingPromptId).exitCode, EXIT_PRODUCT_FAIL);
+
+    // Forged pagination page ok:true with 9s elapsedMs & 15s live-stream gap must fail closed (F3)
+    const slowPageLyingOk = cleanS18();
+    slowPageLyingOk.pagination.pages[1].elapsedMs = 9000;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(slowPageLyingOk).exitCode, EXIT_PRODUCT_FAIL);
+
+    const stalledStream = cleanS18();
+    stalledStream.simultaneity.maxInterTickGapMs = 15000;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(stalledStream).exitCode, EXIT_PRODUCT_FAIL);
+
+    // High-contention <Composer /> send latency & subagent status sync negative meta-gates (t853 + t852)
+    const slowComposerClear = cleanS18();
+    slowComposerClear.composerSendAndSubagentSync.composerClearOrEchoMs.p95 = 240;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(slowComposerClear).exitCode, EXIT_PRODUCT_FAIL);
+
+    const slowPromptAck = cleanS18();
+    slowPromptAck.composerSendAndSubagentSync.promptHttpAckMs.p95 = 2800;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(slowPromptAck).exitCode, EXIT_PRODUCT_FAIL);
+
+    const laggingSubagentSync = cleanS18();
+    laggingSubagentSync.composerSendAndSubagentSync.subagentStatusSyncMs.p95 = 4200;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(laggingSubagentSync).exitCode, EXIT_PRODUCT_FAIL);
+
+    const missingRailSync = cleanS18();
+    missingRailSync.composerSendAndSubagentSync.subagentSync[0].railSyncMs = null;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(missingRailSync).exitCode, EXIT_PRODUCT_FAIL);
+
+    const weakStorm = cleanS18();
+    weakStorm.composerSendAndSubagentSync.storm.largeThreadReadTargetCount = 1;
+    assert.equal(evaluateS18CoupledWorkstationVerdict(weakStorm).exitCode, EXIT_HARNESS_FAIL);
   });
 });

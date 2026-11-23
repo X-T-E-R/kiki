@@ -2,26 +2,54 @@
  * Timeline integrity monitor for Playwright proofs. Installs an in-page
  * sampler that runs once per painted frame and checks every visible
  * transcript list:
- *   - overlap: consecutive virtual rows whose boxes intersect;
- *   - hole: a gap between consecutive rows larger than the list's row gap;
- *   - escape: row content painting below its own row box.
- * A violation seen on two consecutive samples is "persistent"; a one-frame
- * violation is "transient" (still a visible flicker, still reported).
+ *   - overlap: consecutive virtual rows whose boxes have positive-area intersection;
+ *   - tail-overlap: last virtual row intersecting `[data-transcript-tail-slot]`;
+ *   - escape: visible row content (respecting legitimate scroll clips) painting
+ *     below its own row box;
+ *   - hole: a gap between consecutive rows larger than the list's row gap (diagnostic).
+ * Every painted frame is gated: zero multi-frame pardons and zero multi-pixel
+ * tolerances (only a 0.5px float-rounding subpixel epsilon). Missing monitor
+ * installation or zero sampled frames is a hard failure.
  */
 
 const MONITOR = () => {
   const GAP = 16;
-  const TOLERANCE = 1.5;
-  // `runs`: consecutive-frame count per live violation; `longest`: the worst
-  // run per kind since the last drain (how long a user could see it).
-  const state = { label: 'boot', frames: 0, counts: {}, samples: [], runs: new Map(), longest: {} };
+  const EPSILON = 0.5;
+  const INTERSECTION_EPSILON = 0.01;
+  const round2 = (value) => Number(value.toFixed(2));
+  const getZoom = () => {
+    const inline = Number.parseFloat(document.documentElement.style.zoom);
+    if (Number.isFinite(inline) && inline > 0) return inline;
+    const computed = Number.parseFloat(getComputedStyle(document.documentElement).zoom);
+    return Number.isFinite(computed) && computed > 0 ? computed : 1;
+  };
+  const state = {
+    installed: true,
+    label: 'boot',
+    frames: 0,
+    windowFrames: 0,
+    rowPairSamples: 0,
+    tailPairSamples: 0,
+    observedHeightChanges: 0,
+    counts: {},
+    samples: [],
+    runs: new Map(),
+    longest: {},
+    firstOffendingFrame: null,
+    lastHeights: new Map(),
+  };
   window.__kikiTimeline = state;
   const record = (kind, detail, signature, run) => {
     const persistent = run > 1;
     const bucket = `${state.label}|${kind}|${persistent ? 'persistent' : 'transient'}`;
     state.counts[bucket] = (state.counts[bucket] ?? 0) + 1;
     const worst = state.longest[kind];
-    if (worst === undefined || run > worst.frames) state.longest[kind] = { frames: run, label: state.label, ...detail };
+    if (worst === undefined || run > worst.frames || (run === worst.frames && detail.px > (worst.px ?? 0))) {
+      state.longest[kind] = { frames: run, label: state.label, ...detail };
+    }
+    if (kind !== 'hole' && state.firstOffendingFrame === null) {
+      state.firstOffendingFrame = { frame: state.frames, label: state.label, kind, ...detail };
+    }
     if (state.samples.length < 400) {
       state.samples.push({ label: state.label, kind, persistent, frame: state.frames, ...detail });
     }
@@ -29,8 +57,63 @@ const MONITOR = () => {
   const describe = (element) =>
     element.querySelector('[data-block-id]')?.getAttribute('data-block-id')
     ?? `#${element.getAttribute('data-index')}`;
-  const scan = () => {
+  const isVerticalClip = (el) => {
+    const oy = getComputedStyle(el).overflowY;
+    return oy === 'hidden' || oy === 'clip' || oy === 'auto' || oy === 'scroll';
+  };
+  const visibleBottomRespectingClips = (rowElement, rowRect) => {
+    let maxBottom = rowRect.bottom;
+    const inner = rowElement.firstElementChild;
+    if (inner === null) return maxBottom;
+    const innerRect = inner.getBoundingClientRect();
+    if (innerRect.width > EPSILON && innerRect.height > EPSILON) {
+      maxBottom = Math.max(maxBottom, innerRect.bottom);
+    }
+    const stack = [{ node: inner, clipBottom: isVerticalClip(inner) ? innerRect.bottom : Infinity }];
+    let visited = 0;
+    while (stack.length > 0 && visited < 48) {
+      const { node, clipBottom } = stack.pop();
+      visited += 1;
+      for (let child = node.firstElementChild; child !== null; child = child.nextElementSibling) {
+        if (child.hasAttribute('data-row-actions')) continue;
+        const st = getComputedStyle(child);
+        if (
+          st.display === 'none' ||
+          st.visibility === 'hidden' ||
+          Number.parseFloat(st.opacity) === 0 ||
+          st.position === 'absolute' ||
+          st.position === 'fixed'
+        ) {
+          continue;
+        }
+        const rect = child.getBoundingClientRect();
+        if (rect.width <= EPSILON || rect.height <= EPSILON) continue;
+        const effectiveBottom = Math.min(rect.bottom, clipBottom);
+        if (effectiveBottom > maxBottom) maxBottom = effectiveBottom;
+        const nextClip = isVerticalClip(child) ? Math.min(clipBottom, rect.bottom) : clipBottom;
+        if (child.firstElementChild !== null) {
+          stack.push({ node: child, clipBottom: nextClip });
+        }
+      }
+    }
+    return maxBottom;
+  };
+  const rectIntersection2D = (a, b) => {
+    const overlapX = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    return { overlapX, overlapY, positiveArea: overlapX > INTERSECTION_EPSILON && overlapY > INTERSECTION_EPSILON };
+  };
+  const packRect = (r) => ({
+    top: round2(r.top),
+    bottom: round2(r.bottom),
+    left: round2(r.left),
+    right: round2(r.right),
+    width: round2(r.width),
+    height: round2(r.height),
+  });
+  const scan = (countSamples = false) => {
     const found = [];
+    const zoom = getZoom();
     for (const scroll of document.querySelectorAll('[data-transcript-scroll]')) {
       const viewport = scroll.getBoundingClientRect();
       if (viewport.height === 0 || viewport.width === 0) continue;
@@ -40,12 +123,31 @@ const MONITOR = () => {
         .sort((left, right) => left.index - right.index);
       for (let i = 0; i < items.length; i += 1) {
         const current = items[i];
+        const heightKey = `${host}|${current.index}`;
+        const prevHeight = state.lastHeights.get(heightKey);
+        if (prevHeight !== undefined && Math.abs(current.rect.height - prevHeight) > 1) {
+          if (countSamples) state.observedHeightChanges += 1;
+        }
+        state.lastHeights.set(heightKey, current.rect.height);
+
         const inView = current.rect.bottom > viewport.top && current.rect.top < viewport.bottom;
-        const inner = current.element.firstElementChild;
-        if (inner !== null && inView) {
-          const escape = inner.getBoundingClientRect().bottom - current.rect.bottom;
-          if (escape > TOLERANCE) {
-            found.push({ kind: 'escape', signature: `${host}|escape|${current.index}`, detail: { host, index: current.index, row: describe(current.element), px: Math.round(escape) } });
+        if (inView && current.rect.width > EPSILON && current.rect.height > EPSILON) {
+          const contentBottom = visibleBottomRespectingClips(current.element, current.rect);
+          const escape = contentBottom - current.rect.bottom;
+          if (escape > EPSILON) {
+            found.push({
+              kind: 'escape',
+              signature: `${host}|escape|${current.index}`,
+              detail: {
+                host,
+                index: current.index,
+                row: describe(current.element),
+                px: round2(escape),
+                zoom,
+                rowRect: packRect(current.rect),
+                contentBottom: round2(contentBottom),
+              },
+            });
           }
         }
         const next = items[i + 1];
@@ -53,45 +155,64 @@ const MONITOR = () => {
         const pairInView = Math.max(current.rect.bottom, next.rect.bottom) > viewport.top
           && Math.min(current.rect.top, next.rect.top) < viewport.bottom;
         if (!pairInView) continue;
+        if (countSamples) state.rowPairSamples += 1;
+        const inter = rectIntersection2D(current.rect, next.rect);
         const gap = next.rect.top - current.rect.bottom;
-        const kind = gap < -TOLERANCE ? 'overlap' : gap > GAP + TOLERANCE ? 'hole' : null;
+        const kind = inter.positiveArea ? 'overlap' : gap > GAP + EPSILON ? 'hole' : null;
         if (kind === null) continue;
-        found.push({ kind, signature: `${host}|${kind}|${current.index}`, detail: {
-          host, index: current.index, row: describe(current.element), nextRow: describe(next.element),
-          px: Math.round(kind === 'overlap' ? -gap : gap - GAP),
-        } });
+        found.push({
+          kind,
+          signature: `${host}|${kind}|${current.index}`,
+          detail: {
+            host,
+            index: current.index,
+            row: describe(current.element),
+            nextRow: describe(next.element),
+            px: round2(kind === 'overlap' ? inter.overlapY : gap - GAP),
+            zoom,
+            rowRect: packRect(current.rect),
+            nextRect: packRect(next.rect),
+          },
+        });
       }
       const tailSlot = scroll.querySelector('[data-transcript-tail-slot]');
       if (tailSlot !== null && items.length > 0) {
         const tailRect = tailSlot.getBoundingClientRect();
         const last = items[items.length - 1];
-        if (tailRect.height > 0 && tailRect.width > 0) {
+        if (tailRect.height > EPSILON && tailRect.width > EPSILON) {
           const pairInView = Math.max(last.rect.bottom, tailRect.bottom) > viewport.top
             && Math.min(last.rect.top, tailRect.top) < viewport.bottom;
-          const tailGap = tailRect.top - last.rect.bottom;
-          if (pairInView && tailGap < -TOLERANCE) {
-            found.push({
-              kind: 'tail-overlap',
-              signature: `${host}|tail-overlap|${last.index}`,
-              detail: {
-                host,
-                index: last.index,
-                row: describe(last.element),
-                nextRow: '[data-transcript-tail-slot]',
-                px: Math.round(-tailGap),
-              },
-            });
+          if (pairInView) {
+            if (countSamples) state.tailPairSamples += 1;
+            const tailInter = rectIntersection2D(last.rect, tailRect);
+            if (tailInter.positiveArea) {
+              found.push({
+                kind: 'tail-overlap',
+                signature: `${host}|tail-overlap|${last.index}`,
+                detail: {
+                  host,
+                  index: last.index,
+                  row: describe(last.element),
+                  nextRow: '[data-transcript-tail-slot]',
+                  px: round2(tailInter.overlapY),
+                  zoom,
+                  rowRect: packRect(last.rect),
+                  tailRect: packRect(tailRect),
+                },
+              });
+            }
           }
         }
       }
     }
     return found;
   };
-  state.scan = () => scan().map(({ kind, detail }) => ({ kind, ...detail }));
+  state.scan = () => scan(false).map(({ kind, detail }) => ({ kind, ...detail }));
   const check = () => {
     state.frames += 1;
+    state.windowFrames += 1;
     const runs = new Map();
-    for (const { kind, signature, detail } of scan()) {
+    for (const { kind, signature, detail } of scan(true)) {
       const run = (state.runs.get(signature) ?? 0) + 1;
       runs.set(signature, run);
       record(kind, detail, signature, run);
@@ -125,11 +246,40 @@ export async function labelTimeline(page, label) {
 export async function drainTimeline(page) {
   return page.evaluate(() => {
     const state = window.__kikiTimeline;
-    if (state === undefined) return { frames: 0, counts: {}, samples: [], longest: {} };
-    const out = { frames: state.frames, counts: state.counts, samples: state.samples, longest: state.longest };
+    if (state === undefined) {
+      return {
+        installed: false,
+        frames: 0,
+        windowFrames: 0,
+        rowPairSamples: 0,
+        tailPairSamples: 0,
+        observedHeightChanges: 0,
+        counts: {},
+        samples: [],
+        longest: {},
+        firstOffendingFrame: null,
+      };
+    }
+    const out = {
+      installed: true,
+      frames: state.frames,
+      windowFrames: state.windowFrames,
+      rowPairSamples: state.rowPairSamples,
+      tailPairSamples: state.tailPairSamples,
+      observedHeightChanges: state.observedHeightChanges,
+      counts: state.counts,
+      samples: state.samples,
+      longest: state.longest,
+      firstOffendingFrame: state.firstOffendingFrame,
+    };
+    state.windowFrames = 0;
+    state.rowPairSamples = 0;
+    state.tailPairSamples = 0;
+    state.observedHeightChanges = 0;
     state.counts = {};
     state.samples = [];
     state.longest = {};
+    state.firstOffendingFrame = null;
     return out;
   });
 }
@@ -141,9 +291,9 @@ export async function drainTimeline(page) {
 export async function timelineAtRest(page, { frames = 6, timeoutMs = 3000 } = {}) {
   return page.evaluate(async ({ frames: need, timeoutMs: budget }) => {
     const state = window.__kikiTimeline;
-    if (state === undefined) return [];
+    if (state === undefined) return { installed: false, violations: [] };
     const shape = () => [...document.querySelectorAll('[data-transcript-virtual-item]')]
-      .map((el) => { const r = el.getBoundingClientRect(); return `${el.dataset.index}:${Math.round(r.top)}:${Math.round(r.height)}`; }).join(',');
+      .map((el) => { const r = el.getBoundingClientRect(); return `${el.dataset.index}:${r.top.toFixed(1)}:${r.height.toFixed(1)}`; }).join(',');
     const started = performance.now();
     let last = shape();
     let stable = 0;
@@ -153,31 +303,55 @@ export async function timelineAtRest(page, { frames = 6, timeoutMs = 3000 } = {}
       stable = next === last ? stable + 1 : 0;
       last = next;
     }
-    return state.scan();
+    return { installed: true, violations: state.scan() };
   }, { frames, timeoutMs });
 }
 
 /**
- * Longest consecutive-frame run tolerated for an overlap/escape while the
- * layout is changing. One or two frames is the ResizeObserver → reposition
- * hand-off; anything longer is a stale size model the user can read.
+ * Zero multi-frame pardon: even a single painted frame with an overlap,
+ * tail-overlap, or content escape is a visible geometry defect and fails.
  */
-export const TIMELINE_MAX_TRANSIENT_FRAMES = 3;
+export const TIMELINE_MAX_TRANSIENT_FRAMES = 0;
 
 /**
- * Collect both settled-state (at-rest) and live (> transient frame budget)
- * timeline overlap/escape violations without throwing.
+ * Collect both settled-state (at-rest) and live painted-frame
+ * timeline overlap/tail-overlap/escape violations without throwing.
+ * Fails closed if the monitor is missing or sampled zero frames.
  */
-export async function collectTimelineIntegrity(page) {
-  const rest = await timelineAtRest(page);
+export async function collectTimelineIntegrity(page, options = {}) {
+  const restResult = await timelineAtRest(page, options);
   const report = await drainTimeline(page);
-  const failures = rest.filter((violation) => violation.kind !== 'hole').map((violation) => ({ at: 'rest', ...violation }));
-  for (const kind of ['overlap', 'escape']) {
+  const rest = Array.isArray(restResult) ? restResult : (restResult?.violations ?? []);
+  const installed = Boolean(report.installed && (Array.isArray(restResult) || restResult?.installed !== false));
+  const failures = [];
+  if (!installed) {
+    failures.push({ at: 'monitor', kind: 'monitor-missing', reason: 'window.__kikiTimeline was not installed' });
+  } else if (report.frames === 0) {
+    failures.push({ at: 'monitor', kind: 'zero-frames', reason: 'timeline monitor sampled 0 frames' });
+  }
+  for (const violation of rest) {
+    if (violation.kind !== 'hole') {
+      failures.push({ at: 'rest', ...violation });
+    }
+  }
+  for (const kind of ['overlap', 'escape', 'tail-overlap']) {
     const worst = report.longest[kind];
-    if (worst !== undefined && worst.frames > TIMELINE_MAX_TRANSIENT_FRAMES) failures.push({ at: 'live', kind, ...worst });
+    if (worst !== undefined && worst.frames > TIMELINE_MAX_TRANSIENT_FRAMES) {
+      failures.push({ at: 'live', kind, ...worst });
+    }
   }
   const totals = summarizeTimeline(report);
-  return { frames: report.frames, totals, failures };
+  return {
+    installed,
+    frames: report.frames,
+    windowFrames: report.windowFrames ?? report.frames,
+    rowPairSamples: report.rowPairSamples ?? 0,
+    tailPairSamples: report.tailPairSamples ?? 0,
+    observedHeightChanges: report.observedHeightChanges ?? 0,
+    firstOffendingFrame: report.firstOffendingFrame ?? null,
+    totals,
+    failures,
+  };
 }
 
 /**

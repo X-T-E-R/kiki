@@ -1106,10 +1106,12 @@ export async function runScenarioS17WorkstationCliff({
       residencyEviction,
       processHelperContention,
       eld: {
-        p99Ms: postMetrics.eldP99Ms ?? 0,
-        maxMs: postMetrics.eldMaxMs ?? 0,
-        maxSingleTickStallMs: postMetrics.maxSingleTickStallMs ?? 0,
-        elu: postMetrics.eventLoopUtilization ?? 0,
+        samples: postMetrics.eldSamples ?? 0,
+        p99Ms: postMetrics.eldP99Ms ?? null,
+        maxMs: postMetrics.eldMaxMs ?? null,
+        rawMaxMs: postMetrics.eldRawMaxMs ?? null,
+        maxSingleTickStallMs: postMetrics.maxSingleTickStallMs ?? null,
+        elu: postMetrics.eventLoopUtilization ?? null,
       },
       memoryMiB: {
         preRss: preMetrics.rssMiB,

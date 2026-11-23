@@ -29,6 +29,7 @@ import {
   verifyZeroFalseTopScrollErrorToast,
 } from './browser-invariants.mjs';
 import { EventLoopWindowMonitor, quantiles, roundMs } from './metrics.mjs';
+import { trustedTouchDragScroll, trustedWheelScrollUp } from './trusted-scroll.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const GUI_ROOT = path.join(REPO_ROOT, 'apps', 'kiki-gui');
@@ -95,10 +96,12 @@ export function ensureGuiStaticBuild(cacheBaseDir = path.join(REPO_ROOT, '.tmp',
       '--logLevel',
       'warn',
     ],
-    { cwd: GUI_ROOT, stdio: 'inherit', timeout: 180_000 },
+    { cwd: GUI_ROOT, stdio: 'inherit', timeout: 360_000 },
   );
   if (result.status !== 0) {
-    throw new Error(`apps/kiki-gui vite build failed with status ${result.status}`);
+    throw new Error(
+      `apps/kiki-gui vite build failed with status ${result.status} (signal=${result.signal ?? 'none'}, error=${result.error?.message ?? 'none'})`,
+    );
   }
   if (expectedKey) {
     fs.writeFileSync(keyFile, expectedKey, 'utf8');
@@ -219,8 +222,7 @@ async function runMobileThrottledLeg({ browser, endpoint, deepLink, sample }) {
     const coldOpenLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
 
     await page.evaluate(() => window.__kikiPerfProbe?.reset?.());
-    const frameDeltas = await page.evaluate(async () => {
-      const scroller = document.querySelector('[data-transcript-scroll]');
+    await page.evaluate(() => {
       const deltas = [];
       let prev = performance.now();
       let active = true;
@@ -230,17 +232,23 @@ async function runMobileThrottledLeg({ browser, endpoint, deepLink, sample }) {
         if (active) requestAnimationFrame(rafLoop);
       };
       requestAnimationFrame(rafLoop);
-      if (scroller) {
-        for (let step = 0; step < 6; step += 1) {
-          scroller.scrollTop = Math.max(0, scroller.scrollTop - Math.floor(scroller.clientHeight * 0.7));
-          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-          await new Promise((r) => setTimeout(r, 90));
-        }
-      }
-      await new Promise((r) => setTimeout(r, 150));
-      active = false;
-      return deltas.slice(1);
+      window.__kikiMobileRaf = {
+        stop() {
+          active = false;
+          return deltas.slice(1);
+        },
+      };
     });
+    const touchScrollOutcome = await trustedTouchDragScroll(page, cdp, {
+      upSwipes: 6,
+      downSwipes: 0,
+      distancePx: 320,
+      stepsPerSwipe: 6,
+      stepDelayMs: 12,
+      pauseBetweenSwipesMs: 70,
+    });
+    await page.waitForTimeout(150);
+    const frameDeltas = await page.evaluate(() => window.__kikiMobileRaf?.stop?.() ?? []);
     const touchScrollLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
     const scrollFrames = quantiles(frameDeltas);
 
@@ -264,7 +272,12 @@ async function runMobileThrottledLeg({ browser, endpoint, deepLink, sample }) {
     if ((touchScrollLongTasks?.maxLongTaskMs ?? Infinity) >= B.touchScrollMaxLongTaskMs) {
       failures.push(`mobile touchScroll maxLongTaskMs=${touchScrollLongTasks?.maxLongTaskMs} >= ${B.touchScrollMaxLongTaskMs}`);
     }
-    if (scrollFrames.count > 0 && scrollFrames.p95 >= B.touchScrollFrameP95Ms) {
+    if (!touchScrollOutcome.ok) {
+      failures.push(`mobile touchScroll failed: ${touchScrollOutcome.reason ?? 'no_movement'}`);
+    }
+    if (scrollFrames.count === 0) {
+      failures.push('mobile touchScroll recorded 0 animation frames');
+    } else if (scrollFrames.p95 >= B.touchScrollFrameP95Ms) {
       failures.push(`mobile touchScroll frameP95Ms=${scrollFrames.p95} >= ${B.touchScrollFrameP95Ms}`);
     }
 
@@ -315,7 +328,7 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
     for (const sample of targets) {
       const context = await browser.newContext({
         viewport: { width: 1440, height: 900 },
-        reducedMotion: 'reduce',
+        reducedMotion: 'no-preference',
       });
       let sampleAssetsRecorder = null;
       try {
@@ -385,23 +398,13 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         await labelTimeline(page, `${sample.label}:scroll`);
         await page.evaluate(() => window.__kikiPerfProbe?.reset?.());
         const scrollStarted = performance.now();
-        const scrolledSteps = await page.evaluate(async () => {
-          const scroller = document.querySelector('[data-transcript-scroll]');
-          if (!scroller) return 0;
-          let steps = 0;
-          for (const ratio of [0.6, 0.3, 0.08, 0]) {
-            scroller.scrollTop = Math.floor(scroller.scrollHeight * ratio);
-            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-            steps += 1;
-            await new Promise((r) => {
-              setTimeout(r, 140);
-            });
-          }
-          await new Promise((r) => {
-            setTimeout(r, 350);
-          });
-          return steps;
+        const wheelOutcome = await trustedWheelScrollUp(page, {
+          deltaY: -1200,
+          steps: 6,
+          pauseMs: 120,
+          settleMs: 350,
         });
+        const scrolledSteps = wheelOutcome.wheelsDispatched;
         const scrollWindowMs = roundMs(performance.now() - scrollStarted);
         const scrollLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
         const timelineCheck = await collectTimelineIntegrity(page);
@@ -492,6 +495,9 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
           scrollOlder: {
             scrollWindowMs,
             scrolledSteps,
+            scrollMoved: wheelOutcome.scrollMoved,
+            olderTurnsLoaded: wheelOutcome.olderTurnsLoaded,
+            snappedToBottom: wheelOutcome.snappedToBottom,
             httpRequests: scrollHttpRequests,
             layoutViolations: timelineCheck.failures.length,
             layoutFailureSamples: timelineCheck.failures.slice(0, 4),
