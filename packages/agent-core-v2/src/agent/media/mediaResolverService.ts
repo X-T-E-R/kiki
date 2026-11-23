@@ -267,7 +267,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       }
       signal?.throwIfAborted();
       const scope = this.agentScope?.current?.scope('blobs') ?? 'blobs';
-      const bytes = await this.blobs.get(scope, match[2]!).catch(() => undefined);
+      const bytes = await this.blobs.get(scope, match[2]!);
       signal?.throwIfAborted();
       if (bytes === undefined) {
         return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
@@ -323,7 +323,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       }
       signal?.throwIfAborted();
       const scope = resolveBlobScope(this.agentScope?.current, ref);
-      const bytes = await this.blobs.get(scope, ref.hash).catch(() => undefined);
+      const bytes = await this.blobs.get(scope, ref.hash);
       signal?.throwIfAborted();
       if (bytes === undefined) {
         return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };

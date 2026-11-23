@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import type { Session } from '@kiki/protocol';
@@ -9,6 +9,7 @@ import {
   isConversationUnread,
   pendingKindOf,
   sessionAttentionCursor,
+  type SpaceConversationSource,
   type UnifiedInboxEntry,
   type UnifiedInboxItem,
 } from '@kiki/session-core/sessions';
@@ -94,6 +95,67 @@ function ChatRouteBridge({
   );
 }
 
+function projectChatItemsFromEntries(
+  entries: readonly UnifiedInboxEntry[],
+  seenMap: ReturnType<typeof useConversationSeen>,
+  fallbackTitle: string,
+): readonly UnifiedInboxItem[] {
+  const items: UnifiedInboxItem[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== 'session') continue;
+    const { session } = entry;
+    if (session.archived === true || session.private === true) continue;
+    const ref = { spaceKey: entry.spaceKey, kind: 'session' as const, id: session.id };
+    const encodedKey = encodeConversationRef(ref);
+    const cursor = sessionAttentionCursor(session);
+    const pending = pendingKindOf(session);
+    const needsYou = pending !== 'none';
+    const unread = !session.busy && isConversationUnread(cursor, seenMap[encodedKey], hasSemanticAttentionCursor(session));
+    items.push({
+      ref,
+      encodedKey,
+      spaceKey: entry.spaceKey,
+      spaceName: entry.spaceName,
+      isRemote: entry.isRemote,
+      workspaceId: session.workspace_id,
+      workspaceName: entry.workspaceName,
+      sessionId: session.id,
+      title: session.title?.trim() || fallbackTitle,
+      reason: pending !== 'none' ? pending : session.busy ? 'running' : 'completed',
+      at: session.updated_at,
+      busy: session.busy === true,
+      attentionCursor: cursor,
+      lastSeq: session.last_seq,
+      triageClass: needsYou || unread ? 'active' : session.busy ? 'working' : 'settled',
+      unread,
+      needsYou,
+      preview: session.last_prompt?.trim() || undefined,
+      personaId: session.agent_config?.persona?.id,
+      personaName: session.agent_config?.persona?.name,
+      model: session.agent_config?.model,
+    });
+  }
+  return items.toSorted((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+function entriesFromSources(sources: readonly SpaceConversationSource[]): readonly UnifiedInboxEntry[] {
+  const entries: UnifiedInboxEntry[] = [];
+  for (const source of sources) {
+    const wsNameById = new Map((source.workspaces ?? []).map((ws) => [ws.id, ws.name]));
+    for (const session of source.sessions) {
+      entries.push({
+        kind: 'session',
+        spaceKey: source.spaceKey,
+        spaceName: source.spaceName,
+        isRemote: source.isRemote,
+        workspaceName: wsNameById.get(session.workspace_id),
+        session,
+      });
+    }
+  }
+  return entries;
+}
+
 export function MobileAppShell() {
   useVisualViewportHeightVar();
   const { t } = useI18n();
@@ -120,26 +182,41 @@ export function MobileAppShell() {
     clearErrorToasts();
   }, [location.pathname]);
 
-  // Lightweight session head query (first page only — zero full-archive/pinned loops).
-  const sessionsQuery = useQuery({
+  // Paginated local session list (initial head stays paginated; older pages load on demand).
+  const sessionsQuery = useInfiniteQuery({
     // The shell's own connection is always the local space; remote spaces come from useMultiSpaceSessions.
-    queryKey: ['mobile-sessions', 'local', client.baseUrl],
+    queryKey: ['mobile-sessions', 'local', client.baseUrl] as const,
     staleTime: 8_000,
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
-    queryFn: async () => {
-      const page = await client.listSessions({ page_size: 40 });
-      return page.items ?? ([] as Session[]);
-    },
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      client.listSessions({ before_id: pageParam }, { signal }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? (lastPage.next_cursor ?? lastPage.items.at(-1)?.id) : undefined,
   });
 
   const workspacesQuery = useQuery({
     queryKey: ['mobile-workspaces', 'local', client.baseUrl],
     staleTime: 60_000,
-    queryFn: async () => (await client.listWorkspaceCatalog()).items ?? [],
+    queryFn: async () => (await client.listWorkspaceCatalog()).items,
   });
 
-  const activeSessions = sessionsQuery.data ?? [];
+  const activeSessions = useMemo<readonly Session[]>(() => {
+    const pages = sessionsQuery.data?.pages;
+    if (pages === undefined) return [];
+    const seenIds = new Set<string>();
+    const out: Session[] = [];
+    for (const page of pages) {
+      for (const item of page.items) {
+        if (!seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          out.push(item);
+        }
+      }
+    }
+    return out;
+  }, [sessionsQuery.data]);
   const multiSpace = useMultiSpaceSessions({
     activeSessions,
     activeRooms: [],
@@ -183,23 +260,10 @@ export function MobileAppShell() {
     };
   }, [navigate]);
 
-  const allEntries = useMemo<readonly UnifiedInboxEntry[]>(() => {
-    const entries: UnifiedInboxEntry[] = [];
-    for (const source of multiSpace.sources) {
-      const wsNameById = new Map((source.workspaces ?? []).map((ws) => [ws.id, ws.name]));
-      for (const session of source.sessions) {
-        entries.push({
-          kind: 'session',
-          spaceKey: source.spaceKey,
-          spaceName: source.spaceName,
-          isRemote: source.isRemote,
-          workspaceName: wsNameById.get(session.workspace_id),
-          session,
-        });
-      }
-    }
-    return entries;
-  }, [multiSpace.sources]);
+  const allEntries = useMemo<readonly UnifiedInboxEntry[]>(
+    () => entriesFromSources(multiSpace.sources),
+    [multiSpace.sources],
+  );
 
   const scopedEntries = useMemo(
     () => allEntries.filter((entry) => matchesSpaceScope(activeScope, entry.spaceKey)),
@@ -216,44 +280,55 @@ export function MobileAppShell() {
   );
 
   // Full conversation list for ChatsTab (including read conversations, newest first).
-  const allChatItems = useMemo<readonly UnifiedInboxItem[]>(() => {
-    const items: UnifiedInboxItem[] = [];
-    for (const entry of scopedEntries) {
-      if (entry.kind !== 'session') continue;
-      const { session } = entry;
-      if (session.archived === true || session.private === true) continue;
-      const ref = { spaceKey: entry.spaceKey, kind: 'session' as const, id: session.id };
-      const encodedKey = encodeConversationRef(ref);
-      const cursor = sessionAttentionCursor(session);
-      const pending = pendingKindOf(session);
-      const needsYou = pending !== 'none';
-      const unread = !session.busy && isConversationUnread(cursor, seenMap[encodedKey], hasSemanticAttentionCursor(session));
-      items.push({
-        ref,
-        encodedKey,
-        spaceKey: entry.spaceKey,
-        spaceName: entry.spaceName,
-        isRemote: entry.isRemote,
-        workspaceId: session.workspace_id,
-        workspaceName: entry.workspaceName,
-        sessionId: session.id,
-        title: session.title?.trim() || t('mobile.chats.title'),
-        reason: pending !== 'none' ? pending : session.busy ? 'running' : 'completed',
-        at: session.updated_at,
-        busy: session.busy === true,
-        attentionCursor: cursor,
-        lastSeq: session.last_seq,
-        triageClass: needsYou || unread ? 'active' : session.busy ? 'working' : 'settled',
-        unread,
-        needsYou,
-        preview: session.last_prompt?.trim() || undefined,
-        personaId: session.agent_config?.persona?.id,
-        personaName: session.agent_config?.persona?.name,
-        model: session.agent_config?.model,
-      });
+  const allChatItems = useMemo<readonly UnifiedInboxItem[]>(
+    () => projectChatItemsFromEntries(scopedEntries, seenMap, t('mobile.chats.title')),
+    [scopedEntries, seenMap, t],
+  );
+
+  const hasMoreChats = useMemo(() => {
+    if (matchesSpaceScope(activeScope, multiSpace.localSpaceKey) && sessionsQuery.hasNextPage) {
+      return true;
     }
-    return items.toSorted((a, b) => Date.parse(b.at) - Date.parse(a.at));
-  }, [scopedEntries, seenMap, t]);
+    for (const [key, more] of multiSpace.hasMoreBySpace.entries()) {
+      if (more && matchesSpaceScope(activeScope, key)) return true;
+    }
+    return false;
+  }, [activeScope, multiSpace.hasMoreBySpace, multiSpace.localSpaceKey, sessionsQuery.hasNextPage]);
+
+  const loadingMoreChats = sessionsQuery.isFetchingNextPage || multiSpace.loadingMoreSpaces.size > 0;
+
+  const loadMoreChats = useCallback(() => {
+    const reportError = (error: unknown) => {
+      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+    };
+    if (
+      matchesSpaceScope(activeScope, multiSpace.localSpaceKey) &&
+      sessionsQuery.hasNextPage &&
+      !sessionsQuery.isFetchingNextPage
+    ) {
+      void sessionsQuery.fetchNextPage().catch(reportError);
+    }
+    for (const [key, more] of multiSpace.hasMoreBySpace.entries()) {
+      if (more && matchesSpaceScope(activeScope, key)) {
+        void multiSpace.loadMoreSpaceSessions(key).catch(reportError);
+      }
+    }
+  }, [activeScope, multiSpace, sessionsQuery]);
+
+  const seenMapRef = useRef(seenMap);
+  seenMapRef.current = seenMap;
+
+  const searchChatItems = useCallback(
+    async (query: string, signal: AbortSignal): Promise<readonly UnifiedInboxItem[]> => {
+      const matchedSources = await multiSpace.searchAcrossSpaces(query, activeScope, signal);
+      return projectChatItemsFromEntries(
+        entriesFromSources(matchedSources),
+        seenMapRef.current,
+        t('mobile.chats.title'),
+      );
+    },
+    [activeScope, multiSpace, t],
+  );
 
   const needsYouItems = useMemo(
     () => scopedInbox.active.filter((item) => item.needsYou),
@@ -408,6 +483,10 @@ export function MobileAppShell() {
               spaceStatusTone={currentSpaceTone}
               items={allChatItems}
               showSpaceTag={activeScope === ALL_SPACE_SCOPE && multiSpace.hasMultipleSpaces}
+              hasMore={hasMoreChats}
+              loadingMore={loadingMoreChats}
+              onLoadMore={loadMoreChats}
+              onSearch={searchChatItems}
               onOpenSpaceSheet={() => { setSpaceSheetOpen(true); }}
               onOpenItem={openItem}
               onMarkRead={(item) => { markConversationSeen(item.ref, item.attentionCursor); }}

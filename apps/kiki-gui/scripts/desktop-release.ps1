@@ -832,6 +832,8 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     $installedHotSwitch = Join-Path $controllerDirectory 'desktop-hot-switch.ps1'
     $sourceConductor = Join-Path $PSScriptRoot 'kiki-ops-conductor.mjs'
     $installedConductor = Join-Path $controllerDirectory 'kiki-ops-conductor.mjs'
+    $sourceReceiptContract = Join-Path $PSScriptRoot 'desktop-receipt-contract.mjs'
+    $installedReceiptContract = Join-Path $controllerDirectory 'desktop-receipt-contract.mjs'
     [IO.Directory]::CreateDirectory($controllerDirectory) | Out-Null
     [IO.Directory]::CreateDirectory($desktopFullPath) | Out-Null
 
@@ -843,6 +845,9 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     }
     if ((Test-Path -LiteralPath $sourceConductor -PathType Leaf) -and ((Get-FullPath $sourceConductor) -ne (Get-FullPath $installedConductor))) {
         Copy-Item -LiteralPath $sourceConductor -Destination $installedConductor -Force
+    }
+    if ((Test-Path -LiteralPath $sourceReceiptContract -PathType Leaf) -and ((Get-FullPath $sourceReceiptContract) -ne (Get-FullPath $installedReceiptContract))) {
+        Copy-Item -LiteralPath $sourceReceiptContract -Destination $installedReceiptContract -Force
     }
     Write-AtomicUtf8Json (Join-Path $controllerDirectory 'settings.json') ([ordered]@{
         schemaVersion = 1

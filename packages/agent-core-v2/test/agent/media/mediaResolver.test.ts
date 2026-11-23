@@ -1411,6 +1411,54 @@ describe('AgentMediaResolverService session-canonical display path', () => {
       { type: 'text', text: VIDEO_UNAVAILABLE_TEXT },
     ]);
   });
+
+  it('degrades missing video/audio blobs to unavailable placeholder while propagating storage read errors', async () => {
+    const missingHash = 'a'.repeat(64);
+    const missingRes = resolver(new Map(), sessionDir, stubMediaStore(sessionDir), blobStore());
+    const missingVideo = await missingRes.resolve(
+      [
+        {
+          role: 'user',
+          toolCalls: [],
+          content: [{ type: 'video_url', videoUrl: { url: `blobref:video/mp4;${missingHash}` } }],
+        },
+      ],
+      requester({ videoIn: true }),
+    );
+    expect(firstPart(missingVideo)).toEqual({ type: 'text', text: VIDEO_UNAVAILABLE_TEXT });
+
+    const failingBlobs: IBlobStore = {
+      ...blobStore(),
+      get: async () => {
+        throw new Error('storage.io_failed: EACCES permission denied');
+      },
+    };
+    const failingRes = resolver(new Map(), sessionDir, stubMediaStore(sessionDir), failingBlobs);
+    await expect(
+      failingRes.resolve(
+        [
+          {
+            role: 'user',
+            toolCalls: [],
+            content: [{ type: 'video_url', videoUrl: { url: `blobref:video/mp4;${missingHash}` } }],
+          },
+        ],
+        requester({ videoIn: true }),
+      ),
+    ).rejects.toThrow(/storage\.io_failed: EACCES/);
+    await expect(
+      failingRes.resolve(
+        [
+          {
+            role: 'user',
+            toolCalls: [],
+            content: [{ type: 'audio_url', audioUrl: { url: `blobref:audio/wav;${missingHash}` } }],
+          },
+        ],
+        requester({ audioIn: true }),
+      ),
+    ).rejects.toThrow(/storage\.io_failed: EACCES/);
+  });
 });
 
 describe('AgentMediaResolverService scoped registration', () => {

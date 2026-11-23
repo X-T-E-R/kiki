@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { UnifiedInboxItem } from '@kiki/session-core/sessions';
 
@@ -14,6 +14,10 @@ interface ChatsTabProps {
   readonly spaceStatusTone: 'online' | 'attention' | 'offline';
   readonly items: readonly UnifiedInboxItem[];
   readonly showSpaceTag: boolean;
+  readonly hasMore?: boolean;
+  readonly loadingMore?: boolean;
+  readonly onLoadMore?: () => void;
+  readonly onSearch?: (query: string, signal: AbortSignal) => Promise<readonly UnifiedInboxItem[]>;
   readonly onOpenSpaceSheet: () => void;
   readonly onOpenItem: (item: UnifiedInboxItem) => void;
   readonly onMarkRead: (item: UnifiedInboxItem) => void;
@@ -151,6 +155,10 @@ export function ChatsTab({
   spaceStatusTone,
   items,
   showSpaceTag,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
+  onSearch,
   onOpenSpaceSheet,
   onOpenItem,
   onMarkRead,
@@ -160,19 +168,65 @@ export function ChatsTab({
   const [filter, setFilter] = useState<ChatsFilter>('all');
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [serverSearchItems, setServerSearchItems] = useState<readonly UnifiedInboxItem[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  const trimmedQuery = query.trim();
+
+  useEffect(() => {
+    if (trimmedQuery === '' || onSearch === undefined) {
+      setServerSearchItems(null);
+      setSearchError(null);
+      setSearching(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setSearching(true);
+    setSearchError(null);
+    void onSearch(trimmedQuery, controller.signal)
+      .then((matched) => {
+        if (controller.signal.aborted) return;
+        setServerSearchItems(matched);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setServerSearchItems(null);
+        setSearchError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSearching(false);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [trimmedQuery, onSearch]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return items.filter((item) => {
+    const q = trimmedQuery.toLowerCase();
+    const matchesFilter = (item: UnifiedInboxItem): boolean => {
       if (filter === 'unread' && !item.unread && !item.needsYou) return false;
       if (filter === 'running' && !item.busy) return false;
+      return true;
+    };
+    const localMatches = items.filter((item) => {
+      if (!matchesFilter(item)) return false;
       if (q !== '') {
         const hay = `${item.title} ${item.preview ?? ''} ${item.spaceName} ${item.workspaceName ?? ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [items, filter, query]);
+    if (q === '' || serverSearchItems === null) return localMatches;
+    const byKey = new Map<string, UnifiedInboxItem>();
+    for (const item of localMatches) byKey.set(item.encodedKey, item);
+    for (const item of serverSearchItems) {
+      if (matchesFilter(item) && !byKey.has(item.encodedKey)) {
+        byKey.set(item.encodedKey, item);
+      }
+    }
+    return Array.from(byKey.values()).toSorted((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  }, [items, filter, trimmedQuery, serverSearchItems]);
 
   const filters: readonly { readonly id: ChatsFilter; readonly label: string }[] = [
     { id: 'all', label: t('mobile.chats.filterAll') },
@@ -240,9 +294,16 @@ export function ChatsTab({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-[calc(104px+var(--kiki-safe-bottom-inset))]">
+        {searchError !== null ? (
+          <p role="alert" className="mx-auto w-full max-w-[600px] px-4 pt-3 text-[13px] text-danger">
+            {searchError}
+          </p>
+        ) : null}
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-            <p className="text-[14.5px] text-ink-faint">{t('mobile.chats.empty')}</p>
+            <p className="text-[14.5px] text-ink-faint">
+              {searching ? t('sidebar.loadingMore') : t('mobile.chats.empty')}
+            </p>
           </div>
         ) : (
           <div className="mx-auto w-full max-w-[600px] divide-y divide-hairline/60">
@@ -258,6 +319,19 @@ export function ChatsTab({
             ))}
           </div>
         )}
+        {hasMore && onLoadMore !== undefined && trimmedQuery === '' ? (
+          <div className="mx-auto flex w-full max-w-[600px] justify-center px-4 py-4">
+            <button
+              type="button"
+              data-mobile-chats-load-more
+              disabled={loadingMore}
+              onClick={onLoadMore}
+              className="inline-flex h-10 items-center rounded-full border border-hairline bg-panel px-5 text-[13.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50"
+            >
+              {loadingMore ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );

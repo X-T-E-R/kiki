@@ -308,7 +308,12 @@ if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate
     ) | Out-Null
     $installedController = Join-Path (Join-Path $runtimeRoot 'controller') 'desktop-release.ps1'
     Assert-True (Test-Path -LiteralPath $installedController -PathType Leaf) 'Shortcut installation did not install the stable release controller.'
-    Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $runtimeRoot 'controller') 'kiki-ops-conductor.mjs') -PathType Leaf) 'Shortcut installation did not sync kiki-ops-conductor.mjs into controller/.'
+    $installedConductor = Join-Path (Join-Path $runtimeRoot 'controller') 'kiki-ops-conductor.mjs'
+    Assert-True (Test-Path -LiteralPath $installedConductor -PathType Leaf) 'Shortcut installation did not sync kiki-ops-conductor.mjs into controller/.'
+    Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $runtimeRoot 'controller') 'desktop-receipt-contract.mjs') -PathType Leaf) 'Shortcut installation did not sync desktop-receipt-contract.mjs into controller/.'
+    $conductorHelp = & node $installedConductor --help 2>&1 | Out-String
+    Assert-Equal 0 $LASTEXITCODE "Installed kiki-ops-conductor.mjs failed to execute outside checkout: $conductorHelp"
+    Assert-True ($conductorHelp -match 'kiki-ops-conductor') 'Installed kiki-ops-conductor.mjs did not print help output.'
     $settings = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installedController) 'settings.json') -Raw | ConvertFrom-Json
     Assert-Equal ([IO.Path]::GetFullPath($candidateRoot)) ([string]$settings.candidateRoot) 'Installed controller did not retain the injected candidate path.'
     Assert-Equal $expectedCommit ([string]$settings.expectedCommit) 'Installed settings did not retain the commit passed to InstallShortcuts.'

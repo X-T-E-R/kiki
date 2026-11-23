@@ -63,6 +63,8 @@ export interface MultiSpaceHealth {
 
 interface CachedSpaceSnapshot {
   readonly sessions: readonly Session[];
+  readonly hasMoreSessions: boolean;
+  readonly nextSessionCursor?: string;
   readonly rooms: readonly RoomListItem[];
   readonly workspaces: readonly WorkspaceCatalogEntry[];
   readonly lastSyncedAt: number;
@@ -88,6 +90,8 @@ export interface UseMultiSpaceSessionsOptions {
 export interface MultiSpaceSessionsResult {
   readonly sources: readonly SpaceConversationSource[];
   readonly healthBySpace: ReadonlyMap<string, MultiSpaceHealth>;
+  readonly hasMoreBySpace: ReadonlyMap<string, boolean>;
+  readonly loadingMoreSpaces: ReadonlySet<string>;
   readonly localSpaceKey: string;
   readonly localSpaceName: string;
   readonly remoteConnections: readonly RemoteConnection[];
@@ -95,10 +99,18 @@ export interface MultiSpaceSessionsResult {
   readonly hasMultipleSpaces: boolean;
   readonly refetchRemotes: () => Promise<void>;
   readonly refreshRemoteSpace: (connectionId: string) => Promise<void>;
+  readonly loadMoreSpaceSessions: (spaceKey: string) => Promise<void>;
+  readonly searchAcrossSpaces: (
+    query: string,
+    scope: string | undefined,
+    signal: AbortSignal,
+  ) => Promise<readonly SpaceConversationSource[]>;
 }
 
 interface SpaceHeadResult {
   readonly sessions: readonly Session[];
+  readonly hasMoreSessions: boolean;
+  readonly nextSessionCursor?: string;
   readonly rooms?: readonly RoomListItem[];
   readonly workspaces?: readonly WorkspaceCatalogEntry[];
   readonly partialFailure: boolean;
@@ -112,16 +124,20 @@ async function fetchSpaceHead(
     ? targetClient.klient.rest.rooms.listItems()
     : undefined;
   const [sessionsPage, workspacesOutcome, roomsOutcome] = await Promise.all([
-    targetClient.listSessions({ page_size: 50 }, { signal }),
+    targetClient.listSessions({}, { signal }),
     Promise.allSettled([targetClient.listWorkspaceCatalog()]).then(([r]) => r),
     roomsPromise !== undefined
       ? Promise.allSettled([roomsPromise]).then(([r]) => r)
       : Promise.resolve({ status: 'fulfilled' as const, value: [] as RoomListItem[] }),
   ]);
   return {
-    sessions: sessionsPage.items ?? [],
+    sessions: sessionsPage.items,
+    hasMoreSessions: sessionsPage.has_more,
+    nextSessionCursor: sessionsPage.has_more
+      ? (sessionsPage.next_cursor ?? sessionsPage.items.at(-1)?.id)
+      : undefined,
     rooms: roomsOutcome.status === 'fulfilled' ? (roomsOutcome.value ?? []) : undefined,
-    workspaces: workspacesOutcome.status === 'fulfilled' ? (workspacesOutcome.value.items ?? []) : undefined,
+    workspaces: workspacesOutcome.status === 'fulfilled' ? workspacesOutcome.value.items : undefined,
     partialFailure: workspacesOutcome.status === 'rejected' || roomsOutcome.status === 'rejected',
   };
 }
@@ -131,8 +147,13 @@ function mergeSpaceSnapshot(
   head: SpaceHeadResult,
   now: number,
 ): CachedSpaceSnapshot {
+  const headIds = new Set(head.sessions.map((session) => session.id));
+  const olderLoaded = (existing?.sessions ?? []).filter((session) => !headIds.has(session.id));
+  const keepOlderPagination = olderLoaded.length > 0 && existing !== undefined;
   return {
-    sessions: head.sessions,
+    sessions: keepOlderPagination ? [...head.sessions, ...olderLoaded] : head.sessions,
+    hasMoreSessions: keepOlderPagination ? existing.hasMoreSessions : head.hasMoreSessions,
+    nextSessionCursor: keepOlderPagination ? existing.nextSessionCursor : head.nextSessionCursor,
     rooms: head.rooms ?? existing?.rooms ?? [],
     workspaces: head.workspaces ?? existing?.workspaces ?? [],
     lastSyncedAt: head.partialFailure ? (existing?.lastSyncedAt ?? now) : now,
@@ -224,6 +245,10 @@ export function useMultiSpaceSessions({
   // Fallback local pool when rendered outside PlaceClientsProvider (e.g. unit tests).
   const poolRef = useRef(new Map<string, PooledRemoteEntry>());
   const [snapshots, setSnapshots] = useState<ReadonlyMap<string, CachedSpaceSnapshot>>(() => new Map());
+  const [loadingMoreSpaces, setLoadingMoreSpaces] = useState<ReadonlySet<string>>(() => new Set());
+  const snapshotsRef = useRef(snapshots);
+  snapshotsRef.current = snapshots;
+  const loadingMoreRef = useRef(new Set<string>());
 
   const controlBaseUrl = controlClient?.baseUrl ?? config.url;
   const controlToken = config.token;
@@ -406,9 +431,10 @@ export function useMultiSpaceSessions({
     getOrCreateRemoteClient,
   ]);
 
-  const { sources, healthBySpace } = useMemo(() => {
+  const { sources, healthBySpace, hasMoreBySpace } = useMemo(() => {
     const outSources: SpaceConversationSource[] = [];
     const outHealth = new Map<string, MultiSpaceHealth>();
+    const outHasMore = new Map<string, boolean>();
 
     // 1. Local space (live from App when active, else cached from localClient).
     const localSnap = snapshots.get(localSpaceKey);
@@ -423,6 +449,9 @@ export function useMultiSpaceSessions({
       rooms: localRooms,
       workspaces: localWorkspaces,
     });
+    if (inBrokeredScope && localSnap !== undefined) {
+      outHasMore.set(localSpaceKey, localSnap.hasMoreSessions);
+    }
     outHealth.set(localSpaceKey, {
       spaceKey: localSpaceKey,
       spaceName: localSpaceName,
@@ -451,6 +480,9 @@ export function useMultiSpaceSessions({
           rooms: remoteRooms,
           workspaces: remoteWorkspaces,
         });
+        if (!isActiveRemote && snap !== undefined) {
+          outHasMore.set(key, snap.hasMoreSessions);
+        }
       }
 
       const healthState: MultiSpaceHealth['state'] =
@@ -469,7 +501,7 @@ export function useMultiSpaceSessions({
       });
     }
 
-    return { sources: outSources, healthBySpace: outHealth };
+    return { sources: outSources, healthBySpace: outHealth, hasMoreBySpace: outHasMore };
   }, [
     snapshots,
     localSpaceKey,
@@ -481,6 +513,148 @@ export function useMultiSpaceSessions({
     activeWorkspaces,
     remoteRecords,
     isVerifiedActiveRemoteRecord,
+  ]);
+
+  const loadMoreSpaceSessions = useCallback(async (targetSpaceKey: string) => {
+    const currentSnap = snapshotsRef.current.get(targetSpaceKey);
+    if (
+      currentSnap === undefined ||
+      !currentSnap.hasMoreSessions ||
+      currentSnap.nextSessionCursor === undefined ||
+      loadingMoreRef.current.has(targetSpaceKey)
+    ) {
+      return;
+    }
+    const targetClient = targetSpaceKey === localSpaceKey
+      ? controlClient
+      : targetSpaceKey.startsWith('remote:')
+        ? getOrCreateRemoteClient(targetSpaceKey.slice('remote:'.length))
+        : null;
+    if (targetClient === null) return;
+
+    loadingMoreRef.current.add(targetSpaceKey);
+    setLoadingMoreSpaces(new Set(loadingMoreRef.current));
+    try {
+      const page = await targetClient.listSessions({ before_id: currentSnap.nextSessionCursor });
+      setSnapshots((prev) => {
+        const existing = prev.get(targetSpaceKey);
+        if (existing === undefined) return prev;
+        const seenIds = new Set(existing.sessions.map((session) => session.id));
+        const appended = page.items.filter((session) => !seenIds.has(session.id));
+        const next = new Map(prev);
+        next.set(targetSpaceKey, {
+          ...existing,
+          sessions: [...existing.sessions, ...appended],
+          hasMoreSessions: page.has_more,
+          nextSessionCursor: page.has_more
+            ? (page.next_cursor ?? page.items.at(-1)?.id)
+            : undefined,
+        });
+        return next;
+      });
+    } finally {
+      loadingMoreRef.current.delete(targetSpaceKey);
+      setLoadingMoreSpaces(new Set(loadingMoreRef.current));
+    }
+  }, [controlClient, getOrCreateRemoteClient, localSpaceKey]);
+
+  const searchAcrossSpaces = useCallback(async (
+    rawQuery: string,
+    scope: string | undefined,
+    signal: AbortSignal,
+  ): Promise<readonly SpaceConversationSource[]> => {
+    const q = rawQuery.trim();
+    if (q === '') return [];
+
+    interface SearchTarget {
+      readonly spaceKey: string;
+      readonly spaceName: string;
+      readonly isRemote: boolean;
+      readonly client: KikiClient;
+      readonly workspaces: readonly WorkspaceCatalogEntry[];
+    }
+
+    const targets: SearchTarget[] = [];
+    if (matchesSpaceScope(scope, localSpaceKey)) {
+      const localTargetClient = !inBrokeredScope ? client : controlClient;
+      if (localTargetClient !== null) {
+        const localWorkspaces = !inBrokeredScope
+          ? activeWorkspaces
+          : (snapshotsRef.current.get(localSpaceKey)?.workspaces ?? []);
+        targets.push({
+          spaceKey: localSpaceKey,
+          spaceName: localSpaceName,
+          isRemote: false,
+          client: localTargetClient,
+          workspaces: localWorkspaces,
+        });
+      }
+    }
+    for (const record of remoteRecords) {
+      if (!record.enabled) continue;
+      const key = remoteSpaceKey(record.id);
+      if (!matchesSpaceScope(scope, key)) continue;
+      const isActiveRemote = isVerifiedActiveRemoteRecord(record);
+      if (!isActiveRemote && record.state !== 'online') continue;
+      const remoteTargetClient = isActiveRemote ? client : getOrCreateRemoteClient(record.id);
+      if (remoteTargetClient === null) continue;
+      const remoteWorkspaces = isActiveRemote
+        ? activeWorkspaces
+        : (snapshotsRef.current.get(key)?.workspaces ?? []);
+      targets.push({
+        spaceKey: key,
+        spaceName: record.label,
+        isRemote: true,
+        client: remoteTargetClient,
+        workspaces: remoteWorkspaces,
+      });
+    }
+
+    const results: SpaceConversationSource[] = [];
+    await runWithConcurrency(targets, REMOTE_FETCH_CONCURRENCY, async (target) => {
+      if (signal.aborted) return;
+      try {
+        const sessions: Session[] = [];
+        const seenIds = new Set<string>();
+        let beforeId: string | undefined;
+        while (!signal.aborted) {
+          const page = await target.client.listSessions({ q, before_id: beforeId }, { signal });
+          for (const item of page.items) {
+            if (!seenIds.has(item.id)) {
+              seenIds.add(item.id);
+              sessions.push(item);
+            }
+          }
+          if (!page.has_more) break;
+          const nextCursor = page.next_cursor ?? page.items.at(-1)?.id;
+          if (nextCursor === undefined || nextCursor === beforeId) break;
+          beforeId = nextCursor;
+        }
+        if (signal.aborted) return;
+        results.push({
+          spaceKey: target.spaceKey,
+          spaceName: target.spaceName,
+          isRemote: target.isRemote,
+          sessions,
+          rooms: [],
+          workspaces: target.workspaces,
+        });
+      } catch (error) {
+        if (signal.aborted) return;
+        if (targets.length === 1) throw error;
+      }
+    });
+    return results;
+  }, [
+    activeWorkspaces,
+    client,
+    controlClient,
+    getOrCreateRemoteClient,
+    inBrokeredScope,
+    isVerifiedActiveRemoteRecord,
+    localSpaceKey,
+    localSpaceName,
+    remoteRecords,
   ]);
 
   const localSpaceCount = desktop ? Math.max(1, (localSpacesQuery.data ?? []).length) : 1;
@@ -495,6 +669,8 @@ export function useMultiSpaceSessions({
   return {
     sources,
     healthBySpace,
+    hasMoreBySpace,
+    loadingMoreSpaces,
     localSpaceKey,
     localSpaceName,
     remoteConnections: remoteRecords,
@@ -502,5 +678,7 @@ export function useMultiSpaceSessions({
     hasMultipleSpaces,
     refetchRemotes,
     refreshRemoteSpace,
+    loadMoreSpaceSessions,
+    searchAcrossSpaces,
   };
 }

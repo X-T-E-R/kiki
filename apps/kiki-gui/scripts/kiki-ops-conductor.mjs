@@ -28,14 +28,14 @@ import {
   assertEvidenceRef,
   assertFullCommit,
   DESKTOP_EXE,
+  FULL_COMMIT_RE,
+  FULL_HASH_RE,
   RECEIPT_FILE_NAME,
   RECEIPT_SCHEMA_VERSION,
   SERVER_EXE,
-} from './desktop-build-source.mjs';
+} from './desktop-receipt-contract.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const FULL_COMMIT_RE = /^[0-9a-f]{40}$/;
-const FULL_HASH_RE = /^[0-9a-f]{64}$/;
 const RELEASE_ID_RE = /^[0-9a-f]{24}-[0-9a-f]{24}$/;
 const OWNER_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 const ACTIVE_ACTIVITY_STATUSES = new Set(['running', 'approval', 'question', 'cleanup_pending']);

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -10,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -687,4 +689,24 @@ test('parseConductorArgs validates commands and flags', () => {
   assert.equal(parsed.options['settle-seconds'], '45');
   assert.equal(parsed.options['nudge-interrupted'], true);
   assert.equal(parsed.options.json, true);
+});
+
+test('installed controller copy executes outside the repository checkout', () => {
+  const root = makeTemp();
+  try {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const controllerDir = join(root, 'controller');
+    mkdirSync(controllerDir, { recursive: true });
+    copyFileSync(join(scriptsDir, 'kiki-ops-conductor.mjs'), join(controllerDir, 'kiki-ops-conductor.mjs'));
+    copyFileSync(join(scriptsDir, 'desktop-receipt-contract.mjs'), join(controllerDir, 'desktop-receipt-contract.mjs'));
+
+    const res = spawnSync(process.execPath, [join(controllerDir, 'kiki-ops-conductor.mjs'), '--help'], {
+      cwd: controllerDir,
+      encoding: 'utf8',
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /kiki-ops-conductor/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
