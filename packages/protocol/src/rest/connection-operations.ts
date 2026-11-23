@@ -108,6 +108,8 @@ export const CONNECTION_OPERATIONS = {
   syncBundleExport: ['POST', '/sync/bundle/export'],
   syncBundleImport: ['POST', '/sync/bundle/import'],
   syncCredentialsMerge: ['POST', '/sync/credentials/merge'],
+  syncFilesExport: ['POST', '/sync/files:export'],
+  syncFilesImport: ['POST', '/sync/files:import'],
 } as const;
 export type ConnectionOperation = keyof typeof CONNECTION_OPERATIONS;
 export interface ResolvedConnectionOperation { operation: ConnectionOperation; params: Record<string, string> }

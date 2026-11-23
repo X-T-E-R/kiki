@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   IMemoryStore,
@@ -15,10 +18,11 @@ import {
   type IThreadPeerSendCapability,
 } from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
-import { startServer, type StartedServer } from '../src/start';
+import { CcpTunnelConnector, type CcpTunnelProcess, type CcpTunnelRunner } from '../src/services/ccpTunnel/connector';
+import { startServer, type RunningServer, type StartServerOptions } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
-const servers: StartedServer[] = [];
+const servers: RunningServer[] = [];
 const tempDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
@@ -41,11 +45,15 @@ function runGit(cwd: string, args: string[]): void {
   });
 }
 
-function serverEndpoint(server: StartedServer): string {
+function serverEndpoint(server: RunningServer): string {
   return `http://127.0.0.1:${server.port}`;
 }
 
-async function bootServer(homeDir: string, osHomeDir: string): Promise<StartedServer> {
+async function bootServer(
+  homeDir: string,
+  osHomeDir: string,
+  extra?: Partial<StartServerOptions>,
+): Promise<RunningServer> {
   mkdirSync(homeDir, { recursive: true });
   mkdirSync(osHomeDir, { recursive: true });
   const server = await startServer({
@@ -55,6 +63,7 @@ async function bootServer(homeDir: string, osHomeDir: string): Promise<StartedSe
     osHomeDir,
     logLevel: 'silent',
     hostIdentity: TEST_HOST_IDENTITY,
+    ...extra,
   });
   servers.push(server);
   return server;
@@ -403,6 +412,321 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
       });
       expect(rejectedImport.sessionsApplied).toBe(0);
       expect(rejectedImport.sessionsSkipped).toBe(1);
+    } finally {
+      await clientA.close();
+      await clientB.close();
+    }
+  }, 60_000);
+
+  it('transfers artifact directories and single files between trusted file_sync peers while enforcing capability and path safety gates', async () => {
+    const sandbox = makeTempDir('kiki-file-sync-');
+    const homeA = join(sandbox, 'home-a');
+    const osHomeA = join(sandbox, 'os-home-a');
+    const homeB = join(sandbox, 'home-b');
+    const osHomeB = join(sandbox, 'os-home-b');
+    const serverA = await bootServer(homeA, osHomeA);
+    const serverB = await bootServer(homeB, osHomeB);
+    const clientA = createKlient({ endpoint: serverEndpoint(serverA), token: serverA.localOwnerToken });
+    const clientB = createKlient({ endpoint: serverEndpoint(serverB), token: serverB.localOwnerToken });
+
+    try {
+      const restrictedCode = await clientB.rest!.connections.createPairCode({ trustTier: 'restricted_peer' });
+      const restrictedConn = await clientA.rest!.connections.pair({
+        endpoint: restrictedCode.loopbackEndpoint!,
+        code: restrictedCode.code,
+        label: 'restricted-b',
+        includeGui: false,
+        backgroundSummary: false,
+      });
+
+      const remoteArtifactDir = join(sandbox, 'remote-build', 'MyPlugin.vst3');
+      mkdirSync(join(remoteArtifactDir, 'Contents', 'x86_64-linux'), { recursive: true });
+      writeFileSync(join(remoteArtifactDir, 'Contents', 'x86_64-linux', 'MyPlugin.so'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02]));
+      writeFileSync(join(remoteArtifactDir, 'Contents', 'moduleinfo.json'), '{"name":"MyPlugin"}\n');
+      const remoteSingleFile = join(sandbox, 'remote-build', 'MyPlugin.clap');
+      writeFileSync(remoteSingleFile, Buffer.from([0xca, 0xfe, 0xba, 0xbe]));
+
+      await expect(
+        clientA.rest!.sync.pullFilesFromPeer(restrictedConn.id, {
+          remotePath: remoteArtifactDir,
+          localPath: join(sandbox, 'denied-pull'),
+        }),
+      ).rejects.toThrow();
+
+      const noFileSyncCode = await clientB.rest!.connections.createPairCode({
+        trustTier: 'trusted_personal',
+        meshCapabilities: ['read', 'send'],
+      });
+      const noFileSyncConn = await clientA.rest!.connections.pair({
+        endpoint: noFileSyncCode.loopbackEndpoint!,
+        code: noFileSyncCode.code,
+        label: 'trusted-no-filesync',
+        includeGui: false,
+        backgroundSummary: false,
+      });
+      await expect(
+        clientA.rest!.sync.pullFilesFromPeer(noFileSyncConn.id, {
+          remotePath: remoteArtifactDir,
+          localPath: join(sandbox, 'denied-pull-2'),
+        }),
+      ).rejects.toThrow();
+
+      const trustedCode = await clientB.rest!.connections.createPairCode({ trustTier: 'trusted_personal' });
+      const trustedConn = await clientA.rest!.connections.pair({
+        endpoint: trustedCode.loopbackEndpoint!,
+        code: trustedCode.code,
+        label: 'trusted-b',
+        includeGui: false,
+        backgroundSummary: false,
+      });
+
+      const pulledDir = join(sandbox, 'local-artifacts', 'MyPlugin.vst3');
+      const pullDirReceipt = await clientA.rest!.sync.pullFilesFromPeer(trustedConn.id, {
+        remotePath: remoteArtifactDir,
+        localPath: pulledDir,
+      });
+      expect(pullDirReceipt.kind).toBe('directory');
+      expect(pullDirReceipt.fileCount).toBe(2);
+      expect(readFileSync(join(pulledDir, 'Contents', 'x86_64-linux', 'MyPlugin.so'))).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02]));
+      expect(readFileSync(join(pulledDir, 'Contents', 'moduleinfo.json'), 'utf8')).toBe('{"name":"MyPlugin"}\n');
+
+      const pulledFile = join(sandbox, 'local-artifacts', 'MyPlugin.clap');
+      const pullFileReceipt = await clientA.rest!.sync.pullFilesFromPeer(trustedConn.id, {
+        remotePath: remoteSingleFile,
+        localPath: pulledFile,
+      });
+      expect(pullFileReceipt.kind).toBe('file');
+      expect(pullFileReceipt.fileCount).toBe(1);
+      expect(readFileSync(pulledFile)).toEqual(Buffer.from([0xca, 0xfe, 0xba, 0xbe]));
+
+      const pushedRemoteDir = join(sandbox, 'remote-pushed', 'MyPlugin.vst3');
+      const pushDirReceipt = await clientA.rest!.sync.pushFilesToPeer(trustedConn.id, {
+        localPath: pulledDir,
+        remotePath: pushedRemoteDir,
+      });
+      expect(pushDirReceipt.kind).toBe('directory');
+      expect(pushDirReceipt.fileCount).toBe(2);
+      expect(readFileSync(join(pushedRemoteDir, 'Contents', 'x86_64-linux', 'MyPlugin.so'))).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02]));
+
+      mkdirSync(join(osHomeB, '.ssh'), { recursive: true });
+      writeFileSync(join(osHomeB, '.ssh', 'id_ed25519'), 'PRIVATE\n');
+      mkdirSync(join(osHomeB, '.gnupg'), { recursive: true });
+      writeFileSync(join(osHomeB, '.gnupg', 'secring.gpg'), 'GPG\n');
+      mkdirSync(join(homeB, 'credentials'), { recursive: true });
+      writeFileSync(join(homeB, 'credentials', 'device-x25519.key'), 'AGE-SECRET\n');
+
+      for (const secretPath of [
+        join(osHomeB, '.ssh', 'id_ed25519'),
+        join(osHomeB, '.gnupg', 'secring.gpg'),
+        join(homeB, 'credentials', 'device-x25519.key'),
+        join(homeB, 'server', 'server.local-owner'),
+      ]) {
+        await expect(
+          clientA.rest!.sync.pullFilesFromPeer(trustedConn.id, {
+            remotePath: secretPath,
+            localPath: join(sandbox, 'should-not-exist'),
+          }),
+        ).rejects.toThrow();
+      }
+
+      const symlinkDir = join(sandbox, 'remote-symlink-dir');
+      mkdirSync(symlinkDir, { recursive: true });
+      let symlinkCreated = false;
+      try {
+        symlinkSync(remoteSingleFile, join(symlinkDir, 'escape.clap'));
+        symlinkCreated = true;
+      } catch {
+        symlinkCreated = false;
+      }
+      if (symlinkCreated) {
+        await expect(
+          clientA.rest!.sync.pullFilesFromPeer(trustedConn.id, {
+            remotePath: symlinkDir,
+            localPath: join(sandbox, 'symlink-pull'),
+          }),
+        ).rejects.toThrow();
+      }
+
+      const header = Buffer.alloc(512, 0);
+      Buffer.from('../escape.txt').copy(header, 0);
+      Buffer.from('0000644\0').copy(header, 100);
+      Buffer.from('0000000\0').copy(header, 108);
+      Buffer.from('0000000\0').copy(header, 116);
+      Buffer.from('00000000004\0').copy(header, 124);
+      Buffer.from('00000000000\0').copy(header, 136);
+      header.fill(0x20, 148, 156);
+      header[156] = 0x30;
+      let checksum = 0;
+      for (const byte of header) checksum += byte;
+      Buffer.from(`${checksum.toString(8).padStart(6, '0')}\0 `).copy(header, 148);
+      const bodyBlock = Buffer.alloc(512, 0);
+      Buffer.from('evil').copy(bodyBlock, 0);
+      const craftedTarGz = gzipSync(Buffer.concat([header, bodyBlock, Buffer.alloc(1024, 0)]));
+      await expect(
+        clientA.rest!.sync.importFiles({
+          destinationPath: join(sandbox, 'crafted-dest'),
+          kind: 'directory',
+          archiveBase64: craftedTarGz.toString('base64'),
+        }),
+      ).rejects.toThrow();
+      expect(existsSync(join(sandbox, 'escape.txt'))).toBe(false);
+    } finally {
+      await clientA.close();
+      await clientB.close();
+    }
+  }, 60_000);
+
+  it('pairs ccp:<runtimeId> without a manual code and auto-reconnects with a fresh ccp ssh prepare after tunnel 255 exit', async () => {
+    const sandbox = makeTempDir('kiki-ccp-tunnel-');
+    const homeA = join(sandbox, 'home-a');
+    const osHomeA = join(sandbox, 'os-home-a');
+    const homeB = join(sandbox, 'home-b');
+    const osHomeB = join(sandbox, 'os-home-b');
+    const workA = join(sandbox, 'work-a');
+    const workB = join(sandbox, 'work-b');
+    mkdirSync(workA, { recursive: true });
+    mkdirSync(workB, { recursive: true });
+
+    const serverB = await bootServer(homeB, osHomeB);
+    const clientB = createKlient({ endpoint: serverEndpoint(serverB), token: serverB.localOwnerToken });
+    const preparedSessions: string[] = [];
+    const openedTunnels: Array<{
+      readonly sessionId: string;
+      readonly localPort: number;
+      readonly remoteTlsPort: number;
+      readonly forceDrop255: () => Promise<void>;
+    }> = [];
+    const activeProxies = new Map<NetServer, Set<Socket>>();
+
+    const runner: CcpTunnelRunner = {
+      async prepare(runtimeId: string) {
+        expect(runtimeId).toBe('rt-build-1');
+        const sessionId = `ssh_session${preparedSessions.length + 1}`;
+        preparedSessions.push(sessionId);
+        return sessionId;
+      },
+      async exec(_sessionId: string, script: string) {
+        if (script.includes('kiki pair')) {
+          const trusted = script.includes('--trusted');
+          const created = await clientB.rest!.connections.createPairCode({
+            trustTier: trusted ? 'trusted_personal' : 'restricted_peer',
+          });
+          return JSON.stringify(created);
+        }
+        throw new Error(`Unexpected remote exec script: ${script}`);
+      },
+      async openTunnel(sessionId: string, localPort: number, remoteTlsPort: number): Promise<CcpTunnelProcess> {
+        const controller = new AbortController();
+        const sockets = new Set<Socket>();
+        const proxy = createServer((inbound) => {
+          if (controller.signal.aborted) {
+            inbound.destroy();
+            return;
+          }
+          const upstream = createConnection({ host: '127.0.0.1', port: remoteTlsPort });
+          sockets.add(inbound);
+          sockets.add(upstream);
+          const cleanup = () => {
+            sockets.delete(inbound);
+            sockets.delete(upstream);
+          };
+          inbound.on('close', cleanup);
+          upstream.on('close', cleanup);
+          inbound.on('error', () => upstream.destroy());
+          upstream.on('error', () => inbound.destroy());
+          inbound.pipe(upstream);
+          upstream.pipe(inbound);
+        });
+        proxy.listen(localPort, '127.0.0.1');
+        await once(proxy, 'listening');
+        activeProxies.set(proxy, sockets);
+
+        const shutdown = async () => {
+          if (!controller.signal.aborted) {
+            controller.abort(new Error('ccp ssh connect exited with code 255'));
+          }
+          for (const socket of [...sockets]) socket.destroy();
+          sockets.clear();
+          if (activeProxies.delete(proxy)) {
+            proxy.unref();
+            await new Promise<void>((resolve) => {
+              let settled = false;
+              const done = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve();
+              };
+              const timer = setTimeout(done, 250);
+              proxy.close(done);
+            });
+          }
+        };
+
+        openedTunnels.push({
+          sessionId,
+          localPort,
+          remoteTlsPort,
+          forceDrop255: shutdown,
+        });
+
+        return {
+          endpoint: `https://127.0.0.1:${localPort}`,
+          signal: controller.signal,
+          close: shutdown,
+        };
+      },
+      async close() {
+        for (const [proxy, sockets] of [...activeProxies.entries()]) {
+          for (const socket of [...sockets]) socket.destroy();
+          sockets.clear();
+          activeProxies.delete(proxy);
+          await new Promise<void>((resolve) => { proxy.close(() => { resolve(); }); });
+        }
+      },
+    };
+
+    const serverA = await bootServer(homeA, osHomeA, {
+      ccpTunnelConnector: new CcpTunnelConnector(runner),
+    });
+    const clientA = createKlient({ endpoint: serverEndpoint(serverA), token: serverA.localOwnerToken });
+
+    try {
+      await clientA.global.sessions.create({ sessionId: 'local-main', workDir: workA });
+      await clientB.global.sessions.create({ sessionId: 'colab-main', workDir: workB });
+      await serverA.core.accessor.get(ISessionManager).close('local-main');
+      await serverB.core.accessor.get(ISessionManager).close('colab-main');
+
+      const paired = await clientA.rest!.connections.pair({
+        endpoint: 'ccp:rt-build-1',
+        includeGui: false,
+        trusted: true,
+        backgroundSummary: false,
+      });
+      expect(paired.transport).toMatchObject({ kind: 'ccp_tunnel', runtimeId: 'rt-build-1' });
+      expect(paired.pinnedFingerprint).toBeDefined();
+      expect(paired.purposes).toEqual(['bridge']);
+      expect(preparedSessions).toEqual(['ssh_session1']);
+      expect(openedTunnels).toHaveLength(1);
+
+      const workspaceA = (await serverA.core.accessor.get(IWorkspaceService).list())[0]!;
+      const threadsA = serverA.core.accessor.get(IThreadCommunicationService);
+      const firstList = await threadsA.listThreads({
+        caller: { workspaceId: workspaceA.id, sessionId: 'local-main' },
+        connectionId: paired.id,
+      });
+      expect(firstList.threads.some((item) => item.ref.sessionId === 'colab-main')).toBe(true);
+
+      await openedTunnels[0]!.forceDrop255();
+
+      const secondList = await threadsA.listThreads({
+        caller: { workspaceId: workspaceA.id, sessionId: 'local-main' },
+        connectionId: paired.id,
+      });
+      expect(secondList.threads.some((item) => item.ref.sessionId === 'colab-main')).toBe(true);
+      expect(preparedSessions).toEqual(['ssh_session1', 'ssh_session2']);
+      expect(openedTunnels).toHaveLength(2);
+      expect(openedTunnels[1]!.sessionId).toBe('ssh_session2');
     } finally {
       await clientA.close();
       await clientB.close();

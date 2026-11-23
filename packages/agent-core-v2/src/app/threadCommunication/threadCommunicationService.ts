@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as yieldToEventLoop, setTimeout as delay } from 'node:timers/promises';
 
 import { createKimiDeviceId } from '@kiki/oauth';
@@ -36,6 +36,7 @@ import { IWireService } from '#/wire/wire';
 
 import {
   IThreadCommunicationService,
+  type BridgePermissionCeilingInput,
   type ListThreadMessagesInput,
   type ListThreadMessagesResult,
   type ThreadCommunicationMessage,
@@ -59,7 +60,17 @@ import {
   type WaitThreadResult,
   type WaitThreadsInput,
   type WaitThreadsResult,
+  type WatchThreadTerminalInput,
 } from './threadCommunication';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import {
+  extractResyncCursor,
+  extractTerminalPreview,
+  formatTerminalWatchMessage,
+  formatWatchStoppedMessage,
+  isCursorInvalidWatchError,
+  isUnrecoverableWatchError,
+} from './terminalWatch';
 import {
   IThreadMailboxStore,
   threadMailboxClaimRequestId,
@@ -94,6 +105,9 @@ const FAST_DELIVERY_TIMEOUT_MS = 5_000;
 const MAX_BACKGROUND_TARGET_DRAINS = 4;
 const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
 const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
+const TERMINAL_WATCH_SLICE_TIMEOUT_MS = 30_000;
+const TERMINAL_WATCH_MAX_TRANSIENT_ERRORS = 5;
+const TERMINAL_WATCH_MAX_CURSOR_RESETS = 2;
 
 type CursorPayload = ListCursor | ReadCursor | ActivityCursor;
 
@@ -208,6 +222,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private readonly claimRequestIds = new Map<string, string>();
   private readonly roomDeliveryTargets = new Map<string, RoomDeliveryTarget>();
   private readonly roomDeliveryReceipts = new Map<string, RoomDeliveryReceipt>();
+  private readonly terminalWatches = new Map<string, { readonly controller: AbortController; readonly watchId: string }>();
   private readonly mailboxController = new AbortController();
   private readonly shutdownSignal: Promise<void>;
   private resolveShutdown!: () => void;
@@ -252,6 +267,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
     this.roomDeliveryReceipts.clear();
     this.roomDeliveryTargets.clear();
+    for (const entry of this.terminalWatches.values()) entry.controller.abort();
+    this.terminalWatches.clear();
     this.mailboxController.abort(new Error('Thread communication is shutting down.'));
     this.resolveShutdown();
     await this.dispose();
@@ -363,10 +380,59 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     })).toString('base64url') : undefined };
   }
 
+  resolveBridgePermissionCeiling(input: BridgePermissionCeilingInput): PermissionMode | undefined {
+    return this.connector?.permissionCeiling?.(input);
+  }
+
+  async watchTerminal(input: WatchThreadTerminalInput): Promise<void> {
+    await this.ensureRecovery();
+    const callerRef: ThreadRef = { hostId: this.hostId, workspaceId: input.caller.workspaceId, sessionId: input.caller.sessionId };
+    await this.requireThread(callerRef, input.caller);
+    if (this.needsBridge(input.target)) {
+      this.requireConnector().assertCanWatch?.({ caller: input.caller, target: input.target });
+    } else {
+      const localTarget = this.requireLocalHost(input.target);
+      await this.requireThread(localTarget, input.caller);
+    }
+    this.startTerminalWatch(input.caller, callerRef, input.target, input.cursor);
+  }
+
   async createThread(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
     input.signal?.throwIfAborted();
     await this.requireBridgeCaller(input.caller);
-    return this.requireConnector().create(input);
+    const connector = this.requireConnector();
+    if (input.notifyOnTerminal === true) {
+      if (input.prompt === undefined) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'notify_on_terminal requires prompt to be provided.');
+      }
+      connector.assertCanWatch?.({
+        caller: input.caller,
+        bridgeId: input.bridgeId,
+        connectionId: input.connectionId,
+        workspaceId: input.workspaceId,
+      });
+    }
+    const created = await connector.create(input);
+    if (input.notifyOnTerminal === true && created.promptStarted) {
+      const callerRef: ThreadRef = {
+        hostId: this.hostId,
+        workspaceId: input.caller.workspaceId,
+        sessionId: input.caller.sessionId,
+      };
+      const watchKeyHash = createHash('sha256')
+        .update(`${created.ref.sessionId}\0${input.idempotencyKey}`)
+        .digest('hex')
+        .slice(0, 32);
+      this.startTerminalWatch(
+        input.caller,
+        callerRef,
+        created.ref,
+        created.activityCursor,
+        `create:${watchKeyHash}`,
+        true,
+      );
+    }
+    return created;
   }
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
@@ -575,25 +641,61 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     };
     await waitWithSignal(this.requireThread(peer.source, caller, this.needsBridge(peer.target) || peer.allowWhenDisabled !== true), input.signal);
     input.signal?.throwIfAborted();
-    if (this.needsBridge(peer.target)) return this.requireConnector().send({ ...peer, deliveryTimeoutMs: Math.max(0, deadline - Date.now()) });
-    const target = this.requireLocalHost(peer.target);
-    if (sameThread(peer.source, target)) {
-      throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
+    let watchCursor: string | undefined;
+    if (input.notifyOnTerminal === true) {
+      if (this.needsBridge(peer.target)) {
+        this.requireConnector().assertCanWatch?.({ caller, target: peer.target });
+      } else {
+        const localTarget = this.requireLocalHost(peer.target);
+        if (sameThread(peer.source, localTarget)) {
+          throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
+        }
+        await waitWithSignal(this.requireThread(localTarget, caller, peer.allowWhenDisabled !== true), input.signal);
+      }
+      const baseline = await this.waitThreads({
+        caller,
+        threads: [{ thread: peer.target }],
+        timeoutMs: 0,
+        signal: peer.signal,
+      });
+      watchCursor = baseline.threads[0]?.cursor;
     }
-    return this.sendProducedMessage({
-      producer: {
-        kind: 'peer_thread',
-        source: peer.source,
-        sender: peer.sender,
-        allowWhenDisabled: peer.allowWhenDisabled,
-      },
-      caller,
-      target,
-      content: peer.content,
-      idempotencyKey: peer.idempotencyKey,
-      signal: peer.signal,
-      deliveryTimeoutMs: Math.max(0, deadline - Date.now()),
-    }, peer.allowWhenDisabled !== true);
+    let result: SendThreadMessageResult;
+    if (this.needsBridge(peer.target)) {
+      result = await this.requireConnector().send({ ...peer, deliveryTimeoutMs: Math.max(0, deadline - Date.now()) });
+    } else {
+      const target = this.requireLocalHost(peer.target);
+      if (sameThread(peer.source, target)) {
+        throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
+      }
+      result = await this.sendProducedMessage({
+        producer: {
+          kind: 'peer_thread',
+          source: peer.source,
+          sender: peer.sender,
+          allowWhenDisabled: peer.allowWhenDisabled,
+        },
+        caller,
+        target,
+        content: peer.content,
+        idempotencyKey: peer.idempotencyKey,
+        signal: peer.signal,
+        deliveryTimeoutMs: Math.max(0, deadline - Date.now()),
+      }, peer.allowWhenDisabled !== true);
+    }
+    if (input.notifyOnTerminal === true && !result.deduplicated && result.delivery !== 'undeliverable') {
+      const watchTarget = this.needsBridge(peer.target) ? peer.target : this.requireLocalHost(peer.target);
+      const sendKeyHash = createHash('sha256').update(result.messageId).digest('hex').slice(0, 32);
+      this.startTerminalWatch(
+        caller,
+        source,
+        watchTarget,
+        watchCursor,
+        `send:${sendKeyHash}`,
+        true,
+      );
+    }
+    return result;
   }
 
   private async sendProducedMessage(input: {
@@ -850,9 +952,160 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private async threadLabel(ref: ThreadRef): Promise<string> {
+    if (ref.hostId !== this.hostId) return `${ref.sessionId} (host ${ref.hostId})`;
     const summary = await this.sessions.get(ref.sessionId, ref.workspaceId).catch(() => undefined);
     const title = summary?.workspaceId === ref.workspaceId ? summary.title : undefined;
     return title === undefined || title === '' ? ref.sessionId : `"${title}" (${ref.sessionId})`;
+  }
+
+  private startTerminalWatch(
+    caller: ThreadCaller,
+    callerRef: ThreadRef,
+    target: ThreadRef,
+    initialCursor: string | undefined,
+    explicitWatchId?: string,
+    preserveIfSameOrActive = false,
+  ): void {
+    if (this.closing || this.mailboxController.signal.aborted) return;
+    const normalizedTarget: ThreadRef = this.needsBridge(target) ? target : this.requireLocalHost(target);
+    const key = `${threadIdentity(callerRef)}\0${threadIdentity(normalizedTarget)}`;
+    const watchId = explicitWatchId ?? randomUUID();
+    const previous = this.terminalWatches.get(key);
+    if (previous !== undefined) {
+      if (preserveIfSameOrActive && previous.watchId === watchId) {
+        return;
+      }
+      previous.controller.abort();
+    }
+    const controller = new AbortController();
+    const record = { controller, watchId };
+    this.terminalWatches.set(key, record);
+    const signal = AbortSignal.any([controller.signal, this.mailboxController.signal]);
+    this.detach(
+      this.runTerminalWatch({
+        key,
+        watchId,
+        controller,
+        signal,
+        caller,
+        callerRef,
+        target: normalizedTarget,
+        initialCursor,
+      }),
+    );
+  }
+
+  private async runTerminalWatch(input: {
+    readonly key: string;
+    readonly watchId: string;
+    readonly controller: AbortController;
+    readonly signal: AbortSignal;
+    readonly caller: ThreadCaller;
+    readonly callerRef: ThreadRef;
+    readonly target: ThreadRef;
+    readonly initialCursor: string | undefined;
+  }): Promise<void> {
+    const { key, watchId, controller, signal, caller, callerRef, target } = input;
+    let cursor = input.initialCursor;
+    let transientErrors = 0;
+    let cursorResets = 0;
+    try {
+      while (!signal.aborted && !this.closing) {
+        let result: WaitThreadsResult;
+        try {
+          result = await this.waitThreads({
+            caller,
+            threads: [{ thread: target, cursor }],
+            timeoutMs: TERMINAL_WATCH_SLICE_TIMEOUT_MS,
+            signal,
+          });
+        } catch (error) {
+          if (signal.aborted || this.closing) return;
+          if (isCursorInvalidWatchError(error) && cursorResets < TERMINAL_WATCH_MAX_CURSOR_RESETS) {
+            cursorResets += 1;
+            cursor = extractResyncCursor(error);
+            continue;
+          }
+          if (isUnrecoverableWatchError(error) || transientErrors >= TERMINAL_WATCH_MAX_TRANSIENT_ERRORS) {
+            const reason = error instanceof Error ? error.message : String(error);
+            await this.deliverWatchNotification(
+              caller,
+              callerRef,
+              target,
+              formatWatchStoppedMessage(target, reason),
+              `notify-terminal-stop:${watchId}`,
+              signal,
+            );
+            return;
+          }
+          transientErrors += 1;
+          await delay(1_000 * 2 ** (transientErrors - 1), undefined, { signal, ref: false }).catch(() => {});
+          continue;
+        }
+        transientErrors = 0;
+        const entry = result.threads[0];
+        if (entry !== undefined) cursor = entry.cursor;
+        if (result.timedOut || entry === undefined || entry.activities.length === 0) continue;
+        let preview: string | undefined;
+        const hasTerminal = entry.activities.some((activity) => activity.kind === 'terminal');
+        const hasDeletedOrArchived = entry.activities.some(
+          (activity) => activity.kind === 'lifecycle' && (activity.reason === 'deleted' || activity.reason === 'archived'),
+        );
+        if (hasTerminal && !hasDeletedOrArchived) {
+          const readResult = await this.readThread({ caller, thread: target, limit: 1, signal }).catch(() => undefined);
+          if (readResult !== undefined) preview = extractTerminalPreview(readResult);
+        }
+        if (signal.aborted || this.closing) return;
+        const lastSeq = entry.activities.at(-1)!.seq;
+        const content = formatTerminalWatchMessage(target, entry.activities, preview);
+        await this.deliverWatchNotification(
+          caller,
+          callerRef,
+          target,
+          content,
+          `notify-terminal:${watchId}:${lastSeq}`,
+          signal,
+        );
+        return;
+      }
+    } finally {
+      if (this.terminalWatches.get(key)?.controller === controller) {
+        this.terminalWatches.delete(key);
+      }
+    }
+  }
+
+  private async deliverWatchNotification(
+    caller: ThreadCaller,
+    callerRef: ThreadRef,
+    target: ThreadRef,
+    content: string,
+    idempotencyKey: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted || this.closing) return;
+    try {
+      await this.sendProducedMessage({
+        producer: {
+          kind: 'peer_thread',
+          source: target,
+          sender: { sessionId: target.sessionId, name: `thread-watch:${target.sessionId}` },
+        },
+        caller,
+        target: callerRef,
+        content,
+        idempotencyKey,
+        signal,
+      });
+    } catch (error) {
+      if (!signal.aborted && !this.closing) {
+        this.log.warn('Failed to deliver terminal watch notification to caller thread', {
+          callerSessionId: callerRef.sessionId,
+          targetSessionId: target.sessionId,
+          error,
+        });
+      }
+    }
   }
 
   private scheduleTargetDrain(target: ThreadRef): void {

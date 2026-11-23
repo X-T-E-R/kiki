@@ -74,6 +74,14 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
           : [];
         const revokedBridgeIds = req.headers['x-kiki-pairing-rotation'] === '1' ? hooks.current?.revokedBridges?.(input.source) : undefined;
         const includeTrust = req.headers['x-kiki-mesh-metadata'] === '1' || input.includeTrustMetadata === true;
+        const includeBridgeCeiling = req.headers['x-kiki-bridge-ceiling'] === '1';
+        const wireBridge = includeBridgeCeiling
+          ? bridge
+          : bridge.map((bundle) => {
+              if (bundle.grant.permissionCeiling === undefined) return bundle;
+              const { permissionCeiling: _omitted, ...grantWithoutCeiling } = bundle.grant;
+              return { ...bundle, grant: grantWithoutCeiling };
+            });
         const recipient = x25519Recipient();
         const result = {
           target: claimed.target,
@@ -82,7 +90,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
           revision: claimed.revision,
           peerToken: claimed.peerToken,
           revokedBridgeIds,
-          bridge: bridge.length > 0 ? bridge : undefined,
+          bridge: wireBridge.length > 0 ? wireBridge : undefined,
           ...(includeTrust
             ? {
                 trustTier: claimed.trustTier,
@@ -154,7 +162,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       finally { reply.raw.off('close', stop); }
     });
   }
-  app.get('/api/remote-connections/inbound', async (req, reply) => reply.send(okEnvelope(admission.status(), req.id)));
+  app.get('/api/remote-connections/inbound', async (req, reply) => {
+    const loopbackEndpoint = hooks.current?.loopbackEndpoint?.();
+    return reply.send(okEnvelope({ ...admission.status(), ...(loopbackEndpoint === undefined ? {} : { loopbackEndpoint }) }, req.id));
+  });
   app.put('/api/remote-connections/inbound', async (req, reply) => respond(req.id, reply, async () => {
     const enabled = (req.body as { enabled?: unknown })?.enabled;
     if (typeof enabled !== 'boolean') throw new AdmissionError(400, 'invalid_inbound_setting'); return admission.setEnabled(enabled);

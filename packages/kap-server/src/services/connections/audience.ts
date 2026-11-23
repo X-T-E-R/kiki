@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { matchConnectionOperation, type MeshCapability } from '@kiki/protocol';
+import { matchConnectionOperation, type MeshCapability, type PeerTrustTier } from '@kiki/protocol';
 import type { KlientFrame, KlientProcedure } from '@kiki/klient/host';
 import { catalogChangedSchema, searchIndexStateSchema } from '@kiki/klient/contract/global/events';
 import { modelSwitchQueuedEventSchema, modelSwitchStatusEventSchema } from '@kiki/klient/contract/agent/modelSwitch';
@@ -9,7 +9,7 @@ import { matchesLocalOwner } from '../auth/localOwner';
 import type { CredentialValidator } from '../auth/credentials';
 import { AdmissionError, ConnectionAdmission } from './admission';
 
-export interface PeerAudience { grantId: string; revision: number; meshCapabilities?: readonly MeshCapability[]; signal?: AbortSignal }
+export interface PeerAudience { grantId: string; revision: number; trustTier?: PeerTrustTier; meshCapabilities?: readonly MeshCapability[]; signal?: AbortSignal }
 const peers = new WeakMap<object, PeerAudience>();
 export function peerAudience(request: object): PeerAudience | undefined { return peers.get(request); }
 export function peerGrant(headers: IncomingMessage['headers']): string | undefined {
@@ -118,6 +118,12 @@ const PEER_SYNC_OPERATIONS = new Set([
   'syncBundleExport',
   'syncBundleImport',
   'syncCredentialsMerge',
+  'syncFilesExport',
+  'syncFilesImport',
+]);
+const PEER_TRUSTED_PERSONAL_OPERATIONS = new Set([
+  'syncFilesExport',
+  'syncFilesImport',
 ]);
 const PEER_EXECUTE_PROCEDURE_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['agentPromptService', new Set(['submit', 'submitAndWait', 'submitSteer', 'switchModel', 'resumeRecoveredQueue'])],
@@ -330,7 +336,8 @@ export class ConnectionAudience {
     if (operation === undefined || (operation.params['spaceId'] !== undefined && operation.params['spaceId'] !== this.currentSpaceId())) throw new AdmissionError(403, 'local_owner_required');
     const audience = this.peerContext(peer);
     if ((PEER_EXECUTE_OPERATIONS.has(operation.operation) && audience.meshCapabilities?.includes('execute') !== true) ||
-      (PEER_SYNC_OPERATIONS.has(operation.operation) && audience.meshCapabilities?.includes('file_sync') !== true)) {
+      (PEER_SYNC_OPERATIONS.has(operation.operation) && audience.meshCapabilities?.includes('file_sync') !== true) ||
+      (PEER_TRUSTED_PERSONAL_OPERATIONS.has(operation.operation) && audience.trustTier !== 'trusted_personal')) {
       throw new AdmissionError(403, 'mesh_capability_denied');
     }
     const terminalOperation = TERMINAL_CONNECTION_OPERATIONS.has(operation.operation);
@@ -361,6 +368,7 @@ export class ConnectionAudience {
     return audience;
   }
   private peerContext(peer: { id: string; revision: number }): PeerAudience {
-    return { grantId: peer.id, revision: peer.revision, meshCapabilities: this.admission.getGrantTrust?.(peer.id)?.meshCapabilities };
+    const trust = this.admission.getGrantTrust?.(peer.id);
+    return { grantId: peer.id, revision: peer.revision, trustTier: trust?.trustTier, meshCapabilities: trust?.meshCapabilities };
   }
 }

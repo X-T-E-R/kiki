@@ -132,10 +132,17 @@ export const syncSessionFileEntrySchema = /* @__PURE__ */ z.object({
 }).strict();
 export type SyncSessionFileEntry = z.infer<typeof syncSessionFileEntrySchema>;
 
+export const syncHomeAssetEntrySchema = /* @__PURE__ */ z.object({
+  relativePath: z.string().min(1).max(512),
+  contentBase64: z.string(),
+}).strict();
+export type SyncHomeAssetEntry = z.infer<typeof syncHomeAssetEntrySchema>;
+
 export const syncBundleSchema = /* @__PURE__ */ z.object({
   format: z.literal('kiki.sync-bundle.v1'),
   exportedAt: z.string().datetime({ offset: true }),
   portableConfig: z.record(z.string(), z.unknown()).optional(),
+  homeAssets: z.array(syncHomeAssetEntrySchema).optional(),
   credentialEnvelopes: z.array(encryptedCredentialEnvelopeSchema).max(128).optional(),
   memories: z.array(syncMemoryRecordSchema).optional(),
   skills: z.array(syncSkillFileEntrySchema).optional(),
@@ -157,6 +164,7 @@ export const syncBundleExportInputSchema = /* @__PURE__ */ z.object({
   memoryScopes: z.array(syncMemoryScopeKindSchema).optional(),
   workDir: z.string().min(1).max(4096).optional(),
   includeConfig: z.boolean().default(true),
+  includeHomeAssets: z.boolean().optional(),
   includeCredentials: z.boolean().default(true),
   includeMemories: z.boolean().default(true),
   includeSkills: z.boolean().default(true),
@@ -184,6 +192,8 @@ export type SyncPeerTransferInput = z.infer<typeof syncPeerTransferInputSchema>;
 
 export const syncBundleImportReceiptSchema = /* @__PURE__ */ z.object({
   configDomainsApplied: z.array(z.string()),
+  homeAssetsApplied: z.number().int().nonnegative().optional(),
+  homeAssetsSkipped: z.number().int().nonnegative().optional(),
   credentials: syncCredentialMergeReceiptSchema,
   memoriesApplied: z.number().int().nonnegative(),
   memoriesSkipped: z.number().int().nonnegative(),
@@ -193,3 +203,45 @@ export const syncBundleImportReceiptSchema = /* @__PURE__ */ z.object({
   sessionsSkipped: z.number().int().nonnegative().optional(),
 }).strict();
 export type SyncBundleImportReceipt = z.infer<typeof syncBundleImportReceiptSchema>;
+
+export const syncFilesExportInputSchema = /* @__PURE__ */ z.object({
+  path: z.string().min(1).max(4096),
+}).strict();
+export type SyncFilesExportInput = z.infer<typeof syncFilesExportInputSchema>;
+
+export const syncFilesExportResultSchema = /* @__PURE__ */ z.object({
+  kind: z.enum(['file', 'directory']),
+  rootName: z.string().min(1).max(256),
+  fileCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  archiveBase64: z.string().min(1),
+}).strict();
+export type SyncFilesExportResult = z.infer<typeof syncFilesExportResultSchema>;
+
+export const syncFilesImportInputSchema = /* @__PURE__ */ z.object({
+  destinationPath: z.string().min(1).max(4096),
+  kind: z.enum(['file', 'directory']),
+  archiveBase64: z.string().min(1),
+}).strict();
+export type SyncFilesImportInput = z.infer<typeof syncFilesImportInputSchema>;
+
+export const syncFilesTransferReceiptSchema = /* @__PURE__ */ z.object({
+  kind: z.enum(['file', 'directory']),
+  destinationPath: z.string().min(1).max(4096),
+  fileCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  files: z.array(z.string()).max(32_768),
+}).strict();
+export type SyncFilesTransferReceipt = z.infer<typeof syncFilesTransferReceiptSchema>;
+
+export const syncPeerFilesPullInputSchema = /* @__PURE__ */ z.object({
+  remotePath: z.string().min(1).max(4096),
+  localPath: z.string().min(1).max(4096),
+}).strict();
+export type SyncPeerFilesPullInput = z.infer<typeof syncPeerFilesPullInputSchema>;
+
+export const syncPeerFilesPushInputSchema = /* @__PURE__ */ z.object({
+  localPath: z.string().min(1).max(4096),
+  remotePath: z.string().min(1).max(4096),
+}).strict();
+export type SyncPeerFilesPushInput = z.infer<typeof syncPeerFilesPushInputSchema>;

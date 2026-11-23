@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, mkdir, open, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   syncBundleImportInputSchema,
@@ -14,8 +15,15 @@ import {
   type SyncBundleImportInput,
   type SyncBundleImportReceipt,
   type SyncCredentialMergeReceipt,
+  type SyncFilesExportInput,
+  type SyncFilesExportResult,
+  type SyncFilesImportInput,
+  type SyncFilesTransferReceipt,
+  type SyncHomeAssetEntry,
   type SyncMemoryRecord,
   type SyncMemoryScopeKind,
+  type SyncPeerFilesPullInput,
+  type SyncPeerFilesPushInput,
   type SyncPeerTransferInput,
   type SyncSessionFileEntry,
   type SyncSkillFileEntry,
@@ -55,11 +63,15 @@ import type { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/
 import type { IMemoryPersistence } from '@kiki/agent-core-v2/persistence/interface/memoryPersistence';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import { discoverMemoryScopes, exportSessionFiles, importSessionFiles } from '../portableSpace/liveSpace';
+import { safePortablePath } from '../portableSpace/tarArchive';
+import { exportTransferFiles, importTransferFiles } from './fileSync';
 
 export interface SyncPeerTransport {
   resolvePeerRecipient(peerId: string): Promise<string | undefined>;
   pushBundle(peerId: string, bundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt>;
   pullBundle(peerId: string, input: SyncBundleExportInput): Promise<SyncBundle>;
+  exportPeerFiles?(peerId: string, input: SyncFilesExportInput): Promise<SyncFilesExportResult>;
+  importPeerFiles?(peerId: string, input: SyncFilesImportInput): Promise<SyncFilesTransferReceipt>;
 }
 
 export interface SyncServiceOptions {
@@ -85,6 +97,11 @@ const ALL_MEMORY_SCOPE_KINDS: readonly SyncMemoryScopeKind[] = ['global', 'perso
 const CANONICAL_MEMORY_ID_PATTERN = /^m_[a-zA-Z0-9_]+$/;
 const MAX_SYNC_BUNDLE_WIRE_BYTES = 64 * 1024 * 1024;
 const MAX_SKILL_MD_PROBE_BYTES = 1024 * 1024;
+const HOME_ASSET_ROOT_FILES = ['AGENTS.md', 'SYSTEM.md'] as const;
+const HOME_ASSET_ROOT_DIRS = ['prompt', 'prompts', 'cognition', 'personas', 'agents'] as const;
+const HOME_ASSET_EXCLUDED_SEGMENT =
+  /^(?:\.git|\.ssh|\.gnupg|node_modules|credentials|config\.local\.toml|server\.local-owner|\.env(?:\..*)?|secrets?|\.secrets?|.*\.(?:pem|key|pfx|sqlite(?:3)?(?:-wal|-shm)?|lock))$/i;
+const NOFOLLOW_FLAG = fsConstants.O_NOFOLLOW ?? 0;
 
 /** Coordinates device X25519 keys, per-entry credential envelopes, portable project identities, portable config/memory/skill bundles, and peer push/pull sync. */
 export class SyncService {
@@ -254,6 +271,12 @@ export class SyncService {
       throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
     }
     const wireBudget = { remaining: MAX_SYNC_BUNDLE_WIRE_BYTES - baseEnvelopeBytes };
+    const exportedHomeAssets = input.includeConfig && input.includeHomeAssets === true
+      ? await this.exportPortableHomeAssets(wireBudget)
+      : undefined;
+    const homeAssets = exportedHomeAssets !== undefined && exportedHomeAssets.length > 0
+      ? exportedHomeAssets
+      : undefined;
     const skills = input.includeSkills
       ? await this.exportPortableSkills(input.workDir, input.targetPlatform, input.includeGitSkills === true, wireBudget)
       : undefined;
@@ -265,6 +288,7 @@ export class SyncService {
       format: 'kiki.sync-bundle.v1',
       exportedAt,
       portableConfig,
+      homeAssets,
       credentialEnvelopes,
       memories,
       skills,
@@ -279,6 +303,14 @@ export class SyncService {
 
   async importSyncBundle(rawBundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt> {
     const bundle = syncBundleImportInputSchema.parse(rawBundle);
+    let homeAssetsApplied: number | undefined;
+    let homeAssetsSkipped: number | undefined;
+    if (bundle.homeAssets !== undefined) {
+      const applied = await this.importPortableHomeAssets(bundle.homeAssets);
+      homeAssetsApplied = applied.applied;
+      homeAssetsSkipped = applied.skipped;
+    }
+
     const configDomainsApplied: string[] = [];
     if (bundle.portableConfig !== undefined && this.options.configService !== undefined) {
       await this.options.configService.ready;
@@ -468,6 +500,8 @@ export class SyncService {
 
     return {
       configDomainsApplied: configDomainsApplied.toSorted(),
+      ...(homeAssetsApplied === undefined ? {} : { homeAssetsApplied }),
+      ...(homeAssetsSkipped === undefined ? {} : { homeAssetsSkipped }),
       credentials,
       memoriesApplied,
       memoriesSkipped,
@@ -491,17 +525,27 @@ export class SyncService {
       memoryScopes: input.memoryScopes,
       workDir: input.workDir,
       includeConfig: input.includeConfig,
+      includeHomeAssets: input.includeConfig,
       includeCredentials: input.includeCredentials && recipients.length > 0,
       includeMemories: input.includeMemories,
       includeSkills: input.includeSkills,
       includeGitSkills: input.includeGitSkills,
       sessions: input.sessions,
     });
-    return this.options.peerTransport.pushBundle(peerId, {
+    const payload: SyncBundleImportInput = {
       ...bundle,
       targetWorkDir: input.targetWorkDir,
       targetProjectId: input.targetProjectId,
-    });
+    };
+    try {
+      return await this.options.peerTransport.pushBundle(peerId, payload);
+    } catch (error) {
+      if (bundle.homeAssets !== undefined && isLegacyHomeAssetsRejection(error)) {
+        const { homeAssets: _omitted, ...legacyPayload } = payload;
+        return this.options.peerTransport.pushBundle(peerId, legacyPayload);
+      }
+      throw error;
+    }
   }
 
   async pullFromPeer(peerId: string, input: SyncPeerTransferInput): Promise<SyncBundleImportReceipt> {
@@ -509,24 +553,74 @@ export class SyncService {
       throw new Error('Peer sync transport is not configured');
     }
     const localKey = await this.ensureDeviceKeypair();
-    const bundle = await this.options.peerTransport.pullBundle(peerId, {
+    const pullRequest: SyncBundleExportInput = {
       recipients: [localKey.recipient],
       credentialIds: input.credentialIds,
       projectIds: input.projectIds,
       memoryScopes: input.memoryScopes,
       workDir: input.workDir,
       includeConfig: input.includeConfig,
+      includeHomeAssets: input.includeConfig,
       includeCredentials: input.includeCredentials,
       includeMemories: input.includeMemories,
       includeSkills: input.includeSkills,
       includeGitSkills: input.includeGitSkills,
       sessions: input.sessions,
       targetPlatform: process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux',
-    });
+    };
+    let bundle: SyncBundle;
+    try {
+      bundle = await this.options.peerTransport.pullBundle(peerId, pullRequest);
+    } catch (error) {
+      if (pullRequest.includeHomeAssets === true && isLegacyHomeAssetsRejection(error)) {
+        const { includeHomeAssets: _omitted, ...legacyPullRequest } = pullRequest;
+        bundle = await this.options.peerTransport.pullBundle(peerId, legacyPullRequest);
+      } else {
+        throw error;
+      }
+    }
     return this.importSyncBundle({
       ...bundle,
       targetWorkDir: input.targetWorkDir,
       targetProjectId: input.targetProjectId,
+    });
+  }
+
+  exportFiles(input: SyncFilesExportInput): Promise<SyncFilesExportResult> {
+    return exportTransferFiles(input.path, {
+      homeDir: this.options.homeDir,
+      osHomeDir: this.options.osHomeDir,
+    });
+  }
+
+  importFiles(input: SyncFilesImportInput): Promise<SyncFilesTransferReceipt> {
+    return importTransferFiles(input, {
+      homeDir: this.options.homeDir,
+      osHomeDir: this.options.osHomeDir,
+    });
+  }
+
+  async pullFilesFromPeer(peerId: string, input: SyncPeerFilesPullInput): Promise<SyncFilesTransferReceipt> {
+    if (this.options.peerTransport?.exportPeerFiles === undefined) {
+      throw new Error('Peer file sync transport is not configured');
+    }
+    const exported = await this.options.peerTransport.exportPeerFiles(peerId, { path: input.remotePath });
+    return this.importFiles({
+      destinationPath: input.localPath,
+      kind: exported.kind,
+      archiveBase64: exported.archiveBase64,
+    });
+  }
+
+  async pushFilesToPeer(peerId: string, input: SyncPeerFilesPushInput): Promise<SyncFilesTransferReceipt> {
+    if (this.options.peerTransport?.importPeerFiles === undefined) {
+      throw new Error('Peer file sync transport is not configured');
+    }
+    const exported = await this.exportFiles({ path: input.localPath });
+    return this.options.peerTransport.importPeerFiles(peerId, {
+      destinationPath: input.remotePath,
+      kind: exported.kind,
+      archiveBase64: exported.archiveBase64,
     });
   }
 
@@ -686,6 +780,174 @@ export class SyncService {
     return files;
   }
 
+  private async exportPortableHomeAssets(
+    wireBudget: { remaining: number },
+  ): Promise<SyncHomeAssetEntry[]> {
+    let realHomeDir: string;
+    try {
+      realHomeDir = await realpath(this.options.homeDir);
+    } catch {
+      return [];
+    }
+    const entries: SyncHomeAssetEntry[] = [];
+    const seen = new Set<string>();
+    const addFile = async (relPath: string, fullPath: string): Promise<void> => {
+      const normalized = normalizeAllowedSyncHomeAssetPath(relPath);
+      if (normalized === undefined || seen.has(normalized)) return;
+      let info;
+      try {
+        info = await lstat(fullPath);
+      } catch {
+        return;
+      }
+      if (info.isSymbolicLink() || !info.isFile()) return;
+      let resolvedPath: string;
+      try {
+        resolvedPath = await realpath(fullPath);
+      } catch {
+        return;
+      }
+      const rel = relative(realHomeDir, resolvedPath);
+      if (rel.startsWith('..') || isAbsolute(rel)) return;
+      const statCost = estimateBase64EntryWireBytes(info.size, 'home', normalized);
+      if (statCost > wireBudget.remaining) {
+        throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+      }
+      let bytes: Buffer;
+      try {
+        const handle = await open(fullPath, fsConstants.O_RDONLY | NOFOLLOW_FLAG);
+        try {
+          const handleStat = await handle.stat();
+          if (!handleStat.isFile()) return;
+          const handleCost = estimateBase64EntryWireBytes(handleStat.size, 'home', normalized);
+          if (handleCost > wireBudget.remaining) {
+            throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+          }
+          bytes = await handle.readFile();
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('64 MiB')) throw error;
+        return;
+      }
+      const actualCost = estimateBase64EntryWireBytes(bytes.byteLength, 'home', normalized);
+      if (actualCost > wireBudget.remaining) {
+        throw new Error('Sync bundle exceeds the 64 MiB transfer limit');
+      }
+      wireBudget.remaining -= actualCost;
+      seen.add(normalized);
+      entries.push({
+        relativePath: normalized,
+        contentBase64: bytes.toString('base64'),
+      });
+    };
+
+    for (const rootFile of HOME_ASSET_ROOT_FILES) {
+      await addFile(rootFile, join(realHomeDir, rootFile));
+    }
+    const walkDir = async (relDir: string, fullDir: string): Promise<void> => {
+      let info;
+      try {
+        info = await lstat(fullDir);
+      } catch {
+        return;
+      }
+      if (info.isSymbolicLink() || !info.isDirectory()) return;
+      let resolvedDir: string;
+      try {
+        resolvedDir = await realpath(fullDir);
+      } catch {
+        return;
+      }
+      const dirRel = relative(realHomeDir, resolvedDir);
+      if (dirRel.startsWith('..') || isAbsolute(dirRel)) return;
+      let children;
+      try {
+        children = await readdir(fullDir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      const sorted = children.toSorted((left, right) => left.name.localeCompare(right.name));
+      for (const child of sorted) {
+        if (child.isSymbolicLink()) continue;
+        if (HOME_ASSET_EXCLUDED_SEGMENT.test(child.name) || isSyncConflictArtifact(child.name)) continue;
+        const childRel = `${relDir}/${child.name}`;
+        if (relDir === 'agents' && child.name.toLowerCase() === 'builtin') continue;
+        const childFull = join(fullDir, child.name);
+        if (child.isDirectory()) {
+          await walkDir(childRel, childFull);
+        } else if (child.isFile()) {
+          await addFile(childRel, childFull);
+        }
+      }
+    };
+    for (const rootDir of HOME_ASSET_ROOT_DIRS) {
+      await walkDir(rootDir, join(realHomeDir, rootDir));
+    }
+    return entries.toSorted((left, right) => left.relativePath.localeCompare(right.relativePath));
+  }
+
+  private async importPortableHomeAssets(
+    assets: readonly SyncHomeAssetEntry[],
+  ): Promise<{ readonly applied: number; readonly skipped: number }> {
+    await mkdir(this.options.homeDir, { recursive: true });
+    const realHomeDir = await realpath(this.options.homeDir);
+    let applied = 0;
+    let skipped = 0;
+    for (const entry of assets) {
+      const normalized = normalizeAllowedSyncHomeAssetPath(entry.relativePath);
+      if (normalized === undefined) {
+        skipped += 1;
+        continue;
+      }
+      const dest = resolve(realHomeDir, normalized);
+      const rel = relative(realHomeDir, dest);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        skipped += 1;
+        continue;
+      }
+      if (!(await hasNoSymlinkSegments(realHomeDir, normalized))) {
+        skipped += 1;
+        continue;
+      }
+      const destParent = dirname(dest);
+      await mkdir(destParent, { recursive: true });
+      const confirmedParent = await realpath(destParent);
+      const parentRel = relative(realHomeDir, confirmedParent);
+      if (parentRel.startsWith('..') || isAbsolute(parentRel)) {
+        skipped += 1;
+        continue;
+      }
+      if (!(await isSafeRegularWriteTarget(dest))) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const handle = await open(
+          dest,
+          fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NOFOLLOW_FLAG,
+          0o644,
+        );
+        try {
+          const handleStat = await handle.stat();
+          if (!handleStat.isFile()) {
+            skipped += 1;
+            continue;
+          }
+          await handle.writeFile(Buffer.from(entry.contentBase64, 'base64'));
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        skipped += 1;
+        continue;
+      }
+      applied += 1;
+    }
+    return { applied, skipped };
+  }
+
   private async readCredentialLayers(): Promise<{
     readonly userPool: CredentialsPoolSection;
     readonly localMachineIds: ReadonlySet<string>;
@@ -769,6 +1031,35 @@ const SECRET_SKILL_FILE_PATTERN =
 function isSecretSkillSidecar(relPath: string): boolean {
   const normalized = relPath.replaceAll('\\', '/');
   return normalized.split('/').some((seg) => SECRET_SKILL_FILE_PATTERN.test(seg));
+}
+
+function isLegacyHomeAssetsRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:homeAssets|includeHomeAssets)/i.test(message) && /unrecognized|unknown|additional/i.test(message);
+}
+
+function normalizeAllowedSyncHomeAssetPath(rawPath: string): string | undefined {
+  let normalized: string;
+  try {
+    normalized = safePortablePath(rawPath);
+  } catch {
+    return undefined;
+  }
+  const parts = normalized.split('/');
+  if (parts.some((part) => HOME_ASSET_EXCLUDED_SEGMENT.test(part) || isSyncConflictArtifact(part))) {
+    return undefined;
+  }
+  if (parts.length === 1) {
+    return (HOME_ASSET_ROOT_FILES as readonly string[]).includes(normalized) ? normalized : undefined;
+  }
+  const top = parts[0];
+  if (top === undefined || !(HOME_ASSET_ROOT_DIRS as readonly string[]).includes(top)) {
+    return undefined;
+  }
+  if (top === 'agents' && parts[1]?.toLowerCase() === 'builtin') {
+    return undefined;
+  }
+  return normalized;
 }
 
 function isSafeRelativeSkillPath(relPath: string): boolean {
