@@ -299,7 +299,7 @@ export class FsWatchBridge {
     signal: AbortSignal,
   ): Promise<SessionWatch | undefined> {
     const key = sessionRuntimeKey(sessionId, runtimeId);
-    const sessionLease = await acquireSessionOperation(this.core, sessionId, 'fs-watch');
+    const sessionLease = await acquireSessionOperation(this.core, sessionId, 'fs-watch', undefined, { priority: 'background' });
     let lease: RuntimeLease | undefined;
     let handle: IHostFsWatchHandle | undefined;
     let sw: SessionWatch | undefined;

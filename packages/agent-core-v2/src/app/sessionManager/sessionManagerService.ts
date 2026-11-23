@@ -4,7 +4,7 @@ import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { abortable } from '#/_base/utils/abort';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
-import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreLifetime, withoutRestoreAttempt, type RestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
+import { restorePriority, restoreQueueObserver, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreLifetime, withoutRestoreAttempt, type RestoreLifetime, type RestorePriority } from '#/session/agentLifecycle/restoreTiming';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -68,12 +68,26 @@ interface SessionControllerEntry {
   sessionCount: number;
 }
 
+interface PendingResumeEntry {
+  promise: Promise<ISessionScopeHandle | undefined>;
+  readonly lifetime: RestoreLifetime;
+  priority: RestorePriority;
+}
+
+interface RestoreQueueEntry {
+  readonly sessionId: string;
+  priority: RestorePriority;
+  readonly wake: (admittedAs: RestorePriority) => void;
+  readonly evict: (error: Error) => void;
+  readonly reporters: Set<(position: number) => void>;
+}
+
 export class SessionManager implements ISessionManager {
   declare readonly _serviceBrand: undefined;
   private readonly sessions = new Map<string, ISessionScopeHandle>();
   private readonly ephemeral = new Map<string, { workspaceId: string; controller: SessionLifecycleService }>();
   private readonly owners = new Map<string, SessionLifecycleService>();
-  private readonly pendingResumes = new Map<string, { promise: Promise<ISessionScopeHandle | undefined>; lifetime: RestoreLifetime }>();
+  private readonly pendingResumes = new Map<string, PendingResumeEntry>();
   private readonly restoreDisposal = new AbortController();
   private readonly resumeFailures = new Map<string, Error>();
   private readonly lifecycleChains = new Map<string, Promise<void>>();
@@ -87,7 +101,8 @@ export class SessionManager implements ISessionManager {
   private residencyReclaim: Promise<void> | undefined;
   private disposed = false;
   private activeRestores = 0;
-  private readonly restoreQueue: Array<{ wake: () => void; report: (position: number) => void }> = [];
+  private activeBackgroundRestores = 0;
+  private readonly restoreQueue: RestoreQueueEntry[] = [];
   private readonly configSubscription: IDisposable | undefined;
   private evictionAttempts = 0;
   private evictionSuccesses = 0;
@@ -169,20 +184,24 @@ export class SessionManager implements ISessionManager {
     const closing = this.finishCommittedEviction(sessionId);
     if (closing) return closing.then(() => this.resume(sessionId, options));
     this.touchResidency(sessionId);
+    const priority = this.resolveRestorePriority(options);
     const inflight = this.pendingResumes.get(sessionId);
     if (inflight !== undefined) {
       if (options?.forExecutionControl) inflight.lifetime.ownerManaged = true;
+      if (priority === 'interactive') this.promotePendingRestore(sessionId, inflight);
+      else this.attachRestoreQueueReporter(sessionId);
       return inflight.promise;
     }
     this.resumeFailures.delete(sessionId);
     const lifetime: RestoreLifetime = { ownerManaged: options?.forExecutionControl === true, signal: this.restoreDisposal.signal };
+    const pending: PendingResumeEntry = { promise: Promise.resolve(undefined), lifetime, priority };
     const restoreTimeoutMs = this.residencyConfig().restoreTimeoutMs;
     const promise = this.serializeLifecycle(sessionId, () => withRestoreLifetime(lifetime, async () => {
       const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(undefined, { sessionId }, name, action);
       const live = this.sessions.get(sessionId);
       if (live !== undefined) return live;
       if (!lifetime.ownerManaged) this.startResidencyReclaim(sessionId);
-      const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId));
+      const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId, pending));
       try {
         await this.awaitSessionMaintenanceRelease(sessionId);
         const target = await phase('restore_workspace', () => this.controllerForSession(sessionId));
@@ -196,7 +215,8 @@ export class SessionManager implements ISessionManager {
         releaseRestore();
       }
     }, restoreTimeoutMs)).finally(() => this.pendingResumes.delete(sessionId));
-    this.pendingResumes.set(sessionId, { promise, lifetime });
+    pending.promise = promise;
+    this.pendingResumes.set(sessionId, pending);
     void promise.then(
       (handle) => {
         if (handle === undefined && !this.sessions.has(sessionId)) this.dropResidency(sessionId);
@@ -688,16 +708,119 @@ export class SessionManager implements ISessionManager {
     return size === undefined || size === 0;
   }
 
-  private async reserveRestoreSlot(sessionId: string): Promise<() => void> {
+  private resolveRestorePriority(options?: ResumeSessionOptions): RestorePriority {
+    if (options?.forExecutionControl === true || options?.priority === 'interactive' || restorePriority() === 'interactive') {
+      return 'interactive';
+    }
+    if (options?.priority === 'background' || restorePriority() === 'background') {
+      return 'background';
+    }
+    return 'interactive';
+  }
+
+  private canAdmitRestore(priority: RestorePriority, limit: number): boolean {
+    if (this.activeRestores >= limit) return false;
+    if (priority === 'interactive') return true;
+    if (limit <= 1) return this.activeRestores === 0;
+    return this.activeBackgroundRestores < Math.max(1, Math.floor(limit / 2)) && this.activeRestores < limit - 1;
+  }
+
+  private ensureRestoreQueueSpace(priority: RestorePriority, maxQueuedRestores: number): boolean {
+    if (maxQueuedRestores <= 0) return false;
+    let backgroundQueued = 0;
+    for (const entry of this.restoreQueue) {
+      if (entry.priority !== 'interactive') backgroundQueued += 1;
+    }
+    if (priority === 'background') {
+      const backgroundQueueLimit = maxQueuedRestores === 1 ? 1 : Math.max(1, Math.floor(maxQueuedRestores / 2));
+      return backgroundQueued < backgroundQueueLimit && this.restoreQueue.length < maxQueuedRestores;
+    }
+    if (this.restoreQueue.length < maxQueuedRestores) return true;
+    for (let index = this.restoreQueue.length - 1; index >= 0; index -= 1) {
+      const candidate = this.restoreQueue[index]!;
+      if (candidate.priority !== 'interactive') {
+        this.restoreQueue.splice(index, 1);
+        candidate.evict(new Error2(ErrorCodes.SESSION_BUSY, 'Session restore queue is full. Retry the saved message after another session finishes restoring.'));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private insertRestoreQueueEntry(entry: RestoreQueueEntry): void {
+    if (entry.priority === 'interactive') {
+      const firstBackground = this.restoreQueue.findIndex((queued) => queued.priority !== 'interactive');
+      if (firstBackground >= 0) {
+        this.restoreQueue.splice(firstBackground, 0, entry);
+        return;
+      }
+    }
+    this.restoreQueue.push(entry);
+  }
+
+  private reportRestoreQueuePositions(): void {
+    this.restoreQueue.forEach((entry, index) => {
+      const position = index + 1;
+      for (const report of entry.reporters) report(position);
+    });
+  }
+
+  private attachRestoreQueueReporter(sessionId: string): RestoreQueueEntry | undefined {
+    const entry = this.restoreQueue.find((queued) => queued.sessionId === sessionId);
+    const observer = restoreQueueObserver();
+    if (entry !== undefined && observer !== undefined) {
+      entry.reporters.add(observer);
+      observer(this.restoreQueue.indexOf(entry) + 1);
+    }
+    return entry;
+  }
+
+  private promotePendingRestore(sessionId: string, pending: PendingResumeEntry): void {
+    pending.priority = 'interactive';
+    const entry = this.restoreQueue.find((queued) => queued.sessionId === sessionId);
+    if (entry === undefined) return;
+    const observer = restoreQueueObserver();
+    if (observer !== undefined) entry.reporters.add(observer);
+    if (entry.priority !== 'interactive') {
+      const index = this.restoreQueue.indexOf(entry);
+      if (index >= 0) this.restoreQueue.splice(index, 1);
+      entry.priority = 'interactive';
+      this.insertRestoreQueueEntry(entry);
+      this.wakeRestoreQueue();
+      return;
+    }
+    if (observer !== undefined) observer(this.restoreQueue.indexOf(entry) + 1);
+  }
+
+  private async reserveRestoreSlot(sessionId: string, pending: PendingResumeEntry): Promise<() => void> {
     if (this.sessions.has(sessionId) || await this.isUnstartedSession(sessionId)) return () => {};
     const config = this.residencyConfig();
-    if (this.activeRestores >= config.maxConcurrentRestores) {
-      if (this.restoreQueue.length >= config.maxQueuedRestores) {
+    const priority = pending.priority;
+    let admittedAs: RestorePriority;
+    if (!this.canAdmitRestore(priority, config.maxConcurrentRestores)) {
+      if (!this.ensureRestoreQueueSpace(priority, config.maxQueuedRestores)) {
         throw new Error2(ErrorCodes.SESSION_BUSY, 'Session restore queue is full. Retry the saved message after another session finishes restoring.');
       }
       const signal = restoreSignal();
-      await new Promise<void>((resolve, reject) => {
-        const entry = { wake: () => { signal?.removeEventListener('abort', aborted); this.activeRestores += 1; resolve(); }, report: restoreQueueReporter() };
+      const reporters = new Set<(position: number) => void>();
+      const observer = restoreQueueObserver();
+      if (observer !== undefined) reporters.add(observer);
+      admittedAs = await new Promise<RestorePriority>((resolve, reject) => {
+        const entry: RestoreQueueEntry = {
+          sessionId,
+          priority,
+          wake: (grantedAs) => {
+            signal?.removeEventListener('abort', aborted);
+            this.activeRestores += 1;
+            if (grantedAs === 'background') this.activeBackgroundRestores += 1;
+            resolve(grantedAs);
+          },
+          evict: (error) => {
+            signal?.removeEventListener('abort', aborted);
+            reject(error);
+          },
+          reporters,
+        };
         const aborted = () => {
           const index = this.restoreQueue.indexOf(entry);
           if (index >= 0) this.restoreQueue.splice(index, 1);
@@ -705,13 +828,15 @@ export class SessionManager implements ISessionManager {
           this.wakeRestoreQueue();
           reject(signal?.reason);
         };
-        this.restoreQueue.push(entry);
-        entry.report(this.restoreQueue.length);
+        this.insertRestoreQueueEntry(entry);
+        this.reportRestoreQueuePositions();
         signal?.addEventListener('abort', aborted, { once: true });
         if (signal?.aborted) aborted();
       });
     } else {
+      admittedAs = priority;
       this.activeRestores += 1;
+      if (admittedAs === 'background') this.activeBackgroundRestores += 1;
     }
     let released = false;
     const signal = restoreSignal();
@@ -720,6 +845,9 @@ export class SessionManager implements ISessionManager {
       released = true;
       signal?.removeEventListener('abort', release);
       this.activeRestores = Math.max(0, this.activeRestores - 1);
+      if (admittedAs === 'background') {
+        this.activeBackgroundRestores = Math.max(0, this.activeBackgroundRestores - 1);
+      }
       this.wakeRestoreQueue();
     };
     signal?.addEventListener('abort', release, { once: true });
@@ -729,8 +857,17 @@ export class SessionManager implements ISessionManager {
 
   private wakeRestoreQueue(): void {
     const limit = this.residencyConfig().maxConcurrentRestores;
-    while (this.activeRestores < limit && this.restoreQueue.length > 0) this.restoreQueue.shift()!.wake();
-    this.restoreQueue.forEach((entry, index) => entry.report(index + 1));
+    let index = 0;
+    while (this.activeRestores < limit && index < this.restoreQueue.length) {
+      const entry = this.restoreQueue[index]!;
+      if (!this.canAdmitRestore(entry.priority, limit)) {
+        index += 1;
+        continue;
+      }
+      this.restoreQueue.splice(index, 1);
+      entry.wake(entry.priority);
+    }
+    this.reportRestoreQueuePositions();
   }
 
   private ensureResidency(sessionId: string): SessionResidencyEntry {

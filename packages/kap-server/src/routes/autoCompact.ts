@@ -96,7 +96,7 @@ export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
         if (missing === undefined) throw error;
         reply.send(missing);
       }
-    });
+    }, undefined, { priority: 'background' });
   });
   app.get(read.path, read.options, read.handler as Parameters<RouteHost['get']>[2]);
 

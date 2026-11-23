@@ -267,17 +267,28 @@ const MEDIA_TYPE_FIELD_PATTERN = /(?:media|mime)_?type/;
 
 const PROVIDER_INVALID_MEDIA_PATTERNS = [
   /\binvalid_media\b/i,
-  /unable to process input:\s*the file or media data is empty,\s*corrupted,\s*or malformed/i,
-  /the file or media data is empty,\s*corrupted,\s*or malformed/i,
+  /(?:image|video|audio|media)(?:\s+data)?\s+is\s+(?:empty|corrupted|malformed|invalid)/i,
   /could not (?:process|decode) (?:the |input )?(?:image|video|audio|media)/i,
   /unable to process (?:the |input )?(?:image|video|audio|media)/i,
   /failed to decode (?:the )?(?:image|video|audio|media)/i,
   /invalid_(?:image|video|audio|media)_format/i,
-  /image data you provided does not represent a valid image/i,
   /does not represent a valid (?:image|video|audio|media)/i,
   /unsupported (?:image|video|audio|media) (?:url|format|type)/i,
   /invalid (?:image|video|audio|media)(?: data| type| format)?/i,
 ] as const;
+
+function serializedProviderErrorText(current: object): string {
+  const details = providerErrorMetadata(current);
+  const message = current instanceof Error ? current.message : '';
+  if (details['upstreamDetails'] === undefined) return message;
+  let serializedDetails = '';
+  try {
+    serializedDetails = JSON.stringify(details['upstreamDetails']);
+  } catch {
+    serializedDetails = Object.prototype.toString.call(details['upstreamDetails']);
+  }
+  return serializedDetails.length > 0 ? `${message} ${serializedDetails}` : message;
+}
 
 export function isImageFormatError(error: unknown): boolean {
   if (error instanceof APIStatusError) {
@@ -314,16 +325,7 @@ export function isProviderInvalidMediaError(error: unknown): boolean {
     const status = current instanceof APIStatusError
       ? current.statusCode
       : (details['statusCode'] ?? details['upstreamStatus']);
-    const message = current instanceof Error ? current.message : '';
-    let serializedDetails = '';
-    if (details['upstreamDetails'] !== undefined) {
-      try {
-        serializedDetails = JSON.stringify(details['upstreamDetails']);
-      } catch {
-        serializedDetails = Object.prototype.toString.call(details['upstreamDetails']);
-      }
-    }
-    const combined = serializedDetails.length > 0 ? `${message} ${serializedDetails}` : message;
+    const combined = serializedProviderErrorText(current);
     const hasInvalidArgument = status === 400 || /\bINVALID_ARGUMENT\b/i.test(combined);
     if (
       hasInvalidArgument &&
@@ -336,6 +338,90 @@ export function isProviderInvalidMediaError(error: unknown): boolean {
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
+}
+
+export interface SentMediaAttachment {
+  readonly urls: readonly string[];
+}
+
+const STRUCTURED_MEDIA_URL_FIELDS = new Set([
+  'url',
+  'uri',
+  'file_uri',
+  'fileUri',
+  'media_url',
+  'mediaUrl',
+  'image_url',
+  'imageUrl',
+  'video_url',
+  'videoUrl',
+  'audio_url',
+  'audioUrl',
+  'invalid_url',
+  'invalidUrl',
+  'failed_url',
+  'failedUrl',
+  'rejected_url',
+  'rejectedUrl',
+]);
+
+function collectStructuredErrorUrls(error: unknown): ReadonlySet<string> {
+  const urls = new Set<string>();
+  const visited = new Set<object>();
+  const walkPayload = (value: unknown): void => {
+    if (typeof value !== 'object' || value === null || visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) walkPayload(item);
+      return;
+    }
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (STRUCTURED_MEDIA_URL_FIELDS.has(key) && typeof entry === 'string' && entry.length > 0) {
+        urls.add(entry);
+      } else {
+        walkPayload(entry);
+      }
+    }
+  };
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const details = providerErrorMetadata(current);
+    if (details['upstreamDetails'] !== undefined) walkPayload(details['upstreamDetails']);
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return urls;
+}
+
+/**
+ * Attributes a provider invalid-media rejection to the exact logical attachment(s)
+ * that should be poisoned. A single logical attachment (even with both source and
+ * resolved URLs) is unambiguously responsible; with multiple attachments, only
+ * attachments explicitly named in a structured provider error URL field are
+ * returned, and unattributed or ambiguous prose rejections return an empty list.
+ */
+export function identifyPoisonedMediaUrls(
+  error: unknown,
+  attachments: readonly SentMediaAttachment[],
+): readonly string[] {
+  if (attachments.length === 0 || !isProviderInvalidMediaError(error)) return [];
+  const collectUnique = (group: readonly SentMediaAttachment[]): string[] => {
+    const result = new Set<string>();
+    for (const attachment of group) {
+      for (const url of attachment.urls) {
+        if (url.length > 0) result.add(url);
+      }
+    }
+    return [...result];
+  };
+  if (attachments.length === 1) return collectUnique(attachments);
+  const structuredUrls = collectStructuredErrorUrls(error);
+  if (structuredUrls.size === 0) return [];
+  const matched = attachments.filter((attachment) =>
+    attachment.urls.some((url) => url.length > 0 && structuredUrls.has(url)),
+  );
+  if (matched.length === 0 || matched.length === attachments.length) return [];
+  return collectUnique(matched);
 }
 
 function explicitDeliveryMark(error: object): 'unknown' | 'executed' | undefined {

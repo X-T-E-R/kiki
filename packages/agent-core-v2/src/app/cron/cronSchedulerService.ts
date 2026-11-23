@@ -193,9 +193,9 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
       if (this.bootstrap.interactive === false) {
         if (this.sessions.get(sessionId) === undefined) return;
       } else if (this.sessions.acquire !== undefined) {
-        lease = await this.sessions.acquire(sessionId, 'cron-fire');
+        lease = await this.sessions.acquire(sessionId, 'cron-fire', { priority: 'background' });
         if (lease === undefined) return;
-      } else if ((await this.sessions.resume(sessionId)) === undefined) {
+      } else if ((await this.sessions.resume(sessionId, { priority: 'background' })) === undefined) {
         return;
       }
 

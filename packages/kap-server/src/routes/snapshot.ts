@@ -432,7 +432,7 @@ async function assembleSnapshotSource(
   }
   const fields = { sessionId, requestId: timing.requestId };
   const lease = await timeSessionViewPhase('snapshot_acquire', fields,
-    () => acquireSessionOperation(core, sessionId, 'operation', timing.signal), timing);
+    () => acquireSessionOperation(core, sessionId, 'operation', timing.signal, { priority: 'background' }), timing);
   let prepared: PreparedLiveSnapshot;
   try {
     prepared = await prepareSnapshotFromLease(core, broadcaster, sessionId, mode, lease, timing);
@@ -936,7 +936,7 @@ export async function readBrowseSnapshotContent(
       return readContentSegment({ subagents }, ref);
     }
     const lease = await timeSessionViewPhase('snapshot_content_acquire', fields,
-      () => acquireSessionOperation(core, sessionId, 'operation', timing.signal), timing);
+      () => acquireSessionOperation(core, sessionId, 'operation', timing.signal, { priority: 'background' }), timing);
     try {
       const handle = lease.handle;
       if (handle === undefined) return undefined;
@@ -1024,7 +1024,7 @@ async function readSnapshotMessageSource(
     return projectHydratedMessageHistoryTail(sessionId, summary.createdAt, hydrated, aligned.times, start);
   }
   const lease = await timeSessionViewPhase('snapshot_content_acquire', fields,
-    () => acquireSessionOperation(core, sessionId, 'operation', timing.signal), timing);
+    () => acquireSessionOperation(core, sessionId, 'operation', timing.signal, { priority: 'background' }), timing);
   let deferredHistory: DeferredSnapshotHistory | undefined;
   try {
     const handle = lease.handle;

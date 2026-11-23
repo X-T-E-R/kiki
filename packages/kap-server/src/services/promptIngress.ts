@@ -11,7 +11,7 @@ import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitRece
 import { assertPromptFileRefs, sessionPromptFiles } from '../lib/promptMedia';
 import { detachSlicedString } from '../lib/detachString';
 import { mapError } from '../transport/errors';
-import type { RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
+import { withRestorePriority, type RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 export type PromptIngressResult = PromptSubmitResult & Pick<PromptSubmitReceipt, 'resolved_parts'>;
@@ -620,7 +620,7 @@ export class PromptIngress {
     }, 30_000);
     timer.unref?.();
     try {
-      await this.consumer.cancel(sessionId, agentId, promptId, cancelController.signal);
+      await withRestorePriority('interactive', () => this.consumer.cancel(sessionId, agentId, promptId, cancelController.signal));
     } finally {
       clearTimeout(timer);
       this.cancelControllers.delete(cancelController);
@@ -689,7 +689,7 @@ export class PromptIngress {
         const payload = await this.payload(target, key);
         controller.signal.throwIfAborted();
         let registerUnsettledSubmit: (() => void) | undefined;
-        const rawSubmitFlight = this.consumer.submit(target.sessionId, { body: payload, fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
+        const rawSubmitFlight = withRestorePriority('interactive', () => this.consumer.submit(target.sessionId, { body: payload, fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
           steerTarget: entry.steerTarget,
           onRestoreProgress: progress => {
             if (controller.signal.aborted) return;
@@ -708,7 +708,7 @@ export class PromptIngress {
               clearTimeout(timeout);
               if (entry.contentIdentity !== undefined && this.pendingContent.get(entry.contentIdentity)?.key === entry.key) this.pendingContent.delete(entry.contentIdentity);
             });
-          } });
+          } }));
         const trackedFlight = rawSubmitFlight.then(async (resolved) => {
           if (!this.closed) {
             await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, resolved);

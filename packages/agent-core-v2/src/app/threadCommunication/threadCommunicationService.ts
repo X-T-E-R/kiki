@@ -1022,7 +1022,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const retryDelaysMs = [100, 250, 500];
     for (let attempt = 0;; attempt++) {
       try {
-        return await waitWithSignal(this.sessionManager.resume(sessionId), this.mailboxController.signal);
+        return await waitWithSignal(this.sessionManager.resume(sessionId, { priority: 'background' }), this.mailboxController.signal);
       } catch (error) {
         const waitMs = retryDelaysMs[attempt];
         const transient =

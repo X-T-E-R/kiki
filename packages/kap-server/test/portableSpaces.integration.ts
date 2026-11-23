@@ -852,6 +852,37 @@ describe('Portable Spaces authenticated locked protocol', () => {
     await expect(
       decodeAge(encoded65.bytes, { identity: wrongKey.identity }, failSync),
     ).rejects.toThrow('Unable to decrypt portable age archive');
+
+    const hugeSrc = join(root, 'huge-multiline-src');
+    const hugeDst = join(root, 'huge-multiline-dst');
+    await mkdir(join(hugeSrc, 'agents'), { recursive: true });
+    await mkdir(join(hugeDst, 'agents'), { recursive: true });
+    const hugeOldText = Array.from({ length: 200_000 }, (_, i) => `o${i}`).join('\n');
+    const hugeNewText = Array.from({ length: 200_000 }, (_, i) => `n${i}`).join('\n');
+    await writeFile(join(hugeDst, 'agents', 'large.md'), hugeOldText, 'utf8');
+    await writeFile(join(hugeSrc, 'agents', 'large.md'), hugeNewText, 'utf8');
+    const hugePreview = await request(
+      source,
+      sourceBase,
+      '/api/spaces/portable/preview',
+      { mode: 'override', sources: [{ kind: 'dir', path: hugeSrc }], target: { kind: 'dir', path: hugeDst }, domains: ['agents'] },
+      portableSpacePreviewResultSchema,
+    );
+    const hugeRow = hugePreview.rows.find((row) => row.path === 'agents/large.md');
+    expect(hugeRow?.diffPreview).toBeDefined();
+    expect(hugeRow!.diffPreview!.length).toBeLessThanOrEqual(16_384);
+    expect(hugeRow!.diffPreview).toContain('-o0');
+    expect(hugeRow!.diffPreview).toContain('+n0');
+    expect(hugeRow!.diffPreview).toContain('more lines omitted');
+
+    await request(
+      source,
+      sourceBase,
+      '/api/spaces/portable/apply',
+      { direct: { mode: 'override', sources: [{ kind: 'dir', path: hugeSrc }], target: { kind: 'dir', path: hugeDst }, domains: ['agents'] }, createBackup: false },
+      portableSpaceApplyReceiptSchema,
+    );
+    expect(await readFile(join(hugeDst, 'agents', 'large.md'), 'utf8')).toBe(hugeNewText);
   });
 
 });

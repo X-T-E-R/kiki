@@ -3,6 +3,7 @@ import {
   ITelemetryService,
   isError2,
   type ISessionScopeHandle,
+  type ResumeSessionOptions,
   type Scope,
   type SessionLease,
 } from '@kiki/agent-core-v2';
@@ -54,13 +55,14 @@ export async function acquireSessionOperation(
   sessionId: string,
   reason: string,
   signal?: AbortSignal,
+  options?: ResumeSessionOptions,
 ): Promise<SessionOperationLease> {
   const deadline = restoreSignal();
   signal = deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
   signal?.throwIfAborted();
   const manager = core.accessor.get(ISessionManager);
   if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
-  const lease: SessionLease | undefined = await manager.acquire(sessionId, reason, undefined, signal).catch((error: unknown) => {
+  const lease: SessionLease | undefined = await manager.acquire(sessionId, reason, options, signal).catch((error: unknown) => {
     core.accessor
       .get(ITelemetryService)
       .withContext({ sessionId })
@@ -88,8 +90,9 @@ export async function withSessionOperation<T>(
   sessionId: string,
   work: (handle: ISessionScopeHandle | undefined) => Promise<T>,
   signal?: AbortSignal,
+  options?: ResumeSessionOptions,
 ): Promise<T> {
-  const lease = await acquireSessionOperation(core, sessionId, 'operation', signal);
+  const lease = await acquireSessionOperation(core, sessionId, 'operation', signal, options);
   try {
     return await work(lease.handle);
   } finally {

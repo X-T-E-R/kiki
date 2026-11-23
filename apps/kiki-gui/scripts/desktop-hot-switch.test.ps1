@@ -220,7 +220,25 @@ internal static class Program
         string executable = Process.GetCurrentProcess().MainModule.FileName;
         string directory = Path.GetDirectoryName(executable);
         string server = Path.Combine(directory, "kiki-server.exe");
-        string launcherHome = Environment.GetEnvironmentVariable("KIKI_HOME");
+        string launcherHome = null;
+        string[] cmdArgs = Environment.GetCommandLineArgs();
+        for (int i = 1; i < cmdArgs.Length; i++)
+        {
+            if (String.Equals(cmdArgs[i], "--home", StringComparison.OrdinalIgnoreCase) && i + 1 < cmdArgs.Length)
+            {
+                launcherHome = cmdArgs[i + 1];
+                break;
+            }
+            if (cmdArgs[i].StartsWith("--home=", StringComparison.OrdinalIgnoreCase))
+            {
+                launcherHome = cmdArgs[i].Substring("--home=".Length);
+                break;
+            }
+        }
+        if (String.IsNullOrWhiteSpace(launcherHome))
+        {
+            launcherHome = Environment.GetEnvironmentVariable("KIKI_HOME");
+        }
         string preferences = Path.Combine(launcherHome, "desktop.json");
         string explicitExitPath = Path.Combine(launcherHome, "server", "explicit-exit.json");
         bool launcherClosing = false;
@@ -240,14 +258,16 @@ internal static class Program
             Action startServer = null;
             startServer = delegate
             {
-                Process process = Process.Start(new ProcessStartInfo
+                ProcessStartInfo psi = new ProcessStartInfo
                 {
                     FileName = server,
                     Arguments = "serve",
                     WorkingDirectory = directory,
                     UseShellExecute = false,
                     CreateNoWindow = true
-                });
+                };
+                psi.EnvironmentVariables["KIKI_HOME"] = launcherHome;
+                Process process = Process.Start(psi);
                 backend = process;
                 int backendPid = process.Id;
                 process.EnableRaisingEvents = true;
@@ -413,6 +433,11 @@ internal static class Program
         }
         if (action == "update" || action == "restart" || action == "quit")
         {
+            if (action == "update" && File.Exists(Path.Combine(home, "fixture-reject-update")))
+            {
+                Send(context, 200, Envelope(50001, "Fixture rejected update shutdown", "null"));
+                return;
+            }
             int pid = Process.GetCurrentProcess().Id;
             File.WriteAllText(Path.Combine(home, "server", "explicit-exit.json"),
                 "{\"schemaVersion\":1,\"serverId\":" + Json(serverId) + ",\"pid\":" + pid + ",\"startedAt\":" + startedAt + ",\"action\":" + Json(action) + "}");
@@ -1553,8 +1578,96 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-Equal 'active' ([string]$conductorObj.postSwitch.layout) 'kiki-ops-conductor.mjs switch did not verify active layout.'
     Assert-True (Test-Path -LiteralPath (Join-Path $runtimeRoot 'hot-switch-ledger.json') -PathType Leaf) 'kiki-ops-conductor.mjs did not write hot-switch-ledger.json.'
 
+    # 10. Multi-home end-to-end: two managed spaces (second path WITH spaces), AppScopeOnly inspect, partial shutdown failure recovery, and rollback.
+    $secondSpaceHome = Join-Path $testRoot 'second space home'
+    [IO.Directory]::CreateDirectory((Join-Path $secondSpaceHome 'server\instances')) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $secondSpaceHome 'server.local-owner'), $fixtureToken)
+    function Wait-ForSpaceServer([string]$SpaceHome, [string]$ExpectedCommit, [int]$TimeoutSeconds = 15) {
+        $spaceInstances = Join-Path $SpaceHome 'server\instances'
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            foreach ($file in Get-ChildItem -LiteralPath $spaceInstances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+                try {
+                    $inst = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+                    $proc = Get-Process -Id ([int]$inst.pid) -ErrorAction Stop
+                    $reply = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/meta" -f $inst.port) -Headers @{ Authorization = 'Bearer ' + $fixtureToken } -TimeoutSec 3
+                    if ($reply.code -eq 0 -and $reply.data.build_id -ceq $ExpectedCommit) {
+                        return [pscustomobject]@{ instance = $inst; process = $proc; meta = $reply.data }
+                    }
+                } catch {}
+            }
+            Start-Sleep -Milliseconds 150
+        }
+        throw "Timed out waiting for fixture server in $SpaceHome with build_id $ExpectedCommit"
+    }
+
+    $activeDesktopPath = Join-Path (Join-Path $runtimeRoot 'active') 'kiki-desktop.exe'
+    $null = Start-Process -FilePath $activeDesktopPath -WorkingDirectory (Split-Path -Parent $activeDesktopPath) -ArgumentList ('--home "' + $secondSpaceHome + '"') -PassThru
+    $secondOldServer = Wait-ForSpaceServer $secondSpaceHome $oldCommit 15
+    Assert-Equal $oldCommit ([string]$secondOldServer.meta.build_id) 'Secondary space with spaces in path did not start on old commit.'
+
+    # 10a. -InspectOnly -AppScopeOnly must discover BOTH spaces without invoking per-session RPCs.
+    $appScopeInspectRaw = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-InspectOnly',
+        '-AppScopeOnly'
+    ) 0
+    $appScopeInspect = $appScopeInspectRaw | ConvertFrom-Json
+    Assert-Equal 2 (@($appScopeInspect.spaces).Count) 'Multi-home -InspectOnly -AppScopeOnly did not discover both spaces.'
+    Assert-Equal $true ([bool]$appScopeInspect.spaces[1].appScopeOnly) 'Secondary space inspect did not report appScopeOnly=true.'
+    Assert-Equal 0 (@($appScopeInspect.spaces[1].workPendingSessions).Count) 'AppScopeOnly inspect should not populate per-session workPendingSessions.'
+
+    # 10b. Partial shutdown failure: secondary rejects 'update' after primary accepts and exits -> must persist 'stopping' (NOT 'complete'), then -Recover converges BOTH spaces onto $goodCommit!
+    $rejectFlag = Join-Path $secondSpaceHome 'fixture-reject-update'
+    [IO.File]::WriteAllText($rejectFlag, '1')
+    try {
+        $partialFailOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $goodCandidate,
+            '-ExpectedCommit', $goodCommit,
+            '-SettleSeconds', '15',
+            '-StartupSeconds', '15'
+        ) 1
+        Assert-Contains 'Fixture rejected update shutdown' $partialFailOut 'Partial shutdown failure did not surface secondary update rejection.'
+        $splitState = Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json
+        Assert-Equal 'stopping' ([string]$splitState.phase) 'Partial shutdown failure did not keep phase=stopping for recovery!'
+    } finally {
+        if (Test-Path -LiteralPath $rejectFlag) { Remove-Item -LiteralPath $rejectFlag -Force }
+    }
+
+    $recoverMultiOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-Recover',
+        '-StartupSeconds', '15'
+    ) 0
+    Assert-Contains "Recovery complete: $goodReleaseId" $recoverMultiOut 'Multi-home -Recover did not converge to target release.'
+    $primaryGoodMulti = Wait-ForSpaceServer $homePath $goodCommit 15
+    $secondGoodMulti = Wait-ForSpaceServer $secondSpaceHome $goodCommit 15
+    Assert-Equal $goodCommit ([string]$primaryGoodMulti.meta.build_id) 'Primary home not on target commit after multi-home recovery.'
+    Assert-Equal $goodCommit ([string]$secondGoodMulti.meta.build_id) 'Secondary home (with spaces in path) not on target commit after multi-home recovery.'
+
+    # 10c. -Recover -Rollback on an unfinished switch record while BOTH homes are running on target MUST replace BOTH homes back onto $oldCommit (preserving quoted --home path with spaces)!
+    $forcedUnfinished = Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json
+    $forcedUnfinished.phase = 'resuming'
+    [IO.File]::WriteAllText($switchStatePath, ($forcedUnfinished | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+    $rollbackMultiOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-Recover',
+        '-Rollback',
+        '-StartupSeconds', '15'
+    ) 0
+    Assert-Contains "Recovery complete: $oldReleaseId" $rollbackMultiOut 'Multi-home -Recover -Rollback did not roll back to old release.'
+    $primaryRolledBack = Wait-ForSpaceServer $homePath $oldCommit 15
+    $secondRolledBack = Wait-ForSpaceServer $secondSpaceHome $oldCommit 15
+    Assert-Equal $oldCommit ([string]$primaryRolledBack.meta.build_id) 'Primary home was not replaced with old commit on -Recover -Rollback.'
+    Assert-Equal $oldCommit ([string]$secondRolledBack.meta.build_id) 'Secondary home (with spaces in path) was not replaced with old commit on -Recover -Rollback.'
+
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, clean UTF-8 detached logging, inspect/canary, failed/resuming fix, legacy->active migration, and kiki-ops-conductor.'
+    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, clean UTF-8 detached logging, inspect/canary, failed/resuming fix, legacy->active migration, kiki-ops-conductor, and multi-home recovery/rollback with quoted spaces.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome

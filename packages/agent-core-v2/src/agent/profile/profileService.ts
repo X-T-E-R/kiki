@@ -3186,7 +3186,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       persona: this.currentPersona,
       roomPrompt: this.profileState.roomPrompt,
       profileName: this.profileName,
-      profileDefinitionId: this.activeProfileDefinitionId ?? this.profileState.profileDefinitionId,
+      profileDefinitionId:
+        this.activeProfileDefinitionId ??
+        this.profileState.profileDefinitionId ??
+        (this.profileName === undefined ? undefined : this.catalog.get(this.profileName)?.definitionId),
       routeId: this.routeId,
       lockedModelAlias: this.profileState.lockedModelAlias,
       lockedThinkingEffort: this.profileState.lockedThinkingEffort,

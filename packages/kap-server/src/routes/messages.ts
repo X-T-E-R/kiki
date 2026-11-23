@@ -214,7 +214,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
           return;
         }
-        lease = await acquireSessionOperation(core, session_id, 'operation');
+        lease = await acquireSessionOperation(core, session_id, 'operation', undefined, { priority: 'interactive' });
         const session = lease.handle;
         if (session === undefined) throw new Error2('session.not_found', `session ${session_id} does not exist`);
         const agent = await ensureMainAgent(session);

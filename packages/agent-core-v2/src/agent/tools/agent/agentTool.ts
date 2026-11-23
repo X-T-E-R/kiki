@@ -145,6 +145,7 @@ export class SubagentTool implements ISubagentTool {
   private readonly backgroundLaunchQueue: Array<() => void> = [];
   private catalogReady = false;
   private frozenDescription: string | undefined;
+  private frozenDescriptionKey: string | undefined;
   private advertised: ReturnType<ISubagentTool['visibleProfileDescriptions']> = new Map();
 
   constructor(
@@ -180,9 +181,30 @@ export class SubagentTool implements ISubagentTool {
     });
   }
 
+  private descriptionKey(): string | undefined {
+    const caller = this.profile.data();
+    if (caller.profileName === undefined) return undefined;
+    return JSON.stringify({
+      profileName: caller.profileName,
+      profileDefinitionId: caller.profileDefinitionId,
+      canSpawnSubagents: caller.canSpawnSubagents,
+      allowedSubagents: caller.allowedSubagents,
+      denySubagents: caller.denySubagents,
+      preferredSubagents: caller.preferredSubagents,
+      canRunInBackground: this.canRunInBackground(),
+    });
+  }
+
   get description(): string {
     if (!this.catalogReady) return this.buildDescription();
-    return this.frozenDescription ??= this.buildDescription();
+    const key = this.descriptionKey();
+    if (key === undefined) return this.buildDescription();
+    if (this.frozenDescription !== undefined && this.frozenDescriptionKey === key) {
+      return this.frozenDescription;
+    }
+    this.frozenDescriptionKey = key;
+    this.frozenDescription = this.buildDescription();
+    return this.frozenDescription;
   }
 
   private buildDescription(): string {

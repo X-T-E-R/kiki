@@ -9,6 +9,7 @@ param(
     [switch]$Background,
     [switch]$Detach,
     [switch]$InspectOnly,
+    [switch]$AppScopeOnly,
     [switch]$CanaryCheck,
     [ValidateRange(0, 86400)][int]$CanaryTimeoutSeconds = 0,
     [ValidateRange(0, 300)][int]$DetachDelaySeconds = 5,
@@ -43,8 +44,30 @@ $activeDesktopExe = Join-Path $activeDir 'kiki-desktop.exe'
 $activeServerExe = Join-Path $activeDir 'kiki-server.exe'
 [System.Net.WebRequest]::DefaultWebProxy = $null
 
-function Call-Local([object]$Server, [string]$Path, [object]$Body, [int]$TimeoutSeconds = 60) {
-    $headers = @{ Authorization = 'Bearer ' + $ownerToken }
+function Read-OwnerToken([string]$SpaceHome, [switch]$AllowMissing) {
+    $ownerPath = Join-Path $SpaceHome 'server.local-owner'
+    if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) {
+        if ($AllowMissing) { return $null }
+        throw ("The selected home ({0}) has no local-owner capability. Start its managed desktop normally and verify the home before switching." -f $SpaceHome)
+    }
+    $rawToken = [IO.File]::ReadAllText($ownerPath).Trim()
+    if ($rawToken -notmatch '^[A-Za-z0-9_-]{43}$') {
+        if ($AllowMissing) { return $null }
+        throw ("The local-owner capability for {0} is invalid." -f $SpaceHome)
+    }
+    return $rawToken
+}
+
+function Call-Local([object]$Server, [string]$Path, [object]$Body = $null, [int]$TimeoutSeconds = 60, [string]$Token = $null) {
+    $effectiveToken = $Token
+    if ([string]::IsNullOrWhiteSpace($effectiveToken) -and $null -ne $Server) {
+        $tokProp = $Server.PSObject.Properties['ownerToken']
+        if ($null -ne $tokProp -and -not [string]::IsNullOrWhiteSpace([string]$tokProp.Value)) {
+            $effectiveToken = [string]$tokProp.Value
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($effectiveToken)) { $effectiveToken = $ownerToken }
+    $headers = @{ Authorization = 'Bearer ' + $effectiveToken }
     $url = 'http://127.0.0.1:{0}/api/{1}' -f $Server.port, $Path
     if ($null -eq $Body) {
         $reply = Invoke-RestMethod -Uri $url -Headers $headers -MaximumRedirection 0 -TimeoutSec 10
@@ -115,9 +138,10 @@ function Get-ProcessTreePids([int[]]$RootPids) {
     return @($seen)
 }
 
-function Get-HomeRegisteredServerPids {
+function Get-HomeRegisteredServerPids([string]$SpaceHome = $homePath) {
+    $spaceInstances = Join-Path $SpaceHome 'server\instances'
     $pids = New-Object 'System.Collections.Generic.HashSet[int]'
-    foreach ($file in @(Get-ChildItem -LiteralPath $instances -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $spaceInstances -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
         try {
             $inst = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
             if ($file.BaseName -cne [string](Get-ObjectProperty $inst 'server_id')) { continue }
@@ -175,9 +199,12 @@ function Get-RuntimeServerBinaryInfo([string]$BinaryPath) {
     return $null
 }
 
-function Find-Server {
+function Find-Server([string]$SpaceHome = $homePath, [string]$SpaceToken = $null) {
+    $spaceInstances = Join-Path $SpaceHome 'server\instances'
+    $effectiveToken = if (-not [string]::IsNullOrWhiteSpace($SpaceToken)) { $SpaceToken } else { $ownerToken }
+    if ([string]::IsNullOrWhiteSpace($effectiveToken)) { return $null }
     $matches = @(
-        foreach ($file in Get-ChildItem -LiteralPath $instances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+        foreach ($file in Get-ChildItem -LiteralPath $spaceInstances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
             $instance = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
             if ($instance.host -notin @('127.0.0.1', 'localhost') -or $instance.port -le 0) { continue }
             $process = Get-Process -Id $instance.pid -ErrorAction SilentlyContinue
@@ -187,12 +214,15 @@ function Find-Server {
             $binary = Get-ProcessPathSafe $process
             $binaryInfo = Get-RuntimeServerBinaryInfo $binary
             if ($null -eq $binaryInfo) { continue }
-            $meta = Call-Local $instance 'meta'
+            $instance | Add-Member -NotePropertyName ownerToken -NotePropertyValue $effectiveToken -Force
+            $meta = Call-Local $instance 'meta' $null 10 $effectiveToken
             if ($meta.server_id -cne $instance.server_id -or !$meta.desktop_managed -or $meta.dangerous_bypass_auth `
                 -or $meta.build_id -cne $instance.build_id) { throw 'The local service identity does not match its registration.' }
             $process.EnableRaisingEvents = $true
             $null = $process.Handle
             [pscustomobject]@{
+                kikiHome = $SpaceHome
+                ownerToken = $effectiveToken
                 instance = $instance
                 process = $process
                 meta = $meta
@@ -202,20 +232,135 @@ function Find-Server {
             }
         }
     )
-    if ($matches.Count -gt 1) { throw 'More than one managed service is active in this home. Close the extra instance before switching.' }
+    if ($matches.Count -gt 1) { throw ("More than one managed service is active in home {0}. Close the extra instance before switching." -f $SpaceHome) }
     if ($matches.Count -eq 1) { return $matches[0] }
+    return $null
+}
+
+function Get-ShellHomeFromCommandLine([string]$CommandLine, [string]$DefaultHome) {
+    if (-not [string]::IsNullOrWhiteSpace($CommandLine)) {
+        if ($CommandLine -match '(?i)(?:^|\s)--home(?:=|\s+)(?:"([^"]+)"|''([^'']+)''|(\S+))') {
+            $rawHome = if ($Matches[1]) { $Matches[1] } elseif ($Matches[2]) { $Matches[2] } else { $Matches[3] }
+            if (-not [string]::IsNullOrWhiteSpace($rawHome)) {
+                $full = [IO.Path]::GetFullPath($rawHome.Trim())
+                if ($full.Length -gt 3 -and $full.EndsWith('\')) { $full = $full.TrimEnd('\') }
+                return $full
+            }
+        }
+    }
+    $fallback = [IO.Path]::GetFullPath($DefaultHome)
+    if ($fallback.Length -gt 3 -and $fallback.EndsWith('\')) { $fallback = $fallback.TrimEnd('\') }
+    return $fallback
+}
+
+function Find-ShellEntries {
+    $expectedActiveDesktop = Join-Path (Get-ActivePath $runtime) 'kiki-desktop.exe'
+    $releasesPrefix = (Join-Path $runtime 'releases') + '\'
+    $cmdByPid = @{}
+    try {
+        foreach ($wmiProc in @(Get-CimInstance Win32_Process -Filter "Name='kiki-desktop.exe'" -ErrorAction SilentlyContinue)) {
+            $cmdByPid[[int]$wmiProc.ProcessId] = [string]$wmiProc.CommandLine
+        }
+    } catch {}
+    $entries = @()
+    foreach ($proc in @(Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue)) {
+        $procPath = Get-ProcessPathSafe $proc
+        if (-not $procPath) { continue }
+        if (($procPath -ine $expectedActiveDesktop) -and (-not $procPath.StartsWith($releasesPrefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
+        $cmdLine = if ($cmdByPid.ContainsKey([int]$proc.Id)) { $cmdByPid[[int]$proc.Id] } else { '' }
+        $shellHome = Get-ShellHomeFromCommandLine $cmdLine $homePath
+        $entries += [pscustomobject]@{
+            process = $proc
+            pid = [int]$proc.Id
+            executablePath = $procPath
+            commandLine = $cmdLine
+            kikiHome = $shellHome
+            hasExplicitHomeArg = ($cmdLine -match '(?i)(?:^|\s)--home(?:=|\s+)')
+        }
+    }
+    return @($entries)
 }
 
 function Find-Shells {
-    $expectedActiveDesktop = Join-Path (Get-ActivePath $runtime) 'kiki-desktop.exe'
-    $releasesPrefix = (Join-Path $runtime 'releases') + '\'
-    Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object {
-        $procPath = Get-ProcessPathSafe $_
-        $procPath -and (
-            ($procPath -ieq $expectedActiveDesktop) -or
-            ($procPath.StartsWith($releasesPrefix, [StringComparison]::OrdinalIgnoreCase))
-        )
+    return @(Find-ShellEntries | ForEach-Object { $_.process })
+}
+
+function Discover-RuntimeSpaces([switch]$AllowMissingTokens) {
+    $shellEntries = @(Find-ShellEntries)
+    $shellsByKey = @{}
+    $orderedHomes = New-Object System.Collections.Generic.List[string]
+    $seenKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+    $primaryKey = $homePath.ToLowerInvariant()
+    $null = $seenKeys.Add($primaryKey)
+    $orderedHomes.Add($homePath)
+    foreach ($entry in $shellEntries) {
+        $key = $entry.kikiHome.ToLowerInvariant()
+        if ($seenKeys.Add($key)) {
+            $orderedHomes.Add($entry.kikiHome)
+        }
+        if (-not $shellsByKey.ContainsKey($key)) {
+            $shellsByKey[$key] = @()
+        }
+        $shellsByKey[$key] = @($shellsByKey[$key]) + @($entry)
     }
+    $spaces = @()
+    foreach ($spaceHome in $orderedHomes) {
+        $key = $spaceHome.ToLowerInvariant()
+        $isPrimary = ($key -ceq $primaryKey)
+        $entries = @(if ($shellsByKey.ContainsKey($key)) { $shellsByKey[$key] })
+        $spaceShells = @($entries | ForEach-Object { $_.process })
+        $passHomeArg = (-not $isPrimary) -or (@($entries | Where-Object { $_.hasExplicitHomeArg }).Count -gt 0)
+        $tokenError = $null
+        $spaceToken = $null
+        try {
+            $spaceToken = Read-OwnerToken $spaceHome -AllowMissing:$AllowMissingTokens
+            if ($null -eq $spaceToken -and $AllowMissingTokens) {
+                $ownerPath = Join-Path $spaceHome 'server.local-owner'
+                $tokenError = if (Test-Path -LiteralPath $ownerPath -PathType Leaf) { 'The local-owner capability is invalid.' } else { 'No local-owner capability file found.' }
+            }
+        } catch {
+            if ($AllowMissingTokens) {
+                $tokenError = $_.Exception.Message
+            } else {
+                throw
+            }
+        }
+        $server = if ($null -ne $spaceToken) { Find-Server $spaceHome $spaceToken } else { $null }
+        $spaces += [pscustomobject]@{
+            kikiHome = $spaceHome
+            isPrimary = $isPrimary
+            passHomeArg = $passHomeArg
+            ownerToken = $spaceToken
+            tokenError = $tokenError
+            server = $server
+            shells = $spaceShells
+            shellEntries = $entries
+        }
+    }
+    return @($spaces)
+}
+
+function Get-RecordedSpaces([object]$StateObj) {
+    $rawSpaces = Get-ObjectProperty $StateObj 'spaces'
+    $recorded = @(if ($null -ne $rawSpaces) { @($rawSpaces) | Where-Object { $null -ne $_ } })
+    if ($recorded.Count -gt 0) { return $recorded }
+    $rawSessions = Get-ObjectProperty $StateObj 'sessions'
+    $sessionItems = @(if ($null -ne $rawSessions) { @($rawSessions) | Where-Object { $null -ne $_ } })
+    return @(
+        [pscustomobject]@{
+            kikiHome = [string]$StateObj.kikiHome
+            isPrimary = $true
+            passHomeArg = $false
+            oldReleaseId = [string]$StateObj.oldReleaseId
+            oldBuildId = [string]$StateObj.oldBuildId
+            oldServerId = [string]$StateObj.oldServerId
+            serverHomeId = [string]$StateObj.serverHomeId
+            spaceId = [string]$StateObj.spaceId
+            hadDesktop = [bool]$StateObj.hadDesktop
+            fenceOperationId = [string](Get-ObjectProperty $StateObj 'fenceOperationId')
+            sessions = $sessionItems
+        }
+    )
 }
 
 function Get-ExpectedDesktopPathForServer([object]$ServerInfo) {
@@ -293,17 +438,19 @@ function Get-SessionActiveTaskCount([object]$Instance, [string]$SessionId, [obje
     }
 }
 
-function Get-LiveInspectionSnapshot([object]$ServerInfo, [object[]]$Shells = @()) {
+function Get-LiveInspectionSnapshot([object]$ServerInfo, [object[]]$Shells = @(), [switch]$AppScopeOnly) {
     if ($null -eq $ServerInfo) {
         return [ordered]@{
             server = $null
             shells = @($Shells | ForEach-Object { [ordered]@{ pid = [int]$_.Id; executablePath = (Get-ProcessPathSafe $_) } })
             lifecycle = $null
             workPendingSessions = @()
+            appScopeOnly = [bool]$AppScopeOnly
         }
     }
     $lifecycle = Lifecycle $ServerInfo.instance ''
-    $pendingDetails = @(
+    $pendingDetails = New-Object System.Collections.Generic.List[object]
+    if (-not $AppScopeOnly) {
         foreach ($sid in @($lifecycle.work_pending)) {
             $control = $null
             $readError = $null
@@ -311,7 +458,7 @@ function Get-LiveInspectionSnapshot([object]$ServerInfo, [object[]]$Shells = @()
             catch { $readError = $_.Exception.Message }
             $agents = @(Get-ObjectProperty $control 'agents')
             $activeTaskCount = if ($null -ne $control) { Get-SessionActiveTaskCount $ServerInfo.instance $sid $control } else { 0 }
-            [ordered]@{
+            $pendingDetails.Add([ordered]@{
                 sessionId = $sid
                 phase = if ($null -ne $control) { [string](Get-ObjectProperty $control 'phase') } else { 'unknown' }
                 pauseOperationId = if ($null -ne $control) { Get-ObjectProperty $control 'pauseOperationId' } else { $null }
@@ -325,9 +472,9 @@ function Get-LiveInspectionSnapshot([object]$ServerInfo, [object[]]$Shells = @()
                     }
                 })
                 error = $readError
-            }
+            })
         }
-    )
+    }
     return [ordered]@{
         server = [ordered]@{
             server_id = [string]$ServerInfo.meta.server_id
@@ -349,7 +496,8 @@ function Get-LiveInspectionSnapshot([object]$ServerInfo, [object[]]$Shells = @()
             hot_switch_prepared = [bool](Get-ObjectProperty $lifecycle 'hot_switch_prepared')
             work_pending = @($lifecycle.work_pending)
         }
-        workPendingSessions = $pendingDetails
+        workPendingSessions = $pendingDetails.ToArray()
+        appScopeOnly = [bool]$AppScopeOnly
     }
 }
 
@@ -407,43 +555,79 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
 
         $deadline = if ($TimeoutSeconds -gt 0) { [DateTime]::UtcNow.AddSeconds($TimeoutSeconds) } else { $null }
         $meta = $null
+        $lastProbeError = $null
         do {
             if ($proc.HasExited) {
-                throw "Canary server exited prematurely with code $($proc.ExitCode)."
+                $detail = if (-not [string]::IsNullOrWhiteSpace($lastProbeError)) { " Last probe error: $lastProbeError" } else { '' }
+                throw "Canary server exited prematurely with code $($proc.ExitCode).$detail"
             }
             $ownedPids = @(Get-ProcessTreePids @([int]$proc.Id))
             if ($ownedPids.Count -eq 0) {
-                throw "Canary server lost process liveness before reporting readiness."
+                $detail = if (-not [string]::IsNullOrWhiteSpace($lastProbeError)) { " Last probe error: $lastProbeError" } else { '' }
+                throw "Canary server lost process liveness before reporting readiness.$detail"
             }
             foreach ($file in @(Get-ChildItem -LiteralPath $canaryInstances -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+                $inst = $null
+                $liveToken = $null
                 try {
-                    $inst = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+                    $rawInst = Get-Content -LiteralPath $file.FullName -Raw
+                    if ([string]::IsNullOrWhiteSpace($rawInst)) { continue }
+                    $inst = $rawInst | ConvertFrom-Json
                     $instPid = [int]$inst.pid
                     if ($instPid -le 0 -or [int]$inst.port -le 0) { continue }
                     if ($ownedPids -notcontains $instPid) { continue }
                     if ($inst.host -notin @('127.0.0.1', 'localhost')) { continue }
                     $liveToken = [IO.File]::ReadAllText((Join-Path $canaryHome 'server.local-owner')).Trim()
-                    $headers = @{ Authorization = 'Bearer ' + $liveToken }
-                    $url = 'http://127.0.0.1:{0}/api/meta' -f $inst.port
-                    $reply = Invoke-RestMethod -Uri $url -Headers $headers -MaximumRedirection 0 -TimeoutSec 5
-                    if ($reply.code -eq 0 -and $reply.data.server_id -ceq $inst.server_id) {
-                        $canaryPort = [int]$inst.port
-                        $canaryServerId = [string]$inst.server_id
-                        $canaryServerPid = $instPid
-                        $canaryManaged = [bool](Get-ObjectProperty $reply.data 'desktop_managed')
-                        $canaryToken = $liveToken
-                        $meta = $reply.data
-                        break
-                    }
                 } catch {
+                    $lastProbeError = $_.Exception.Message
+                    continue
                 }
+                $probeUrl = 'http://127.0.0.1:{0}/api/meta' -f $inst.port
+                $headers = @{ Authorization = 'Bearer ' + $liveToken }
+                $reply = $null
+                try {
+                    $reply = Invoke-RestMethod -Uri $probeUrl -Headers $headers -MaximumRedirection 0 -TimeoutSec 5
+                } catch {
+                    $lastProbeError = $_.Exception.Message
+                    $responseProperty = $_.Exception.PSObject.Properties['Response']
+                    $response = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
+                    if ($null -ne $response) {
+                        $statusCode = 0
+                        try { $statusCode = [int]$response.StatusCode } catch {}
+                        throw ("Canary readiness probe returned HTTP {0} from {1}: {2}" -f $statusCode, $probeUrl, $lastProbeError)
+                    }
+                    $webStatusProp = $_.Exception.PSObject.Properties['Status']
+                    $webStatus = if ($null -ne $webStatusProp) { [string]$webStatusProp.Value } else { '' }
+                    if ($webStatus -eq 'Timeout') {
+                        throw ("Canary readiness probe timed out waiting for HTTP response from {0}: {1}" -f $probeUrl, $lastProbeError)
+                    }
+                    continue
+                }
+                if ($null -eq $reply -or ($reply -is [string]) -or $null -eq $reply.PSObject.Properties['code']) {
+                    throw ("Canary readiness probe returned invalid response contract from {0}." -f $probeUrl)
+                }
+                if ($reply.code -ne 0) {
+                    throw ("Canary readiness probe API error from {0}: code={1} msg={2}" -f $probeUrl, $reply.code, (Get-ObjectProperty $reply 'msg'))
+                }
+                $replyData = Get-ObjectProperty $reply 'data'
+                if ($null -eq $replyData -or ([string](Get-ObjectProperty $replyData 'server_id')) -cne ([string]$inst.server_id)) {
+                    throw ("Canary server_id mismatch from {0}: expected '{1}', got '{2}'." -f $probeUrl, $inst.server_id, (Get-ObjectProperty $replyData 'server_id'))
+                }
+                $canaryPort = [int]$inst.port
+                $canaryServerId = [string]$inst.server_id
+                $canaryServerPid = [int]$inst.pid
+                $canaryManaged = [bool](Get-ObjectProperty $replyData 'desktop_managed')
+                $canaryToken = $liveToken
+                $meta = $replyData
+                break
             }
             if ($null -ne $meta) { break }
             Start-Sleep -Milliseconds 150
         } while ($null -eq $deadline -or [DateTime]::UtcNow -lt $deadline)
 
         if ($null -eq $meta) {
-            throw "Canary server did not report /api/meta readiness within ${TimeoutSeconds}s."
+            $detail = if (-not [string]::IsNullOrWhiteSpace($lastProbeError)) { " Last probe error: $lastProbeError" } else { '' }
+            throw "Canary server did not report /api/meta readiness within ${TimeoutSeconds}s.$detail"
         }
         if (-not [string]::IsNullOrWhiteSpace($ExpectedBuildId) -and ([string](Get-ObjectProperty $meta 'build_id')) -cne $ExpectedBuildId) {
             throw ("Canary server reported build_id '{0}' instead of expected '{1}'." -f (Get-ObjectProperty $meta 'build_id'), $ExpectedBuildId)
@@ -457,6 +641,7 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
             server_version = Get-ObjectProperty $meta 'server_version'
             artifactSha256 = $artifactSha256
             elapsedMs = [int]$sw.ElapsedMilliseconds
+            lastProbeError = $lastProbeError
             error = $null
         }
     } finally {
@@ -510,9 +695,9 @@ function Stop-ProcessBounded([object]$Proc, [int]$WaitMilliseconds = 5000) {
     try { $Proc.Refresh() } catch {}
 }
 
-function Close-DesktopShell([object]$Shell) {
+function Close-DesktopShell([object]$Shell, [string]$SpaceHome = $homePath) {
     if ($Shell.HasExited) { return }
-    $prefsPath = Join-Path $homePath 'desktop.json'
+    $prefsPath = Join-Path $SpaceHome 'desktop.json'
     $hadPrefs = Test-Path -LiteralPath $prefsPath -PathType Leaf
     $prefs = if ($hadPrefs) { Get-Content -LiteralPath $prefsPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
     $original = $prefs.PSObject.Properties['closeToTray']
@@ -542,117 +727,186 @@ function Close-DesktopShell([object]$Shell) {
             $prefs = Get-Content -LiteralPath $prefsPath -Raw | ConvertFrom-Json
             if ((Get-ObjectProperty $prefs 'closeToTray') -eq $false) {
                 if ($null -eq $original) { $prefs.PSObject.Properties.Remove('closeToTray') } else { $prefs.closeToTray = $previous }
-                if (!$hadPrefs -and $prefs.PSObject.Properties.Count -eq 0) { Remove-Item -LiteralPath $prefsPath }
+                if (!$hadPrefs -and @($prefs.PSObject.Properties).Count -eq 0) { Remove-Item -LiteralPath $prefsPath }
                 else { Write-AtomicUtf8Json $prefsPath $prefs }
             }
         }
     }
 }
 
-function Wait-ForExit([object]$Old, [object[]]$Shells, [bool]$InterruptedAfterSettle = $false) {
+function Assert-NoUnplannedRuntimeProcesses([object[]]$SpacePlans) {
+    $plannedHomeKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+    $ownedRootPids = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($plan in @($SpacePlans)) {
+        $null = $plannedHomeKeys.Add(([string]$plan.kikiHome).ToLowerInvariant())
+        if ($null -ne $plan.server -and $null -ne $plan.server.process) {
+            $ownedRootPids.Add([int]$plan.server.process.Id)
+        }
+        foreach ($sh in @($plan.shells)) {
+            if ($null -ne $sh) { $ownedRootPids.Add([int]$sh.Id) }
+        }
+    }
+    $unplannedShells = @(Find-ShellEntries | Where-Object {
+        -not $plannedHomeKeys.Contains(([string]$_.kikiHome).ToLowerInvariant())
+    })
+    if ($unplannedShells.Count -gt 0) {
+        $unplannedDesc = ($unplannedShells | ForEach-Object { '{0} (pid {1})' -f $_.kikiHome, $_.pid }) -join ', '
+        throw ("Another Kiki desktop space appeared outside the switch plan: {0}. Retry hot-switch so all spaces are fenced and relaunched together." -f $unplannedDesc)
+    }
+    $ownedTreePids = @(Get-ProcessTreePids $ownedRootPids.ToArray())
+    $otherActive = @(Get-OtherActiveServerPids $ownedTreePids)
+    if ($otherActive.Count -gt 0) {
+        throw ("Another Kiki home/instance is running from active\kiki-server.exe (PIDs: {0}). Close other spaces sharing this runtime before hot-switching." -f ($otherActive -join ', '))
+    }
+}
+
+function Wait-ForAllExits([object[]]$SpacePlans) {
     $graceSeconds = [Math]::Min($StartupSeconds, $StopGraceSeconds)
-    $oldDirs = New-Object System.Collections.Generic.List[string]
-    $oldExePath = Get-ObjectProperty $Old 'executablePath'
-    if (-not [string]::IsNullOrWhiteSpace([string]$oldExePath)) {
-        $oldDirs.Add((Split-Path -Parent ([string]$oldExePath)))
-    }
-    $oldDirs.Add((Get-ActivePath $runtime))
-    if ($Old.releaseId -match '^[0-9a-f]{24}-[0-9a-f]{24}$') {
-        $oldDirs.Add((Get-ReleasePath $runtime $Old.releaseId))
-    }
-    $uniqueDirs = @($oldDirs | Select-Object -Unique)
-    $oldDesktopExes = @($uniqueDirs | ForEach-Object { Join-Path $_ 'kiki-desktop.exe' })
-    $oldInstancePath = Join-Path $instances ($Old.meta.server_id + '.json')
-
-    # Snapshot the process tree owned by $Old before it exits so we only sweep its own worker children
-    # and never touch another Kiki home's server sharing active\kiki-server.exe.
+    $plannedHomeKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+    $plannedShellPids = New-Object 'System.Collections.Generic.HashSet[int]'
     $ownedWorkerPids = New-Object 'System.Collections.Generic.HashSet[int]'
-    foreach ($treePid in @(Get-ProcessTreePids @([int]$Old.process.Id))) {
-        if ($treePid -ne [int]$Old.process.Id) { $null = $ownedWorkerPids.Add($treePid) }
-    }
-
-    $exitedGracefully = $Old.process.WaitForExit($graceSeconds * 1000)
-    if (-not $exitedGracefully) {
-        Write-Warning ("Original service {0} (pid {1}) did not exit within {2}s; closing old desktop shell and force-stopping original service." -f $Old.meta.server_id, $Old.process.Id, $graceSeconds)
-        foreach ($shell in $Shells) { Close-DesktopShell $shell }
-        foreach ($lingeringShell in @(Find-Shells | Where-Object { $p = Get-ProcessPathSafe $_; $p -and ($oldDesktopExes -contains $p) })) {
-            try { $lingeringShell.EnableRaisingEvents = $true; $null = $lingeringShell.Handle } catch {}
-            Close-DesktopShell $lingeringShell
+    $serverPidSet = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($plan in $SpacePlans) {
+        $null = $plannedHomeKeys.Add(([string]$plan.kikiHome).ToLowerInvariant())
+        foreach ($sh in @($plan.shells)) {
+            if ($null -ne $sh) { $null = $plannedShellPids.Add([int]$sh.Id) }
         }
-        foreach ($treePid in @(Get-ProcessTreePids @([int]$Old.process.Id))) {
-            if ($treePid -ne [int]$Old.process.Id) { $null = $ownedWorkerPids.Add($treePid) }
-        }
-        Stop-ProcessBounded $Old.process 5000
-        if (-not $Old.process.HasExited) {
-            throw ("Original service {0} (pid {1}) could not be terminated." -f $Old.meta.server_id, $Old.process.Id)
-        }
-    } else {
-        $exitCode = $Old.process.ExitCode
-        if ($exitCode -ne 0) {
-            Write-Warning ("Original service {0} (pid {1}) exited with code {2} (interrupted={3}); continuing hot switch." -f $Old.meta.server_id, $Old.process.Id, $exitCode, $InterruptedAfterSettle)
-        }
-        foreach ($shell in $Shells) { Close-DesktopShell $shell }
-        foreach ($lingeringShell in @(Find-Shells | Where-Object { $p = Get-ProcessPathSafe $_; $p -and ($oldDesktopExes -contains $p) })) {
-            try { $lingeringShell.EnableRaisingEvents = $true; $null = $lingeringShell.Handle } catch {}
-            Close-DesktopShell $lingeringShell
+        $oldServer = $plan.server
+        $null = $serverPidSet.Add([int]$oldServer.process.Id)
+        foreach ($treePid in @(Get-ProcessTreePids @([int]$oldServer.process.Id))) {
+            if ($treePid -ne [int]$oldServer.process.Id) { $null = $ownedWorkerPids.Add($treePid) }
         }
     }
 
-    if (Test-Path -LiteralPath $oldInstancePath -PathType Leaf) {
-        Write-Warning ("Removing leftover instance registration after old service exit: {0}" -f $oldInstancePath)
-        Remove-Item -LiteralPath $oldInstancePath -Force -ErrorAction SilentlyContinue
+    # Close all planned desktop shells immediately alongside server update shutdown so Tauri never holds --idle-exit 0ms sidecars open.
+    foreach ($plan in $SpacePlans) {
+        foreach ($shell in @($plan.shells)) {
+            Close-DesktopShell $shell $plan.kikiHome
+        }
     }
-    foreach ($regPid in @(Get-HomeRegisteredServerPids)) {
-        if ($regPid -ne [int]$Old.process.Id) { $null = $ownedWorkerPids.Add($regPid) }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($graceSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $allExited = $true
+        foreach ($plan in $SpacePlans) {
+            try { $plan.server.process.Refresh() } catch {}
+            if (-not $plan.server.process.HasExited) {
+                $allExited = $false
+                break
+            }
+        }
+        if ($allExited) { break }
+        Start-Sleep -Milliseconds 150
     }
+
+    foreach ($plan in $SpacePlans) {
+        $oldServer = $plan.server
+        try { $oldServer.process.Refresh() } catch {}
+        if (-not $oldServer.process.HasExited) {
+            Write-Warning ("Original service {0} ({1}, pid {2}) did not exit within {3}s; force-stopping original service." -f $oldServer.meta.server_id, $plan.kikiHome, $oldServer.process.Id, $graceSeconds)
+            foreach ($treePid in @(Get-ProcessTreePids @([int]$oldServer.process.Id))) {
+                if ($treePid -ne [int]$oldServer.process.Id) { $null = $ownedWorkerPids.Add($treePid) }
+            }
+            Stop-ProcessBounded $oldServer.process 5000
+            if (-not $oldServer.process.HasExited) {
+                throw ("Original service {0} (pid {1}) could not be terminated." -f $oldServer.meta.server_id, $oldServer.process.Id)
+            }
+        } else {
+            $exitCode = $oldServer.process.ExitCode
+            if ($exitCode -ne 0) {
+                Write-Warning ("Original service {0} ({1}, pid {2}) exited with code {3} (interrupted={4}); continuing hot switch." -f $oldServer.meta.server_id, $plan.kikiHome, $oldServer.process.Id, $exitCode, [bool]$plan.interruptedAfterSettle)
+            }
+        }
+        $oldInstancePath = Join-Path (Join-Path $plan.kikiHome 'server\instances') ($oldServer.meta.server_id + '.json')
+        if (Test-Path -LiteralPath $oldInstancePath -PathType Leaf) {
+            Write-Warning ("Removing leftover instance registration after old service exit: {0}" -f $oldInstancePath)
+            Remove-Item -LiteralPath $oldInstancePath -Force -ErrorAction SilentlyContinue
+        }
+        foreach ($regPid in @(Get-HomeRegisteredServerPids $plan.kikiHome)) {
+            if (-not $serverPidSet.Contains($regPid)) { $null = $ownedWorkerPids.Add($regPid) }
+        }
+    }
+
     foreach ($workerPid in @($ownedWorkerPids)) {
         $lingeringWorker = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
         if ($null -ne $lingeringWorker -and (-not $lingeringWorker.HasExited)) {
-            Write-Warning ("Stopping lingering worker process {0} owned by old service {1}." -f $lingeringWorker.Id, $Old.releaseId)
+            Write-Warning ("Stopping lingering worker process {0} owned by old service." -f $lingeringWorker.Id)
             Stop-ProcessBounded $lingeringWorker 5000
         }
     }
-    foreach ($lingeringShell in @(Find-Shells | Where-Object { $p = Get-ProcessPathSafe $_; $p -and ($oldDesktopExes -contains $p) })) {
-        try { $lingeringShell.EnableRaisingEvents = $true; $null = $lingeringShell.Handle } catch {}
-        Close-DesktopShell $lingeringShell
+    # Close ONLY leftover shells belonging to planned homes (never touch an unplanned space opened mid-switch).
+    foreach ($entry in @(Find-ShellEntries | Where-Object {
+        $plannedHomeKeys.Contains(([string]$_.kikiHome).ToLowerInvariant()) -or $plannedShellPids.Contains([int]$_.pid)
+    })) {
+        try { $entry.process.EnableRaisingEvents = $true; $null = $entry.process.Handle } catch {}
+        Close-DesktopShell $entry.process $entry.kikiHome
     }
     $otherActive = @(Get-OtherActiveServerPids @())
     if ($otherActive.Count -gt 0) {
         throw ("Another Kiki home/instance is holding active\kiki-server.exe (PIDs: {0}); cannot sync active runtime." -f ($otherActive -join ', '))
     }
-    if (@(Find-Shells).Count -gt 0 -or $null -ne (Find-Server)) { throw 'Another desktop or managed service appeared before launch.' }
+    foreach ($plan in $SpacePlans) {
+        if ($null -ne (Find-Server $plan.kikiHome $plan.ownerToken)) {
+            throw ("Another managed service appeared in {0} before launch." -f $plan.kikiHome)
+        }
+    }
+    $remainingShells = @(Find-ShellEntries)
+    if ($remainingShells.Count -gt 0) {
+        $remainingDesc = ($remainingShells | ForEach-Object { '{0} (pid {1})' -f $_.kikiHome, $_.pid }) -join ', '
+        throw ("Another desktop shell appeared outside the switch plan before launch: {0}" -f $remainingDesc)
+    }
 }
 
-function Await-Release([string]$ReleaseId, [string]$ExpectedBuildId, [object]$Launcher) {
+function Await-AllReleases([object[]]$SpaceStates, [string]$ReleaseId, [string]$ExpectedBuildId, [hashtable]$LaunchersByHome, [hashtable]$TokensByHome) {
     if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) {
         throw 'Expected build commit is required when awaiting a switched release.'
     }
     $expectedActiveServer = Join-Path (Get-ActivePath $runtime) 'kiki-server.exe'
     $expectedActiveDesktop = Join-Path (Get-ActivePath $runtime) 'kiki-desktop.exe'
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupSeconds)
+    $readyByKey = @{}
     do {
-        $new = Find-Server
-        if ($null -ne $new) {
-            if ($new.releaseId -cne $ReleaseId -or $new.meta.server_id -ceq $state.oldServerId `
-                -or $new.meta.server_home_id -cne $state.serverHomeId -or $new.meta.current_space_id -cne $state.spaceId) {
-                throw 'The service that started does not match the selected release and home.'
+        $shellEntries = @(Find-ShellEntries)
+        foreach ($spaceState in $SpaceStates) {
+            $key = ([string]$spaceState.kikiHome).ToLowerInvariant()
+            if ($readyByKey.ContainsKey($key)) { continue }
+            $spaceToken = $TokensByHome[$key]
+            $new = Find-Server $spaceState.kikiHome $spaceToken
+            if ($null -ne $new) {
+                if ($new.releaseId -cne $ReleaseId -or $new.meta.server_id -ceq $spaceState.oldServerId `
+                    -or $new.meta.server_home_id -cne $spaceState.serverHomeId -or $new.meta.current_space_id -cne $spaceState.spaceId) {
+                    throw ("The service that started for {0} does not match the selected release and home." -f $spaceState.kikiHome)
+                }
+                if ($new.meta.build_id -cne $ExpectedBuildId -or $new.instance.build_id -cne $ExpectedBuildId) {
+                    throw ("The started service for {0} reported build_id '{1}' instead of expected commit '{2}'." -f $spaceState.kikiHome, $new.meta.build_id, $ExpectedBuildId)
+                }
+                $newExePath = Get-ObjectProperty $new 'executablePath'
+                if (-not [string]::IsNullOrWhiteSpace([string]$newExePath) -and ([string]$newExePath) -ine $expectedActiveServer) {
+                    throw ("The started service for {0} is running from '{1}' instead of active path '{2}'." -f $spaceState.kikiHome, $newExePath, $expectedActiveServer)
+                }
+                if ([bool]$spaceState.hadDesktop) {
+                    $matchingActiveShells = @($shellEntries | Where-Object {
+                        $_.kikiHome.ToLowerInvariant() -ceq $key -and $_.executablePath -ieq $expectedActiveDesktop
+                    })
+                    if ($matchingActiveShells.Count -lt 1) {
+                        continue
+                    }
+                }
+                $readyByKey[$key] = $new
+                continue
             }
-            if ($new.meta.build_id -cne $ExpectedBuildId -or $new.instance.build_id -cne $ExpectedBuildId) {
-                throw ("The started service reported build_id '{0}' instead of expected commit '{1}'." -f $new.meta.build_id, $ExpectedBuildId)
+            $launcher = $LaunchersByHome[$key]
+            if ($null -ne $launcher -and $launcher.HasExited -and $launcher.ExitCode -ne 0) {
+                throw ("The selected desktop for {0} exited with code {1} before its service was ready." -f $spaceState.kikiHome, $launcher.ExitCode)
             }
-            $newExePath = Get-ObjectProperty $new 'executablePath'
-            if (-not [string]::IsNullOrWhiteSpace([string]$newExePath) -and ([string]$newExePath) -ine $expectedActiveServer) {
-                throw ("The started service is running from '{0}' instead of active path '{1}'." -f $newExePath, $expectedActiveServer)
-            }
-            if ($state.hadDesktop -and @((Find-Shells) | Where-Object { (Get-ProcessPathSafe $_) -ieq $expectedActiveDesktop }).Count -ne 1) {
-                throw 'The new service is ready, but the selected desktop shell is not running from active.'
-            }
-            return $new
         }
-        if ($Launcher.HasExited -and $Launcher.ExitCode -ne 0) { throw "The selected desktop exited with code $($Launcher.ExitCode) before its service was ready." }
+        if ($readyByKey.Count -eq $SpaceStates.Count) {
+            return $readyByKey
+        }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw 'The selected release did not start its local service before the startup deadline.'
+    $missing = @($SpaceStates | Where-Object { -not $readyByKey.ContainsKey(([string]$_.kikiHome).ToLowerInvariant()) } | ForEach-Object { $_.kikiHome })
+    throw ("The selected release did not start its local service before the startup deadline for: {0}" -f ($missing -join ', '))
 }
 
 function Test-InstalledRelease([string]$ReleaseId) {
@@ -695,53 +949,75 @@ function Restore-OriginalRelease([switch]$RequireActiveSync) {
     Select-InstalledRelease $state.oldReleaseId $state.oldBuildId 'Original' -RequireActiveSync:$RequireActiveSync
 }
 
-function Stop-ReleaseProcesses([string]$ReleaseId, [object]$Launcher = $null) {
-    # Bind cleanup strictly to the launcher process tree and instances registered in THIS KikiHome.
+function Stop-ReleaseProcesses([string]$ReleaseId, [object[]]$Launchers = @(), [string[]]$SpaceHomes = @($homePath)) {
+    # Bind cleanup strictly to launcher process trees and instances registered in our managed spaces.
     $ownedPids = New-Object 'System.Collections.Generic.HashSet[int]'
-    if ($null -ne $Launcher) {
-        foreach ($treePid in @(Get-ProcessTreePids @([int]$Launcher.Id))) {
+    foreach ($launcher in @($Launchers)) {
+        if ($null -eq $launcher) { continue }
+        foreach ($treePid in @(Get-ProcessTreePids @([int]$launcher.Id))) {
             $null = $ownedPids.Add($treePid)
         }
-        Stop-ProcessBounded $Launcher 5000
+        Stop-ProcessBounded $launcher 5000
     }
-    foreach ($regPid in @(Get-HomeRegisteredServerPids)) {
-        foreach ($treePid in @(Get-ProcessTreePids @($regPid))) {
-            $null = $ownedPids.Add($treePid)
+    foreach ($spaceHome in @($SpaceHomes)) {
+        if ([string]::IsNullOrWhiteSpace($spaceHome)) { continue }
+        foreach ($regPid in @(Get-HomeRegisteredServerPids $spaceHome)) {
+            foreach ($treePid in @(Get-ProcessTreePids @($regPid))) {
+                $null = $ownedPids.Add($treePid)
+            }
         }
+    }
+    $shellHomeByPid = @{}
+    foreach ($entry in @(Find-ShellEntries)) {
+        $shellHomeByPid[[int]$entry.pid] = [string]$entry.kikiHome
     }
     foreach ($ownedPid in @($ownedPids)) {
         $proc = Get-Process -Id $ownedPid -ErrorAction SilentlyContinue
         if ($null -eq $proc -or $proc.HasExited) { continue }
         if ($proc.ProcessName -ieq 'kiki-desktop') {
             try { $proc.EnableRaisingEvents = $true; $null = $proc.Handle } catch {}
-            Close-DesktopShell $proc
+            $shellHome = if ($shellHomeByPid.ContainsKey($ownedPid)) { $shellHomeByPid[$ownedPid] } else { $homePath }
+            Close-DesktopShell $proc $shellHome
         } else {
             Stop-ProcessBounded $proc 5000
         }
     }
-    foreach ($file in Get-ChildItem -LiteralPath $instances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
-        try {
-            $instance = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
-            if ($null -eq (Get-Process -Id $instance.pid -ErrorAction SilentlyContinue)) {
-                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
+    foreach ($spaceHome in @($SpaceHomes)) {
+        if ([string]::IsNullOrWhiteSpace($spaceHome)) { continue }
+        $spaceInstances = Join-Path $spaceHome 'server\instances'
+        foreach ($file in Get-ChildItem -LiteralPath $spaceInstances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+            try {
+                $instance = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+                if ($null -eq (Get-Process -Id $instance.pid -ErrorAction SilentlyContinue)) {
+                    Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
     }
 }
 
-function Clear-SwitchControls([object]$Target, [bool]$AllowCancel) {
-    if ((Get-ObjectProperty (Lifecycle $Target.instance '') 'hot_switch_prepared') -eq $true) {
-        Lifecycle $Target.instance 'cancel-update' | Out-Null
+function Format-ServerMetaReport([object]$ServerInfo) {
+    if ($null -eq $ServerInfo) { return $null }
+    return [ordered]@{
+        server_id = [string]$ServerInfo.meta.server_id
+        pid = [int]$ServerInfo.process.Id
+        executablePath = [string]$ServerInfo.executablePath
+        layout = [string]$ServerInfo.layout
+        releaseId = [string]$ServerInfo.releaseId
+        build_id = [string]$ServerInfo.meta.build_id
+        server_version = Get-ObjectProperty $ServerInfo.meta 'server_version'
+        server_home_id = [string]$ServerInfo.meta.server_home_id
+        current_space_id = [string]$ServerInfo.meta.current_space_id
     }
-    Try-RuntimeSwitch $Target.instance (Get-ObjectProperty $state 'fenceOperationId') 'cancel'
-    Release-OurPauses $Target $AllowCancel
 }
 
-function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
+function Release-OurPauses([object]$Target, [bool]$AllowCancel, [object[]]$Sessions = $null, [switch]$ReturnResult) {
+    $rawSessions = if ($null -ne $Sessions) { $Sessions } else { Get-ObjectProperty $state 'sessions' }
+    $sessionList = @(if ($null -ne $rawSessions) { @($rawSessions) | Where-Object { $null -ne $_ } })
     $failures = @()
     $resumed = @()
     $failureRecords = @()
-    foreach ($item in @(Get-ObjectProperty $state 'sessions')) {
+    foreach ($item in $sessionList) {
         if ($null -eq $item) { continue }
         try {
             $actual = Execution $Target.instance $item.id 'read'
@@ -769,7 +1045,15 @@ function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
             $msg = $_.Exception.Message
             Write-Warning "Failed to release pause on $($item.id): $msg"
             $failures += "$($item.id): $msg"
-            $failureRecords += [ordered]@{ sessionId = [string]$item.id; error = $msg }
+            $spaceHomeVal = Get-ObjectProperty $Target 'kikiHome'
+            $failureRecords += [ordered]@{ sessionId = [string]$item.id; kikiHome = $spaceHomeVal; error = $msg }
+        }
+    }
+    if ($ReturnResult) {
+        return [pscustomobject]@{
+            resumed = @($resumed)
+            failures = @($failures)
+            failureRecords = @($failureRecords)
         }
     }
     $reportVar = Get-Variable -Name 'report' -Scope Script -ErrorAction SilentlyContinue
@@ -782,20 +1066,82 @@ function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
     }
 }
 
-if ($InspectOnly) {
-    $ownerPath = Join-Path $homePath 'server.local-owner'
-    $ownerToken = $null
-    $tokenError = $null
-    if (Test-Path -LiteralPath $ownerPath -PathType Leaf) {
-        $rawToken = [IO.File]::ReadAllText($ownerPath).Trim()
-        if ($rawToken -match '^[A-Za-z0-9_-]{43}$') { $ownerToken = $rawToken }
-        else { $tokenError = 'The local-owner capability is invalid.' }
-    } else {
-        $tokenError = 'No local-owner capability file found.'
+function Release-OurPausesForAllSpaces([hashtable]$TargetsByHome, [object[]]$SpaceStates, [bool]$AllowCancel) {
+    $allResumed = @()
+    $allFailures = @()
+    $allFailureRecords = @()
+    foreach ($spaceState in @($SpaceStates)) {
+        $key = ([string]$spaceState.kikiHome).ToLowerInvariant()
+        $target = $TargetsByHome[$key]
+        if ($null -eq $target) { continue }
+        $spaceAllowCancel = $AllowCancel -or [bool](Get-ObjectProperty $spaceState 'interruptedAfterSettle')
+        $res = Release-OurPauses $target $spaceAllowCancel @(Get-ObjectProperty $spaceState 'sessions') -ReturnResult
+        $allResumed += $res.resumed
+        $allFailures += $res.failures
+        $allFailureRecords += $res.failureRecords
     }
-    $live = if ($null -ne $ownerToken) { Find-Server } else { $null }
-    $shells = @(Find-Shells)
-    $snapshot = Get-LiveInspectionSnapshot $live $shells
+    $reportVar = Get-Variable -Name 'report' -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $reportVar -and $null -ne $reportVar.Value) {
+        $reportVar.Value.resumedSessions = @($allResumed)
+        $reportVar.Value.resumeFailures = @($allFailureRecords)
+    }
+    if ($allFailures.Count -gt 0) {
+        throw ("Failed to release $($allFailures.Count) paused session(s): " + ($allFailures -join '; '))
+    }
+}
+
+function Clear-SwitchControlsForAllSpaces([hashtable]$TargetsByHome, [object[]]$SpaceStates, [bool]$AllowCancel) {
+    foreach ($spaceState in @($SpaceStates)) {
+        $key = ([string]$spaceState.kikiHome).ToLowerInvariant()
+        $target = $TargetsByHome[$key]
+        if ($null -eq $target) { continue }
+        if ((Get-ObjectProperty (Lifecycle $target.instance '') 'hot_switch_prepared') -eq $true) {
+            Lifecycle $target.instance 'cancel-update' | Out-Null
+        }
+        Try-RuntimeSwitch $target.instance (Get-ObjectProperty $spaceState 'fenceOperationId') 'cancel'
+    }
+    Release-OurPausesForAllSpaces $TargetsByHome $SpaceStates $AllowCancel
+}
+
+function Start-AllSpaces([object[]]$SpaceStates) {
+    $launchers = @{}
+    foreach ($spaceState in @($SpaceStates)) {
+        $key = ([string]$spaceState.kikiHome).ToLowerInvariant()
+        $passHome = [bool](Get-ObjectProperty $spaceState 'passHomeArg')
+        $launchers[$key] = Invoke-Launch $runtime ([string]$spaceState.kikiHome) -PassThru -Background:$Background -PassHomeArg:$passHome
+    }
+    return $launchers
+}
+
+if ($InspectOnly) {
+    $discoveredSpaces = @(Discover-RuntimeSpaces -AllowMissingTokens)
+    $primarySpace = $discoveredSpaces[0]
+    $ownerToken = $primarySpace.ownerToken
+    $tokenError = $primarySpace.tokenError
+    $primarySnapshot = Get-LiveInspectionSnapshot $primarySpace.server $primarySpace.shells -AppScopeOnly:$AppScopeOnly
+    $allShells = @($discoveredSpaces | ForEach-Object { $_.shells } | Where-Object { $null -ne $_ })
+    $spaceSnapshots = @(
+        foreach ($sp in $discoveredSpaces) {
+            $snap = if ($sp.isPrimary) { $primarySnapshot } else { Get-LiveInspectionSnapshot $sp.server $sp.shells -AppScopeOnly:$AppScopeOnly }
+            [ordered]@{
+                kikiHome = [string]$sp.kikiHome
+                isPrimary = [bool]$sp.isPrimary
+                passHomeArg = [bool]$sp.passHomeArg
+                tokenError = $sp.tokenError
+                liveServer = $snap.server
+                shells = @($sp.shellEntries | ForEach-Object {
+                    [ordered]@{
+                        pid = [int]$_.pid
+                        executablePath = [string]$_.executablePath
+                        kikiHome = [string]$_.kikiHome
+                    }
+                })
+                lifecycle = $snap.lifecycle
+                workPendingSessions = @($snap.workPendingSessions)
+                appScopeOnly = [bool]$AppScopeOnly
+            }
+        }
+    )
     $currentManifest = Read-CurrentManifest $runtime -AllowMissing
     $activeManifest = Read-ActiveManifest $runtime -AllowMissing
     $candidateReport = $null
@@ -844,10 +1190,11 @@ if ($InspectOnly) {
         runtimeRoot = $runtime
         kikiHome = $homePath
         tokenError = $tokenError
-        liveServer = $snapshot.server
-        shells = $snapshot.shells
-        lifecycle = $snapshot.lifecycle
-        workPendingSessions = $snapshot.workPendingSessions
+        liveServer = $primarySnapshot.server
+        shells = @($allShells | ForEach-Object { [ordered]@{ pid = [int]$_.Id; executablePath = (Get-ProcessPathSafe $_) } })
+        lifecycle = $primarySnapshot.lifecycle
+        workPendingSessions = $primarySnapshot.workPendingSessions
+        spaces = $spaceSnapshots
         currentManifest = $currentManifest
         activeManifest = $activeManifest
         candidate = $candidateReport
@@ -860,60 +1207,158 @@ if ($InspectOnly) {
 
 [IO.Directory]::CreateDirectory($runtime) | Out-Null
 $lock = [IO.File]::Open((Join-Path $runtime 'hot-switch.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
-$pauseOwner = $null
+$pauseOwnersByHome = @{}
 $script:report = $null
 try {
-    $ownerPath = Join-Path $homePath 'server.local-owner'
-    if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { throw 'The selected home has no local-owner capability. Start its managed desktop normally and verify the home before switching.' }
-    $ownerToken = [IO.File]::ReadAllText($ownerPath).Trim()
-    if ($ownerToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'The local-owner capability is invalid.' }
+    $ownerToken = Read-OwnerToken $homePath
     $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
     if ($Recover) {
         if ($null -eq $state -or $state.schemaVersion -ne 1 -or $state.kikiHome -ine $homePath -or $state.phase -eq 'complete') {
             throw 'There is no unfinished switch for this runtime and home.'
         }
         $shouldRollback = [bool]$Rollback -or ($state.phase -eq 'starting_failed')
-        $target = Find-Server
-        if ($null -eq $target) {
-            foreach ($lingeringShell in @(Find-Shells)) {
-                try { $lingeringShell.EnableRaisingEvents = $true; $null = $lingeringShell.Handle } catch {}
-                Close-DesktopShell $lingeringShell
+        $recordedSpaces = @(Get-RecordedSpaces $state)
+        $recordedHomeKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($spState in $recordedSpaces) { $null = $recordedHomeKeys.Add(([string]$spState.kikiHome).ToLowerInvariant()) }
+        $tokensByHome = @{}
+        $runningByHome = @{}
+        foreach ($spState in $recordedSpaces) {
+            $key = ([string]$spState.kikiHome).ToLowerInvariant()
+            $spToken = Read-OwnerToken ([string]$spState.kikiHome)
+            $tokensByHome[$key] = $spToken
+            $liveServer = Find-Server ([string]$spState.kikiHome) $spToken
+            if ($null -ne $liveServer) { $runningByHome[$key] = $liveServer }
+        }
+        $targetReleaseId = [string](Get-ObjectProperty $state 'targetReleaseId')
+        $targetBuildId = [string](Get-ObjectProperty $state 'targetBuildId')
+        $canUseTarget = (-not $shouldRollback) -and (-not [string]::IsNullOrWhiteSpace($targetReleaseId)) -and (-not [string]::IsNullOrWhiteSpace($targetBuildId)) -and (Test-InstalledRelease $targetReleaseId)
+        $desiredReleaseId = if ($canUseTarget) { $targetReleaseId } else { [string]$state.oldReleaseId }
+        $desiredBuildId = if ($canUseTarget) { $targetBuildId } else { [string]$state.oldBuildId }
+        $desiredLabel = if ($canUseTarget) { 'Target' } else { 'Original' }
+        $allHomes = @($recordedSpaces | ForEach-Object { [string]$_.kikiHome })
+
+        foreach ($spState in $recordedSpaces) {
+            $key = ([string]$spState.kikiHome).ToLowerInvariant()
+            if (-not $runningByHome.ContainsKey($key)) { continue }
+            $srv = $runningByHome[$key]
+            $knownReleases = @($state.oldReleaseId, $state.targetReleaseId, $state.priorPointerReleaseId) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+            if ($srv.meta.server_home_id -cne $spState.serverHomeId -or $srv.meta.current_space_id -cne $spState.spaceId -or
+                $srv.releaseId -cnotin $knownReleases) {
+                throw 'Recovery found a different service. Leave it running and inspect the switch record.'
             }
-            if (@(Find-Shells).Count -gt 0) { throw 'Quit the remaining desktop from its tray before retrying recovery.' }
-            $otherActive = @(Get-OtherActiveServerPids @())
-            if ($otherActive.Count -gt 0) {
-                throw ("Another Kiki home/instance is holding active\kiki-server.exe (PIDs: {0}); close it before recovery." -f ($otherActive -join ', '))
+        }
+
+        $wrongSpaces = @($recordedSpaces | Where-Object {
+            $k = ([string]$_.kikiHome).ToLowerInvariant()
+            if (-not $runningByHome.ContainsKey($k)) { return $false }
+            $srv = $runningByHome[$k]
+            return ($srv.releaseId -cne $desiredReleaseId -or $srv.meta.build_id -cne $desiredBuildId -or $srv.layout -ne 'active')
+        })
+        $missingSpaces = @($recordedSpaces | Where-Object {
+            -not $runningByHome.ContainsKey(([string]$_.kikiHome).ToLowerInvariant())
+        })
+
+        $uniqueRunningReleases = @($runningByHome.Values | ForEach-Object { [string]$_.releaseId } | Select-Object -Unique)
+        $allUniformOnRecordedRelease = ($missingSpaces.Count -eq 0) -and (-not $shouldRollback) -and ($uniqueRunningReleases.Count -eq 1)
+
+        if ($allUniformOnRecordedRelease -or ($wrongSpaces.Count -eq 0 -and $missingSpaces.Count -eq 0)) {
+            if ($shouldRollback) {
+                Restore-OriginalRelease
             }
-            $targetReleaseId = [string](Get-ObjectProperty $state 'targetReleaseId')
-            $targetBuildId = [string](Get-ObjectProperty $state 'targetBuildId')
-            if ((-not $shouldRollback) -and (-not [string]::IsNullOrWhiteSpace($targetReleaseId)) -and (-not [string]::IsNullOrWhiteSpace($targetBuildId)) -and (Test-InstalledRelease $targetReleaseId)) {
-                $launcher = $null
+        } else {
+            if ($wrongSpaces.Count -gt 0) {
+                # Validate ownership BEFORE stopping any surviving recorded space so recovery never stops recorded homes only to fail on an unplanned space.
+                $shellEntriesNow = @(Find-ShellEntries)
+                $unplannedBeforeStop = @($shellEntriesNow | Where-Object { -not $recordedHomeKeys.Contains(([string]$_.kikiHome).ToLowerInvariant()) })
+                if ($unplannedBeforeStop.Count -gt 0) {
+                    throw 'Another desktop space outside the switch record is still running. Close it before retrying recovery.'
+                }
+                $recordedRootPids = New-Object 'System.Collections.Generic.List[int]'
+                foreach ($k in $runningByHome.Keys) { $recordedRootPids.Add([int]$runningByHome[$k].process.Id) }
+                foreach ($entry in @($shellEntriesNow)) { $recordedRootPids.Add([int]$entry.pid) }
+                $ownedBeforeRecoverStop = @(Get-ProcessTreePids $recordedRootPids.ToArray())
+                $otherActiveBeforeRecoverStop = @(Get-OtherActiveServerPids $ownedBeforeRecoverStop)
+                if ($otherActiveBeforeRecoverStop.Count -gt 0) {
+                    throw ("Another Kiki home/instance is holding active\kiki-server.exe (PIDs: {0}); close it before recovery." -f ($otherActiveBeforeRecoverStop -join ', '))
+                }
+
+                # Split runtime or rollback while another release is still running: close shells of already-exited recorded spaces first, then request shutdown from surviving recorded spaces honoring any backend refusal.
+                foreach ($entry in @($shellEntriesNow | Where-Object {
+                    $ek = ([string]$_.kikiHome).ToLowerInvariant()
+                    $recordedHomeKeys.Contains($ek) -and (-not $runningByHome.ContainsKey($ek))
+                })) {
+                    try { $entry.process.EnableRaisingEvents = $true; $null = $entry.process.Handle } catch {}
+                    Close-DesktopShell $entry.process $entry.kikiHome
+                }
+                $stopPlans = @(
+                    foreach ($spState in $recordedSpaces) {
+                        $k = ([string]$spState.kikiHome).ToLowerInvariant()
+                        if (-not $runningByHome.ContainsKey($k)) { continue }
+                        $srv = $runningByHome[$k]
+                        $spShells = @($shellEntriesNow | Where-Object { ([string]$_.kikiHome).ToLowerInvariant() -ceq $k } | ForEach-Object { $_.process })
+                        foreach ($sh in $spShells) { try { $sh.EnableRaisingEvents = $true; $null = $sh.Handle } catch {} }
+                        Lifecycle $srv.instance 'update' ($state.phase -eq 'stopping' -or $state.phase -eq 'starting_failed') | Out-Null
+                        [pscustomobject]@{
+                            kikiHome = [string]$spState.kikiHome
+                            key = $k
+                            ownerToken = $tokensByHome[$k]
+                            server = $srv
+                            shells = $spShells
+                            interruptedAfterSettle = ($state.phase -eq 'stopping' -or $state.phase -eq 'starting_failed')
+                        }
+                    }
+                )
+                Wait-ForAllExits $stopPlans
+                $runningByHome.Clear()
+                $missingSpaces = @($recordedSpaces)
+            }
+
+            if ($runningByHome.Count -eq 0) {
+                foreach ($entry in @(Find-ShellEntries | Where-Object { $recordedHomeKeys.Contains(([string]$_.kikiHome).ToLowerInvariant()) })) {
+                    try { $entry.process.EnableRaisingEvents = $true; $null = $entry.process.Handle } catch {}
+                    Close-DesktopShell $entry.process $entry.kikiHome
+                }
+                $unplannedShells = @(Find-ShellEntries | Where-Object { -not $recordedHomeKeys.Contains(([string]$_.kikiHome).ToLowerInvariant()) })
+                if ($unplannedShells.Count -gt 0) {
+                    throw 'Another desktop space outside the switch record is still running. Close it before retrying recovery.'
+                }
+                if (@(Find-Shells).Count -gt 0) { throw 'Quit the remaining desktop from its tray before retrying recovery.' }
+                $otherActive = @(Get-OtherActiveServerPids @())
+                if ($otherActive.Count -gt 0) {
+                    throw ("Another Kiki home/instance is holding active\kiki-server.exe (PIDs: {0}); close it before recovery." -f ($otherActive -join ', '))
+                }
+            }
+
+            $launchers = @{}
+            if ($canUseTarget) {
                 try {
-                    Select-InstalledRelease $targetReleaseId $targetBuildId 'Target' -RequireActiveSync
-                    $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
-                    $target = Await-Release $targetReleaseId $targetBuildId $launcher
+                    if ($runningByHome.Count -eq 0) {
+                        Select-InstalledRelease $desiredReleaseId $desiredBuildId $desiredLabel -RequireActiveSync
+                    }
+                    $launchers = Start-AllSpaces $missingSpaces
+                    $startedByHome = Await-AllReleases $missingSpaces $desiredReleaseId $desiredBuildId $launchers $tokensByHome
+                    foreach ($k in $startedByHome.Keys) { $runningByHome[$k] = $startedByHome[$k] }
                 } catch {
-                    Write-Warning ("Target release {0} failed to start during recovery: {1}. Rolling back to {2}." -f $targetReleaseId, $_.Exception.Message, $state.oldReleaseId)
+                    Write-Warning ("Target release {0} failed to start during recovery: {1}. Rolling back to {2}." -f $desiredReleaseId, $_.Exception.Message, $state.oldReleaseId)
                     $state.phase = 'starting_failed'; Save-State
-                    Stop-ReleaseProcesses $targetReleaseId $launcher
+                    Stop-ReleaseProcesses $desiredReleaseId @($launchers.Values) $allHomes
                     Restore-OriginalRelease -RequireActiveSync
-                    $rollbackLauncher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
-                    $target = Await-Release $state.oldReleaseId $state.oldBuildId $rollbackLauncher
+                    $rollbackLaunchers = Start-AllSpaces $recordedSpaces
+                    $runningByHome = Await-AllReleases $recordedSpaces $state.oldReleaseId $state.oldBuildId $rollbackLaunchers $tokensByHome
                 }
             } else {
-                Restore-OriginalRelease -RequireActiveSync
-                $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
-                $target = Await-Release $state.oldReleaseId $state.oldBuildId $launcher
+                if ($runningByHome.Count -eq 0) {
+                    Restore-OriginalRelease -RequireActiveSync
+                }
+                $launchers = Start-AllSpaces $missingSpaces
+                $startedByHome = Await-AllReleases $missingSpaces $state.oldReleaseId $state.oldBuildId $launchers $tokensByHome
+                foreach ($k in $startedByHome.Keys) { $runningByHome[$k] = $startedByHome[$k] }
             }
-        } elseif ($target.meta.server_home_id -cne $state.serverHomeId -or $target.meta.current_space_id -cne $state.spaceId -or
-            $target.releaseId -cnotin @($state.oldReleaseId, $state.targetReleaseId, $state.priorPointerReleaseId)) {
-            throw 'Recovery found a different service. Leave it running and inspect the switch record.'
-        } elseif ($shouldRollback) {
-            Restore-OriginalRelease
         }
-        Clear-SwitchControls $target $true
+        Clear-SwitchControlsForAllSpaces $runningByHome $recordedSpaces $true
         $state.phase = 'complete'; Save-State
-        Write-Host "Recovery complete: $($target.releaseId)"
+        $primaryRecovered = $runningByHome[$homePath.ToLowerInvariant()]
+        Write-Host "Recovery complete: $($primaryRecovered.releaseId)"
         return
     }
 
@@ -933,16 +1378,43 @@ try {
     $verified = Read-PromotionCandidate $candidate $commit
     $expectedBuildId = [string]$verified.GitSha
     $targetRelease = $verified.ReleaseId
-    $old = Find-Server
 
     if ($null -ne $state -and $state.phase -ne 'complete' -and $state.schemaVersion -eq 1 -and $state.kikiHome -ine $homePath) {
         throw 'A switch for another Kiki home is unfinished. Run this command with -Recover for that home first.'
     }
+
+    $discoveredSpaces = @(Discover-RuntimeSpaces)
+    $primarySpace = $discoveredSpaces[0]
+    $old = $primarySpace.server
     if ($null -eq $old) { throw 'No authenticated managed service is running from this runtime and home.' }
     $current = Read-CurrentManifest $runtime -AllowMissing
     $priorPointerReleaseId = if ($null -ne $current) { [string]$current.releaseId } else { $old.releaseId }
-    $shells = @(Find-Shells)
 
+    $spacePlans = @()
+    foreach ($sp in $discoveredSpaces) {
+        if ($null -eq $sp.server) {
+            throw ("No authenticated managed service is running for open desktop space {0}." -f $sp.kikiHome)
+        }
+        $expectedDesktopExe = Get-ExpectedDesktopPathForServer $sp.server
+        if (@($sp.shells | Where-Object { (Get-ProcessPathSafe $_) -ine $expectedDesktopExe }).Count -gt 0) {
+            throw ("A desktop shell for {0} does not match the executable of its running service." -f $sp.kikiHome)
+        }
+        $spacePlans += [pscustomobject]@{
+            kikiHome = $sp.kikiHome
+            key = $sp.kikiHome.ToLowerInvariant()
+            isPrimary = $sp.isPrimary
+            passHomeArg = $sp.passHomeArg
+            ownerToken = $sp.ownerToken
+            server = $sp.server
+            shells = @($sp.shells)
+            interruptedAfterSettle = $false
+            interruptedSessions = @()
+            lastLifecycle = $null
+        }
+    }
+
+    $allShells = @($spacePlans | ForEach-Object { $_.shells } | Where-Object { $null -ne $_ })
+    $primaryPreSnapshot = Get-LiveInspectionSnapshot $old $primarySpace.shells
     $script:report = [ordered]@{
         schemaVersion = 1
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -952,21 +1424,33 @@ try {
         kikiHome = $homePath
         targetReleaseId = $targetRelease
         targetBuildId = $expectedBuildId
-        preSnapshot = Get-LiveInspectionSnapshot $old $shells
+        preSnapshot = $primaryPreSnapshot
+        spaces = @($spacePlans | ForEach-Object {
+            [ordered]@{
+                kikiHome = [string]$_.kikiHome
+                isPrimary = [bool]$_.isPrimary
+                passHomeArg = [bool]$_.passHomeArg
+                preServerMeta = Format-ServerMetaReport $_.server
+                postServerMeta = $null
+                interruptedSessions = @()
+            }
+        })
         canaryPassed = $null
         canary = $null
         pausedSessions = @()
         skippedFailedOrIdleSessions = @()
         interruptedAfterSettle = $false
         interruptedSessions = @()
+        interruptedSessionRecords = @()
         postServerMeta = $null
         resumedSessions = @()
         resumeFailures = @()
         error = $null
     }
 
-    # Only short-circuit as already_running when the live process is BOTH on $targetRelease AND running from active\.
-    if ($old.releaseId -ceq $targetRelease -and $old.layout -eq 'active') {
+    # Short-circuit as already_running only when EVERY discovered space is on $targetRelease from active\.
+    $allAlreadyCurrent = (@($spacePlans | Where-Object { $_.server.releaseId -cne $targetRelease -or $_.server.layout -ne 'active' }).Count -eq 0)
+    if ($allAlreadyCurrent) {
         Invoke-Promotion $runtime $verified | Out-Host
         $script:report.outcome = 'already_running'
         $script:report.finishedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -976,24 +1460,22 @@ try {
         return
     }
 
-    $expectedOldDesktopExe = Get-ExpectedDesktopPathForServer $old
-    if ($shells.Count -gt 1 -or @($shells | Where-Object { (Get-ProcessPathSafe $_) -ine $expectedOldDesktopExe }).Count) {
-        throw 'Close extra desktop shells; the running shell must match the service being switched.'
-    }
-
     # Pre-drain safety checks BEFORE any mutation:
-    # 1. Verify rollback archive releases\<oldReleaseId>\ exists and matches its hash.
-    if (-not (Test-InstalledRelease $old.releaseId)) {
-        throw ("Rollback archive releases\{0} is missing or corrupt; refusing to drain the running service." -f $old.releaseId)
+    # 1. Verify rollback archive releases\<oldReleaseId>\ exists for every running space.
+    foreach ($plan in $spacePlans) {
+        if (-not (Test-InstalledRelease $plan.server.releaseId)) {
+            throw ("Rollback archive releases\{0} is missing or corrupt; refusing to drain the running service ({1})." -f $plan.server.releaseId, $plan.kikiHome)
+        }
     }
-    # 2. Verify no other Kiki home/space is running from active\kiki-server.exe.
-    $ownedBeforeDrain = @(Get-ProcessTreePids @([int]$old.process.Id))
+    # 2. Verify no unmanaged/unknown Kiki server is running from active\kiki-server.exe outside our discovered spaces.
+    $ownedRootPids = @($spacePlans | ForEach-Object { [int]$_.server.process.Id }) + @($allShells | ForEach-Object { [int]$_.Id })
+    $ownedBeforeDrain = @(Get-ProcessTreePids $ownedRootPids)
     $otherActiveBeforeDrain = @(Get-OtherActiveServerPids $ownedBeforeDrain)
     if ($otherActiveBeforeDrain.Count -gt 0) {
         throw ("Another Kiki home/instance is running from active\kiki-server.exe (PIDs: {0}). Close other spaces sharing this runtime before hot-switching." -f ($otherActiveBeforeDrain -join ', '))
     }
 
-    # 3. Run canary check BEFORE reconciling stale state or promoting so a bad candidate leaves live state completely untouched.
+    # 3. Run canary check FIRST BEFORE touching, fencing, pausing, or closing ANY space (0s blackout during canary!).
     if ($CanaryCheck) {
         try {
             $canaryResult = Invoke-CanaryCheck $verified.Sidecar.Path $expectedBuildId $CanaryTimeoutSeconds
@@ -1005,6 +1487,8 @@ try {
             $script:report.canary = [ordered]@{ passed = $false; error = $_.Exception.Message }
             throw ("Canary check failed; live desktop was not modified: {0}" -f $_.Exception.Message)
         }
+        # Re-verify no new desktop space or active server appeared while canary ran.
+        Assert-NoUnplannedRuntimeProcesses $spacePlans
     }
 
     $continuing = $false
@@ -1014,8 +1498,16 @@ try {
             $continuing = $true
         } else {
             Write-Warning ("Reconciling stale hot-switch record (phase={0}, old={1}, target={2}) before starting new switch." -f $state.phase, $state.oldReleaseId, $state.targetReleaseId)
-            if ($state.schemaVersion -eq 1 -and $old.meta.server_home_id -ceq $state.serverHomeId -and $old.meta.current_space_id -ceq $state.spaceId) {
-                Clear-SwitchControls $old $true
+            if ($state.schemaVersion -eq 1) {
+                $staleTargets = @{}
+                foreach ($plan in $spacePlans) { $staleTargets[$plan.key] = $plan.server }
+                $staleSpaces = @(Get-RecordedSpaces $state | Where-Object {
+                    $k = ([string]$_.kikiHome).ToLowerInvariant()
+                    $staleTargets.ContainsKey($k) -and $staleTargets[$k].meta.server_home_id -ceq $_.serverHomeId -and $staleTargets[$k].meta.current_space_id -ceq $_.spaceId
+                })
+                if ($staleSpaces.Count -gt 0) {
+                    Clear-SwitchControlsForAllSpaces $staleTargets $staleSpaces $true
+                }
             }
             $state.phase = 'complete'; Save-State
             $state = $null
@@ -1072,147 +1564,242 @@ try {
         if ($wmiRes.ReturnValue -ne 0) {
             throw "Failed to spawn detached hot-switch worker via Win32_Process (ReturnValue=$($wmiRes.ReturnValue))."
         }
-        Write-Host ("Detached hot-switch scheduled (wmiPid={0}, delay={1}s, target={2}, log={3})" -f $wmiRes.ProcessId, $DetachDelaySeconds, $targetRelease, $logPath)
+        Write-Host ("Detached hot-switch scheduled (wmiPid={0}, delay={1}s, target={2}, spaces={3}, log={4})" -f $wmiRes.ProcessId, $DetachDelaySeconds, $targetRelease, $spacePlans.Count, $logPath)
         return
     }
-    foreach ($shell in $shells) { try { $shell.EnableRaisingEvents = $true; $null = $shell.Handle } catch {} }
+
+    foreach ($shell in $allShells) { try { $shell.EnableRaisingEvents = $true; $null = $shell.Handle } catch {} }
+    $tokensByHome = @{}
+    foreach ($plan in $spacePlans) { $tokensByHome[$plan.key] = $plan.ownerToken }
+
     if ($continuing) {
         if (-not (Get-ObjectProperty $state 'fenceOperationId')) {
             $state | Add-Member -NotePropertyName fenceOperationId -NotePropertyValue ('hot-switch:' + [guid]::NewGuid().ToString('N')) -Force
-            Save-State
         }
+        $rawExistingSpaces = Get-ObjectProperty $state 'spaces'
+        $existingSpaces = @(if ($null -ne $rawExistingSpaces) { @($rawExistingSpaces) | Where-Object { $null -ne $_ } })
+        if ($existingSpaces.Count -eq 0) {
+            $rawPrimarySessions = Get-ObjectProperty $state 'sessions'
+            $primarySessions = @(if ($null -ne $rawPrimarySessions) { @($rawPrimarySessions) | Where-Object { $null -ne $_ } })
+            $state | Add-Member -NotePropertyName spaces -NotePropertyValue @(
+                foreach ($plan in $spacePlans) {
+                    [pscustomobject]@{
+                        kikiHome = $plan.kikiHome; isPrimary = $plan.isPrimary; passHomeArg = $plan.passHomeArg
+                        oldReleaseId = $plan.server.releaseId; oldBuildId = $plan.server.meta.build_id
+                        oldServerId = $plan.server.meta.server_id; serverHomeId = $plan.server.meta.server_home_id
+                        spaceId = $plan.server.meta.current_space_id; hadDesktop = $plan.shells.Count -gt 0
+                        fenceOperationId = if ($plan.isPrimary) { [string]$state.fenceOperationId } else { 'hot-switch:' + [guid]::NewGuid().ToString('N') }
+                        sessions = if ($plan.isPrimary) { $primarySessions } else { @() }
+                    }
+                }
+            ) -Force
+        }
+        Save-State
     } else {
+        $primaryFenceId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+        $spaceStateList = @(
+            foreach ($plan in $spacePlans) {
+                [pscustomobject]@{
+                    kikiHome = $plan.kikiHome; isPrimary = $plan.isPrimary; passHomeArg = $plan.passHomeArg
+                    oldReleaseId = $plan.server.releaseId; oldBuildId = $plan.server.meta.build_id
+                    oldServerId = $plan.server.meta.server_id; serverHomeId = $plan.server.meta.server_home_id
+                    spaceId = $plan.server.meta.current_space_id; hadDesktop = $plan.shells.Count -gt 0
+                    fenceOperationId = if ($plan.isPrimary) { $primaryFenceId } else { 'hot-switch:' + [guid]::NewGuid().ToString('N') }
+                    sessions = @()
+                }
+            }
+        )
         $state = [pscustomobject]@{
             schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
             oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
-            priorPointerReleaseId = $priorPointerReleaseId; targetReleaseId = $targetRelease; targetBuildId = $expectedBuildId; hadDesktop = $shells.Count -gt 0
-            fenceOperationId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
+            priorPointerReleaseId = $priorPointerReleaseId; targetReleaseId = $targetRelease; targetBuildId = $expectedBuildId; hadDesktop = $primarySpace.shells.Count -gt 0
+            fenceOperationId = $primaryFenceId
             sessions = @()
+            spaces = $spaceStateList
         }
         Save-State
     }
-    $pauseOwner = $old
-    Try-RuntimeSwitch $old.instance $state.fenceOperationId 'fence'
+
+    $spaceStateByHome = @{}
+    foreach ($spState in @(Get-RecordedSpaces $state)) {
+        $spaceStateByHome[([string]$spState.kikiHome).ToLowerInvariant()] = $spState
+    }
+    foreach ($plan in $spacePlans) {
+        $pauseOwnersByHome[$plan.key] = $plan.server
+        Try-RuntimeSwitch $plan.server.instance ([string]$spaceStateByHome[$plan.key].fenceOperationId) 'fence'
+    }
+
     $interruptedAfterSettle = $false
     $interruptedSessions = @()
     $notedPhases = @{}
     $deadline = [DateTime]::UtcNow.AddSeconds($SettleSeconds)
     do {
-        $lifecycle = Lifecycle $old.instance ''
-        foreach ($id in @($lifecycle.work_pending)) {
-            $control = Execution $old.instance $id 'read'
-            if ($control.phase -eq 'running') {
-                $item = [pscustomobject]@{ id = $id; pauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N') }
-                $state.sessions = @($state.sessions | Where-Object id -CNE $id) + @($item)
-                Save-State
-                Execution $old.instance $id 'pause' @(@{ operationId = $item.pauseId }) | Out-Null
-                Write-Host "Pausing $id"
-            } elseif ($control.phase -in @('failed', 'idle')) {
-                if ($notedPhases[$id] -cne $control.phase) {
-                    $notedPhases[$id] = $control.phase
-                    Write-Host "Session $id is $($control.phase); no pause needed."
+        $allPending = @()
+        foreach ($plan in $spacePlans) {
+            $spState = $spaceStateByHome[$plan.key]
+            $lifecycle = Lifecycle $plan.server.instance ''
+            $plan.lastLifecycle = $lifecycle
+            foreach ($id in @($lifecycle.work_pending)) {
+                $noteKey = '{0}|{1}' -f $plan.key, $id
+                $control = Execution $plan.server.instance $id 'read'
+                if ($control.phase -eq 'running') {
+                    $item = [pscustomobject]@{ id = $id; pauseId = 'hot-switch:' + [guid]::NewGuid().ToString('N') }
+                    $spState.sessions = @($spState.sessions | Where-Object id -CNE $id) + @($item)
+                    if ($plan.isPrimary) { $state.sessions = @($spState.sessions) }
+                    Save-State
+                    Execution $plan.server.instance $id 'pause' @(@{ operationId = $item.pauseId }) | Out-Null
+                    Write-Host "Pausing $id"
+                } elseif ($control.phase -in @('failed', 'idle')) {
+                    if ($notedPhases[$noteKey] -cne $control.phase) {
+                        $notedPhases[$noteKey] = $control.phase
+                        Write-Host "Session $id is $($control.phase); no pause needed."
+                    }
+                } elseif ($control.phase -eq 'resuming') {
+                    if ($notedPhases[$noteKey] -cne 'resuming') {
+                        $notedPhases[$noteKey] = 'resuming'
+                        Write-Host "Session $id is resuming; waiting up to settle deadline."
+                    }
                 }
-            } elseif ($control.phase -eq 'resuming') {
-                if ($notedPhases[$id] -cne 'resuming') {
-                    $notedPhases[$id] = 'resuming'
-                    Write-Host "Session $id is resuming; waiting up to settle deadline."
-                }
+            }
+            $spacePending = @($lifecycle.work_pending)
+            if ($spacePending.Count -gt 0) {
+                $allPending += $spacePending
             }
         }
-        $pending = @($lifecycle.work_pending)
-        if ($pending.Count -eq 0) { break }
+        if ($allPending.Count -eq 0) { break }
         if ([DateTime]::UtcNow -ge $deadline) {
             if (-not $allowInterruptAfterSettle) {
-                throw ('Still settling: ' + ($pending -join ', '))
+                throw ('Still settling: ' + ($allPending -join ', '))
             }
-            Write-Warning ('Settle deadline ({0}s) expired with active work ({1}); interrupting remaining work to complete hot switch.' -f $SettleSeconds, ($pending -join ', '))
+            Write-Warning ('Settle deadline ({0}s) expired with active work ({1}); interrupting remaining work to complete hot switch.' -f $SettleSeconds, ($allPending -join ', '))
             $interruptedAfterSettle = $true
-            $interruptedSessions = @($pending)
+            $interruptedSessions = @($allPending)
+            foreach ($plan in $spacePlans) {
+                $spacePending = @(Get-ObjectProperty $plan.lastLifecycle 'work_pending')
+                if ($spacePending.Count -gt 0) {
+                    $plan.interruptedAfterSettle = $true
+                    $plan.interruptedSessions = @($spacePending)
+                    $spaceStateByHome[$plan.key] | Add-Member -NotePropertyName interruptedAfterSettle -NotePropertyValue $true -Force
+                }
+            }
+            Save-State
             break
         }
         Start-Sleep -Milliseconds 400
     } while ($true)
-    $script:report.pausedSessions = @($state.sessions | ForEach-Object { [ordered]@{ id = [string]$_.id; pauseId = [string]$_.pauseId } })
+
+    $allPausedRecords = @(
+        foreach ($spState in @(Get-RecordedSpaces $state)) {
+            foreach ($s in @(Get-ObjectProperty $spState 'sessions')) {
+                if ($null -eq $s) { continue }
+                [ordered]@{ id = [string]$s.id; pauseId = [string]$s.pauseId; kikiHome = [string]$spState.kikiHome }
+            }
+        }
+    )
+    $interruptedSessionRecords = @(
+        foreach ($plan in $spacePlans) {
+            foreach ($sid in @($plan.interruptedSessions)) {
+                [ordered]@{ sessionId = [string]$sid; kikiHome = [string]$plan.kikiHome }
+            }
+        }
+    )
+    $script:report.pausedSessions = $allPausedRecords
     $script:report.interruptedAfterSettle = $interruptedAfterSettle
     $script:report.interruptedSessions = @($interruptedSessions)
-    # The explicit exit record blocks reconnect recovery while the shell drains the backend pipes.
-    if ($interruptedAfterSettle) {
-        if ((Get-ObjectProperty $lifecycle 'hot_switch_prepared') -eq $true) {
-            try { Lifecycle $old.instance 'cancel-update' | Out-Null } catch { Write-Warning "cancel-update failed: $($_.Exception.Message)" }
+    $script:report.interruptedSessionRecords = @($interruptedSessionRecords)
+    foreach ($repSpace in @($script:report.spaces)) {
+        $rk = ([string]$repSpace.kikiHome).ToLowerInvariant()
+        $matchingPlan = @($spacePlans | Where-Object { $_.key -ceq $rk })[0]
+        if ($null -ne $matchingPlan) {
+            $repSpace.interruptedSessions = @($matchingPlan.interruptedSessions)
         }
-        try {
-            Lifecycle $old.instance 'update' $true | Out-Null
-        } catch {
-            Write-Warning ("Lifecycle 'update' (interrupt_work=true) failed: {0}. Proceeding to bounded shutdown." -f $_.Exception.Message)
-        }
-    } else {
-        Lifecycle $old.instance 'update' | Out-Null
     }
+
+    # Revalidate ownership before entering stopping phase so an unplanned space opened during settle aborts cleanly while still in pausing.
+    Assert-NoUnplannedRuntimeProcesses $spacePlans
+
+    # Persist 'stopping' BEFORE sending the first 'update' request so any partial shutdown failure stays recoverable and never falls back to 'pausing' cleanup.
     $state.phase = 'stopping'; Save-State
-    Wait-ForExit $old $shells $interruptedAfterSettle
+    foreach ($plan in $spacePlans) {
+        if ($plan.interruptedAfterSettle) {
+            if ((Get-ObjectProperty $plan.lastLifecycle 'hot_switch_prepared') -eq $true) {
+                try { Lifecycle $plan.server.instance 'cancel-update' | Out-Null } catch { Write-Warning "cancel-update failed ($($plan.kikiHome)): $($_.Exception.Message)" }
+            }
+            try {
+                Lifecycle $plan.server.instance 'update' $true | Out-Null
+            } catch {
+                Write-Warning ("Lifecycle 'update' (interrupt_work=true) failed ({0}): {1}. Proceeding to bounded shutdown." -f $plan.kikiHome, $_.Exception.Message)
+            }
+        } else {
+            Lifecycle $plan.server.instance 'update' | Out-Null
+        }
+    }
+
+    Wait-ForAllExits $spacePlans
     $state.phase = 'starting'; Save-State
-    $launcher = $null
+
+    $recordedSpaces = @(Get-RecordedSpaces $state)
+    $allHomes = @($recordedSpaces | ForEach-Object { [string]$_.kikiHome })
+    $launchers = @{}
+    $targetsByHome = @{}
     try {
         if ((Read-CurrentManifest $runtime).releaseId -cne $targetRelease) {
             Invoke-Promotion $runtime $verified | Out-Host
             if ((Read-CurrentManifest $runtime).releaseId -cne $targetRelease) { throw 'Promotion did not select the verified candidate.' }
         }
         Sync-ActiveRelease $runtime $targetRelease $expectedBuildId $verified.Desktop $verified.Sidecar | Out-Null
-        $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
-        $target = Await-Release $targetRelease $expectedBuildId $launcher
+        $launchers = Start-AllSpaces $recordedSpaces
+        $targetsByHome = Await-AllReleases $recordedSpaces $targetRelease $expectedBuildId $launchers $tokensByHome
     } catch {
         $startFailure = $_
         Write-Warning ("New release {0} failed to start: {1}. Rolling back to {2}." -f $targetRelease, $startFailure.Exception.Message, $state.oldReleaseId)
         $state.phase = 'starting_failed'; Save-State
-        Stop-ReleaseProcesses $targetRelease $launcher
+        Stop-ReleaseProcesses $targetRelease @($launchers.Values) $allHomes
         try {
             Restore-OriginalRelease -RequireActiveSync
-            $rollbackLauncher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
-            $restored = Await-Release $state.oldReleaseId $state.oldBuildId $rollbackLauncher
-            Clear-SwitchControls $restored $true
+            $rollbackLaunchers = Start-AllSpaces $recordedSpaces
+            $restoredByHome = Await-AllReleases $recordedSpaces $state.oldReleaseId $state.oldBuildId $rollbackLaunchers $tokensByHome
+            Clear-SwitchControlsForAllSpaces $restoredByHome $recordedSpaces $true
             $state.phase = 'complete'; Save-State
+            $primaryRestored = $restoredByHome[$homePath.ToLowerInvariant()]
             $script:report.outcome = 'rolled_back'
-            $script:report.postServerMeta = [ordered]@{
-                server_id = [string]$restored.meta.server_id
-                pid = [int]$restored.process.Id
-                executablePath = [string]$restored.executablePath
-                layout = [string]$restored.layout
-                releaseId = [string]$restored.releaseId
-                build_id = [string]$restored.meta.build_id
-                server_version = Get-ObjectProperty $restored.meta 'server_version'
-                server_home_id = [string]$restored.meta.server_home_id
-                current_space_id = [string]$restored.meta.current_space_id
+            $script:report.postServerMeta = Format-ServerMetaReport $primaryRestored
+            foreach ($repSpace in @($script:report.spaces)) {
+                $k = ([string]$repSpace.kikiHome).ToLowerInvariant()
+                if ($restoredByHome.ContainsKey($k)) { $repSpace.postServerMeta = Format-ServerMetaReport $restoredByHome[$k] }
             }
-            Write-Warning ("Rolled back to previous release {0} ({1}) after new release failed to start." -f $state.oldReleaseId, $restored.meta.server_id)
+            Write-Warning ("Rolled back to previous release {0} ({1}) after new release failed to start." -f $state.oldReleaseId, $primaryRestored.meta.server_id)
         } catch {
             Write-Warning ("Automatic rollback to {0} failed: {1}" -f $state.oldReleaseId, $_.Exception.Message)
         }
         throw $startFailure
     }
+
     $state.phase = 'resuming'; Save-State
-    $script:report.postServerMeta = [ordered]@{
-        server_id = [string]$target.meta.server_id
-        pid = [int]$target.process.Id
-        executablePath = [string]$target.executablePath
-        layout = [string]$target.layout
-        releaseId = [string]$target.releaseId
-        build_id = [string]$target.meta.build_id
-        server_version = Get-ObjectProperty $target.meta 'server_version'
-        server_home_id = [string]$target.meta.server_home_id
-        current_space_id = [string]$target.meta.current_space_id
+    $primaryTarget = $targetsByHome[$homePath.ToLowerInvariant()]
+    $script:report.postServerMeta = Format-ServerMetaReport $primaryTarget
+    foreach ($repSpace in @($script:report.spaces)) {
+        $k = ([string]$repSpace.kikiHome).ToLowerInvariant()
+        if ($targetsByHome.ContainsKey($k)) { $repSpace.postServerMeta = Format-ServerMetaReport $targetsByHome[$k] }
     }
-    Release-OurPauses $target $interruptedAfterSettle
+    Release-OurPausesForAllSpaces $targetsByHome $recordedSpaces $interruptedAfterSettle
     $state.phase = 'complete'; Save-State
     $script:report.outcome = 'succeeded'
     $script:report.finishedAtUtc = [DateTime]::UtcNow.ToString('o')
     Save-Report
-    Write-Host "Running $targetRelease ($($target.meta.server_id))"
+    Write-Host "Running $targetRelease ($($primaryTarget.meta.server_id))"
 } catch {
     $failure = $_
-    if ($null -ne $pauseOwner -and $state.phase -eq 'pausing') {
+    if ($pauseOwnersByHome.Count -gt 0 -and $null -ne $state -and $state.phase -eq 'pausing') {
         try {
-            Try-RuntimeSwitch $pauseOwner.instance (Get-ObjectProperty $state 'fenceOperationId') 'cancel'
-            Release-OurPauses $pauseOwner $true
+            $recordedSpaces = @(Get-RecordedSpaces $state)
+            foreach ($spState in $recordedSpaces) {
+                $k = ([string]$spState.kikiHome).ToLowerInvariant()
+                if ($pauseOwnersByHome.ContainsKey($k)) {
+                    Try-RuntimeSwitch $pauseOwnersByHome[$k].instance (Get-ObjectProperty $spState 'fenceOperationId') 'cancel'
+                }
+            }
+            Release-OurPausesForAllSpaces $pauseOwnersByHome $recordedSpaces $true
             $state.phase = 'complete'; Save-State
             Write-Warning 'The running service was not switched; pauses were released and current.json remains promoted to the verified target release.'
         } catch { Write-Warning "Pause recovery is still pending: $($_.Exception.Message)" }

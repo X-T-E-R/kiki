@@ -26,6 +26,7 @@ import {
   execGitReadonly,
   pnpmCommand,
   receiptPathFor,
+  resolveSharedCargoTargetDir,
   writeReceiptAtomic,
 } from './desktop-build-source.mjs';
 import {
@@ -147,6 +148,7 @@ test('writes a receipt only after sea, sidecar, and desktop artifacts', async ()
     const steps = [];
     const seaPath = treeSeaPath(buildTree);
     const binaries = join(buildTree, 'apps', 'kiki-gui', 'src-tauri', 'binaries');
+    const sharedCargoTarget = join(root, 'outer', 'cargo-target');
     const result = await runLocalDesktopBuild({
       buildTree,
       sourceCommit: COMMIT,
@@ -158,7 +160,7 @@ test('writes a receipt only after sea, sidecar, and desktop artifacts', async ()
         KIKI_SIDECAR_SOURCE: join(root, 'outer', 'sea', 'kiki.exe'),
         KIKI_BUILD_TARGET: 'linux-x64',
         TAURI_TARGET_TRIPLE: OUTER_TARGET_TRIPLE,
-        CARGO_TARGET_DIR: join(root, 'outer', 'cargo-target'),
+        CARGO_TARGET_DIR: sharedCargoTarget,
         PATH: 'C:\\Windows',
       },
       git,
@@ -174,8 +176,10 @@ test('writes a receipt only after sea, sidecar, and desktop artifacts', async ()
           copyFileSync(seaPath, join(binaries, sidecarFileName(hostTarget())));
           return;
         }
-        writeFileSync(join(candidate, 'kiki-desktop.exe'), 'desktop-bytes');
-        copyFileSync(seaPath, join(candidate, 'kiki-server.exe'));
+        const desktopDir = join(step.env.CARGO_TARGET_DIR, 'release');
+        mkdirSync(desktopDir, { recursive: true });
+        writeFileSync(join(desktopDir, 'kiki-desktop.exe'), 'desktop-bytes');
+        copyFileSync(seaPath, join(desktopDir, 'kiki-server.exe'));
       },
     });
     assert.deepEqual(steps.map((step) => step.id), ['sea', 'sidecar', 'desktop-artifacts']);
@@ -189,7 +193,7 @@ test('writes a receipt only after sea, sidecar, and desktop artifacts', async ()
       assert.equal(step.env.KIKI_BUILD_SHA, COMMIT);
       assert.equal(Object.hasOwn(step.env, 'KIKI_DESKTOP_BUNDLED'), false);
       assert.equal(Object.hasOwn(step.env, 'TAURI_TARGET_TRIPLE'), false);
-      assert.equal(Object.hasOwn(step.env, 'CARGO_TARGET_DIR'), false);
+      assert.equal(step.env.CARGO_TARGET_DIR, resolve(sharedCargoTarget));
       assert.equal(step.env.KIKI_BUILD_TARGET, hostSeaTarget());
       assert.equal(step.env.KIKI_SIDECAR_SOURCE, treeSeaPath(buildTree));
     }
@@ -468,7 +472,9 @@ async function runMirroredBuild({ buildTree, env, corrupt } = {}) {
         );
         return;
       }
-      const targetDir = step.env.CARGO_TARGET_DIR ? resolve(step.env.CARGO_TARGET_DIR) : releaseDir;
+      const targetDir = step.env.CARGO_TARGET_DIR
+        ? join(resolve(step.env.CARGO_TARGET_DIR), 'release')
+        : releaseDir;
       mkdirSync(targetDir, { recursive: true });
       writeFileSync(join(targetDir, 'kiki-desktop.exe'), 'desktop-bytes');
       const sidecarOutputDir = step.env.CARGO_BUILD_BUILD_DIR
@@ -518,11 +524,12 @@ test('an inherited KIKI_SIDECAR_SOURCE cannot stamp another tree into the receip
   }
 });
 
-test('inherited target redirects cannot move the build out of this tree', async () => {
+test('shared CARGO_TARGET_DIR stages desktop output back into canonical candidate while TAURI_TARGET_TRIPLE stays isolated', async () => {
   const root = makeTemp();
   try {
     const { buildTree, candidate } = layout(root);
     const { outerTarget } = layoutOuterTree(root);
+    writeFileSync(join(candidate, 'kiki-desktop.exe'), 'stale-desktop-bytes');
     const { result, steps, seaPath, releaseDir, binaries, manifest } = await runMirroredBuild({
       buildTree,
       env: {
@@ -534,8 +541,8 @@ test('inherited target redirects cannot move the build out of this tree', async 
 
     assert.deepEqual(steps.map((step) => step.id), ['sea', 'sidecar', 'desktop-artifacts']);
     assert.equal(existsSync(join(binaries, sidecarFileName(OUTER_TARGET_TRIPLE))), false);
-    assert.deepEqual(readdirSync(outerTarget), []);
     assert.equal(manifest.target, hostTarget());
+    assert.equal(readFileSync(join(releaseDir, 'kiki-desktop.exe'), 'utf8'), 'desktop-bytes');
     assert.deepEqual(result.receipt.files, {
       'kiki-desktop.exe': {
         sha256: sha256(join(releaseDir, 'kiki-desktop.exe')),
@@ -544,6 +551,95 @@ test('inherited target redirects cannot move the build out of this tree', async 
       'kiki-server.exe': { sha256: sha256(seaPath), bytes: statSync(seaPath).size },
     });
     assert.equal(result.path, receiptPathFor(candidate));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('auto-detects <worktreeParent>/.cargo-target for git worktrees and stages desktop binary into candidate', async () => {
+  const root = makeTemp();
+  try {
+    const { buildTree, candidate } = layout(root);
+    writeFileSync(join(buildTree, '.git'), 'gitdir: ../repo/.git/worktrees/wt-1\n');
+    const expectedShared = join(root, '.cargo-target');
+    assert.equal(resolveSharedCargoTargetDir(buildTree, {}), expectedShared);
+    const { result, steps, releaseDir } = await runMirroredBuild({ buildTree, env: {} });
+    for (const step of steps) {
+      assert.equal(step.env.CARGO_TARGET_DIR, expectedShared);
+    }
+    assert.equal(readFileSync(join(expectedShared, 'release', 'kiki-desktop.exe'), 'utf8'), 'desktop-bytes');
+    assert.equal(readFileSync(join(releaseDir, 'kiki-desktop.exe'), 'utf8'), 'desktop-bytes');
+    assert.equal(result.path, receiptPathFor(candidate));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('serializes concurrent builds sharing CARGO_TARGET_DIR so each receipt certifies its own desktop binary', async () => {
+  const root = makeTemp();
+  try {
+    const rootA = join(root, 'wt-a');
+    const rootB = join(root, 'wt-b');
+    mkdirSync(rootA, { recursive: true });
+    mkdirSync(rootB, { recursive: true });
+    const layoutA = layout(rootA);
+    const layoutB = layout(rootB);
+    const sharedTarget = join(root, 'shared-cargo-target');
+    const COMMIT_B = 'd'.repeat(40);
+    const TREE_B = 'e'.repeat(40);
+    const buildOrder = [];
+
+    const makeRunner = (tree, label, desktopPayload, seaPayload) => async (step) => {
+      if (step.id === 'sea') {
+        const seaPath = treeSeaPath(tree);
+        mkdirSync(dirname(seaPath), { recursive: true });
+        writeFileSync(seaPath, seaPayload);
+        return;
+      }
+      if (step.id === 'sidecar') {
+        const staged = join(tree, 'apps', 'kiki-gui', 'src-tauri', 'binaries', sidecarFileName(hostTarget()));
+        mkdirSync(dirname(staged), { recursive: true });
+        copyFileSync(treeSeaPath(tree), staged);
+        return;
+      }
+      if (step.id === 'desktop-artifacts') {
+        buildOrder.push(`${label}:start`);
+        await new Promise((r) => setTimeout(r, 80));
+        const targetRelease = join(step.env.CARGO_TARGET_DIR, 'release');
+        mkdirSync(targetRelease, { recursive: true });
+        writeFileSync(join(targetRelease, 'kiki-desktop.exe'), desktopPayload);
+        buildOrder.push(`${label}:end`);
+      }
+    };
+
+    const [resA, resB] = await Promise.all([
+      runLocalDesktopBuild({
+        buildTree: layoutA.buildTree,
+        sourceCommit: COMMIT,
+        acceptanceRef: ACCEPTANCE,
+        checkRef: CHECK,
+        env: { CARGO_TARGET_DIR: sharedTarget },
+        git: fakeGit({ headForRead: () => COMMIT, tree: TREE }).git,
+        runner: makeRunner(layoutA.buildTree, 'A', 'desktop-a-bytes', 'sea-a-bytes'),
+      }),
+      runLocalDesktopBuild({
+        buildTree: layoutB.buildTree,
+        sourceCommit: COMMIT_B,
+        acceptanceRef: ACCEPTANCE,
+        checkRef: CHECK,
+        env: { CARGO_TARGET_DIR: sharedTarget },
+        git: fakeGit({ headForRead: () => COMMIT_B, tree: TREE_B }).git,
+        runner: makeRunner(layoutB.buildTree, 'B', 'desktop-b-bytes', 'sea-b-bytes'),
+      }),
+    ]);
+
+    assert.equal(buildOrder[0].slice(0, 1), buildOrder[1].slice(0, 1));
+    assert.equal(buildOrder[2].slice(0, 1), buildOrder[3].slice(0, 1));
+    assert.equal(readFileSync(join(layoutA.candidate, 'kiki-desktop.exe'), 'utf8'), 'desktop-a-bytes');
+    assert.equal(readFileSync(join(layoutB.candidate, 'kiki-desktop.exe'), 'utf8'), 'desktop-b-bytes');
+    assert.equal(resA.receipt.files['kiki-desktop.exe'].sha256, sha256(join(layoutA.candidate, 'kiki-desktop.exe')));
+    assert.equal(resB.receipt.files['kiki-desktop.exe'].sha256, sha256(join(layoutB.candidate, 'kiki-desktop.exe')));
+    assert.notEqual(resA.receipt.files['kiki-desktop.exe'].sha256, resB.receipt.files['kiki-desktop.exe'].sha256);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

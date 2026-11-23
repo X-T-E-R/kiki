@@ -54,7 +54,7 @@ export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void
         return;
       }
       reply.send(okEnvelope(agent.accessor.get(IAgentFullCompactionService).getContextStrategy(), req.id));
-    });
+    }, undefined, { priority: 'background' });
   });
   app.get(read.path, read.options, read.handler as Parameters<RouteHost['get']>[2]);
   const write = defineRoute({ method: 'PATCH', path, params, body: contextStrategyWriteSchema,

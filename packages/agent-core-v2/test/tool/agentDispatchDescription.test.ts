@@ -176,4 +176,84 @@ describe('AgentRun dispatch recommendations', () => {
       await compactCtx.dispose();
     }
   });
+
+  it('does not freeze AgentRun description while unbound and refreshes when bound profile switches to scoped private subagents', async () => {
+    const explore = normalizeAgentProfile({
+      name: 'explore', description: 'Built-in explorer', modelAlias: 'mock-model', systemPrompt: () => '',
+    });
+    const agent = normalizeAgentProfile({
+      name: 'agent', description: 'Main agent profile', main: true, definitionId: 'def:agent', systemPrompt: () => '',
+    });
+    const ctfWorker = normalizeAgentProfile({
+      name: 'ctf-worker', description: 'Private CTF execution seat', private: true, definitionId: 'def:ctf-worker', modelAlias: 'mock-model', systemPrompt: () => '',
+    });
+    const ctf = normalizeAgentProfile({
+      name: 'ctf', description: 'CTF orchestrator', main: true, definitionId: 'def:ctf',
+      allowedSubagents: ['ctf-worker'], preferredSubagents: ['ctf-worker'], systemPrompt: () => '',
+    });
+    const snapshot = {
+      publicProfiles: new Map([[agent.name, agent], [ctf.name, ctf], [explore.name, explore]]),
+      defaultProfile: agent,
+      routes: new Map(),
+      scopedBindings: new Map([
+        ['def:ctf', new Map([
+          ['ctf-worker', {
+            alias: 'ctf-worker',
+            parentDefinitionId: 'def:ctf',
+            source: '_private/ctf-worker.md',
+            status: 'ready' as const,
+            sourceDefinitionId: 'def:ctf-worker',
+            profile: ctfWorker,
+          }],
+        ])],
+      ]),
+      sourceDefinitions: new Map([['def:ctf-worker', ctfWorker]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const catalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name: string) => [agent, ctf, explore].find((profile) => profile.name === name),
+      getDefault: () => agent,
+      list: () => [agent, ctf, explore],
+      snapshot: () => snapshot,
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    } as unknown as ISessionAgentProfileCatalog;
+
+    ctx = createTestAgent(
+      configServices(() => ({ providers: {} })),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+    );
+    await Promise.resolve();
+
+    const tool = ctx.get(ISubagentTool);
+    const unboundDescription = tool.description;
+    expect(unboundDescription).toContain('- explore: Built-in explorer');
+    expect(unboundDescription).not.toContain('ctf-worker');
+
+    ctx.get(IAgentProfileService).applyBindingSnapshot({
+      profileName: 'agent',
+      profileDefinitionId: 'def:agent',
+      thinkingLevel: 'off',
+      systemPrompt: 'agent',
+    });
+    const agentDescription = tool.description;
+    expect(agentDescription).toContain('- explore: Built-in explorer');
+    expect(agentDescription).not.toContain('ctf-worker');
+
+    ctx.get(IAgentProfileService).applyBindingSnapshot({
+      profileName: 'ctf',
+      thinkingLevel: 'off',
+      systemPrompt: 'ctf',
+      allowedSubagents: ['ctf-worker'],
+      preferredSubagents: ['ctf-worker'],
+    });
+    const ctfDescription = tool.description;
+    expect(ctfDescription).toContain('- ctf-worker: Private CTF execution seat');
+    expect(ctfDescription).not.toContain('- explore: Built-in explorer');
+  });
 });

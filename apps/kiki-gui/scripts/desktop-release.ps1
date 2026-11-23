@@ -726,7 +726,36 @@ function Resolve-LaunchTarget([string]$Root) {
     }
 }
 
-function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background) {
+function Format-WindowsProcessArgument([string]$Value) {
+    if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $sb = New-Object System.Text.StringBuilder
+    $null = $sb.Append('"')
+    $backslashes = 0
+    for ($i = 0; $i -lt $Value.Length; $i++) {
+        $ch = $Value[$i]
+        if ($ch -eq '\') {
+            $backslashes++
+        } elseif ($ch -eq '"') {
+            $null = $sb.Append('\', $backslashes * 2 + 1)
+            $null = $sb.Append('"')
+            $backslashes = 0
+        } else {
+            if ($backslashes -gt 0) {
+                $null = $sb.Append('\', $backslashes)
+                $backslashes = 0
+            }
+            $null = $sb.Append($ch)
+        }
+    }
+    if ($backslashes -gt 0) {
+        $null = $sb.Append('\', $backslashes * 2)
+    }
+    $null = $sb.Append('"')
+    return $sb.ToString()
+}
+
+function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background, [switch]$PassHomeArg) {
     $rootPath = Get-FullPath $Root
     $manifest = Read-CurrentManifest $rootPath
     $releaseId = [string]$manifest.releaseId
@@ -759,8 +788,16 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
             WorkingDirectory = $target.LaunchDirectory
             PassThru = [bool]$PassThru
         }
+        $argList = New-Object System.Collections.Generic.List[string]
+        if ($PassHomeArg -and -not [string]::IsNullOrWhiteSpace($LaunchHome)) {
+            $argList.Add('--home')
+            $argList.Add((Format-WindowsProcessArgument $LaunchHome))
+        }
         if ($Background) {
-            $startParams['ArgumentList'] = @('--background')
+            $argList.Add('--background')
+        }
+        if ($argList.Count -gt 0) {
+            $startParams['ArgumentList'] = ($argList.ToArray() -join ' ')
         }
         Start-Process @startParams
     }

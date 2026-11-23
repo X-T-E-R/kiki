@@ -431,7 +431,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       return result;
     },
     cancel: async (sessionId, agentId, promptId, signal) => {
-      const lease = await acquireSessionOperation(core, sessionId, 'prompt-ingress-cancel', signal);
+      const lease = await acquireSessionOperation(core, sessionId, 'prompt-ingress-cancel', signal, { priority: 'interactive' });
       try {
         const resolved = await abortable(resolvePromptFromSession(core, requireSession(lease.handle, sessionId), agentId), signal);
         signal.throwIfAborted();
@@ -717,7 +717,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTarget));
           return;
         }
-        lease = await phase('prompt_acquire', () => acquireSessionOperation(core, session_id, 'operation', signal));
+        lease = await phase('prompt_acquire', () => acquireSessionOperation(core, session_id, 'operation', signal, { priority: 'interactive' }));
         const session = requireSession(lease.handle, session_id);
         if (sessionAccessToken(req) !== undefined && req.body.agent_id !== undefined && req.body.agent_id !== MAIN_AGENT_ID &&
             (await session.accessor.get(ISessionMetadata).read()).agents?.[req.body.agent_id] === undefined) {
@@ -1083,7 +1083,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           if (!replacement.success) {
             throw new Error2(ErrorCodes.REQUEST_INVALID, 'replacement content is required');
           }
-          lease = await acquireSessionOperation(core, session_id, 'operation');
+          lease = await acquireSessionOperation(core, session_id, 'operation', undefined, { priority: 'interactive' });
           const session = requireSession(lease.handle, session_id);
           const sessionMedia = session.accessor.get(ISessionMediaStore);
           const files = sessionPromptFiles(core.accessor.get(IFileService), sessionMedia);
@@ -1123,7 +1123,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           reply.send(okEnvelope(projectPromptHandle(handle), req.id));
           return;
         }
-        lease = await acquireSessionOperation(core, session_id, 'operation');
+        lease = await acquireSessionOperation(core, session_id, 'operation', undefined, { priority: 'interactive' });
         const agentId = (req as { query?: { agent_id?: string } }).query?.agent_id;
         if (agentId !== undefined && agentId !== MAIN_AGENT_ID && parsed.action !== 'steer' && parsed.action !== 'abort' && parsed.action !== 'cancel') {
           throw new Error2(ErrorCodes.REQUEST_INVALID, `prompt ${parsed.action} is main-agent only`);

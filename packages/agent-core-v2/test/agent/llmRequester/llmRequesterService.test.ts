@@ -2793,6 +2793,196 @@ describe('AgentLLMRequesterService 400 INVALID_MEDIA self-heal', () => {
     expect(noMediaCalls.value).toBe(1);
   });
 
+  it('does not poison unrelated attachments on an unattributed multi-attachment invalid-media 400, and poisons only the named URL when attributed', async () => {
+    const goodUrl = 'https://media.example.test/good.png';
+    const badUrl = 'https://media.example.test/corrupt.png';
+    const unattributedCalls = { value: 0 };
+    const poisonedUnattributed: string[] = [];
+    const baseResolver = makePoisoningResolver();
+    const trackingResolver: IAgentMediaResolverService = {
+      ...baseResolver,
+      markMediaPoisoned(urls) {
+        for (const u of urls) poisonedUnattributed.push(u);
+        baseResolver.markMediaPoisoned?.(urls);
+      },
+    };
+    const { service: ambiguous } = createService(
+      createRequester(unattributedCalls, invalidMedia400()),
+      undefined,
+      {
+        contextMessages: [
+          {
+            role: 'user',
+            toolCalls: [],
+            content: [
+              { type: 'image_url', imageUrl: { url: goodUrl } },
+              { type: 'image_url', imageUrl: { url: badUrl } },
+            ],
+          },
+        ],
+        mediaResolver: trackingResolver,
+      },
+    );
+    await expect(ambiguous.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(unattributedCalls.value).toBe(1);
+    expect(poisonedUnattributed).toEqual([]);
+
+    const attributedCalls = { value: 0 };
+    const observedMessages: Array<readonly Message[]> = [];
+    const attributedError = normalizeAPIStatusError(
+      400,
+      `INVALID_MEDIA: failed to decode image ${badUrl}`,
+      null,
+      null,
+      null,
+      { error: { code: 'INVALID_MEDIA', url: badUrl } },
+    );
+    const baseAttributedRequester = createRequester(attributedCalls, attributedError);
+    const capturingRequester: ModelRequester = {
+      ...baseAttributedRequester,
+      async *request(input, signal, params) {
+        observedMessages.push(input.messages);
+        yield* baseAttributedRequester.request(input, signal, params);
+      },
+    };
+    const { service: attributed } = createService(capturingRequester, undefined, {
+      contextMessages: [
+        {
+          role: 'user',
+          toolCalls: [],
+          content: [
+            { type: 'image_url', imageUrl: { url: goodUrl } },
+            { type: 'image_url', imageUrl: { url: badUrl } },
+          ],
+        },
+      ],
+      mediaResolver: makePoisoningResolver(),
+    });
+    const turn = await attributed.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(turn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(attributedCalls.value).toBe(2);
+    expect(observedMessages[1]![0]!.content[0]).toEqual({ type: 'image_url', imageUrl: { url: goodUrl } });
+    expect(observedMessages[1]![0]!.content[1]).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+
+    const prefixGoodUrl = 'https://cdn.example/photo.png';
+    const prefixBadUrl = 'https://cdn.example/photo.png?v=2';
+    const prefixPoisoned: string[] = [];
+    const prefixCalls = { value: 0 };
+    const prefixResolverBase = makePoisoningResolver();
+    const prefixResolver: IAgentMediaResolverService = {
+      ...prefixResolverBase,
+      markMediaPoisoned(urls) {
+        for (const u of urls) prefixPoisoned.push(u);
+        prefixResolverBase.markMediaPoisoned?.(urls);
+      },
+    };
+    const prefixError = normalizeAPIStatusError(
+      400,
+      `INVALID_MEDIA: failed to decode image "${prefixBadUrl}"`,
+      null,
+      null,
+      null,
+      { error: { code: 'INVALID_MEDIA', url: prefixBadUrl } },
+    );
+    const { service: prefixService } = createService(createRequester(prefixCalls, prefixError), undefined, {
+      contextMessages: [
+        {
+          role: 'user',
+          toolCalls: [],
+          content: [
+            { type: 'image_url', imageUrl: { url: prefixGoodUrl } },
+            { type: 'image_url', imageUrl: { url: prefixBadUrl } },
+          ],
+        },
+      ],
+      mediaResolver: prefixResolver,
+    });
+    const prefixTurn = await prefixService.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(prefixTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(prefixPoisoned).toEqual([prefixBadUrl]);
+
+    const sourceUrl = 'kiki-file://single-resolved';
+    const resolvedUrl = 'data:image/png;base64,QUJD';
+    const dualPoisoned: string[] = [];
+    const dualCalls = { value: 0 };
+    const dualResolver: IAgentMediaResolverService = {
+      _serviceBrand: undefined,
+      markMediaPoisoned(urls) {
+        for (const u of urls) dualPoisoned.push(u);
+      },
+      async resolve(messages) {
+        return messages.map((message) => ({
+          ...message,
+          content: message.content.map((part) => {
+            if (part.type === 'image_url' && part.imageUrl.url === sourceUrl) {
+              if (dualPoisoned.includes(sourceUrl) || dualPoisoned.includes(resolvedUrl)) {
+                return { type: 'text', text: '[media omitted]' };
+              }
+              return { type: 'image_url', imageUrl: { url: resolvedUrl } };
+            }
+            return part;
+          }),
+        }));
+      },
+    };
+    const { service: dualService } = createService(createRequester(dualCalls, invalidMedia400()), undefined, {
+      contextMessages: [
+        {
+          role: 'user',
+          toolCalls: [],
+          content: [{ type: 'image_url', imageUrl: { url: sourceUrl } }],
+        },
+      ],
+      mediaResolver: dualResolver,
+    });
+    const dualTurn = await dualService.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(dualTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(dualCalls.value).toBe(2);
+    expect(new Set(dualPoisoned)).toEqual(new Set([sourceUrl, resolvedUrl]));
+
+    const proseMentionCalls = { value: 0 };
+    const prosePoisoned: string[] = [];
+    const proseResolverBase = makePoisoningResolver();
+    const proseResolver: IAgentMediaResolverService = {
+      ...proseResolverBase,
+      markMediaPoisoned(urls) {
+        for (const u of urls) prosePoisoned.push(u);
+        proseResolverBase.markMediaPoisoned?.(urls);
+      },
+    };
+    const proseMentionError = normalizeAPIStatusError(
+      400,
+      `INVALID_MEDIA: failed to decode one attachment; kept ${goodUrl}`,
+      null,
+      null,
+      null,
+      { error: { code: 'INVALID_MEDIA', message: `failed to decode one attachment; kept ${goodUrl}` } },
+    );
+    const { service: proseService } = createService(createRequester(proseMentionCalls, proseMentionError), undefined, {
+      contextMessages: [
+        {
+          role: 'user',
+          toolCalls: [],
+          content: [
+            { type: 'image_url', imageUrl: { url: goodUrl } },
+            { type: 'image_url', imageUrl: { url: badUrl } },
+          ],
+        },
+      ],
+      mediaResolver: proseResolver,
+    });
+    await expect(proseService.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(proseMentionCalls.value).toBe(1);
+    expect(prosePoisoned).toEqual([]);
+  });
+
   it('does not loop under KIKI_INFINITE_RETRY when 400 INVALID_MEDIA lacks retryable=false', async () => {
     const mediaCalls = { value: 0 };
     const { service: withMedia } = createService(

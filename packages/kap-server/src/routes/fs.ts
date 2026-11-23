@@ -434,7 +434,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             runtimeFs = cold.runtimeFs;
             workspaceLease = cold.workspaceLease;
           } else if (cold?.kind === 'fallback_session') {
-            operation = await acquireSessionOperation(core, session_id, 'operation');
+            operation = await acquireSessionOperation(core, session_id, 'operation', undefined, { priority: 'background' });
             if (operation.handle !== undefined) {
               runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, required);
             }
@@ -661,7 +661,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             runtimeFs = cold.runtimeFs;
             workspaceLease = cold.workspaceLease;
           } else if (cold?.kind === 'fallback_session') {
-            operation = await acquireSessionOperation(core, session_id, 'operation');
+            operation = await acquireSessionOperation(core, session_id, 'operation', undefined, { priority: 'background' });
             if (operation.handle !== undefined) {
               runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, ['fs']);
             }

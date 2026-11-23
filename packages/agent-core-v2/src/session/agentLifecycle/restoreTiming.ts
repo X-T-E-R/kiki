@@ -25,6 +25,8 @@ export interface RestoreProgress {
   readonly queuePosition?: number;
 }
 
+export type RestorePriority = 'interactive' | 'background';
+
 export interface RestoreLifetime {
   ownerManaged: boolean;
   readonly signal: AbortSignal;
@@ -39,19 +41,31 @@ interface RestoreAttempt {
 
 const attempts = new AsyncLocalStorage<RestoreAttempt>();
 const observers = new AsyncLocalStorage<(progress: RestoreProgress) => void>();
+const priorities = new AsyncLocalStorage<RestorePriority>();
 
 export function observeRestore<T>(observer: (progress: RestoreProgress) => void, action: () => Promise<T>): Promise<T> {
   return observers.run(observer, action);
 }
 
-export function withoutRestoreAttempt<T>(action: () => T): T {
-  return attempts.exit(() => observers.exit(action));
+export function withRestorePriority<T>(priority: RestorePriority, action: () => T): T {
+  return priorities.run(priority, action);
 }
 
-export function restoreQueueReporter(): (position: number) => void {
+export function restorePriority(): RestorePriority | undefined {
+  return priorities.getStore();
+}
+
+export function withoutRestoreAttempt<T>(action: () => T): T {
+  return attempts.exit(() => observers.exit(() => priorities.exit(action)));
+}
+
+export function restoreQueueObserver(): ((position: number) => void) | undefined {
   const observer = observers.getStore();
+  if (observer === undefined) return undefined;
   const startedAt = attempts.getStore()?.startedAt ?? Date.now();
-  return (queuePosition) => observer?.({ phase: 'restore_queue', startedAt: new Date(startedAt).toISOString(), elapsedMs: Date.now() - startedAt, queuePosition });
+  return (queuePosition) => {
+    observer({ phase: 'restore_queue', startedAt: new Date(startedAt).toISOString(), elapsedMs: Date.now() - startedAt, queuePosition });
+  };
 }
 
 export function restoreSignal(): AbortSignal | undefined {

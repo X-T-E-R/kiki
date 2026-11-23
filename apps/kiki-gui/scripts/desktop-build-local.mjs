@@ -5,8 +5,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, rmSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -16,11 +16,16 @@ import {
   assertSameSnapshot,
   createReceiptForCandidate,
   defaultCandidateRoot,
+  DESKTOP_EXE,
   execGitReadonly,
+  isSharedCargoTargetDir,
   localBuildSteps,
   readBuildTreeSnapshot,
   receiptPathFor,
+  resolveSharedCargoTargetDir,
+  stageDesktopArtifact,
   stageServerArtifact,
+  withSharedCargoTargetLock,
   writeReceiptAtomic,
 } from './desktop-build-source.mjs';
 
@@ -102,13 +107,24 @@ export async function runLocalDesktopBuild({
   }
   const started = await readBuildTreeSnapshot(tree, git);
   assertBuildSnapshot(started, commit);
-  for (const step of localBuildSteps(tree, commit, env)) {
-    await runner(step);
+  const cargoTargetDir = resolveSharedCargoTargetDir(tree, env);
+  const candidateRoot = defaultCandidateRoot(tree);
+  const steps = localBuildSteps(tree, commit, env);
+  const sharedTarget = isSharedCargoTargetDir(tree, cargoTargetDir);
+  for (const step of steps) {
+    if (step.id === 'desktop-artifacts' && sharedTarget) {
+      await withSharedCargoTargetLock(tree, cargoTargetDir, async () => {
+        rmSync(join(resolve(cargoTargetDir), 'release', DESKTOP_EXE), { force: true });
+        await runner(step);
+        stageDesktopArtifact(tree, candidateRoot, cargoTargetDir);
+      });
+    } else {
+      await runner(step);
+    }
   }
   const finished = await readBuildTreeSnapshot(tree, git);
   assertSameSnapshot(started, finished);
   assertBuildSnapshot(finished, commit);
-  const candidateRoot = defaultCandidateRoot(tree);
   stageServerArtifact(tree, candidateRoot);
   const receipt = createReceiptForCandidate({
     buildTree: tree,

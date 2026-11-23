@@ -1,7 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
-import { PORTABLE_SPACE_DOMAINS, type PortableSpaceDiffRow, type PortableSpacePreviewInput } from '@kiki/protocol';
+import { PORTABLE_SPACE_DIFF_PREVIEW_MAX_CHARS, PORTABLE_SPACE_DOMAINS, type PortableSpaceDiffRow, type PortableSpacePreviewInput } from '@kiki/protocol';
 import { git, scratch, writeFileAtomic } from './spaceFiles';
 import { matches, object, selectedUnits, type Data, type SpaceUnit, type Units } from './treeProjection';
 
@@ -87,13 +87,96 @@ function summary(unit: SpaceUnit | undefined): string | null {
   return unit.domain === 'credentials' ? 'Credential (masked)' : Buffer.isBuffer(unit.value) ? `${unit.value.length} bytes` : JSON.stringify(unit.value).slice(0, 512);
 }
 
+function countNewlinesFrom(text: string, start: number): number {
+  let count = 0;
+  let pos = start;
+  while (pos < text.length) {
+    const nl = text.indexOf('\n', pos);
+    if (nl < 0) break;
+    count += 1;
+    pos = nl + 1;
+  }
+  return count;
+}
+
+function measurePrefixedLength(text: string, limit: number): number | undefined {
+  let total = 0;
+  let pos = 0;
+  for (;;) {
+    const nl = text.indexOf('\n', pos);
+    const end = nl < 0 ? text.length : nl;
+    total += 1 + (end - pos) + (nl < 0 ? 0 : 1);
+    if (total > limit) return undefined;
+    if (nl < 0) return total;
+    pos = nl + 1;
+  }
+}
+
+function renderBoundedSide(text: string, prefix: '-' | '+', maxChars: number): string {
+  const out: string[] = [];
+  if (measurePrefixedLength(text, maxChars) !== undefined) {
+    let pos = 0;
+    for (;;) {
+      const nl = text.indexOf('\n', pos);
+      const end = nl < 0 ? text.length : nl;
+      out.push(`${prefix}${text.slice(pos, end)}`);
+      if (nl < 0) return out.join('\n');
+      pos = nl + 1;
+    }
+  }
+  let used = 0;
+  let pos = 0;
+  const maxMarkerLen = 48;
+  const contentLimit = Math.max(0, maxChars - maxMarkerLen);
+  for (;;) {
+    const nl = text.indexOf('\n', pos);
+    const end = nl < 0 ? text.length : nl;
+    const lineLen = end - pos;
+    const sep = out.length > 0 ? 1 : 0;
+    const needed = sep + 1 + lineLen;
+    if (used + needed <= contentLimit) {
+      out.push(`${prefix}${text.slice(pos, end)}`);
+      used += needed;
+      if (nl < 0) return out.join('\n');
+      pos = nl + 1;
+      continue;
+    }
+    if (out.length === 0) {
+      const available = Math.max(0, contentLimit - 1);
+      const omittedChars = lineLen - available;
+      const tailLines = nl < 0 ? 0 : countNewlinesFrom(text, nl + 1) + 1;
+      const note = tailLines > 0
+        ? `... (${omittedChars} chars and ${tailLines} more line${tailLines === 1 ? '' : 's'} omitted)`
+        : `... (${omittedChars} more chars omitted)`;
+      out.push(`${prefix}${text.slice(pos, pos + available)}`);
+      out.push(note);
+      return out.join('\n').slice(0, maxChars);
+    }
+    const omittedLines = 1 + (nl < 0 ? 0 : countNewlinesFrom(text, nl + 1));
+    out.push(`... (${omittedLines} more line${omittedLines === 1 ? '' : 's'} omitted)`);
+    return out.join('\n').slice(0, maxChars);
+  }
+}
+
 function diffText(left?: SpaceUnit, right?: SpaceUnit): string | undefined {
   if ((left ?? right)?.domain === 'credentials') return;
   const text = (unit?: SpaceUnit) => unit === undefined ? '' : Buffer.isBuffer(unit.value) ? unit.value.toString('utf8') : JSON.stringify(unit.value, null, 2);
   const a = text(right);
   const b = text(left);
   if (a.includes('\0') || b.includes('\0') || a.includes('\ufffd') || b.includes('\ufffd')) return;
-  return `--- target\n+++ source\n${a.split('\n').map((line) => `-${line}`).join('\n')}\n${b.split('\n').map((line) => `+${line}`).join('\n')}`.slice(0, 16_384);
+  const header = '--- target\n+++ source';
+  const bodyBudget = PORTABLE_SPACE_DIFF_PREVIEW_MAX_CHARS - header.length - 1;
+  if (right !== undefined && left !== undefined) {
+    const half = Math.floor((bodyBudget - 1) / 2);
+    const aLen = measurePrefixedLength(a, half);
+    const bLen = measurePrefixedLength(b, half);
+    const aBudget = aLen !== undefined ? aLen : bLen !== undefined ? bodyBudget - 1 - bLen : half;
+    const bBudget = bLen !== undefined ? bLen : bodyBudget - 1 - aBudget;
+    return `${header}\n${renderBoundedSide(a, '-', aBudget)}\n${renderBoundedSide(b, '+', bBudget)}`;
+  }
+  if (right !== undefined) return `${header}\n${renderBoundedSide(a, '-', bodyBudget)}`;
+  if (left !== undefined) return `${header}\n${renderBoundedSide(b, '+', bodyBudget)}`;
+  return header;
 }
 
 function textFile(unit: SpaceUnit | undefined): unit is SpaceUnit & { value: Buffer } {
@@ -114,7 +197,7 @@ async function mergeText(left: SpaceUnit, base: SpaceUnit | undefined, right: Sp
   });
 }
 
-export async function planChanges(input: PortableSpacePreviewInput, left: Units, right: Units, masks: ReadonlySet<string>, base: VerifiedBase | undefined, hashKey: string, targetMasks: ReadonlySet<string>): Promise<{ changes: Change[]; unchangedCount: number }> {
+export async function planChanges(input: PortableSpacePreviewInput, left: Units, right: Units, masks: ReadonlySet<string>, base: VerifiedBase | undefined, hashKey: string, targetMasks: ReadonlySet<string>, includeDiffPreview = true): Promise<{ changes: Change[]; unchangedCount: number }> {
   const selectedLeft = selectedUnits(left, input.domains, input.pick);
   const selectedRight = selectedUnits(right, input.domains, input.pick);
   const sync = input.mode === 'sync';
@@ -157,7 +240,7 @@ export async function planChanges(input: PortableSpacePreviewInput, left: Units,
     changes.push({ left: l, right: r, merged, row: {
       id, domain: unit.domain, path: unit.path, label: unit.path.slice(0, 256), change, direction,
       beforeSummary: summary(sync ? l : r), afterSummary: summary(sync ? r : merged ?? l),
-      diffPreview: diffText(direction === 'to_left' ? r : merged ?? l, direction === 'to_left' ? l : r),
+      diffPreview: includeDiffPreview ? diffText(direction === 'to_left' ? r : merged ?? l, direction === 'to_left' ? l : r) : undefined,
       selected: direction !== 'conflict', masked: unit.domain === 'credentials' || undefined,
     } });
   }

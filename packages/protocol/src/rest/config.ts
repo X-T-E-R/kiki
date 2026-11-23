@@ -307,12 +307,12 @@ export const sessionResidencyConfigResponseSchema = /* @__PURE__ */ z.object({
 });
 
 export const sessionResidencyConfigPatchSchema = /* @__PURE__ */ z.object({
-  idle_ttl_ms: z.number().int().min(0).max(86_400_000).optional(),
-  max_live_sessions: z.number().int().min(1).max(64).optional(),
-  min_idle_ms: z.number().int().min(0).max(86_400_000).optional(),
-  sweep_interval_ms: z.number().int().min(1_000).max(300_000).optional(),
-  max_concurrent_restores: z.number().int().min(1).max(4).optional(),
-  max_queued_restores: z.number().int().min(0).max(64).optional(),
+  idle_ttl_ms: z.number().int().min(0).max(2_147_483_647).optional(),
+  max_live_sessions: z.number().int().min(1).optional(),
+  min_idle_ms: z.number().int().min(0).max(2_147_483_647).optional(),
+  sweep_interval_ms: z.number().int().min(1_000).max(2_147_483_647).optional(),
+  max_concurrent_restores: z.number().int().min(1).optional(),
+  max_queued_restores: z.number().int().min(0).optional(),
   max_resident_heap_bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
 }).strict();
 

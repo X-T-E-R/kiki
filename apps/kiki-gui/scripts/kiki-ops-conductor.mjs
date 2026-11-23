@@ -850,69 +850,159 @@ export async function reconcileSwitch({
   const resolvedReportPath = resolve(reportPath ?? join(resolvedRuntime, 'hot-switch-report.json'));
   const report = readJsonIfExists(resolvedReportPath);
 
-  const targetSessionIds = [];
+  const targets = [];
   const seen = new Set();
-  const addId = (id) => {
-    if (typeof id === 'string' && id.trim() !== '' && !seen.has(id)) {
-      seen.add(id);
-      targetSessionIds.push(id);
+  const addTarget = (sessionId, targetHome) => {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') return;
+    const effectiveHome = resolve(
+      typeof targetHome === 'string' && targetHome.trim() !== '' ? targetHome : resolvedHome,
+    );
+    const dedupKey = `${effectiveHome.toLowerCase()}|${sessionId}`;
+    if (!seen.has(dedupKey)) {
+      seen.add(dedupKey);
+      targets.push({ sessionId, kikiHome: effectiveHome });
     }
   };
   if (Array.isArray(sessions) && sessions.length > 0) {
-    for (const id of sessions) addId(id);
+    for (const id of sessions) addTarget(id, resolvedHome);
   } else if (report) {
-    for (const id of Array.isArray(report.interruptedSessions) ? report.interruptedSessions : []) addId(id);
-    for (const fail of Array.isArray(report.resumeFailures) ? report.resumeFailures : []) addId(fail?.sessionId);
+    const defaultReportHome =
+      typeof report.kikiHome === 'string' && report.kikiHome.trim() !== '' ? report.kikiHome : resolvedHome;
+    const hasStructuredInterrupted =
+      Array.isArray(report.interruptedSessionRecords) && report.interruptedSessionRecords.length > 0;
+    const spaceInterrupted = Array.isArray(report.spaces)
+      ? report.spaces.flatMap((sp) =>
+          Array.isArray(sp?.interruptedSessions)
+            ? sp.interruptedSessions.map((id) => ({ sessionId: id, kikiHome: sp.kikiHome ?? defaultReportHome }))
+            : [],
+        )
+      : [];
+    if (hasStructuredInterrupted) {
+      for (const rec of report.interruptedSessionRecords) {
+        addTarget(rec?.sessionId ?? rec?.id, rec?.kikiHome ?? defaultReportHome);
+      }
+    } else if (spaceInterrupted.length > 0) {
+      for (const rec of spaceInterrupted) {
+        addTarget(rec.sessionId, rec.kikiHome);
+      }
+    } else {
+      for (const id of Array.isArray(report.interruptedSessions) ? report.interruptedSessions : []) {
+        addTarget(id, defaultReportHome);
+      }
+    }
+    for (const fail of Array.isArray(report.resumeFailures) ? report.resumeFailures : []) {
+      addTarget(fail?.sessionId, fail?.kikiHome ?? defaultReportHome);
+    }
   }
 
-  const discovered = await discoverLiveServer({
+  const primaryDiscovered = await discoverLiveServer({
     runtimeRoot: resolvedRuntime,
     kikiHome: resolvedHome,
     resolveProcessPath,
     callApi,
   });
-  if (!discovered.server) {
-    throw new Error(`No live Kiki server found for reconcile (${discovered.tokenError ?? 'not running'}).`);
+  if (!primaryDiscovered.server && targets.length === 0) {
+    throw new Error(`No live Kiki server found for reconcile (${primaryDiscovered.tokenError ?? 'not running'}).`);
   }
 
-  const { port, token } = discovered.server;
-  let workPendingSet = new Set();
-  let lifecycleState = 'ok';
-  let lifecycleError = null;
-  try {
-    const lifecycle = await callApi({ port, token, path: '/api/desktop-lifecycle', method: 'GET' });
-    if (Array.isArray(lifecycle?.work_pending)) {
-      workPendingSet = new Set(lifecycle.work_pending);
+  const serverContextCache = new Map();
+  const getServerContext = async (targetHome) => {
+    const homeKey = targetHome.toLowerCase();
+    if (serverContextCache.has(homeKey)) return serverContextCache.get(homeKey);
+    const discovered =
+      homeKey === resolvedHome.toLowerCase()
+        ? primaryDiscovered
+        : await discoverLiveServer({
+            runtimeRoot: resolvedRuntime,
+            kikiHome: targetHome,
+            resolveProcessPath,
+            callApi,
+          });
+    if (!discovered.server) {
+      throw new Error(
+        `No live Kiki server found for reconcile in home ${targetHome} (${discovered.tokenError ?? 'not running'}).`,
+      );
     }
-  } catch (error) {
-    if (error?.statusCode === 404 || error?.apiCode === 40404) {
-      lifecycleState = 'unsupported';
-    } else {
-      lifecycleState = 'error';
-      lifecycleError = error instanceof Error ? error.message : String(error);
-    }
-  }
-  const activityStatusBySession = new Map();
-  let activityQueryState = 'ok';
-  let activityQueryError = null;
-  try {
-    const items = await queryActiveSessionsPaginated({ port, token, callApi });
-    for (const item of items) {
-      if (item?.id && item?.activity?.status) {
-        activityStatusBySession.set(item.id, item.activity.status);
+    const { port, token } = discovered.server;
+    let workPendingSet = new Set();
+    let lifecycleState = 'ok';
+    let lifecycleError = null;
+    try {
+      const lifecycle = await callApi({ port, token, path: '/api/desktop-lifecycle', method: 'GET' });
+      if (Array.isArray(lifecycle?.work_pending)) {
+        workPendingSet = new Set(lifecycle.work_pending);
+      }
+    } catch (error) {
+      if (error?.statusCode === 404 || error?.apiCode === 40404) {
+        lifecycleState = 'unsupported';
+      } else {
+        lifecycleState = 'error';
+        lifecycleError = error instanceof Error ? error.message : String(error);
       }
     }
-  } catch (error) {
-    if (error?.statusCode === 404 || error?.apiCode === 40404) {
-      activityQueryState = 'unsupported';
-    } else {
-      activityQueryState = 'error';
-      activityQueryError = error instanceof Error ? error.message : String(error);
+    const activityStatusBySession = new Map();
+    let activityQueryState = 'ok';
+    let activityQueryError = null;
+    try {
+      const items = await queryActiveSessionsPaginated({ port, token, callApi });
+      for (const item of items) {
+        if (item?.id && item?.activity?.status) {
+          activityStatusBySession.set(item.id, item.activity.status);
+        }
+      }
+    } catch (error) {
+      if (error?.statusCode === 404 || error?.apiCode === 40404) {
+        activityQueryState = 'unsupported';
+      } else {
+        activityQueryState = 'error';
+        activityQueryError = error instanceof Error ? error.message : String(error);
+      }
     }
-  }
+    const ctx = {
+      server: discovered.server,
+      port,
+      token,
+      workPendingSet,
+      lifecycleState,
+      lifecycleError,
+      activityStatusBySession,
+      activityQueryState,
+      activityQueryError,
+    };
+    serverContextCache.set(homeKey, ctx);
+    return ctx;
+  };
 
   const results = [];
-  for (const sessionId of targetSessionIds) {
+  for (const target of targets) {
+    const { sessionId, kikiHome: targetHome } = target;
+    let ctx;
+    try {
+      ctx = await getServerContext(targetHome);
+    } catch (error) {
+      results.push({
+        sessionId,
+        kikiHome: targetHome,
+        activityStatus: null,
+        controlPhase: 'unknown',
+        nudged: false,
+        reason: 'server_unavailable',
+        error: error instanceof Error ? error.message : String(error),
+        readError: null,
+      });
+      continue;
+    }
+    const {
+      port,
+      token,
+      workPendingSet,
+      lifecycleState,
+      lifecycleError,
+      activityStatusBySession,
+      activityQueryState,
+      activityQueryError,
+    } = ctx;
+
     let controlPhase = 'unknown';
     let readError = null;
     try {
@@ -939,20 +1029,21 @@ export async function reconcileSwitch({
       controlPhase === 'pausing';
 
     if (!nudge) {
-      results.push({ sessionId, activityStatus, controlPhase, nudged: false, reason: 'dry_run', readError });
+      results.push({ sessionId, kikiHome: targetHome, activityStatus, controlPhase, nudged: false, reason: 'dry_run', readError });
       continue;
     }
     if (isActuallyActive) {
-      results.push({ sessionId, activityStatus, controlPhase, nudged: false, reason: 'already_active', readError });
+      results.push({ sessionId, kikiHome: targetHome, activityStatus, controlPhase, nudged: false, reason: 'already_active', readError });
       continue;
     }
     if (controlPhase === 'paused') {
-      results.push({ sessionId, activityStatus, controlPhase, nudged: false, reason: 'still_paused', readError });
+      results.push({ sessionId, kikiHome: targetHome, activityStatus, controlPhase, nudged: false, reason: 'still_paused', readError });
       continue;
     }
     if (lifecycleState === 'error') {
       results.push({
         sessionId,
+        kikiHome: targetHome,
         activityStatus,
         controlPhase,
         nudged: false,
@@ -965,6 +1056,7 @@ export async function reconcileSwitch({
     if (activityStatus === null && activityQueryState === 'error') {
       results.push({
         sessionId,
+        kikiHome: targetHome,
         activityStatus,
         controlPhase,
         nudged: false,
@@ -989,10 +1081,11 @@ export async function reconcileSwitch({
           content: [{ type: 'text', text: prompt }],
         },
       });
-      results.push({ sessionId, activityStatus, controlPhase, nudged: true, promptId, receipt, readError });
+      results.push({ sessionId, kikiHome: targetHome, activityStatus, controlPhase, nudged: true, promptId, receipt, readError });
     } catch (error) {
       results.push({
         sessionId,
+        kikiHome: targetHome,
         activityStatus,
         controlPhase,
         nudged: false,
@@ -1004,16 +1097,19 @@ export async function reconcileSwitch({
   }
 
   const failedNudges = results.filter((item) => item.error);
+  const reportingServer = primaryDiscovered.server ?? [...serverContextCache.values()][0]?.server ?? null;
   return {
     ok: failedNudges.length === 0,
     reportPath: resolvedReportPath,
-    liveServer: {
-      server_id: discovered.server.meta.server_id,
-      pid: discovered.server.pid,
-      executablePath: discovered.server.executablePath,
-      build_id: discovered.server.meta.build_id,
-    },
-    interruptedCount: targetSessionIds.length,
+    liveServer: reportingServer
+      ? {
+          server_id: reportingServer.meta.server_id,
+          pid: reportingServer.pid,
+          executablePath: reportingServer.executablePath,
+          build_id: reportingServer.meta.build_id,
+        }
+      : null,
+    interruptedCount: targets.length,
     nudgeEnabled: Boolean(nudge),
     results,
   };
@@ -1053,7 +1149,7 @@ export async function switchRuntime({
   candidateRoot,
   expectedCommit,
   hotSwitchScript = join(SCRIPT_DIR, 'desktop-hot-switch.ps1'),
-  settleSeconds = 30,
+  settleSeconds = 600,
   startupSeconds = 90,
   stopGraceSeconds = 30,
   canaryTimeoutSeconds,
@@ -1328,7 +1424,7 @@ async function main() {
       candidateRoot: options['candidate-root'],
       expectedCommit: options['expected-commit'],
       hotSwitchScript: options['hot-switch-script'],
-      settleSeconds: parsePositiveInt(options['settle-seconds'], 30, '--settle-seconds'),
+      settleSeconds: parsePositiveInt(options['settle-seconds'], 600, '--settle-seconds'),
       startupSeconds: parsePositiveInt(options['startup-seconds'], 90, '--startup-seconds'),
       stopGraceSeconds: parsePositiveInt(options['stop-grace-seconds'], 30, '--stop-grace-seconds'),
       canaryTimeoutSeconds:

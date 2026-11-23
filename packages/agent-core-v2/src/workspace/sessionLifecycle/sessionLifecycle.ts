@@ -50,6 +50,7 @@ export interface ForkSessionOptions {
 
 export interface ResumeSessionOptions {
   readonly forExecutionControl?: true;
+  readonly priority?: import('#/session/agentLifecycle/restoreTiming').RestorePriority;
   readonly additionalDirs?: readonly string[];
   readonly waitForSessionMs?: number;
   /**

@@ -11,7 +11,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { observeRestore, type RestoreProgress } from '#/session/agentLifecycle/restoreTiming';
+import { observeRestore, withRestorePriority, type RestoreProgress } from '#/session/agentLifecycle/restoreTiming';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -201,6 +201,228 @@ describe('SessionManager', () => {
       changed.dispose();
       didCreate.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it('reserves one restore slot for interactive callers and promotes queued background restores in place', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const entered: string[] = [];
+    const gates = new Map<string, () => void>();
+    const fake = controller();
+    const service = Object.assign(fake.service, { onDidCreateSession: didCreate.event, resume: async (id: string) => {
+      entered.push(id);
+      await new Promise<void>(resolve => { gates.set(id, resolve); });
+      const handle = { id } as ISessionScopeHandle;
+      didCreate.fire({ sessionId: id, handle, source: 'resume' });
+      return handle;
+    } });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ maxConcurrentRestores: 2 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => false });
+      reg.definePartialInstance(IBootstrapService, { scope: name => name });
+      reg.definePartialInstance(IAtomicDocumentStore, { get: (async () => ({ agents: { main: {} } })) as IAtomicDocumentStore['get'] });
+      reg.definePartialInstance(IFileSystemStorageService, { size: async () => undefined });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    const bg2Progress: RestoreProgress[] = [];
+    const interactiveProgress: RestoreProgress[] = [];
+    const bg1 = manager.resume('bg-1', { priority: 'background' });
+    const bg2 = observeRestore(value => bg2Progress.push(value), () => manager.resume('bg-2', { priority: 'background' }));
+    try {
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-1']);
+      expect(bg2Progress).toContainEqual(expect.objectContaining({ phase: 'restore_queue', queuePosition: 1 }));
+
+      const interactive = observeRestore(
+        value => interactiveProgress.push(value),
+        () => withRestorePriority('interactive', () => manager.resume('interactive-1')),
+      );
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-1', 'interactive-1']);
+      expect(interactiveProgress.some(value => value.queuePosition !== undefined)).toBe(false);
+
+      gates.get('interactive-1')?.();
+      await expect(interactive).resolves.toMatchObject({ id: 'interactive-1' });
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-1', 'interactive-1']);
+
+      const promoted = manager.resume('bg-2', { priority: 'interactive' });
+      expect(promoted).toBe(bg2);
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-1', 'interactive-1', 'bg-2']);
+
+      gates.get('bg-1')?.();
+      gates.get('bg-2')?.();
+      await expect(Promise.all([bg1, bg2])).resolves.toHaveLength(2);
+    } finally {
+      for (const release of gates.values()) release();
+      await Promise.allSettled([bg1, bg2]);
+      await disposables.dispose();
+      didCreate.dispose();
+    }
+  });
+
+  it('queues interactive restores ahead of background restores when concurrency is 1 and updates queue positions', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const entered: string[] = [];
+    const gates = new Map<string, () => void>();
+    const fake = controller();
+    const service = Object.assign(fake.service, { onDidCreateSession: didCreate.event, resume: async (id: string) => {
+      entered.push(id);
+      await new Promise<void>(resolve => { gates.set(id, resolve); });
+      const handle = { id } as ISessionScopeHandle;
+      didCreate.fire({ sessionId: id, handle, source: 'resume' });
+      return handle;
+    } });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ maxConcurrentRestores: 1 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => false });
+      reg.definePartialInstance(IBootstrapService, { scope: name => name });
+      reg.definePartialInstance(IAtomicDocumentStore, { get: (async () => ({ agents: { main: {} } })) as IAtomicDocumentStore['get'] });
+      reg.definePartialInstance(IFileSystemStorageService, { size: async () => undefined });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    const bg2Positions: number[] = [];
+    const bg3Positions: number[] = [];
+    const interactivePositions: number[] = [];
+    const active = manager.resume('bg-active', { priority: 'background' });
+    const bg2 = observeRestore(v => { if (v.queuePosition !== undefined) bg2Positions.push(v.queuePosition); }, () => manager.resume('bg-2', { priority: 'background' }));
+    const bg3 = observeRestore(v => { if (v.queuePosition !== undefined) bg3Positions.push(v.queuePosition); }, () => manager.resume('bg-3', { priority: 'background' }));
+    try {
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-active']);
+      expect(bg2Positions.at(-1)).toBe(1);
+      expect(bg3Positions.at(-1)).toBe(2);
+
+      const interactive = observeRestore(
+        v => { if (v.queuePosition !== undefined) interactivePositions.push(v.queuePosition); },
+        () => manager.resume('interactive-1', { priority: 'interactive' }),
+      );
+      await drainMicrotasks();
+      expect(interactivePositions.at(-1)).toBe(1);
+      expect(bg2Positions.at(-1)).toBe(2);
+      expect(bg3Positions.at(-1)).toBe(3);
+
+      const promotedBg3 = manager.resume('bg-3', { priority: 'interactive' });
+      expect(promotedBg3).toBe(bg3);
+      await drainMicrotasks();
+      expect(interactivePositions.at(-1)).toBe(1);
+      expect(bg3Positions.at(-1)).toBe(2);
+      expect(bg2Positions.at(-1)).toBe(3);
+
+      gates.get('bg-active')?.();
+      await expect(active).resolves.toMatchObject({ id: 'bg-active' });
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-active', 'interactive-1']);
+
+      gates.get('interactive-1')?.();
+      await expect(interactive).resolves.toMatchObject({ id: 'interactive-1' });
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-active', 'interactive-1', 'bg-3']);
+
+      gates.get('bg-3')?.();
+      await expect(bg3).resolves.toMatchObject({ id: 'bg-3' });
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-active', 'interactive-1', 'bg-3', 'bg-2']);
+
+      gates.get('bg-2')?.();
+      await expect(bg2).resolves.toMatchObject({ id: 'bg-2' });
+    } finally {
+      for (const release of gates.values()) release();
+      await Promise.allSettled([active, bg2, bg3]);
+      await disposables.dispose();
+      didCreate.dispose();
+    }
+  });
+
+  it('bounds background restores to half of concurrency and queue capacity so concurrent foreground prompts never starve or hit SESSION_BUSY', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const entered: string[] = [];
+    const gates = new Map<string, () => void>();
+    const fake = controller();
+    const service = Object.assign(fake.service, { onDidCreateSession: didCreate.event, resume: async (id: string) => {
+      entered.push(id);
+      await new Promise<void>(resolve => { gates.set(id, resolve); });
+      const handle = { id } as ISessionScopeHandle;
+      didCreate.fire({ sessionId: id, handle, source: 'resume' });
+      return handle;
+    } });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ maxConcurrentRestores: 8, maxQueuedRestores: 4 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => false });
+      reg.definePartialInstance(IBootstrapService, { scope: name => name });
+      reg.definePartialInstance(IAtomicDocumentStore, { get: (async () => ({ agents: { main: {} } })) as IAtomicDocumentStore['get'] });
+      reg.definePartialInstance(IFileSystemStorageService, { size: async () => undefined });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    const bgPromises: Array<Promise<ISessionScopeHandle | undefined>> = [];
+    const fgImmediatePromises: Array<Promise<ISessionScopeHandle | undefined>> = [];
+    const fgQueuedPromises: Array<Promise<ISessionScopeHandle | undefined>> = [];
+    const fgImmediateQueuedEvents: RestoreProgress[] = [];
+    try {
+      for (let i = 0; i < 12; i += 1) {
+        const p = manager.resume(`bg-${i}`, { priority: 'background' });
+        p.catch(() => undefined);
+        bgPromises.push(p);
+      }
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-0', 'bg-1', 'bg-2', 'bg-3']);
+      const bgOverflow = await Promise.allSettled(bgPromises.slice(6));
+      for (const settled of bgOverflow) {
+        expect(settled.status).toBe('rejected');
+        if (settled.status === 'rejected') expect(settled.reason).toMatchObject({ code: ErrorCodes.SESSION_BUSY });
+      }
+
+      for (let i = 0; i < 4; i += 1) {
+        fgImmediatePromises.push(
+          observeRestore(v => { if (v.queuePosition !== undefined) fgImmediateQueuedEvents.push(v); },
+            () => manager.resume(`fg-now-${i}`, { priority: 'interactive' })),
+        );
+      }
+      await drainMicrotasks();
+      expect(entered).toEqual(['bg-0', 'bg-1', 'bg-2', 'bg-3', 'fg-now-0', 'fg-now-1', 'fg-now-2', 'fg-now-3']);
+      expect(fgImmediateQueuedEvents).toEqual([]);
+
+      for (let i = 0; i < 4; i += 1) {
+        fgQueuedPromises.push(manager.resume(`fg-queued-${i}`, { priority: 'interactive' }));
+      }
+      await drainMicrotasks();
+      const evictedBackground = await Promise.allSettled(bgPromises.slice(4, 6));
+      for (const settled of evictedBackground) {
+        expect(settled.status).toBe('rejected');
+        if (settled.status === 'rejected') expect(settled.reason).toMatchObject({ code: ErrorCodes.SESSION_BUSY });
+      }
+
+      for (let i = 0; i < 4; i += 1) gates.get(`fg-now-${i}`)?.();
+      await expect(Promise.all(fgImmediatePromises)).resolves.toHaveLength(4);
+      await drainMicrotasks();
+      expect(entered.slice(8)).toEqual(['fg-queued-0', 'fg-queued-1', 'fg-queued-2', 'fg-queued-3']);
+
+      for (let i = 0; i < 4; i += 1) gates.get(`fg-queued-${i}`)?.();
+      await expect(Promise.all(fgQueuedPromises)).resolves.toHaveLength(4);
+
+      for (const release of gates.values()) release();
+      await expect(Promise.all(bgPromises.slice(0, 4))).resolves.toHaveLength(4);
+    } finally {
+      for (const release of gates.values()) release();
+      await Promise.allSettled([...bgPromises, ...fgImmediatePromises, ...fgQueuedPromises]);
+      await disposables.dispose();
+      didCreate.dispose();
     }
   });
 

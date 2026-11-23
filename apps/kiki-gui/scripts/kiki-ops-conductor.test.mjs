@@ -710,3 +710,82 @@ test('installed controller copy executes outside the repository checkout', () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('reconcileSwitch routes interrupted and resume-failed sessions to their owning space home server', async () => {
+  const root = makeTemp();
+  const runtimeRoot = join(root, 'Kiki');
+  const primaryHome = join(root, 'home-primary');
+  const secondaryHome = join(root, 'home-secondary');
+  mkdirSync(join(primaryHome, 'server', 'instances'), { recursive: true });
+  mkdirSync(join(secondaryHome, 'server', 'instances'), { recursive: true });
+  writeFileSync(join(primaryHome, 'server.local-owner'), TOKEN);
+  writeFileSync(join(secondaryHome, 'server.local-owner'), TOKEN);
+  const relId = `${sha256('d').slice(0, 24)}-${sha256('s').slice(0, 24)}`;
+  seedActive(runtimeRoot, relId, NEW_COMMIT, 'd', 's');
+
+  const primaryState = {
+    serverId: 'srv-primary',
+    buildId: NEW_COMMIT,
+    workPending: [],
+    activeSessions: [{ id: 'shared-sid', activity: { status: 'idle' } }],
+    controlPhases: { 'shared-sid': 'idle' },
+  };
+  const secondaryState = {
+    serverId: 'srv-secondary',
+    buildId: NEW_COMMIT,
+    workPending: [],
+    activeSessions: [
+      { id: 'shared-sid', activity: { status: 'idle' } },
+      { id: 'sec-failed-resume', activity: { status: 'idle' } },
+    ],
+    controlPhases: { 'shared-sid': 'idle', 'sec-failed-resume': 'idle' },
+  };
+  const primarySrv = await startFixtureHttpServer(primaryState);
+  const secondarySrv = await startFixtureHttpServer(secondaryState);
+  try {
+    const activeExePath = join(runtimeRoot, 'active', 'kiki-server.exe');
+    writeFileSync(
+      join(primaryHome, 'server', 'instances', 'srv-primary.json'),
+      JSON.stringify({ server_id: 'srv-primary', pid: 40001, host: '127.0.0.1', port: primarySrv.port, build_id: NEW_COMMIT }),
+    );
+    writeFileSync(
+      join(secondaryHome, 'server', 'instances', 'srv-secondary.json'),
+      JSON.stringify({ server_id: 'srv-secondary', pid: 40002, host: '127.0.0.1', port: secondarySrv.port, build_id: NEW_COMMIT }),
+    );
+    const reportPath = join(runtimeRoot, 'hot-switch-report.json');
+    writeFileSync(
+      reportPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        kikiHome: primaryHome,
+        interruptedSessions: ['shared-sid'],
+        interruptedSessionRecords: [{ sessionId: 'shared-sid', kikiHome: secondaryHome }],
+        resumeFailures: [{ sessionId: 'sec-failed-resume', kikiHome: secondaryHome, error: 'timeout' }],
+      }),
+    );
+
+    const reconciled = await reconcileSwitch({
+      runtimeRoot,
+      kikiHome: primaryHome,
+      reportPath,
+      nudge: true,
+      resolveProcessPath: (pid) => (pid === 40001 || pid === 40002 ? activeExePath : null),
+    });
+
+    assert.equal(reconciled.ok, true);
+    assert.equal(reconciled.interruptedCount, 2);
+    assert.equal(primarySrv.receivedPrompts.length, 0);
+    assert.deepEqual(
+      secondarySrv.receivedPrompts.map((p) => p.sessionId).sort(),
+      ['sec-failed-resume', 'shared-sid'],
+    );
+    assert.equal(
+      reconciled.results.every((r) => r.kikiHome === secondaryHome && r.nudged === true),
+      true,
+    );
+  } finally {
+    await primarySrv.close();
+    await secondarySrv.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -280,7 +280,7 @@ export class PortableSpaceService {
     return known ? this.loadBase(known.forkId, known.unitHashes) : undefined;
   }
 
-  private async plan(input: PortableSpacePreviewInput): Promise<Plan> {
+  private async plan(input: PortableSpacePreviewInput, includeDiffPreview = true): Promise<Plan> {
     if (input.mode === 'sync' && input.sources.length !== 1) throw new Error('Sync requires one source and one target');
     const targetKey = endpointKey(input.target);
     if (input.sources.some((source) => endpointKey(source) === targetKey)) throw new Error('Source and target must differ');
@@ -319,7 +319,7 @@ export class PortableSpaceService {
     const base = sync ? await this.findBase(input, sourceTrees[0]!, tree, key) : link ? await this.loadBase(link.id) : undefined;
     const domains = input.mode === 'replace' && !input.domains && sourceTrees.every((source) => source.secretMode === 'none')
       ? [...new Set([...left.values(), ...right.values()].flatMap((unit) => unit.domain === 'credentials' ? [] : [unit.domain]))] : input.domains;
-    return { input, tree, sourceTrees, left, right, base, key, ...await planChanges({ ...input, domains }, left, right, masks, base, key, targetMasks) };
+    return { input, tree, sourceTrees, left, right, base, key, ...await planChanges({ ...input, domains }, left, right, masks, base, key, targetMasks, includeDiffPreview) };
   }
 
   private errors(plan: Plan, result: ReturnType<typeof reconcile>): string[] {
@@ -346,7 +346,7 @@ export class PortableSpaceService {
       if (input.previewToken && (!cached || Date.now() > cached.at + TTL)) throw new Error('Portable Space preview expired');
       const request = cached?.plan.input ?? input.direct;
       if (!request) throw new Error('Apply requires a preview token or direct plan');
-      const plan = await this.plan(request);
+      const plan = await this.plan(request, false);
       if (cached && (!sameTree(cached.plan.tree, plan.tree) || cached.plan.sourceTrees.some((tree, index) => !sameTree(tree, plan.sourceTrees[index]!)) || !isDeepStrictEqual(cached.plan.base?.hashes, plan.base?.hashes))) throw new Error('Portable Space changed after preview; preview it again');
       const sync = request.mode === 'sync';
       const result = reconcile(plan.changes, plan.left, plan.right, sync, input.selectedIds, input.resolutions);

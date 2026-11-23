@@ -66,6 +66,8 @@ import {
   readProviderEventErrorCode,
   isImageFormatError,
   isProviderInvalidMediaError,
+  identifyPoisonedMediaUrls,
+  type SentMediaAttachment,
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
@@ -641,7 +643,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     let attemptStartedAt = Date.now();
     let attemptTraceId: string | undefined;
     let malformedFunctionCallRetry = 0;
-    let lastAttemptMediaUrls = new Set<string>();
+    let lastAttemptMediaAttachments: readonly SentMediaAttachment[] = [];
     let poisonedMediaRetryAttempted = false;
     const run = async (
       policy: ProjectionPolicy | undefined,
@@ -705,7 +707,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         request.model,
         { unmarkedOpaquePolicy },
       );
-      lastAttemptMediaUrls = collectSentMediaUrls(projected, resolvedMessages, targetMessages);
+      lastAttemptMediaAttachments = collectSentMediaAttachments(projected, resolvedMessages, targetMessages);
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
@@ -939,13 +941,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           raw instanceof APIRequestTooLargeError &&
           requestDeliveryProvenance(error) !== 'executed' &&
           (policy?.media === undefined || policy?.media === 'degraded');
-        const canSelfHealInvalidMedia =
+        const poisonedMediaUrls =
           !poisonedMediaRetryAttempted &&
-          lastAttemptMediaUrls.size > 0 &&
+          lastAttemptMediaAttachments.length > 0 &&
           typeof this.mediaResolver.markMediaPoisoned === 'function' &&
           requestDeliveryProvenance(error) !== 'executed' &&
-          !attemptObservedOutput &&
-          isProviderInvalidMediaError(error);
+          !attemptObservedOutput
+            ? identifyPoisonedMediaUrls(error, lastAttemptMediaAttachments)
+            : [];
+        const canSelfHealInvalidMedia = poisonedMediaUrls.length > 0;
         if (source?.type === 'operation' && retryPolicy?.retry === false) attachErrorDetails(error, { retry_policy_veto: true });
         if (retry === 'never' || retryPolicy?.retry === false ||
           (hasExplicitRetryVeto(error) && !discardRetry && !canDegradeOrStripMedia && !canSelfHealInvalidMedia) ||
@@ -1019,10 +1023,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         params = { ...params, googleContinuationToken: undefined };
         if (canSelfHealInvalidMedia) {
           poisonedMediaRetryAttempted = true;
-          this.mediaResolver.markMediaPoisoned?.(lastAttemptMediaUrls);
+          this.mediaResolver.markMediaPoisoned?.(poisonedMediaUrls);
           this.log.warn('provider rejected media payload as invalid; poisoning media and retrying once', {
             model: request.model.name,
-            mediaCount: lastAttemptMediaUrls.size,
+            mediaCount: poisonedMediaUrls.length,
             ...request.logFields,
           });
           onAttemptRetry?.('discard');
@@ -2009,11 +2013,11 @@ function extractMediaPartUrl(
   return undefined;
 }
 
-function collectSentMediaUrls(
+function collectSentMediaAttachments(
   projected: readonly Message[],
   resolvedMessages: readonly Message[],
   targetMessages: readonly Message[],
-): Set<string> {
+): readonly SentMediaAttachment[] {
   const sourceByResolvedUrl = new Map<string, Set<string>>();
   for (let messageIndex = 0; messageIndex < resolvedMessages.length; messageIndex += 1) {
     const resolvedMessage = resolvedMessages[messageIndex]!;
@@ -2032,19 +2036,23 @@ function collectSentMediaUrls(
       }
     }
   }
-  const sentUrls = new Set<string>();
+  const byResolvedUrl = new Map<string, Set<string>>();
   for (const targetMessage of targetMessages) {
     for (const part of targetMessage.content) {
       const targetMedia = extractMediaPartUrl(part);
       if (targetMedia === undefined) continue;
-      sentUrls.add(targetMedia.url);
+      let urls = byResolvedUrl.get(targetMedia.url);
+      if (urls === undefined) {
+        urls = new Set<string>([targetMedia.url]);
+        byResolvedUrl.set(targetMedia.url, urls);
+      }
       const sources = sourceByResolvedUrl.get(targetMedia.url);
       if (sources !== undefined) {
-        for (const sourceUrl of sources) sentUrls.add(sourceUrl);
+        for (const sourceUrl of sources) urls.add(sourceUrl);
       }
     }
   }
-  return sentUrls;
+  return [...byResolvedUrl.values()].map((urls) => ({ urls: [...urls] }));
 }
 
 registerScopedService(

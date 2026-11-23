@@ -131,7 +131,7 @@ async function resolveActivatedSession(
   sessionId: string,
   requestId: string,
 ): Promise<ResolvedSession> {
-  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  const lease = await acquireSessionOperation(core, sessionId, 'operation', undefined, { priority: 'background' });
   if (lease.handle !== undefined) return { handle: lease.handle, lease };
   await lease.dispose();
 

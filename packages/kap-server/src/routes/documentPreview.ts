@@ -490,7 +490,7 @@ async function openPreviewFile(
       if (lease === undefined) {
         workspaceLease?.dispose();
         workspaceLease = undefined;
-        operation = await acquireSessionOperation(core, sessionId, 'document-preview');
+        operation = await acquireSessionOperation(core, sessionId, 'document-preview', undefined, { priority: 'background' });
         if (operation.handle === undefined) {
           await operation.dispose();
           return { sessionExists: false, dispose: () => {} };

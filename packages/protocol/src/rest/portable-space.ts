@@ -213,6 +213,8 @@ export const portableSpaceDiffChangeSchema = z.enum([
 ]);
 export type PortableSpaceDiffChange = z.infer<typeof portableSpaceDiffChangeSchema>;
 
+export const PORTABLE_SPACE_DIFF_PREVIEW_MAX_CHARS = 16_384;
+
 export const portableSpaceDiffRowSchema = z.object({
   id: z.string().min(1).max(512),
   domain: portableSpaceDomainSchema,
@@ -222,7 +224,7 @@ export const portableSpaceDiffRowSchema = z.object({
   direction: z.enum(['to_target', 'to_left', 'to_right', 'both', 'conflict', 'none']),
   beforeSummary: z.string().max(512).nullable(),
   afterSummary: z.string().max(512).nullable(),
-  diffPreview: z.string().max(16_384).optional(),
+  diffPreview: z.string().max(PORTABLE_SPACE_DIFF_PREVIEW_MAX_CHARS).optional(),
   selected: z.boolean(),
   masked: z.boolean().optional(),
   blockedReason: z.string().max(512).optional(),
