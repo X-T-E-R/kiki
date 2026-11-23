@@ -64,7 +64,7 @@ import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
 } from '@kiki/oauth';
-import { createAsyncApiDocument, CONNECTION_PROTOCOL, MAX_PAIR_SOURCE_WORKSPACES, peerBridgeAttachPayloadSchema, type ExternalDelegationState } from '@kiki/protocol';
+import { createAsyncApiDocument, CONNECTION_PROTOCOL, peerBridgeAttachPayloadSchema, type ExternalDelegationState } from '@kiki/protocol';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -1585,7 +1585,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('preClose', () => { for (const subscription of connectionChangeSubscriptions) subscription.dispose(); });
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));
   pairingHooks.current = {
-    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].toSorted((left, right) => right.lastOpenedAt - left.lastOpenedAt).slice(0, MAX_PAIR_SOURCE_WORKSPACES).map((workspace) => workspace.id),
+    workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].toSorted((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
     issueBridges: (input) => pairedBridge.issuePairingBridges(input),
     installBridge: async (connectionId, grant, credential, connectionGrantId, borrowTools) => { await pairedBridge.install({ connectionId, grant, credential }, connectionGrantId, borrowTools); },
     revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),

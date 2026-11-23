@@ -169,7 +169,7 @@ describe('portable Space CLI', () => {
 
   it('maps delta source, --since, recent session selection, and -o without using a legacy sync route', async () => {
     const harness = makeHarness((path) => path.endsWith('/delta') ? { destination: 'delta.tgz' } : sourceList());
-    await parse(harness.dependencies, 'delta', '--since', 'archive:./old.kiki.tgz', '--include-sessions', 'recent:5', '-o', './delta.kiki.tgz');
+    await parse(harness.dependencies, 'delta', '--since', 'archive:./old.kiki.tgz', '--include-sessions', 'recent:51', '-o', './delta.kiki.tgz');
     expect(harness.requests).toHaveLength(1);
     expect(harness.requests[0]).toMatchObject({
       path: '/api/spaces/portable/delta',
@@ -177,7 +177,7 @@ describe('portable Space CLI', () => {
         source: { kind: 'live', spaceId: 'main' },
         since: { kind: 'archive', path: expect.stringContaining('old.kiki.tgz') },
         destination: expect.stringContaining('delta.kiki.tgz'),
-        sessions: { mode: 'recent', count: 5 },
+        sessions: { mode: 'recent', count: 51 },
       },
     });
   });

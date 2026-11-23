@@ -69,8 +69,8 @@ export type PortableSpaceEndpoint = z.infer<typeof portableSpaceEndpointSchema>;
 
 export const portableSpaceSessionSelectionSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }).strict(),
-  z.object({ mode: z.literal('recent'), count: z.number().int().min(1).max(50) }).strict(),
-  z.object({ mode: z.literal('ids'), sessionIds: z.array(z.string().min(1).max(256)).min(1).max(50) }).strict(),
+  z.object({ mode: z.literal('recent'), count: z.number().int().min(1) }).strict(),
+  z.object({ mode: z.literal('ids'), sessionIds: z.array(z.string().min(1).max(256)).min(1) }).strict(),
 ]);
 export type PortableSpaceSessionSelection = z.infer<typeof portableSpaceSessionSelectionSchema>;
 

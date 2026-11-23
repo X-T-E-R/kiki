@@ -608,6 +608,15 @@ describe('PortableSpacesCard & workflows', () => {
         encryption: { mode: 'passphrase', passphrase: 'second-secret-pass' },
       }),
     );
+
+    await click('[data-portable-link-open]');
+    hostMock.pickDirectory.mockResolvedValueOnce(null);
+    await click('[data-portable-link-browse]');
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+
+    hostMock.pickDirectory.mockRejectedValueOnce(new Error('Native directory picker unavailable'));
+    await click('[data-portable-link-browse]');
+    expect(document.body.textContent).toContain('Native directory picker unavailable');
   });
 });
 

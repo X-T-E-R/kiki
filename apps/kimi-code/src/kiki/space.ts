@@ -143,7 +143,7 @@ function sessionSelection(value: boolean | string | undefined): { readonly mode:
   const match = /^recent:(\d+)$/u.exec(value.trim());
   if (match === null) throw new Error('Expected --include-sessions to be bare or recent:<count>.');
   const count = Number(match[1]);
-  if (!Number.isSafeInteger(count) || count < 1 || count > 50) throw new Error('--include-sessions recent:<count> requires a count from 1 to 50.');
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('--include-sessions recent:<count> requires a positive integer count.');
   return { mode: 'recent', count };
 }
 

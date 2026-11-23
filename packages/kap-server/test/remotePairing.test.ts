@@ -13,7 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { evictPinnedAgent, peerFetch } from '../src/services/connections/peerTls';
 import { loadPeerTlsIdentity, spkiFingerprint } from '../src/services/connections/tlsIdentity';
 import { pairOutbound, PeerListeners, type PairingHooks } from '../src/services/connections/pairing';
-import { formatPairingUri, matchConnectionOperation, MAX_PAIR_SOURCE_WORKSPACES, parsePairingUri } from '@kiki/protocol';
+import { formatPairingUri, matchConnectionOperation, parsePairingUri } from '@kiki/protocol';
 import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
 import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { ConnectionAudience, isPeerProcedureAllowed } from '../src/services/connections/audience';
@@ -193,11 +193,11 @@ describe('pairing workspace limits', () => {
     registerRemoteConnectionRoutes(app, targetAdmission, targetManager, randomUUID(), () => 'owner-token', undefined, { current: hooks });
     const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
     try {
-      const allWorkspaces = Array.from({ length: MAX_PAIR_SOURCE_WORKSPACES + 1 }, (_, index) => `recent-${index}`);
+      const allWorkspaces = Array.from({ length: 1_050 }, (_, index) => `recent-${index}`);
       const code = await targetAdmission.createPairCode();
       await pairOutbound(sourceManager, { endpoint, code: code.code, backgroundSummary: false, requestBridge: true }, { ...hooks, workspaces: async () => allWorkspaces });
-      expect(received[0]).toEqual(allWorkspaces.slice(0, MAX_PAIR_SOURCE_WORKSPACES));
-      expect(received[0]).toHaveLength(MAX_PAIR_SOURCE_WORKSPACES);
+      expect(received[0]).toEqual(allWorkspaces);
+      expect(received[0]).toHaveLength(1_050);
     } finally {
       await app.close();
       await sourceManager.close();

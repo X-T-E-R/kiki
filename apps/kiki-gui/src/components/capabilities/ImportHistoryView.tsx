@@ -332,8 +332,16 @@ export function ImportHistoryView({
   };
 
   const pickHome = async () => {
-    const selected = await host.pickDirectory?.().catch(() => null);
-    if (typeof selected === 'string') setHome(selected);
+    if (host.pickDirectory === undefined) return;
+    try {
+      const selected = await host.pickDirectory();
+      if (typeof selected === 'string') {
+        setHome(selected);
+        setError(null);
+      }
+    } catch (err) {
+      setError(errorText(locale, err));
+    }
   };
 
   /**
@@ -343,8 +351,16 @@ export function ImportHistoryView({
    * import leaves no workspace behind.
    */
   const pickWorkDir = async () => {
-    const selected = await host.pickDirectory?.().catch(() => null);
-    if (typeof selected === 'string') setWorkDir(selected);
+    if (host.pickDirectory === undefined) return;
+    try {
+      const selected = await host.pickDirectory();
+      if (typeof selected === 'string') {
+        setWorkDir(selected);
+        setError(null);
+      }
+    } catch (err) {
+      setError(errorText(locale, err));
+    }
   };
 
   if (flagLoading) {

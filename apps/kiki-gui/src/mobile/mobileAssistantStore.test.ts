@@ -41,4 +41,21 @@ describe('mobileAssistantStore', () => {
     expect(assistantScopeTarget('remote:abc', 'remote:abc')).toBeUndefined();
     expect(assistantScopeTarget(undefined, 'remote:abc')).toBeUndefined();
   });
+
+  it('retains the newly selected binding in memory when localStorage rejects a write', () => {
+    writeMobileAssistant({ spaceKey: 'local', personaId: 'kiki', sessionId: 's-old' });
+    const origSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => {
+      throw new DOMException('Quota exceeded', 'QuotaExceededError');
+    };
+    try {
+      writeMobileAssistant({ spaceKey: 'local', personaId: 'nia', sessionId: 's-new' });
+      expect(readMobileAssistant('local')).toEqual({ spaceKey: 'local', personaId: 'nia', sessionId: 's-new' });
+      expect(readMobileAssistant()).toEqual({ spaceKey: 'local', personaId: 'nia', sessionId: 's-new' });
+    } finally {
+      Storage.prototype.setItem = origSetItem;
+    }
+    writeMobileAssistant({ spaceKey: 'local', personaId: 'nia', sessionId: 's-persisted' });
+    expect(readMobileAssistant('local')?.sessionId).toBe('s-persisted');
+  });
 });

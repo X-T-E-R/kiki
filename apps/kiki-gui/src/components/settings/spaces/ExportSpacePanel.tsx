@@ -160,11 +160,17 @@ export function ExportSpacePanel({
   };
 
   const browse = async () => {
-    const picked = await host.pickDirectory?.().catch(() => null);
-    if (picked !== undefined && picked !== null) {
-      setDestination(picked);
-      setDestEdited(true);
-      setDestIssue(null);
+    if (host.pickDirectory === undefined) return;
+    try {
+      const picked = await host.pickDirectory();
+      if (picked !== null) {
+        setDestination(picked);
+        setDestEdited(true);
+        setDestIssue(null);
+        setFeedback(null);
+      }
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     }
   };
 

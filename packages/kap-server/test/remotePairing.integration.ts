@@ -11,7 +11,7 @@ import { createServer as createHttpServer } from 'node:http';
 import { connect, createServer, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { createConnectionKlient, createKlient } from '@kiki/klient/http';
-import { formatPairingUri, MAX_PAIR_SOURCE_WORKSPACES, parsePairingUri, type ConnectionBrokerInput, type MetaResponse } from '@kiki/protocol';
+import { formatPairingUri, parsePairingUri, type ConnectionBrokerInput, type MetaResponse } from '@kiki/protocol';
 import { IConfigService, IEventService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
 import { SEND_PEER_THREAD_MESSAGE, type IThreadPeerSendCapability } from '@kiki/agent-core-v2/app/threadCommunication/peerThreadCapability';
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
@@ -314,12 +314,12 @@ describe('short-code pairing on two real servers', () => {
       await client.close(); await targetClient.close();
     }
   }, 120_000);
-  it('sends the most recently active workspaces first and caps a real outbound pairing claim', async () => {
+  it('sends all eligible workspaces ordered by most recently active first on a real outbound pairing claim', async () => {
     const source = await boot();
     const sourceClient = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
     const targetIdentity = { homeId: randomUUID(), hostId: 'pair-target', protocol: 1 as const };
     const workspaceService = source.core.accessor.get(IWorkspaceService);
-    const workspaces = Array.from({ length: MAX_PAIR_SOURCE_WORKSPACES + 1 }, (_, index) => ({ id: `recent-${index}`, lastOpenedAt: 100_000 - index })) as unknown as Awaited<ReturnType<typeof workspaceService.list>>;
+    const workspaces = Array.from({ length: 1_050 }, (_, index) => ({ id: `recent-${index}`, lastOpenedAt: index })) as unknown as Awaited<ReturnType<typeof workspaceService.list>>;
     const list = vi.spyOn(workspaceService, 'list').mockResolvedValue(workspaces);
     const received: string[][] = [];
     const peer = createHttpServer((request, response) => {
@@ -337,7 +337,8 @@ describe('short-code pairing on two real servers', () => {
     try {
       const paired = await sourceClient.rest!.connections.pair({ endpoint: `http://127.0.0.1:${address.port}`, code: 'K9F2-7X4M', backgroundSummary: false, requestBridge: true });
       expect(paired.target).toEqual(targetIdentity);
-      expect(received).toEqual([workspaces.slice(0, MAX_PAIR_SOURCE_WORKSPACES).map((workspace) => workspace.id)]);
+      expect(received).toEqual([[...workspaces].toSorted((a, b) => b.lastOpenedAt - a.lastOpenedAt).map((workspace) => workspace.id)]);
+      expect(received[0]).toHaveLength(1_050);
     } finally {
       list.mockRestore();
       await sourceClient.close();

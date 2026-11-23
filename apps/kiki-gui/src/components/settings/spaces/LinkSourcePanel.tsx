@@ -43,10 +43,16 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
   const [feedback, setFeedback] = useState<Feedback>(null);
 
   const browse = async () => {
-    const picked = await host.pickDirectory?.().catch(() => null);
-    if (picked !== undefined && picked !== null) {
-      setTarget(picked);
-      setIssue(null);
+    if (host.pickDirectory === undefined) return;
+    try {
+      const picked = await host.pickDirectory();
+      if (picked !== null) {
+        setTarget(picked);
+        setIssue(null);
+        setFeedback(null);
+      }
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     }
   };
 
@@ -153,7 +159,7 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
               className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`}
             />
             {kind === 'dir' && host.pickDirectory !== undefined ? (
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void browse(); }}>
+              <button type="button" data-portable-link-browse className={SECONDARY_BUTTON} onClick={() => { void browse(); }}>
                 {t('st.spaces.browse')}
               </button>
             ) : null}

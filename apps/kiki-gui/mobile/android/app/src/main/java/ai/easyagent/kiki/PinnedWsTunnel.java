@@ -9,7 +9,6 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -18,7 +17,9 @@ import java.util.Collections;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -35,12 +36,6 @@ import javax.net.ssl.SSLSocketFactory;
 final class PinnedWsTunnel implements Closeable {
     static final String PATH_PREFIX = "/__kiki_ws/";
     private static final int MAX_HEADER_BYTES = 16 * 1024;
-    private static final int CONNECT_TIMEOUT_MS = 10_000;
-    private static final int HEADER_TIMEOUT_MS = 15_000;
-    /** Upper bound on simultaneous bridged sockets; extra clients get 503 instead of a thread each. */
-    static final int MAX_ACTIVE_TUNNELS = 16;
-    /** Absolute budget for TCP connect + TLS handshake + the upstream {@code 101} response head. */
-    static final int UPSTREAM_HANDSHAKE_TIMEOUT_MS = 15_000;
     private static final int PUMP_BUFFER_BYTES = 16 * 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final byte[] HEADER_END = { '\r', '\n', '\r', '\n' };
@@ -54,7 +49,6 @@ final class PinnedWsTunnel implements Closeable {
     private final String secret;
     private final ServerSocket server;
     private final Set<Socket> sockets = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private final AtomicInteger activeConnections = new AtomicInteger();
     private volatile boolean closed;
 
     private PinnedWsTunnel(
@@ -118,18 +112,7 @@ final class PinnedWsTunnel implements Closeable {
                 break;
             }
             sockets.add(client);
-            if (activeConnections.incrementAndGet() > MAX_ACTIVE_TUNNELS) {
-                activeConnections.decrementAndGet();
-                reject(client, "503 Service Unavailable");
-                continue;
-            }
-            Thread worker = new Thread(() -> {
-                try {
-                    handle(client);
-                } finally {
-                    activeConnections.decrementAndGet();
-                }
-            }, "kiki-ws-tunnel-conn");
+            Thread worker = new Thread(() -> handle(client), "kiki-ws-tunnel-conn");
             worker.setDaemon(true);
             worker.start();
         }
@@ -137,10 +120,13 @@ final class PinnedWsTunnel implements Closeable {
     }
 
     private void handle(Socket client) {
-        Socket upstream = null;
+        final Socket raw = new Socket();
+        final AtomicReference<Socket> upstreamRef = new AtomicReference<>(raw);
+        final CountDownLatch upgraded = new CountDownLatch(1);
+        final AtomicBoolean upgradeSucceeded = new AtomicBoolean(false);
         try {
             client.setTcpNoDelay(true);
-            byte[] buffered = readHead(client, System.currentTimeMillis() + HEADER_TIMEOUT_MS);
+            byte[] buffered = readHead(client);
             int end = buffered == null ? -1 : indexOf(buffered, HEADER_END);
             if (end < 0) {
                 reject(client, "400 Bad Request");
@@ -153,9 +139,27 @@ final class PinnedWsTunnel implements Closeable {
                 reject(client, "403 Forbidden");
                 return;
             }
-            long upstreamDeadline = System.currentTimeMillis() + UPSTREAM_HANDSHAKE_TIMEOUT_MS;
-            upstream = openPinnedUpstream(upstreamDeadline);
+
+            sockets.add(raw);
+            if (closed) {
+                release(raw);
+                release(client);
+                return;
+            }
+
+            // Watch client closure during TCP/TLS/101 negotiation so an aborted or timed-out
+            // WebView socket tears down any stalled upstream immediately without imposing a
+            // synthetic combined wall-clock deadline on progressing slow-link handshakes.
+            Thread upstreamPump = new Thread(
+                () -> watchClientThenPumpUpstream(client, upstreamRef, upgraded, upgradeSucceeded),
+                "kiki-ws-tunnel-up"
+            );
+            upstreamPump.setDaemon(true);
+            upstreamPump.start();
+
+            Socket upstream = openPinnedUpstream(raw, upstreamRef);
             if (upstream == null) {
+                upgraded.countDown();
                 reject(client, "502 Bad Gateway");
                 return;
             }
@@ -165,54 +169,109 @@ final class PinnedWsTunnel implements Closeable {
                 out.write(buffered, headLength, buffered.length - headLength);
             }
             out.flush();
-            // Relay the upstream response head (normally 101) only once it arrived within budget;
-            // a half-open server never pins this thread.
-            byte[] response = readHead(upstream, upstreamDeadline);
+
+            byte[] response = readHead(upstream);
             if (response == null) {
+                upgraded.countDown();
                 release(upstream);
                 reject(client, "502 Bad Gateway");
                 return;
             }
+            boolean is101 = startsWith101(response);
+            if (is101) {
+                upgradeSucceeded.set(true);
+            }
+            upgraded.countDown();
             OutputStream down = client.getOutputStream();
             down.write(response);
             down.flush();
-            if (!startsWith101(response)) {
+            if (!is101) {
                 release(upstream);
                 release(client);
                 return;
             }
-            upstream.setSoTimeout(0);
-            client.setSoTimeout(0);
-            final Socket remote = upstream;
-            Thread back = new Thread(() -> pump(remote, client), "kiki-ws-tunnel-down");
-            back.setDaemon(true);
-            back.start();
-            pump(client, remote);
+            pump(upstream, client);
         } catch (IOException e) {
+            upgraded.countDown();
             release(client);
-            if (upstream != null) release(upstream);
+            release(raw);
+            release(upstreamRef.get());
         }
     }
 
-    private Socket openPinnedUpstream(long deadline) {
-        Socket raw = new Socket();
+    private void watchClientThenPumpUpstream(
+        Socket client,
+        AtomicReference<Socket> upstreamRef,
+        CountDownLatch upgraded,
+        AtomicBoolean upgradeSucceeded
+    ) {
+        ByteArrayOutputStream earlyBytes = new ByteArrayOutputStream();
+        try {
+            InputStream in = client.getInputStream();
+            byte[] probe = new byte[PUMP_BUFFER_BYTES];
+            while (upgraded.getCount() > 0) {
+                int read = in.read(probe);
+                if (read == -1) {
+                    release(upstreamRef.get());
+                    release(client);
+                    return;
+                }
+                earlyBytes.write(probe, 0, read);
+                if (upgraded.getCount() == 0) {
+                    break;
+                }
+                if (earlyBytes.size() > MAX_HEADER_BYTES) {
+                    release(upstreamRef.get());
+                    release(client);
+                    return;
+                }
+            }
+            upgraded.await();
+            if (!upgradeSucceeded.get()) return;
+            Socket upstream = upstreamRef.get();
+            OutputStream out = upstream.getOutputStream();
+            if (earlyBytes.size() > 0) {
+                earlyBytes.writeTo(out);
+                earlyBytes.reset();
+                out.flush();
+            }
+            int read;
+            while ((read = in.read(probe)) != -1) {
+                out.write(probe, 0, read);
+                out.flush();
+            }
+        } catch (IOException | InterruptedException ignored) {
+            /* client or upstream closed */
+        } finally {
+            release(client);
+            release(upstreamRef.get());
+        }
+    }
+
+    private Socket openPinnedUpstream(Socket raw, AtomicReference<Socket> upstreamRef) {
         SSLSocket ssl = null;
         try {
             raw.setTcpNoDelay(true);
-            raw.connect(new InetSocketAddress(connectHost, remotePort), Math.min(CONNECT_TIMEOUT_MS, remainingMs(deadline)));
+            raw.setKeepAlive(true);
+            raw.connect(new InetSocketAddress(connectHost, remotePort));
             ssl = (SSLSocket) factory.createSocket(raw, connectHost, remotePort, true);
             sockets.add(ssl);
-            ssl.setSoTimeout(remainingMs(deadline));
+            upstreamRef.set(ssl);
+            if (closed) {
+                release(ssl);
+                return null;
+            }
             ssl.startHandshake();
             Certificate[] peers = ssl.getSession().getPeerCertificates();
             if (peers == null || peers.length == 0 || !peerCheck.test(peers[0])) {
                 release(ssl);
                 return null;
             }
+            sockets.remove(raw);
             return ssl;
         } catch (Exception e) {
-            if (ssl != null) sockets.remove(ssl);
-            closeQuietly(raw);
+            if (ssl != null) release(ssl);
+            release(raw);
             return null;
         }
     }
@@ -236,6 +295,7 @@ final class PinnedWsTunnel implements Closeable {
     }
 
     private void release(Socket socket) {
+        if (socket == null) return;
         sockets.remove(socket);
         closeQuietly(socket);
     }
@@ -253,15 +313,13 @@ final class PinnedWsTunnel implements Closeable {
     }
 
     /**
-     * Reads until the end of the HTTP head before {@code deadline}; returns everything read so far, or
-     * null on EOF/oversize. Throws {@link SocketTimeoutException} once the deadline passes.
+     * Reads until the end of the HTTP head; returns everything read so far, or null on EOF/oversize.
      */
-    private static byte[] readHead(Socket socket, long deadline) throws IOException {
+    private static byte[] readHead(Socket socket) throws IOException {
         InputStream in = socket.getInputStream();
         ByteArrayOutputStream acc = new ByteArrayOutputStream(1024);
         byte[] chunk = new byte[2048];
         while (acc.size() <= MAX_HEADER_BYTES) {
-            socket.setSoTimeout(remainingMs(deadline));
             int read = in.read(chunk);
             if (read == -1) return null;
             acc.write(chunk, 0, read);
@@ -316,12 +374,6 @@ final class PinnedWsTunnel implements Closeable {
     static boolean startsWith101(byte[] response) {
         String status = new String(response, 0, Math.min(response.length, 16), StandardCharsets.ISO_8859_1);
         return status.startsWith("HTTP/1.1 101") || status.startsWith("HTTP/1.0 101");
-    }
-
-    private static int remainingMs(long deadline) throws SocketTimeoutException {
-        long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0) throw new SocketTimeoutException("tunnel handshake budget exhausted");
-        return (int) Math.min(Integer.MAX_VALUE, remaining);
     }
 
     static String hostHeader(String host, int port) {

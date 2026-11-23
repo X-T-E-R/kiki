@@ -135,8 +135,11 @@ export function PortablePackDialog({
                     if (picked !== null) {
                       setDestination(picked);
                       setDestIssue(null);
+                      setFeedback(null);
                     }
-                  }).catch(() => undefined);
+                  }).catch((error: unknown) => {
+                    setFeedback({ tone: 'error', text: errorText(locale, error) });
+                  });
                 }}
               >
                 {t('st.spaces.browse')}

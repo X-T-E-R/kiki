@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { z } from 'zod';
-import { MAX_PAIR_SOURCE_WORKSPACES, MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, connectionTrustUpdateInputSchema, meshCapabilitySchema, pairClaimInputSchema, pairCodeCreateInputSchema, peerTrustTierSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
+import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, connectionTrustUpdateInputSchema, meshCapabilitySchema, pairClaimInputSchema, pairCodeCreateInputSchema, peerTrustTierSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame, parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
@@ -61,7 +61,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations, trustTier: created.trustTier, meshCapabilities: created.meshCapabilities };
     });
   });
-  app.post('/api/remote-connections/pair/claim', { bodyLimit: 1024 * 1024 }, async (req, reply) => {
+  app.post('/api/remote-connections/pair/claim', { bodyLimit: 16 * 1024 * 1024 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, async () => {
       if (!pairingLimit.allow(req.ip)) throw new AdmissionError(429, 'pairing_rate_limited');
@@ -100,10 +100,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     await admission.revoke(body.grantId);
     return { revoked: true };
   }));
-  app.post('/api/remote-connections/inbound/peer-grant', { bodyLimit: 1024 * 1024 }, async (req, reply) => {
+  app.post('/api/remote-connections/inbound/peer-grant', { bodyLimit: 16 * 1024 * 1024 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, async () => {
-      const input = z.object({ source: connectionIdentitySchema, label: z.string().min(1).max(128), sourceWorkspaces: z.array(z.string().min(1).max(512)).max(MAX_PAIR_SOURCE_WORKSPACES).optional(), requestBridge: z.boolean().optional(), bridgeOperations: bridgeOperationsSchema.optional(), trustTier: peerTrustTierSchema.optional(), meshCapabilities: z.array(meshCapabilitySchema).optional() }).strict().parse(req.body);
+      const input = z.object({ source: connectionIdentitySchema, label: z.string().min(1).max(128), sourceWorkspaces: z.array(z.string().min(1).max(512)).optional(), requestBridge: z.boolean().optional(), bridgeOperations: bridgeOperationsSchema.optional(), trustTier: peerTrustTierSchema.optional(), meshCapabilities: z.array(meshCapabilitySchema).optional() }).strict().parse(req.body);
       if (admission.unavailableReason !== undefined) throw new AdmissionError(403, admission.unavailableReason);
       const claimed = await admission.approvePeer(input.source, input.label, input.requestBridge, input.bridgeOperations, input.trustTier, input.meshCapabilities);
       try {
@@ -134,7 +134,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         const input = sshConnectionConnectInputSchema.parse(req.body);
         const plan = await ssh.plan(input.profile, controller.signal);
         const ready = await ssh.execute(plan.id, { ensure: plan.state !== 'attach' }, controller.signal);
-        const workspaces = hooks.current === undefined ? [] : (await hooks.current.workspaces()).slice(0, MAX_PAIR_SOURCE_WORKSPACES);
+        const workspaces = hooks.current === undefined ? [] : await hooks.current.workspaces();
         return manager.registerSsh({ purpose: 'gui', planId: ready.id, label: input.label?.trim() || input.profile.label, enableInbound: true, backgroundSummary: input.backgroundSummary }, controller.signal, hooks.current === undefined ? undefined : {
           sourceWorkspaces: workspaces,
           bridgeOperations: input.bridgeOperations,

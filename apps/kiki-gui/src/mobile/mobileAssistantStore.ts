@@ -22,6 +22,7 @@ interface MobileAssistantState {
 const EMPTY_STATE: MobileAssistantState = { version: 1, bySpace: {} };
 const listeners = new Set<() => void>();
 let cached: { readonly raw: string | null; readonly state: MobileAssistantState } | null = null;
+let memoryFallback: MobileAssistantState | null = null;
 
 function isBinding(value: unknown): value is { readonly personaId: string; readonly sessionId: string } {
   if (typeof value !== 'object' || value === null) return false;
@@ -63,6 +64,7 @@ function readRaw(): string | null {
 }
 
 function readState(): MobileAssistantState {
+  if (memoryFallback !== null) return memoryFallback;
   const raw = readRaw();
   if (cached !== null && cached.raw === raw) return cached.state;
   const state = parseState(raw);
@@ -72,12 +74,17 @@ function readState(): MobileAssistantState {
 
 function writeState(state: MobileAssistantState): void {
   const raw = JSON.stringify(state);
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(MOBILE_ASSISTANT_STORAGE_KEY, raw);
-  } catch {
-    // Storage may be unavailable (private mode); keep the in-memory copy.
+  if (typeof localStorage === 'undefined') {
+    memoryFallback = state;
+  } else {
+    try {
+      localStorage.setItem(MOBILE_ASSISTANT_STORAGE_KEY, raw);
+      memoryFallback = null;
+      cached = { raw, state };
+    } catch {
+      memoryFallback = state;
+    }
   }
-  cached = { raw, state };
   for (const listener of listeners) listener();
 }
 
@@ -118,7 +125,10 @@ export function clearMobileAssistant(spaceKey: string): void {
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   const onStorage = (event: StorageEvent) => {
-    if (event.key === MOBILE_ASSISTANT_STORAGE_KEY) listener();
+    if (event.key === MOBILE_ASSISTANT_STORAGE_KEY) {
+      memoryFallback = null;
+      listener();
+    }
   };
   if (typeof window !== 'undefined') window.addEventListener('storage', onStorage);
   return () => {

@@ -188,10 +188,16 @@ export function SpaceCreateForm({
   };
 
   const browse = async () => {
-    const picked = await host.pickDirectory?.().catch(() => null);
-    if (picked !== undefined && picked !== null) {
-      setPath(picked);
-      setPathEdited(true);
+    if (host.pickDirectory === undefined) return;
+    try {
+      const picked = await host.pickDirectory();
+      if (picked !== null) {
+        setPath(picked);
+        setPathEdited(true);
+        setFeedback(null);
+      }
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     }
   };
 
@@ -350,7 +356,15 @@ export function SpaceAttachForm({ client: controlClient, onClose, onDone }: {
             className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`} />
           {host.pickDirectory !== undefined ? (
             <button type="button" className={SECONDARY_BUTTON} onClick={() => {
-              void host.pickDirectory?.().then((picked) => { if (picked !== null) { setPath(picked); setIssue(null); } }).catch(() => undefined);
+              void host.pickDirectory?.().then((picked) => {
+                if (picked !== null) {
+                  setPath(picked);
+                  setIssue(null);
+                  setFeedback(null);
+                }
+              }).catch((error: unknown) => {
+                setFeedback({ tone: 'error', text: errorText(locale, error) });
+              });
             }}>{t('st.spaces.browse')}</button>
           ) : null}
         </div>

@@ -18,7 +18,7 @@ import {
   type CallRemoteSpaceToolInput, type ListRemoteSpaceToolsInput, type RemoteBorrowedSpaceCatalog, type RemoteSpaceToolConnector,
 } from '@kiki/agent-core-v2/app/remoteTools/remoteSpaceToolBridge';
 import {
-  MAX_PAIR_SOURCE_WORKSPACES, bridgePolicySchema, bridgeGrantSchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema, bridgeCreateSchema, type BridgeCreate, peerBridgeInstallSchema,
+  bridgePolicySchema, bridgeGrantSchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema, bridgeCreateSchema, type BridgeCreate, peerBridgeInstallSchema,
   bridgeOperationsSchema, bridgeToolsListSchema, bridgeToolsListResultSchema, bridgeToolsCallSchema, bridgeToolsCallResultSchema,
   type BridgeGrant, type BridgePolicy, type BridgeLink, type BridgeSend, type BridgeReceipt, type BridgeOperation, type ConnectionIdentity, type PeerBridgeInstall,
   type BridgeToolsCall, type BridgeToolsCallResult, type BridgeToolsList, type BridgeToolsListResult,
@@ -1308,7 +1308,7 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
     const body = z.object({
       sourceLabel: z.string().min(1).max(128).optional(),
       operations: bridgeOperationsSchema.optional(),
-      sourceWorkspaces: z.array(z.string().min(1).max(512)).max(MAX_PAIR_SOURCE_WORKSPACES).optional(),
+      sourceWorkspaces: z.array(z.string().min(1).max(512)).optional(),
       existingBridgeId: z.string().uuid().optional(),
     }).strict().parse(req.body ?? {});
     return bridge.requestBridgeFromPeer(peerGrantId, body);
