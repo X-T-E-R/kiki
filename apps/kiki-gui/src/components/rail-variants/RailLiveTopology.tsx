@@ -22,7 +22,6 @@ import { Icon } from '../icons';
 import { age, useNow } from './model';
 import { FOCUS_RING, StateMark } from './shell';
 
-const MAX_VISIBLE_NODES = 4;
 const ROW_HEIGHT = 28;
 const ROW_GAP = 4;
 const ROW_STEP = ROW_HEIGHT + ROW_GAP;
@@ -150,10 +149,7 @@ export const RailLiveTopology = memo(function RailLiveTopology({
 
   if (!isActive) return null;
 
-  const visibleChildren = liveChildren.slice(0, MAX_VISIBLE_NODES);
-  const overflowCount = Math.max(0, liveChildren.length - MAX_VISIBLE_NODES);
-  const hasOverflow = overflowCount > 0;
-  const renderedRows = visibleChildren.length === 0 ? 1 : visibleChildren.length + (hasOverflow ? 1 : 0);
+  const renderedRows = Math.max(1, liveChildren.length);
   const svgHeight = renderedRows * ROW_HEIGHT + Math.max(0, renderedRows - 1) * ROW_GAP;
   const rootY = svgHeight / 2;
 
@@ -214,7 +210,7 @@ export const RailLiveTopology = memo(function RailLiveTopology({
           viewBox={`0 0 ${SVG_WIDTH} ${svgHeight}`}
           className="shrink-0 overflow-visible"
         >
-          {visibleChildren.length === 0 ? (
+          {liveChildren.length === 0 ? (
             <g className={pendingCount > 0 ? 'text-attention/70' : 'text-hairline-strong'}>
               <path
                 d={`M 0 ${rootY} L ${SVG_WIDTH - 1} ${rootY}`}
@@ -225,42 +221,26 @@ export const RailLiveTopology = memo(function RailLiveTopology({
               <circle cx={SVG_WIDTH - 1} cy={rootY} r="1.5" fill="currentColor" />
             </g>
           ) : (
-            <>
-              {visibleChildren.map((item, index) => {
-                const targetY = index * ROW_STEP + ROW_HEIGHT / 2;
-                const isWaiting = item.state === 'waiting';
-                return (
-                  <g key={item.id} className={isWaiting ? 'text-attention/75' : 'text-hairline-strong'}>
-                    <path
-                      d={`M 0 ${rootY} C 9 ${rootY}, 11 ${targetY}, ${SVG_WIDTH - 1} ${targetY}`}
-                      stroke="currentColor"
-                      strokeWidth="1"
-                      fill="none"
-                    />
-                    <circle cx={SVG_WIDTH - 1} cy={targetY} r="1.5" fill="currentColor" />
-                  </g>
-                );
-              })}
-              {hasOverflow ? (() => {
-                const targetY = visibleChildren.length * ROW_STEP + ROW_HEIGHT / 2;
-                return (
-                  <g className="text-hairline-strong">
-                    <path
-                      d={`M 0 ${rootY} C 9 ${rootY}, 11 ${targetY}, ${SVG_WIDTH - 1} ${targetY}`}
-                      stroke="currentColor"
-                      strokeWidth="1"
-                      strokeDasharray="2 2"
-                      fill="none"
-                    />
-                  </g>
-                );
-              })() : null}
-            </>
+            liveChildren.map((item, index) => {
+              const targetY = index * ROW_STEP + ROW_HEIGHT / 2;
+              const isWaiting = item.state === 'waiting';
+              return (
+                <g key={item.id} className={isWaiting ? 'text-attention/75' : 'text-hairline-strong'}>
+                  <path
+                    d={`M 0 ${rootY} C 9 ${rootY}, 11 ${targetY}, ${SVG_WIDTH - 1} ${targetY}`}
+                    stroke="currentColor"
+                    strokeWidth="1"
+                    fill="none"
+                  />
+                  <circle cx={SVG_WIDTH - 1} cy={targetY} r="1.5" fill="currentColor" />
+                </g>
+              );
+            })
           )}
         </svg>
 
         <div className="min-w-0 flex-1 space-y-1">
-          {visibleChildren.length === 0 ? (
+          {liveChildren.length === 0 ? (
             <button
               type="button"
               data-topology-main-status=""
@@ -280,84 +260,70 @@ export const RailLiveTopology = memo(function RailLiveTopology({
               <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
             </button>
           ) : (
-            <>
-              {visibleChildren.map((item) => {
-                const isWaiting = item.state === 'waiting';
-                if (item.kind === 'branch') {
-                  const statusText = t(`rail.branches.status.${item.state}` as I18nKey);
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      data-topology-node={item.id}
-                      data-topology-kind="branch"
-                      title={`${item.label} · ${statusText}`}
-                      onClick={() => { onOpenAgent(item.id); }}
-                      className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-paper/70 px-2 text-left transition-colors hover:border-hairline-strong hover:bg-canvas ${FOCUS_RING}`}
-                    >
-                      <Icon
-                        name="branch"
-                        size={12}
-                        className={isWaiting ? 'shrink-0 text-attention' : 'shrink-0 text-ink-soft'}
-                      />
-                      <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'font-medium text-attention' : 'text-ink'}`}>
-                        {item.label}
-                      </span>
-                      <span
-                        className={`shrink-0 text-[10.5px] ${
-                          isWaiting
-                            ? 'font-medium text-attention'
-                            : item.state === 'running'
-                              ? 'text-accent'
-                              : 'text-ink-faint'
-                        }`}
-                      >
-                        {statusText}
-                      </span>
-                    </button>
-                  );
-                }
-
-                const elapsed = item.startedAt !== undefined ? age(now - item.startedAt, locale) : undefined;
+            liveChildren.map((item) => {
+              const isWaiting = item.state === 'waiting';
+              if (item.kind === 'branch') {
+                const statusText = t(`rail.branches.status.${item.state}` as I18nKey);
                 return (
                   <button
                     key={item.id}
                     type="button"
                     data-topology-node={item.id}
-                    data-topology-kind="subagent"
-                    title={elapsed === undefined ? item.label : `${item.label} · ${elapsed}`}
+                    data-topology-kind="branch"
+                    title={`${item.label} · ${statusText}`}
                     onClick={() => { onOpenAgent(item.id); }}
                     className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-paper/70 px-2 text-left transition-colors hover:border-hairline-strong hover:bg-canvas ${FOCUS_RING}`}
                   >
-                    <StateMark state={item.state} className="h-[7px] w-[7px]" />
+                    <Icon
+                      name="branch"
+                      size={12}
+                      className={isWaiting ? 'shrink-0 text-attention' : 'shrink-0 text-ink-soft'}
+                    />
                     <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'font-medium text-attention' : 'text-ink'}`}>
                       {item.label}
                     </span>
-                    {isWaiting ? (
-                      <span className="shrink-0 text-[10.5px] font-medium text-attention">
-                        {t('rail.needsInput')}
-                      </span>
-                    ) : elapsed !== undefined ? (
-                      <span className="shrink-0 font-mono text-[10.5px] text-ink-faint tabular-nums">
-                        {elapsed}
-                      </span>
-                    ) : null}
+                    <span
+                      className={`shrink-0 text-[10.5px] ${
+                        isWaiting
+                          ? 'font-medium text-attention'
+                          : item.state === 'running'
+                            ? 'text-accent'
+                            : 'text-ink-faint'
+                      }`}
+                    >
+                      {statusText}
+                    </span>
                   </button>
                 );
-              })}
+              }
 
-              {hasOverflow ? (
+              const elapsed = item.startedAt !== undefined ? age(now - item.startedAt, locale) : undefined;
+              return (
                 <button
+                  key={item.id}
                   type="button"
-                  data-topology-overflow={overflowCount}
-                  onClick={onSwitchToRun}
-                  className={`flex h-7 w-full min-w-0 cursor-pointer items-center justify-between gap-1.5 rounded-md border border-dashed border-hairline-strong px-2 text-left text-[11.5px] text-ink-faint transition-colors hover:border-ink-faint hover:text-ink ${FOCUS_RING}`}
+                  data-topology-node={item.id}
+                  data-topology-kind="subagent"
+                  title={elapsed === undefined ? item.label : `${item.label} · ${elapsed}`}
+                  onClick={() => { onOpenAgent(item.id); }}
+                  className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-paper/70 px-2 text-left transition-colors hover:border-hairline-strong hover:bg-canvas ${FOCUS_RING}`}
                 >
-                  <span className="truncate">{t('rail.topology.more', { count: overflowCount })}</span>
-                  <Icon name="arrowRight" size={12} className="shrink-0" />
+                  <StateMark state={item.state} className="h-[7px] w-[7px]" />
+                  <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'font-medium text-attention' : 'text-ink'}`}>
+                    {item.label}
+                  </span>
+                  {isWaiting ? (
+                    <span className="shrink-0 text-[10.5px] font-medium text-attention">
+                      {t('rail.needsInput')}
+                    </span>
+                  ) : elapsed !== undefined ? (
+                    <span className="shrink-0 font-mono text-[10.5px] text-ink-faint tabular-nums">
+                      {elapsed}
+                    </span>
+                  ) : null}
                 </button>
-              ) : null}
-            </>
+              );
+            })
           )}
         </div>
       </div>

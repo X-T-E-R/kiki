@@ -14,7 +14,7 @@ import { readHomeFiles } from './homeFiles';
 import { sameUnit } from './mergeEngine';
 import { checkedPath, git, gitRemote, missing, pathFormat, readBounded, readTree, scratch, writeFileAtomic, writeTree } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
-import { encodeToml, filesFromUnits, FORK, object, parseToml, PLAIN, RECIPIENTS, SEALED, toUnits, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
+import { encodeToml, filesFromUnits, FORK, object, parseToml, PLAIN, RECIPIENTS, SEALED, toUnitsWithExcluded, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
 
 export const NO_SESSIONS = { mode: 'none' } as const;
 export interface LoadOptions {
@@ -42,6 +42,7 @@ export function counts(units: Units) {
 }
 
 export function inspectTree(endpoint: PortableSpaceEndpoint, tree: PortableSpaceTree): PortableSpaceInspectResult {
+  const excluded = tree.excluded?.length ? tree.excluded : undefined;
   return {
     endpoint, label: tree.label, format: tree.format, spaceMode: tree.overlay ? 'overlay' : 'full',
     secretMode: tree.secretMode, encryptionMode: tree.encryptionMode, recipients: tree.recipients.map(({ recipient }) => recipient),
@@ -52,7 +53,7 @@ export function inspectTree(endpoint: PortableSpaceEndpoint, tree: PortableSpace
       return { id, domain: unit.domain, path: unit.path, label: unit.path.slice(0, 256), masked: masked || undefined, bytes,
         summary: masked ? 'Credential (masked)' : bytes === undefined ? JSON.stringify(unit.value).slice(0, 512) : undefined,
         scalarValue: !masked && (scalar === null || ['string', 'number', 'boolean'].includes(typeof scalar)) ? scalar as string | number | boolean | null : undefined };
-    }),
+    }), excluded,
   };
 }
 
@@ -227,13 +228,13 @@ export class SpaceEndpoints {
       }
       files.delete(SEALED);
     }
-    const units = toUnits(files, this.live.registry);
+    const { units, excluded } = toUnitsWithExcluded(files, this.live.registry);
     for (const [id, item] of units) if (item.domain === 'memories' && options.includeMemories === false || item.domain === 'credentials' && options.includeCredentials === false) units.delete(id);
     const overlay = parseToml(files.get('overlay.toml'));
     const unset = overlay['unset'] ?? [];
     if (files.has('overlay.toml') && (overlay['schema'] !== 1 || overlay['mode'] !== 'overlay' || !Array.isArray(unset) || unset.some((item) => typeof item !== 'string' || item.length === 0))) throw new Error('Invalid portable overlay.toml');
     const recipients = parseRecipients(files.get(RECIPIENTS)?.toString('utf8') ?? '');
-    return { units, unset: new Set(unset as string[]), overlay: overlay['mode'] === 'overlay', recipients, format,
+    return { units, excluded: excluded.length ? excluded : undefined, unset: new Set(unset as string[]), overlay: overlay['mode'] === 'overlay', recipients, format,
       secretMode: [...units.values()].some((item) => item.domain === 'credentials') ? (sealed || format === 'age' ? 'sealed' : 'plain') : 'none',
       encryptionMode, matchedPassphrase, label: label.slice(0, 256) || 'Portable Space', fork: readFork(files.get(FORK)) };
   }
@@ -316,6 +317,7 @@ export class SpaceEndpoints {
         await writeFileAtomic(destination, buffer, actualSecretMode === 'plain' ? 0o600 : 0o644);
       }
     }
-    return { destination, format, spaceMode: tree.overlay ? 'overlay' : 'full', secretMode: actualSecretMode, encryptionMode, domains: counts(units), totalItems: units.size, bytes };
+    const excluded = tree.excluded?.length ? tree.excluded : undefined;
+    return { destination, format, spaceMode: tree.overlay ? 'overlay' : 'full', secretMode: actualSecretMode, encryptionMode, domains: counts(units), totalItems: units.size, bytes, excluded };
   }
 }

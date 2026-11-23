@@ -47,7 +47,7 @@ import type { TranscriptResponse } from '@kiki/transcript';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
-import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES } from '../src/services/messages/messageHistory';
+import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES, messageHistoryCacheReport } from '../src/services/messages/messageHistory';
 import { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -275,12 +275,25 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
   }
 
   async function waitForTerminal(main: Awaited<ReturnType<typeof ensureMainAgent>>): Promise<void> {
+    const activity = main.accessor.get(ISessionActivityView);
+    if (activity.state().busy) {
+      await new Promise<void>((resolve) => {
+        const sub = activity.onDidChange(({ state }) => {
+          if (!state.busy) {
+            sub.dispose();
+            resolve();
+          }
+        });
+        if (!activity.state().busy) {
+          sub.dispose();
+          resolve();
+        }
+      });
+    }
     await main.accessor.get(IAgentExecutionService).settled();
-    await vi.waitFor(() => {
-      const prompts = main.accessor.get(IAgentPromptService).list();
-      expect(prompts.active).toBeUndefined();
-      expect(prompts.pending).toHaveLength(0);
-    });
+    const prompts = main.accessor.get(IAgentPromptService).list();
+    expect(prompts.active).toBeUndefined();
+    expect(prompts.pending).toHaveLength(0);
   }
 
   async function createTerminalPrompt(text: string) {
@@ -1458,9 +1471,9 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(tailReads - tailReadsBeforeRebuild).toBe(0);
   });
 
-  it('serves an oversized history entry without retaining it in the cache', async () => {
+  it('serves an oversized history entry without retaining it in RAM while reusing its spilled projection across reads', async () => {
     const id = await createSession();
-    const bigText = 'x'.repeat(MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES / 2 + 1024);
+    const bigText = 'x'.repeat(MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES + 1024);
     await seedMainAgentMessages(id, [
       { role: 'user', content: [{ type: 'text', text: bigText }], toolCalls: [] },
     ]);
@@ -1468,6 +1481,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     const first = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     expect(first.body.data.items).toHaveLength(1);
     expect(first.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
+    expect(messageHistoryCacheReport(server!.core).entries).toBe(0);
 
     const appendLog = server!.core.accessor.get(IAppendLogStore);
     const originalRead = appendLog.read.bind(appendLog);
@@ -1480,6 +1494,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     const second = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     expect(second.body.data.items).toHaveLength(1);
     expect(second.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
+    expect(messageHistoryCacheReport(server!.core).entries).toBe(0);
     expect(reads).toBe(1);
   });
 

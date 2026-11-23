@@ -6,7 +6,6 @@ import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { Transform } from 'node:stream';
 
 import {
   portableSpaceApplyInputSchema,
@@ -497,13 +496,7 @@ async function withArchiveOutput<T>(
 
 async function stageStdin(temporaryRoot: string, suffix: string, dependencies: SpaceCommandDependencies): Promise<string> {
   const path = join(temporaryRoot, `stdin${suffix}`);
-  let size = 0;
-  const limit = new Transform({ transform(chunk: Buffer, _encoding, done) {
-    size += chunk.length;
-    if (size > 128 * 1024 * 1024) done(new Error('Portable Space stdin exceeds 128 MiB'));
-    else done(null, chunk);
-  } });
-  await pipeline(dependencies.stdin ?? process.stdin, limit, createWriteStream(path, { flags: 'wx', mode: 0o600 }));
+  await pipeline(dependencies.stdin ?? process.stdin, createWriteStream(path, { flags: 'wx', mode: 0o600 }));
   return path;
 }
 

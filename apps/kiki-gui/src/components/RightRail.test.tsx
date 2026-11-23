@@ -390,7 +390,8 @@ describe('RightRail Run | Config tabs and decluttered layout', () => {
     expect(idleRail.querySelector('[data-rail-config-topology]')).toBeNull();
   });
 
-  it('caps visible live topology nodes to 4 with a +N overflow node that returns to Run', async () => {
+  it('renders all live topology nodes directly without arbitrary truncation and returns to Run via summary', async () => {
+    const onOpenSubagent = vi.fn();
     const manyForest = buildAgentForest([], [
       { agentId: 'main', name: 'Kiki', status: 'running', busy: true },
       ...Array.from({ length: 6 }, (_, i) => ({
@@ -401,12 +402,17 @@ describe('RightRail Run | Config tabs and decluttered layout', () => {
         busy: true,
       })),
     ]);
-    const rail = await renderRail({ agentForest: manyForest, stateTasks: [], stateOverrides: { busy: true } });
+    const rail = await renderRail({ agentForest: manyForest, stateTasks: [], stateOverrides: { busy: true }, onOpenSubagent });
     await selectTab(rail, 'config');
-    expect(rail.querySelectorAll('[data-topology-node]')).toHaveLength(4);
-    const overflow = rail.querySelector<HTMLButtonElement>('[data-topology-overflow="2"]')!;
-    expect(overflow).not.toBeNull();
-    await act(async () => { overflow.click(); });
+    expect(rail.querySelectorAll('[data-topology-node]')).toHaveLength(6);
+    expect(rail.querySelector('[data-topology-overflow]')).toBeNull();
+    const sixth = rail.querySelector<HTMLButtonElement>('[data-topology-node="worker-6"]')!;
+    expect(sixth).not.toBeNull();
+    await act(async () => { sixth.click(); });
+    expect(onOpenSubagent).toHaveBeenCalledWith('worker-6');
+    await selectTab(rail, 'config');
+    const summary = rail.querySelector<HTMLButtonElement>('[data-topology-summary]')!;
+    await act(async () => { summary.click(); });
     expect(rail.querySelector('[data-rail-panel="run"]')).not.toBeNull();
   });
 

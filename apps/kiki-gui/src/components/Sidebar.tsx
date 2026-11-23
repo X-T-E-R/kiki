@@ -2084,12 +2084,11 @@ export function Sidebar({
     const enabled = !search.active && !filtersActive && groupBy === 'time';
     return partitionColdFold(sessionTree, {
       enabled,
-      nowMs: nowMs ?? Date.now(),
       activeSessionId,
       activeRoomHref: location.pathname.startsWith('/rooms/') ? location.pathname : undefined,
       rowStateOf: (node) => conversationRowState(node.item, seen),
     });
-  }, [sessionTree, search.active, filtersActive, groupBy, nowMs, activeSessionId, location.pathname, seen]);
+  }, [sessionTree, search.active, filtersActive, groupBy, activeSessionId, location.pathname, seen]);
   const displayedSessionTree = coldFoldExpanded ? sessionTree : coldFoldPartition.visibleGroups;
   const coldNodes = coldFoldPartition.coldNodes;
 

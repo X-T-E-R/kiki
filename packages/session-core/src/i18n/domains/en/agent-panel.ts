@@ -860,7 +860,6 @@ export const agentPanelEn = {
   'rail.tokensInOut': '{input} in · {output} out',
   'rail.toolsRow': 'Tools',
   'rail.topology.aria': 'Live run topology',
-  'rail.topology.more': '+{count} more',
   'rail.topology.title': 'Live activity',
   'rail.turns': 'Turns',
   'rail.updatedPrefix': 'updated {time}',

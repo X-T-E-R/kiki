@@ -1,9 +1,11 @@
 /**
- * 72-hour cold-fold partitioner for the `会话` (Sessions) sidebar view.
+ * Historical time-bucket cold-fold partitioner for the `会话` (Sessions) sidebar view.
  *
- * When search & filters are inactive in time/flat view, conversations older
- * than 72 hours are folded behind a single quiet disclosure row (`更早 · N` /
- * `Older · N`), excluding:
+ * When search & filters are inactive in calendar-grouped (`groupBy === 'time'`) view,
+ * quiet read conversations in the post-week historical buckets (`month` and `older`
+ * from `TimeGroupKey` in `@kiki/session-core/sessions`) are folded behind a single
+ * quiet disclosure row (`更早 · N` / `Older · N`), keeping `pinned`, `today`,
+ * `yesterday`, and `week` directly visible and protecting:
  *   - the active conversation
  *   - pinned conversations
  *   - conversations needing user input (`needs-me` / `cleanup-pending`)
@@ -11,20 +13,14 @@
  *   - unread conversations
  */
 
-import type { SessionRowState } from '@kiki/session-core/sessions';
+import type { SessionRowState, TimeGroupKey } from '@kiki/session-core/sessions';
 import type { ConversationTreeNode } from '../../lib/sessionThreads';
 
-export const COLD_FOLD_THRESHOLD_MS = 72 * 60 * 60 * 1000;
+const HISTORICAL_TIME_GROUP_KEYS: ReadonlySet<string> = new Set<TimeGroupKey>(['month', 'older']);
 
 export interface ColdFoldGroup<TGroup extends { readonly key: string; readonly label: string; readonly nodes: readonly ConversationTreeNode[]; readonly total: number }> {
   readonly visibleGroups: readonly TGroup[];
   readonly coldNodes: readonly ConversationTreeNode[];
-}
-
-function nodeTimestampMs(node: ConversationTreeNode): number {
-  const raw = node.item.updated_at;
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function isProtectedNode(
@@ -58,7 +54,6 @@ export function partitionColdFold<
   groups: readonly TGroup[],
   options: {
     readonly enabled: boolean;
-    readonly nowMs: number;
     readonly activeSessionId?: string;
     readonly activeRoomHref?: string;
     readonly rowStateOf: (node: ConversationTreeNode) => SessionRowState;
@@ -67,19 +62,17 @@ export function partitionColdFold<
   if (!options.enabled || groups.length === 0) {
     return { visibleGroups: groups, coldNodes: [] };
   }
-  const cutoffMs = options.nowMs - COLD_FOLD_THRESHOLD_MS;
   const visibleGroups: TGroup[] = [];
   const coldNodes: ConversationTreeNode[] = [];
 
   for (const group of groups) {
-    if (group.key === 'pinned' || group.key === 'today' || group.key === 'yesterday') {
+    if (!HISTORICAL_TIME_GROUP_KEYS.has(group.key)) {
       visibleGroups.push(group);
       continue;
     }
     const kept: ConversationTreeNode[] = [];
     for (const node of group.nodes) {
-      const ts = nodeTimestampMs(node);
-      if (ts > 0 && ts < cutoffMs && !isProtectedNode(node, options)) {
+      if (!isProtectedNode(node, options)) {
         coldNodes.push(node);
       } else {
         kept.push(node);

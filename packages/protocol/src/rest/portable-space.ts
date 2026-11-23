@@ -93,6 +93,14 @@ export const portableSpaceDomainCountSchema = z.object({
 }).strict();
 export type PortableSpaceDomainCount = z.infer<typeof portableSpaceDomainCountSchema>;
 
+export const portableSpaceExcludedItemSchema = z.object({
+  id: z.string().min(1).max(512),
+  domain: portableSpaceDomainSchema,
+  path: z.string().min(1).max(512),
+  reason: z.string().min(1).max(512),
+}).strict();
+export type PortableSpaceExcludedItem = z.infer<typeof portableSpaceExcludedItemSchema>;
+
 export const portableSpaceInspectInputSchema = z.object({
   endpoint: portableSpaceEndpointSchema,
   unlock: portableSpaceUnlockSchema.optional(),
@@ -116,6 +124,7 @@ export const portableSpaceInspectResultSchema = z.object({
   }).strict().optional(),
   domains: z.array(portableSpaceDomainCountSchema),
   items: z.array(portableSpaceItemSummarySchema),
+  excluded: z.array(portableSpaceExcludedItemSchema).optional(),
   updatedAt: z.string().optional(),
 }).strict();
 export type PortableSpaceInspectResult = z.infer<typeof portableSpaceInspectResultSchema>;
@@ -185,6 +194,7 @@ export const portableSpaceExportReceiptSchema = z.object({
   domains: z.array(portableSpaceDomainCountSchema),
   totalItems: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative().optional(),
+  excluded: z.array(portableSpaceExcludedItemSchema).optional(),
   sourceRecord: portableSpaceSourceRecordSchema.optional(),
 }).strict();
 export type PortableSpaceExportReceipt = z.infer<typeof portableSpaceExportReceiptSchema>;

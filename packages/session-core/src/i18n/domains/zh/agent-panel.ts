@@ -860,7 +860,6 @@ export const agentPanelZh = {
   'rail.tokensInOut': '输入 {input} · 输出 {output}',
   'rail.toolsRow': '工具',
   'rail.topology.aria': '实时运行拓扑',
-  'rail.topology.more': '+{count} 更多',
   'rail.topology.title': '实时运行',
   'rail.turns': '轮次',
   'rail.updatedPrefix': '更新于 {time}',

@@ -420,6 +420,17 @@ export function PortableSpaceDetail({
             )
           ) : null}
 
+          {data?.excluded && data.excluded.length > 0 ? (
+            <ul className="space-y-1 text-[12px] text-ink-soft" data-portable-excluded-list>
+              {data.excluded.map((entry) => (
+                <li key={entry.id} data-portable-excluded-item={entry.id} className="flex flex-wrap gap-x-2">
+                  <span className="font-mono text-ink">{entry.path}</span>
+                  <span className="text-ink-faint">{entry.reason}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
           <FeedbackLine feedback={feedback} />
         </div>
       ) : null}

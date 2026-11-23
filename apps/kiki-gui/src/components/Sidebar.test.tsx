@@ -4442,24 +4442,27 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     expect(container.querySelector('[data-inbox-active-list] [data-inbox-row="s-wait"]')).not.toBeNull();
   });
 
-  it('folds read sessions older than 72h in Sessions view while protecting unread, running, pinned and active rows, and clears unread immediately on cold-session click', async () => {
+  it('folds post-week historical read sessions in time-grouped Sessions view while keeping week/recent and protected rows visible, and clears unread immediately on cold-session click', async () => {
     const recent = { ...session('s-recent'), title: 'Recent work', updated_at: '2026-10-06T09:00:00Z', last_seq: 0 };
+    const weekRead = { ...session('s-week-read'), title: 'This week read', updated_at: '2026-10-01T09:00:00Z', last_seq: 0 };
     const oldRead = { ...session('s-old-read'), title: 'Old read thread', updated_at: '2026-09-20T09:00:00Z', last_seq: 0 };
     const oldUnread = { ...session('s-old-unread'), title: 'Old unread thread', updated_at: '2026-09-18T09:00:00Z', last_seq: 7, last_turn_reason: 'completed' as const };
     // Clicking the cold unread session clears its unread state synchronously!
     const { container, render } = await mount({
       sidebarMode: 'sessions',
-      sessions: [recent, oldRead, oldUnread],
+      sessions: [recent, weekRead, oldRead, oldUnread],
       sessionGroups: [
         { key: 'today', label: 'Today', items: [recent] },
+        { key: 'week', label: 'Previous 7 days', items: [weekRead] },
         { key: 'month', label: 'Past 30 days', items: [oldRead, oldUnread] },
       ],
       groupBy: 'time',
       nowMs: FIXTURE_NOW_MS,
     });
 
-    // Old read session is folded behind Older · 1; old unread session stays visible.
+    // Today & week stay visible; month read session folds behind Older · 1; month unread stays visible.
     expect(container.querySelector('[data-session-row="s-recent"]')).not.toBeNull();
+    expect(container.querySelector('[data-session-row="s-week-read"]')).not.toBeNull();
     expect(container.querySelector('[data-session-row="s-old-read"]')).toBeNull();
     expect(container.querySelector('[data-session-row="s-old-unread"]')?.getAttribute('data-session-row-state')).toBe('unread');
     const foldToggle = container.querySelector<HTMLButtonElement>('[data-sidebar-cold-fold="collapsed"]')!;
@@ -4473,9 +4476,10 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     await render({
       sidebarMode: 'sessions',
       activeSessionId: 's-old-unread',
-      sessions: [recent, oldRead, oldUnread],
+      sessions: [recent, weekRead, oldRead, oldUnread],
       sessionGroups: [
         { key: 'today', label: 'Today', items: [recent] },
+        { key: 'week', label: 'Previous 7 days', items: [weekRead] },
         { key: 'month', label: 'Past 30 days', items: [oldRead, oldUnread] },
       ],
       groupBy: 'time',
@@ -4483,7 +4487,7 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     });
     expect(container.querySelector('[data-session-row="s-old-unread"]')?.getAttribute('data-session-row-state')).toBe('read');
 
-    // Expanding the fold reveals the folded >72h read row.
+    // Expanding the fold reveals the folded historical read row.
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-sidebar-cold-fold="collapsed"]')!.click();
     });

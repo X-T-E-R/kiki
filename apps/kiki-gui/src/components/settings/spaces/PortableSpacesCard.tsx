@@ -244,9 +244,13 @@ export function PortableSpacesCard({
     const wasFork = exportPanel?.intent === 'fork';
     setExportPanel(null);
     refresh();
-    const text = wasFork
+    const baseText = wasFork
       ? t('st.portable.forkDone', { path: receipt.destination })
       : t('st.portable.exportDone', { count: receipt.totalItems, path: receipt.destination });
+    const excludedSuffix = receipt.excluded?.length
+      ? ` (${receipt.excluded.map((entry) => `${entry.path}: ${entry.reason}`).join('; ')})`
+      : '';
+    const text = `${baseText}${excludedSuffix}`;
     setFeedback({ tone: 'success', text });
     pushToast({ tone: 'success', text });
   };

@@ -39,7 +39,6 @@ const MAX_PAGE_SIZE = 100;
 const MESSAGE_HISTORY_CACHE_CAPACITY = 128;
 export const MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES = 8 << 20;
 export const MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES = 64 << 20;
-export const MESSAGE_HISTORY_SPILL_MAX_ENTRY_BYTES = 16 << 20;
 const MESSAGE_HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES = 256;
 const MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES = 32;
 const MESSAGE_HISTORY_ESTIMATE_TOOL_CALL_BYTES = 128;
@@ -593,10 +592,6 @@ async function loadSpilledMessageHistory(
       readonly bytes: number;
     }>(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId);
     if (value === undefined) return undefined;
-    if (value.bytes > MESSAGE_HISTORY_SPILL_MAX_ENTRY_BYTES) {
-      await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
-      return undefined;
-    }
     return { ...value, explicitIndexes: new Map(value.explicitIndexes) };
   } catch {
     return undefined;
@@ -610,7 +605,7 @@ async function persistSpilledMessageHistory(
   spill: boolean,
 ): Promise<void> {
   const store = core.accessor.get(IQueryStore);
-  if (!spill || entry.bytes > MESSAGE_HISTORY_SPILL_MAX_ENTRY_BYTES) {
+  if (!spill) {
     await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
     return;
   }

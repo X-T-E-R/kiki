@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse, stringify } from 'smol-toml';
 import { extractPortableConfigLayer, type IConfigRegistry } from '@kiki/agent-core-v2';
 import { splitConfigCredentials, mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
-import type { PortableSpaceDomain, PortableSpaceFormat, PortableSpaceSecretMode } from '@kiki/protocol';
+import type { PortableSpaceDomain, PortableSpaceExcludedItem, PortableSpaceFormat, PortableSpaceSecretMode } from '@kiki/protocol';
 import { safePortablePath } from './tarArchive';
 import { parseRecipients } from './ageCodec';
 import { installBytes, readRecipeInstallations, RECIPE_INSTALLATIONS, RECIPE_STORE, type PortableRecipeInstallation } from './recipeStore';
@@ -14,6 +14,7 @@ export type Units = Map<string, SpaceUnit>;
 export interface ForkBase { forkId: string; createdAt: string; unitHashes: Record<string, string> }
 export interface PortableSpaceTree {
   units: Units;
+  excluded?: PortableSpaceExcludedItem[];
   unset: Set<string>;
   overlay: boolean;
   recipients: ReturnType<typeof parseRecipients>;
@@ -82,18 +83,44 @@ export function configProjection(raw: Data, registry?: IConfigRegistry): { confi
   return { config: projected, credentials: secret };
 }
 
-export function mcpProjection(raw: Data): { config: Data; credentials: Data } {
+function mcpExclusionReason(server: Data): string | undefined {
+  const command = server['command'];
+  if (typeof command === 'string') {
+    const trimmed = command.trim();
+    if (!trimmed) return 'MCP command is empty';
+    if (/[\\/]|^[a-z]:|^~/i.test(trimmed)) return `MCP command uses a machine-local filesystem path (${trimmed})`;
+  } else {
+    const url = typeof server['url'] === 'string' && URL.canParse(server['url']) ? new URL(server['url']) : undefined;
+    if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+      return 'MCP server URL is missing or does not use http/https';
+    }
+    if (url.username || url.password || [...url.searchParams.keys()].some((key) => SECRET_KEY.test(key))) {
+      return 'MCP server URL embeds inline credentials or secret query parameters';
+    }
+  }
+  if (Array.isArray(server['args']) && server['args'].some((arg) => typeof arg === 'string' && /^(?:[a-z]:[\\/]|[\\/]|~(?:[\\/]|$))/i.test(arg.trim()))) {
+    return 'MCP arguments reference a machine-local filesystem path';
+  }
+  return undefined;
+}
+
+export function mcpProjection(raw: Data): { config: Data; credentials: Data; excluded: PortableSpaceExcludedItem[] } {
   const config: Data = {};
   const credentials: Data = {};
+  const excluded: PortableSpaceExcludedItem[] = [];
   for (const [id, value] of Object.entries(object(raw['mcpServers'] ?? raw['servers'] ?? raw))) {
     const server = object(value);
-    const command = server['command'];
-    if (typeof command === 'string' && !/^(?:npx|uvx|node|python3?|uv|deno|bun|npm|pnpm|docker)(?:\.exe)?$/i.test(command)) continue;
-    if (typeof command !== 'string') {
-      const url = typeof server['url'] === 'string' && URL.canParse(server['url']) ? new URL(server['url']) : undefined;
-      if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || [...url.searchParams.keys()].some((key) => SECRET_KEY.test(key))) continue;
+    const reason = mcpExclusionReason(server);
+    if (reason !== undefined) {
+      const escapedId = `mcp:${id.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
+      excluded.push({
+        id: escapedId.slice(0, 512),
+        domain: 'mcp',
+        path: `mcp.${id}`.slice(0, 512),
+        reason: reason.slice(0, 512),
+      });
+      continue;
     }
-    if (Array.isArray(server['args']) && server['args'].some((arg) => typeof arg === 'string' && /^(?:[a-z]:[\\/]|[\\/])/i.test(arg))) continue;
     const split = splitConfigCredentials(server);
     for (const name of ['headers', 'env']) {
       const publicEntries = object(split.config[name]);
@@ -114,7 +141,7 @@ export function mcpProjection(raw: Data): { config: Data; credentials: Data } {
     config[id] = split.config;
     if (Object.keys(split.credentials).length) credentials[id] = split.credentials;
   }
-  return { config, credentials };
+  return { config, credentials, excluded };
 }
 
 export function domainForFile(path: string): PortableSpaceDomain | undefined {
@@ -139,8 +166,12 @@ export function putUnit(units: Units, domain: PortableSpaceDomain, key: string[]
   units.set(id, { domain, key, path, value });
 }
 
-export function toUnits(files: ReadonlyMap<string, Buffer>, registry?: IConfigRegistry): Units {
+export function toUnitsWithExcluded(
+  files: ReadonlyMap<string, Buffer>,
+  registry?: IConfigRegistry,
+): { units: Units; excluded: PortableSpaceExcludedItem[] } {
   const units: Units = new Map();
+  let excluded: PortableSpaceExcludedItem[] = [];
   let secrets: Data = parseToml(files.get(PLAIN));
   for (const filename of ['config.toml', ...platforms.map((platform) => `config.${platform}.toml`)]) {
     const platform = filename.split('.')[1];
@@ -159,6 +190,7 @@ export function toUnits(files: ReadonlyMap<string, Buffer>, registry?: IConfigRe
     try { data = object(JSON.parse(mcp.toString('utf8'))); }
     catch { throw new Error('Invalid Portable Space mcp.json'); }
     const split = mcpProjection(data);
+    excluded = split.excluded;
     for (const [id, server] of Object.entries(split.config)) putUnit(units, 'mcp', [id], server, `mcp.${id}`);
     secrets = mergeConfigCredentials({ mcp: split.credentials }, secrets);
   }
@@ -189,7 +221,11 @@ export function toUnits(files: ReadonlyMap<string, Buffer>, registry?: IConfigRe
     const domain = domainForFile(path);
     if (domain) putUnit(units, domain, [path], bytes, path);
   }
-  return units;
+  return { units, excluded };
+}
+
+export function toUnits(files: ReadonlyMap<string, Buffer>, registry?: IConfigRegistry): Units {
+  return toUnitsWithExcluded(files, registry).units;
 }
 
 export function sections(units: Units, domain: PortableSpaceDomain): Data {

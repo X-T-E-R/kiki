@@ -171,7 +171,8 @@ export class PortableSpaceService {
       const source = await this.endpoints.load(input.source, { unlock: input.sourceUnlock, includeMemories: input.includeMemories, includeCredentials: input.secretMode !== 'none' && (!input.domains || input.domains.includes('credentials')), sessions: input.sessions, targetPlatform: input.targetPlatform });
       const units = selectedUnits(source.units, input.domains, input.pick);
       if (input.sessions.mode === 'none') for (const [id, unit] of units) if (unit.domain === 'sessions') units.delete(id);
-      return this.recordDestination(await this.endpoints.write(input.destination, { ...source, units, overlay: input.spaceMode === 'overlay', unset: new Set(input.unset ?? (input.spaceMode === 'overlay' ? source.unset : [])) }, input));
+      const excluded = source.excluded?.filter((item) => (input.domains === undefined || input.domains.includes(item.domain)) && (input.pick === undefined || input.pick.some((selector) => item.id === selector || item.path === selector || item.path.startsWith(`${selector}.`))));
+      return this.recordDestination(await this.endpoints.write(input.destination, { ...source, units, excluded: excluded?.length ? excluded : undefined, overlay: input.spaceMode === 'overlay', unset: new Set(input.unset ?? (input.spaceMode === 'overlay' ? source.unset : [])) }, input));
     });
   }
 
@@ -224,7 +225,8 @@ export class PortableSpaceService {
       const fork: ForkBase = { forkId, createdAt: new Date().toISOString(), unitHashes: unitHashes(baseline, key) };
       const destination = endpointKey(await this.endpoints.destination(input.destination));
       if (destination === endpointKey(input.source)) throw new Error('Fork destination must differ from its source');
-      const receipt = await this.endpoints.write(input.destination, { ...source, units, unset, overlay: input.overlay, fork }, input);
+      const excluded = source.excluded?.filter((item) => (input.domains === undefined || input.domains.includes(item.domain)) && (input.pick === undefined || input.pick.some((selector) => item.id === selector || item.path === selector || item.path.startsWith(`${selector}.`))));
+      const receipt = await this.endpoints.write(input.destination, { ...source, units, excluded: excluded?.length ? excluded : undefined, unset, overlay: input.overlay, fork }, input);
       await this.saveBase(forkId, baseline, key);
       const records = await this.forkRecords();
       records[forkId] = { ...fork, source: endpointKey(input.source), destination };

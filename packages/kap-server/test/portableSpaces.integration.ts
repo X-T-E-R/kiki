@@ -736,10 +736,22 @@ describe('Portable Spaces authenticated locked protocol', () => {
 
   it('scrubs MCP env values, replaces notification records and rejects a Git ignore negation', async () => {
     await source.core.accessor.get(IMcpConfigStore).add({ name: 'env-fixture', transport: 'stdio', command: 'npx', args: ['fixture'], env: { GH_PAT: 'secret-fixture-pat', NODE_ENV: 'production' } });
+    await source.core.accessor.get(IMcpConfigStore).add({ name: 'custom-path-bin', transport: 'stdio', command: 'officecli-mcp', args: ['--serve'] });
+    await source.core.accessor.get(IMcpConfigStore).add({ name: 'local-only', transport: 'stdio', command: '/opt/machine-local/bin/mcp', args: ['--stdio'] });
+    const liveInspect = await request(source, sourceBase, '/api/spaces/portable/inspect', { endpoint: { kind: 'live', spaceId: 'main' } }, portableSpaceInspectResultSchema);
+    expect(liveInspect.items.some((item) => item.id === 'mcp:custom-path-bin')).toBe(true);
+    expect(liveInspect.excluded).toEqual([
+      expect.objectContaining({ id: 'mcp:local-only', domain: 'mcp', path: 'mcp.local-only', reason: expect.stringContaining('machine-local') }),
+    ]);
     const directory = join(root, 'scrubbed-mcp-credentials');
-    await request(source, sourceBase, '/api/spaces/portable/export', { destination: directory, domains: ['mcp', 'credentials'], secretMode: 'none' }, portableSpaceExportReceiptSchema);
+    const mcpExportReceipt = await request(source, sourceBase, '/api/spaces/portable/export', { destination: directory, domains: ['mcp', 'credentials'], secretMode: 'none' }, portableSpaceExportReceiptSchema);
+    expect(mcpExportReceipt.excluded).toEqual([
+      expect.objectContaining({ id: 'mcp:local-only', domain: 'mcp', path: 'mcp.local-only' }),
+    ]);
     const mcp = await readFile(join(directory, 'mcp.json'), 'utf8');
     expect(mcp).toContain('NODE_ENV');
+    expect(mcp).toContain('officecli-mcp');
+    expect(mcp).not.toContain('local-only');
     expect(mcp).not.toMatch(/GH_PAT|secret-fixture-pat/);
     const targetConfig = target.core.accessor.get(IConfigService);
     await targetConfig.replace('notifications', { ...DEFAULT_NOTIFICATIONS_CONFIG, channels: { removed: {} }, provider_instances: { removed: {} }, credential_slots: { removed: {} }, credential_values: { retain: { token: 'fixture-notification-token' } } });

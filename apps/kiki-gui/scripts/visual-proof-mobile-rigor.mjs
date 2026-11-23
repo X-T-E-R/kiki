@@ -214,11 +214,49 @@ async function createMobilePage(browser, profile, { locale = 'en', theme = 'ligh
     } catch { /* ignore */ }
   }, { loc: locale, thm: theme, token: appShellToken });
 
+  context.setDefaultTimeout(0);
+  context.setDefaultNavigationTimeout(0);
+
   const page = await context.newPage();
   const pageErrors = [];
-  page.on('pageerror', (err) => pageErrors.push(err.message));
+  let fatalPageSignal = null;
+  const fatalWaiters = new Set();
+  const signalFatal = (err) => {
+    if (fatalPageSignal) return;
+    fatalPageSignal = err instanceof Error ? err : new Error(String(err));
+    for (const reject of fatalWaiters) reject(fatalPageSignal);
+    fatalWaiters.clear();
+  };
+  page.on('pageerror', (err) => {
+    pageErrors.push(err.message);
+    signalFatal(new Error(`Uncaught pageerror: ${err.message}`));
+  });
+  page.on('crash', () => signalFatal(new Error('Browser page crashed')));
+  page.on('close', () => signalFatal(new Error('Browser page closed unexpectedly')));
+
+  const guard = async (promise) => {
+    if (fatalPageSignal) throw fatalPageSignal;
+    let onFatal;
+    const fatalPromise = new Promise((_, reject) => {
+      onFatal = reject;
+      fatalWaiters.add(onFatal);
+    });
+    try {
+      return await Promise.race([promise, fatalPromise]);
+    } finally {
+      if (onFatal) fatalWaiters.delete(onFatal);
+    }
+  };
+
   const cdp = await applyMobileCdpEmulation(page, profile);
-  return { context, page, cdp, pageErrors };
+  return { context, page, cdp, pageErrors, guard };
+}
+
+async function gotoChecked(page, guard, url) {
+  const response = await guard(page.goto(url, { waitUntil: 'domcontentloaded', timeout: 0 }));
+  if (response && response.status() >= 400) {
+    throw new Error(`Navigation to ${url} failed with HTTP ${response.status()}`);
+  }
 }
 
 async function captureShot(page, outDir, name) {
@@ -233,13 +271,13 @@ async function captureShot(page, outDir, name) {
   return `${name}.png`;
 }
 
-async function openFixtureSession(page, origin, sessionId, { useDeepLink = true } = {}) {
+async function openFixtureSession(page, guard, origin, sessionId, { useDeepLink = true } = {}) {
   const target = useDeepLink
     ? `${origin}/s/${sessionId}?server=${encodeURIComponent(origin)}&token=${FIXTURE_TOKEN}`
     : `${origin}/s/${sessionId}`;
-  await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-  await page.waitForSelector('[data-session-sidebar]', { timeout: 25_000 });
-  await page.waitForSelector('[data-composer-card]', { timeout: 25_000 });
+  await gotoChecked(page, guard, target);
+  await guard(page.waitForSelector('[data-session-sidebar]', { timeout: 0 }));
+  await guard(page.waitForSelector('[data-composer-card]', { timeout: 0 }));
   await page.waitForTimeout(450);
 }
 
@@ -253,9 +291,9 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, origin, 'session_fixture_rail_fleet', { useDeepLink: false });
+        await openFixtureSession(page, guard, origin, 'session_fixture_rail_fleet', { useDeepLink: false });
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'iphone-portrait-session')];
 
@@ -291,9 +329,9 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, origin, 'session_fixture_basic', { useDeepLink: false });
+        await openFixtureSession(page, guard, origin, 'session_fixture_basic', { useDeepLink: false });
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'iphone-landscape-safe-area')];
         const findings = [
@@ -318,9 +356,9 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, origin, 'session_fixture_basic', { useDeepLink: false });
+        await openFixtureSession(page, guard, origin, 'session_fixture_basic', { useDeepLink: false });
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'ipad-portrait-safe-area')];
         const findings = [
@@ -345,9 +383,9 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, origin, 'session_fixture_basic', { useDeepLink: false });
+        await openFixtureSession(page, guard, origin, 'session_fixture_basic', { useDeepLink: false });
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'android-narrow-360')];
         const findings = [
@@ -372,9 +410,9 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, origin, 'session_fixture_basic', { useDeepLink: false });
+        await openFixtureSession(page, guard, origin, 'session_fixture_basic', { useDeepLink: false });
         const composerInput = page.locator('[data-composer-input]').first();
         await composerInput.click();
         await page.waitForTimeout(150);
@@ -433,23 +471,23 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
         // Navigate without ?server= deep link so ConnectionProvider adopts the real `app-shell` credential!
-        await page.goto(`${origin}/s/session_space_one`, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-        await page.waitForSelector('[data-session-sidebar]', { timeout: 25_000 });
+        await gotoChecked(page, guard, `${origin}/s/session_space_one`);
+        await guard(page.waitForSelector('[data-session-sidebar]', { timeout: 0 }));
         await page.waitForTimeout(450);
 
         // Open sidebar drawer on phone, then open SpaceSwitcher
         const menuBtn = page.locator('[data-sidebar-menu], button[aria-label="Open menu"], button[aria-label="打开菜单"]').first();
-        await menuBtn.waitFor({ state: 'visible', timeout: 10_000 });
+        await guard(menuBtn.waitFor({ state: 'visible', timeout: 0 }));
         await menuBtn.click();
-        await page.waitForSelector('aside.app-sidebar.open', { timeout: 10_000 });
+        await guard(page.waitForSelector('aside.app-sidebar.open', { timeout: 0 }));
         await page.waitForTimeout(250);
         const switcher = page.locator('[data-space-switcher], [data-space-remote]').first();
-        await switcher.waitFor({ state: 'visible', timeout: 10_000 });
+        await guard(switcher.waitFor({ state: 'visible', timeout: 0 }));
         await switcher.click();
-        await page.waitForSelector('[data-space-switcher-menu]', { timeout: 10_000 });
+        await guard(page.waitForSelector('[data-space-switcher-menu]', { timeout: 0 }));
         await page.waitForTimeout(450);
 
         const snap = await page.evaluate(collectMobileDomSnapshot);
@@ -544,10 +582,10 @@ const SCENARIOS = [
       const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
       const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
       const origin = `http://127.0.0.1:${proxy.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, origin, 'session_fixture_extreme_dirty', { useDeepLink: false });
-        await page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 20_000 });
+        await openFixtureSession(page, guard, origin, 'session_fixture_extreme_dirty', { useDeepLink: false });
+        await guard(page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 0 }));
         await page.waitForTimeout(300);
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'extreme-dirty-transcript-mobile')];
@@ -598,7 +636,7 @@ const SCENARIOS = [
       const profile = MOBILE_DEVICE_PROFILES[this.profileId];
       const server = await startStaticDirectoryServer(LAUNCHER_DIR);
       const origin = `http://127.0.0.1:${server.address().port}`;
-      const { context, page, pageErrors } = await createMobilePage(browser, profile);
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile);
       try {
         // Seed multi-machine paired computers using the real `STORE_SERVERS_KEY = 'kiki.shell.servers'` schema (`apps/kiki-gui/mobile/src/target.ts`).
         await page.addInitScript(() => {
@@ -631,9 +669,9 @@ const SCENARIOS = [
           localStorage.setItem('kiki.shell.origin', originA);
         });
 
-        await page.goto(`${origin}/index.html#change`, { waitUntil: 'domcontentloaded', timeout: 25_000 });
-        await page.waitForSelector('#view-computers:not([hidden])', { timeout: 10_000 });
-        await page.waitForSelector('#recent-list .saved-card', { timeout: 10_000 });
+        await gotoChecked(page, guard, `${origin}/index.html#change`);
+        await guard(page.waitForSelector('#view-computers:not([hidden])', { timeout: 0 }));
+        await guard(page.waitForSelector('#recent-list .saved-card', { timeout: 0 }));
         await page.waitForTimeout(250);
 
         const shots = [];
@@ -659,7 +697,7 @@ const SCENARIOS = [
 
         // 2. Connect view + manual entry + keyboard-open state + long URL
         await page.locator('button.tab[data-tab="connect"]').click();
-        await page.waitForSelector('#view-connect:not([hidden])', { timeout: 5_000 });
+        await guard(page.waitForSelector('#view-connect:not([hidden])', { timeout: 0 }));
         await page.waitForTimeout(200);
         const connectSnap = await page.evaluate(collectMobileDomSnapshot);
         shots.push(await captureShot(page, outDir, 'launcher-connect-portrait'));
@@ -671,7 +709,7 @@ const SCENARIOS = [
         const manualToggle = page.locator('#manual-toggle');
         if (await manualToggle.isVisible()) {
           await manualToggle.click();
-          await page.waitForSelector('#connect:not([hidden])', { timeout: 5_000 });
+          await guard(page.waitForSelector('#connect:not([hidden])', { timeout: 0 }));
         }
         await page.locator('#server').fill('http://unreachable-tailnet-host.example.test:5494');
         await page.evaluate(() => { document.body.classList.add('keyboard-open'); });
@@ -683,7 +721,7 @@ const SCENARIOS = [
 
         // 3. Network tab offline probe
         await page.locator('button.tab[data-tab="network"]').click();
-        await page.waitForSelector('#view-network:not([hidden])', { timeout: 5_000 });
+        await guard(page.waitForSelector('#view-network:not([hidden])', { timeout: 0 }));
         await page.locator('#probe-address').fill('http://127.0.0.1:1');
         await page.locator('#test-server').click();
         await page.waitForTimeout(700);
