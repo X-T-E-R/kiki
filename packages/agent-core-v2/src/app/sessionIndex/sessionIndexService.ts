@@ -946,13 +946,21 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     );
   }
 
+  private isArchiveIndexCompleteNow(): boolean {
+    return (
+      this.readModelEnabled() &&
+      this.state === 'ready' &&
+      !this.recoveryRequired &&
+      this.mirror.dirtyEpoch() === undefined &&
+      this.watchedSessions.size === 0 &&
+      !this.watchInventory &&
+      this.watchFlight === undefined &&
+      this.reconcileFlight === undefined
+    );
+  }
+
   private async createArchiveFamilyIndexedReader(): Promise<ArchiveFamilyIndexedReader | undefined> {
-    if (
-      !this.readModelEnabled() ||
-      this.state !== 'ready' ||
-      this.recoveryRequired ||
-      this.mirror.dirtyEpoch() !== undefined
-    ) {
+    if (!this.isArchiveIndexCompleteNow()) {
       return undefined;
     }
     let manifest: Checkpoint | undefined;
@@ -961,17 +969,30 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     } catch {
       return undefined;
     }
-    if (manifest === undefined) return undefined;
+    if (manifest === undefined || !this.isArchiveIndexCompleteNow()) return undefined;
     const generation = manifest.seq;
     const collection = sessionCollection(generation);
+    const verifyConsistent = async (): Promise<boolean> => {
+      if (!this.isArchiveIndexCompleteNow()) return false;
+      try {
+        const current = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, undefined, { priority: true });
+        return current !== undefined && current.seq === generation && this.isArchiveIndexCompleteNow();
+      } catch {
+        return false;
+      }
+    };
     return {
+      verifyConsistent,
       getSummary: async (sessionId) => {
+        if (!this.isArchiveIndexCompleteNow()) throw new Error('session index no longer complete');
         const pending = this.mirror.pending().find((summary) => summary.id === sessionId);
         if (pending !== undefined) return pending;
         const stored: unknown = await this.queryStore.get(collection, sessionId, undefined, { priority: true });
+        if (!(await verifyConsistent())) throw new Error('session index generation changed');
         return isSessionSummaryShape(stored) ? stripRecencyField(generation, stored) : undefined;
       },
       listAttachedChildren: async (parentId) => {
+        if (!this.isArchiveIndexCompleteNow()) throw new Error('session index no longer complete');
         const pending = this.mirror.pending();
         const pendingById = new Map(pending.map((summary) => [summary.id, summary]));
         const page = await this.queryStore
@@ -983,6 +1004,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             ],
           })
           .execute();
+        if (!(await verifyConsistent())) throw new Error('session index generation changed');
         const merged = new Map<string, SessionSummary>();
         for (const item of page.items) {
           if (!isSessionSummaryShape(item)) continue;

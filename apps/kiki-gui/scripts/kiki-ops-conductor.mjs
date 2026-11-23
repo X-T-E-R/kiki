@@ -14,6 +14,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -151,30 +152,180 @@ const OPS_DISABLED_CONFIG_SECTIONS = new Set([
   'computer_control',
 ]);
 
+function parseTomlFirstKeySegment(src, startIndex) {
+  let i = startIndex;
+  while (i < src.length && (src[i] === ' ' || src[i] === '\t')) i += 1;
+  if (i >= src.length) return null;
+  if (src[i] === '"') {
+    i += 1;
+    let out = '';
+    while (i < src.length) {
+      const ch = src[i];
+      if (ch === '\\' && i + 1 < src.length) {
+        out += src[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '"') return out;
+      out += ch;
+      i += 1;
+    }
+    return null;
+  }
+  if (src[i] === "'") {
+    i += 1;
+    const start = i;
+    while (i < src.length && src[i] !== "'") i += 1;
+    return i < src.length ? src.slice(start, i) : null;
+  }
+  const start = i;
+  while (i < src.length && /[A-Za-z0-9_-]/.test(src[i])) i += 1;
+  return i > start ? src.slice(start, i) : null;
+}
+
+function advanceTomlTokenState(line, state) {
+  let i = 0;
+  while (i < line.length) {
+    if (state.mode === 'ml_basic') {
+      if (line[i] === '\\') {
+        i += 2;
+        continue;
+      }
+      if (line.startsWith('"""', i)) {
+        i += 3;
+        while (i < line.length && line[i] === '"') i += 1;
+        state.mode = 'code';
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if (state.mode === 'ml_literal') {
+      if (line.startsWith("'''", i)) {
+        i += 3;
+        while (i < line.length && line[i] === "'") i += 1;
+        state.mode = 'code';
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    const ch = line[i];
+    if (ch === '#') break;
+    if (line.startsWith('"""', i)) {
+      state.mode = 'ml_basic';
+      i += 3;
+      continue;
+    }
+    if (line.startsWith("'''", i)) {
+      state.mode = 'ml_literal';
+      i += 3;
+      continue;
+    }
+    if (ch === '"') {
+      i += 1;
+      while (i < line.length) {
+        if (line[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (line[i] === '"') {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "'") {
+      i += 1;
+      while (i < line.length && line[i] !== "'") i += 1;
+      if (i < line.length) i += 1;
+      continue;
+    }
+    if (ch === '[' || ch === '{') {
+      state.depth += 1;
+    } else if ((ch === ']' || ch === '}') && state.depth > 0) {
+      state.depth -= 1;
+    }
+    i += 1;
+  }
+}
+
 export function sanitizeOpsConfigToml(raw) {
   const text = typeof raw === 'string' ? raw : '';
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r?\n/);
-  const sectionRe = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*(?:#.*)?$/;
   const kept = [];
-  let skipSection = false;
+  const state = { mode: 'code', depth: 0 };
   let inTopLevel = true;
+  let skipSection = false;
+  let skipStatement = false;
+
   for (const line of lines) {
-    const match = sectionRe.exec(line);
-    if (match) {
-      inTopLevel = false;
-      const rootSection = match[1].trim().replace(/^["']|["']$/g, '').split('.')[0].trim().toLowerCase();
-      skipSection = OPS_DISABLED_CONFIG_SECTIONS.has(rootSection);
-      if (!skipSection) kept.push(line);
-      continue;
+    const atStatementBoundary = state.mode === 'code' && state.depth === 0;
+    if (atStatementBoundary) {
+      skipStatement = false;
+      const trimmed = line.trimStart();
+      if (trimmed === '' || trimmed.startsWith('#')) {
+        if (!skipSection) kept.push(line);
+        continue;
+      }
+      if (trimmed.startsWith('[')) {
+        inTopLevel = false;
+        const headerStart = trimmed.startsWith('[[') ? 2 : 1;
+        const firstSeg = parseTomlFirstKeySegment(trimmed, headerStart);
+        const rootSection = firstSeg !== null ? firstSeg.trim().toLowerCase() : '';
+        skipSection = OPS_DISABLED_CONFIG_SECTIONS.has(rootSection);
+        if (!skipSection) kept.push(line);
+        continue;
+      }
+      if (skipSection) {
+        skipStatement = true;
+      } else if (inTopLevel) {
+        const firstSeg = parseTomlFirstKeySegment(trimmed, 0);
+        const rootKey = firstSeg !== null ? firstSeg.trim().toLowerCase() : '';
+        if (OPS_DISABLED_CONFIG_SECTIONS.has(rootKey)) {
+          skipStatement = true;
+        }
+      }
     }
-    if (skipSection) continue;
-    if (inTopLevel && /^\s*hooks\s*=/.test(line)) continue;
-    kept.push(line);
+    advanceTomlTokenState(line, state);
+    if (!skipSection && !skipStatement) {
+      kept.push(line);
+    }
   }
+
   const body = kept.join(eol).replace(/[\r\n]+$/, '');
-  const overrides = [`[search]`, `enabled = false`, ``, `[mcp]`].join(eol);
+  const overrides = ['[search]', 'enabled = false', '', '[mcp]'].join(eol);
   return body === '' ? `${overrides}${eol}` : `${body}${eol}${eol}${overrides}${eol}`;
+}
+
+function resolveCanonicalPathForIsolation(targetPath) {
+  const resolved = resolve(targetPath);
+  const missingSegments = [];
+  let cursor = resolved;
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    missingSegments.unshift(basename(cursor));
+    cursor = parent;
+  }
+  const canonicalBase = existsSync(cursor) ? realpathSync(cursor) : cursor;
+  return normalizeComparePath(join(canonicalBase, ...missingSegments));
+}
+
+function assertIsolatedOpsPath(opsPath, livePath, label) {
+  assertNotSymlinkOrReparse(opsPath, label);
+  const canonicalOps = resolveCanonicalPathForIsolation(opsPath);
+  const canonicalLive = resolveCanonicalPathForIsolation(livePath);
+  if (canonicalOps === canonicalLive) {
+    throw new Error(`Refusing to bootstrap Kiki-Ops into the live ${label}: ${opsPath} resolves to ${livePath}`);
+  }
+  const relFromLive = relative(canonicalLive, canonicalOps);
+  if (relFromLive !== '' && !relFromLive.startsWith('..') && !/^[a-zA-Z]:/.test(relFromLive)) {
+    throw new Error(`Refusing to bootstrap Kiki-Ops inside the live ${label}: ${opsPath}`);
+  }
 }
 
 function copyDirectoryTreeSafe(sourceDir, destinationDir) {
@@ -186,7 +337,14 @@ function copyDirectoryTreeSafe(sourceDir, destinationDir) {
   let copiedCount = 0;
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) continue;
-    if (entry.name.endsWith('.lock') || entry.name.endsWith('.tmp') || entry.name.endsWith('.bak')) continue;
+    if (
+      entry.name.endsWith('.lock') ||
+      entry.name.endsWith('.lock-target') ||
+      entry.name.endsWith('.tmp') ||
+      entry.name.endsWith('.bak')
+    ) {
+      continue;
+    }
     const srcPath = join(sourceDir, entry.name);
     const dstPath = join(destinationDir, entry.name);
     if (entry.isDirectory()) {
@@ -559,11 +717,10 @@ export function bootstrapOps({
   const resolvedTargetHome = resolve(targetHome);
   const resolvedSourceHome = resolve(sourceHome ?? targetHome);
 
-  if (normalizeComparePath(resolvedOpsRuntime) === normalizeComparePath(resolvedTargetRuntime)) {
-    throw new Error(`Refusing to bootstrap Kiki-Ops into the live target runtime: ${resolvedOpsRuntime}`);
-  }
-  if (normalizeComparePath(resolvedOpsHome) === normalizeComparePath(resolvedTargetHome)) {
-    throw new Error(`Refusing to bootstrap Kiki-Ops into the live target home: ${resolvedOpsHome}`);
+  assertIsolatedOpsPath(resolvedOpsRuntime, resolvedTargetRuntime, 'target runtime');
+  assertIsolatedOpsPath(resolvedOpsHome, resolvedTargetHome, 'target home');
+  if (normalizeComparePath(resolvedSourceHome) !== normalizeComparePath(resolvedTargetHome)) {
+    assertIsolatedOpsPath(resolvedOpsHome, resolvedSourceHome, 'source home');
   }
 
   let resolvedSourceCli = sourceCli ? resolve(sourceCli) : null;
@@ -596,11 +753,15 @@ export function bootstrapOps({
   };
   writeJsonAtomic(manifestPath, manifest);
 
+  assertNotSymlinkOrReparse(resolvedOpsHome, 'Ops home directory');
   mkdirSync(resolvedOpsHome, { recursive: true });
   const configPath = join(resolvedOpsHome, 'config.toml');
   const mcpConfigPath = join(resolvedOpsHome, 'mcp.json');
+  assertNotSymlinkOrReparse(configPath, 'Ops config.toml');
+  assertNotSymlinkOrReparse(mcpConfigPath, 'Ops mcp.json');
   let syncedConfig = false;
   let syncedCredentials = false;
+  let syncedCredentialFiles = 0;
   let syncedOAuthFiles = 0;
   let syncedAgentsCount = 0;
 
@@ -615,14 +776,23 @@ export function bootstrapOps({
     }
     writeJsonAtomic(mcpConfigPath, { mcpServers: {} });
 
-    const credCandidates = [
-      join(resolvedSourceHome, 'credentials', 'credentials.toml'),
-      join(resolvedSourceHome, 'credentials.toml'),
-    ];
-    const sourceCredPath = credCandidates.find((p) => existsSync(p) && statSync(p).isFile() && statSync(p).size > 0);
-    if (sourceCredPath) {
-      copyFileVerified(sourceCredPath, join(resolvedOpsHome, 'credentials', 'credentials.toml'));
+    const sourceCredDir = join(resolvedSourceHome, 'credentials');
+    if (existsSync(sourceCredDir)) {
+      syncedCredentialFiles = copyDirectoryTreeSafe(sourceCredDir, join(resolvedOpsHome, 'credentials'));
+      if (syncedCredentialFiles > 0) syncedCredentials = true;
+    }
+    const legacySourceCredPath = join(resolvedSourceHome, 'credentials.toml');
+    const destCredTomlPath = join(resolvedOpsHome, 'credentials', 'credentials.toml');
+    if (
+      !existsSync(destCredTomlPath) &&
+      existsSync(legacySourceCredPath) &&
+      !lstatSync(legacySourceCredPath).isSymbolicLink() &&
+      statSync(legacySourceCredPath).isFile() &&
+      statSync(legacySourceCredPath).size > 0
+    ) {
+      copyFileVerified(legacySourceCredPath, destCredTomlPath);
       syncedCredentials = true;
+      syncedCredentialFiles += 1;
     }
     const sourceOAuthDir = join(resolvedSourceHome, 'oauth');
     if (existsSync(sourceOAuthDir)) {
@@ -663,6 +833,7 @@ export function bootstrapOps({
     mcpConfigPath: syncConfig !== false ? mcpConfigPath : null,
     syncedConfig,
     syncedCredentials,
+    syncedCredentialFiles,
     syncedOAuthFiles,
     syncedAgentsCount,
     sha256: copied.sha256,
@@ -1359,27 +1530,23 @@ export async function verifySpaceHealth({
       method: 'GET',
       timeoutMs: 5000,
     });
-    if (hz && typeof hz === 'object' && 'ok' in hz && hz.ok === false) {
+    if (!hz || typeof hz !== 'object' || hz.ok !== true) {
       return {
         ok: false,
         kikiHome: resolvedHome,
         server: srv,
         healthz: 'unhealthy',
-        error: `Post-switch verification failed for ${resolvedHome}: /api/healthz returned ok=false.`,
+        error: `Post-switch verification failed for ${resolvedHome}: /api/healthz did not return ok=true.`,
       };
     }
   } catch (error) {
-    if (error?.statusCode === 404 || error?.apiCode === 40404) {
-      healthz = 'unsupported';
-    } else {
-      return {
-        ok: false,
-        kikiHome: resolvedHome,
-        server: srv,
-        healthz: 'error',
-        error: `Post-switch verification failed for ${resolvedHome}: /api/healthz failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: srv,
+      healthz: 'error',
+      error: `Post-switch verification failed for ${resolvedHome}: /api/healthz failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   return {
     ok: true,

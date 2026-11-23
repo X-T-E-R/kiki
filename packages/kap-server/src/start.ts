@@ -212,7 +212,7 @@ import { startStorageMaintenance } from './storageMaintenance';
 import { StorageMigrationController, registerStorageMigrationRoutes } from './routes/storageMigration';
 import { StorageStartupCleanupError } from './storageStartupCleanup';
 import { ManagedWriterOwner } from './runtime/runtimeStore';
-import { registerRuntimeSwitchRoutes } from './routes/runtimeSwitch';
+import { createUnmanagedRuntimeSwitchOwner, registerRuntimeSwitchRoutes } from './routes/runtimeSwitch';
 
 export interface ServerHostIdentity extends KimiHostIdentity {
   /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
@@ -1229,7 +1229,21 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       () => core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID));
   }, { prefix: '/api' });
 
-  if (managedOwner !== undefined) registerRuntimeSwitchRoutes(app, core, managedOwner,
+  const unmanagedSwitchOwner = managedOwner === undefined && enableShutdown
+    ? createUnmanagedRuntimeSwitchOwner({
+      serverId: registration.serverId,
+      homeId: serverHomeId,
+      pid: process.pid,
+      startedAt,
+      host,
+      port,
+      serverVersion,
+      buildId,
+      buildChannel,
+    })
+    : undefined;
+  const switchOwner = managedOwner ?? unmanagedSwitchOwner;
+  if (switchOwner !== undefined) registerRuntimeSwitchRoutes(app, core, switchOwner,
     () => { void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed')); }, shutdownController.signal);
   const mintPanelDocument = await registerApiV1Routes(app, core, {
     serverVersion,
@@ -1795,6 +1809,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  unmanagedSwitchOwner?.update({ port: boundPort });
   if (peerTls !== undefined) peerListeners = new PeerListeners(app, boundPort, peerRequests, true, peerTls);
   peerAdmissionHook = admission.onDidChange((change) => change.enabled ? peerListeners?.ensure().then(() => undefined) : undefined);
 

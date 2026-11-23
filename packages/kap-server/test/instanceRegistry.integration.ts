@@ -415,6 +415,32 @@ describe('startServer — instance registry wiring', () => {
       try { expect(store.writer()).toMatchObject({ phase: 'exited', operationId: 'example-switch', exitReceipt: { cleanupOutcome: 'closed' } }); }
       finally { store.close(); }
       expect((await external.app.inject({ url: '/api/meta', headers: { authorization: `Bearer ${external.localOwnerToken}` } })).statusCode).toBe(200);
+      const externalAdmission = external.core.accessor.get(IWorkAdmissionService);
+      const externalFence = await external.app.inject({
+        method: 'POST',
+        url: '/api/runtime-switch',
+        headers: { authorization: `Bearer ${external.localOwnerToken}` },
+        payload: { operationId: 'headless-fence-test', serverId: external.serverId, action: 'fence' },
+      });
+      expect(externalFence.statusCode).toBe(200);
+      expect((externalFence.json() as { code: number; data: { writer: { phase: string } } })).toMatchObject({
+        code: 0,
+        data: { writer: { phase: 'draining' } },
+      });
+      expect(() => externalAdmission.acquire('prompt-after-headless-fence')).toThrow();
+      const externalCancel = await external.app.inject({
+        method: 'POST',
+        url: '/api/runtime-switch',
+        headers: { authorization: `Bearer ${external.localOwnerToken}` },
+        payload: { operationId: 'headless-fence-test', serverId: external.serverId, action: 'cancel' },
+      });
+      expect(externalCancel.statusCode).toBe(200);
+      expect((externalCancel.json() as { code: number; data: { writer: { phase: string } } })).toMatchObject({
+        code: 0,
+        data: { writer: { phase: 'ready' } },
+      });
+      const reopenedLease = externalAdmission.acquire('after-headless-cancel');
+      reopenedLease.dispose();
     } finally { accepted.dispose(); }
   });
 

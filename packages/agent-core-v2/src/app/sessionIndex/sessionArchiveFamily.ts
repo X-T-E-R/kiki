@@ -16,6 +16,7 @@ export interface ArchiveFamilySummaryCache {
 export interface ArchiveFamilyIndexedReader {
   getSummary(sessionId: string): Promise<SessionSummary | undefined>;
   listAttachedChildren(parentId: string): Promise<readonly SessionSummary[]>;
+  verifyConsistent?(): Promise<boolean>;
 }
 
 const fallbackSummaryCaches = new WeakMap<IAtomicDocumentStore, Map<string, { readonly fingerprint: SessionSourceFingerprint; readonly summary: SessionSummary }>>();
@@ -113,7 +114,10 @@ export async function readSessionArchiveFamily(
             });
             for (const item of verified) family.push(item);
           }
-          if (indexedComplete) {
+          const indexedStillConsistent =
+            indexedComplete &&
+            (indexed.verifyConsistent === undefined || (await indexed.verifyConsistent()));
+          if (indexedStillConsistent) {
             log.info('session archive family discovered', {
               sessions_scanned: family.length,
               family_count: family.length,

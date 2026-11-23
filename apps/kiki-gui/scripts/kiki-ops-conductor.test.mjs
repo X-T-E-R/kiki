@@ -9,12 +9,14 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse as parseToml } from 'smol-toml';
 
 import {
   bootstrapOps,
@@ -822,7 +824,6 @@ test('bootstrapOps syncs model/provider config, credentials, and agents while is
       join(liveHome, 'config.toml'),
       [
         'default_model = "fast-coder"',
-        'hooks = []',
         '',
         '[providers.main]',
         'type = "openai"',
@@ -854,6 +855,9 @@ test('bootstrapOps syncs model/provider config, credentials, and agents while is
       ].join('\n'),
     );
     writeFileSync(join(liveHome, 'credentials', 'credentials.toml'), '[providers.main]\napi_key = "YOUR_API_KEY"\n');
+    writeFileSync(join(liveHome, 'credentials', 'kimi-oauth.json'), '{"access_token":"tok-1"}\n');
+    writeFileSync(join(liveHome, 'credentials', 'kimi-oauth.lock-target'), '');
+    writeFileSync(join(liveHome, 'credentials', 'kimi-oauth.lock'), 'busy');
     writeFileSync(join(liveHome, 'agents', 'implementer.md'), '# Implementer\n');
     writeFileSync(join(liveHome, 'agents', 'stale.lock'), 'locked');
     writeFileSync(join(liveHome, 'sessions', 'ws1', 's1', 'state.json'), '{"id":"s1"}');
@@ -869,18 +873,19 @@ test('bootstrapOps syncs model/provider config, credentials, and agents while is
     assert.equal(res.ok, true);
     assert.equal(res.syncedConfig, true);
     assert.equal(res.syncedCredentials, true);
+    assert.equal(res.syncedCredentialFiles, 2);
     assert.equal(res.syncedAgentsCount, 1);
 
-    const opsConfig = readFileSync(res.configPath, 'utf8');
-    assert.match(opsConfig, /default_model = "fast-coder"/);
-    assert.match(opsConfig, /\[providers\.main\]/);
-    assert.match(opsConfig, /\[models\.fast-coder\]/);
-    assert.match(opsConfig, /\[search\]\r?\nenabled = false/);
-    assert.match(opsConfig, /\[mcp\]\r?\n$/);
-    assert.doesNotMatch(opsConfig, /\[plugins\]/);
-    assert.doesNotMatch(opsConfig, /\[plugin_settings/);
-    assert.doesNotMatch(opsConfig, /\[\[hooks\]\]/);
-    assert.doesNotMatch(opsConfig, /\[cron\]/);
+    const parsedOpsConfig = parseToml(readFileSync(res.configPath, 'utf8'));
+    assert.equal(parsedOpsConfig.default_model, 'fast-coder');
+    assert.equal(parsedOpsConfig.providers?.main?.base_url, 'https://example.test/v1');
+    assert.equal(parsedOpsConfig.models?.['fast-coder']?.model, 'coder-v1');
+    assert.deepEqual({ ...parsedOpsConfig.search }, { enabled: false });
+    assert.deepEqual({ ...parsedOpsConfig.mcp }, {});
+    assert.equal('plugins' in parsedOpsConfig, false);
+    assert.equal('plugin_settings' in parsedOpsConfig, false);
+    assert.equal('hooks' in parsedOpsConfig, false);
+    assert.equal('cron' in parsedOpsConfig, false);
 
     const opsMcp = JSON.parse(readFileSync(res.mcpConfigPath, 'utf8'));
     assert.deepEqual(opsMcp, { mcpServers: {} });
@@ -888,13 +893,61 @@ test('bootstrapOps syncs model/provider config, credentials, and agents while is
       readFileSync(join(opsHome, 'credentials', 'credentials.toml'), 'utf8'),
       '[providers.main]\napi_key = "YOUR_API_KEY"\n',
     );
+    assert.equal(
+      readFileSync(join(opsHome, 'credentials', 'kimi-oauth.json'), 'utf8'),
+      '{"access_token":"tok-1"}\n',
+    );
+    assert.equal(existsSync(join(opsHome, 'credentials', 'kimi-oauth.lock-target')), false);
+    assert.equal(existsSync(join(opsHome, 'credentials', 'kimi-oauth.lock')), false);
     assert.equal(readFileSync(join(opsHome, 'agents', 'implementer.md'), 'utf8'), '# Implementer\n');
     assert.equal(existsSync(join(opsHome, 'agents', 'stale.lock')), false);
     assert.equal(existsSync(join(opsHome, 'sessions')), false);
     assert.equal(existsSync(join(opsHome, 'logs')), false);
 
-    // sanitizeOpsConfigToml handles empty input cleanly.
-    assert.match(sanitizeOpsConfigToml(''), /\[search\]\nenabled = false\n\n\[mcp\]\n/);
+    // sanitizeOpsConfigToml preserves valid TOML with multiline strings, dotted keys, inline tables, and quoted tables.
+    const complexToml = [
+      'default_model = "fast-coder"',
+      'search.enabled = true',
+      'mcp = { tool_timeout_ms = 5000 }',
+      'system_note = """',
+      '[search]',
+      'enabled = true',
+      '"""',
+      '',
+      '["plugins".heavy]',
+      'enabled = true',
+      '',
+      '[providers.main]',
+      'type = "openai"',
+    ].join('\n');
+    const sanitizedComplex = parseToml(sanitizeOpsConfigToml(complexToml));
+    assert.equal(sanitizedComplex.default_model, 'fast-coder');
+    assert.equal(sanitizedComplex.system_note, '[search]\nenabled = true\n');
+    assert.equal(sanitizedComplex.providers?.main?.type, 'openai');
+    assert.deepEqual({ ...sanitizedComplex.search }, { enabled: false });
+    assert.deepEqual({ ...sanitizedComplex.mcp }, {});
+    assert.equal('plugins' in sanitizedComplex, false);
+    const sanitizedEmpty = parseToml(sanitizeOpsConfigToml(''));
+    assert.deepEqual({ ...sanitizedEmpty.search }, { enabled: false });
+    assert.deepEqual({ ...sanitizedEmpty.mcp }, {});
+
+    // Junction/symlink opsHome pointing to liveHome MUST be refused before writing config.toml!
+    const junctionOpsHome = join(root, 'ops-home-junction');
+    symlinkSync(liveHome, junctionOpsHome, process.platform === 'win32' ? 'junction' : 'dir');
+    const liveConfigBefore = readFileSync(join(liveHome, 'config.toml'), 'utf8');
+    assert.throws(
+      () =>
+        bootstrapOps({
+          opsRuntime: join(root, 'Kiki-Ops-Junction'),
+          opsHome: junctionOpsHome,
+          sourceRuntime: liveRuntime,
+          targetRuntime: liveRuntime,
+          targetHome: liveHome,
+        }),
+      /symlink|junction|live target home/i,
+    );
+    assert.equal(readFileSync(join(liveHome, 'config.toml'), 'utf8'), liveConfigBefore);
+    assert.equal(existsSync(join(liveHome, 'mcp.json')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -986,8 +1039,72 @@ test('switchRuntime automatically rolls back primary + headless spaces when swit
     }
 
     assert.ok(caughtError, 'switchRuntime must reject when headless /api/healthz fails');
-    assert.match(caughtError.message, /\/api\/healthz returned ok=false/);
+    assert.match(caughtError.message, /\/api\/healthz did not return ok=true/);
     assert.equal(calls.length, 2);
+
+    // Case A2: /api/healthz returning 404 must ALSO fail verification and trigger auto-rollback (never bypassed as unsupported).
+    let caught404Error = null;
+    try {
+      await switchRuntime({
+        runtimeRoot,
+        kikiHome: primaryHome,
+        candidateRoot: newCand,
+        expectedCommit: NEW_COMMIT,
+        resolveProcessPath: (pid) => (pid === primaryPid || pid === headlessPid ? activeExe : null),
+        inspectSpaces: async () => [
+          {
+            kikiHome: primaryHome,
+            isPrimary: true,
+            hadDesktop: true,
+            liveServer: { server_id: 'srv-p-rb', pid: primaryPid, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-1', current_space_id: 'main' },
+          },
+          {
+            kikiHome: headlessHome,
+            isPrimary: false,
+            hadDesktop: false,
+            headlessLaunchArgs: `serve --home "${headlessHome}" --port ${headlessSrv.port}`,
+            desktopManaged: false,
+            liveServer: { server_id: 'srv-h-rb', pid: headlessPid, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-h', current_space_id: 'subtext' },
+          },
+        ],
+        runHotSwitch: async (_script, args) => {
+          if (args.includes('-Rollback')) {
+            rmSync(join(primaryHome, 'server', 'instances', 'srv-p-404.json'), { force: true });
+            rmSync(join(headlessHome, 'server', 'instances', 'srv-h-404.json'), { force: true });
+            primaryState.serverId = 'srv-p-rb2';
+            primaryState.buildId = OLD_COMMIT;
+            primaryState.healthzStatus = 200;
+            headlessState.serverId = 'srv-h-rb2';
+            headlessState.buildId = OLD_COMMIT;
+            headlessState.healthzStatus = 200;
+            primaryPid = 50021;
+            headlessPid = 50022;
+            seedActive(runtimeRoot, oldRelId, OLD_COMMIT, 'desk-old', 'srv-old');
+            registerInstance(primaryHome, { serverId: 'srv-p-rb2', pid: 50021, port: primarySrv.port, buildId: OLD_COMMIT });
+            registerInstance(headlessHome, { serverId: 'srv-h-rb2', pid: 50022, port: headlessSrv.port, buildId: OLD_COMMIT });
+            return { code: 0, stdout: `Recovery complete: ${oldRelId}`, stderr: '' };
+          }
+          rmSync(join(primaryHome, 'server', 'instances', 'srv-p-rb.json'), { force: true });
+          rmSync(join(headlessHome, 'server', 'instances', 'srv-h-rb.json'), { force: true });
+          primaryState.serverId = 'srv-p-404';
+          primaryState.buildId = NEW_COMMIT;
+          headlessState.serverId = 'srv-h-404';
+          headlessState.buildId = NEW_COMMIT;
+          headlessState.healthzStatus = 404;
+          primaryPid = 50015;
+          headlessPid = 50016;
+          seedActive(runtimeRoot, newRelId, NEW_COMMIT, 'desk-new', 'srv-new');
+          registerInstance(primaryHome, { serverId: 'srv-p-404', pid: 50015, port: primarySrv.port, buildId: NEW_COMMIT });
+          registerInstance(headlessHome, { serverId: 'srv-h-404', pid: 50016, port: headlessSrv.port, buildId: NEW_COMMIT });
+          return { code: 0, stdout: `Running ${newRelId}`, stderr: '' };
+        },
+      });
+    } catch (error) {
+      caught404Error = error;
+    }
+    assert.ok(caught404Error, 'switchRuntime must reject when /api/healthz returns 404');
+    assert.match(caught404Error.message, /\/api\/healthz failed/);
+    assert.equal(caught404Error.failureReport.rollback.ok, true);
     assert.ok(calls[1].includes('-Recover') && calls[1].includes('-Rollback'));
     assert.equal(caughtError.failureReport.ok, false);
     assert.equal(caughtError.failureReport.stage, 'post_switch_verify');
