@@ -1,9 +1,15 @@
 
-import { describe, expect, it } from 'vitest';
+import { promises as fsp } from 'node:fs';
+import os from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
+import { Emitter } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
+import { IFlagService } from '#/app/flag/flag';
 import { ISessionManager, type UnguardedSessionLifecycle } from '#/app/sessionManager/sessionManager';
 import {
   ISessionIndex,
@@ -12,6 +18,14 @@ import {
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
 import { readSessionArchiveFamily } from '#/app/sessionIndex/sessionArchiveFamily';
+import { SESSION_INDEX_MANIFEST } from '#/app/sessionIndex/sessionIndexModel';
+import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
+import { SessionIndexMirror } from '#/app/sessionIndex/sessionIndexMirrorService';
+import type { IHostFsWatchService, HostFsChange } from '#/os/interface/hostFsWatch';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 import type { ILogService } from '#/_base/log/log';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
@@ -502,4 +516,194 @@ describe('updateColdSessionProfile', () => {
     expect(unrelatedFamily.map((s) => s.id)).toEqual(['unrelated-1']);
     expect(reads).toEqual(['sessions/wd/unrelated-1']);
   });
+
+  it('uses ready indexed summaries without scanning directories and falls back when unindexed', async () => {
+    const metas = new Map<string, SessionMeta>([
+      ['sessions/wd/root', { id: 'root', createdAt: 1, updatedAt: 1, archived: false }],
+      ['sessions/wd/child', { id: 'child', createdAt: 2, updatedAt: 2, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+      ['sessions/wd/grandchild', { id: 'grandchild', createdAt: 3, updatedAt: 3, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'child' } }],
+      ['sessions/wd/excluded', { id: 'excluded', createdAt: 4, updatedAt: 4, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+    ]);
+    let listCalls = 0;
+    const storage = {
+      list: async (scope: string) => {
+        listCalls += 1;
+        if (scope === 'sessions') return ['wd'];
+        if (scope === 'sessions/wd') return ['root', 'child', 'grandchild', 'excluded'];
+        return [];
+      },
+      mtime: async (scope: string, key: string) => (key === 'state.json' && metas.has(scope) ? 1000 : undefined),
+      size: async (scope: string, key: string) => (key === 'state.json' && metas.has(scope) ? 128 : undefined),
+    } as unknown as IFileSystemStorageService;
+    const reads: string[] = [];
+    const docs = {
+      get: async (scope: string, key: string) => {
+        if (key !== 'state.json') return undefined;
+        reads.push(scope);
+        return metas.get(scope);
+      },
+    } as unknown as IAtomicDocumentStore;
+    const infoLogs: Array<Record<string, unknown>> = [];
+    const log = {
+      level: 'off',
+      setLevel: () => {},
+      flush: async () => {},
+      error: () => {},
+      warn: () => {},
+      info: (_msg: string, fields?: Record<string, unknown>) => {
+        if (fields !== undefined) infoLogs.push(fields);
+      },
+      debug: () => {},
+      child: () => log,
+    } as unknown as ILogService;
+
+    const indexedSummaries = new Map<string, SessionSummary>([
+      ['root', { id: 'root', workspaceId: 'wd', createdAt: 1, updatedAt: 1, archived: false }],
+      ['child', { id: 'child', workspaceId: 'wd', createdAt: 2, updatedAt: 2, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+      ['grandchild', { id: 'grandchild', workspaceId: 'wd', createdAt: 3, updatedAt: 3, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'child' } }],
+      ['excluded', { id: 'excluded', workspaceId: 'wd', createdAt: 4, updatedAt: 4, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+    ]);
+    const indexed = {
+      getSummary: async (id: string) => indexedSummaries.get(id),
+      listAttachedChildren: async (parentId: string) =>
+        [...indexedSummaries.values()].filter((s) => s.custom?.[CREATED_BY_SESSION_ID_KEY] === parentId),
+    };
+
+    const fast = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', ['excluded'], log, undefined, indexed);
+    expect(fast.map((s) => s.id)).toEqual(['root', 'child', 'grandchild']);
+    expect(listCalls).toBe(0);
+    expect(reads.toSorted()).toEqual(['sessions/wd/child', 'sessions/wd/grandchild', 'sessions/wd/root']);
+    expect(infoLogs.at(-1)?.['source']).toBe('index');
+
+    reads.length = 0;
+    const fallback = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', ['excluded'], log, undefined, {
+      getSummary: async () => undefined,
+      listAttachedChildren: async () => [],
+    });
+    expect(fallback.map((s) => s.id)).toEqual(['root', 'child', 'grandchild']);
+    expect(listCalls).toBeGreaterThan(0);
+    expect(infoLogs.at(-1)?.['source']).toBe('scan');
+  });
+
+  it('FileSessionIndex.archiveFamily falls back on queued watcher changes and mid-traversal generation retirement', async () => {
+    const tmpDir = await fsp.mkdtemp(join(os.tmpdir(), 'kiki-archive-family-index-'));
+    const storage = new FileStorageService(tmpDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const changeEmitter = new Emitter<HostFsChange>();
+    const fsWatch = {
+      watch: () => ({
+        onDidChange: changeEmitter.event,
+        ready: Promise.resolve(),
+        dispose: () => {},
+      }),
+    } as unknown as IHostFsWatchService;
+    const bootstrap = {
+      homeDir: tmpDir,
+      cacheDir: join(tmpDir, 'cache'),
+      scope: (name: string) => name,
+    } as unknown as IBootstrapService;
+    const flags = {
+      enabled: () => true,
+      onDidChange: new Emitter<void>().event,
+    } as unknown as IFlagService;
+    const infoLogs: Array<Record<string, unknown>> = [];
+    const log = {
+      level: 'off',
+      setLevel: () => {},
+      flush: async () => {},
+      error: () => {},
+      warn: () => {},
+      info: (msg: string, fields?: Record<string, unknown>) => {
+        if (msg === 'session archive family discovered' && fields !== undefined) infoLogs.push(fields);
+      },
+      debug: () => {},
+      child: () => log,
+    } as unknown as ILogService;
+    const queryStore = new SqliteQueryStore(bootstrap, log);
+    const mirror = new SessionIndexMirror(queryStore, flags, log);
+    const index = new FileSessionIndex(bootstrap, storage, docs, queryStore, flags, mirror, log, fsWatch);
+
+    try {
+      await docs.set('sessions/wd/root', 'state.json', { id: 'root', createdAt: 1, updatedAt: 1, archived: false });
+      await docs.set('sessions/wd/child-1', 'state.json', {
+        id: 'child-1',
+        createdAt: 2,
+        updatedAt: 2,
+        archived: false,
+        custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' },
+      });
+
+      const status = await index.prepare();
+      expect(status.state).toBe('ready');
+
+      const fastFamily = await index.archiveFamily('root', []);
+      expect(fastFamily.map((s) => s.id).toSorted()).toEqual(['child-1', 'root']);
+      expect(infoLogs.at(-1)?.['source']).toBe('index');
+
+      await docs.set('sessions/wd/child-watch', 'state.json', {
+        id: 'child-watch',
+        createdAt: 3,
+        updatedAt: 3,
+        archived: false,
+        custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' },
+      });
+      changeEmitter.fire({
+        path: join(tmpDir, 'sessions', 'wd', 'child-watch', 'state.json'),
+        kind: 'file',
+        action: 'created',
+      });
+
+      const afterWatchFamily = await index.archiveFamily('root', []);
+      expect(afterWatchFamily.map((s) => s.id).toSorted()).toEqual(['child-1', 'child-watch', 'root']);
+      expect(infoLogs.at(-1)?.['source']).toBe('scan');
+
+      await (index as unknown as { reconcileWatched(): Promise<void> }).reconcileWatched();
+      expect((await index.archiveFamily('root', [])).map((s) => s.id).toSorted()).toEqual([
+        'child-1',
+        'child-watch',
+        'root',
+      ]);
+      expect(infoLogs.at(-1)?.['source']).toBe('index');
+
+      await docs.set('sessions/wd/child-gen', 'state.json', {
+        id: 'child-gen',
+        createdAt: 4,
+        updatedAt: 4,
+        archived: false,
+        custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' },
+      });
+      const originalQuery = queryStore.query.bind(queryStore);
+      const originalGetCheckpoint = queryStore.getCheckpoint.bind(queryStore);
+      let bumpedGeneration = false;
+      const querySpy = vi.spyOn(queryStore, 'query').mockImplementation((collection) => {
+        if (!bumpedGeneration) {
+          bumpedGeneration = true;
+          const builder = originalQuery(collection);
+          const origExec = builder.execute.bind(builder);
+          builder.execute = async () => {
+            const manifest = await originalGetCheckpoint(SESSION_INDEX_MANIFEST, undefined, { priority: true });
+            await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, {
+              seq: (manifest?.seq ?? 1) + 1,
+            });
+            return origExec();
+          };
+          return builder;
+        }
+        return originalQuery(collection);
+      });
+      try {
+        const afterGenRaceFamily = await index.archiveFamily('root', []);
+        expect(afterGenRaceFamily.map((s) => s.id).toSorted()).toEqual(['child-1', 'child-gen', 'child-watch', 'root']);
+        expect(infoLogs.at(-1)?.['source']).toBe('scan');
+      } finally {
+        querySpy.mockRestore();
+      }
+    } finally {
+      index.dispose();
+      changeEmitter.dispose();
+      await queryStore.close();
+      await drainQueryStoreDisposals();
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

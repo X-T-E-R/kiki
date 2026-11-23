@@ -180,6 +180,8 @@ internal static class Program
     private static HttpListener listener;
     private static bool stopping;
     private static bool recoverableOnlyLogged;
+    private static bool desktopManaged = true;
+    private static string fencedOperationId = null;
 
     private sealed class SessionState
     {
@@ -291,8 +293,74 @@ internal static class Program
             Environment.Exit(FailServer);
             return;
         }
-        home = Environment.GetEnvironmentVariable("KIKI_HOME");
+        string[] cmdArgs = Environment.GetCommandLineArgs();
+        int requestedPort = 0;
+        for (int i = 1; i < cmdArgs.Length; i++)
+        {
+            if (String.Equals(cmdArgs[i], "--home", StringComparison.OrdinalIgnoreCase) && i + 1 < cmdArgs.Length)
+            {
+                home = cmdArgs[++i];
+            }
+            else if (cmdArgs[i].StartsWith("--home=", StringComparison.OrdinalIgnoreCase))
+            {
+                home = cmdArgs[i].Substring("--home=".Length);
+            }
+            else if (String.Equals(cmdArgs[i], "--port", StringComparison.OrdinalIgnoreCase) && i + 1 < cmdArgs.Length)
+            {
+                int.TryParse(cmdArgs[++i], out requestedPort);
+            }
+            else if (cmdArgs[i].StartsWith("--port=", StringComparison.OrdinalIgnoreCase))
+            {
+                int.TryParse(cmdArgs[i].Substring("--port=".Length), out requestedPort);
+            }
+            else if (String.Equals(cmdArgs[i], "--headless-unmanaged", StringComparison.OrdinalIgnoreCase))
+            {
+                desktopManaged = false;
+            }
+            else if (String.Equals(cmdArgs[i], "--heap-reexec", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!String.Equals(Environment.GetEnvironmentVariable("KIKI_FIXTURE_REEXEC"), "1", StringComparison.Ordinal))
+                {
+                    string selfPath = Process.GetCurrentProcess().MainModule.FileName;
+                    string rawCmd = Environment.CommandLine;
+                    string tailArgs = "";
+                    if (rawCmd.StartsWith("\""))
+                    {
+                        int closeQuote = rawCmd.IndexOf('"', 1);
+                        tailArgs = closeQuote > 0 ? rawCmd.Substring(closeQuote + 1).Trim() : "";
+                    }
+                    else
+                    {
+                        int firstSpace = rawCmd.IndexOf(' ');
+                        tailArgs = firstSpace > 0 ? rawCmd.Substring(firstSpace + 1).Trim() : "";
+                    }
+                    ProcessStartInfo childPsi = new ProcessStartInfo
+                    {
+                        FileName = selfPath,
+                        Arguments = tailArgs,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WorkingDirectory = Path.GetDirectoryName(selfPath),
+                    };
+                    childPsi.EnvironmentVariables["KIKI_FIXTURE_REEXEC"] = "1";
+                    using (Process childProc = Process.Start(childPsi))
+                    {
+                        childProc.WaitForExit();
+                        Environment.Exit(childProc.ExitCode);
+                    }
+                    return;
+                }
+            }
+        }
+        if (String.IsNullOrWhiteSpace(home))
+        {
+            home = Environment.GetEnvironmentVariable("KIKI_HOME");
+        }
         if (String.IsNullOrWhiteSpace(home)) throw new InvalidOperationException("KIKI_HOME is missing.");
+        if (File.Exists(Path.Combine(home, "fixture-headless-unmanaged")))
+        {
+            desktopManaged = false;
+        }
         token = File.ReadAllText(Path.Combine(home, "server.local-owner")).Trim();
         if (!Regex.IsMatch(token, "^[A-Za-z0-9_-]{43}$")) throw new InvalidOperationException("The fixture token is invalid.");
         Directory.CreateDirectory(Path.Combine(home, "server", "instances"));
@@ -302,7 +370,7 @@ internal static class Program
         serverId = "fixture-" + Guid.NewGuid().ToString("N");
         startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         startedIso = DateTimeOffset.UtcNow.ToString("o");
-        int port = AllocatePort();
+        int port = requestedPort > 0 ? requestedPort : AllocatePort();
         listener = new HttpListener();
         listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
         listener.Start();
@@ -371,8 +439,87 @@ internal static class Program
                 return;
             }
             string path = context.Request.Url.AbsolutePath.TrimEnd('/').ToLowerInvariant();
+            if (path == "/api/healthz" && context.Request.HttpMethod == "GET")
+            {
+                if (File.Exists(Path.Combine(home, "fixture-fail-healthz")))
+                {
+                    Send(context, 200, "{\"ok\":false}");
+                    return;
+                }
+                Send(context, 200, "{\"ok\":true}");
+                return;
+            }
+            if (path == "/api/runtime-switch")
+            {
+                if (File.Exists(Path.Combine(home, "fixture-no-runtime-switch")))
+                {
+                    Send(context, 404, Envelope(40404, "Fixture route not found", "null"));
+                    return;
+                }
+                if (context.Request.HttpMethod == "GET")
+                {
+                    string opJson = fencedOperationId == null ? "null" : Json(fencedOperationId);
+                    Send(context, 200, Envelope(0, "ok", "{\"writer\":{\"serverId\":" + Json(serverId) + ",\"phase\":" + Json(fencedOperationId == null ? "ready" : "draining") + ",\"operationId\":" + opJson + "},\"admission\":{\"pending\":[]},\"workPending\":[]}"));
+                    return;
+                }
+                if (context.Request.HttpMethod == "POST")
+                {
+                    string body = ReadBody(context);
+                    string reqSrv = JsonValue(body, "serverId");
+                    if (!String.Equals(reqSrv, serverId, StringComparison.Ordinal))
+                    {
+                        Send(context, 200, Envelope(40001, "Server identity mismatch", "null"));
+                        return;
+                    }
+                    string action = JsonValue(body, "action");
+                    string opId = JsonValue(body, "operationId");
+                    lock (Gate)
+                    {
+                        if (action == "fence" || action == "prepare")
+                        {
+                            fencedOperationId = opId;
+                            AppendEvent("fenced|" + opId);
+                        }
+                        else if (action == "cancel")
+                        {
+                            fencedOperationId = null;
+                            AppendEvent("fence-cancelled|" + opId);
+                        }
+                    }
+                    Send(context, 200, Envelope(0, "ok", "{\"writer\":{\"serverId\":" + Json(serverId) + ",\"phase\":" + Json(fencedOperationId == null ? "ready" : "draining") + "},\"admission\":{\"pending\":[]},\"workPending\":[]}"));
+                    return;
+                }
+            }
+            if (path.StartsWith("/api/sessions/") && path.EndsWith("/prompts") && context.Request.HttpMethod == "POST")
+            {
+                lock (Gate)
+                {
+                    if (fencedOperationId != null)
+                    {
+                        Send(context, 200, Envelope(40900, "Server admission is fenced for runtime switch", "null"));
+                        return;
+                    }
+                }
+                Send(context, 200, Envelope(0, "ok", "{\"accepted\":true}"));
+                return;
+            }
+            if (path == "/api/shutdown" && context.Request.HttpMethod == "POST")
+            {
+                Send(context, 200, Envelope(0, "ok", "{\"ok\":true}"));
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    Thread.Sleep(50);
+                    StopServer();
+                });
+                return;
+            }
             if (path == "/api/meta" && context.Request.HttpMethod == "GET")
             {
+                if (File.Exists(Path.Combine(home, "fixture-fail-meta")))
+                {
+                    Send(context, 500, Envelope(50001, "Fixture simulated broken /api/meta", "null"));
+                    return;
+                }
                 Send(context, 200, Envelope(0, "ok", Meta()));
                 return;
             }
@@ -398,7 +545,7 @@ internal static class Program
     {
         return "{\"server_id\":" + Json(serverId) + ",\"server_home_id\":" + Json(ServerHomeId) +
             ",\"current_space_id\":\"main\",\"server_version\":\"fixture\",\"started_at\":" + Json(startedIso) +
-            ",\"desktop_managed\":true,\"dangerous_bypass_auth\":false,\"backend\":\"fixture\",\"build_id\":" + Json(BuildId) + "}";
+            ",\"desktop_managed\":" + (desktopManaged ? "true" : "false") + ",\"dangerous_bypass_auth\":false,\"backend\":\"fixture\",\"build_id\":" + Json(BuildId) + "}";
     }
 
     private static void HandleLifecycle(HttpListenerContext context)
@@ -411,6 +558,11 @@ internal static class Program
         if (context.Request.HttpMethod != "POST")
         {
             Send(context, 405, Envelope(40500, "Fixture method not allowed", "null"));
+            return;
+        }
+        if (!desktopManaged)
+        {
+            Send(context, 200, Envelope(40005, "This service is externally managed; stop it through its owner", "null"));
             return;
         }
         string body = ReadBody(context);
@@ -489,7 +641,7 @@ internal static class Program
             if (index > 0) ids.Append(',');
             ids.Append(Json(pending[index]));
         }
-        return "{\"server_id\":" + Json(serverId) + ",\"home_id\":\"main\",\"managed\":true,\"draining\":false,\"hot_switch_prepared\":false,\"work_pending\":[" + ids + "],\"impact\":\"all-windows-in-this-space\"}";
+        return "{\"server_id\":" + Json(serverId) + ",\"home_id\":\"main\",\"managed\":" + (desktopManaged ? "true" : "false") + ",\"draining\":false,\"hot_switch_prepared\":false,\"work_pending\":[" + ids + "],\"impact\":\"all-windows-in-this-space\"}";
     }
 
     private static void HandleCall(HttpListenerContext context, string body)
@@ -1666,8 +1818,139 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-Equal $oldCommit ([string]$primaryRolledBack.meta.build_id) 'Primary home was not replaced with old commit on -Recover -Rollback.'
     Assert-Equal $oldCommit ([string]$secondRolledBack.meta.build_id) 'Secondary home (with spaces in path) was not replaced with old commit on -Recover -Rollback.'
 
+    # 11. Headless Space Home end-to-end (e.g., Subtext daemon running active\kiki-server.exe serve --home ... --port <fixedPort> without kiki-desktop.exe):
+    # Must discover it alongside GUI spaces, stop it cleanly via /api/shutdown, relaunch headlessly on the exact same port without spawning kiki-desktop.exe, and roll back cleanly on failed candidate!
+    $headlessHome = Join-Path $testRoot 'headless space home'
+    [IO.Directory]::CreateDirectory((Join-Path $headlessHome 'server\instances')) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $headlessHome 'server.local-owner'), $fixtureToken)
+    $portProbe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+    $portProbe.Start()
+    $headlessFixedPort = ([System.Net.IPEndPoint]$portProbe.LocalEndpoint).Port
+    $portProbe.Stop()
+
+    $activeServerPath = Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe'
+    $headlessArgs = ('serve --home "{0}" --port {1} --headless-unmanaged --heap-reexec' -f $headlessHome, $headlessFixedPort)
+    $null = Start-Process -FilePath $activeServerPath -WorkingDirectory (Split-Path -Parent $activeServerPath) -ArgumentList $headlessArgs -WindowStyle Hidden -PassThru
+    $headlessOldServer = Wait-ForSpaceServer $headlessHome $oldCommit 15
+    Assert-Equal $headlessFixedPort ([int]$headlessOldServer.instance.port) 'Headless Space Home did not bind to its requested fixed port.'
+    Assert-Equal $false ([bool]$headlessOldServer.meta.desktop_managed) 'Headless fixture server should report desktop_managed=false.'
+
+    # 11a. -InspectOnly -AppScopeOnly must discover Primary GUI + Secondary GUI + Headless Space Home (3 total, including heap-reexec parent attribution).
+    $headlessInspectRaw = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-InspectOnly',
+        '-AppScopeOnly'
+    ) 0
+    $headlessInspect = $headlessInspectRaw | ConvertFrom-Json
+    Assert-Equal 3 (@($headlessInspect.spaces).Count) 'Inspect did not discover primary + secondary GUI + headless Space Home.'
+    $headlessSpaceInspect = @($headlessInspect.spaces | Where-Object { $_.kikiHome -ieq $headlessHome })[0]
+    Assert-True ($null -ne $headlessSpaceInspect) 'Inspect output missing headless Space Home entry.'
+    Assert-Equal $false ([bool]$headlessSpaceInspect.hadDesktop) 'Headless Space Home should report hadDesktop=false.'
+    Assert-Equal $true ([bool]$headlessSpaceInspect.isHeadless) 'Headless Space Home should report isHeadless=true.'
+    Assert-Contains ("--port $headlessFixedPort") ([string]$headlessSpaceInspect.headlessLaunchArgs) 'Headless Space Home did not preserve original --port launch args.'
+
+    # 11a2. Unfenced headless server (404 on /api/runtime-switch) MUST be rejected before draining unless -AllowUnfencedHeadless is passed.
+    $noSwitchFlag = Join-Path $headlessHome 'fixture-no-runtime-switch'
+    [IO.File]::WriteAllText($noSwitchFlag, '1')
+    try {
+        $unfencedFailOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-CandidateRoot', $goodCandidate,
+            '-ExpectedCommit', $goodCommit,
+            '-SettleSeconds', '15',
+            '-StartupSeconds', '15'
+        ) 1
+        Assert-Contains 'admission fencing' $unfencedFailOut 'Unfenced headless server should be refused before draining.'
+        $headlessStillOld = Wait-ForSpaceServer $headlessHome $oldCommit 10
+        Assert-Equal $oldCommit ([string]$headlessStillOld.meta.build_id) 'Refused unfenced headless switch must leave old server running untouched.'
+    } finally {
+        if (Test-Path -LiteralPath $noSwitchFlag) { Remove-Item -LiteralPath $noSwitchFlag -Force }
+    }
+
+    # 11b. Hot-switch ALL 3 spaces (2 GUI + 1 Headless with heap-reexec parent wrapper) onto $goodCommit!
+    $headlessSwitchOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-CandidateRoot', $goodCandidate,
+        '-ExpectedCommit', $goodCommit,
+        '-SettleSeconds', '15',
+        '-StartupSeconds', '20'
+    ) 0
+    Assert-Contains "Running $goodReleaseId" $headlessSwitchOut 'Hot-switch with headless Space Home did not complete.'
+    $headlessEvents = Get-Content -LiteralPath (Join-Path $headlessHome 'fixture-events.log') -Raw
+    Assert-Contains 'fenced|' $headlessEvents 'Headless Space Home did not receive confirmed /api/runtime-switch fence before draining.'
+    $primaryAfterHeadlessSwitch = Wait-ForSpaceServer $homePath $goodCommit 15
+    $secondAfterHeadlessSwitch = Wait-ForSpaceServer $secondSpaceHome $goodCommit 15
+    $headlessAfterSwitch = Wait-ForSpaceServer $headlessHome $goodCommit 15
+    Assert-Equal $goodCommit ([string]$primaryAfterHeadlessSwitch.meta.build_id) 'Primary GUI space not on goodCommit after headless-included switch.'
+    Assert-Equal $goodCommit ([string]$secondAfterHeadlessSwitch.meta.build_id) 'Secondary GUI space not on goodCommit after headless-included switch.'
+    Assert-Equal $goodCommit ([string]$headlessAfterSwitch.meta.build_id) 'Headless Space Home not on goodCommit after switch.'
+    Assert-Equal $headlessFixedPort ([int]$headlessAfterSwitch.instance.port) 'Headless Space Home did not retain its fixed port after switch!'
+    Assert-Equal $activeServerPath ([string]$headlessAfterSwitch.process.Path) 'Headless Space Home not running from active\kiki-server.exe!'
+    Assert-Equal $false ([bool]$headlessAfterSwitch.meta.desktop_managed) 'Headless Space Home lost its unmanaged headless mode after switch!'
+    $headlessDesktopShells = @(Get-CimInstance Win32_Process -Filter "Name='kiki-desktop.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and $_.CommandLine.IndexOf($headlessHome, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+    Assert-Equal 0 $headlessDesktopShells.Count 'Hot-switch wrongly spawned a kiki-desktop.exe window for the headless Space Home!'
+
+    # 11c. Recovery -Rollback MUST succeed even when the live replacement headless server is returning HTTP 500 on /api/meta!
+    $brokenTargetHomeFlag = Join-Path $headlessHome 'fixture-fail-meta'
+    $brokenRecoverState = Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json
+    $brokenRecoverState.phase = 'starting_failed'
+    [IO.File]::WriteAllText($switchStatePath, ($brokenRecoverState | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+    $oldHeadlessPidForBroken = [int]$headlessAfterSwitch.process.Id
+    [IO.File]::WriteAllText($brokenTargetHomeFlag, '1')
+    $flagCleaner = Start-Job -ScriptBlock {
+        param($TargetPid, $FlagFile)
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            if ($null -eq (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)) {
+                if (Test-Path -LiteralPath $FlagFile) { Remove-Item -LiteralPath $FlagFile -Force -ErrorAction SilentlyContinue }
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    } -ArgumentList $oldHeadlessPidForBroken, $brokenTargetHomeFlag
+    try {
+        $brokenRecoverOkOut = Invoke-Script $hotSwitch @(
+            '-RuntimeRoot', $runtimeRoot,
+            '-KikiHome', $homePath,
+            '-Recover',
+            '-Rollback',
+            '-StartupSeconds', '20'
+        ) 0
+        Assert-Contains "Recovery complete: $oldReleaseId" $brokenRecoverOkOut 'Recovery -Rollback failed to stop a live server whose /api/meta returned 500!'
+        $headlessRecoveredOld = Wait-ForSpaceServer $headlessHome $oldCommit 15
+        Assert-Equal $oldCommit ([string]$headlessRecoveredOld.meta.build_id) 'Headless space not restored to oldCommit after broken-/api/meta rollback!'
+        Assert-Equal $headlessFixedPort ([int]$headlessRecoveredOld.instance.port) 'Headless space lost fixed port after broken-/api/meta rollback!'
+    } finally {
+        Wait-Job $flagCleaner -Timeout 5 | Out-Null
+        Remove-Job $flagCleaner -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $brokenTargetHomeFlag) { Remove-Item -LiteralPath $brokenTargetHomeFlag -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 11d. Automatic rollback when switching from oldCommit to $failedCandidate must restore ALL 3 spaces (including Headless Space Home on its exact fixed port) back onto $oldCommit!
+    $headlessFailOut = Invoke-Script $hotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-CandidateRoot', $failedCandidate,
+        '-ExpectedCommit', $failedCommit,
+        '-SettleSeconds', '15',
+        '-StartupSeconds', '15'
+    ) 1
+    Assert-Contains 'Rolled back to previous release' $headlessFailOut 'Failed switch with headless Space Home did not trigger automatic rollback.'
+    $primaryAfterHeadlessRollback = Wait-ForSpaceServer $homePath $oldCommit 15
+    $secondAfterHeadlessRollback = Wait-ForSpaceServer $secondSpaceHome $oldCommit 15
+    $headlessAfterRollback = Wait-ForSpaceServer $headlessHome $oldCommit 15
+    Assert-Equal $oldCommit ([string]$primaryAfterHeadlessRollback.meta.build_id) 'Primary space not restored on rollback.'
+    Assert-Equal $oldCommit ([string]$secondAfterHeadlessRollback.meta.build_id) 'Secondary GUI space not restored on rollback.'
+    Assert-Equal $oldCommit ([string]$headlessAfterRollback.meta.build_id) 'Headless Space Home not restored on rollback.'
+    Assert-Equal $headlessFixedPort ([int]$headlessAfterRollback.instance.port) 'Headless Space Home did not retain its fixed port after rollback!'
+
     $completed = $true
-    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, clean UTF-8 detached logging, inspect/canary, failed/resuming fix, legacy->active migration, kiki-ops-conductor, and multi-home recovery/rollback with quoted spaces.'
+    Write-Output 'desktop-hot-switch tests passed: promote-first + manual restart, automatic starting rollback, target-preferred recovery, hung-server bounded force-stop, stale-state auto-reconcile, clean UTF-8 detached logging, inspect/canary, failed/resuming fix, legacy->active migration, kiki-ops-conductor, multi-home recovery/rollback with quoted spaces, and headless Space Home switch/rollback.'
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome

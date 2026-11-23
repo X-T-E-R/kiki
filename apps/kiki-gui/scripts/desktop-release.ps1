@@ -813,6 +813,82 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
     }
 }
 
+function Invoke-HeadlessLaunch(
+    [string]$Root,
+    [string]$LaunchHome,
+    [string]$LaunchArguments = 'serve',
+    [switch]$PassThru,
+    [switch]$RuntimeManaged
+) {
+    $rootPath = Get-FullPath $Root
+    $manifest = Read-CurrentManifest $rootPath
+    $releaseId = [string]$manifest.releaseId
+    $launchLock = Open-ActiveLock $rootPath 15
+    $previousHome = $env:KIKI_HOME
+    $previousNoRedirect = $env:KIKI_NO_RELEASE_REDIRECT
+    $previousDesktopBundled = $env:KIKI_DESKTOP_BUNDLED
+    $previousRuntimeManaged = $env:KIKI_RUNTIME_MANAGED
+    try {
+        if ($null -ne $launchLock -and (-not (Test-ActiveReleaseAligned $rootPath $releaseId))) {
+            $releasePath = Get-ReleasePath $rootPath $releaseId
+            $desktopInfo = Get-ArtifactInfo (Join-Path $releasePath 'kiki-desktop.exe') 'Release Kiki GUI'
+            $sidecarInfo = Get-ArtifactInfo (Join-Path $releasePath 'kiki-server.exe') 'Release Kiki backend'
+            if (('{0}-{1}' -f $desktopInfo.Hash.Substring(0, 24), $sidecarInfo.Hash.Substring(0, 24)) -cne $releaseId) {
+                throw "Release binaries at $releasePath do not match releaseId $releaseId; headless launch aborted."
+            }
+            $gitSha = [string](Get-ObjectProperty $manifest 'gitSha')
+            if ([string]::IsNullOrWhiteSpace($gitSha)) { $gitSha = 'unknown' }
+            $syncResult = Sync-ActiveReleaseCore $rootPath $releaseId $gitSha $desktopInfo $sidecarInfo -SkipIfLocked
+            if ($syncResult.Locked) {
+                Write-Warning ("Active runtime at {0} is locked by running process(es); launching headless server {1} from releases directory without modifying active." -f $syncResult.ActivePath, $releaseId)
+            }
+        }
+        $target = Resolve-LaunchTarget $rootPath
+        if (-not [string]::IsNullOrWhiteSpace($LaunchHome)) {
+            $env:KIKI_HOME = $LaunchHome
+        }
+        Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
+        Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue
+        if ($RuntimeManaged) {
+            $env:KIKI_RUNTIME_MANAGED = '1'
+        }
+        else {
+            Remove-Item Env:KIKI_RUNTIME_MANAGED -ErrorAction SilentlyContinue
+        }
+        $effectiveArgs = if ([string]::IsNullOrWhiteSpace($LaunchArguments)) { 'serve' } else { $LaunchArguments.Trim() }
+        $startParams = @{
+            FilePath = $target.SidecarPath
+            WorkingDirectory = $target.LaunchDirectory
+            ArgumentList = $effectiveArgs
+            WindowStyle = 'Hidden'
+            PassThru = [bool]$PassThru
+        }
+        Start-Process @startParams
+    }
+    finally {
+        $env:KIKI_HOME = $previousHome
+        if ($null -eq $previousNoRedirect) {
+            Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:KIKI_NO_RELEASE_REDIRECT = $previousNoRedirect
+        }
+        if ($null -eq $previousDesktopBundled) {
+            Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:KIKI_DESKTOP_BUNDLED = $previousDesktopBundled
+        }
+        if ($null -eq $previousRuntimeManaged) {
+            Remove-Item Env:KIKI_RUNTIME_MANAGED -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:KIKI_RUNTIME_MANAGED = $previousRuntimeManaged
+        }
+        if ($null -ne $launchLock) { $launchLock.Dispose() }
+    }
+}
+
 function Assert-SafeShortcutPath([string]$Path, [string]$Label) {
     if ($Path.Contains('"')) {
         throw "$Label cannot contain a double quote: $Path"

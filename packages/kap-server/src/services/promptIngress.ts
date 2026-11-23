@@ -265,8 +265,13 @@ export class PromptIngress {
     await this.documents().set(`${target.scope}/prompt-ingress/requests`, `${entry.key}.json`, entry);
   }
   private async publish(target: Target, entry: Entry): Promise<void> {
-    await this.save(target, entry);
-    await this.ensurePageKey(target, entry);
+    const settled = await Promise.allSettled([
+      this.save(target, entry),
+      this.ensurePageKey(target, entry),
+    ]);
+    for (const outcome of settled) {
+      if (outcome.status === 'rejected') throw outcome.reason;
+    }
   }
   private async ensurePageKey(target: Target, entry: Entry): Promise<void> {
     await this.documents().update<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${Math.floor(entry.ordinal / PAGE_SIZE)}.json`, current => {
@@ -361,11 +366,12 @@ export class PromptIngress {
       const settledWrites = await Promise.allSettled([
         this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload),
         this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 }),
+        this.ensurePageKey(target, created),
       ]);
       for (const outcome of settledWrites) {
         if (outcome.status === 'rejected') throw outcome.reason;
       }
-      await this.publish(target, created);
+      await this.save(target, created);
       if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
       if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
       return created;

@@ -24,6 +24,7 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import {
   CHILD_SESSION_KIND,
   CHILD_SESSION_KIND_KEY,
+  CREATED_BY_SESSION_ID_KEY,
   ISessionIndex,
   ISessionIndexMirror,
   PARENT_SESSION_ID_KEY,
@@ -46,7 +47,11 @@ import {
 } from './sessionIndexModel';
 import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from './errors';
 import { isSessionIndexResourceExhaustionError } from './sessionIndexMirrorService';
-import { readSessionArchiveFamily } from './sessionArchiveFamily';
+import {
+  attachedSessionParent,
+  readSessionArchiveFamily,
+  type ArchiveFamilyIndexedReader,
+} from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
   listSessionIds,
@@ -922,13 +927,96 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     );
   }
 
-  archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]> {
-    return readSessionArchiveFamily(this.storage, this.docs, this.sessionsScope, id, excludedIds, this.log, {
-      get: (workspaceId, sessionId, fingerprint) =>
-        this.projector.cachedSummaryForFingerprint(workspaceId, sessionId, fingerprint),
-      set: (workspaceId, sessionId, fingerprint, summary) =>
-        this.projector.rememberSummaryFingerprint(workspaceId, sessionId, fingerprint, summary),
-    });
+  async archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]> {
+    const indexed = await this.createArchiveFamilyIndexedReader();
+    return readSessionArchiveFamily(
+      this.storage,
+      this.docs,
+      this.sessionsScope,
+      id,
+      excludedIds,
+      this.log,
+      {
+        get: (workspaceId, sessionId, fingerprint) =>
+          this.projector.cachedSummaryForFingerprint(workspaceId, sessionId, fingerprint),
+        set: (workspaceId, sessionId, fingerprint, summary) =>
+          this.projector.rememberSummaryFingerprint(workspaceId, sessionId, fingerprint, summary),
+      },
+      indexed,
+    );
+  }
+
+  private isArchiveIndexCompleteNow(): boolean {
+    return (
+      this.readModelEnabled() &&
+      this.state === 'ready' &&
+      !this.recoveryRequired &&
+      this.mirror.dirtyEpoch() === undefined &&
+      this.watchedSessions.size === 0 &&
+      !this.watchInventory &&
+      this.watchFlight === undefined &&
+      this.reconcileFlight === undefined
+    );
+  }
+
+  private async createArchiveFamilyIndexedReader(): Promise<ArchiveFamilyIndexedReader | undefined> {
+    if (!this.isArchiveIndexCompleteNow()) {
+      return undefined;
+    }
+    let manifest: Checkpoint | undefined;
+    try {
+      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, undefined, { priority: true });
+    } catch {
+      return undefined;
+    }
+    if (manifest === undefined || !this.isArchiveIndexCompleteNow()) return undefined;
+    const generation = manifest.seq;
+    const collection = sessionCollection(generation);
+    const verifyConsistent = async (): Promise<boolean> => {
+      if (!this.isArchiveIndexCompleteNow()) return false;
+      try {
+        const current = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, undefined, { priority: true });
+        return current !== undefined && current.seq === generation && this.isArchiveIndexCompleteNow();
+      } catch {
+        return false;
+      }
+    };
+    return {
+      verifyConsistent,
+      getSummary: async (sessionId) => {
+        if (!this.isArchiveIndexCompleteNow()) throw new Error('session index no longer complete');
+        const pending = this.mirror.pending().find((summary) => summary.id === sessionId);
+        if (pending !== undefined) return pending;
+        const stored: unknown = await this.queryStore.get(collection, sessionId, undefined, { priority: true });
+        if (!(await verifyConsistent())) throw new Error('session index generation changed');
+        return isSessionSummaryShape(stored) ? stripRecencyField(generation, stored) : undefined;
+      },
+      listAttachedChildren: async (parentId) => {
+        if (!this.isArchiveIndexCompleteNow()) throw new Error('session index no longer complete');
+        const pending = this.mirror.pending();
+        const pendingById = new Map(pending.map((summary) => [summary.id, summary]));
+        const page = await this.queryStore
+          .query<SessionSummary>(collection)
+          .where({
+            $or: [
+              { [`custom.${CREATED_BY_SESSION_ID_KEY}`]: parentId },
+              { [`custom.${PARENT_SESSION_ID_KEY}`]: parentId },
+            ],
+          })
+          .execute();
+        if (!(await verifyConsistent())) throw new Error('session index generation changed');
+        const merged = new Map<string, SessionSummary>();
+        for (const item of page.items) {
+          if (!isSessionSummaryShape(item)) continue;
+          const summary = stripRecencyField(generation, item);
+          if (!pendingById.has(summary.id)) merged.set(summary.id, summary);
+        }
+        for (const summary of pending) {
+          if (attachedSessionParent(summary) === parentId) merged.set(summary.id, summary);
+        }
+        return [...merged.values()];
+      },
+    };
   }
 
   async listRecent(query: SessionListQuery): Promise<Page<SessionSummary>> {

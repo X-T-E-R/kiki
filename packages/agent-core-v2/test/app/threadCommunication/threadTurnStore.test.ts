@@ -432,4 +432,62 @@ describe('ThreadTurnStore', () => {
       clearInterval(timer);
     }
   }, 30_000);
+
+  it('throttles concurrent multi-scope large tail+forward preparations and preserves event-loop responsiveness', async () => {
+    const scopes = Array.from({ length: 4 }, (_, index) => `sessions/example/session-${index}/agents/main`);
+    await Promise.all(
+      scopes.map((scope, scopeIndex) =>
+        seed(
+          Array.from({ length: 90 }, (_, id) => [
+            { ...prompt(`s${scopeIndex}-in-${id} ${'a'.repeat(4000)}`), turnId: id },
+            part(id, `s${scopeIndex}-out-${id} ${'b'.repeat(28_000)}`),
+            ended(id),
+          ]).flat(),
+          scope,
+        ),
+      ),
+    );
+    const batchSizes: number[] = [];
+    let activeCommits = 0;
+    let maxConcurrentCommits = 0;
+    const originalBatchIf = query.batchIf?.bind(query);
+    if (originalBatchIf !== undefined) {
+      vi.spyOn(query, 'batchIf').mockImplementation(async (conditions, ops, staged) => {
+        batchSizes.push(ops.length);
+        activeCommits += 1;
+        maxConcurrentCommits = Math.max(maxConcurrentCommits, activeCommits);
+        try {
+          return await originalBatchIf(conditions, ops, staged);
+        } finally {
+          activeCommits -= 1;
+        }
+      });
+    }
+    const tickGaps: number[] = [];
+    let lastTick = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      tickGaps.push(now - lastTick);
+      lastTick = now;
+    }, 5);
+    try {
+      const pages = await Promise.all(scopes.map((scope) => ready(Number.MAX_SAFE_INTEGER, 20, scope)));
+      for (let index = 0; index < scopes.length; index++) {
+        expect(pages[index]?.turns).toHaveLength(20);
+        expect(pages[index]?.turns.at(-1)?.turnId).toBe(89);
+        expect(pages[index]?.turns.at(-1)?.input.startsWith(`s${index}-in-89`)).toBe(true);
+      }
+      if (batchSizes.length > 0) {
+        expect(maxConcurrentCommits).toBe(1);
+        expect(Math.max(...batchSizes)).toBeLessThanOrEqual(132);
+      }
+      const sorted = tickGaps.toSorted((left, right) => left - right);
+      const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
+      const median = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
+      expect(median).toBeLessThan(25);
+      expect(p95).toBeLessThan(60);
+    } finally {
+      clearInterval(timer);
+    }
+  }, 45_000);
 });

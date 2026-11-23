@@ -9,12 +9,14 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse as parseToml } from 'smol-toml';
 
 import {
   bootstrapOps,
@@ -24,6 +26,8 @@ import {
   inspectRuntime,
   parseConductorArgs,
   reconcileSwitch,
+  rollbackRuntime,
+  sanitizeOpsConfigToml,
   switchRuntime,
 } from './kiki-ops-conductor.mjs';
 
@@ -98,6 +102,19 @@ async function startFixtureHttpServer(state) {
         res.end(JSON.stringify({ code: 0, msg: 'ok', data }));
       };
 
+      if (req.method === 'GET' && url.pathname === '/api/healthz') {
+        if (state.healthzStatus && state.healthzStatus !== 200) {
+          res.writeHead(state.healthzStatus, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ code: 50301, msg: 'unhealthy', data: { ok: false } }));
+          return;
+        }
+        if (state.healthzOk === false) {
+          sendOk({ ok: false });
+          return;
+        }
+        sendOk({ ok: true });
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/meta') {
         sendOk({
           server_id: state.serverId,
@@ -786,6 +803,339 @@ test('reconcileSwitch routes interrupted and resume-failed sessions to their own
   } finally {
     await primarySrv.close();
     await secondarySrv.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('bootstrapOps syncs model/provider config, credentials, and agents while isolating ops from locks and heavy plugins', () => {
+  const root = makeTemp();
+  try {
+    const liveRuntime = join(root, 'Kiki');
+    const liveHome = join(root, '.kiki');
+    const opsRuntime = join(root, 'Kiki-Ops');
+    const opsHome = join(root, '.kiki-ops');
+    mkdirSync(join(liveRuntime, 'cli'), { recursive: true });
+    writeFileSync(join(liveRuntime, 'cli', 'kiki.exe'), 'ops-cli-v2');
+    mkdirSync(join(liveHome, 'credentials'), { recursive: true });
+    mkdirSync(join(liveHome, 'agents'), { recursive: true });
+    mkdirSync(join(liveHome, 'sessions', 'ws1', 's1'), { recursive: true });
+    mkdirSync(join(liveHome, 'logs'), { recursive: true });
+    writeFileSync(
+      join(liveHome, 'config.toml'),
+      [
+        'default_model = "fast-coder"',
+        '',
+        '[providers.main]',
+        'type = "openai"',
+        'base_url = "https://example.test/v1"',
+        '',
+        '[models.fast-coder]',
+        'provider = "main"',
+        'model = "coder-v1"',
+        '',
+        '[search]',
+        'enabled = true',
+        '',
+        '[mcp]',
+        'tool_timeout_ms = 30000',
+        '',
+        '[plugins]',
+        'marketplace_url = "https://example.test/plugins"',
+        '',
+        '[plugin_settings.heavy]',
+        'enabled = true',
+        '',
+        '[[hooks]]',
+        'event = "PreToolUse"',
+        'command = "echo hi"',
+        '',
+        '[cron]',
+        'poll_interval_ms = 5000',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(liveHome, 'credentials', 'credentials.toml'), '[providers.main]\napi_key = "YOUR_API_KEY"\n');
+    writeFileSync(join(liveHome, 'credentials', 'kimi-oauth.json'), '{"access_token":"tok-1"}\n');
+    writeFileSync(join(liveHome, 'credentials', 'kimi-oauth.lock-target'), '');
+    writeFileSync(join(liveHome, 'credentials', 'kimi-oauth.lock'), 'busy');
+    writeFileSync(join(liveHome, 'agents', 'implementer.md'), '# Implementer\n');
+    writeFileSync(join(liveHome, 'agents', 'stale.lock'), 'locked');
+    writeFileSync(join(liveHome, 'sessions', 'ws1', 's1', 'state.json'), '{"id":"s1"}');
+    writeFileSync(join(liveHome, 'logs', 'kimi-code.log'), 'live log');
+
+    const res = bootstrapOps({
+      opsRuntime,
+      opsHome,
+      sourceRuntime: liveRuntime,
+      targetRuntime: liveRuntime,
+      targetHome: liveHome,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.syncedConfig, true);
+    assert.equal(res.syncedCredentials, true);
+    assert.equal(res.syncedCredentialFiles, 2);
+    assert.equal(res.syncedAgentsCount, 1);
+
+    const parsedOpsConfig = parseToml(readFileSync(res.configPath, 'utf8'));
+    assert.equal(parsedOpsConfig.default_model, 'fast-coder');
+    assert.equal(parsedOpsConfig.providers?.main?.base_url, 'https://example.test/v1');
+    assert.equal(parsedOpsConfig.models?.['fast-coder']?.model, 'coder-v1');
+    assert.deepEqual({ ...parsedOpsConfig.search }, { enabled: false });
+    assert.deepEqual({ ...parsedOpsConfig.mcp }, {});
+    assert.equal('plugins' in parsedOpsConfig, false);
+    assert.equal('plugin_settings' in parsedOpsConfig, false);
+    assert.equal('hooks' in parsedOpsConfig, false);
+    assert.equal('cron' in parsedOpsConfig, false);
+
+    const opsMcp = JSON.parse(readFileSync(res.mcpConfigPath, 'utf8'));
+    assert.deepEqual(opsMcp, { mcpServers: {} });
+    assert.equal(
+      readFileSync(join(opsHome, 'credentials', 'credentials.toml'), 'utf8'),
+      '[providers.main]\napi_key = "YOUR_API_KEY"\n',
+    );
+    assert.equal(
+      readFileSync(join(opsHome, 'credentials', 'kimi-oauth.json'), 'utf8'),
+      '{"access_token":"tok-1"}\n',
+    );
+    assert.equal(existsSync(join(opsHome, 'credentials', 'kimi-oauth.lock-target')), false);
+    assert.equal(existsSync(join(opsHome, 'credentials', 'kimi-oauth.lock')), false);
+    assert.equal(readFileSync(join(opsHome, 'agents', 'implementer.md'), 'utf8'), '# Implementer\n');
+    assert.equal(existsSync(join(opsHome, 'agents', 'stale.lock')), false);
+    assert.equal(existsSync(join(opsHome, 'sessions')), false);
+    assert.equal(existsSync(join(opsHome, 'logs')), false);
+
+    // sanitizeOpsConfigToml preserves valid TOML with multiline strings, dotted keys, inline tables, and quoted tables.
+    const complexToml = [
+      'default_model = "fast-coder"',
+      'search.enabled = true',
+      'mcp = { tool_timeout_ms = 5000 }',
+      'system_note = """',
+      '[search]',
+      'enabled = true',
+      '"""',
+      '',
+      '["plugins".heavy]',
+      'enabled = true',
+      '',
+      '[providers.main]',
+      'type = "openai"',
+    ].join('\n');
+    const sanitizedComplex = parseToml(sanitizeOpsConfigToml(complexToml));
+    assert.equal(sanitizedComplex.default_model, 'fast-coder');
+    assert.equal(sanitizedComplex.system_note, '[search]\nenabled = true\n');
+    assert.equal(sanitizedComplex.providers?.main?.type, 'openai');
+    assert.deepEqual({ ...sanitizedComplex.search }, { enabled: false });
+    assert.deepEqual({ ...sanitizedComplex.mcp }, {});
+    assert.equal('plugins' in sanitizedComplex, false);
+    const sanitizedEmpty = parseToml(sanitizeOpsConfigToml(''));
+    assert.deepEqual({ ...sanitizedEmpty.search }, { enabled: false });
+    assert.deepEqual({ ...sanitizedEmpty.mcp }, {});
+
+    // Junction/symlink opsHome pointing to liveHome MUST be refused before writing config.toml!
+    const junctionOpsHome = join(root, 'ops-home-junction');
+    symlinkSync(liveHome, junctionOpsHome, process.platform === 'win32' ? 'junction' : 'dir');
+    const liveConfigBefore = readFileSync(join(liveHome, 'config.toml'), 'utf8');
+    assert.throws(
+      () =>
+        bootstrapOps({
+          opsRuntime: join(root, 'Kiki-Ops-Junction'),
+          opsHome: junctionOpsHome,
+          sourceRuntime: liveRuntime,
+          targetRuntime: liveRuntime,
+          targetHome: liveHome,
+        }),
+      /symlink|junction|live target home/i,
+    );
+    assert.equal(readFileSync(join(liveHome, 'config.toml'), 'utf8'), liveConfigBefore);
+    assert.equal(existsSync(join(liveHome, 'mcp.json')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('switchRuntime automatically rolls back primary + headless spaces when switch fails or /api/healthz fails', async () => {
+  const root = makeTemp();
+  const primaryState = { serverId: 'srv-p-old', buildId: OLD_COMMIT, workPending: [], healthzOk: true };
+  const headlessState = { serverId: 'srv-h-old', buildId: OLD_COMMIT, workPending: [], healthzOk: true };
+  const primarySrv = await startFixtureHttpServer(primaryState);
+  const headlessSrv = await startFixtureHttpServer(headlessState);
+  try {
+    const runtimeRoot = join(root, 'Kiki');
+    const primaryHome = join(root, 'home-primary');
+    const headlessHome = join(root, 'home-headless');
+    const oldRelId = writeCandidate(join(root, 'cand-old'), OLD_COMMIT, 'desk-old', 'srv-old');
+    const newCand = join(root, 'cand-new');
+    const newRelId = writeCandidate(newCand, NEW_COMMIT, 'desk-new', 'srv-new');
+    seedActive(runtimeRoot, oldRelId, OLD_COMMIT, 'desk-old', 'srv-old');
+    registerInstance(primaryHome, { serverId: 'srv-p-old', pid: 50001, port: primarySrv.port, buildId: OLD_COMMIT });
+    registerInstance(headlessHome, { serverId: 'srv-h-old', pid: 50002, port: headlessSrv.port, buildId: OLD_COMMIT });
+
+    const activeExe = join(runtimeRoot, 'active', 'kiki-server.exe');
+    let primaryPid = 50001;
+    let headlessPid = 50002;
+    const calls = [];
+
+    // Case A: desktop-hot-switch succeeds exit 0, but headless space /api/healthz returns ok=false -> conductor auto-rolls back both spaces!
+    let caughtError = null;
+    try {
+      await switchRuntime({
+        runtimeRoot,
+        kikiHome: primaryHome,
+        candidateRoot: newCand,
+        expectedCommit: NEW_COMMIT,
+        resolveProcessPath: (pid) => (pid === primaryPid || pid === headlessPid ? activeExe : null),
+        inspectSpaces: async () => [
+          {
+            kikiHome: primaryHome,
+            isPrimary: true,
+            hadDesktop: true,
+            liveServer: { server_id: 'srv-p-old', pid: 50001, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-1', current_space_id: 'main' },
+          },
+          {
+            kikiHome: headlessHome,
+            isPrimary: false,
+            hadDesktop: false,
+            headlessLaunchArgs: `serve --home "${headlessHome}" --port ${headlessSrv.port}`,
+            desktopManaged: false,
+            liveServer: { server_id: 'srv-h-old', pid: 50002, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-h', current_space_id: 'subtext' },
+          },
+        ],
+        runHotSwitch: async (_script, args) => {
+          calls.push(args);
+          if (args.includes('-Rollback')) {
+            rmSync(join(primaryHome, 'server', 'instances', 'srv-p-new.json'), { force: true });
+            rmSync(join(headlessHome, 'server', 'instances', 'srv-h-new.json'), { force: true });
+            primaryState.serverId = 'srv-p-rb';
+            primaryState.buildId = OLD_COMMIT;
+            primaryState.healthzOk = true;
+            headlessState.serverId = 'srv-h-rb';
+            headlessState.buildId = OLD_COMMIT;
+            headlessState.healthzOk = true;
+            primaryPid = 50011;
+            headlessPid = 50012;
+            seedActive(runtimeRoot, oldRelId, OLD_COMMIT, 'desk-old', 'srv-old');
+            registerInstance(primaryHome, { serverId: 'srv-p-rb', pid: 50011, port: primarySrv.port, buildId: OLD_COMMIT });
+            registerInstance(headlessHome, { serverId: 'srv-h-rb', pid: 50012, port: headlessSrv.port, buildId: OLD_COMMIT });
+            return { code: 0, stdout: `Recovery complete: ${oldRelId}`, stderr: '' };
+          }
+          // Simulated switch lands on new release, but headless /api/healthz fails.
+          rmSync(join(primaryHome, 'server', 'instances', 'srv-p-old.json'), { force: true });
+          rmSync(join(headlessHome, 'server', 'instances', 'srv-h-old.json'), { force: true });
+          primaryState.serverId = 'srv-p-new';
+          primaryState.buildId = NEW_COMMIT;
+          headlessState.serverId = 'srv-h-new';
+          headlessState.buildId = NEW_COMMIT;
+          headlessState.healthzOk = false;
+          primaryPid = 50003;
+          headlessPid = 50004;
+          seedActive(runtimeRoot, newRelId, NEW_COMMIT, 'desk-new', 'srv-new');
+          registerInstance(primaryHome, { serverId: 'srv-p-new', pid: 50003, port: primarySrv.port, buildId: NEW_COMMIT });
+          registerInstance(headlessHome, { serverId: 'srv-h-new', pid: 50004, port: headlessSrv.port, buildId: NEW_COMMIT });
+          return { code: 0, stdout: `Running ${newRelId}`, stderr: '' };
+        },
+      });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    assert.ok(caughtError, 'switchRuntime must reject when headless /api/healthz fails');
+    assert.match(caughtError.message, /\/api\/healthz did not return ok=true/);
+    assert.equal(calls.length, 2);
+
+    // Case A2: /api/healthz returning 404 must ALSO fail verification and trigger auto-rollback (never bypassed as unsupported).
+    let caught404Error = null;
+    try {
+      await switchRuntime({
+        runtimeRoot,
+        kikiHome: primaryHome,
+        candidateRoot: newCand,
+        expectedCommit: NEW_COMMIT,
+        resolveProcessPath: (pid) => (pid === primaryPid || pid === headlessPid ? activeExe : null),
+        inspectSpaces: async () => [
+          {
+            kikiHome: primaryHome,
+            isPrimary: true,
+            hadDesktop: true,
+            liveServer: { server_id: 'srv-p-rb', pid: primaryPid, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-1', current_space_id: 'main' },
+          },
+          {
+            kikiHome: headlessHome,
+            isPrimary: false,
+            hadDesktop: false,
+            headlessLaunchArgs: `serve --home "${headlessHome}" --port ${headlessSrv.port}`,
+            desktopManaged: false,
+            liveServer: { server_id: 'srv-h-rb', pid: headlessPid, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-h', current_space_id: 'subtext' },
+          },
+        ],
+        runHotSwitch: async (_script, args) => {
+          if (args.includes('-Rollback')) {
+            rmSync(join(primaryHome, 'server', 'instances', 'srv-p-404.json'), { force: true });
+            rmSync(join(headlessHome, 'server', 'instances', 'srv-h-404.json'), { force: true });
+            primaryState.serverId = 'srv-p-rb2';
+            primaryState.buildId = OLD_COMMIT;
+            primaryState.healthzStatus = 200;
+            headlessState.serverId = 'srv-h-rb2';
+            headlessState.buildId = OLD_COMMIT;
+            headlessState.healthzStatus = 200;
+            primaryPid = 50021;
+            headlessPid = 50022;
+            seedActive(runtimeRoot, oldRelId, OLD_COMMIT, 'desk-old', 'srv-old');
+            registerInstance(primaryHome, { serverId: 'srv-p-rb2', pid: 50021, port: primarySrv.port, buildId: OLD_COMMIT });
+            registerInstance(headlessHome, { serverId: 'srv-h-rb2', pid: 50022, port: headlessSrv.port, buildId: OLD_COMMIT });
+            return { code: 0, stdout: `Recovery complete: ${oldRelId}`, stderr: '' };
+          }
+          rmSync(join(primaryHome, 'server', 'instances', 'srv-p-rb.json'), { force: true });
+          rmSync(join(headlessHome, 'server', 'instances', 'srv-h-rb.json'), { force: true });
+          primaryState.serverId = 'srv-p-404';
+          primaryState.buildId = NEW_COMMIT;
+          headlessState.serverId = 'srv-h-404';
+          headlessState.buildId = NEW_COMMIT;
+          headlessState.healthzStatus = 404;
+          primaryPid = 50015;
+          headlessPid = 50016;
+          seedActive(runtimeRoot, newRelId, NEW_COMMIT, 'desk-new', 'srv-new');
+          registerInstance(primaryHome, { serverId: 'srv-p-404', pid: 50015, port: primarySrv.port, buildId: NEW_COMMIT });
+          registerInstance(headlessHome, { serverId: 'srv-h-404', pid: 50016, port: headlessSrv.port, buildId: NEW_COMMIT });
+          return { code: 0, stdout: `Running ${newRelId}`, stderr: '' };
+        },
+      });
+    } catch (error) {
+      caught404Error = error;
+    }
+    assert.ok(caught404Error, 'switchRuntime must reject when /api/healthz returns 404');
+    assert.match(caught404Error.message, /\/api\/healthz failed/);
+    assert.equal(caught404Error.failureReport.rollback.ok, true);
+    assert.ok(calls[1].includes('-Recover') && calls[1].includes('-Rollback'));
+    assert.equal(caughtError.failureReport.ok, false);
+    assert.equal(caughtError.failureReport.stage, 'post_switch_verify');
+    assert.equal(caughtError.failureReport.rollback.triggered, true);
+    assert.equal(caughtError.failureReport.rollback.source, 'conductor_auto_rollback');
+    assert.equal(caughtError.failureReport.rollback.ok, true);
+    assert.equal(caughtError.failureReport.rollback.releaseId, oldRelId);
+    assert.equal(caughtError.failureReport.rollback.spaces.length, 2);
+    assert.ok(caughtError.failureReport.rollback.spaces.every((s) => s.ok && s.server.build_id === OLD_COMMIT));
+
+    // Case B: standalone rollback command + arg parser validation.
+    const rbParsed = parseConductorArgs(['rollback', '--runtime-root', runtimeRoot, '--release-id', oldRelId, '--json']);
+    assert.equal(rbParsed.command, 'rollback');
+    assert.equal(rbParsed.options['release-id'], oldRelId);
+    const rbRes = await rollbackRuntime({
+      runtimeRoot,
+      kikiHome: primaryHome,
+      releaseId: oldRelId,
+      expectedCommit: OLD_COMMIT,
+      resolveProcessPath: (pid) => (pid === primaryPid || pid === headlessPid ? activeExe : null),
+      runHotSwitch: async (_script, args) => {
+        assert.ok(args.includes('-Recover') && args.includes('-Rollback'));
+        return { code: 0, stdout: `Recovery complete: ${oldRelId}`, stderr: '' };
+      },
+    });
+    assert.equal(rbRes.ok, true);
+    assert.equal(rbRes.releaseId, oldRelId);
+    assert.equal(rbRes.spaces.length, 2);
+  } finally {
+    await primarySrv.close();
+    await headlessSrv.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

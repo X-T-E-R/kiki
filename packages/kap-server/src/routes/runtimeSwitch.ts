@@ -4,7 +4,48 @@ import { z } from 'zod';
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { desktopPendingWork } from './desktopLifecycle';
-import { ManagedWriterOwner, managedWriterSchema } from '../runtime/runtimeStore';
+import { managedWriterSchema, type ManagedWriter } from '../runtime/runtimeStore';
+
+export interface RuntimeSwitchOwner {
+  state(): ManagedWriter;
+  update(patch: Partial<Pick<ManagedWriter, 'phase' | 'operationId' | 'port'>>): void;
+}
+
+export function createUnmanagedRuntimeSwitchOwner(identity: {
+  readonly serverId: string;
+  readonly homeId: string;
+  readonly pid: number;
+  readonly startedAt: number;
+  readonly host: string;
+  readonly port: number;
+  readonly serverVersion: string;
+  readonly buildId?: string;
+  readonly buildChannel?: string;
+}): RuntimeSwitchOwner {
+  let current: ManagedWriter = {
+    serverId: identity.serverId,
+    homeId: identity.homeId,
+    pid: identity.pid,
+    generation: 1,
+    ownerId: identity.serverId,
+    startedAt: identity.startedAt,
+    host: identity.host,
+    port: identity.port,
+    serverVersion: identity.serverVersion,
+    buildId: identity.buildId,
+    buildChannel: identity.buildChannel,
+    phase: 'ready',
+    updatedAt: Date.now(),
+    warnings: [],
+  };
+  return {
+    state: () => current,
+    update: (patch) => {
+      current = { ...current, ...patch, updatedAt: Date.now() };
+      return current;
+    },
+  };
+}
 
 interface RuntimeRouteHost {
   get(path: string, options: object, handler: (...args: never[]) => unknown): unknown;
@@ -12,7 +53,7 @@ interface RuntimeRouteHost {
   log: { error(data: object, message: string): unknown };
 }
 
-export function registerRuntimeSwitchRoutes(app: RuntimeRouteHost, core: Scope, owner: ManagedWriterOwner, shutdown: () => void, signal: AbortSignal): void {
+export function registerRuntimeSwitchRoutes(app: RuntimeRouteHost, core: Scope, owner: RuntimeSwitchOwner, shutdown: () => void, signal: AbortSignal): void {
   const admission = core.accessor.get(IWorkAdmissionService);
   let autoShutdown = true;
   const snapshot = () => ({ writer: owner.state(), admission: admission.state(), workPending: desktopPendingWork(core) });
