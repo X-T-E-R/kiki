@@ -4,20 +4,36 @@ import { afterPaint } from './afterPaint';
 
 describe('afterPaint', () => {
   let frameDelay: number;
+  let idleDelay: number;
+  let visibilityState: DocumentVisibilityState;
+  const visibilityListeners = new Set<() => void>();
 
   const animationFrame = vi.fn((callback: FrameRequestCallback) =>
     setTimeout(() => { callback(performance.now()); }, frameDelay),
   );
-  const idleCallback = vi.fn((callback: IdleRequestCallback, options: IdleRequestOptions) =>
-    setTimeout(() => { callback({ didTimeout: true, timeRemaining: () => 0 }); }, options.timeout),
+  const idleCallback = vi.fn((callback: IdleRequestCallback) =>
+    setTimeout(() => { callback({ didTimeout: false, timeRemaining: () => 10 }); }, idleDelay),
   );
 
   beforeEach(() => {
     vi.useFakeTimers();
     frameDelay = 16;
+    idleDelay = 20;
+    visibilityState = 'visible';
+    visibilityListeners.clear();
     animationFrame.mockClear();
     idleCallback.mockClear();
-    vi.stubGlobal('document', { visibilityState: 'visible' });
+    vi.stubGlobal('document', {
+      get visibilityState() {
+        return visibilityState;
+      },
+      addEventListener: (_type: string, listener: () => void) => {
+        visibilityListeners.add(listener);
+      },
+      removeEventListener: (_type: string, listener: () => void) => {
+        visibilityListeners.delete(listener);
+      },
+    });
     vi.stubGlobal('requestAnimationFrame', animationFrame);
     vi.stubGlobal('cancelAnimationFrame', clearTimeout);
     vi.stubGlobal('requestIdleCallback', idleCallback);
@@ -30,7 +46,7 @@ describe('afterPaint', () => {
   });
 
   it('uses a cancellable timer in a hidden document', () => {
-    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    visibilityState = 'hidden';
     const task = vi.fn();
     const disposedTask = vi.fn();
 
@@ -44,32 +60,36 @@ describe('afterPaint', () => {
     expect(animationFrame).not.toHaveBeenCalled();
   });
 
-  it('runs once when the second animation frame stalls', () => {
-    frameDelay = 200;
+  it('switches to a timer when the document becomes hidden while waiting for paint', () => {
+    frameDelay = 10_000;
     const task = vi.fn();
     afterPaint(task);
 
-    vi.advanceTimersByTime(249);
     expect(task).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
+    visibilityState = 'hidden';
+    for (const listener of visibilityListeners) listener();
+    vi.advanceTimersByTime(0);
     expect(task).toHaveBeenCalledTimes(1);
     vi.runAllTimers();
     expect(task).toHaveBeenCalledTimes(1);
     expect(idleCallback).not.toHaveBeenCalled();
+    expect(visibilityListeners.size).toBe(0);
   });
 
-  it('waits for two frames, then bounds the wait for an idle slot', () => {
+  it('waits for two frames and an idle slot without forcing an elapsed-time cutoff', () => {
     const task = vi.fn();
     afterPaint(task);
 
     vi.advanceTimersByTime(31);
     expect(idleCallback).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(idleCallback).toHaveBeenCalledWith(task, { timeout: 1000 });
-    vi.advanceTimersByTime(999);
+    expect(idleCallback).toHaveBeenCalledTimes(1);
+    expect(idleCallback.mock.calls[0]?.[1]).toBeUndefined();
+    vi.advanceTimersByTime(19);
     expect(task).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(task).toHaveBeenCalledTimes(1);
+    expect(visibilityListeners.size).toBe(0);
   });
 
   it.each([0, 16, 32])('cancels all scheduled work when disposed after %i ms', (elapsed) => {
@@ -80,6 +100,7 @@ describe('afterPaint', () => {
     dispose();
 
     expect(vi.getTimerCount()).toBe(0);
+    expect(visibilityListeners.size).toBe(0);
     vi.runAllTimers();
     expect(task).not.toHaveBeenCalled();
   });

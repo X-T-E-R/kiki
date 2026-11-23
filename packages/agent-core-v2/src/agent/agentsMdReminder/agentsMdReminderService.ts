@@ -179,13 +179,12 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   }
 
   private async discoverDir(lease: RuntimeLease, directory: string): Promise<readonly string[]> {
-    let target: string;
-    if (this.discovery.resolveRealPath !== undefined) {
-      target = await this.discovery.resolveRealPath(lease, directory);
-    } else {
-      target = normalize(directory);
-      try { target = normalize(await lease.runtime.fs!.realpath(target)); } catch {}
-    }
+    let target = normalize(directory);
+    try {
+      target = this.discovery.resolveRealPath !== undefined
+        ? await this.discovery.resolveRealPath(lease, target)
+        : normalize(await lease.runtime.fs!.realpath(target));
+    } catch {}
     const pathClass = lease.runtime.environment.pathClass;
     const base = normalize(lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(this.runtime, {
       workDir: this.sessionContext.cwd,

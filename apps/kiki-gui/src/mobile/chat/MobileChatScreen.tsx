@@ -6,7 +6,7 @@ import { personaGreeting } from '@kiki/session-core/session';
 import { Icon } from '../../components/icons';
 import { ToastAnchor } from '../../components/Toasts';
 import { useI18n } from '../../i18n';
-import type { KikiClient } from '../../lib/client';
+import { isSessionNotFoundMessage, type KikiClient } from '../../lib/client';
 import { LiftTheHoodSheet, type HoodTab } from './LiftTheHoodSheet';
 import { MobileComposer } from './MobileComposer';
 import { MobileTranscript } from './MobileTranscript';
@@ -88,6 +88,13 @@ export function MobileChatScreen({
   const title = session?.title?.trim() || persona?.name || t('mobile.chats.title');
   const runningTasksCount = stream.state.tasks.filter((task) => task.status === 'running').length;
   const subStatus = stream.state.busy ? `${spaceName} · ${t('mobile.chat.thinking')}` : spaceName;
+  const loadError =
+    stream.state.loadError ??
+    (!stream.state.loaded && stream.state.resyncFailed ? stream.state.resyncError?.message : undefined);
+  const canRetryLoad =
+    loadError !== undefined &&
+    !isSessionNotFoundMessage(loadError) &&
+    (stream.state.loadError !== undefined || stream.state.resyncError?.retryable !== false);
 
   const send = (text: string, timing?: Parameters<typeof stream.sendPrompt>[0]['timing']) =>
     stream.sendPrompt({
@@ -179,6 +186,7 @@ export function MobileChatScreen({
       <MobileTranscript
         blocks={stream.state.blocks}
         loaded={stream.state.loaded}
+        loadError={loadError}
         busy={stream.state.busy}
         hasMoreHistory={stream.state.hasMoreHistory}
         loadingOlder={stream.loadingOlder}
@@ -186,6 +194,7 @@ export function MobileChatScreen({
         personaName={persona?.name}
         greeting={greeting}
         onLoadOlder={() => { void stream.loadOlder(); }}
+        onRetryLoad={canRetryLoad ? () => { void stream.retryLoad(); } : undefined}
         onOpenHood={openHood}
         onResolveApproval={(approvalId, decision, reason) => { void stream.resolveApproval(approvalId, decision, reason); }}
         onAnswerQuestion={stream.answerQuestion}

@@ -1387,6 +1387,39 @@ describe('agentsMdReminder discovery cache', () => {
     expect(h.reminders).toHaveLength(2);
     expect(reminderText(h)).toContain('updated workspace rules');
   });
+
+  it('does not cache transient realpath failures as resolved canonical paths', async () => {
+    const hostFs = new HostFileSystem();
+    const watch = watchHarness();
+    const environment = {
+      _serviceBrand: undefined,
+      homeDir,
+      pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+    } as unknown as IHostEnvironment;
+    const runtime = testRuntime(hostFs, environment, watch.service);
+    const discovery = new AgentsMdDiscoveryService(60_000, () => 1_000);
+    const lease = { runtime, track: () => {}, dispose: () => {} } as unknown as import('#/runtime/runtime').RuntimeLease;
+    const subDir = join(workDir, 'packages', 'transient-realpath');
+    await mkdir(subDir, { recursive: true });
+
+    let shouldFail = true;
+    const originalRealpath = hostFs.realpath.bind(hostFs);
+    const realpath = vi.spyOn(hostFs, 'realpath').mockImplementation(async (target: string) => {
+      if (shouldFail) throw new Error('EIO: transient filesystem fault');
+      return originalRealpath(target);
+    });
+
+    await expect(discovery.resolveRealPath(lease, subDir)).rejects.toThrow('transient filesystem fault');
+    expect(realpath).toHaveBeenCalledTimes(1);
+
+    shouldFail = false;
+    const resolved = await discovery.resolveRealPath(lease, subDir);
+    expect(realpath).toHaveBeenCalledTimes(2);
+    expect(resolved).toBe(normalize(await originalRealpath(subDir)));
+
+    await discovery.resolveRealPath(lease, subDir);
+    expect(realpath).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('agentsMdReminder round-2 hardening', () => {

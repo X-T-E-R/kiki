@@ -2173,6 +2173,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 }
 
 const ControllerRegistryContext = createContext<ControllerRegistry | null>(null);
+export const ControllerRegistryProvider = ControllerRegistryContext.Provider;
 
 export function useControllerRegistry(): ControllerRegistry {
   const value = useContext(ControllerRegistryContext);
