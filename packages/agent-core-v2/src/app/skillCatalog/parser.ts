@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '@kiki/agent-profiles/frontmatter';
 import { sliceUtf16 } from '#/_base/text/utf16';
-import { HookDefSchema, type HookDefConfig } from '#/features/externalHooks/configSection';
+import { HookDefSchema, hooksFromToml, type HookDefConfig } from '#/features/externalHooks/configSection';
 import { parseClaudeHookGroups } from '#/features/externalHooks/internal/claudeHooks';
 import type { HookDef } from '#/features/externalHooks/internal/types';
 
@@ -190,7 +190,7 @@ function parseSkillHooks(raw: unknown, skillDir: string, skillMdPath: string): r
   if (raw === undefined) return undefined;
   let defs: readonly HookDefConfig[];
   if (Array.isArray(raw)) {
-    const parsed = SkillHooksSchema.safeParse(raw);
+    const parsed = SkillHooksSchema.safeParse(hooksFromToml(raw));
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       const detail = issue === undefined ? 'invalid format' : `${issue.path.join('.')}: ${issue.message}`;

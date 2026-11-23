@@ -13,6 +13,7 @@ import {
   type TestInstantiationService,
 } from '#/_base/di/test';
 import { AsyncEmitter, Emitter, Event, type IWaitUntil } from '#/_base/event';
+import type { ILogService } from '#/_base/log/log';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { buildContextCompactionShape } from '#/agent/contextMemory/compactionHandoff';
 import {
@@ -324,18 +325,41 @@ describe('IExternalHooksRunnerService integration', () => {
     expect(dangerous[0]?.reason).toContain('rm -rf');
   });
 
-  it('blocks PreToolUse when the hook times out', async () => {
-    const engine = makeHookRunner([
+  it('fails open on PreToolUse timeout by default and blocks when failClosed is enabled', async () => {
+    const warn = vi.fn();
+    const defaultEngine = makeHookRunner(
+      [
+        {
+          event: 'PreToolUse',
+          matcher: 'Bash',
+          command: nodeCommand('setTimeout(() => {}, 10000);'),
+          timeout: 0.05,
+        },
+      ],
+      { log: { warn } as unknown as ILogService },
+    );
+    await expect(
+      defaultEngine.triggerBlock('PreToolUse', {
+        matcherValue: 'Bash',
+        inputData: { toolName: 'Bash', toolInput: { command: 'printf safe' } },
+      }),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      'PreToolUse hook failed; failing open',
+      expect.objectContaining({ event: 'PreToolUse', timedOut: true }),
+    );
+
+    const failClosedEngine = makeHookRunner([
       {
         event: 'PreToolUse',
         matcher: 'Bash',
         command: nodeCommand('setTimeout(() => {}, 10000);'),
         timeout: 0.05,
+        failClosed: true,
       },
     ]);
-
     await expect(
-      engine.triggerBlock('PreToolUse', {
+      failClosedEngine.triggerBlock('PreToolUse', {
         matcherValue: 'Bash',
         inputData: { toolName: 'Bash', toolInput: { command: 'printf safe' } },
       }),
@@ -962,7 +986,7 @@ describe('IExternalHooksRunnerService integration', () => {
 
   it('round-trips hook definitions through the externalHooks config transforms', () => {
     const raw = [
-      { event: 'PreToolUse', matcher: 'Bash', command: 'echo ok' },
+      { event: 'PreToolUse', matcher: 'Bash', command: 'echo ok', fail_closed: true },
       {
         event: 'Notification',
         matcher: 'permission_prompt',
@@ -974,7 +998,7 @@ describe('IExternalHooksRunnerService integration', () => {
     const parsed = (hooksFromToml(raw) as unknown[]).map((hook) => HookDefSchema.parse(hook));
 
     expect(parsed).toHaveLength(2);
-    expect(parsed[0]).toMatchObject({ event: 'PreToolUse', matcher: 'Bash' });
+    expect(parsed[0]).toMatchObject({ event: 'PreToolUse', matcher: 'Bash', failClosed: true });
     expect(parsed[1]).toMatchObject({ event: 'Notification', timeout: 5 });
     expect(hooksToToml(parsed, undefined)).toEqual(raw);
   });
@@ -2004,16 +2028,189 @@ describe('IExternalHooksRunnerService integration', () => {
     }
   });
 
-  it('includes timeout and exit-code details when a UserPromptSubmit hook blocks without stderr', () => {
-    expect(renderUserPromptHookBlockResult([{ action: 'block', timedOut: true }])).toEqual({
+  it('includes timeout and exit-code details for effective UserPromptSubmit blocks while failing open on non-explicit faults', () => {
+    expect(renderUserPromptHookBlockResult([{ action: 'block', timedOut: true }])).toBeUndefined();
+    expect(renderUserPromptHookBlockResult([{ action: 'block', exitCode: 1 }])).toBeUndefined();
+    expect(renderUserPromptHookBlockResult([{ action: 'block', exitCode: 127 }])).toBeUndefined();
+    expect(
+      renderUserPromptHookBlockResult([{ action: 'block', exitCode: 0, reason: 'Hook produced invalid protocol JSON output' }]),
+    ).toBeUndefined();
+    expect(renderUserPromptHookBlockResult([{ action: 'block', timedOut: true, failClosed: true }])).toEqual({
       event: 'UserPromptSubmit',
       message: 'Blocked by UserPromptSubmit hook (timed out)',
       text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (timed out)\n</hook_result>',
+    });
+    expect(renderUserPromptHookBlockResult([{ action: 'block', exitCode: 1, failClosed: true }])).toEqual({
+      event: 'UserPromptSubmit',
+      message: 'Blocked by UserPromptSubmit hook (exit code 1)',
+      text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (exit code 1)\n</hook_result>',
     });
     expect(renderUserPromptHookBlockResult([{ action: 'block', exitCode: 2 }])).toEqual({
       event: 'UserPromptSubmit',
       message: 'Blocked by UserPromptSubmit hook (exit code 2)',
       text: '<hook_result hook_event="UserPromptSubmit">\nBlocked by UserPromptSubmit hook (exit code 2)\n</hook_result>',
     });
+    expect(
+      renderUserPromptHookBlockResult([
+        { action: 'block', exitCode: 0, structuredOutput: true, reason: 'explicit json block' },
+      ]),
+    ).toEqual({
+      event: 'UserPromptSubmit',
+      message: 'explicit json block',
+      text: '<hook_result hook_event="UserPromptSubmit">\nexplicit json block\n</hook_result>',
+    });
+  });
+
+  it('fails open on crashing or timed-out UserPromptSubmit and PreToolUse hooks in AgentExternalHooksService while honoring explicit and failClosed blocks', async () => {
+    const disposables = new DisposableStore();
+    let ix: TestInstantiationService | undefined;
+    const warn = vi.fn();
+    const runner = makeHookRunner(
+      [
+        { event: 'UserPromptSubmit', matcher: 'fault-exit1', command: nodeCommand('process.stderr.write("script crash"); process.exit(1);'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'fault-timeout', command: nodeCommand('setTimeout(() => {}, 10000);'), timeout: 0.05 },
+        { event: 'UserPromptSubmit', matcher: 'fault-badjson', command: nodeCommand('process.stdout.write("{\\"hookSpecificOutput\\":");'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'explicit-deny', command: nodeCommand('process.stdout.write(JSON.stringify({ decision: "block", reason: "no secrets" }));'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'strict-fault', command: nodeCommand('process.stderr.write("hard gate down"); process.exit(1);'), timeout: 5, failClosed: true },
+        { event: 'PreToolUse', matcher: 'FaultTool', command: nodeCommand('process.exit(1);'), timeout: 5 },
+        { event: 'PreToolUse', matcher: 'StrictFaultTool', command: nodeCommand('process.stderr.write("strict tool gate"); process.exit(1);'), timeout: 5, failClosed: true },
+      ],
+      { log: { warn } as unknown as ILogService },
+    );
+    try {
+      const context = stubContextMemory();
+      const promptHooks = createHooks<
+        { onBeforeSubmitPrompt: PromptSubmitContext },
+        'onBeforeSubmitPrompt'
+      >(['onBeforeSubmitPrompt']);
+
+      ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/fail-open-agent');
+          reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.defineInstance(ISessionContext, stubSessionContext());
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+          reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
+          reg.defineInstance(IAgentContextMemoryService, context);
+          reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+          reg.define(IEventBus, EventBusService);
+          reg.definePartialInstance(IAgentPromptService, { hooks: promptHooks });
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.definePartialInstance(IAgentToolResultTruncationService, {
+            truncateForModel: async (input) => input.result,
+          });
+          reg.definePartialInstance(IAgentPermissionGate, {});
+          reg.definePartialInstance(IAgentFullCompactionService, {
+            hooks: createHooks(['onWillCompact']),
+          });
+          reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
+        },
+      });
+      ix.set(IExternalHooksRunnerService, runner);
+      ix.set(IAgentExternalHooksService, new SyncDescriptor(AgentExternalHooksService));
+      ix.get(IAgentExternalHooksService);
+
+      for (const text of ['fault-exit1', 'fault-timeout', 'fault-badjson']) {
+        const ctx: PromptSubmitContext = {
+          promptMessage: {
+            role: 'user',
+            content: [{ type: 'text', text }],
+            toolCalls: [],
+            origin: { kind: 'user' },
+          },
+          isSteer: false,
+          block: false,
+        };
+        await promptHooks.onBeforeSubmitPrompt.run(ctx);
+        expect(ctx.block, text).toBe(false);
+      }
+      expect(context.messages).toEqual([]);
+
+      const explicitCtx: PromptSubmitContext = {
+        promptMessage: {
+          role: 'user',
+          content: [{ type: 'text', text: 'explicit-deny' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+        isSteer: false,
+        block: false,
+      };
+      await promptHooks.onBeforeSubmitPrompt.run(explicitCtx);
+      expect(explicitCtx.block).toBe(true);
+      expect(context.messages.at(-1)?.content[0]).toEqual({
+        type: 'text',
+        text: '<hook_result hook_event="UserPromptSubmit">\nno secrets\n</hook_result>',
+      });
+
+      const strictCtx: PromptSubmitContext = {
+        promptMessage: {
+          role: 'user',
+          content: [{ type: 'text', text: 'strict-fault' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+        isSteer: false,
+        block: false,
+      };
+      await promptHooks.onBeforeSubmitPrompt.run(strictCtx);
+      expect(strictCtx.block).toBe(true);
+      expect(context.messages.at(-1)?.content[0]).toEqual({
+        type: 'text',
+        text: '<hook_result hook_event="UserPromptSubmit">\nhard gate down\n</hook_result>',
+      });
+
+      const faultToolSpy = vi.fn(async () => ({ output: 'tool ran' }));
+      const strictToolSpy = vi.fn(async () => ({ output: 'should not run' }));
+      const registry = ix.get(IAgentToolRegistryService);
+      registry.register({
+        name: 'FaultTool',
+        description: 'Fixture',
+        parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'FaultTool', accesses: ToolAccesses.none(), execute: faultToolSpy }),
+      });
+      registry.register({
+        name: 'StrictFaultTool',
+        description: 'Fixture',
+        parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'StrictFaultTool', accesses: ToolAccesses.none(), execute: strictToolSpy }),
+      });
+
+      const executor = ix.get(IAgentToolExecutorService);
+      const faultResults: Array<{ readonly result: { readonly isError?: boolean; readonly output: unknown } }> = [];
+      for await (const item of executor.execute(
+        [{ id: 'c1', name: 'FaultTool', type: 'function', arguments: '{}' }],
+        { turnId: 0, signal: new AbortController().signal },
+      )) {
+        faultResults.push(item);
+      }
+      expect(faultToolSpy).toHaveBeenCalledOnce();
+      expect(faultResults[0]?.result.isError).toBeUndefined();
+      expect(faultResults[0]?.result.output).toBe('tool ran');
+
+      const strictResults: Array<{ readonly result: { readonly isError?: boolean; readonly output: unknown } }> = [];
+      for await (const item of executor.execute(
+        [{ id: 'c2', name: 'StrictFaultTool', type: 'function', arguments: '{}' }],
+        { turnId: 0, signal: new AbortController().signal },
+      )) {
+        strictResults.push(item);
+      }
+      expect(strictToolSpy).not.toHaveBeenCalled();
+      expect(strictResults[0]?.result.isError).toBe(true);
+      expect(String(strictResults[0]?.result.output)).toContain('strict tool gate');
+      expect(warn).toHaveBeenCalledWith(
+        'PreToolUse hook failed; failing open',
+        expect.objectContaining({ event: 'PreToolUse', exitCode: 1 }),
+      );
+    } finally {
+      await ix?.dispose();
+      await disposables.dispose();
+      await runner.dispose();
+    }
   });
 });

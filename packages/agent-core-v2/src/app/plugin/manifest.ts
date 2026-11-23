@@ -1,6 +1,7 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import { transformPlainObject } from '#/app/config/toml';
 import { HookDefSchema, HooksV2ConfigSchema, hooksFromToml, type HooksV2Config, type HookDefConfig } from '#/features/externalHooks/configSection';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 
@@ -45,6 +46,7 @@ function checkAborted(signal?: AbortSignal): void {
 export interface ParsedManifestResult {
   readonly manifest?: PluginManifest;
   readonly legacyHooksAbsent?: boolean;
+  readonly hookFailures?: readonly string[];
   readonly manifestKind?: PluginManifestKind;
   readonly manifestPath?: string;
   readonly shadowedManifestPath?: string;
@@ -188,6 +190,8 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
   checkAborted(signal);
   recordUnsupportedRuntimeFields(raw, diagnostics);
 
+  const hookFailures: string[] = [];
+  const parsedHooks = readHooks(raw['hooks'], diagnostics, hookFailures);
   const manifest: PluginManifest = {
     name,
     version: stringField(raw, 'version'),
@@ -201,7 +205,7 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
     agents,
     sessionStart: readSessionStart(raw['sessionStart'], diagnostics),
     mcpServers: await readMcpServers(pluginRoot, raw['mcpServers'], diagnostics, signal),
-    hooks: readHooks(raw['hooks'], diagnostics),
+    hooks: parsedHooks,
     hookRules: readHookRules(raw['hook_rules'] ?? raw['hookRules'] ?? (!Array.isArray(raw['hooks']) ? raw['hooks'] : undefined), diagnostics),
     commands: await readCommands(pluginRoot, raw['commands'], diagnostics, signal),
     interface: readInterface(raw['interface']),
@@ -216,7 +220,15 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
   const hooks = raw['hooks'];
   const legacy = isObject(hooks) ? hooks['legacy'] : hooks;
   const legacyHooksAbsent = legacy === undefined || (Array.isArray(legacy) && legacy.length === 0);
-  return { manifest, manifestKind, manifestPath, shadowedManifestPath, diagnostics, legacyHooksAbsent };
+  return {
+    manifest,
+    manifestKind,
+    manifestPath,
+    shadowedManifestPath,
+    diagnostics,
+    legacyHooksAbsent,
+    hookFailures: hookFailures.length === 0 ? undefined : hookFailures,
+  };
 }
 
 function recordUnsupportedRuntimeFields(
@@ -569,20 +581,36 @@ async function readMcpServers(
 function readHooks(
   raw: unknown,
   diagnostics: PluginDiagnostic[],
+  hookFailures: string[],
 ): readonly HookDefConfig[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw)) {
     const parsed = HooksV2ConfigSchema.safeParse(hooksFromToml(raw));
-    return parsed.success ? parsed.data.legacy : undefined;
+    if (parsed.success) return parsed.data.legacy;
+    if (isObject(raw) && Array.isArray(raw['legacy'])) {
+      return parseHookArray(raw['legacy'], diagnostics, hookFailures);
+    }
+    return undefined;
   }
+  return parseHookArray(raw, diagnostics, hookFailures);
+}
+
+function parseHookArray(
+  entries: readonly unknown[],
+  diagnostics: PluginDiagnostic[],
+  hookFailures: string[],
+): readonly HookDefConfig[] | undefined {
   const out: HookDefConfig[] = [];
-  raw.forEach((entry, i) => {
-    const parsed = HookDefSchema.safeParse(entry);
+  entries.forEach((entry, i) => {
+    const normalized = isObject(entry) ? transformPlainObject(entry) : entry;
+    const parsed = HookDefSchema.safeParse(normalized);
     if (!parsed.success) {
+      const message = `Invalid hook at index ${i}: ${parsed.error.message}`;
       diagnostics.push({
-        severity: 'error',
-        message: `Invalid hook at index ${i}: ${parsed.error.message}`,
+        severity: 'warn',
+        message,
       });
+      hookFailures.push(message);
     } else {
       out.push(parsed.data);
     }

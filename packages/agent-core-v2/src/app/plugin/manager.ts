@@ -556,6 +556,12 @@ export class PluginManager {
           defaultEnabled: record.defaultEnabled ?? false,
           message: message ?? 'invalid plugin state',
         });
+      } else if (record.hookFailures !== undefined && record.hookFailures.length > 0) {
+        out.push({
+          pluginId: record.id,
+          defaultEnabled: record.defaultEnabled ?? false,
+          message: record.hookFailures.join('; '),
+        });
       }
     }
     return out;
@@ -1216,6 +1222,7 @@ async function recordFrom(input: {
     skillCount: await countDiscoveredPluginSkills(input.id, parsed.manifest, input.discoverSkills),
     manifest: parsed.manifest,
     legacyHooksAbsent: parsed.legacyHooksAbsent,
+    hookFailures: parsed.hookFailures,
     manifestKind: parsed.manifestKind,
     manifestPath: parsed.manifestPath,
     shadowedManifestPath: parsed.shadowedManifestPath,

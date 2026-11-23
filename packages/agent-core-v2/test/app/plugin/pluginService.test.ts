@@ -1375,9 +1375,15 @@ describe('PluginService (plugin boundary)', () => {
     try {
       const svc = host.app.accessor.get(IPluginService);
       await expect(svc.getPluginInfo({ id: 'broken-guard' })).resolves.toMatchObject({
-        state: 'error',
+        state: 'ok',
         enabled: true,
         defaultEnabled: false,
+        diagnostics: [
+          expect.objectContaining({
+            severity: 'warn',
+            message: expect.stringContaining('Invalid hook at index 0'),
+          }),
+        ],
       });
 
       const wildcard = await svc.inspectHooks!('*');
@@ -1400,6 +1406,44 @@ describe('PluginService (plugin boundary)', () => {
         code: 'plugin.load_failed',
         message: expect.stringContaining('Failed to load hooks from plugin "broken-guard"'),
       });
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('keeps sibling valid hooks and MCP servers working when a plugin declares an unrecognized hook event', async () => {
+    const home = await makeHome();
+    const mixedRoot = await makePluginDir('mixed-hooks', {
+      mcpServers: {
+        helper: { command: 'node', args: ['helper.js'] },
+      },
+      hooks: [
+        { event: 'FutureHookEvent', command: 'echo future' },
+        { event: 'PreToolUse', command: 'echo valid-hook' },
+      ],
+    });
+    createdDirs.push(mixedRoot);
+    await writeInstalledFile(home, JSON.stringify(installedFile('mixed-hooks', mixedRoot, true)));
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.getPluginInfo({ id: 'mixed-hooks' })).resolves.toMatchObject({
+        state: 'ok',
+        hookCount: 1,
+        mcpServerCount: 1,
+      });
+      const mcp = await svc.enabledMcpServers();
+      expect(Object.keys(mcp)).toEqual(['plugin-mixed-hooks:helper']);
+      const inspected = await svc.inspectHooks!('*');
+      expect(inspected.hooks).toEqual([
+        expect.objectContaining({ pluginId: 'mixed-hooks', event: 'PreToolUse', command: 'echo valid-hook' }),
+      ]);
+      expect(inspected.failures).toEqual([
+        expect.objectContaining({
+          pluginId: 'mixed-hooks',
+          message: expect.stringContaining('Invalid hook at index 0'),
+        }),
+      ]);
     } finally {
       await host.dispose();
     }

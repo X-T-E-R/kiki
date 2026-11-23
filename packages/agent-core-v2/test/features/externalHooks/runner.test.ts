@@ -2,7 +2,11 @@ import { Readable, Writable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildHookSpawnOptions, runHook } from '#/features/externalHooks/internal/runHook';
+import {
+  buildHookSpawnOptions,
+  resolveHookEnvOverrides,
+  runHook,
+} from '#/features/externalHooks/internal/runHook';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 
@@ -314,7 +318,34 @@ describe('runHook process runner', () => {
     );
 
     expect(result.action).toBe('block');
+    expect(result.structuredOutput).toBe(true);
     expect(result.reason).toBe('use rg');
+  });
+
+  it('parses top-level Claude Code decision=block and decision=allow JSON outputs', async () => {
+    const blocked = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ decision: "block", reason: "policy violation" }));',
+      ),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+    expect(blocked.action).toBe('block');
+    expect(blocked.structuredOutput).toBe(true);
+    expect(blocked.reason).toBe('policy violation');
+
+    const allowed = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ decision: "approve", message: "approved note" }));',
+      ),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+    expect(allowed.action).toBe('allow');
+    expect(allowed.structuredOutput).toBe(true);
+    expect(allowed.message).toBe('approved note');
   });
 
   it('writes the input payload to the hook process stdin as JSON', async () => {
@@ -384,18 +415,71 @@ describe('runHook process runner', () => {
       wait: () => outcome === 'completed' ? Promise.resolve(0) : new Promise(() => {}), kill, dispose,
     }) };
     const result = await runHook(host, 'example hook', {}, { timeout: outcome === 'timeout' ? 0.01 : 5, signal: controller.signal });
-    expect(result.action).toBe('block');
-    expect(result.reason).toContain('os.process.kill_failed');
+    expect(result.cleanupError).toContain('os.process.kill_failed');
     expect(result.stderr).toContain('"cleanupComplete":false');
     expect(result.stderr).toContain('"remainingProcessCount":1');
     expect(dispose).toHaveBeenCalledOnce();
     if (outcome === 'completed') {
+      expect(result.action).toBe('allow');
+      expect(result.message).toBeUndefined();
       expect(result.exitCode).toBe(0);
       expect(kill).not.toHaveBeenCalled();
     } else {
+      expect(result.action).toBe('block');
+      expect(result.reason).toContain('os.process.kill_failed');
       expect(kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
       expect(result.timedOut === true).toBe(outcome === 'timeout');
     }
+  });
+
+  it('preserves explicit block on cleanup failure and upgrades allow cleanup failure only when failClosed is true', async () => {
+    const cleanupErr = Object.assign(new Error('handle close failed'), { code: 'os.process.kill_failed' });
+    const makeHost = (exitCode: number, stdoutText = '', stderrText = ''): IHostProcessService => ({
+      _serviceBrand: undefined,
+      spawn: async () => ({
+        _serviceBrand: undefined,
+        pid: 1,
+        exitCode,
+        stdin: new Writable({ write(_chunk, _encoding, callback) { callback(); } }),
+        stdout: Readable.from([stdoutText]),
+        stderr: Readable.from([stderrText]),
+        wait: async () => exitCode,
+        kill: async () => {},
+        dispose: async () => { throw cleanupErr; },
+      }),
+    });
+
+    const explicitExit2 = await runHook(makeHost(2, '', 'explicit deny'), 'example hook', {}, { timeout: 5 });
+    expect(explicitExit2).toMatchObject({
+      action: 'block',
+      exitCode: 2,
+      reason: 'explicit deny',
+      cleanupError: expect.stringContaining('os.process.kill_failed'),
+    });
+
+    const explicitJson = await runHook(
+      makeHost(0, JSON.stringify({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'json deny' } })),
+      'example hook',
+      {},
+      { timeout: 5 },
+    );
+    expect(explicitJson).toMatchObject({
+      action: 'block',
+      exitCode: 0,
+      structuredOutput: true,
+      reason: 'json deny',
+      cleanupError: expect.stringContaining('os.process.kill_failed'),
+    });
+
+    const failClosedAllow = await runHook(makeHost(0, 'ok'), 'example hook', {}, { timeout: 5, failClosed: true });
+    expect(failClosedAllow).toMatchObject({
+      action: 'block',
+      failClosed: true,
+      exitCode: 0,
+      structuredOutput: undefined,
+      reason: expect.stringContaining('os.process.kill_failed'),
+      cleanupError: expect.stringContaining('os.process.kill_failed'),
+    });
   });
 });
 
@@ -414,5 +498,49 @@ describe('buildHookSpawnOptions (Windows console-window regression)', () => {
     const options = buildHookSpawnOptions({ cwd: '/repo', env: { FOO: 'bar' } });
     expect(options.cwd).toBe('/repo');
     expect(options.env).toMatchObject({ FOO: 'bar' });
+  });
+
+  it('appends missing node and POSIX fallback directories after existing PATH entries', () => {
+    const existing = new Set(['/Users/example/.local/bin', '/opt/homebrew/bin']);
+    const overrides = resolveHookEnvOverrides(
+      { CUSTOM: '1', PATH: '/custom/bin:/opt/homebrew/bin' },
+      {
+        baseEnv: { PATH: '/usr/bin:/bin' },
+        platform: 'darwin',
+        execPath: '/Users/example/.nvm/versions/node/v24.0.0/bin/node',
+        homeDir: '/Users/example',
+        pathExists: (candidate) => existing.has(candidate),
+      },
+    );
+    expect(overrides).toEqual({
+      CUSTOM: '1',
+      PATH: '/custom/bin:/opt/homebrew/bin:/Users/example/.nvm/versions/node/v24.0.0/bin:/Users/example/.local/bin',
+    });
+
+    const seaBinary = resolveHookEnvOverrides(undefined, {
+      baseEnv: { PATH: '/usr/bin:/bin' },
+      platform: 'linux',
+      execPath: '/opt/kiki/kiki',
+      homeDir: '/home/example',
+      pathExists: (candidate) => candidate === '/usr/local/bin',
+    });
+    expect(seaBinary).toEqual({
+      PATH: '/usr/bin:/bin:/usr/local/bin',
+    });
+
+    const win = buildHookSpawnOptions(
+      { env: { FOO: 'bar' } },
+      {
+        baseEnv: { Path: 'C:\\Windows\\System32' },
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        homeDir: 'C:\\Users\\example',
+        pathExists: () => true,
+      },
+    );
+    expect(win.env).toEqual({
+      FOO: 'bar',
+      Path: 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
+    });
   });
 });

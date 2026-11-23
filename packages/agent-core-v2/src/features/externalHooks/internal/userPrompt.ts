@@ -1,4 +1,4 @@
-import type { HookResult } from './types';
+import { isEffectiveHookBlock, type HookResult } from './types';
 
 export function renderHookResult(event: string, message: string): string {
   return `<hook_result hook_event="${event}">\n${message}\n</hook_result>`;
@@ -38,7 +38,7 @@ export function renderUserPromptHookResult(
 export function renderUserPromptHookBlockResult(
   results: readonly HookResult[] | undefined,
 ): RenderedHookResult | undefined {
-  const block = results?.find((result) => result.action === 'block');
+  const block = results?.find(isEffectiveHookBlock);
   if (block === undefined) return undefined;
   const message = block.message?.trim();
   if (message !== undefined && message.length > 0) {

@@ -31,6 +31,7 @@ export interface HookDef {
   readonly matcher?: string;
   readonly command: string;
   readonly timeout?: number;
+  readonly failClosed?: boolean;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
 }
@@ -49,6 +50,8 @@ export interface HookResult {
   readonly exitCode?: number;
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
+  readonly failClosed?: boolean;
+  readonly cleanupError?: string;
 }
 
 export interface HookBlockDecision {
@@ -60,4 +63,15 @@ export type HookMatcherValue = string | readonly ContentPart[];
 
 export function compileHookMatcher(value: string): RegExp {
   return new RegExp(value);
+}
+
+export function isExplicitHookBlock(result: HookResult): boolean {
+  if (result.action !== 'block') return false;
+  if (result.timedOut === true) return false;
+  return result.exitCode === 2 || (result.exitCode === 0 && result.structuredOutput === true);
+}
+
+export function isEffectiveHookBlock(result: HookResult): boolean {
+  if (result.action !== 'block') return false;
+  return isExplicitHookBlock(result) || result.failClosed === true;
 }

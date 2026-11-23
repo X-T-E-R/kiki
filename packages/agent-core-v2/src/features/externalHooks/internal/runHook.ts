@@ -1,5 +1,9 @@
 import { type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
 
+import { mergeChildEnv } from '@kiki/kaos/exec-env';
 import { z } from 'zod';
 
 import { type IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
@@ -7,27 +11,138 @@ import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { toErrorPayload } from '#/_base/errors/serialize';
 import { isPlainObject } from '#/_base/utils/types';
 
-import type { HookResult } from './types';
+import { isExplicitHookBlock, type HookResult } from './types';
 
 export interface RunHookOptions {
   readonly timeout: number;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly signal?: AbortSignal;
+  readonly failClosed?: boolean;
 }
 
-export function buildHookSpawnOptions(options: {
-  cwd?: string;
-  env?: Record<string, string>;
-}): SpawnOptionsWithoutStdio {
+export interface HookEnvContext {
+  readonly baseEnv?: Readonly<Record<string, string | undefined>>;
+  readonly platform?: NodeJS.Platform;
+  readonly execPath?: string;
+  readonly homeDir?: string;
+  readonly pathExists?: (candidate: string) => boolean;
+}
+
+export function resolveHookEnvOverrides(
+  overrides?: Readonly<Record<string, string>>,
+  context: HookEnvContext = {},
+): Record<string, string> | undefined {
+  const platform = context.platform ?? process.platform;
+  const isWindows = platform === 'win32';
+  const baseEnv = context.baseEnv ?? process.env;
+  const execPath = context.execPath ?? process.execPath;
+  const pathExists = context.pathExists ?? safeExistsSync;
+  const sep = isWindows ? ';' : ':';
+
+  const overridePath = findPathEntry(overrides, isWindows);
+  const basePath = findPathEntry(baseEnv, isWindows);
+  const pathKey = overridePath?.key ?? basePath?.key ?? 'PATH';
+  const currentPath = overridePath?.value ?? basePath?.value ?? '';
+  const existing = currentPath.split(sep).filter((entry) => entry.length > 0);
+  const seen = new Set(existing.map((entry) => normalizePathSegment(entry, isWindows)));
+  const added: string[] = [];
+
+  const appendIfMissing = (candidate: string): void => {
+    if (candidate.length === 0) return;
+    const key = normalizePathSegment(candidate, isWindows);
+    if (seen.has(key)) return;
+    seen.add(key);
+    added.push(candidate);
+  };
+
+  const pathImpl = isWindows ? path.win32 : path.posix;
+  const execBase = pathImpl.basename(execPath).toLowerCase();
+  if (execBase === 'node' || execBase === 'node.exe') {
+    const nodeDir = pathImpl.dirname(execPath);
+    if (nodeDir.length > 0 && nodeDir !== '.') {
+      appendIfMissing(nodeDir);
+    }
+  }
+
+  if (platform === 'darwin' || platform === 'linux') {
+    const home = context.homeDir ?? safeHomedir();
+    const candidates = [
+      ...(home.length > 0 ? [path.posix.join(home, '.local', 'bin')] : []),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+    ];
+    for (const candidate of candidates) {
+      if (!seen.has(normalizePathSegment(candidate, false)) && pathExists(candidate)) {
+        appendIfMissing(candidate);
+      }
+    }
+  }
+
+  if (added.length === 0) {
+    return overrides === undefined ? undefined : { ...overrides };
+  }
+  return {
+    ...overrides,
+    [pathKey]: [...existing, ...added].join(sep),
+  };
+}
+
+export function buildHookSpawnOptions(
+  options: {
+    cwd?: string;
+    env?: Record<string, string>;
+  },
+  context: HookEnvContext = {},
+): SpawnOptionsWithoutStdio {
+  const platform = context.platform ?? process.platform;
+  const isWindows = platform === 'win32';
+  const baseEnv = context.baseEnv ?? process.env;
+  const overrides = resolveHookEnvOverrides(options.env, context);
   return {
     shell: true,
     cwd: options.cwd,
     stdio: 'pipe',
-    detached: process.platform !== 'win32',
+    detached: !isWindows,
     windowsHide: true,
-    env: options.env === undefined ? undefined : { ...process.env, ...options.env },
+    env: overrides === undefined ? undefined : mergeChildEnv(baseEnv, {}, overrides, [], isWindows),
   };
+}
+
+function findPathEntry(
+  env: Readonly<Record<string, string | undefined>> | undefined,
+  isWindows: boolean,
+): { readonly key: string; readonly value: string } | undefined {
+  if (env === undefined) return undefined;
+  let found: { readonly key: string; readonly value: string } | undefined;
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (key === 'PATH' || (isWindows && key.toLowerCase() === 'path')) {
+      found = { key, value };
+    }
+  }
+  return found;
+}
+
+function normalizePathSegment(segment: string, isWindows: boolean): string {
+  if (isWindows) return segment.replace(/[\\/]+$/, '').toLowerCase();
+  return segment === '/' ? '/' : segment.replace(/\/+$/, '');
+}
+
+function safeHomedir(): string {
+  try {
+    return homedir();
+  } catch {
+    return '';
+  }
+}
+
+function safeExistsSync(candidate: string): boolean {
+  try {
+    return existsSync(candidate);
+  } catch {
+    return false;
+  }
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 30;
@@ -54,6 +169,8 @@ const HookSpecificOutputSchema = z.strictObject({
   ]).optional(),
 });
 const HookJsonOutputSchema = z.strictObject({
+  decision: z.enum(['allow', 'approve', 'block']).optional(),
+  reason: z.string().optional(),
   message: OptionalStringSchema,
   additionalContext: OptionalStringSchema,
   hookSpecificOutput: HookSpecificOutputSchema.optional(),
@@ -65,17 +182,18 @@ export async function runHook(
   input: Record<string, unknown>,
   options: RunHookOptions,
 ): Promise<HookResult> {
+  const failClosed = options.failClosed;
   let proc: IHostProcess;
   try {
     proc = await hostProcess.spawn(command, [], {
       shell: true,
       ownedProcessTree: true,
       cwd: options.cwd,
-      env: options.env,
+      env: resolveHookEnvOverrides(options.env),
     });
   } catch (error) {
     const message = toErrorMessage(error);
-    return blockResult({ message, reason: message, stderr: message });
+    return blockResult({ message, reason: message, stderr: message, failClosed });
   }
 
   return new Promise<HookResult>((resolve) => {
@@ -98,8 +216,24 @@ export async function runHook(
       catch (error) { errors.push(error); }
       if (errors.length > 0) {
         const diagnostic = `Hook process cleanup failed: ${errors.map((error) => JSON.stringify(toErrorPayload(error))).join('; ')}`;
-        resolve({ ...result, action: 'block', reason: diagnostic, message: diagnostic, stderr: [result.stderr, diagnostic].filter(Boolean).join('\n') });
-      } else resolve(result);
+        const combinedStderr = [result.stderr, diagnostic].filter(Boolean).join('\n');
+        if (isExplicitHookBlock(result) || (result.action === 'allow' && failClosed !== true)) {
+          resolve({ ...result, cleanupError: diagnostic, stderr: combinedStderr });
+          return;
+        }
+        const reason = result.reason?.trim() ? `${result.reason.trim()}; ${diagnostic}` : diagnostic;
+        resolve({
+          ...result,
+          action: 'block',
+          structuredOutput: undefined,
+          cleanupError: diagnostic,
+          reason,
+          message: result.message?.trim() ? result.message : diagnostic,
+          stderr: combinedStderr,
+        });
+        return;
+      }
+      resolve(result);
     };
 
     proc.stdout.setEncoding('utf8');
@@ -114,19 +248,19 @@ export async function runHook(
     const stdoutDone = new Promise<void>((done) => proc.stdout.once('end', done));
     const stderrDone = new Promise<void>((done) => proc.stderr.once('end', done));
     void Promise.all([proc.wait(), stdoutDone, stderrDone]).then(
-      ([code]) => settle(resultFromExitCode(code, stdout, stderr)),
+      ([code]) => settle(resultFromExitCode(code, stdout, stderr, failClosed)),
       (error) => {
         const message = toErrorMessage(error);
-        return settle(blockResult({ message, reason: message, stdout, stderr: stderr + message }), true);
+        return settle(blockResult({ message, reason: message, stdout, stderr: stderr + message, failClosed }), true);
       },
     );
 
     const timeout = setTimeout(() => {
-      void settle(blockResult({ stdout, stderr, timedOut: true }), true);
+      void settle(blockResult({ stdout, stderr, timedOut: true, failClosed }), true);
     }, timeoutMs);
 
     const onAbort = (): void => {
-      void settle(blockResult({ stdout, stderr }), true);
+      void settle(blockResult({ stdout, stderr, failClosed }), true);
     };
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -144,15 +278,26 @@ function timeoutSeconds(timeout: number): number {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_SECONDS;
 }
 
-function resultFromExitCode(exitCode: number, stdout: string, stderr: string): HookResult {
+function resultFromExitCode(
+  exitCode: number,
+  stdout: string,
+  stderr: string,
+  failClosed?: boolean,
+): HookResult {
   if (exitCode !== 0) {
     const message = stderr.trim();
-    return blockResult({ message, reason: message, stdout, stderr, exitCode });
+    return blockResult({ message, reason: message, stdout, stderr, exitCode, failClosed });
   }
 
   const structured = structuredOutput(stdout);
   if (structured.kind === 'invalid') {
-    return blockResult({ stdout, stderr, exitCode });
+    return blockResult({
+      reason: 'Hook produced invalid protocol JSON output',
+      stdout,
+      stderr,
+      exitCode,
+      failClosed,
+    });
   }
   if (structured.kind === 'structured' && structured.action === 'block') {
     return blockResult({
@@ -162,6 +307,7 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
       stderr,
       exitCode,
       structuredOutput: true,
+      failClosed,
     });
   }
 
@@ -172,6 +318,7 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
       stderr,
       exitCode,
       structuredOutput: structured.kind === 'structured' ? true : undefined,
+      failClosed,
     }),
     recovery: structured.kind === 'structured' ? structured.recovery : undefined,
   };
@@ -204,7 +351,7 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   const output = HookJsonOutputSchema.safeParse(parsed);
   if (!output.success) return { kind: 'invalid' };
 
-  const { message, additionalContext, hookSpecificOutput } = output.data;
+  const { decision, reason, message, additionalContext, hookSpecificOutput } = output.data;
   const resolvedMessage =
     hookSpecificOutput?.additionalContext ??
     additionalContext ??
@@ -215,20 +362,28 @@ function structuredOutput(stdout: string): StructuredOutputResult {
     message: resolvedMessage,
     recovery: hookSpecificOutput?.recovery,
   };
-  if (hookSpecificOutput?.permissionDecision !== 'deny') {
-    return result;
+  if (hookSpecificOutput?.permissionDecision === 'deny') {
+    return {
+      ...result,
+      action: 'block',
+      reason: hookSpecificOutput.permissionDecisionReason ?? reason,
+    };
   }
-  return {
-    ...result,
-    action: 'block',
-    reason: hookSpecificOutput.permissionDecisionReason,
-  };
+  if (decision === 'block') {
+    return {
+      ...result,
+      action: 'block',
+      reason: reason ?? hookSpecificOutput?.permissionDecisionReason,
+    };
+  }
+  return result;
 }
 
 function containsHookProtocolField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsHookProtocolField);
   if (!isPlainObject(value)) return false;
   if (
+    Object.hasOwn(value, 'decision') ||
     Object.hasOwn(value, 'message') ||
     Object.hasOwn(value, 'additionalContext') ||
     Object.hasOwn(value, 'hookSpecificOutput')
@@ -244,7 +399,7 @@ function attemptsHookProtocol(text: string): boolean {
   const strings = scanJsonLikeStrings(text);
   if (strings.invalid) return true;
   if (strings.values.some(isHookProtocolField)) return true;
-  return /(?:^|[,{]|\s)(?:message|additionalContext|hookSpecificOutput)\s*:/.test(text);
+  return /(?:^|[,{]|\s)(?:decision|message|additionalContext|hookSpecificOutput)\s*:/.test(text);
 }
 
 function scanJsonLikeStrings(text: string): {
@@ -326,7 +481,12 @@ function decodeSimpleEscape(value: string, quote: '"' | "'"): string | undefined
 }
 
 function isHookProtocolField(value: string): boolean {
-  return value === 'message' || value === 'additionalContext' || value === 'hookSpecificOutput';
+  return (
+    value === 'decision' ||
+    value === 'message' ||
+    value === 'additionalContext' ||
+    value === 'hookSpecificOutput'
+  );
 }
 
 function allowResult(input: {
@@ -336,6 +496,7 @@ function allowResult(input: {
   readonly exitCode?: number;
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
+  readonly failClosed?: boolean;
 }): HookResult {
   return {
     action: 'allow',
@@ -345,6 +506,7 @@ function allowResult(input: {
     exitCode: input.exitCode,
     timedOut: input.timedOut,
     structuredOutput: input.structuredOutput,
+    failClosed: input.failClosed,
   };
 }
 
@@ -356,6 +518,7 @@ function blockResult(input: {
   readonly exitCode?: number;
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
+  readonly failClosed?: boolean;
 }): HookResult {
   return {
     action: 'block',
@@ -366,6 +529,7 @@ function blockResult(input: {
     exitCode: input.exitCode,
     timedOut: input.timedOut,
     structuredOutput: input.structuredOutput,
+    failClosed: input.failClosed,
   };
 }
 

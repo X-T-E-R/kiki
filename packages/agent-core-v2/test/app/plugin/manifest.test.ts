@@ -77,13 +77,17 @@ describe('plugin manifest parser', () => {
     expect(result.diagnostics).toEqual([expect.objectContaining({ severity: 'error', message: expect.stringContaining('slice A') })]);
   });
 
-  it('reports invalid hooks as errors and invalid command paths as warnings', async () => {
+  it('isolates invalid hooks as warnings with hookFailures while preserving sibling valid hooks and normalizing fail_closed', async () => {
     await writeFile(
       join(dir, 'kimi.plugin.json'),
       JSON.stringify({
         name: 'demo',
         commands: ['../outside.md'],
-        hooks: [{ event: 'PreToolUse', matcher: '[invalid', command: 'echo nope' }],
+        hooks: [
+          { event: 'PreToolUse', matcher: '[invalid', command: 'echo nope' },
+          { event: 'FutureUnknownEvent', command: 'echo future' },
+          { event: 'PreToolUse', command: 'echo ok', fail_closed: true },
+        ],
       }),
       'utf8',
     );
@@ -91,10 +95,17 @@ describe('plugin manifest parser', () => {
     const result = await parseManifest(dir);
 
     expect(result.manifest?.commands).toBeUndefined();
-    expect(result.manifest?.hooks).toBeUndefined();
-    expect(result.diagnostics.map((d) => d.severity)).toEqual(['error', 'warn']);
+    expect(result.manifest?.hooks).toEqual([
+      { event: 'PreToolUse', command: 'echo ok', failClosed: true },
+    ]);
+    expect(result.hookFailures).toEqual([
+      expect.stringContaining('Invalid hook at index 0'),
+      expect.stringContaining('Invalid hook at index 1'),
+    ]);
+    expect(result.diagnostics.map((d) => d.severity)).toEqual(['warn', 'warn', 'warn']);
     expect(result.diagnostics.map((d) => d.message)).toEqual([
       expect.stringContaining('Invalid hook at index 0'),
+      expect.stringContaining('Invalid hook at index 1'),
       '"commands" path must start with "./" (got "../outside.md")',
     ]);
   });

@@ -1,8 +1,10 @@
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
+import type { ILogService } from '#/_base/log/log';
 import type { ContentPart } from '#/kosong/contract/message';
 import { triggerBlockingResults } from '#/features/externalHooks/app/externalHooksRunner';
+import { parseClaudeHookGroups } from '#/features/externalHooks/internal/claudeHooks';
 import { describe, expect, it, vi } from 'vitest';
 import type { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
@@ -242,31 +244,42 @@ describe('ExternalHooksRunnerService', () => {
     );
   });
 
-  it('fails the hook snapshot when a matcher is not a valid regex', async () => {
-    const runner = makeHookRunner([
-      { event: 'PreToolUse', matcher: '[invalid', command: nodeCommand('process.exit(0);'), timeout: 5 },
-    ]);
+  it('skips only the hook with an invalid matcher regex while keeping valid sibling hooks active', async () => {
+    const warn = vi.fn();
+    const runner = makeHookRunner(
+      [
+        { event: 'PreToolUse', matcher: '[invalid', command: nodeCommand('process.exit(2);'), timeout: 5 },
+        { event: 'PreToolUse', matcher: 'Bash', command: nodeCommand('process.stdout.write("healthy");'), timeout: 5 },
+      ],
+      { log: { warn } as unknown as ILogService },
+    );
 
-    await expect(runner.trigger('PreToolUse', { matcherValue: 'Bash', inputData: {} })).resolves.toEqual([]);
-    await expect(
-      triggerBlockingResults(runner, 'PreToolUse', { matcherValue: 'Bash', inputData: {} }),
-    ).resolves.toEqual([{ action: 'block', reason: expect.stringContaining('Failed to evaluate PreToolUse hooks: Invalid regular expression') }]);
+    const results = await triggerBlockingResults(runner, 'PreToolUse', { matcherValue: 'Bash', inputData: {} });
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ action: 'allow', stdout: 'healthy' });
+    expect(warn).toHaveBeenCalledWith(
+      'Skipping hook with invalid matcher',
+      expect.objectContaining({ event: 'PreToolUse', matcher: '[invalid' }),
+    );
   });
 
-  it('fails closed for blocking triggers when the initial hook load fails', async () => {
-    const runner = makeHookRunner([], { loadError: new Error('load failed') });
-
-    await expect(runner.triggerBlock('PreToolUse')).resolves.toEqual({
-      block: true,
-      reason: 'Failed to evaluate PreToolUse hooks: load failed',
+  it('fails open with a warning when the initial hook load fails', async () => {
+    const warn = vi.fn();
+    const runner = makeHookRunner([], {
+      loadError: new Error('load failed'),
+      log: { warn } as unknown as ILogService,
     });
-    await expect(triggerBlockingResults(runner, 'UserPromptSubmit')).resolves.toEqual([
-      { action: 'block', reason: 'Failed to evaluate UserPromptSubmit hooks: load failed' },
-    ]);
+
+    await expect(runner.triggerBlock('PreToolUse')).resolves.toBeUndefined();
+    await expect(triggerBlockingResults(runner, 'UserPromptSubmit')).resolves.toEqual([]);
     await expect(runner.fireAndForgetTrigger('Notification')).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      'PreToolUse hook evaluation failed; failing open',
+      expect.objectContaining({ event: 'PreToolUse', error: 'load failed' }),
+    );
   });
 
-  it('fails closed when blocking trigger input preparation throws', async () => {
+  it('fails open on input preparation errors by default and fails closed when failClosed is configured', async () => {
     const inputData = {};
     Object.defineProperty(inputData, 'broken', {
       enumerable: true,
@@ -274,19 +287,112 @@ describe('ExternalHooksRunnerService', () => {
         throw new Error('broken input');
       },
     });
-    const runner = makeHookRunner([
-      { event: 'PreToolUse', matcher: 'Bash', command: nodeCommand('process.stdout.write("should-not-run");') },
-    ]);
+    const warn = vi.fn();
+    const defaultRunner = makeHookRunner(
+      [{ event: 'PreToolUse', matcher: 'Bash', command: nodeCommand('process.stdout.write("should-not-run");') }],
+      { log: { warn } as unknown as ILogService },
+    );
 
+    await expect(defaultRunner.trigger('PreToolUse', { matcherValue: 'Bash', inputData })).resolves.toEqual([]);
+    await expect(defaultRunner.triggerBlock('PreToolUse', { matcherValue: 'Bash', inputData })).resolves.toBeUndefined();
+    await expect(triggerBlockingResults(defaultRunner, 'UserPromptSubmit', { matcherValue: 'prompt', inputData })).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      'PreToolUse hook evaluation failed; failing open',
+      expect.objectContaining({ event: 'PreToolUse', error: 'broken input' }),
+    );
+
+    const strictRunner = makeHookRunner([
+      { event: 'PreToolUse', matcher: 'Bash', command: nodeCommand('process.stdout.write("should-not-run");'), failClosed: true },
+      { event: 'UserPromptSubmit', command: nodeCommand('process.stdout.write("should-not-run");'), failClosed: true },
+    ]);
+    await expect(strictRunner.triggerBlock('PreToolUse', { matcherValue: 'Bash', inputData })).resolves.toEqual({
+      block: true,
+      reason: 'Failed to evaluate PreToolUse hooks: broken input',
+    });
     await expect(
-      runner.trigger('PreToolUse', { matcherValue: 'Bash', inputData }),
-    ).resolves.toEqual([]);
-    await expect(
-      runner.triggerBlock('PreToolUse', { matcherValue: 'Bash', inputData }),
-    ).resolves.toEqual({ block: true, reason: 'Failed to evaluate PreToolUse hooks: broken input' });
-    await expect(
-      triggerBlockingResults(runner, 'UserPromptSubmit', { matcherValue: 'prompt', inputData }),
-    ).resolves.toEqual([{ action: 'block', reason: 'Failed to evaluate UserPromptSubmit hooks: broken input' }]);
+      triggerBlockingResults(strictRunner, 'UserPromptSubmit', { matcherValue: 'prompt', inputData }),
+    ).resolves.toEqual([
+      { action: 'block', failClosed: true, reason: 'Failed to evaluate UserPromptSubmit hooks: broken input' },
+    ]);
+  });
+
+  it('fails open with warnings for PreToolUse and UserPromptSubmit hook faults unless failClosed is set or block is explicit', async () => {
+    const warn = vi.fn();
+    const runner = makeHookRunner(
+      [
+        { event: 'PreToolUse', matcher: 'CrashTool', command: nodeCommand('process.stderr.write("boom"); process.exit(1);'), timeout: 5 },
+        { event: 'PreToolUse', matcher: 'MissingBinTool', command: nodeCommand('process.exit(127);'), timeout: 5 },
+        { event: 'PreToolUse', matcher: 'SlowTool', command: nodeCommand('setTimeout(() => {}, 10000);'), timeout: 0.05 },
+        { event: 'PreToolUse', matcher: 'BadJsonTool', command: nodeCommand('process.stdout.write("{\\"hookSpecificOutput\\":");'), timeout: 5 },
+        { event: 'PreToolUse', matcher: 'StrictCrashTool', command: nodeCommand('process.stderr.write("strict failure"); process.exit(1);'), timeout: 5, failClosed: true },
+        { event: 'PreToolUse', matcher: 'StrictSlowTool', command: nodeCommand('setTimeout(() => {}, 10000);'), timeout: 0.05, failClosed: true },
+        { event: 'PreToolUse', matcher: 'StrictBadJsonTool', command: nodeCommand('process.stdout.write("{\\"hookSpecificOutput\\":");'), timeout: 5, failClosed: true },
+        { event: 'PreToolUse', matcher: 'ExplicitDenyJsonTool', command: nodeCommand('process.stdout.write(JSON.stringify({ decision: "block", reason: "top-level deny" }));'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'crash', command: nodeCommand('process.exit(1);'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'missing', command: nodeCommand('process.exit(127);'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'slow', command: nodeCommand('setTimeout(() => {}, 10000);'), timeout: 0.05 },
+        { event: 'UserPromptSubmit', matcher: 'badjson', command: nodeCommand('process.stdout.write("{\\"decision\\":");'), timeout: 5 },
+        { event: 'UserPromptSubmit', matcher: 'strict', command: nodeCommand('process.stderr.write("guard required"); process.exit(1);'), timeout: 5, failClosed: true },
+      ],
+      { log: { warn } as unknown as ILogService },
+    );
+    try {
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'CrashTool' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'MissingBinTool' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'SlowTool' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'BadJsonTool' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('UserPromptSubmit', { matcherValue: 'crash' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('UserPromptSubmit', { matcherValue: 'missing' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('UserPromptSubmit', { matcherValue: 'slow' })).resolves.toBeUndefined();
+      await expect(runner.triggerBlock('UserPromptSubmit', { matcherValue: 'badjson' })).resolves.toBeUndefined();
+
+      expect(warn).toHaveBeenCalledWith('PreToolUse hook failed; failing open', expect.objectContaining({ event: 'PreToolUse', exitCode: 1 }));
+      expect(warn).toHaveBeenCalledWith('PreToolUse hook failed; failing open', expect.objectContaining({ event: 'PreToolUse', exitCode: 127 }));
+      expect(warn).toHaveBeenCalledWith('PreToolUse hook failed; failing open', expect.objectContaining({ event: 'PreToolUse', timedOut: true }));
+      expect(warn).toHaveBeenCalledWith('UserPromptSubmit hook failed; failing open', expect.objectContaining({ event: 'UserPromptSubmit', exitCode: 127 }));
+
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'StrictCrashTool' })).resolves.toEqual({
+        block: true,
+        reason: 'strict failure',
+      });
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'StrictSlowTool' })).resolves.toEqual({
+        block: true,
+        reason: 'Blocked by PreToolUse hook',
+      });
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'StrictBadJsonTool' })).resolves.toEqual({
+        block: true,
+        reason: 'Hook produced invalid protocol JSON output',
+      });
+      await expect(runner.triggerBlock('PreToolUse', { matcherValue: 'ExplicitDenyJsonTool' })).resolves.toEqual({
+        block: true,
+        reason: 'top-level deny',
+      });
+      await expect(runner.triggerBlock('UserPromptSubmit', { matcherValue: 'strict' })).resolves.toEqual({
+        block: true,
+        reason: 'guard required',
+      });
+    } finally {
+      await runner.dispose();
+    }
+  });
+
+  it('parses failClosed and fail_closed in Claude hook groups', () => {
+    const parsed = parseClaudeHookGroups({
+      PreToolUse: [
+        {
+          matcher: 'Bash',
+          hooks: [
+            { type: 'command', command: 'echo a', failClosed: true },
+            { type: 'command', command: 'echo b', fail_closed: true },
+          ],
+        },
+      ],
+    });
+    expect(parsed.unsupported).toEqual([]);
+    expect(parsed.hooks).toEqual([
+      { event: 'PreToolUse', matcher: 'Bash', command: 'echo a', failClosed: true },
+      { event: 'PreToolUse', matcher: 'Bash', command: 'echo b', failClosed: true },
+    ]);
   });
 
   it('fails open when fireAndForgetTrigger sees a synchronous trigger error', async () => {
@@ -385,7 +491,8 @@ describe('ExternalHooksRunnerService', () => {
     expect(runner.hasHooksFor('Stop')).toBe(false);
   });
 
-  it('isolates broken hook plugins by workspace and session scope while failing closed with plugin diagnostics where active', async () => {
+  it('isolates broken hook plugins without locking sessions while preserving load diagnostics and logging once on load', async () => {
+    const warn = vi.fn();
     const sessionWorkspaces: Record<string, string> = {
       'session-prod': 'workspace-prod',
       'session-lab': 'workspace-lab',
@@ -394,6 +501,7 @@ describe('ExternalHooksRunnerService', () => {
     const runner = makeHookRunner(
       [{ event: 'UserPromptSubmit', command: nodeCommand('process.stdout.write("user-ok");'), timeout: 5 }],
       {
+        log: { warn } as unknown as ILogService,
         pluginHooks: [
           {
             pluginId: 'healthy-guard',
@@ -438,14 +546,27 @@ describe('ExternalHooksRunnerService', () => {
       });
       expect(safeLabResults.map((item) => item.stdout)).toEqual(['user-ok', 'healthy-plugin-ok']);
 
-      const blockedLab = await runner.triggerBlock('UserPromptSubmit', {
+      const labResults = await triggerBlockingResults(runner, 'UserPromptSubmit', {
         sessionId: 'session-lab',
         matcherValue: 'hello',
       });
-      expect(blockedLab).toEqual({
-        block: true,
-        reason: 'Failed to evaluate UserPromptSubmit hooks: Plugin "broken-lab-guard" failed to load its hooks: Invalid hook matcher "[unclosed"',
-      });
+      expect(labResults.map((item) => item.stdout)).toEqual(['user-ok', 'healthy-plugin-ok']);
+      await expect(
+        runner.triggerBlock('UserPromptSubmit', { sessionId: 'session-lab', matcherValue: 'hello' }),
+      ).resolves.toBeUndefined();
+
+      expect(runner.hookLoadFailures).toEqual([
+        {
+          pluginId: 'broken-lab-guard',
+          defaultEnabled: false,
+          message: 'Invalid hook matcher "[unclosed"',
+        },
+      ]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        'Plugin failed to load one or more hooks; skipping failed hooks',
+        expect.objectContaining({ pluginId: 'broken-lab-guard' }),
+      );
 
       await expect(
         runner.fireAndForgetTrigger('Notification', { sessionId: 'session-lab' }),

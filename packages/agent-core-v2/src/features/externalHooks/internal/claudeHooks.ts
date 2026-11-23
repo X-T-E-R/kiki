@@ -46,11 +46,15 @@ export function parseClaudeHookGroups(
         const rawHook = hook as Record<string, unknown>;
         const rawCommand = typeof rawHook['command'] === 'string' ? rawHook['command'] : undefined;
         const command = rawCommand === undefined ? undefined : (options.transformCommand?.(rawCommand) ?? rawCommand);
+        const rawFailClosed = Object.hasOwn(rawHook, 'failClosed')
+          ? rawHook['failClosed']
+          : rawHook['fail_closed'];
         const value = HookDefSchema.safeParse({
           event,
           matcher: record.matcher,
           timeout: typeof rawHook['timeout'] === 'number' ? rawHook['timeout'] : undefined,
           command,
+          failClosed: rawFailClosed,
         });
         if (rawHook['type'] !== 'command' || !value.success) {
           unsupported.push(`hooks:${event}[${index}]:${String(rawHook['type'])}`);

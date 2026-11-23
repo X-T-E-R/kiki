@@ -20,12 +20,11 @@ import {
 import {
   blockDecision,
   indexHooks,
-  isExplicitHookBlock,
-  isFailOpenBlockEvent,
+  isEffectiveHookBlock,
   runMatchedHooks,
 } from '../internal/matchHooks';
 import type { HookRunCallbacks, IndexedHookDef } from '../internal/matchHooks';
-import type { HookBlockDecision, HookResult } from '../internal/types';
+import type { HookBlockDecision, HookDef, HookResult } from '../internal/types';
 
 export class ExternalHooksRunnerService extends Disposable implements IExternalHooksRunnerService {
   declare readonly _serviceBrand: undefined;
@@ -67,21 +66,34 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     return result;
   }
 
+  get hookLoadFailures(): readonly PluginHookLoadFailure[] {
+    return [...this.manifestHookFailures, ...this.matcherHookFailures];
+  }
+
   async trigger(
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
     failureMode: ExternalHooksRunnerFailureMode = 'empty',
   ): Promise<HookResult[]> {
+    let hasFailClosed = false;
     try {
-      return await this.triggerInner(event, args);
-    } catch (error) {
-      if (failureMode === 'block') {
-        return [{ action: 'block', reason: `Failed to evaluate ${event} hooks: ${toErrorMessage(error)}` }];
+      const { results, hasFailClosed: evaluatedFailClosed } = await this.triggerInner(event, args, (flag) => {
+        hasFailClosed = flag;
+      });
+      hasFailClosed = evaluatedFailClosed;
+      if (args.signal?.aborted !== true) {
+        this.warnFailOpenResults(event, results);
       }
-      if (isFailOpenBlockEvent(event)) {
+      return results;
+    } catch (error) {
+      const message = toErrorMessage(error);
+      if (failureMode === 'block' && hasFailClosed) {
+        return [{ action: 'block', failClosed: true, reason: `Failed to evaluate ${event} hooks: ${message}` }];
+      }
+      if (args.signal?.aborted !== true) {
         this.logRef?.current?.warn(`${event} hook evaluation failed; failing open`, {
           event,
-          error: toErrorMessage(error),
+          error: message,
         });
       }
       return [];
@@ -92,20 +104,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
   ): Promise<HookBlockDecision | undefined> {
-    const failOpen = isFailOpenBlockEvent(event);
-    const results = await this.trigger(event, args, failOpen ? 'empty' : 'block');
-    if (failOpen && args.signal?.aborted !== true) {
-      for (const result of results) {
-        if (result.action === 'block' && !isExplicitHookBlock(result)) {
-          this.logRef?.current?.warn(`${event} hook failed; failing open`, {
-            event,
-            exitCode: result.exitCode,
-            timedOut: result.timedOut,
-            reason: result.reason,
-          });
-        }
-      }
-    }
+    const results = await this.trigger(event, args, 'block');
     return blockDecision(event, results);
   }
 
@@ -124,10 +123,31 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     return (this.byEvent.get(event)?.length ?? 0) > 0;
   }
 
+  private warnFailOpenResults(event: string, results: readonly HookResult[]): void {
+    for (const result of results) {
+      if (result.action === 'block' && !isEffectiveHookBlock(result)) {
+        this.logRef?.current?.warn(`${event} hook failed; failing open`, {
+          event,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          reason: result.reason,
+        });
+      } else if (result.cleanupError !== undefined) {
+        this.logRef?.current?.warn(`${event} hook cleanup failed`, {
+          event,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          reason: result.cleanupError,
+        });
+      }
+    }
+  }
+
   private async triggerInner(
     event: string,
     args: ExternalHooksRunnerTriggerArgs,
-  ): Promise<HookResult[]> {
+    reportFailClosed: (value: boolean) => void,
+  ): Promise<{ readonly results: HookResult[]; readonly hasFailClosed: boolean }> {
     await this.ready;
     if (!this.hasSuccessfulSnapshot) throw this.loadFailure;
     let workspaceResolved = false;
@@ -141,16 +161,21 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
       }
       return workspaceId;
     };
-    const broken = await this.findApplicableHookFailure(resolveWorkspaceId, args.sessionId);
-    if (broken !== undefined) {
-      throw new Error(`Plugin "${broken.pluginId}" failed to load its hooks: ${broken.message}`);
-    }
     let byEvent = this.byEvent;
+    reportFailClosed((byEvent.get(event) ?? []).some((entry) => entry.hook.failClosed === true));
     if (args.additionalHooks !== undefined) {
       const extra = await args.additionalHooks();
       if (extra.length > 0) {
-        const additional = indexHooks(extra);
+        const additional = indexHooks(extra, ({ hook, message }) => {
+          this.logRef?.current?.warn('Skipping hook with invalid matcher', {
+            pluginId: hook.pluginId,
+            event: hook.event,
+            matcher: hook.matcher,
+            error: message,
+          });
+        });
         byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
+        reportFailClosed((byEvent.get(event) ?? []).some((entry) => entry.hook.failClosed === true));
       }
     }
     if (this.usage?.enabled() && (byEvent.get(event) ?? []).some((entry) => entry.hook.pluginId !== undefined)) {
@@ -167,8 +192,10 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
           ) ? indexed : undefined));
         byEvent = new Map([[event, hooks.filter((indexed) => indexed !== undefined)]]);
       }
+      reportFailClosed((byEvent.get(event) ?? []).some((entry) => entry.hook.failClosed === true));
     }
-    return runMatchedHooks(
+    const hasFailClosed = (byEvent.get(event) ?? []).some((entry) => entry.hook.failClosed === true);
+    const results = await runMatchedHooks(
       this.hostProcess,
       byEvent,
       event,
@@ -182,41 +209,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
       },
       this.callbacks,
     );
-  }
-
-  private async findApplicableHookFailure(
-    resolveWorkspaceId: () => Promise<string | undefined>,
-    sessionId: string | undefined,
-  ): Promise<PluginHookLoadFailure | undefined> {
-    if (this.manifestHookFailures.length === 0 && this.matcherHookFailures.length === 0) {
-      return undefined;
-    }
-    const workspaceId = await resolveWorkspaceId();
-    if (this.manifestHookFailures.length > 0) {
-      if (this.plugins.inspectHooks !== undefined) {
-        const scoped = await this.plugins.inspectHooks(workspaceId, sessionId);
-        if (scoped.failures.length > 0) return scoped.failures[0];
-      } else {
-        for (const failure of this.manifestHookFailures) {
-          if (await this.isFailureApplicable(failure, workspaceId, sessionId)) return failure;
-        }
-      }
-    }
-    for (const failure of this.matcherHookFailures) {
-      if (await this.isFailureApplicable(failure, workspaceId, sessionId)) return failure;
-    }
-    return undefined;
-  }
-
-  private async isFailureApplicable(
-    failure: PluginHookLoadFailure,
-    workspaceId: string | undefined,
-    sessionId: string | undefined,
-  ): Promise<boolean> {
-    if (this.usage === undefined || !this.usage.enabled()) {
-      return failure.defaultEnabled;
-    }
-    return this.usage.allows(workspaceId, failure.pluginId, sessionId);
+    return { results, hasFailClosed };
   }
 
   private async loadSafe(): Promise<void> {
@@ -238,31 +231,56 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
   private async load(): Promise<void> {
     await this.config.ready;
     const configured = this.config.get<HooksConfig>(HOOKS_SECTION);
-    const merged = indexHooks(legacyHooks(configured));
-    const snapshot = this.plugins.inspectHooks !== undefined
-      ? await this.plugins.inspectHooks('*')
-      : { hooks: await this.plugins.enabledHooks('*'), failures: [] };
+    const merged = indexHooks(legacyHooks(configured), ({ hook, message }) => {
+      this.logRef?.current?.warn('Skipping hook with invalid matcher', {
+        event: hook.event,
+        matcher: hook.matcher,
+        error: message,
+      });
+    });
+    let snapshot: { readonly hooks: readonly HookDef[]; readonly failures: readonly PluginHookLoadFailure[] };
+    try {
+      snapshot = this.plugins.inspectHooks !== undefined
+        ? await this.plugins.inspectHooks('*')
+        : { hooks: await this.plugins.enabledHooks('*'), failures: [] };
+    } catch (error) {
+      const message = toErrorMessage(error);
+      this.logRef?.current?.warn('Failed to load plugin hooks; continuing with configured hooks', {
+        error: message,
+      });
+      snapshot = {
+        hooks: [],
+        failures: [{ pluginId: '*', defaultEnabled: true, message }],
+      };
+    }
     const matcherFailures: PluginHookLoadFailure[] = [];
     const failedIds = new Set(snapshot.failures.map((item) => item.pluginId));
-    for (const hook of snapshot.hooks) {
-      try {
-        const indexed = indexHooks([hook]);
-        for (const [event, items] of indexed.entries()) {
-          const target = merged.get(event) ?? [];
-          target.push(...items);
-          merged.set(event, target);
-        }
-      } catch (error) {
-        if (hook.pluginId === undefined) throw error;
-        if (!failedIds.has(hook.pluginId)) {
-          failedIds.add(hook.pluginId);
-          matcherFailures.push({
-            pluginId: hook.pluginId,
-            defaultEnabled: true,
-            message: toErrorMessage(error),
-          });
-        }
+    const pluginIndexed = indexHooks(snapshot.hooks, ({ hook, message }) => {
+      this.logRef?.current?.warn('Skipping plugin hook with invalid matcher', {
+        pluginId: hook.pluginId,
+        event: hook.event,
+        matcher: hook.matcher,
+        error: message,
+      });
+      if (hook.pluginId !== undefined && !failedIds.has(hook.pluginId)) {
+        failedIds.add(hook.pluginId);
+        matcherFailures.push({
+          pluginId: hook.pluginId,
+          defaultEnabled: true,
+          message,
+        });
       }
+    });
+    for (const [event, items] of pluginIndexed.entries()) {
+      const target = merged.get(event) ?? [];
+      target.push(...items);
+      merged.set(event, target);
+    }
+    for (const failure of snapshot.failures) {
+      this.logRef?.current?.warn('Plugin failed to load one or more hooks; skipping failed hooks', {
+        pluginId: failure.pluginId,
+        error: failure.message,
+      });
     }
     this.byEvent = merged;
     this.manifestHookFailures = snapshot.failures;
