@@ -1,5 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   SyncFilesExportResult,
@@ -41,27 +42,29 @@ async function readRegularFileNoFollow(filePath: string, maxBytes: number): Prom
 }
 
 async function writeRegularFileNoFollow(filePath: string, bytes: Buffer): Promise<void> {
+  const parent = dirname(filePath);
+  const tmpPath = join(parent, `.kiki-sync-${randomBytes(8).toString('hex')}.tmp`);
   let handle;
   try {
     handle = await open(
-      filePath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NOFOLLOW_FLAG,
+      tmpPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW_FLAG,
       0o644,
     );
+    await handle.writeFile(bytes);
+    await handle.close();
+    handle = undefined;
+    await assertLeafSafeForFileWrite(filePath);
+    await rename(tmpPath, filePath);
   } catch (error) {
+    if (handle !== undefined) {
+      await handle.close().catch(() => {});
+    }
+    await unlink(tmpPath).catch(() => {});
     if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
       throw new SyncPathForbiddenError(`Symlink destination '${filePath}' is not allowed`);
     }
     throw error;
-  }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) {
-      throw new SyncPathForbiddenError(`Destination '${filePath}' is not a regular file`);
-    }
-    await handle.writeFile(bytes);
-  } finally {
-    await handle.close();
   }
 }
 
@@ -145,6 +148,9 @@ function expandAbsolutePath(rawPath: string, osHomeDir: string): string {
   return resolve(expanded);
 }
 
+const FORBIDDEN_SEGMENT_PATTERN =
+  /^(?:\.ssh|\.gnupg|\.secrets?|server\.local-owner|server\.token|config\.local\.toml|device-x25519\.key|\.env(?:\..+)?|id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|jks|kdbx|age))$/i;
+
 async function resolveForbiddenRoots(options: FileSyncPathOptions): Promise<readonly string[]> {
   const rawHome = resolve(options.homeDir);
   const rawOsHome = resolve(options.osHomeDir);
@@ -157,22 +163,24 @@ async function resolveForbiddenRoots(options: FileSyncPathOptions): Promise<read
     join(realOsHome, '.gnupg'),
     join(rawHome, 'credentials'),
     join(realHome, 'credentials'),
+    join(rawHome, 'secrets'),
+    join(realHome, 'secrets'),
     join(rawHome, 'server'),
     join(realHome, 'server'),
     join(rawHome, 'server.local-owner'),
     join(realHome, 'server.local-owner'),
+    join(rawHome, 'config.local.toml'),
+    join(realHome, 'config.local.toml'),
   ]);
   return [...roots];
 }
 
 function assertNotForbiddenPath(candidate: string, forbiddenRoots: readonly string[]): void {
-  const base = basename(candidate).toLowerCase();
-  if (base === 'server.local-owner') {
-    throw new SyncPathForbiddenError(`Transfer path '${candidate}' is forbidden`);
-  }
-  const normalizedSegments = resolve(candidate).replaceAll('\\', '/').toLowerCase().split('/');
-  if (normalizedSegments.includes('.ssh') || normalizedSegments.includes('.gnupg')) {
-    throw new SyncPathForbiddenError(`Transfer path '${candidate}' is forbidden`);
+  const normalizedSegments = resolve(candidate).replaceAll('\\', '/').split('/');
+  for (const segment of normalizedSegments) {
+    if (segment.length > 0 && FORBIDDEN_SEGMENT_PATTERN.test(segment)) {
+      throw new SyncPathForbiddenError(`Transfer path '${candidate}' is forbidden`);
+    }
   }
   for (const forbidden of forbiddenRoots) {
     if (isSameOrDescendant(forbidden, candidate)) {
@@ -220,6 +228,9 @@ async function assertLeafSafeForFileWrite(dest: string): Promise<void> {
     const info = await lstat(dest);
     if (info.isSymbolicLink() || info.isDirectory()) {
       throw new SyncPathForbiddenError(`Destination '${dest}' is a symlink or directory`);
+    }
+    if (info.nlink > 1) {
+      throw new SyncPathForbiddenError(`Hardlinked destination '${dest}' is not allowed`);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
@@ -327,8 +338,9 @@ export async function importTransferFiles(
   let files: Map<string, Buffer>;
   try {
     files = unpackTarGz(Buffer.from(input.archiveBase64, 'base64'));
-  } catch {
-    throw new SyncArchiveInvalidError('Invalid or unsafe tar.gz archive');
+  } catch (error) {
+    const detail = error instanceof Error && error.message.length > 0 ? `: ${error.message}` : '';
+    throw new SyncArchiveInvalidError(`Invalid or unsafe tar.gz archive${detail}`);
   }
 
   if (input.kind === 'file') {

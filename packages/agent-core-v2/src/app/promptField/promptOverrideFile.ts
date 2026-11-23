@@ -1,9 +1,12 @@
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import {
   parsePromptOverrideDocument,
   validatePromptOverridePath,
   type PromptOverrideDocument,
 } from '@kiki/agent-profiles/promptOverrides';
 import { parse as parseToml } from 'smol-toml';
+
+export { validatePromptOverridePath };
 import { isAbsolute, join, normalize, relative } from 'pathe';
 
 import { Error2 } from '#/_base/errors/errors';
@@ -91,5 +94,49 @@ function invalidPromptOverrideFile(message: string, ref: string, cause?: unknown
     cause,
     details: { ref },
     name: 'PromptOverrideFileError',
+  });
+}
+
+/** Collects and validates home-relative `prompt_overrides.files` references from a portable config object. */
+export function extractPromptOverrideRefsFromConfig(value: unknown): readonly string[] {
+  const refs = new Set<string>();
+  const seen = new WeakSet<object>();
+  const walk = (entry: unknown, overrides = false): void => {
+    if (entry === null || typeof entry !== 'object') return;
+    if (seen.has(entry)) return;
+    seen.add(entry);
+    if (Array.isArray(entry)) {
+      for (const child of entry) walk(child, overrides);
+      return;
+    }
+    for (const [key, child] of Object.entries(entry as Record<string, unknown>)) {
+      if (overrides && key === 'files' && Array.isArray(child)) {
+        for (const ref of child) {
+          if (typeof ref === 'string') {
+            refs.add(validatePromptOverridePath(ref));
+          }
+        }
+      }
+      walk(child, overrides || key === 'promptOverrides' || key === 'prompt_overrides' || key === 'overrides');
+    }
+  };
+  walk(value);
+  return [...refs];
+}
+
+/** Collects and validates home-relative `prompt_overrides.files` references from an agent profile Markdown file. */
+export function extractPromptOverrideRefsFromAgentMarkdown(
+  text: string,
+  filePath: string,
+): readonly string[] {
+  const definition = parseAgentFileText({
+    path: filePath,
+    source: 'user',
+    text,
+  });
+  return extractPromptOverrideRefsFromConfig({
+    promptOverrides: definition.promptOverrides,
+    modelProfiles: definition.modelProfiles,
+    subagents: definition.subagents,
   });
 }

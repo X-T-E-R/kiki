@@ -454,7 +454,7 @@ describe('thread communication tools', () => {
     }));
     expect(create).not.toHaveBeenCalled();
     expect(createThread).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      caller: { workspaceId: 'ambient-workspace', sessionId: 'ambient-a' },
+      caller: { workspaceId: 'ambient-workspace', sessionId: 'ambient-a', agentId: 'main' },
       bridgeId, workspaceId: 'remote-workspace', idempotencyKey: 'fixture-tool-call', permissionMode: 'auto', prompt: 'Start',
     }));
     expect(JSON.parse(result.output as string)).toMatchObject({

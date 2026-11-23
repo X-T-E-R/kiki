@@ -93,7 +93,7 @@ import { join } from 'node:path';
 import type { Socket } from 'node:net';
 import type { IncomingMessage } from 'node:http';
 import { TLSSocket } from 'node:tls';
-import type { Duplex } from 'node:stream';
+import { Readable, type Duplex } from 'node:stream';
 
 import {
   KLIENT_EVENTS_PATH,
@@ -1499,6 +1499,68 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
           throw new Error(envelope.msg ?? `Peer file import failed (HTTP ${status})`);
         }
         return envelope.data;
+      },
+      pullSessionsStream: async (peerId, sessions) => {
+        const record = resolveOutboundConnection(peerId);
+        if (record === undefined) {
+          throw new MeshPeerUnavailableError(404, 'peer_not_found', peerId, `Peer '${peerId}' not found`);
+        }
+        const lease = remoteConnections.lease(record.id);
+        let handedOff = false;
+        try {
+          const response = await remoteConnections.forward(
+            record.id,
+            { operation: 'syncSessionsExportStream', body: { sessions } },
+            lease.signal,
+          );
+          if (response.status >= 400 || response.body === null) {
+            const parsed = (await readBoundedJsonBody(response, 65_536, lease.signal).catch(() => ({}))) as { readonly msg?: string };
+            const err = new Error(parsed.msg ?? `Peer session stream export failed (HTTP ${response.status})`) as Error & { status?: number };
+            err.status = response.status;
+            throw err;
+          }
+          const nodeStream = Readable.fromWeb(response.body as unknown as import('node:stream/web').ReadableStream);
+          handedOff = true;
+          const release = () => { lease.release(); };
+          nodeStream.once('end', release);
+          nodeStream.once('close', release);
+          nodeStream.once('error', release);
+          return nodeStream;
+        } finally {
+          if (!handedOff) lease.release();
+        }
+      },
+      pushSessionsStream: async (peerId, stream, options) => {
+        const record = resolveOutboundConnection(peerId);
+        if (record === undefined) {
+          throw new MeshPeerUnavailableError(404, 'peer_not_found', peerId, `Peer '${peerId}' not found`);
+        }
+        const lease = remoteConnections.lease(record.id);
+        try {
+          const query: Record<string, string> = {};
+          if (options?.targetWorkDir !== undefined) query['target_work_dir'] = options.targetWorkDir;
+          if (options?.targetProjectId !== undefined) query['target_project_id'] = options.targetProjectId;
+          const response = await remoteConnections.forward(
+            record.id,
+            { operation: 'syncSessionsImportStream', query },
+            lease.signal,
+            Readable.toWeb(stream) as unknown as Parameters<typeof remoteConnections.forward>[3],
+            'application/gzip',
+          );
+          const parsed = (await readBoundedJsonBody(response, 65_536, lease.signal).catch(() => ({}))) as {
+            readonly code?: number;
+            readonly msg?: string;
+            readonly data?: { readonly sessionsApplied: number; readonly sessionsSkipped: number };
+          };
+          if (response.status >= 400 || parsed.code !== 0 || parsed.data === undefined) {
+            const err = new Error(parsed.msg ?? `Peer session stream import failed (HTTP ${response.status})`) as Error & { status?: number };
+            err.status = response.status;
+            throw err;
+          }
+          return parsed.data;
+        } finally {
+          lease.release();
+        }
       },
     },
   });

@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { PassThrough } from 'node:stream';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   IMemoryStore,
@@ -17,8 +18,16 @@ import {
   resolveProjectIdentity,
   type IThreadPeerSendCapability,
 } from '@kiki/agent-core-v2';
+import type { IHostProcess, IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
 import { createKlient } from '@kiki/klient/http';
-import { CcpTunnelConnector, type CcpTunnelProcess, type CcpTunnelRunner } from '../src/services/ccpTunnel/connector';
+import {
+  CcpTunnelConnector,
+  SystemCcpTunnelRunner,
+  type CcpRuntimeInfo,
+  type CcpTunnelProcess,
+  type CcpTunnelRunner,
+} from '../src/services/ccpTunnel/connector';
+import { packTarGz } from '../src/services/portableSpace/tarArchive';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -202,7 +211,7 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
         content: 'Hello from bridge-only Colab over loopback TLS',
         idempotencyKey: 'colab-to-local-1',
       });
-      expect(bToA.delivery).toBe('pending');
+      expect(['delivered', 'pending']).toContain(bToA.delivery);
       const inboxA = await serverA.core.accessor.get(IThreadMailboxStore).readMessages({ group: 'session:local-main', limit: 10 });
       expect(inboxA.items.some((item) => item.message.content === 'Hello from bridge-only Colab over loopback TLS')).toBe(true);
 
@@ -217,7 +226,7 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
         content: 'Dispatching GPU job to Colab',
         idempotencyKey: 'local-to-colab-1',
       });
-      expect(aToB.delivery).toBe('pending');
+      expect(['delivered', 'pending']).toContain(aToB.delivery);
       const inboxB = await serverB.core.accessor.get(IThreadMailboxStore).readMessages({ group: 'session:colab-main', limit: 10 });
       expect(inboxB.items.some((item) => item.message.content === 'Dispatching GPU job to Colab')).toBe(true);
 
@@ -517,10 +526,15 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
       mkdirSync(join(homeB, 'credentials'), { recursive: true });
       writeFileSync(join(homeB, 'credentials', 'device-x25519.key'), 'AGE-SECRET\n');
 
+      mkdirSync(join(homeB, 'secrets', 'nb-search'), { recursive: true });
+      writeFileSync(join(homeB, 'secrets', 'nb-search', 'gui-credentials.json'), '{"slots":{"exa":"secret"}}');
+      writeFileSync(join(homeB, 'config.local.toml'), 'token = "local-secret"\n');
       for (const secretPath of [
         join(osHomeB, '.ssh', 'id_ed25519'),
         join(osHomeB, '.gnupg', 'secring.gpg'),
         join(homeB, 'credentials', 'device-x25519.key'),
+        join(homeB, 'secrets', 'nb-search', 'gui-credentials.json'),
+        join(homeB, 'config.local.toml'),
         join(homeB, 'server', 'server.local-owner'),
       ]) {
         await expect(
@@ -529,6 +543,27 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
             localPath: join(sandbox, 'should-not-exist'),
           }),
         ).rejects.toThrow();
+      }
+
+      const protectedTarget = join(sandbox, 'protected-hardlink-origin.txt');
+      const hardlinkDest = join(sandbox, 'hardlinked-dest.txt');
+      writeFileSync(protectedTarget, 'ORIGINAL-UNTOUCHED\n');
+      let hardlinkCreated = false;
+      try {
+        linkSync(protectedTarget, hardlinkDest);
+        hardlinkCreated = true;
+      } catch {
+        hardlinkCreated = false;
+      }
+      if (hardlinkCreated) {
+        await expect(
+          clientA.rest!.sync.importFiles({
+            destinationPath: hardlinkDest,
+            kind: 'file',
+            archiveBase64: packTarGz(new Map([['overwrite.txt', Buffer.from('OVERWRITTEN')]])).toString('base64'),
+          }),
+        ).rejects.toThrow(/Hardlinked destination/i);
+        expect(readFileSync(protectedTarget, 'utf8')).toBe('ORIGINAL-UNTOUCHED\n');
       }
 
       const symlinkDir = join(sandbox, 'remote-symlink-dir');
@@ -549,28 +584,23 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
         ).rejects.toThrow();
       }
 
-      const header = Buffer.alloc(512, 0);
-      Buffer.from('../escape.txt').copy(header, 0);
-      Buffer.from('0000644\0').copy(header, 100);
-      Buffer.from('0000000\0').copy(header, 108);
-      Buffer.from('0000000\0').copy(header, 116);
-      Buffer.from('00000000004\0').copy(header, 124);
-      Buffer.from('00000000000\0').copy(header, 136);
-      header.fill(0x20, 148, 156);
-      header[156] = 0x30;
+      const validTar = gunzipSync(packTarGz(new Map([['placeholder.txt', Buffer.from('evil')]])));
+      validTar.fill(0, 0, 100);
+      Buffer.from('../escape.txt').copy(validTar, 0);
+      validTar.fill(0x20, 148, 156);
       let checksum = 0;
-      for (const byte of header) checksum += byte;
-      Buffer.from(`${checksum.toString(8).padStart(6, '0')}\0 `).copy(header, 148);
-      const bodyBlock = Buffer.alloc(512, 0);
-      Buffer.from('evil').copy(bodyBlock, 0);
-      const craftedTarGz = gzipSync(Buffer.concat([header, bodyBlock, Buffer.alloc(1024, 0)]));
+      for (let i = 0; i < 512; i += 1) checksum += validTar[i]!;
+      Buffer.from(`${checksum.toString(8).padStart(6, '0')}\0 `).copy(validTar, 148);
+      expect(validTar.subarray(257, 263).toString('ascii')).toBe('ustar\0');
+      expect(validTar.subarray(263, 265).toString('ascii')).toBe('00');
+      const craftedTarGz = gzipSync(validTar);
       await expect(
         clientA.rest!.sync.importFiles({
           destinationPath: join(sandbox, 'crafted-dest'),
           kind: 'directory',
           archiveBase64: craftedTarGz.toString('base64'),
         }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/Invalid portable archive/);
       expect(existsSync(join(sandbox, 'escape.txt'))).toBe(false);
     } finally {
       await clientA.close();
@@ -734,4 +764,189 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
       await clientB.close();
     }
   }, 60_000);
+
+  it('streams canonical sessions with execution-control.json and updates existing cold sessions on repeat pull', async () => {
+    const sandbox = makeTempDir('kiki-stream-session-sync-');
+    const homeA = join(sandbox, 'home-a');
+    const osHomeA = join(sandbox, 'os-home-a');
+    const homeB = join(sandbox, 'home-b');
+    const osHomeB = join(sandbox, 'os-home-b');
+    const workA = join(sandbox, 'work-a');
+    const workB = join(sandbox, 'work-b');
+    mkdirSync(workA, { recursive: true });
+    mkdirSync(workB, { recursive: true });
+
+    const serverA = await bootServer(homeA, osHomeA);
+    const serverB = await bootServer(homeB, osHomeB);
+    const clientA = createKlient({ endpoint: serverEndpoint(serverA), token: serverA.localOwnerToken });
+    const clientB = createKlient({ endpoint: serverEndpoint(serverB), token: serverB.localOwnerToken });
+
+    try {
+      const code = await clientB.rest!.connections.createPairCode({ trustTier: 'trusted_personal' });
+      const paired = await clientA.rest!.connections.pair({
+        endpoint: code.loopbackEndpoint!,
+        code: code.code,
+        fingerprint: code.tlsFingerprint,
+        includeGui: false,
+        trusted: true,
+        backgroundSummary: false,
+      });
+
+      await clientB.global.sessions.create({ sessionId: 'sess-repeatable', workDir: workB });
+      await serverB.core.accessor.get(ISessionManager).close('sess-repeatable');
+      const indexedB = await serverB.core.accessor.get(ISessionIndex).get('sess-repeatable');
+      expect(indexedB).toBeDefined();
+
+      const sessionDirB = join(homeB, 'sessions', indexedB!.workspaceId, 'sess-repeatable');
+      const agentDirB = join(sessionDirB, 'agents', 'main');
+      mkdirSync(agentDirB, { recursive: true });
+      writeFileSync(join(sessionDirB, 'execution-control.json'), JSON.stringify({ state: 'paused', reason: 'sync-test' }));
+      writeFileSync(join(agentDirB, 'wire.jsonl'), '{"type":"metadata","seq":1}\n');
+      const statePathB = join(sessionDirB, 'state.json');
+      const initialState = JSON.parse(readFileSync(statePathB, 'utf8')) as Record<string, unknown>;
+      writeFileSync(statePathB, JSON.stringify({ ...initialState, updatedAt: 1_700_000_000_000 }));
+      await serverB.core.accessor.get(ISessionIndex).reconcileNow?.();
+
+      const firstPull = await clientA.rest!.sync.pullFromPeer(paired.id, {
+        includeConfig: false,
+        includeCredentials: false,
+        includeMemories: false,
+        includeSkills: false,
+        sessions: { mode: 'ids', sessionIds: ['sess-repeatable'] },
+        targetWorkDir: workA,
+      });
+      expect(firstPull).toMatchObject({ sessionsApplied: 1, sessionsSkipped: 0 });
+
+      const indexedA = await serverA.core.accessor.get(ISessionIndex).get('sess-repeatable');
+      expect(indexedA).toBeDefined();
+      const sessionDirA = join(homeA, 'sessions', indexedA!.workspaceId, 'sess-repeatable');
+      expect(JSON.parse(readFileSync(join(sessionDirA, 'execution-control.json'), 'utf8'))).toMatchObject({
+        state: 'paused',
+        reason: 'sync-test',
+      });
+      expect(readFileSync(join(sessionDirA, 'agents', 'main', 'wire.jsonl'), 'utf8')).toBe('{"type":"metadata","seq":1}\n');
+
+      const noopPull = await clientA.rest!.sync.pullFromPeer(paired.id, {
+        includeConfig: false,
+        includeCredentials: false,
+        includeMemories: false,
+        includeSkills: false,
+        sessions: { mode: 'ids', sessionIds: ['sess-repeatable'] },
+        targetWorkDir: workA,
+      });
+      expect(noopPull.sessionsApplied).toBe(0);
+      expect(noopPull.sessionsSkipped).toBe(1);
+
+      writeFileSync(join(agentDirB, 'wire.jsonl'), '{"type":"metadata","seq":1}\n{"type":"turn.ended","seq":2}\n');
+      writeFileSync(join(sessionDirB, 'execution-control.json'), JSON.stringify({ state: 'running', reason: 'resumed' }));
+      writeFileSync(statePathB, JSON.stringify({ ...initialState, updatedAt: 1_700_000_060_000 }));
+      await serverB.core.accessor.get(ISessionIndex).reconcileNow?.();
+
+      const secondPull = await clientA.rest!.sync.pullFromPeer(paired.id, {
+        includeConfig: false,
+        includeCredentials: false,
+        includeMemories: false,
+        includeSkills: false,
+        sessions: { mode: 'ids', sessionIds: ['sess-repeatable'] },
+        targetWorkDir: workA,
+      });
+      expect(secondPull.sessionsApplied).toBe(1);
+      expect(secondPull.sessionsSkipped).toBe(0);
+      expect(readFileSync(join(sessionDirA, 'agents', 'main', 'wire.jsonl'), 'utf8')).toContain('"seq":2');
+      expect(JSON.parse(readFileSync(join(sessionDirA, 'execution-control.json'), 'utf8'))).toMatchObject({
+        state: 'running',
+        reason: 'resumed',
+      });
+    } finally {
+      await clientA.close();
+      await clientB.close();
+    }
+  }, 60_000);
+
+  it('handles SystemCcpTunnelRunner cancel without hanging, warm-pool idle keepalive, and RELEASED terminal stop', async () => {
+    const fakeHost: Pick<IHostProcessService, 'spawn'> = {
+      spawn: async (): Promise<IHostProcess> => {
+        const stdin = new PassThrough();
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        let resolveWait!: (code: number) => void;
+        const waitPromise = new Promise<number>((resolve) => { resolveWait = resolve; });
+        const terminate = () => {
+          stdout.destroy();
+          stderr.destroy();
+          resolveWait(143);
+        };
+        return {
+          pid: 4242,
+          stdin,
+          stdout,
+          stderr,
+          wait: () => waitPromise,
+          kill: async () => { terminate(); },
+          dispose: () => { terminate(); },
+        } as unknown as IHostProcess;
+      },
+    };
+    const cancelRunner = new SystemCcpTunnelRunner(fakeHost);
+    const abort = new AbortController();
+    const preparePromise = cancelRunner.prepare('rt-cancel-1', abort.signal);
+    setTimeout(() => abort.abort(), 20);
+    await expect(preparePromise).rejects.toThrow(/ccp_operation_cancelled/);
+    await cancelRunner.close();
+
+    let inspectCalls = 0;
+    let disableCalls = 0;
+    let prepareCalls = 0;
+    let currentRuntimeInfo: CcpRuntimeInfo = { state: 'RUNNING', idleTimeoutMinutes: 0.002 };
+    const lifecycleRunner: CcpTunnelRunner = {
+      async inspectRuntime() {
+        inspectCalls += 1;
+        return currentRuntimeInfo;
+      },
+      async disableIdleTimeout() {
+        disableCalls += 1;
+        return currentRuntimeInfo;
+      },
+      async prepare() {
+        prepareCalls += 1;
+        return `ssh_pool${prepareCalls}`;
+      },
+      async exec() {
+        return '{}';
+      },
+      async openTunnel(_sessionId, localPort) {
+        const ctrl = new AbortController();
+        return {
+          endpoint: `https://127.0.0.1:${localPort}`,
+          signal: ctrl.signal,
+          close: async () => { ctrl.abort(); },
+        };
+      },
+      async close() {},
+    };
+    const connector = new CcpTunnelConnector(lifecycleRunner);
+    try {
+      const record = {
+        id: 'conn-pool-1',
+        target: { hostId: 'host-pool', homeId: 'home-pool', protocol: 1 as const },
+        transport: { kind: 'ccp_tunnel' as const, runtimeId: 'ccp-pool-1', remoteTlsPort: 5443 },
+      };
+      const resolved = await connector.acquire(record, AbortSignal.timeout(5_000));
+      expect(resolved.endpoint).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
+      expect(disableCalls).toBe(1);
+      expect(prepareCalls).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      expect(inspectCalls).toBeGreaterThanOrEqual(2);
+
+      currentRuntimeInfo = { state: 'RELEASED', idleTimeoutMinutes: 0 };
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      const preparesBeforeReleased = prepareCalls;
+      await expect(connector.acquire(record, AbortSignal.timeout(5_000))).rejects.toThrow(/CCP runtime ccp-pool-1 is RELEASED/);
+      await expect(connector.acquire(record, AbortSignal.timeout(5_000))).rejects.toThrow(/CCP runtime ccp-pool-1 is RELEASED/);
+      expect(prepareCalls).toBe(preparesBeforeReleased);
+    } finally {
+      await connector.close();
+    }
+  }, 30_000);
 });

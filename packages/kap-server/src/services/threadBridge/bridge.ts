@@ -6,7 +6,7 @@ import { z } from 'zod';
 import {
   IBootstrapService, ICapabilitySnapshotService, IConfigService, ISessionIndex, ISessionManager, ISessionActivityView, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService,
   spaceThreadCapability, SPACE_THREAD_ROUTER, RECHECK_BRIDGED_THREADS, ACCEPT_BRIDGED_THREAD_MESSAGE,
-  Error2, ErrorCodes, isError2, ThreadMailboxBacklogError, type Scope, type ThreadRef, type AcceptedThreadMessage,
+  Error2, ErrorCodes, isError2, ThreadMailboxBacklogError, type ErrorCode, type Scope, type ThreadRef, type AcceptedThreadMessage,
   type SpaceThreadConnector, type SendPeerThreadMessageInput, type SendThreadMessageResult,
   type ListThreadsInput, type ListThreadsResult, type ReadThreadInput, type ReadThreadResult,
   type WaitThreadsInput, type WaitThreadsResult, type CreateBridgedThreadInput, type CreateBridgedThreadResult,
@@ -47,7 +47,23 @@ interface Outbound extends BridgeLink { connectionGrantId?: string }
 interface Outbox { receipt: BridgeReceipt; request?: BridgeSend; fingerprint: string; attempts?: number; nextAttemptAt?: number; finishedAt?: number }
 interface InboundCreate { key: string; grantId: string; at: number; fingerprint: string; sessionId: string; result?: CreateBridgedThreadResult }
 interface State { inbound: Inbound[]; outbound: Outbound[]; outbox: Outbox[]; nextSeq: number; targets?: ThreadRef[]; inboundKeys?: { key: string; grantId: string; at: number }[]; inboundCreates?: InboundCreate[] }
-interface RemoteEnvelope<T> { code: number; msg: string; data: { identity: ConnectionAdmission['identity']; result: T } }
+interface RemoteEnvelope<T> {
+  code: number;
+  msg: string;
+  data: { identity: ConnectionAdmission['identity']; result: T };
+  errorCode?: string;
+  details?: Record<string, unknown>;
+}
+function throwBridgeEnvelopeError(status: number, envelope: RemoteEnvelope<unknown>): never {
+  if (typeof envelope.errorCode === 'string' && envelope.errorCode.length > 0) {
+    throw new Error2(
+      envelope.errorCode as ErrorCode,
+      envelope.msg || 'bridge_request_rejected',
+      envelope.details === undefined ? undefined : { details: envelope.details },
+    );
+  }
+  throw new AdmissionError(status, envelope.msg || 'bridge_request_rejected');
+}
 const RECEIPT_RETENTION_MS = 7 * 24 * 3600000;
 const isPending = (entry: Outbox) => entry.receipt.delivery === 'pending' || entry.receipt.delivery === 'accepted';
 const DATA_PATHS = new Set(['/api/thread-bridge/list', '/api/thread-bridge/read', '/api/thread-bridge/send', '/api/thread-bridge/wait', '/api/thread-bridge/create', '/api/thread-bridge/tools_list', '/api/thread-bridge/tools_call']);
@@ -153,7 +169,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const label = input.sourceLabel.trim().slice(0, 128) || 'Kiki';
     const approvedPeer = input.grantId === undefined ? undefined : this.admission.approvedPeer(input.grantId);
     const permissionCeiling =
-      approvedPeer?.trustTier === 'trusted_personal' || approvedPeer?.meshCapabilities?.includes('execute')
+      approvedPeer?.trustTier === 'trusted_personal'
         ? 'yolo' as const
         : undefined;
     return [await this.approve({ source: input.source, target: this.admission.identity, sourceScope: { workspaceId: '*' }, targetScope: { workspaceId: '*' }, operations, permissionCeiling, expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10, pendingLimit: 20, messagesPerMinute: 60, location: 'network', label }, input.grantId)];
@@ -598,7 +614,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const parentId = this.state.inbound.find((entry) => entry.grant.id === grant.id)?.connectionGrantId;
     if (parentId === undefined) return declared;
     const peer = this.admission.approvedPeer(parentId);
-    if (peer?.trustTier === 'trusted_personal' || peer?.meshCapabilities?.includes('execute') === true) {
+    if (peer?.trustTier === 'trusted_personal') {
       return declared;
     }
     return constrainPermissionMode(declared, 'auto');
@@ -771,7 +787,15 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         delivery: record.delivery,
       };
     }
-    return spaceThreadCapability(this.threads)[ACCEPT_BRIDGED_THREAD_MESSAGE]({ producer, target: input.target, content: input.content, idempotencyKey: input.idempotencyKey, signal });
+    const isTargetLive = this.core.accessor.get(ISessionManager).get(input.target.sessionId) !== undefined;
+    return spaceThreadCapability(this.threads)[ACCEPT_BRIDGED_THREAD_MESSAGE]({
+      producer,
+      target: input.target,
+      content: input.content,
+      idempotencyKey: input.idempotencyKey,
+      signal,
+      ...(isTargetLive ? {} : { deliveryTimeoutMs: 0 }),
+    });
   }
   async inboundWait(grant: BridgeGrant, input: ReturnType<typeof bridgeWaitSchema.parse>, signal: AbortSignal): Promise<WaitThreadsResult> {
     this.checkInbound(grant, input, 'wait', input.target); await this.requireTarget(input.target);
@@ -1245,7 +1269,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         const reply = await this.peerBridges.forward(record.transport.grantId, operation, credential, body, lease.signal);
         const envelope = reply.envelope as RemoteEnvelope<T>;
         if (reply.status < 200 || reply.status >= 300 || envelope.code !== 0) {
-          throw new AdmissionError(reply.status >= 200 && reply.status < 300 ? 409 : reply.status, envelope.msg || 'bridge_request_rejected');
+          throwBridgeEnvelopeError(reply.status >= 200 && reply.status < 300 ? 409 : reply.status, envelope);
         }
         if (envelope.data === null || typeof envelope.data !== 'object' || !sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
         return envelope.data.result;
@@ -1278,7 +1302,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
           record.pinnedFingerprint,
         );
         const envelope = await readBoundedJsonBody(response, responseLimit, lease.signal) as RemoteEnvelope<T>;
-        if (!response.ok || envelope.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, envelope.msg ?? 'bridge_request_rejected');
+        if (!response.ok || envelope.code !== 0) throwBridgeEnvelopeError(response.ok ? 409 : response.status, envelope);
         if (!sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
         return envelope.data.result;
       };
@@ -1360,7 +1384,14 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
     catch (error) {
       if (error instanceof ContentChangedError) return reply.code(409).send(errEnvelope(40922, error.message, req.id));
       if (error instanceof ThreadMailboxBacklogError) return reply.code(429).send(errEnvelope(42901, 'bridge_queue_or_rate_limit', req.id));
-      if (isError2(error)) return reply.code(403).send(errEnvelope(40301, error.message, req.id));
+      if (isError2(error)) {
+        const status = error.code === ErrorCodes.THREAD_CURSOR_INVALID ? 409 : 403;
+        return reply.code(status).send({
+          ...errEnvelope(status === 409 ? 40924 : 40301, error.message, req.id),
+          errorCode: error.code,
+          ...(error.details === undefined ? {} : { details: error.details }),
+        });
+      }
       if (error instanceof Error && error.name === 'ZodError') return reply.code(400).send(errEnvelope(40001, 'invalid_bridge_request', req.id));
       if (!(error instanceof AdmissionError)) throw error;
       return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));

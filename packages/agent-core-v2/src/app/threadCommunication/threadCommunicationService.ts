@@ -965,7 +965,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   ): void {
     if (this.closing || this.mailboxController.signal.aborted) return;
     const normalizedTarget: ThreadRef = this.needsBridge(target) ? target : this.requireLocalHost(target);
-    const key = `${threadIdentity(callerRef)}\0${threadIdentity(normalizedTarget)}`;
+    const key = `${threadIdentity(callerRef)}\0${caller.agentId ?? MAIN_AGENT_ID}\0${threadIdentity(normalizedTarget)}`;
     const watchId = explicitWatchId ?? randomUUID();
     const previous = this.terminalWatches.get(key);
     if (previous !== undefined) {
@@ -1026,12 +1026,16 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           }
           if (isUnrecoverableWatchError(error) || isCursorInvalidWatchError(error)) {
             const reason = error instanceof Error ? error.message : String(error);
+            const notificationId = `notify-terminal-stop:${watchId}`;
             await this.deliverWatchNotification(
               caller,
               callerRef,
               target,
-              formatWatchStoppedMessage(target, reason),
-              `notify-terminal-stop:${watchId}`,
+              formatWatchStoppedMessage(target, reason, {
+                notificationId,
+                agentId: caller.agentId,
+              }),
+              notificationId,
               signal,
             );
             return;
@@ -1051,6 +1055,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         const hasDeletedOrArchived = entry.activities.some(
           (activity) => activity.kind === 'lifecycle' && (activity.reason === 'deleted' || activity.reason === 'archived'),
         );
+        const hasAttention = entry.activities.some((activity) => activity.kind === 'attention');
+        const shouldTerminate = hasTerminal || hasDeletedOrArchived;
+        if (!shouldTerminate && !hasAttention) continue;
         if (hasTerminal && !hasDeletedOrArchived) {
           try {
             const readResult = await this.readThread({ caller, thread: target, limit: 1, signal });
@@ -1061,16 +1068,22 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         }
         if (signal.aborted || this.closing) return;
         const lastSeq = entry.activities.at(-1)!.seq;
-        const content = formatTerminalWatchMessage(target, entry.activities, preview, previewError);
+        const notificationId = shouldTerminate
+          ? `notify-terminal:${watchId}:${lastSeq}`
+          : `notify-attention:${watchId}:${lastSeq}`;
+        const content = formatTerminalWatchMessage(target, entry.activities, preview, previewError, {
+          notificationId,
+          agentId: caller.agentId,
+        });
         await this.deliverWatchNotification(
           caller,
           callerRef,
           target,
           content,
-          `notify-terminal:${watchId}:${lastSeq}`,
+          notificationId,
           signal,
         );
-        return;
+        if (shouldTerminate) return;
       }
     } finally {
       if (this.terminalWatches.get(key)?.controller === controller) {
@@ -1094,13 +1107,16 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           kind: 'peer_thread',
           source: target,
           sender: { sessionId: target.sessionId, name: `thread-watch:${target.sessionId}` },
+          allowWhenDisabled: true,
+          targetAgentId: caller.agentId,
+          rawNotification: true,
         },
         caller,
         target: callerRef,
         content,
         idempotencyKey,
         signal,
-      });
+      }, false);
     } catch (error) {
       if (!signal.aborted && !this.closing) {
         this.log.warn('Failed to deliver terminal watch notification to caller thread', {
@@ -1324,9 +1340,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
       }
       this.mailboxController.signal.throwIfAborted();
-      const main = await waitWithSignal(ensureMainAgent(session), this.mailboxController.signal);
+      const requestedAgentId = message.producer.kind === 'peer_thread' ? message.producer.targetAgentId : undefined;
+      const targetAgent =
+        requestedAgentId !== undefined && requestedAgentId !== MAIN_AGENT_ID
+          ? (session.accessor.get(IAgentLifecycleService).get(requestedAgentId)
+            ?? await waitWithSignal(ensureMainAgent(session), this.mailboxController.signal))
+          : await waitWithSignal(ensureMainAgent(session), this.mailboxController.signal);
       this.mailboxController.signal.throwIfAborted();
-      prompt = main.accessor.get(IAgentPromptService);
+      prompt = targetAgent.accessor.get(IAgentPromptService);
       const origin: PromptOrigin = message.producer.kind === 'bridged_peer'
         ? { ...message.producer, messageId: message.messageId, acceptedAt: message.acceptedAt }
         : message.producer.kind === 'peer_thread'
@@ -1351,7 +1372,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           : { kind: 'external_thread', messageId: message.messageId, acceptedAt: message.acceptedAt };
       const text = message.producer.kind === 'bridged_peer'
         ? `Verified message from space ${message.producer.sourceHomeId} · thread ${message.producer.source.sessionId} (${message.producer.location}):\n\n${message.content}`
-        : message.producer.kind === 'peer_thread'
+        : message.producer.kind === 'peer_thread' && message.producer.rawNotification !== true
           ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
           : message.content;
       const input = { id: message.messageId, message: { id: message.messageId, role: 'user' as const,

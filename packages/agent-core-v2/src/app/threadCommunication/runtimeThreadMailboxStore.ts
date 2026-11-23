@@ -1991,6 +1991,8 @@ function asProducer(value: unknown): ThreadMessageProducer | undefined {
       source,
       sender: asSender(producer['sender']),
       allowWhenDisabled: producer['allowWhenDisabled'] === true,
+      targetAgentId: typeof producer['targetAgentId'] === 'string' && producer['targetAgentId'].length > 0 ? producer['targetAgentId'] : undefined,
+      rawNotification: producer['rawNotification'] === true ? true : undefined,
     };
   }
   if (producer['kind'] === 'room' && typeof producer['roomId'] === 'string' && (producer['targeted'] === undefined || typeof producer['targeted'] === 'boolean')) {

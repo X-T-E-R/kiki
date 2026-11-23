@@ -616,6 +616,8 @@ it('supports trusted bidirectional bridge-only yolo ceiling and notify_on_termin
       expect(
         inbox.items.some(
           (entry) =>
+            entry.message.content.includes('<notification ') &&
+            entry.message.content.includes('type="thread.terminal"') &&
             entry.message.content.includes(`session=${created.id}`) &&
             entry.message.content.includes('terminal') &&
             entry.message.content.includes('Verified bridge reply.'),
@@ -698,14 +700,14 @@ it('supports trusted bidirectional bridge-only yolo ceiling and notify_on_termin
 
     const inboundStatus = await bClient.rest!.connections.inbound();
     const peerGrant = inboundStatus.grants.find((entry) => entry.trustTier === 'trusted_personal')!;
-    await f.b.admission.setTrust(peerGrant.id, 'restricted_peer', ['read']);
+    await f.b.admission.setTrust(peerGrant.id, 'restricted_peer', ['read', 'send', 'execute']);
     await expect(
       execute(createTool, {
         connection_id: paired.id,
         workspace_id: f.target.workspaceId,
         permission_mode: 'yolo',
-        prompt: 'Must fail after trust downgrade',
-        idempotency_key: 'post-downgrade-yolo',
+        prompt: 'Must fail for restricted_peer even with execute mesh capability',
+        idempotency_key: 'post-downgrade-restricted-execute-yolo',
       }),
     ).rejects.toThrow('bridge_permission_ceiling');
   } finally {

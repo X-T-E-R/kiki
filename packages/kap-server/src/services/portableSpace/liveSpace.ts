@@ -1,6 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { join } from 'node:path';
-import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { lstat, mkdir, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { ConfigTarget, isSkillSyncExcluded, openPinnedLogicalRead, planSkillSync, readPinnedRange, type IBootstrapService, type IConfigRegistry, type IConfigService, type IFileSystemStorageService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
 import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
 import { applySectionToToml, snakeToCamel, transformTomlData } from '@kiki/agent-core-v2/app/config/toml';
@@ -128,45 +129,110 @@ async function readSessionWire(
   return missing(readBounded(filePath, limit));
 }
 
-async function collectSessionSubtree(
+const CANONICAL_SESSION_META_FILES = ['state.json', 'meta.json'] as const;
+const CANONICAL_SESSION_EXTRA_ROOT_FILES = ['execution-control.json', 'upcoming-goals.json'] as const;
+const CANONICAL_SESSION_ROOT_FOLDERS = ['attachments', 'media', 'media-originals', 'agent-outcomes'] as const;
+const CANONICAL_AGENT_FOLDERS = ['blobs', 'tasks', 'cron'] as const;
+const STALE_DERIVED_SESSION_ENTRIES = ['replay-checkpoints', 'autonomous-receipts-v1'] as const;
+
+export interface CanonicalSessionFileSource {
+  readonly sessionId: string;
+  readonly workspaceId: string;
+  readonly relativePath: string;
+  readonly archivePath: string;
+  readonly size: number;
+  readonly bytes?: Buffer;
+  readonly filePath?: string;
+  readonly wireScope?: string;
+}
+
+async function collectSessionSubtreeSources(
   dir: string,
-  prefix: string,
-  files: Map<string, Buffer>,
-  budget: { remaining: number },
+  sessionId: string,
+  workspaceId: string,
+  relPrefix: string,
+  out: CanonicalSessionFileSource[],
 ): Promise<void> {
   const dirInfo = await missing(lstat(dir));
   if (!dirInfo || dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) return;
-  const entries = (await missing(readdir(dir, { withFileTypes: true }))) ?? [];
+  const entries = ((await missing(readdir(dir, { withFileTypes: true }))) ?? []).toSorted((a, b) =>
+    a.name.localeCompare(b.name),
+  );
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
     const full = join(dir, entry.name);
-    const key = `${prefix}/${entry.name}`;
+    const rel = `${relPrefix}/${entry.name}`;
     if (entry.isDirectory()) {
-      await collectSessionSubtree(full, key, files, budget);
+      await collectSessionSubtreeSources(full, sessionId, workspaceId, rel, out);
       continue;
     }
     if (!entry.isFile()) continue;
-    const bytes = await missing(readBounded(full, Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining))));
-    if (!bytes) continue;
-    files.set(key, bytes);
-    budget.remaining -= bytes.byteLength;
+    const info = await missing(lstat(full));
+    if (!info || info.isSymbolicLink() || !info.isFile()) continue;
+    out.push({
+      sessionId,
+      workspaceId,
+      relativePath: rel,
+      archivePath: `sessions/${sessionId}/${rel}`,
+      size: info.size,
+      filePath: full,
+    });
   }
 }
 
-export async function exportSessionFiles(
+async function resolveWireSource(
+  live: SessionLiveServices,
+  sessionId: string,
+  workspaceId: string,
+  relativePath: string,
+  scope: string,
+  filePath: string,
+): Promise<CanonicalSessionFileSource | undefined> {
+  const info = await missing(lstat(filePath));
+  if (info !== undefined && (info.isSymbolicLink() || !info.isFile())) return undefined;
+  if (live.storage !== undefined) {
+    const pinned = await openPinnedLogicalRead(live.storage, scope, 'wire.jsonl');
+    try {
+      if (pinned.size !== undefined) {
+        const useDirectFile = info !== undefined && info.size === pinned.size;
+        return {
+          sessionId,
+          workspaceId,
+          relativePath,
+          archivePath: `sessions/${sessionId}/${relativePath}`,
+          size: pinned.size,
+          filePath: useDirectFile ? filePath : undefined,
+          wireScope: useDirectFile ? undefined : scope,
+        };
+      }
+    } finally {
+      pinned.close();
+    }
+  }
+  if (info === undefined) return undefined;
+  return {
+    sessionId,
+    workspaceId,
+    relativePath,
+    archivePath: `sessions/${sessionId}/${relativePath}`,
+    size: info.size,
+    filePath,
+  };
+}
+
+/** Enumerates canonical files across the selected sessions after flushing active append logs. */
+export async function collectCanonicalSessionSources(
   live: SessionLiveServices,
   selection: PortableSpaceSessionSelection,
-  maxBytes = MAX_SPACE_BYTES,
-): Promise<Map<string, Buffer>> {
-  const files = new Map<string, Buffer>();
-  if (selection.mode === 'none') return files;
+): Promise<CanonicalSessionFileSource[]> {
+  const sources: CanonicalSessionFileSource[] = [];
+  if (selection.mode === 'none') return sources;
   const sessions = selection.mode === 'recent' ? (await live.index.listRecent({ limit: selection.count })).items
     : await Promise.all(selection.sessionIds.map(async (id) => {
       const entry = await live.index.get(id);
       if (!entry) throw new Error(`Session not found: ${id}`);
       return entry;
     }));
-  const budget = { remaining: maxBytes };
   for (const session of sessions) {
     if (session.private || live.sessions.isEphemeral(session.id)) continue;
     const workspaceSeg = safePortablePath(session.workspaceId);
@@ -176,58 +242,305 @@ export async function exportSessionFiles(
     const rootInfo = await missing(lstat(root));
     if (!rootInfo || rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) continue;
     const scope = `${live.bootstrap.scope('sessions')}/${session.workspaceId}/${session.id}`;
-    for (const entry of ['state.json', 'meta.json']) {
+    for (const entry of CANONICAL_SESSION_META_FILES) {
       const metaPath = join(root, entry);
       const metaInfo = await missing(lstat(metaPath));
       if (!metaInfo || metaInfo.isSymbolicLink() || !metaInfo.isFile()) continue;
-      const file = await missing(readBounded(metaPath, Math.max(0, budget.remaining)));
+      const file = await missing(readFile(metaPath));
       if (file) {
         const bytes = Buffer.from(JSON.stringify({ ...object(JSON.parse(file.toString('utf8'))), workspaceId: session.workspaceId }));
-        if (bytes.byteLength > budget.remaining) throw new Error(`Portable Space file exceeds its limit: ${entry}`);
-        files.set(`sessions/${session.id}/${entry}`, bytes);
-        budget.remaining -= bytes.byteLength;
+        sources.push({
+          sessionId: session.id,
+          workspaceId: session.workspaceId,
+          relativePath: entry,
+          archivePath: `sessions/${session.id}/${entry}`,
+          size: bytes.byteLength,
+          bytes,
+        });
       }
+    }
+    for (const entry of CANONICAL_SESSION_EXTRA_ROOT_FILES) {
+      const filePath = join(root, entry);
+      const info = await missing(lstat(filePath));
+      if (!info || info.isSymbolicLink() || !info.isFile()) continue;
+      sources.push({
+        sessionId: session.id,
+        workspaceId: session.workspaceId,
+        relativePath: entry,
+        archivePath: `sessions/${session.id}/${entry}`,
+        size: info.size,
+        filePath,
+      });
     }
     const agentRoot = join(root, 'agents');
     const agentRootInfo = await missing(lstat(agentRoot));
     if (agentRootInfo && !agentRootInfo.isSymbolicLink() && agentRootInfo.isDirectory()) {
-      for (const id of await dirs(agentRoot)) {
+      for (const id of (await dirs(agentRoot)).toSorted((a, b) => a.localeCompare(b))) {
         const agentDir = join(agentRoot, id);
         const agentInfo = await missing(lstat(agentDir));
         if (!agentInfo || agentInfo.isSymbolicLink() || !agentInfo.isDirectory()) continue;
         await live.logs.flush(`${scope}/agents/${id}`, 'wire.jsonl');
-        const bytes = await readSessionWire(live, `${scope}/agents/${id}`, join(agentDir, 'wire.jsonl'), Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining)));
-        if (bytes) {
-          files.set(`sessions/${session.id}/agents/${id}/wire.jsonl`, bytes);
-          budget.remaining -= bytes.byteLength;
+        const wireSource = await resolveWireSource(
+          live,
+          session.id,
+          session.workspaceId,
+          `agents/${id}/wire.jsonl`,
+          `${scope}/agents/${id}`,
+          join(agentDir, 'wire.jsonl'),
+        );
+        if (wireSource) sources.push(wireSource);
+        for (const folder of CANONICAL_AGENT_FOLDERS) {
+          await collectSessionSubtreeSources(join(agentDir, folder), session.id, session.workspaceId, `agents/${id}/${folder}`, sources);
         }
-        await collectSessionSubtree(join(agentDir, 'blobs'), `sessions/${session.id}/agents/${id}/blobs`, files, budget);
-        await collectSessionSubtree(join(agentDir, 'tasks'), `sessions/${session.id}/agents/${id}/tasks`, files, budget);
       }
     }
-    const wire = await readSessionWire(live, scope, join(root, 'wire.jsonl'), Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining)));
-    if (wire) {
-      files.set(`sessions/${session.id}/wire.jsonl`, wire);
-      budget.remaining -= wire.byteLength;
+    await live.logs.flush(scope, 'wire.jsonl');
+    const rootWireSource = await resolveWireSource(
+      live,
+      session.id,
+      session.workspaceId,
+      'wire.jsonl',
+      scope,
+      join(root, 'wire.jsonl'),
+    );
+    if (rootWireSource) sources.push(rootWireSource);
+    for (const folder of CANONICAL_SESSION_ROOT_FOLDERS) {
+      await collectSessionSubtreeSources(join(root, folder), session.id, session.workspaceId, folder, sources);
     }
-    for (const folder of ['attachments', 'media', 'media-originals', 'agent-outcomes']) {
-      await collectSessionSubtree(join(root, folder), `sessions/${session.id}/${folder}`, files, budget);
+  }
+  return sources;
+}
+
+export async function exportSessionFiles(
+  live: SessionLiveServices,
+  selection: PortableSpaceSessionSelection,
+  maxBytes = MAX_SPACE_BYTES,
+): Promise<Map<string, Buffer>> {
+  const files = new Map<string, Buffer>();
+  const sources = await collectCanonicalSessionSources(live, selection);
+  const budget = { remaining: maxBytes };
+  for (const source of sources) {
+    if (source.size > budget.remaining) {
+      throw new Error(`Portable Space file exceeds its limit: ${source.relativePath}`);
     }
+    let bytes: Buffer | undefined;
+    if (source.bytes !== undefined) {
+      bytes = source.bytes;
+    } else if (source.wireScope !== undefined) {
+      bytes = await readSessionWire(
+        live,
+        source.wireScope,
+        join(live.bootstrap.sessionsDir, source.workspaceId, source.sessionId, source.relativePath),
+        Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining)),
+      );
+    } else if (source.filePath !== undefined) {
+      bytes = await missing(readBounded(source.filePath, Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining))));
+    }
+    if (bytes === undefined) continue;
+    if (bytes.byteLength > budget.remaining) {
+      throw new Error(`Portable Space file exceeds its limit: ${source.relativePath}`);
+    }
+    files.set(source.archivePath, bytes);
+    budget.remaining -= bytes.byteLength;
   }
   return files;
 }
 
-function isAllowedSessionRelativePath(rel: string): boolean {
-  if (rel === 'state.json' || rel === 'meta.json' || rel === 'wire.jsonl') return true;
+/** Validates whether a session-relative archive path is an allowed canonical session artifact. */
+export function isAllowedSessionRelativePath(rel: string): boolean {
+  if (
+    rel === 'state.json' ||
+    rel === 'meta.json' ||
+    rel === 'wire.jsonl' ||
+    rel === 'execution-control.json' ||
+    rel === 'upcoming-goals.json'
+  ) {
+    return true;
+  }
   const parts = rel.split('/');
   if (parts[0] === 'attachments' || parts[0] === 'media' || parts[0] === 'media-originals' || parts[0] === 'agent-outcomes') {
     return parts.length >= 2;
   }
   if (parts[0] === 'agents' && parts.length >= 3) {
     if (parts.length === 3 && parts[2] === 'wire.jsonl') return true;
-    if ((parts[2] === 'blobs' || parts[2] === 'tasks') && parts.length >= 4) return true;
+    if ((parts[2] === 'blobs' || parts[2] === 'tasks' || parts[2] === 'cron') && parts.length >= 4) return true;
   }
   return false;
+}
+
+function parseSessionUpdatedAt(bytes: Buffer | undefined): number {
+  if (bytes === undefined) return 0;
+  try {
+    const parsed = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+    for (const key of ['updatedAt', 'updated_at', 'lastUpdatedAt']) {
+      const value = parsed[key];
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string') {
+        const ms = Date.parse(value);
+        if (Number.isFinite(ms)) return ms;
+      }
+    }
+  } catch {}
+  return 0;
+}
+
+function isWireRelativePath(rel: string): boolean {
+  if (rel === 'wire.jsonl') return true;
+  const parts = rel.split('/');
+  return parts.length === 3 && parts[0] === 'agents' && parts[2] === 'wire.jsonl';
+}
+
+function rewriteSessionMetaBytes(
+  rawBytes: Buffer,
+  workspaceId: string,
+  remap?: SessionImportRemap,
+): Buffer | undefined {
+  try {
+    const rawJson: unknown = JSON.parse(rawBytes.toString('utf8'));
+    if (rawJson === null || typeof rawJson !== 'object' || Array.isArray(rawJson)) {
+      return undefined;
+    }
+    const parsed = object(rawJson);
+    parsed['workspaceId'] = workspaceId;
+    if ('workspace_id' in parsed) parsed['workspace_id'] = workspaceId;
+    if (remap?.workDir !== undefined) {
+      parsed['workDir'] = remap.workDir;
+      parsed['cwd'] = remap.workDir;
+      if (parsed['custom'] && typeof parsed['custom'] === 'object' && !Array.isArray(parsed['custom'])) {
+        const custom = object(parsed['custom']);
+        if ('cwd' in custom) {
+          custom['cwd'] = remap.workDir;
+          parsed['custom'] = custom;
+        }
+      }
+    }
+    return Buffer.from(JSON.stringify(parsed));
+  } catch {
+    return undefined;
+  }
+}
+
+async function shouldUpdateExistingSession(
+  existingDir: string,
+  incomingUpdatedAt: number,
+  incomingFiles: readonly { readonly relativePath: string; readonly size: number }[],
+): Promise<boolean> {
+  const localMetaBytes =
+    (await missing(readFile(join(existingDir, 'state.json')))) ??
+    (await missing(readFile(join(existingDir, 'meta.json'))));
+  const localUpdatedAt = parseSessionUpdatedAt(localMetaBytes);
+  if (incomingUpdatedAt > localUpdatedAt) return true;
+  for (const entry of incomingFiles) {
+    const existingPath = join(existingDir, entry.relativePath);
+    const localInfo = await missing(lstat(existingPath));
+    if (localInfo === undefined) return true;
+    if (isWireRelativePath(entry.relativePath) && entry.size > localInfo.size) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Atomically commits a staged session directory, updating cold existing sessions when incoming state is newer. */
+export async function commitStagedSessionDirectory(
+  live: SessionLiveServices,
+  input: {
+    readonly sessionId: string;
+    readonly stageDir: string;
+    readonly files: readonly { readonly relativePath: string; readonly size: number }[];
+    readonly remap?: SessionImportRemap;
+  },
+): Promise<'applied' | 'skipped'> {
+  let safeSessionId: string;
+  try {
+    safeSessionId = safePortablePath(input.sessionId);
+    if (safeSessionId.includes('/')) return 'skipped';
+  } catch {
+    return 'skipped';
+  }
+  if (live.sessions.get(safeSessionId) !== undefined) {
+    return 'skipped';
+  }
+  const hasState = input.files.some((entry) => entry.relativePath === 'state.json');
+  const hasMeta = input.files.some((entry) => entry.relativePath === 'meta.json');
+  const primaryMetaRel = hasState ? 'state.json' : hasMeta ? 'meta.json' : undefined;
+  if (primaryMetaRel === undefined) return 'skipped';
+
+  const rawPrimaryMeta = await missing(readFile(join(input.stageDir, primaryMetaRel)));
+  if (rawPrimaryMeta === undefined) return 'skipped';
+  let sourceWorkspaceId: string;
+  try {
+    sourceWorkspaceId = sessionWorkspace(rawPrimaryMeta);
+  } catch {
+    return 'skipped';
+  }
+  const remappedWorkspaceId = input.remap?.workspaceId === undefined
+    ? undefined
+    : (() => {
+      const safe = safePortablePath(input.remap.workspaceId);
+      return safe.includes('/') ? undefined : safe;
+    })();
+  const workspaceId = remappedWorkspaceId ?? sourceWorkspaceId;
+
+  for (const metaRel of CANONICAL_SESSION_META_FILES) {
+    if (!input.files.some((entry) => entry.relativePath === metaRel)) continue;
+    const metaPath = join(input.stageDir, metaRel);
+    const rawBytes = await missing(readFile(metaPath));
+    if (rawBytes === undefined) return 'skipped';
+    const rewritten = rewriteSessionMetaBytes(rawBytes, workspaceId, input.remap);
+    if (rewritten === undefined) return 'skipped';
+    await writeFileAtomic(metaPath, rewritten);
+  }
+
+  const incomingUpdatedAt = parseSessionUpdatedAt(rawPrimaryMeta);
+  const workspaceDir = await checkedPath(live.bootstrap.sessionsDir, workspaceId);
+  await mkdir(workspaceDir, { recursive: true });
+  const targetSessionDir = await checkedPath(live.bootstrap.sessionsDir, `${workspaceId}/${safeSessionId}`);
+  const existingIndexed = await live.index.get(safeSessionId);
+  const existingIndexedDir =
+    existingIndexed === undefined
+      ? undefined
+      : await checkedPath(live.bootstrap.sessionsDir, `${safePortablePath(existingIndexed.workspaceId)}/${safeSessionId}`).catch(() => undefined);
+  const targetExists = (await missing(lstat(targetSessionDir))) !== undefined;
+  const existingDir = targetExists
+    ? targetSessionDir
+    : existingIndexedDir !== undefined && existingIndexedDir !== input.stageDir && (await missing(lstat(existingIndexedDir))) !== undefined
+      ? existingIndexedDir
+      : undefined;
+
+  if (existingDir !== undefined) {
+    const newer = await shouldUpdateExistingSession(existingDir, incomingUpdatedAt, input.files);
+    if (!newer) return 'skipped';
+  }
+
+  for (const derived of STALE_DERIVED_SESSION_ENTRIES) {
+    await rm(join(input.stageDir, derived), { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  if (!targetExists) {
+    await rename(input.stageDir, targetSessionDir);
+    if (existingIndexedDir !== undefined && existingIndexedDir !== targetSessionDir) {
+      await rm(existingIndexedDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return 'applied';
+  }
+
+  const backupParent = join(dirname(live.bootstrap.sessionsDir), '.sync-staging');
+  await mkdir(backupParent, { recursive: true });
+  const backupDir = join(backupParent, `backup-${safeSessionId}-${randomBytes(6).toString('hex')}`);
+  await rename(targetSessionDir, backupDir);
+  try {
+    await rename(input.stageDir, targetSessionDir);
+  } catch (error) {
+    await rename(backupDir, targetSessionDir).catch(() => undefined);
+    throw error;
+  }
+  await rm(backupDir, { recursive: true, force: true }).catch(() => undefined);
+  return 'applied';
+}
+
+export async function refreshSessionIndexAfterImport(index: SessionLiveServices['index']): Promise<void> {
+  await refreshSessionIndex(index);
 }
 
 export async function importSessionFiles(
@@ -243,12 +556,6 @@ export async function importSessionFiles(
   }
   let sessionsApplied = 0;
   let sessionsSkipped = 0;
-  const remappedWorkspaceId = remap?.workspaceId === undefined
-    ? undefined
-    : (() => {
-      const safe = safePortablePath(remap.workspaceId);
-      return safe.includes('/') ? undefined : safe;
-    })();
   for (const [sessionId, group] of grouped) {
     let safeSessionId: string;
     try {
@@ -261,97 +568,49 @@ export async function importSessionFiles(
       sessionsSkipped += 1;
       continue;
     }
-    if (live.sessions.get(safeSessionId) || (await live.index.get(safeSessionId)) !== undefined) {
+    if (live.sessions.get(safeSessionId) !== undefined) {
       sessionsSkipped += 1;
       continue;
     }
-    const metaEntry = group.find((entry) => entry.relativePath === 'state.json')
-      ?? group.find((entry) => entry.relativePath === 'meta.json');
-    if (metaEntry === undefined) {
-      sessionsSkipped += 1;
-      continue;
-    }
-    let sourceWorkspaceId: string;
-    try {
-      sourceWorkspaceId = sessionWorkspace(Buffer.from(metaEntry.contentBase64, 'base64'));
-    } catch {
-      sessionsSkipped += 1;
-      continue;
-    }
-    const workspaceId = remappedWorkspaceId ?? sourceWorkspaceId;
-    const writes: { path: string; bytes: Buffer }[] = [];
+    const stagingParent = join(dirname(live.bootstrap.sessionsDir), '.sync-staging');
+    await mkdir(stagingParent, { recursive: true });
+    const stageDir = join(stagingParent, `session-${safeSessionId}-${randomBytes(6).toString('hex')}`);
+    const stagedFiles: { relativePath: string; size: number }[] = [];
     let valid = true;
-    for (const file of group) {
-      let safeRel: string;
-      try {
-        safeRel = safePortablePath(file.relativePath);
-      } catch {
-        valid = false;
-        break;
-      }
-      if (!isAllowedSessionRelativePath(safeRel)) {
-        valid = false;
-        break;
-      }
-      let bytes: Buffer = Buffer.from(file.contentBase64, 'base64');
-      if (safeRel === 'state.json' || safeRel === 'meta.json') {
+    try {
+      await mkdir(stageDir, { recursive: true });
+      for (const file of group) {
+        let safeRel: string;
         try {
-          const rawJson: unknown = JSON.parse(bytes.toString('utf8'));
-          if (rawJson === null || typeof rawJson !== 'object' || Array.isArray(rawJson)) {
-            valid = false;
-            break;
-          }
-          const parsed = object(rawJson);
-          parsed['workspaceId'] = workspaceId;
-          if ('workspace_id' in parsed) parsed['workspace_id'] = workspaceId;
-          if (remap?.workDir !== undefined) {
-            parsed['workDir'] = remap.workDir;
-            parsed['cwd'] = remap.workDir;
-            if (parsed['custom'] && typeof parsed['custom'] === 'object' && !Array.isArray(parsed['custom'])) {
-              const custom = object(parsed['custom']);
-              if ('cwd' in custom) {
-                custom['cwd'] = remap.workDir;
-                parsed['custom'] = custom;
-              }
-            }
-          }
-          bytes = Buffer.from(JSON.stringify(parsed));
+          safeRel = safePortablePath(file.relativePath);
         } catch {
           valid = false;
           break;
         }
+        if (!isAllowedSessionRelativePath(safeRel)) {
+          valid = false;
+          break;
+        }
+        const bytes = Buffer.from(file.contentBase64, 'base64');
+        const destination = await checkedPath(stageDir, safeRel);
+        await writeFileAtomic(destination, bytes);
+        stagedFiles.push({ relativePath: safeRel, size: bytes.byteLength });
       }
-      try {
-        const destination = await checkedPath(live.bootstrap.sessionsDir, `${workspaceId}/${safeSessionId}/${safeRel}`);
-        writes.push({ path: destination, bytes });
-      } catch {
-        valid = false;
-        break;
-      }
-    }
-    if (!valid || writes.length === 0) {
-      sessionsSkipped += 1;
-      continue;
-    }
-    const workspaceDir = await checkedPath(live.bootstrap.sessionsDir, workspaceId);
-    await mkdir(workspaceDir, { recursive: true });
-    const sessionDir = await checkedPath(live.bootstrap.sessionsDir, `${workspaceId}/${safeSessionId}`);
-    try {
-      await mkdir(sessionDir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      if (!valid || stagedFiles.length === 0) {
         sessionsSkipped += 1;
         continue;
       }
-      throw error;
+      const outcome = await commitStagedSessionDirectory(live, {
+        sessionId: safeSessionId,
+        stageDir,
+        files: stagedFiles,
+        remap,
+      });
+      if (outcome === 'applied') sessionsApplied += 1;
+      else sessionsSkipped += 1;
+    } finally {
+      await rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
     }
-    try {
-      for (const item of writes) await writeFileAtomic(item.path, item.bytes);
-    } catch (error) {
-      await rm(sessionDir, { recursive: true, force: true }).catch(() => undefined);
-      throw error;
-    }
-    sessionsApplied += 1;
   }
   if (sessionsApplied > 0) await refreshSessionIndex(live.index);
   return { sessionsApplied, sessionsSkipped };
