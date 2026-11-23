@@ -4,10 +4,17 @@ import type {
   SkillRootSyncPlan,
   SyncBundle,
   SyncBundleExportInput,
+  SyncBundleImportInput,
   SyncBundleImportReceipt,
   SyncCredentialMergeInput,
   SyncCredentialMergeReceipt,
   SyncCredentialSealInput,
+  SyncFilesExportInput,
+  SyncFilesExportResult,
+  SyncFilesImportInput,
+  SyncFilesTransferReceipt,
+  SyncPeerFilesPullInput,
+  SyncPeerFilesPushInput,
   SyncPeerTransferInput,
   SyncProjectIdentityResolveInput,
 } from '@kiki/protocol';
@@ -24,7 +31,11 @@ export interface SyncFacade {
   exportPortableConfig(): Promise<Record<string, unknown>>;
   planSkillsSync(workDir?: string): Promise<readonly SkillRootSyncPlan[]>;
   exportBundle(input?: Partial<SyncBundleExportInput>): Promise<SyncBundle>;
-  importBundle(bundle: SyncBundle): Promise<SyncBundleImportReceipt>;
+  importBundle(bundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt>;
   pushToPeer(peerId: string, input?: Partial<SyncPeerTransferInput>, options?: HttpRestRequestOptions): Promise<SyncBundleImportReceipt>;
   pullFromPeer(peerId: string, input?: Partial<SyncPeerTransferInput>, options?: HttpRestRequestOptions): Promise<SyncBundleImportReceipt>;
+  exportFiles(input: SyncFilesExportInput, options?: HttpRestRequestOptions): Promise<SyncFilesExportResult>;
+  importFiles(input: SyncFilesImportInput, options?: HttpRestRequestOptions): Promise<SyncFilesTransferReceipt>;
+  pullFilesFromPeer(peerId: string, input: SyncPeerFilesPullInput, options?: HttpRestRequestOptions): Promise<SyncFilesTransferReceipt>;
+  pushFilesToPeer(peerId: string, input: SyncPeerFilesPushInput, options?: HttpRestRequestOptions): Promise<SyncFilesTransferReceipt>;
 }

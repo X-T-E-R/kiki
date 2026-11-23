@@ -38,6 +38,7 @@ export const ThreadCreateToolInputSchema = z.object({
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
   prompt: z.string().min(1).max(100_000).optional(),
+  notify_on_terminal: z.boolean().optional(),
   bridge_id: z.string().uuid().optional(),
   connection_id: z.string().uuid().optional(),
   workspace_id: z.string().min(1).max(512).optional(),
@@ -81,6 +82,9 @@ export class ThreadCreateTool implements IThreadCreateTool {
     if (input.prompt !== undefined && input.prompt.trim() === '') {
       return { output: 'prompt must contain non-whitespace text.', isError: true };
     }
+    if (input.notify_on_terminal === true && input.prompt === undefined) {
+      return { output: 'notify_on_terminal requires prompt to be provided.', isError: true };
+    }
     if (input.from_subagent !== undefined && input.cwd !== undefined) {
       return { output: 'from_subagent keeps the subagent\'s own working directory; omit cwd.', isError: true };
     }
@@ -92,28 +96,59 @@ export class ThreadCreateTool implements IThreadCreateTool {
       description: bridged ? 'Creating a thread in another space' : input.from_subagent === undefined ? 'Creating a new thread' : `Opening subagent ${input.from_subagent} as a thread`,
       execute: async ({ signal, toolCallId }) => {
         const callerMode = this.callerPermission.mode;
-        const requestedMode = input.permission_mode ?? (bridged ? constrainPermissionMode(callerMode, 'auto') : callerMode);
-        if (bridged && constrainPermissionMode(requestedMode, 'auto') !== requestedMode) {
-          return { output: `permission_mode ${requestedMode} exceeds the cross-space auto ceiling.`, isError: true };
+        const caller = {
+          workspaceId: this.session.workspaceId,
+          sessionId: this.session.sessionId,
+          agentId: this.caller.agentId,
+        };
+        const crossSpaceCeiling = bridged
+          ? (this.threadCommunication.resolveBridgePermissionCeiling?.({
+              caller,
+              bridgeId: input.bridge_id,
+              connectionId: input.connection_id,
+              workspaceId: input.workspace_id,
+            }) ?? 'auto')
+          : callerMode;
+        const defaultBridgedMode = constrainPermissionMode(callerMode, constrainPermissionMode('auto', crossSpaceCeiling));
+        const requestedMode = input.permission_mode ?? (bridged ? defaultBridgedMode : callerMode);
+        if (bridged && constrainPermissionMode(requestedMode, crossSpaceCeiling) !== requestedMode) {
+          return { output: `permission_mode ${requestedMode} exceeds the cross-space ${crossSpaceCeiling} ceiling.`, isError: true };
         }
         if (constrainPermissionMode(requestedMode, callerMode) !== requestedMode) {
           return { output: `permission_mode ${requestedMode} exceeds the caller's effective ${callerMode} mode. Ask the user to change the caller's mode first.`, isError: true };
         }
         if (bridged) {
           const created = await this.threadCommunication.createThread({
-            caller: { workspaceId: this.session.workspaceId, sessionId: this.session.sessionId },
+            caller,
             bridgeId: input.bridge_id, connectionId: input.connection_id, workspaceId: input.workspace_id,
             idempotencyKey: input.idempotency_key ?? toolCallId, signal,
             title: input.title, profile: input.profile, persona: input.persona, modelAlias: input.model_alias,
             effort: input.effort, permissionMode: requestedMode, planMode: input.plan_mode, prompt: input.prompt,
+            notifyOnTerminal: input.notify_on_terminal,
           });
           const ref = created.ref;
+          const watching = input.notify_on_terminal === true && created.promptStarted;
           return { output: JSON.stringify({
             id: ref.sessionId,
             thread: { host_id: ref.hostId, workspace_id: ref.workspaceId, session_id: ref.sessionId, bridge_id: ref.bridgeId, connection_id: ref.connectionId },
             title: created.title, profile: created.profile, prompt_started: created.promptStarted,
-            message: 'Pass thread directly to ThreadSend, ThreadRead, or ThreadWait when the bridge permits the operation.',
+            notify_on_terminal: watching ? true : undefined,
+            message: watching
+              ? 'Pass thread directly to ThreadSend, ThreadRead, or ThreadWait when the bridge permits the operation. Automatic terminal/attention notification is active for this thread.'
+              : 'Pass thread directly to ThreadSend, ThreadRead, or ThreadWait when the bridge permits the operation.',
           }, null, 2) };
+        }
+        if (input.notify_on_terminal === true) {
+          const enabled = await this.threadCommunication.isWorkspaceEnabled(this.session.workspaceId, {
+            ...caller,
+            agentId: this.caller.agentId,
+          });
+          if (!enabled) {
+            throw new Error2(
+              ErrorCodes.THREAD_DISABLED,
+              `Thread communication is disabled for workspace "${this.session.workspaceId}".`,
+            );
+          }
         }
         const model = normalizeSubagentBindingValue(input.model_alias, 'model_alias');
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
@@ -171,7 +206,32 @@ export class ThreadCreateTool implements IThreadCreateTool {
               else plan.exit();
             }
           }
+          const context = handle.accessor.get(ISessionContext);
+          let localWatchCursor: string | undefined;
+          let localTargetRef:
+            | { readonly hostId: string; readonly workspaceId: string; readonly sessionId: string }
+            | undefined;
           if (input.prompt !== undefined) {
+            if (input.notify_on_terminal === true) {
+              if (this.threadCommunication === undefined) {
+                throw new Error2(
+                  ErrorCodes.REQUEST_INVALID,
+                  'notify_on_terminal requires thread communication service support.',
+                );
+              }
+              localTargetRef = {
+                hostId: this.threadCommunication.hostId,
+                workspaceId: context.workspaceId,
+                sessionId: handle.id,
+              };
+              const baseline = await this.threadCommunication.waitThreads({
+                caller,
+                threads: [{ thread: localTargetRef }],
+                timeoutMs: 0,
+                signal,
+              });
+              localWatchCursor = baseline.threads[0]?.cursor;
+            }
             const submitted = await main.accessor.get(IAgentPromptService).enqueue({
               message: {
                 role: 'user',
@@ -188,9 +248,16 @@ export class ThreadCreateTool implements IThreadCreateTool {
                 `Thread "${handle.id}" accepted the prompt but could not start it (${completion.state}).`,
               );
             }
+            if (input.notify_on_terminal === true && localTargetRef !== undefined) {
+              await this.threadCommunication.watchTerminal?.({
+                caller,
+                target: localTargetRef,
+                cursor: localWatchCursor,
+              });
+            }
           }
           const created = await metadata.read();
-          const context = handle.accessor.get(ISessionContext);
+          const watchingLocal = input.notify_on_terminal === true && input.prompt !== undefined;
           return {
             output: JSON.stringify({
               id: handle.id,
@@ -198,7 +265,10 @@ export class ThreadCreateTool implements IThreadCreateTool {
               cwd: context.cwd,
               profile: profile.name,
               prompt_started: input.prompt !== undefined,
-              message: 'Thread created in the session list. It runs independently and does not report back here; to continue it, use ThreadList for its thread reference, then ThreadSend and ThreadWait (requires thread communication to be enabled).',
+              notify_on_terminal: watchingLocal ? true : undefined,
+              message: watchingLocal
+                ? 'Thread created in the session list. Automatic terminal/attention notification is active for this thread.'
+                : 'Thread created in the session list. It runs independently and does not report back here; to continue it, use ThreadList for its thread reference, then ThreadSend and ThreadWait (requires thread communication to be enabled).',
             }, null, 2),
           };
         } catch (error) {

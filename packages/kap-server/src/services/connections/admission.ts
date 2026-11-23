@@ -21,6 +21,7 @@ import { generateServerToken } from '../auth/persistentToken';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 
 const DEFAULT_PAIR_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait'];
+const DEFAULT_TRUSTED_PAIR_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create'];
 const DEFAULT_APPROVED_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create', 'tools'];
 const LAST_CONNECTED_AT_PERSIST_INTERVAL_MS = 5 * 60 * 1000;
 interface StoredGrant extends Omit<ConnectionGrant, 'activeLeases'> { digest: string; allowBridge?: boolean; bridgeOperations?: BridgeOperation[]; trustTier?: PeerTrustTier; meshCapabilities?: MeshCapability[] }
@@ -240,8 +241,9 @@ export class ConnectionAdmission {
       for (const byte of bytes) compact += PAIRING_CODE_ALPHABET[byte % PAIRING_CODE_ALPHABET.length];
       const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
       const expiresAt = Date.now() + (input.expiresInMs ?? 600_000);
-      const bridgeOperations = [...new Set(input.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)];
       const trustTier: PeerTrustTier = input.trustTier ?? 'restricted_peer';
+      const defaultOps = trustTier === 'trusted_personal' ? DEFAULT_TRUSTED_PAIR_BRIDGE_OPERATIONS : DEFAULT_PAIR_BRIDGE_OPERATIONS;
+      const bridgeOperations = [...new Set(input.bridgeOperations ?? defaultOps)];
       const defaultCaps = trustTier === 'restricted_peer' ? DEFAULT_RESTRICTED_PEER_CAPABILITIES : DEFAULT_TRUSTED_PERSONAL_CAPABILITIES;
       const meshCapabilities = [...new Set(input.meshCapabilities ?? defaultCaps)];
       for (const entry of this.state.pairingCodes) if (!entry.consumed) entry.consumed = true;

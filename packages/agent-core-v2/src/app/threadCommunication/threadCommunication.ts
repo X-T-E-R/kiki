@@ -49,6 +49,7 @@ export interface CreateBridgedThreadInput {
   readonly permissionMode?: import('#/agent/permissionPolicy/types').PermissionMode;
   readonly planMode?: boolean;
   readonly prompt?: string;
+  readonly notifyOnTerminal?: boolean;
 }
 
 export interface CreateBridgedThreadResult {
@@ -56,6 +57,20 @@ export interface CreateBridgedThreadResult {
   readonly title: string;
   readonly profile: string;
   readonly promptStarted: boolean;
+  readonly activityCursor?: string;
+}
+
+export interface BridgePermissionCeilingInput {
+  readonly caller: ThreadCaller;
+  readonly bridgeId?: string;
+  readonly connectionId?: string;
+  readonly workspaceId?: string;
+}
+
+export interface WatchThreadTerminalInput {
+  readonly caller: ThreadCaller;
+  readonly target: ThreadRef;
+  readonly cursor?: string;
 }
 
 export interface ListThreadsResult {
@@ -187,6 +202,8 @@ export interface IThreadCommunicationService {
   listMessages(input?: ListThreadMessagesInput): Promise<ListThreadMessagesResult>;
   listThreads(input?: ListThreadsInput): Promise<ListThreadsResult>;
   createThread(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult>;
+  resolveBridgePermissionCeiling?(input: BridgePermissionCeilingInput): import('#/agent/permissionPolicy/types').PermissionMode | undefined;
+  watchTerminal?(input: WatchThreadTerminalInput): Promise<void>;
   readThread(input: ReadThreadInput): Promise<ReadThreadResult>;
   sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult>;
   sendRoomMessage(input: SendRoomMessageInput): Promise<SendThreadMessageResult>;

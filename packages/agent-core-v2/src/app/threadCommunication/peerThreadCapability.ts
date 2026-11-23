@@ -1,10 +1,15 @@
 import type {
   IThreadCommunicationService,
+  ListThreadsInput,
+  ListThreadsResult,
+  ReadThreadInput,
+  ReadThreadResult,
   SendThreadMessageResult,
   ThreadRef,
+  WaitThreadsInput,
+  WaitThreadsResult,
 } from './threadCommunication';
 import type { AcceptedThreadMessage, ThreadMessageProducer, ThreadMessageSender } from './threadMailboxStore';
-import type { ListThreadsInput, ListThreadsResult, ReadThreadInput, ReadThreadResult, WaitThreadsInput, WaitThreadsResult } from './threadCommunication';
 
 export const RECHECK_BRIDGED_THREADS: unique symbol = Symbol('recheckBridgedThreads');
 export const SPACE_THREAD_ROUTER: unique symbol = Symbol('spaceThreadRouter');
@@ -12,6 +17,14 @@ export const ACCEPT_BRIDGED_THREAD_MESSAGE: unique symbol = Symbol('acceptBridge
 
 export interface SpaceThreadConnector {
   create(input: import('./threadCommunication').CreateBridgedThreadInput): Promise<import('./threadCommunication').CreateBridgedThreadResult>;
+  permissionCeiling?(input: import('./threadCommunication').BridgePermissionCeilingInput): import('#/agent/permissionPolicy/types').PermissionMode | undefined;
+  assertCanWatch?(input: {
+    readonly caller: import('./threadCommunication').ThreadCaller;
+    readonly bridgeId?: string;
+    readonly connectionId?: string;
+    readonly workspaceId?: string;
+    readonly target?: ThreadRef;
+  }): void;
   list(input: ListThreadsInput): Promise<ListThreadsResult>;
   read(input: ReadThreadInput): Promise<ReadThreadResult>;
   send(input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult>;
@@ -50,6 +63,7 @@ export interface SendPeerThreadMessageInput {
   readonly sender?: ThreadMessageSender;
   readonly allowWhenDisabled?: boolean;
   readonly executingAgentId?: string;
+  readonly notifyOnTerminal?: boolean;
 }
 
 /** `threadCommunication` domain — non-reflective peer-send capability. The symbol-keyed method is

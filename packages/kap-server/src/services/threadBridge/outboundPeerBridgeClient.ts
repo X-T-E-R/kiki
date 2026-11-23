@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { WebSocket, type RawData } from 'ws';
-import { isError2, ThreadMailboxBacklogError } from '@kiki/agent-core-v2';
+import { ErrorCodes, isError2, ThreadMailboxBacklogError } from '@kiki/agent-core-v2';
 import { decodeJsonFrame, encodeJsonFrame, type KlientFrame } from '@kiki/klient/host';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import {
@@ -221,8 +221,7 @@ function rawDataToString(data: RawData): string {
 function isEligiblePeerBridgeRecord(record: RemoteConnection): boolean {
   return (
     record.enabled &&
-    record.transport === undefined &&
-    record.purposes.includes('gui') &&
+    (record.transport === undefined || record.transport.kind === 'ccp_tunnel') &&
     record.purposes.includes('bridge') &&
     record.state !== 'disabled' &&
     record.state !== 'identity_changed'
@@ -509,7 +508,18 @@ export class OutboundPeerBridgeClient {
           return;
         }
         if (isError2(error)) {
-          sendBridgeResponse(ws, id, 403, errEnvelope(40301, error.message, id) as unknown as Record<string, unknown>, isAborted);
+          const status = error.code === ErrorCodes.THREAD_CURSOR_INVALID ? 409 : 403;
+          sendBridgeResponse(
+            ws,
+            id,
+            status,
+            {
+              ...(errEnvelope(status === 409 ? 40924 : 40301, error.message, id) as unknown as Record<string, unknown>),
+              errorCode: error.code,
+              ...(error.details === undefined ? {} : { details: error.details }),
+            },
+            isAborted,
+          );
           return;
         }
         if (error instanceof Error && error.name === 'ZodError') {
@@ -760,8 +770,12 @@ export class OutboundPeerBridgeClient {
       } catch (error) {
         if (connectController === controller) connectController = undefined;
         if (resumeCredentialChange() || !current()) return;
-        if (error instanceof AdmissionError && error.reason === 'identity_changed') this.connections.failed(record.id, error, epoch);
-        else if (error instanceof AdmissionError && error.status === 401) setAuthCooldown();
+        if (error instanceof AdmissionError && error.reason === 'gui_connection_required') return;
+        if (error instanceof AdmissionError && (error.reason === 'identity_changed' || error.status === 410)) {
+          this.connections.failed(record.id, error, epoch);
+          return;
+        }
+        if (error instanceof AdmissionError && error.status === 401) setAuthCooldown();
         else scheduleReconnect();
       } finally { lease?.release(); }
     };

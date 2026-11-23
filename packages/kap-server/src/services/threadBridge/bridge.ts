@@ -6,11 +6,11 @@ import { z } from 'zod';
 import {
   IBootstrapService, ICapabilitySnapshotService, IConfigService, ISessionIndex, ISessionManager, ISessionActivityView, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService,
   spaceThreadCapability, SPACE_THREAD_ROUTER, RECHECK_BRIDGED_THREADS, ACCEPT_BRIDGED_THREAD_MESSAGE,
-  Error2, ErrorCodes, isError2, ThreadMailboxBacklogError, type Scope, type ThreadRef, type AcceptedThreadMessage,
+  Error2, ErrorCodes, isError2, ThreadMailboxBacklogError, type ErrorCode, type Scope, type ThreadRef, type AcceptedThreadMessage,
   type SpaceThreadConnector, type SendPeerThreadMessageInput, type SendThreadMessageResult,
   type ListThreadsInput, type ListThreadsResult, type ReadThreadInput, type ReadThreadResult,
   type WaitThreadsInput, type WaitThreadsResult, type CreateBridgedThreadInput, type CreateBridgedThreadResult,
-  type Workspace,
+  type BridgePermissionCeilingInput, type PermissionMode, type ThreadCaller, type Workspace,
   constrainPermissionMode,
 } from '@kiki/agent-core-v2';
 import {
@@ -47,7 +47,23 @@ interface Outbound extends BridgeLink { connectionGrantId?: string }
 interface Outbox { receipt: BridgeReceipt; request?: BridgeSend; fingerprint: string; attempts?: number; nextAttemptAt?: number; finishedAt?: number }
 interface InboundCreate { key: string; grantId: string; at: number; fingerprint: string; sessionId: string; result?: CreateBridgedThreadResult }
 interface State { inbound: Inbound[]; outbound: Outbound[]; outbox: Outbox[]; nextSeq: number; targets?: ThreadRef[]; inboundKeys?: { key: string; grantId: string; at: number }[]; inboundCreates?: InboundCreate[] }
-interface RemoteEnvelope<T> { code: number; msg: string; data: { identity: ConnectionAdmission['identity']; result: T } }
+interface RemoteEnvelope<T> {
+  code: number;
+  msg: string;
+  data: { identity: ConnectionAdmission['identity']; result: T };
+  errorCode?: string;
+  details?: Record<string, unknown>;
+}
+function throwBridgeEnvelopeError(status: number, envelope: RemoteEnvelope<unknown>): never {
+  if (typeof envelope.errorCode === 'string' && envelope.errorCode.length > 0) {
+    throw new Error2(
+      envelope.errorCode as ErrorCode,
+      envelope.msg || 'bridge_request_rejected',
+      envelope.details === undefined ? undefined : { details: envelope.details },
+    );
+  }
+  throw new AdmissionError(status, envelope.msg || 'bridge_request_rejected');
+}
 const RECEIPT_RETENTION_MS = 7 * 24 * 3600000;
 const isPending = (entry: Outbox) => entry.receipt.delivery === 'pending' || entry.receipt.delivery === 'accepted';
 const DATA_PATHS = new Set(['/api/thread-bridge/list', '/api/thread-bridge/read', '/api/thread-bridge/send', '/api/thread-bridge/wait', '/api/thread-bridge/create', '/api/thread-bridge/tools_list', '/api/thread-bridge/tools_call']);
@@ -151,7 +167,12 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (operations.length === 0) denied('bridge_operation_denied');
     await this.enableThreads();
     const label = input.sourceLabel.trim().slice(0, 128) || 'Kiki';
-    return [await this.approve({ source: input.source, target: this.admission.identity, sourceScope: { workspaceId: '*' }, targetScope: { workspaceId: '*' }, operations, expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10, pendingLimit: 20, messagesPerMinute: 60, location: 'network', label }, input.grantId)];
+    const approvedPeer = input.grantId === undefined ? undefined : this.admission.approvedPeer(input.grantId);
+    const permissionCeiling =
+      approvedPeer?.trustTier === 'trusted_personal'
+        ? 'yolo' as const
+        : undefined;
+    return [await this.approve({ source: input.source, target: this.admission.identity, sourceScope: { workspaceId: '*' }, targetScope: { workspaceId: '*' }, operations, permissionCeiling, expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10, pendingLimit: 20, messagesPerMinute: 60, location: 'network', label }, input.grantId)];
   }
   async ensureReversePeerBridge(input: { connectionId: string; target: ConnectionIdentity; label: string; signal: AbortSignal }): Promise<{ grant: BridgeGrant; credential: string } | undefined> {
     if (this.admission.unavailableReason !== undefined) return undefined;
@@ -160,6 +181,13 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const localWorkspaceId = forward.grant.sourceScope.workspaceId;
     const remoteWorkspaceId = forward.grant.targetScope.workspaceId;
     const inheritedOperations = [...forward.grant.operations];
+    const connectionRecord = this.connections.list().find((entry) => entry.id === input.connectionId);
+    const inheritedPermissionCeiling =
+      connectionRecord?.localTrusted === true
+        ? forward.grant.permissionCeiling
+        : forward.grant.permissionCeiling === undefined
+          ? undefined
+          : constrainPermissionMode(forward.grant.permissionCeiling, 'auto');
     if (!this.admission.status().enabled) await this.admission.setEnabled(true);
     await this.enableThreads();
     if (localWorkspaceId !== '*' && !(await this.threads.isWorkspaceEnabled(localWorkspaceId))) return undefined;
@@ -168,7 +196,8 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (existing !== undefined) {
       const scopeMatches = existing.grant.sourceScope.workspaceId === remoteWorkspaceId && existing.grant.targetScope.workspaceId === localWorkspaceId;
       const operationsMatch = SAME_OPERATIONS(existing.grant.operations, inheritedOperations);
-      if (existing.grant.enabled && scopeMatches && operationsMatch) {
+      const ceilingMatches = existing.grant.permissionCeiling === inheritedPermissionCeiling;
+      if (existing.grant.enabled && scopeMatches && operationsMatch && ceilingMatches) {
         const stored = await this.connections.secrets.read<{ credential: string }>({ connectionId: existing.grant.id, purpose: 'bridge' }).catch(() => undefined);
         input.signal.throwIfAborted();
         if (stored !== undefined && typeof stored.credential === 'string' && stored.credential.length >= 32) return { grant: { ...existing.grant }, credential: stored.credential };
@@ -181,6 +210,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         existing.grant.sourceScope = { workspaceId: remoteWorkspaceId };
         existing.grant.targetScope = { workspaceId: localWorkspaceId };
         existing.grant.operations = inheritedOperations;
+        existing.grant.permissionCeiling = inheritedPermissionCeiling;
         existing.digest = hash(credential);
         existing.peerConnectionId = input.connectionId;
         await this.connections.secrets.write({ connectionId: existing.grant.id, purpose: 'bridge' }, { credential });
@@ -196,6 +226,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       sourceScope: { workspaceId: remoteWorkspaceId },
       targetScope: { workspaceId: localWorkspaceId },
       operations: inheritedOperations,
+      permissionCeiling: inheritedPermissionCeiling,
       expiresAt: Date.now() + 366 * 24 * 3600 * 1000 * 10,
       pendingLimit: 20,
       messagesPerMinute: 60,
@@ -299,20 +330,29 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const link: Outbound = { connectionId: input.connectionId, grant: input.grant, enabled: true, connectionGrantId };
     await this.change(async () => {
       if (epoch !== this.connections.credentialEpoch(input.connectionId)) denied('connection_not_approved');
-      if (connectionGrantId !== undefined && !this.connections.get(input.connectionId).purposes.includes('gui') && !this.admission.approvedPeer(connectionGrantId)?.allowBridge) denied('connection_not_approved');
+      const record = this.connections.get(input.connectionId);
+      const outboundCredential = connectionGrantId === undefined || record.transport?.kind === 'peer_socket'
+        ? undefined
+        : await this.connections.secrets.read<{ grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        });
+      if (connectionGrantId !== undefined) {
+        if (outboundCredential !== undefined) {
+          if (outboundCredential.grantId !== connectionGrantId) denied('connection_not_approved');
+        } else if (record.purposes.includes('gui') || !this.admission.approvedPeer(connectionGrantId)?.allowBridge) {
+          denied('connection_not_approved');
+        }
+      }
       const previous = this.state.outbound.find((entry) => entry.grant.id === input.grant.id);
       const effectiveBorrowTools = borrowTools ?? previous?.borrowTools;
       if (effectiveBorrowTools !== undefined) link.borrowTools = effectiveBorrowTools;
       const idempotentPeerInstall = previous !== undefined && !previous.grant.revoked && connectionGrantId !== undefined && previous.connectionGrantId === connectionGrantId && input.grant.revision === previous.grant.revision;
       if (previous !== undefined && (previous.grant.revoked || (!idempotentPeerInstall && input.grant.revision <= previous.grant.revision))) throw new AdmissionError(409, 'bridge_revision_not_newer');
       if (input.grant.revoked || !input.grant.enabled || input.grant.expiresAt <= Date.now()) denied('bridge_operation_denied');
-      if (connectionGrantId !== undefined && this.connections.get(input.connectionId).purposes.includes('gui')) {
-        const credential = await this.connections.secrets.read<{ grantId: string }>({ connectionId: this.connections.get(input.connectionId).credentialRef, purpose: 'gui' });
-        if (credential.grantId !== connectionGrantId) denied('connection_not_approved');
-      }
       await this.connections.secrets.write({ connectionId: input.grant.id, purpose: 'bridge' }, { credential: input.credential });
       if (epoch !== this.connections.credentialEpoch(input.connectionId)) denied('connection_not_approved');
-      if (connectionGrantId !== undefined && !this.connections.get(input.connectionId).purposes.includes('gui') && !this.admission.approvedPeer(connectionGrantId)?.allowBridge) denied('connection_not_approved');
+      if (connectionGrantId !== undefined && outboundCredential === undefined && !this.admission.approvedPeer(connectionGrantId)?.allowBridge) denied('connection_not_approved');
       this.cancelOutgoing(input.grant.id);
       if (previous === undefined) this.state.outbound.push(link); else Object.assign(previous, link);
     });
@@ -431,7 +471,6 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   async syncConnection(connectionId: string, input: { operations?: readonly BridgeOperation[]; borrowTools?: boolean } = {}): Promise<ReturnType<SpaceThreadBridge['status']>> {
     const record = this.connections.get(connectionId);
     if (!record.enabled) throw new AdmissionError(403, 'connection_disabled');
-    if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
     const existingLink = this.state.outbound.find((entry) => entry.connectionId === connectionId && !entry.grant.revoked && entry.enabled);
     const lease = this.connections.lease(connectionId, AbortSignal.timeout(15000));
     try {
@@ -570,15 +609,29 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (summary.archived) throw new AdmissionError(410, 'thread_archived');
     if (!(await this.threads.isWorkspaceEnabled(target.workspaceId, target))) denied('workspace_disabled');
   }
+  private effectiveInboundCeiling(grant: BridgeGrant): PermissionMode {
+    const declared = grant.permissionCeiling ?? 'auto';
+    const parentId = this.state.inbound.find((entry) => entry.grant.id === grant.id)?.connectionGrantId;
+    if (parentId === undefined) return declared;
+    const peer = this.admission.approvedPeer(parentId);
+    if (peer?.trustTier === 'trusted_personal') {
+      return declared;
+    }
+    return constrainPermissionMode(declared, 'auto');
+  }
   async inboundCreate(grant: BridgeGrant, input: BridgeCreate): Promise<CreateBridgedThreadResult> {
     this.checkInbound(grant, input, 'create');
+    if (input.notifyOnTerminal === true) {
+      this.checkInbound(grant, input, 'wait');
+    }
     if (grant.targetScope.sessionId !== undefined || (grant.targetScope.workspaceId !== '*' && input.workspaceId !== undefined && input.workspaceId !== grant.targetScope.workspaceId)) denied('bridge_target_scope');
-    if (input.permissionMode !== undefined && constrainPermissionMode(input.permissionMode, 'auto') !== input.permissionMode) denied('bridge_permission_ceiling');
+    const ceiling = this.effectiveInboundCeiling(grant);
+    if (input.permissionMode !== undefined && constrainPermissionMode(input.permissionMode, ceiling) !== input.permissionMode) denied('bridge_permission_ceiling');
     if (input.prompt !== undefined && input.prompt.trim() === '') throw new AdmissionError(400, 'invalid_bridge_request');
     const targetWorkspaceId = grant.targetScope.workspaceId === '*' ? input.workspaceId : grant.targetScope.workspaceId;
     const key = hash(JSON.stringify(['create', grant.id, input.source, input.idempotencyKey]));
     const fingerprint = hash(JSON.stringify({ workspaceId: targetWorkspaceId ?? '*', title: input.title, profile: input.profile,
-      persona: input.persona, modelAlias: input.modelAlias, effort: input.effort, permissionMode: input.permissionMode, planMode: input.planMode, prompt: input.prompt }));
+      persona: input.persona, modelAlias: input.modelAlias, effort: input.effort, permissionMode: input.permissionMode, planMode: input.planMode, prompt: input.prompt, notifyOnTerminal: input.notifyOnTerminal === true ? true : undefined }));
     return this.change(async () => {
       this.checkInbound(grant, input, 'create');
       const now = Date.now();
@@ -616,8 +669,15 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       }
       await writePrivateFile(this.path, JSON.stringify(this.state));
       this.checkInbound(grant, input, 'create');
+      if (input.notifyOnTerminal === true) {
+        this.checkInbound(grant, input, 'wait');
+      }
+      const liveCeiling = this.effectiveInboundCeiling(grant);
+      if (input.permissionMode !== undefined && constrainPermissionMode(input.permissionMode, liveCeiling) !== input.permissionMode) {
+        denied('bridge_permission_ceiling');
+      }
       try {
-        const result = await createBridgedThread(this.core, workspace, this.admission.identity.hostId, input, entry.sessionId, key);
+        const result = await createBridgedThread(this.core, workspace, this.admission.identity.hostId, input, entry.sessionId, key, liveCeiling);
         entry.result = result;
         return result;
       } catch (error) {
@@ -727,7 +787,15 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         delivery: record.delivery,
       };
     }
-    return spaceThreadCapability(this.threads)[ACCEPT_BRIDGED_THREAD_MESSAGE]({ producer, target: input.target, content: input.content, idempotencyKey: input.idempotencyKey, signal });
+    const isTargetLive = this.core.accessor.get(ISessionManager).get(input.target.sessionId) !== undefined;
+    return spaceThreadCapability(this.threads)[ACCEPT_BRIDGED_THREAD_MESSAGE]({
+      producer,
+      target: input.target,
+      content: input.content,
+      idempotencyKey: input.idempotencyKey,
+      signal,
+      ...(isTargetLive ? {} : { deliveryTimeoutMs: 0 }),
+    });
   }
   async inboundWait(grant: BridgeGrant, input: ReturnType<typeof bridgeWaitSchema.parse>, signal: AbortSignal): Promise<WaitThreadsResult> {
     this.checkInbound(grant, input, 'wait', input.target); await this.requireTarget(input.target);
@@ -853,14 +921,44 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     }, input.signal);
     return bridgeToolsCallResultSchema.parse(raw);
   }
+  permissionCeiling(input: BridgePermissionCeilingInput): PermissionMode | undefined {
+    try {
+      const link = this.choose(input, input.caller, undefined, 'create');
+      return link.grant.permissionCeiling ?? 'auto';
+    } catch {
+      return undefined;
+    }
+  }
+  assertCanWatch(input: {
+    readonly caller: ThreadCaller;
+    readonly bridgeId?: string;
+    readonly connectionId?: string;
+    readonly workspaceId?: string;
+    readonly target?: ThreadRef;
+  }): void {
+    if (input.target !== undefined) {
+      this.choose(input.target, input.caller, input.target, 'wait');
+      return;
+    }
+    const link = this.choose(input, input.caller, undefined, 'create');
+    if (!link.grant.operations.includes('wait')) denied('bridge_operation_denied');
+  }
   private source(source: { workspaceId: string; sessionId: string } | undefined): ThreadRef { if (source === undefined) denied('bridge_source_required'); return plainRef({ hostId: this.admission.identity.hostId, ...source }); }
   async create(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
     const link = this.choose(input, input.caller, undefined, 'create');
+    const ceiling = link.grant.permissionCeiling ?? 'auto';
+    if (input.permissionMode !== undefined && constrainPermissionMode(input.permissionMode, ceiling) !== input.permissionMode) {
+      denied('bridge_permission_ceiling');
+    }
+    if (input.notifyOnTerminal === true && !link.grant.operations.includes('wait')) {
+      denied('bridge_operation_denied');
+    }
     const result = await this.remote<CreateBridgedThreadResult>(link, 'create', {
       bridgeId: link.grant.id, revision: link.grant.revision, source: this.source(input.caller),
       workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey,
       title: input.title, profile: input.profile, persona: input.persona, modelAlias: input.modelAlias,
       effort: input.effort, permissionMode: input.permissionMode, planMode: input.planMode, prompt: input.prompt,
+      ...(input.notifyOnTerminal === true ? { notifyOnTerminal: true } : {}),
     }, input.signal);
     return { ...result, ref: { ...result.ref, bridgeId: link.grant.id, connectionId: link.connectionId } };
   }
@@ -940,7 +1038,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     });
     await this.retryLink(link.grant.id, input.signal);
     input.signal?.throwIfAborted();
-    const receipt = existing!.receipt;
+    const receipt = this.state.outbox.find((entry) => entry.receipt.id === id)?.receipt ?? existing!.receipt;
     return { messageId: receipt.messageId ?? receipt.id, targetSeq: receipt.targetSeq ?? 0, acceptedAt: receipt.acceptedAt ?? receipt.createdAt,
       deduplicated: duplicate, delivery: receipt.delivery === 'delivered' ? 'delivered' : ['rejected', 'undeliverable'].includes(receipt.delivery) ? 'undeliverable' : 'pending' };
   }
@@ -1163,25 +1261,34 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const lease = this.connections.lease(link.connectionId, AbortSignal.any([this.lifetime.signal, controller.signal, parent ?? this.lifetime.signal, AbortSignal.timeout(Math.max(15000, waitMs + 5000))]), 'bridge');
     const controllers = this.outgoing.get(link.grant.id) ?? new Set<AbortController>(); controllers.add(controller); this.outgoing.set(link.grant.id, controllers);
     try {
-      const transport = await this.connections.acquireTransport(link.connectionId, lease.signal, 'bridge');
-      if (!sameIdentity(transport.target, descriptor.target)) denied('bridge_identity_mismatch');
       const { credential } = await this.connections.secrets.read<{ credential: string }>({ connectionId: link.grant.id, purpose: 'bridge' });
       if (record.transport?.kind === 'peer_socket') {
+        const transport = await this.connections.acquireTransport(link.connectionId, lease.signal, 'bridge');
+        if (!sameIdentity(transport.target, descriptor.target)) denied('bridge_identity_mismatch');
         if (this.peerBridges === undefined) throw new AdmissionError(503, 'peer_bridge_offline');
         const reply = await this.peerBridges.forward(record.transport.grantId, operation, credential, body, lease.signal);
         const envelope = reply.envelope as RemoteEnvelope<T>;
         if (reply.status < 200 || reply.status >= 300 || envelope.code !== 0) {
-          throw new AdmissionError(reply.status >= 200 && reply.status < 300 ? 409 : reply.status, envelope.msg || 'bridge_request_rejected');
+          throwBridgeEnvelopeError(reply.status >= 200 && reply.status < 300 ? 409 : reply.status, envelope);
         }
         if (envelope.data === null || typeof envelope.data !== 'object' || !sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
         return envelope.data.result;
       }
       const serializedBody = JSON.stringify(body);
       const responseLimit = operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'tools_call' ? 16 * 1024 * 1024 : operation === 'tools_list' ? 512 * 1024 : operation === 'list' ? PEER_BRIDGE_LIST_MAX_RESPONSE_BYTES : 16 * 1024;
+      let lastEndpoint = descriptor.endpoint;
       const sendOverHttp = async (): Promise<T> => {
-        if (record.purposes.includes('gui') && record.pinnedFingerprint === undefined) {
-          const { grant, grantId } = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
-          await this.connections.provePeer(transport.endpoint, record.target, { grant, grantId }, lease.signal, record.pinnedFingerprint);
+        const transport = await this.connections.acquireTransport(link.connectionId, lease.signal, 'bridge');
+        if (!sameIdentity(transport.target, descriptor.target)) denied('bridge_identity_mismatch');
+        lastEndpoint = transport.endpoint;
+        if (record.pinnedFingerprint === undefined && record.transport?.kind !== 'peer_socket') {
+          const peerCredential = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' }).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT' && !record.purposes.includes('gui')) return undefined;
+            throw error;
+          });
+          if (peerCredential !== undefined) {
+            await this.connections.provePeer(transport.endpoint, record.target, { grant: peerCredential.grant, grantId: peerCredential.grantId }, lease.signal, record.pinnedFingerprint);
+          }
         }
         lease.signal.throwIfAborted();
         const response = await peerFetch(
@@ -1195,7 +1302,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
           record.pinnedFingerprint,
         );
         const envelope = await readBoundedJsonBody(response, responseLimit, lease.signal) as RemoteEnvelope<T>;
-        if (!response.ok || envelope.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, envelope.msg ?? 'bridge_request_rejected');
+        if (!response.ok || envelope.code !== 0) throwBridgeEnvelopeError(response.ok ? 409 : response.status, envelope);
         if (!sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
         return envelope.data.result;
       };
@@ -1205,7 +1312,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         if (operation === 'tools_call' || parent?.aborted || this.lifetime.signal.aborted || lease.signal.aborted || !isRetryableTransportError(firstError)) {
           throw firstError;
         }
-        evictPinnedAgent(transport.endpoint, record.pinnedFingerprint);
+        evictPinnedAgent(lastEndpoint, record.pinnedFingerprint);
         await pause(150 + Math.floor(Math.random() * 180), lease.signal);
         return await sendOverHttp();
       }
@@ -1277,7 +1384,14 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
     catch (error) {
       if (error instanceof ContentChangedError) return reply.code(409).send(errEnvelope(40922, error.message, req.id));
       if (error instanceof ThreadMailboxBacklogError) return reply.code(429).send(errEnvelope(42901, 'bridge_queue_or_rate_limit', req.id));
-      if (isError2(error)) return reply.code(403).send(errEnvelope(40301, error.message, req.id));
+      if (isError2(error)) {
+        const status = error.code === ErrorCodes.THREAD_CURSOR_INVALID ? 409 : 403;
+        return reply.code(status).send({
+          ...errEnvelope(status === 409 ? 40924 : 40301, error.message, req.id),
+          errorCode: error.code,
+          ...(error.details === undefined ? {} : { details: error.details }),
+        });
+      }
       if (error instanceof Error && error.name === 'ZodError') return reply.code(400).send(errEnvelope(40001, 'invalid_bridge_request', req.id));
       if (!(error instanceof AdmissionError)) throw error;
       return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id));

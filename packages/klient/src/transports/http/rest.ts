@@ -72,6 +72,8 @@ export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly jsonErrorOnSuccess?: boolean;
   readonly skipAuth?: boolean;
   readonly baseUrl?: string;
+  readonly maxBodyBytes?: number;
+  readonly maxResponseBytes?: number;
 }
 
 export interface HttpRestTransport {

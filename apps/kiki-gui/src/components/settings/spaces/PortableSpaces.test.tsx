@@ -360,17 +360,19 @@ describe('PortableSpaces REST client', () => {
       .toBe('https://github.com/example/dots.git#HEAD//spaces/work');
 
     const single = buildColabCommand({ source: SOURCE_AGE_A.endpoint });
-    expect(single.split('\n')).toHaveLength(4);
+    expect(single.split('\n')).toHaveLength(5);
     expect(single).toContain('# Set KIKI_AGE_PASSPHRASE (or KIKI_AGE_KEY) in Colab Secrets if encrypted');
-    expect(single).toContain('curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s --');
+    expect(single).toContain('curl -fsSL https://raw.githubusercontent.com/X-T-E-R/kiki/kiki/scripts/install.sh | sh -s --');
+    expect(single).toContain('--channel beta \\');
     expect(single).toContain("--apply '/backups/workstation-a.kiki.age'");
     expect(single).toContain('--override');
     expect(single).not.toContain('--yes');
     expect(single).not.toContain('passphrase=');
 
     const stacked = buildColabCommand({ source: SOURCE_GIT.endpoint, overlay: SOURCE_AGE_B.endpoint });
-    expect(stacked.split('\n')).toHaveLength(5);
+    expect(stacked.split('\n')).toHaveLength(6);
     expect(stacked).toContain('# Set KIKI_AGE_PASSPHRASE (or KIKI_AGE_KEY) in Colab Secrets if encrypted');
+    expect(stacked).toContain('--channel beta \\');
     expect(stacked).toContain("--apply 'https://github.com/example/kiki-dotfiles.git#main'");
     expect(stacked).toContain("--apply '/backups/colab-overlay.kiki.age'");
     expect(stacked).toContain('--override');
@@ -585,7 +587,8 @@ describe('PortableSpacesCard & workflows', () => {
 
     expect(document.querySelector('[data-portable-device-recipient]')?.textContent).toBe(DEVICE_KEY);
     const command = document.querySelector('[data-portable-colab-command]')?.textContent ?? '';
-    expect(command).toContain('curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s --');
+    expect(command).toContain('curl -fsSL https://raw.githubusercontent.com/X-T-E-R/kiki/kiki/scripts/install.sh | sh -s --');
+    expect(command).toContain('--channel beta \\');
     await click('[data-portable-copy-colab]');
     expect(clipboard.copyTextToClipboard).toHaveBeenCalledWith(command);
 
