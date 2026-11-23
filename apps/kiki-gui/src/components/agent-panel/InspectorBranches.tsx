@@ -14,9 +14,11 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode, type Block } from '@kiki/session-core/session';
 import { plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { usePromoteAgent } from '../../lib/usePromoteAgent';
 import { displayUserMessageText } from '../message/messageSource';
 import { DisclosureChevron } from '../icons';
+import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { plainFailure } from './failureText';
 
 export const MERGED_BRANCH_INLINE_LIMIT = 5;
@@ -156,7 +158,8 @@ const BranchRow = memo(function BranchRow({
   readonly preview: string | undefined;
   readonly onSelect: (agentId: string) => void;
 }) {
-  const { t, time } = useI18n();
+  const { t, time, locale } = useI18n();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const promote = usePromoteAgent(sessionId, node.agentId);
   const isMerged = state === 'merged';
   const isRunning = state === 'running';
@@ -197,8 +200,40 @@ const BranchRow = memo(function BranchRow({
         ? 'text-ink-soft'
         : 'text-ink-faint';
 
+  const menuEntries = useMemo<readonly MiniMenuEntry[]>(() => {
+    const list: MiniMenuEntry[] = [
+      {
+        key: 'open-branch',
+        label: t('file.openPreview'),
+        run: () => { onSelect(node.agentId); },
+      },
+    ];
+    if (promote !== undefined) {
+      list.push({
+        key: 'promote-branch',
+        label: t(promote.pending ? 'agent.promotePending' : 'transcript.branch.promote'),
+        disabled: promote.pending,
+        run: promote.promote,
+      });
+    }
+    list.push({ separator: true });
+    list.push({
+      key: 'copy-branch-id',
+      label: locale === 'zh' ? '复制分支 ID' : 'Copy branch ID',
+      run: () => copyTextToClipboard(node.agentId),
+    });
+    return list;
+  }, [locale, node.agentId, onSelect, promote, t]);
+
   return (
-    <div className="group relative -mx-1.5 w-[calc(100%+0.75rem)] min-w-0">
+    <div
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
+      className="group relative -mx-1.5 w-[calc(100%+0.75rem)] min-w-0"
+    >
     <button
       type="button"
       data-branch-row={node.agentId}
@@ -238,6 +273,17 @@ const BranchRow = memo(function BranchRow({
       >
         {t(promote.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
       </button>
+    ) : null}
+    {menu !== null ? (
+      <MiniContextMenu
+        x={menu.x}
+        y={menu.y}
+        entries={menuEntries}
+        onClose={() => { setMenu(null); }}
+        ariaLabel={node.label}
+        overlayId="branch-row-menu"
+        dataAttribute="data-branch-row-menu"
+      />
     ) : null}
     </div>
   );

@@ -20,10 +20,12 @@ import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/sessi
 import { useRemoteSubagentSearch, type SubagentSearchFn } from '../../lib/subagentSearch';
 import { getSubagentScaleConfig } from '../../lib/subagentScaleConfig';
 import { formatThinkingEffort } from '../../lib/thinkingEffort';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
 import { DisclosureChevron, Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
+import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { buildRoster, ROSTER_BUCKETS, type RosterAgentRow, type RosterBucket, type RosterRow } from './agentRoster';
 import { plainFailure } from './failureText';
 
@@ -263,6 +265,7 @@ const RosterAgent = memo(function RosterAgent({
   onToggle: (agentId: string) => void;
 }) {
   const { t, tp, time } = useI18n();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const { node, bucket, depth } = row;
   const waiting = bucket === 'waiting';
   const failed = node.status === 'failed' || node.status === 'lost';
@@ -295,9 +298,37 @@ const RosterAgent = memo(function RosterAgent({
       ? (elapsed ?? (node.busy === false ? t(STATUS_KEY(node.status)) : t('inspector.nowWorking')))
       : `${t(STATUS_KEY(node.status))}${duration === undefined ? '' : ` · ${duration}`}`;
   const trail = row.path.length > 0 ? row.path.join(' › ') : undefined;
+  const menuEntries = useMemo<readonly MiniMenuEntry[]>(() => {
+    const list: MiniMenuEntry[] = [
+      {
+        key: 'open-agent',
+        label: t('file.openPreview'),
+        run: () => { onSelect(node.agentId); },
+      },
+    ];
+    if (row.childCount > 0) {
+      list.push({
+        key: 'toggle-children',
+        label: t(row.expanded ? 'inspector.collapseAgent' : 'inspector.expandAgent', { name: label }),
+        run: () => { onToggle(node.agentId); },
+      });
+    }
+    list.push({ separator: true });
+    list.push({
+      key: 'copy-id',
+      label: t('preview.copyAgentId'),
+      run: () => copyTextToClipboard(node.agentId),
+    });
+    return list;
+  }, [label, node.agentId, onSelect, onToggle, row.childCount, row.expanded, t]);
   return (
     <div
       data-roster-waiting={waiting ? '' : undefined}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
       className={`relative flex min-w-0 items-start rounded-lg ${waiting ? 'bg-attention-soft/60' : ''}`}
       style={{ paddingLeft: depth * INDENT }}
     >
@@ -368,6 +399,17 @@ const RosterAgent = memo(function RosterAgent({
           </span>
         </span>
       </button>
+      {menu !== null ? (
+        <MiniContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={menuEntries}
+          onClose={() => { setMenu(null); }}
+          ariaLabel={label}
+          overlayId="roster-agent-menu"
+          dataAttribute="data-agent-row-menu"
+        />
+      ) : null}
     </div>
   );
 });

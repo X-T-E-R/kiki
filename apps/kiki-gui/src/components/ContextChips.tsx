@@ -11,7 +11,7 @@
  * Remove buttons are optional: the composer passes them, the bubble does not.
  */
 
-import { Suspense, useState, type ReactNode } from 'react';
+import { Suspense, useState, type MouseEvent, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -223,6 +223,7 @@ export function TextTile({
   leading,
   mono = false,
   onRemove,
+  onContextMenu,
   removeLabel,
   ariaLabel,
   dataAttrs,
@@ -234,6 +235,7 @@ export function TextTile({
   leading?: ReactNode;
   mono?: boolean;
   onRemove?: () => void;
+  onContextMenu?: (event: MouseEvent<HTMLSpanElement>) => void;
   removeLabel?: string;
   ariaLabel?: string;
   /** State markers other code keys on (`data-attachment-reading`, …). */
@@ -247,6 +249,7 @@ export function TextTile({
         data-chip-variant="shelf"
         title={title}
         aria-label={ariaLabel}
+        onContextMenu={onContextMenu}
         className={`${SHELF_CARD} ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} ${mono ? 'font-mono' : ''}`}
       >
         {leading !== undefined ? <span className="flex shrink-0 items-center text-ink-faint">{leading}</span> : null}
@@ -269,6 +272,7 @@ export function TextTile({
       {...dataAttrs}
       title={title}
       aria-label={ariaLabel}
+      onContextMenu={onContextMenu}
       className={`${TILE} max-w-[16rem] bg-ink/[0.045] pl-2 text-ink-soft ${onRemove === undefined ? 'pr-3' : 'pr-1'} ${mono ? 'font-mono' : ''}`}
     >
       {leading}

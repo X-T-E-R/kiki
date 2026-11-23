@@ -17,7 +17,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 import type { MessageAttachment, MessageBlock, MessageChannelDelivery } from '@kiki/session-core/session';
 
+import { browserHost, HostProvider } from '../../host';
 import { I18nProvider } from '../../i18n';
+import { configureRemoteMediaPlayback } from '../useSessionMediaPlayback';
 import { MessageAttachmentView, MessageRow } from './MessageRow';
 import { deliveryNotes } from './messageDelivery';
 import { messageAttachmentSubtype } from './messageMedia';
@@ -27,8 +29,10 @@ import { messageAttachmentSubtype } from './messageMedia';
 const previewProbe = vi.hoisted(() => ({
   openAttachment: vi.fn(),
   openAttachmentInWorkspace: vi.fn(),
+  openFile: vi.fn(),
   openWeb: vi.fn(),
   openImage: vi.fn(),
+  openUrl: vi.fn(async () => {}),
   workspaceEnabled: false,
 }));
 vi.mock('../mediaPreviewContext', async (importOriginal) => {
@@ -39,7 +43,7 @@ vi.mock('../mediaPreviewContext', async (importOriginal) => {
       sessionId: 'session',
       cwd: '/workspace',
       openImage: previewProbe.openImage,
-      openFile: () => {},
+      openFile: previewProbe.openFile,
       openAttachment: previewProbe.openAttachment,
       openAttachmentInWorkspace: previewProbe.workspaceEnabled ? previewProbe.openAttachmentInWorkspace : undefined,
       openWeb: previewProbe.openWeb,
@@ -57,9 +61,11 @@ beforeAll(() => {
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal('IntersectionObserver', undefined);
+  configureRemoteMediaPlayback(false);
 });
 
 afterAll(async () => {
+  configureRemoteMediaPlayback(null);
   for (const root of roots) await act(async () => { flushSync(() => { root.unmount(); }); });
 });
 
@@ -70,9 +76,11 @@ function render(node: ReactNode): HTMLDivElement {
   act(() => {
     flushSync(() => {
       root.render(
-        <QueryClientProvider client={new QueryClient()}>
-          <I18nProvider>{node}</I18nProvider>
-        </QueryClientProvider>,
+        <HostProvider host={{ ...browserHost, openUrl: previewProbe.openUrl }}>
+          <QueryClientProvider client={new QueryClient()}>
+            <I18nProvider>{node}</I18nProvider>
+          </QueryClientProvider>
+        </HostProvider>,
       );
     });
   });
@@ -255,7 +263,9 @@ describe('attachment media kinds', () => {
 
     previewProbe.workspaceEnabled = true;
     previewProbe.openAttachmentInWorkspace.mockClear();
+    previewProbe.openFile.mockClear();
     previewProbe.openWeb.mockClear();
+    previewProbe.openUrl.mockClear();
     try {
       const container = draw(message({
         text: '请审阅页面 [路演看板](https://board.example.com/roadshow/2026) 与以下附件：',
@@ -268,15 +278,11 @@ describe('attachment media kinds', () => {
       expect(container.querySelector('[data-message-attachment-subtype="markdown"]')).not.toBeNull();
       expect(container.querySelector('[data-message-attachment-subtype="archive"]')).not.toBeNull();
 
+      // Local HTML attachment opens the real host file directly in 1 click (skipping the read-only copy hop).
       const htmlOpen = container.querySelector<HTMLButtonElement>('[data-message-attachment="blobref:main:html1"] [data-message-attachment-open]');
       expect(htmlOpen).not.toBeNull();
       act(() => { htmlOpen?.click(); });
-      expect(previewProbe.openAttachmentInWorkspace).toHaveBeenCalledWith(expect.objectContaining({
-        kind: 'file',
-        fileId: 'blobref:main:html1',
-        path: '/workspace/demo/index.html',
-        mime: 'text/html',
-      }));
+      expect(previewProbe.openFile).toHaveBeenCalledWith('/workspace/demo/index.html');
 
       const pdfOpen = container.querySelector<HTMLButtonElement>('[data-message-attachment="blob-report"] [data-message-attachment-open]');
       act(() => { pdfOpen?.click(); });
@@ -287,10 +293,17 @@ describe('attachment media kinds', () => {
         mime: 'application/pdf',
       }));
 
+      // WebLinkPreviewCard primary click opens directly in browser, while the preview icon opens PreviewWorkspace.
       const webCard = container.querySelector<HTMLElement>('[data-message-web-preview="https://board.example.com/roadshow/2026"]');
       expect(webCard).not.toBeNull();
       const webOpen = webCard?.querySelector<HTMLButtonElement>('[data-message-web-open]');
       act(() => { webOpen?.click(); });
+      expect(previewProbe.openUrl).toHaveBeenCalledWith('https://board.example.com/roadshow/2026');
+      expect(previewProbe.openWeb).not.toHaveBeenCalled();
+
+      const webPreviewBtn = webCard?.querySelector<HTMLButtonElement>('[data-message-web-preview-btn]');
+      expect(webPreviewBtn).not.toBeNull();
+      act(() => { webPreviewBtn?.click(); });
       expect(previewProbe.openWeb).toHaveBeenCalledWith('https://board.example.com/roadshow/2026', '路演看板');
     } finally {
       previewProbe.workspaceEnabled = false;
@@ -349,6 +362,7 @@ describe('attachment media kinds', () => {
     const audioWithoutSource: MessageAttachment = { ...voice, blobId: 'blob-aud-nosrc' };
 
     previewProbe.openAttachment.mockClear();
+    previewProbe.openFile.mockClear();
     const withSourceContainer = draw(message({
       attachments: [fileWithSource, imageWithSource, videoWithSource, audioWithSource],
     }));
@@ -359,15 +373,20 @@ describe('attachment media kinds', () => {
     act(() => {
       withSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-src"] [data-message-attachment-open]')?.click();
     });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        kind: 'file',
-        fileId: 'blob-file-src',
-        sourceId,
-        path: undefined,
-        origin: { path: '/workspace/docs/notes.md', trusted: true },
-      }),
-    );
+    expect(previewProbe.openFile).toHaveBeenLastCalledWith('/workspace/docs/notes.md');
+
+    // Right-clicking AttachmentCard raises the unified file context menu with copy-path and open-preview.
+    const fileCard = withSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-src"]')!;
+    act(() => {
+      fileCard.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 50 }));
+    });
+    const fileMenu = document.body.querySelector('[data-file-link-menu]');
+    expect(fileMenu).not.toBeNull();
+    expect(fileMenu?.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+    expect(fileMenu?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
 
     const imgBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button');
     expect(imgBtn).not.toBeNull();
@@ -398,6 +417,16 @@ describe('attachment media kinds', () => {
 
     const audBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]');
     expect(audBtn).not.toBeNull();
+    // Right-clicking AudioAttachment raises the unified file context menu.
+    act(() => {
+      audBtn!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }));
+    });
+    const audioMenu = document.body.querySelector('[data-file-link-menu]');
+    expect(audioMenu).not.toBeNull();
+    expect(audioMenu?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
     act(() => { audBtn?.click(); });
     expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -494,6 +523,7 @@ describe('attachment media kinds', () => {
 
   it('renders and opens web preview cards when a message URL contains malformed percent-encoded pathname sequences', () => {
     previewProbe.openWeb.mockClear();
+    previewProbe.openUrl.mockClear();
     const container = draw(message({
       text: '参见 https://example.test/% 与 https://example.test/docs/%E0%A4 的说明。',
     }));
@@ -503,14 +533,27 @@ describe('attachment media kinds', () => {
     expect(barePercentCard?.textContent).toContain('example.test / %');
     const barePercentOpen = barePercentCard?.querySelector<HTMLButtonElement>('[data-message-web-open]');
     act(() => { barePercentOpen?.click(); });
-    expect(previewProbe.openWeb).toHaveBeenCalledWith('https://example.test/%', 'example.test / %');
+    expect(previewProbe.openUrl).toHaveBeenCalledWith('https://example.test/%');
 
     const truncatedUtf8Card = container.querySelector<HTMLElement>('[data-message-web-preview="https://example.test/docs/%E0%A4"]');
     expect(truncatedUtf8Card).not.toBeNull();
     expect(truncatedUtf8Card?.textContent).toContain('example.test / docs/%E0%A4');
-    const truncatedUtf8Open = truncatedUtf8Card?.querySelector<HTMLButtonElement>('[data-message-web-open]');
-    act(() => { truncatedUtf8Open?.click(); });
+    const truncatedUtf8Preview = truncatedUtf8Card?.querySelector<HTMLButtonElement>('[data-message-web-preview-btn]');
+    act(() => { truncatedUtf8Preview?.click(); });
     expect(previewProbe.openWeb).toHaveBeenCalledWith('https://example.test/docs/%E0%A4', 'example.test / docs/%E0%A4');
+
+    // Right-clicking WebLinkPreviewCard opens the web-link context menu.
+    act(() => {
+      barePercentCard!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }));
+    });
+    const linkMenu = document.body.querySelector('[data-web-link-menu]');
+    expect(linkMenu).not.toBeNull();
+    expect(linkMenu?.querySelector('[data-menu-item="open-in-browser"]')).not.toBeNull();
+    expect(linkMenu?.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+    expect(linkMenu?.querySelector('[data-menu-item="copy-link"]')).not.toBeNull();
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
   });
 });
 

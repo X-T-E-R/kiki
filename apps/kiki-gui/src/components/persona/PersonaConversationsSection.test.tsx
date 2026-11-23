@@ -14,16 +14,20 @@ import { PersonaConversationsSection } from './PersonaConversationsSection';
 const navigate = vi.fn();
 const listSessions = vi.fn();
 const setHome = vi.fn();
+const updateSession = vi.fn();
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
+const mockedConnection = {
+  client: {
+    listSessions,
+    updateSession,
+    klient: { rest: { personas: { setHome } } },
+  },
+  scopeId: 'local',
+  sshLabel: null,
+};
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({
-    client: {
-      listSessions,
-      klient: { rest: { personas: { setHome } } },
-    },
-    scopeId: 'local',
-    sshLabel: null,
-  }),
+  useConnection: () => mockedConnection,
+  useOptionalConnection: () => mockedConnection,
 }));
 
 const mounted: Root[] = [];
@@ -139,5 +143,34 @@ describe('one persona\'s conversations', () => {
     await act(async () => { container.querySelector<HTMLElement>('[data-persona-conversations-more]')!.click(); });
     for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(listSessions.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('opens the unified session context menu on right-click and via the row action button, including Set as daily for topic threads', async () => {
+    listSessions.mockResolvedValue({
+      items: [
+        session({ id: 'home_lin', title: '日常', updated_at: '2026-10-05T09:00:00Z' }),
+        session({ id: 'topic_1', title: '架构评审', updated_at: '2026-10-05T10:00:00Z' }),
+      ],
+      has_more: false,
+    });
+    const container = await render();
+
+    const topicRow = container.querySelector<HTMLButtonElement>('[data-persona-conversation-row="topic_1"]')!;
+    await act(async () => {
+      topicRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 120 }));
+    });
+    const menu = document.body.querySelector('[data-session-menu]');
+    expect(menu).not.toBeNull();
+    expect(menu?.querySelector('[data-menu-item="set-daily"]')).not.toBeNull();
+    expect(menu?.querySelector('[data-menu-item="pin"]')).not.toBeNull();
+    expect(menu?.querySelector('[data-menu-item="rename"]')).not.toBeNull();
+    expect(menu?.querySelector('[data-menu-item="archive"]')).not.toBeNull();
+
+    setHome.mockResolvedValue(undefined);
+    await act(async () => {
+      menu?.querySelector<HTMLButtonElement>('[data-menu-item="set-daily"]')?.click();
+    });
+    for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(setHome).toHaveBeenCalledWith('xiao-you', 'topic_1');
   });
 });

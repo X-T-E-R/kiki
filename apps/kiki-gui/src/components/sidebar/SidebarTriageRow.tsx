@@ -32,6 +32,7 @@ export interface SidebarTriageRowProps {
   readonly untitled: string;
   readonly resolveTitle?: (text: string) => string;
   readonly onOpen: () => void;
+  readonly onContextMenu?: (x: number, y: number) => void;
   readonly onSettle?: () => void;
   readonly onSnooze?: (preset: SnoozePreset) => void;
   readonly onArchive?: () => void;
@@ -99,6 +100,7 @@ export function SidebarTriageRow({
   untitled,
   resolveTitle,
   onOpen,
+  onContextMenu,
   onSettle,
   onSnooze,
   onArchive,
@@ -141,6 +143,10 @@ export function SidebarTriageRow({
       data-inbox-space={item.spaceKey}
       data-inbox-unread={item.unread ? 'true' : 'false'}
       data-inbox-focused={focused ? 'true' : undefined}
+      onContextMenu={onContextMenu === undefined ? undefined : (event) => {
+        event.preventDefault();
+        onContextMenu(event.clientX, event.clientY);
+      }}
       className={`group relative rounded-md ${focused ? 'bg-ink/[0.045]' : ''}`}
     >
       <button

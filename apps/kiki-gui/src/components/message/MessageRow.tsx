@@ -35,6 +35,12 @@ import { useOptionalConnection } from '../../state/connection';
 import { Markdown } from '../Markdown';
 import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, MESSAGE_TEXT_ROOTS } from '../ContentContinuation';
 import { isOnKikiComputer, isRemoteConnection } from '../imageActions';
+import {
+  openAttachmentDirectly,
+  resolveDirectLocalAttachment,
+  useAttachmentContextMenu,
+  useWebLinkContextMenu,
+} from '../fileContextMenu';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { MediaPart, useSessionMedia, useVisibleOnce } from '../mediaParts';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
@@ -52,7 +58,6 @@ import {
   messageAttachmentSubtype,
   messageMediaKind,
   messageMediaRef,
-  resolveSameSessionAttachmentPath,
   trustedAttachmentOrigin,
   type MessageAttachmentSubtype,
   type MessageMediaKind,
@@ -232,64 +237,88 @@ function AttachmentCard({
   const style = SUBTYPE_STYLE[subtype];
   const detail = attachmentDetail(attachment, subtype, readable, t);
   const openable = preview !== null && readable;
-  const origin = useMemo(
-    () => trustedAttachmentOrigin(attachment, { readable }),
-    [attachment, readable],
-  );
-  const hostPath = useMemo(
-    () => (subtype === 'html' ? resolveSameSessionAttachmentPath(attachment, { readable, remote, cwd: preview?.cwd }) : undefined),
+  const { origin, localPath } = useMemo(
+    () => resolveDirectLocalAttachment(attachment, {
+      readable,
+      remote,
+      isHtml: subtype === 'html',
+      cwd: preview?.cwd,
+    }),
     [attachment, readable, remote, subtype, preview?.cwd],
   );
-  const openAttachment = () => {
+  const ref = useMemo(
+    () => messageMediaRef(attachment, kind, subtype === 'html' ? localPath : undefined, origin),
+    [attachment, kind, subtype, localPath, origin],
+  );
+  const openCopy = () => {
     if (!openable) return;
-    const ref = messageMediaRef(attachment, kind, hostPath, origin);
     if (preview.openAttachmentInWorkspace !== undefined) {
       preview.openAttachmentInWorkspace(ref);
     } else {
       preview.openAttachment(ref);
     }
   };
+  const openAttachment = () => {
+    if (!openable) return;
+    openAttachmentDirectly({
+      localPath,
+      preview,
+      client: connection?.client,
+      openCopy,
+    });
+  };
+  const fileMenu = useAttachmentContextMenu({
+    item: ref,
+    label: name,
+    readable,
+    opensLiveDirectly: localPath !== undefined,
+    onOpenPreview: openable ? openAttachment : undefined,
+  });
 
   return (
-    <div
-      data-message-attachment={attachment.blobId}
-      data-message-attachment-subtype={subtype}
-      data-message-attachment-readable={readable ? 'true' : 'false'}
-      onClick={openable ? openAttachment : undefined}
-      className={`flex max-w-full items-center gap-2.5 rounded-xl bg-panel py-2 pr-2.5 pl-3 ring-1 ring-hairline transition-colors sm:max-w-[400px] ${
-        openable ? 'cursor-pointer hover:ring-hairline-strong' : 'opacity-80'
-      }`}
-    >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink/[0.04] text-ink-soft">
-        <Icon name={style.icon} size={14} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide ${style.badgeClass}`}>
-            {style.badge}
-          </span>
-          <span className="min-w-0 truncate font-mono text-[12.5px] font-medium text-ink" title={origin !== undefined ? origin.path : name}>
-            {name}
-          </span>
+    <>
+      <div
+        data-message-attachment={attachment.blobId}
+        data-message-attachment-subtype={subtype}
+        data-message-attachment-readable={readable ? 'true' : 'false'}
+        onClick={openable ? openAttachment : undefined}
+        onContextMenu={fileMenu.openMenu}
+        className={`flex max-w-full items-center gap-2.5 rounded-xl bg-panel py-2 pr-2.5 pl-3 ring-1 ring-hairline transition-colors sm:max-w-[400px] ${
+          openable ? 'cursor-pointer hover:ring-hairline-strong' : 'opacity-80'
+        }`}
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink/[0.04] text-ink-soft">
+          <Icon name={style.icon} size={14} />
         </span>
-        {detail !== '' ? (
-          <span className="mt-0.5 block truncate text-[11.5px] text-ink-faint">{detail}</span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide ${style.badgeClass}`}>
+              {style.badge}
+            </span>
+            <span className="min-w-0 truncate font-mono text-[12.5px] font-medium text-ink" title={origin !== undefined ? origin.path : name}>
+              {name}
+            </span>
+          </span>
+          {detail !== '' ? (
+            <span className="mt-0.5 block truncate text-[11.5px] text-ink-faint">{detail}</span>
+          ) : null}
+        </span>
+        {openable ? (
+          <button
+            type="button"
+            data-message-attachment-open
+            onClick={(event) => {
+              event.stopPropagation();
+              openAttachment();
+            }}
+            className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            {t('message.openAttachment')}
+          </button>
         ) : null}
-      </span>
-      {openable ? (
-        <button
-          type="button"
-          data-message-attachment-open
-          onClick={(event) => {
-            event.stopPropagation();
-            openAttachment();
-          }}
-          className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-        >
-          {t('message.openAttachment')}
-        </button>
-      ) : null}
-    </div>
+      </div>
+      {fileMenu.menuElement}
+    </>
   );
 }
 
@@ -297,60 +326,73 @@ function WebLinkPreviewCard({ link }: { readonly link: MessageWebLink }) {
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const openInWorkspace = () => {
-    if (preview?.openWeb !== undefined) {
-      preview.openWeb(link.url, link.title);
-    } else {
-      void openExternalUrl(host, link.url, t('common.popupBlocked'));
-    }
+  const openExternal = () => {
+    void openExternalUrl(host, link.url, t('common.popupBlocked'));
   };
+  const openInWorkspace = preview?.openWeb === undefined
+    ? undefined
+    : () => { preview.openWeb!(link.url, link.title); };
+  const linkMenu = useWebLinkContextMenu({
+    url: link.url,
+    title: link.title,
+    onOpenPreview: openInWorkspace,
+  });
   return (
-    <div
-      data-message-web-preview={link.url}
-      onClick={openInWorkspace}
-      className="flex max-w-full cursor-pointer items-center gap-2.5 rounded-xl bg-panel py-2 pr-2.5 pl-3 ring-1 ring-hairline transition-colors hover:ring-hairline-strong sm:max-w-[400px]"
-    >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink/[0.04] text-ink-soft">
-        <Icon name="compass" size={14} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="shrink-0 rounded border border-hairline-strong bg-ink/[0.05] px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide text-ink-soft">
-            WEB
+    <>
+      <div
+        data-message-web-preview={link.url}
+        onClick={openExternal}
+        onContextMenu={linkMenu.openMenu}
+        className="flex max-w-full cursor-pointer items-center gap-2.5 rounded-xl bg-panel py-2 pr-2.5 pl-3 ring-1 ring-hairline transition-colors hover:ring-hairline-strong sm:max-w-[400px]"
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink/[0.04] text-ink-soft">
+          <Icon name="compass" size={14} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 rounded border border-hairline-strong bg-ink/[0.05] px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide text-ink-soft">
+              WEB
+            </span>
+            <span className="min-w-0 truncate text-[12.5px] font-medium text-ink" title={link.url}>
+              {link.title}
+            </span>
           </span>
-          <span className="min-w-0 truncate text-[12.5px] font-medium text-ink" title={link.url}>
-            {link.title}
+          <span className="mt-0.5 block truncate font-mono text-[11px] text-ink-faint">
+            {link.hostname} · {t('message.media.web')}
           </span>
         </span>
-        <span className="mt-0.5 block truncate font-mono text-[11px] text-ink-faint">
-          {link.hostname} · {t('message.media.web')}
-        </span>
-      </span>
-      <button
-        type="button"
-        data-message-web-open
-        onClick={(event) => {
-          event.stopPropagation();
-          openInWorkspace();
-        }}
-        className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-      >
-        {t('message.openAttachment')}
-      </button>
-      <button
-        type="button"
-        data-message-web-external
-        title={t('message.openInBrowser')}
-        aria-label={t('message.openInBrowser')}
-        onClick={(event) => {
-          event.stopPropagation();
-          void openExternalUrl(host, link.url, t('common.popupBlocked'));
-        }}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-      >
-        <Icon name="external" size={12} />
-      </button>
-    </div>
+        <button
+          type="button"
+          data-message-web-open
+          title={t('message.openInBrowser')}
+          aria-label={t('message.openInBrowser')}
+          onClick={(event) => {
+            event.stopPropagation();
+            openExternal();
+          }}
+          className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <span>{t('message.openAttachment')}</span>
+          <Icon name="external" size={12} />
+        </button>
+        {openInWorkspace !== undefined ? (
+          <button
+            type="button"
+            data-message-web-preview-btn
+            title={t('file.openPreview')}
+            aria-label={t('file.openPreview')}
+            onClick={(event) => {
+              event.stopPropagation();
+              openInWorkspace();
+            }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <Icon name="read" size={12} />
+          </button>
+        ) : null}
+      </div>
+      {linkMenu.menuElement}
+    </>
   );
 }
 
@@ -437,11 +479,24 @@ function AudioAttachment({ attachment, voice }: { readonly attachment: MessageAt
   } else {
     body = <span aria-busy="true" className="block h-10 w-[240px] max-w-full rounded-lg bg-ink/[0.04]" />;
   }
+  const audioMenu = useAttachmentContextMenu({
+    item,
+    label: attachmentDisplayName(attachment),
+  });
   return (
-    <div ref={slot} data-message-media="audio" data-message-voice={voice ? '' : undefined} className="flex min-w-0 flex-col gap-1">
-      {body}
-      <span title={caption} className="min-w-0 max-w-[320px] truncate text-[11.5px] text-ink-faint">{caption}</span>
-    </div>
+    <>
+      <div
+        ref={slot}
+        data-message-media="audio"
+        data-message-voice={voice ? '' : undefined}
+        onContextMenu={audioMenu.openMenu}
+        className="flex min-w-0 flex-col gap-1"
+      >
+        {body}
+        <span title={caption} className="min-w-0 max-w-[320px] truncate text-[11.5px] text-ink-faint">{caption}</span>
+      </div>
+      {audioMenu.menuElement}
+    </>
   );
 }
 
