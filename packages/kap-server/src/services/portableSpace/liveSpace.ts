@@ -19,7 +19,7 @@ import type { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/
 import type { IMemoryPersistence } from '@kiki/agent-core-v2/persistence/interface/memoryPersistence';
 import { McpServerConfigSchema } from '@kiki/agent-core-v2/mcpCore/config-schema';
 import type { PortableSpaceOperationMode, PortableSpaceSessionSelection } from '@kiki/protocol';
-import { checkedPath, git, gitRemote, MAX_SPACE_BYTES, missing, readBounded, writeFileAtomic } from './spaceFiles';
+import { checkedPath, git, gitRemote, missing, readBounded, writeFileAtomic } from './spaceFiles';
 import { configProjection, encodeToml, filesFromUnits, mcpProjection, object, parseToml, sections, type Data, type Units } from './treeProjection';
 import { hydrateRecipeInstallation, installBytes, readRecipeInstallations, RECIPE_INSTALLATIONS } from './recipeStore';
 import { GUI_CREDENTIALS, readGuiCredentials, readHomeFiles } from './homeFiles';
@@ -111,7 +111,7 @@ async function readSessionWire(
   live: SessionLiveServices,
   scope: string,
   filePath: string,
-  limit: number,
+  limit?: number,
 ): Promise<Buffer | undefined> {
   const info = await missing(lstat(filePath));
   if (info !== undefined && (info.isSymbolicLink() || !info.isFile())) return undefined;
@@ -119,7 +119,9 @@ async function readSessionWire(
     const pinned = await openPinnedLogicalRead(live.storage, scope, 'wire.jsonl');
     try {
       if (pinned.size !== undefined) {
-        if (pinned.size > limit) throw new Error('Portable Space file exceeds its limit: wire.jsonl');
+        if (limit !== undefined && pinned.size > limit) {
+          throw new Error('Portable Space file exceeds its limit: wire.jsonl');
+        }
         if (pinned.size === 0) return Buffer.alloc(0);
         const bytes = await readPinnedRange(pinned, 0, pinned.size);
         return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -317,15 +319,16 @@ export async function collectCanonicalSessionSources(
 export async function exportSessionFiles(
   live: SessionLiveServices,
   selection: PortableSpaceSessionSelection,
-  maxBytes = MAX_SPACE_BYTES,
+  maxBytes?: number,
 ): Promise<Map<string, Buffer>> {
   const files = new Map<string, Buffer>();
   const sources = await collectCanonicalSessionSources(live, selection);
-  const budget = { remaining: maxBytes };
+  let remaining = maxBytes;
   for (const source of sources) {
-    if (source.size > budget.remaining) {
+    if (remaining !== undefined && source.size > remaining) {
       throw new Error(`Portable Space file exceeds its limit: ${source.relativePath}`);
     }
+    const perFileLimit = remaining === undefined ? undefined : Math.max(0, remaining);
     let bytes: Buffer | undefined;
     if (source.bytes !== undefined) {
       bytes = source.bytes;
@@ -334,17 +337,17 @@ export async function exportSessionFiles(
         live,
         source.wireScope,
         join(live.bootstrap.sessionsDir, source.workspaceId, source.sessionId, source.relativePath),
-        Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining)),
+        perFileLimit,
       );
     } else if (source.filePath !== undefined) {
-      bytes = await missing(readBounded(source.filePath, Math.min(MAX_SPACE_BYTES, Math.max(0, budget.remaining))));
+      bytes = await missing(readBounded(source.filePath, perFileLimit));
     }
     if (bytes === undefined) continue;
-    if (bytes.byteLength > budget.remaining) {
+    if (remaining !== undefined && bytes.byteLength > remaining) {
       throw new Error(`Portable Space file exceeds its limit: ${source.relativePath}`);
     }
     files.set(source.archivePath, bytes);
-    budget.remaining -= bytes.byteLength;
+    if (remaining !== undefined) remaining -= bytes.byteLength;
   }
   return files;
 }

@@ -1,3 +1,4 @@
+import { constants as bufferConstants } from 'node:buffer';
 import type { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -24,8 +25,6 @@ import {
   SyncPathNotFoundError,
 } from '../services/sync/fileSync';
 import type { SyncService } from '../services/sync/syncService';
-
-const SYNC_FILES_BODY_LIMIT_BYTES = 96 * 1024 * 1024;
 
 function requireTrustedFileSyncPeer(req: FastifyRequest): void {
   const peer = peerAudience(req);
@@ -140,7 +139,7 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
     }),
   );
 
-  app.post('/api/sync/files::import', { bodyLimit: SYNC_FILES_BODY_LIMIT_BYTES }, async (req, reply) =>
+  app.post('/api/sync/files::import', { bodyLimit: bufferConstants.MAX_STRING_LENGTH }, async (req, reply) =>
     handle(req.id, reply, async () => {
       requireTrustedFileSyncPeer(req);
       return sync.importFiles(syncFilesImportInputSchema.parse(req.body));

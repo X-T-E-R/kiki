@@ -9,11 +9,10 @@ import type {
 } from '@kiki/protocol';
 import { packTarGz, safePortablePath, unpackTarGz } from '../portableSpace/tarArchive';
 
-const MAX_TRANSFER_CONTENT_BYTES = 64 * 1024 * 1024;
 const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
 const NOFOLLOW_FLAG = fsConstants.O_NOFOLLOW ?? 0;
 
-async function readRegularFileNoFollow(filePath: string, maxBytes: number): Promise<Buffer> {
+async function readRegularFileNoFollow(filePath: string): Promise<Buffer> {
   let handle;
   try {
     handle = await open(filePath, fsConstants.O_RDONLY | NOFOLLOW_FLAG);
@@ -31,14 +30,7 @@ async function readRegularFileNoFollow(filePath: string, maxBytes: number): Prom
     if (info.nlink > 1) {
       throw new SyncPathForbiddenError(`Hardlinked source file '${filePath}' is not allowed`);
     }
-    if (info.size > maxBytes) {
-      throw new SyncArchiveInvalidError('Transfer exceeds the 64 MiB archive limit');
-    }
-    const bytes = await handle.readFile();
-    if (bytes.byteLength > maxBytes) {
-      throw new SyncArchiveInvalidError('Transfer exceeds the 64 MiB archive limit');
-    }
-    return bytes;
+    return await handle.readFile();
   } finally {
     await handle.close();
   }
@@ -270,7 +262,7 @@ export async function exportTransferFiles(
   let totalBytes = 0;
 
   if (stat.isFile()) {
-    const bytes = await readRegularFileNoFollow(realTarget, MAX_TRANSFER_CONTENT_BYTES);
+    const bytes = await readRegularFileNoFollow(realTarget);
     files.set(rootName, bytes);
     totalBytes = bytes.byteLength;
     const archive = packTarGz(files);
@@ -305,11 +297,7 @@ export async function exportTransferFiles(
           throw new SyncPathForbiddenError(`Non-regular entry '${entry.name}' is not allowed`);
         }
         const rel = safePortablePath(relative(realTarget, fullPath).replaceAll('\\', '/'));
-        const remainingBudget = MAX_TRANSFER_CONTENT_BYTES - totalBytes;
-        if (info.size > remainingBudget) {
-          throw new SyncArchiveInvalidError('Transfer exceeds the 64 MiB archive limit');
-        }
-        const bytes = await readRegularFileNoFollow(fullPath, remainingBudget);
+        const bytes = await readRegularFileNoFollow(fullPath);
         totalBytes += bytes.byteLength;
         files.set(rel, bytes);
       }

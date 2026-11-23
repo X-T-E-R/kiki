@@ -230,7 +230,7 @@ export const syncFilesTransferReceiptSchema = /* @__PURE__ */ z.object({
   destinationPath: z.string().min(1).max(4096),
   fileCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
-  files: z.array(z.string()).max(32_768),
+  files: z.array(z.string()),
 }).strict();
 export type SyncFilesTransferReceipt = z.infer<typeof syncFilesTransferReceiptSchema>;
 
