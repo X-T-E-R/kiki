@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 
 import { ensureGuiStaticBuild } from '../../perf/browser-runner.mjs';
 import { buildIsolatedPerfEnv, computeWorkDirKey } from '../../perf/sandbox-stager.mjs';
+import { trustedTouchDragScroll } from '../../perf/trusted-scroll.mjs';
 import { evaluateS16MobileVerdict } from '../verify/verdict.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
@@ -682,26 +683,20 @@ export async function runScenarioS16MobileHeavySession({
     };
 
     // --- Phase 3: Touch Scroll Jank on Heavy Session (reducedMotion: no-preference) ---
-    progress('S16 [3/4]: Measuring mobile touch-scroll frame times (P95 rAF delta) under 4x CPU throttle...');
+    progress('S16 [3/4]: Measuring mobile touch-scroll frame times (P95 rAF delta) under 4x CPU throttle via real CDP touch drags...');
     activePhase = 'touch-scroll';
     phaseStartMs = performance.now();
     await page.evaluate(() => {
       window.__s16Probe.resetLongTasks();
       window.__s16Probe.startRaf();
     });
-    await page.evaluate(async () => {
-      const scroller = document.querySelector('[data-transcript-scroll]');
-      if (!scroller) return;
-      for (let step = 0; step < 18; step += 1) {
-        scroller.scrollTop = Math.max(0, scroller.scrollTop - 260);
-        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 45));
-      }
-      for (let step = 0; step < 10; step += 1) {
-        scroller.scrollTop = Math.min(scroller.scrollHeight, scroller.scrollTop + 320);
-        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 45));
-      }
+    const touchDragResult = await trustedTouchDragScroll(page, cdp, {
+      upSwipes: 12,
+      downSwipes: 6,
+      distancePx: 260,
+      stepsPerSwipe: 6,
+      stepDelayMs: 10,
+      pauseBetweenSwipesMs: 45,
     });
     const rafDeltas = await page.evaluate(() => window.__s16Probe.stopRaf());
     const scrollLongTasks = await page.evaluate(() => window.__s16Probe.drainLongTasks());
@@ -714,6 +709,11 @@ export async function runScenarioS16MobileHeavySession({
       jankFramesOver50Ms: rafDeltas.filter((d) => d > 50).length,
       totalBlockingTimeMs: scrollLongTasks.totalBlockingTimeMs,
       maxLongTaskMs: scrollLongTasks.maxLongTaskMs,
+      touchDragOk: touchDragResult.ok,
+      touchSwipesCompleted: touchDragResult.swipesCompleted,
+      touchScrollMoved: touchDragResult.scrollMoved,
+      moved: touchDragResult.scrollMoved,
+      scrollTopDelta: touchDragResult.totalScrollDelta ?? (touchDragResult.scrollMoved ? 1 : 0),
     };
 
     // --- Phase 4: Rapid 5-Session Mobile Switching ---

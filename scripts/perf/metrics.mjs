@@ -55,15 +55,18 @@ export class EventLoopWindowMonitor {
       this.prevElu,
     );
     const currMem = process.memoryUsage();
-    const hasSamples = this.histogram.count > 0;
-    const rawP50 = hasSamples ? this.histogram.percentile(50) / 1e6 : 0;
-    const rawP99 = hasSamples ? this.histogram.percentile(99) / 1e6 : 0;
-    const rawMax = hasSamples ? this.histogram.max / 1e6 : 0;
+    const samples = this.histogram.count;
+    const hasSamples = samples > 0;
+    const rawP50 = hasSamples ? this.histogram.percentile(50) / 1e6 : null;
+    const rawP99 = hasSamples ? this.histogram.percentile(99) / 1e6 : null;
+    const rawMax = hasSamples ? this.histogram.max / 1e6 : null;
     this.histogram.reset();
     return {
-      eldP50Ms: roundMs(Math.max(0, rawP50 - this.resolutionMs)),
-      eldP99Ms: roundMs(Math.max(0, rawP99 - this.resolutionMs)),
-      eldMaxMs: roundMs(Math.max(0, rawMax - this.resolutionMs)),
+      eldSamples: samples,
+      eldP50Ms: rawP50 === null ? null : roundMs(rawP50),
+      eldP99Ms: rawP99 === null ? null : roundMs(rawP99),
+      eldMaxMs: rawMax === null ? null : roundMs(rawMax),
+      eldRawMaxMs: rawMax,
       elu: Number((eluDiff.utilization * 100).toFixed(1)),
       rssMb: roundMb(currMem.rss),
       heapUsedMb: roundMb(currMem.heapUsed),

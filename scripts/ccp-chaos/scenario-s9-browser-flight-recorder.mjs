@@ -8,6 +8,7 @@ import { computeChaosWorkDirKey } from './corpus-generator.mjs';
 import { buildDecodableMp4 } from './fixtures/media.mjs';
 import { generateSyntheticPng } from './scenario-soak-and-media-weaknet.mjs';
 import { assertKapServerWebAssets, createWebAssetsAuditRecorder, evaluateWebAssetsBudget } from './web-assets-bridge.mjs';
+import { trustedWheelScrollUp } from '../perf/trusted-scroll.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const MiB = 1024 * 1024;
@@ -1089,8 +1090,11 @@ export function evaluateS9Verdict({
     if (drill1.composerUsableAfterAllRounds !== true) {
       breaches.push('drill1.composerNotUsableWithoutReload');
     }
-    if (drill1.upwardScrollSnapBackCheck && drill1.upwardScrollSnapBackCheck.ok !== true) {
-      breaches.push(`drill1.upwardScrollSnapBackFailed=${drill1.upwardScrollSnapBackCheck.reason ?? 'snapped'}`);
+    if (drill1.steerWhileBusyVerified !== true) {
+      breaches.push(`drill1.steerWhileBusyNotVerified(mode=${drill1.steerModeUsed ?? 'none'})`);
+    }
+    if (!drill1.upwardScrollSnapBackCheck || drill1.upwardScrollSnapBackCheck.ok !== true) {
+      breaches.push(`drill1.upwardScrollSnapBackFailed=${drill1.upwardScrollSnapBackCheck?.reason ?? 'missing_or_snapped'}`);
     }
     if (drill1.upwardScrollSnapBackCheck?.skipped === true) {
       breaches.push('drill1.upwardScrollSnapBackSkipped');
@@ -1179,12 +1183,23 @@ export function evaluateS9Verdict({
     }
   }
 
-  // Server health assertions
+  // Server health assertions (require positive finite ELD samples; fail closed when unsampled)
   if ((serverHealth?.unhandledRejections ?? 0) > 0) {
     breaches.push(`server.unhandledRejections=${serverHealth.unhandledRejections}`);
   }
   if ((serverHealth?.uncaughtExceptions ?? 0) > 0) {
     breaches.push(`server.uncaughtExceptions=${serverHealth.uncaughtExceptions}`);
+  }
+  const maxAllowedEldMs = tierConfig?.serverEldMaxMs ?? 1_000;
+  if (serverHealth && Object.hasOwn(serverHealth, 'eldSamples')) {
+    if (!Number.isFinite(serverHealth.eldSamples) || serverHealth.eldSamples <= 0) {
+      breaches.push(`server.eldSamples=${serverHealth.eldSamples ?? 0} <= 0`);
+    }
+    if (!Number.isFinite(serverHealth.eldMaxMs)) {
+      breaches.push(`server.eldMaxMs=${String(serverHealth.eldMaxMs)} not finite`);
+    } else if (serverHealth.eldMaxMs > maxAllowedEldMs) {
+      breaches.push(`server.eldMaxMs=${serverHealth.eldMaxMs}ms > ${maxAllowedEldMs}ms`);
+    }
   }
 
   return { passed: breaches.length === 0, breaches };
@@ -1546,7 +1561,7 @@ export async function runScenarioS9BrowserFlightRecorder({
             `[CHAOS_SCOPE:s9_d1_r4b_${Date.now()}] S9 Round 4b follow-up while busy.`,
             { submitMode: 'send-now' },
           );
-          drill1.steerWhileBusyVerified = true;
+          drill1.steerWhileBusyVerified = modeUsed === 'send-now';
           drill1.steerModeUsed = modeUsed;
           if (activeNewSid) {
             await waitForSessionIdle(server.endpoint, server.token, activeNewSid, 25_000);
@@ -1613,22 +1628,29 @@ export async function runScenarioS9BrowserFlightRecorder({
         drill1.roundLatenciesMs.push(roundMs(performance.now() - rT0));
       }
 
-      // Verify upward scroll does not snap back to 0 on mega-session
+      // Verify upward trusted wheel scroll while the giant session is actively streaming
       await page.evaluate(() => window.__s9FlightRecorder?.armSnapBackWatch?.('drill1-upward-scroll'));
-      const scrollCheck = await page.evaluate(async () => {
-        const scroller = document.querySelector('[data-transcript-scroll]');
-        if (!scroller) return { ok: false, reason: 'no_scroller' };
-        const maxScroll = scroller.scrollHeight - scroller.clientHeight;
-        if (maxScroll < 300) return { ok: false, skipped: false, reason: 'insufficient_scroll_height', maxScroll };
-        const target = Math.floor(maxScroll * 0.4);
-        scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
-        scroller.scrollTop = target;
-        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 500));
-        return { ok: scroller.scrollTop > 40, target, settledScrollTop: Math.round(scroller.scrollTop) };
+      await typeAndSubmitComposer(
+        `[CHAOS_SCOPE:s9_d1_mega_live_scroll_${Date.now()}] [CHAOS:STREAM_HOLD:${Math.max(2500, tierConfig.streamHoldDrill1Ms)}] S9 Mega-session active stream during live upward wheel scroll.`,
+      );
+      await sleep(250);
+      const scrollCheck = await trustedWheelScrollUp(page, {
+        deltaY: -1200,
+        steps: 6,
+        pauseMs: 110,
+        settleMs: 500,
       });
+      await waitForSessionIdle(server.endpoint, server.token, corpus.giantSessionId, 25_000);
       await page.evaluate(() => window.__s9FlightRecorder?.disarmSnapBackWatch?.());
-      drill1.upwardScrollSnapBackCheck = scrollCheck;
+      drill1.upwardScrollSnapBackCheck = {
+        ok: scrollCheck.ok && scrollCheck.olderTurnsLoaded,
+        skipped: false,
+        reason: scrollCheck.ok && !scrollCheck.olderTurnsLoaded ? 'no_older_turn_loaded' : scrollCheck.reason,
+        wheelsDispatched: scrollCheck.wheelsDispatched,
+        olderTurnsLoaded: scrollCheck.olderTurnsLoaded,
+        distanceFromBottomPx: scrollCheck.distanceFromBottomPx,
+        snappedToBottom: scrollCheck.snappedToBottom,
+      };
 
       // Verify composer is still usable without reload
       const composerEditable = await page.evaluate(() => {
@@ -1729,16 +1751,20 @@ export async function runScenarioS9BrowserFlightRecorder({
       await spaNavigate(`/s/${s9Corpus.mediaSessionId}`);
       await page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: tierConfig.stepTimeoutMs });
 
-      // Scroll through transcript so .ogg <audio> elements enter IntersectionObserver viewport and mount
-      await page.evaluate(async () => {
-        const scroller = document.querySelector('[data-transcript-scroll]');
-        if (!scroller) return;
-        for (const ratio of [0.0, 0.25, 0.5, 0.75, 1.0, 0.2]) {
-          scroller.scrollTop = Math.floor(Math.max(0, scroller.scrollHeight - scroller.clientHeight) * ratio);
-          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-          await new Promise((r) => setTimeout(r, 180));
-        }
+      // Scroll through transcript via real trusted mouse wheel so .ogg <audio> elements mount
+      const mediaScrollerBox = await page.evaluate(() => {
+        const el = document.querySelector('[data-transcript-scroll]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width * 0.5, y: r.top + r.height * 0.5 };
       });
+      if (mediaScrollerBox) {
+        await page.mouse.move(mediaScrollerBox.x, mediaScrollerBox.y);
+        for (const dy of [-1200, -1200, -1200, 900, 900, -600]) {
+          await page.mouse.wheel(0, dy);
+          await sleep(180);
+        }
+      }
 
       // Wait for at least 1 in-message <audio> with a real src to mount
       await page.waitForFunction(
@@ -1832,14 +1858,22 @@ export async function runScenarioS9BrowserFlightRecorder({
       drill2.oggRangeProbe = oggProbe;
       drill2.mp4RangeProbe = mp4Probe;
 
-      // Scroll to top of media session so video placeholder & audio controls are mounted in viewport
-      await page.evaluate(() => {
+      // Scroll to top of media session via trusted wheel events so video placeholder & audio controls mount in viewport
+      const mediaScrollerRect = await page.evaluate(() => {
         const scroller = document.querySelector('[data-transcript-scroll]');
-        if (scroller) {
-          scroller.scrollTop = 0;
-          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-        }
+        if (!scroller) return null;
+        const r = scroller.getBoundingClientRect();
+        return { x: r.left + Math.min(200, Math.max(40, r.width * 0.5)), y: r.top + Math.min(200, Math.max(40, r.height * 0.5)) };
       });
+      if (mediaScrollerRect) {
+        await page.mouse.move(mediaScrollerRect.x, mediaScrollerRect.y);
+        for (let step = 0; step < 12; step += 1) {
+          const atTop = await page.evaluate(() => (document.querySelector('[data-transcript-scroll]')?.scrollTop ?? 0) <= 2);
+          if (atTop) break;
+          await page.mouse.wheel(0, -1400);
+          await sleep(40);
+        }
+      }
       await sleep(300);
 
       // Arm in-browser audio watch + redundant media-playback re-mint detector, then open AttachmentTabView in PreviewWorkspace
@@ -1921,24 +1955,36 @@ export async function runScenarioS9BrowserFlightRecorder({
           await sleep(450);
           continue;
         }
-        // Scroll to bottom of [data-session-list] to trigger infinite load-more button visibility
-        await page.evaluate(() => {
-          const list = document.querySelector('[data-session-list]');
-          if (list) {
-            list.scrollTop = list.scrollHeight;
-            list.dispatchEvent(new Event('scroll', { bubbles: true }));
-          }
+        // Scroll downward in [data-session-list] via real trusted mouse wheel to trigger load-more
+        const listBox = await page.evaluate(() => {
+          const el = document.querySelector('[data-session-list]');
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width * 0.5, y: r.top + r.height * 0.5 };
         });
+        if (listBox) {
+          await page.mouse.move(listBox.x, listBox.y);
+          for (let w = 0; w < 6; w += 1) {
+            await page.mouse.wheel(0, 1400);
+            await sleep(50);
+          }
+        }
         await sleep(300);
       }
-      // Reset sidebar scroll to top before measuring initial state
-      await page.evaluate(() => {
-        const list = document.querySelector('[data-session-list]');
-        if (list) {
-          list.scrollTop = 0;
-          list.dispatchEvent(new Event('scroll', { bubbles: true }));
-        }
+      // Return sidebar scroll to top via real trusted upward wheel before measuring initial state
+      const listTopBox = await page.evaluate(() => {
+        const el = document.querySelector('[data-session-list]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width * 0.5, y: r.top + r.height * 0.5 };
       });
+      if (listTopBox) {
+        await page.mouse.move(listTopBox.x, listTopBox.y);
+        for (let w = 0; w < 12; w += 1) {
+          await page.mouse.wheel(0, -1600);
+          await sleep(30);
+        }
+      }
       await sleep(200);
 
       const measureSidebarGap = async (label) => {
@@ -2236,6 +2282,7 @@ export async function runScenarioS9BrowserFlightRecorder({
     heapUsedMiB: postSrv.heapUsedMiB,
     eldP99Ms: postSrv.eldP99Ms,
     eldMaxMs: postSrv.eldMaxMs,
+    eldSamples: postSrv.eldSamples ?? 0,
     maxSingleTickStallMs: postSrv.maxSingleTickStallMs,
     eventLoopUtilization: postSrv.eventLoopUtilization,
     unhandledRejections: postSrv.unhandledRejections,

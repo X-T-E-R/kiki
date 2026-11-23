@@ -39,19 +39,46 @@ const CORPUS_TOOL_ROTATION = [
   { name: 'ThreadRead', args: (t) => ({ thread: { session_id: `chaos_bg_${String((t % 20) + 1).padStart(4, '0')}` } }) },
 ];
 
-function buildTurnWireLines(turnId, baseTime, outputPayload) {
+export function formatTurnMarker(turnId) {
+  return `TURN_MARKER_${String(turnId).padStart(6, '0')}`;
+}
+
+function buildTallSystemReminderText(turnId, marker) {
+  const lines = [
+    `Host runtime snapshot rev ${turnId} (${marker}). Full diagnostic context snapshot.`,
+    '',
+    '## Active Workspace State',
+    `- Turn anchor: ${marker}`,
+    `- Snapshot revision: ${turnId}`,
+    '- Policy: coupled workstation stress fixture with overflowing scrollable reminder body.',
+    '',
+    '## Observed Modules & Checkpoints',
+  ];
+  for (let i = 1; i <= 64; i += 1) {
+    lines.push(
+      `[${String(i).padStart(2, '0')}] ${marker} subsystem_${String(i).padStart(2, '0')}: residency=tracked digest=${String((turnId * 31 + i * 17) % 999983).padStart(6, '0')} lines=${120 + i * 7} status=verified`,
+    );
+  }
+  lines.push('', `End of reminder snapshot ${marker}.`);
+  return `<system-reminder>\n${lines.join('\n')}\n</system-reminder>`;
+}
+
+function buildTurnWireLines(turnId, baseTime, outputPayload, options = {}) {
   const ts = baseTime + turnId * 1000;
   const turnKey = String(turnId);
+  const marker = formatTurnMarker(turnId);
   const stepUuid = `step-${turnId}-1`;
   const callId = `call-${turnId}-1`;
   const toolDef = CORPUS_TOOL_ROTATION[turnId % CORPUS_TOOL_ROTATION.length];
-  return [
+  const userText = `${marker} Synthetic chaos benchmark turn ${turnId} invoking ${toolDef.name}`;
+  const lines = [
     JSON.stringify({
       type: 'turn.prompt',
       turnId,
       promptId: `prompt-${turnId}`,
-      input: [{ type: 'text', text: `Synthetic chaos benchmark turn ${turnId} invoking ${toolDef.name}` }],
-      origin: { kind: 'user' },
+      userMessageId: `msg-user-${turnId}`,
+      input: [{ type: 'text', text: userText }],
+      origin: { kind: 'user', payload: { userMessageId: `msg-user-${turnId}` } },
       time: ts,
     }),
     JSON.stringify({
@@ -59,12 +86,29 @@ function buildTurnWireLines(turnId, baseTime, outputPayload) {
       message: {
         id: `msg-user-${turnId}`,
         role: 'user',
-        content: [{ type: 'text', text: `Synthetic chaos benchmark turn ${turnId} invoking ${toolDef.name}` }],
+        content: [{ type: 'text', text: userText }],
         toolCalls: [],
         origin: { kind: 'user' },
       },
       time: ts + 2,
     }),
+  ];
+  if (options.includeTallReminder) {
+    lines.push(
+      JSON.stringify({
+        type: 'context.append_message',
+        message: {
+          id: `msg-reminder-${turnId}`,
+          role: 'user',
+          content: [{ type: 'text', text: buildTallSystemReminderText(turnId, marker) }],
+          toolCalls: [],
+          origin: { kind: 'injection', variant: 'runtime_snapshot', ownerPromptId: `prompt-${turnId}` },
+        },
+        time: ts + 3,
+      }),
+    );
+  }
+  lines.push(
     JSON.stringify({
       type: 'context.append_loop_event',
       event: { type: 'step.begin', turnId: turnKey, step: 1, uuid: stepUuid },
@@ -99,7 +143,11 @@ function buildTurnWireLines(turnId, baseTime, outputPayload) {
         stepUuid,
         part: {
           type: 'text',
-          text: `Synthetic assistant summary for turn ${turnId} after ${toolDef.name} verifying zero-PII corpus layout.`,
+          text: [
+            `Assistant summary for ${marker} (turn ${turnId}) after ${toolDef.name}:`,
+            `- Verified zero-PII corpus layout and unique addressable turn identity ${turnId}.`,
+            `- Tool ${toolDef.name} completed cleanly with ${outputPayload.length} chars output.`,
+          ].join('\n'),
         },
       },
       time: ts + 30,
@@ -116,15 +164,18 @@ function buildTurnWireLines(turnId, baseTime, outputPayload) {
       reason: 'completed',
       time: ts + 50,
     }),
-  ];
+  );
+  return lines;
 }
 
-function writeGiantWireFile(filePath, { targetBytes, spikeLineBytes, baseTime }) {
+export function writeGiantWireFile(filePath, { targetBytes, spikeLineBytes, baseTime, minTurns = null }) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const fd = fs.openSync(filePath, 'w');
   let writtenBytes = 0;
   let turnId = 0;
   let spikeLinesWritten = 0;
+  let tallRemindersWritten = 0;
+  const manifestTurns = [];
 
   try {
     const headerBuf = Buffer.from(
@@ -134,53 +185,84 @@ function writeGiantWireFile(filePath, { targetBytes, spikeLineBytes, baseTime })
     fs.writeSync(fd, headerBuf);
     writtenBytes += headerBuf.byteLength;
 
-    const spikePayload = 'S'.repeat(Math.max(1024, spikeLineBytes - 256));
-    const regularPayload = 'R'.repeat(Math.min(256 * 1024, Math.max(4096, Math.floor(targetBytes / 32))));
-
-    const regularCycle = Buffer.from(
-      `${Array.from({ length: CORPUS_TOOL_ROTATION.length }, (_, idx) =>
-        buildTurnWireLines(idx + 1, baseTime, regularPayload).join('\n'),
-      ).join('\n')}\n`,
-      'utf8',
-    );
-    const regularSingle = Buffer.from(`${buildTurnWireLines(1, baseTime, regularPayload).join('\n')}\n`, 'utf8');
-    const spikeTemplate = Buffer.from(`${buildTurnWireLines(2, baseTime, spikePayload).join('\n')}\n`, 'utf8');
-
     const tailTurns = 24;
-    const tailChunks = [];
-    for (let i = 0; i < tailTurns; i += 1) {
-      tailChunks.push(...buildTurnWireLines(i + 1, baseTime, `tail-turn-output-${i + 1}`));
-    }
-    const tailReserveBytes = Buffer.byteLength(`${tailChunks.join('\n')}\n`, 'utf8');
-    const mainFillTarget = Math.max(0, targetBytes - tailReserveBytes);
+    const requestedMinTurns = Number.isInteger(minTurns) && minTurns > tailTurns
+      ? minTurns
+      : targetBytes >= 256 * MiB
+        ? 340
+        : targetBytes >= 4 * MiB
+          ? 72
+          : 36;
+    const targetBodyTurns = Math.max(requestedMinTurns - tailTurns, 12);
+    const effectiveSpikeBytes = Math.min(
+      Math.max(1024, spikeLineBytes - 256),
+      Math.max(1024, Math.floor(targetBytes / 16)),
+    );
+    const spikeCount = targetBytes >= 16 * MiB ? 4 : targetBytes >= 4 * MiB ? 2 : 0;
+    const spikeTotalBytes = spikeCount * effectiveSpikeBytes;
+    const tailReserveBytes = tailTurns * 2048;
+    const bodyTargetBytes = Math.max(0, targetBytes - writtenBytes - tailReserveBytes);
+    const perBodyTurnBytes = Math.max(
+      2048,
+      Math.min(
+        4 * MiB,
+        Math.floor(Math.max(0, bodyTargetBytes - spikeTotalBytes) / Math.max(1, targetBodyTurns - spikeCount)),
+      ),
+    );
+    const spikePayload = 'S'.repeat(effectiveSpikeBytes);
+    const regularPayload = 'R'.repeat(perBodyTurnBytes);
 
-    let iteration = 0;
-    while (writtenBytes < mainFillTarget) {
-      if (spikeLinesWritten < 4 && (iteration === 0 || (iteration % 12 === 0 && writtenBytes + spikeTemplate.byteLength <= targetBytes))) {
-        fs.writeSync(fd, spikeTemplate);
-        writtenBytes += spikeTemplate.byteLength;
-        spikeLinesWritten += 1;
-        turnId += 1;
-      } else if (targetBytes >= 64 * MiB && writtenBytes + regularCycle.byteLength <= mainFillTarget) {
-        fs.writeSync(fd, regularCycle);
-        writtenBytes += regularCycle.byteLength;
-        turnId += CORPUS_TOOL_ROTATION.length;
-      } else {
-        fs.writeSync(fd, regularSingle);
-        writtenBytes += regularSingle.byteLength;
-        turnId += 1;
-      }
-      iteration += 1;
-    }
+    let batchChunks = [];
+    let batchBytes = 0;
+    const flushBatch = () => {
+      if (batchChunks.length === 0) return;
+      const buf = Buffer.from(batchChunks.join(''), 'utf8');
+      fs.writeSync(fd, buf);
+      batchChunks = [];
+      batchBytes = 0;
+    };
 
-    const finalTailChunks = [];
-    for (let i = 0; i < tailTurns; i += 1) {
+    const appendTurn = (payload, includeTallReminder) => {
       turnId += 1;
-      finalTailChunks.push(...buildTurnWireLines(turnId, baseTime, `tail-turn-output-${turnId}`));
+      const byteOffset = writtenBytes;
+      const text = `${buildTurnWireLines(turnId, baseTime, payload, { includeTallReminder }).join('\n')}\n`;
+      const byteLength = Buffer.byteLength(text, 'utf8');
+      batchChunks.push(text);
+      batchBytes += byteLength;
+      writtenBytes += byteLength;
+      if (includeTallReminder) tallRemindersWritten += 1;
+      manifestTurns.push({
+        turnId,
+        promptId: `prompt-${turnId}`,
+        userMessageId: `msg-user-${turnId}`,
+        marker: formatTurnMarker(turnId),
+        byteOffset,
+        byteLength,
+        hasSystemReminder: Boolean(includeTallReminder),
+      });
+      if (batchBytes >= 4 * MiB) flushBatch();
+    };
+
+    const spikeStride = Math.max(1, Math.floor(targetBodyTurns / Math.max(1, spikeCount)));
+    while (turnId < targetBodyTurns || writtenBytes < targetBytes - tailReserveBytes) {
+      const nextTurnIdx = turnId;
+      const isSpike =
+        spikeLinesWritten < spikeCount &&
+        (nextTurnIdx === 0 || (nextTurnIdx % spikeStride === 0 && writtenBytes + effectiveSpikeBytes <= targetBytes));
+      const includeTallReminder = turnId > 0 && turnId % 25 === 0;
+      if (isSpike) {
+        appendTurn(spikePayload, includeTallReminder);
+        spikeLinesWritten += 1;
+      } else {
+        appendTurn(regularPayload, includeTallReminder);
+      }
     }
-    const tailBuf = Buffer.from(`${finalTailChunks.join('\n')}\n`, 'utf8');
-    fs.writeSync(fd, tailBuf);
-    writtenBytes += tailBuf.byteLength;
+
+    for (let i = 0; i < tailTurns; i += 1) {
+      const isTailReminderTurn = i === tailTurns - 4 || i === tailTurns - 2;
+      appendTurn(`tail-turn-output-${turnId + 1}`, isTailReminderTurn);
+    }
+    flushBatch();
   } finally {
     fs.closeSync(fd);
   }
@@ -188,7 +270,225 @@ function writeGiantWireFile(filePath, { targetBytes, spikeLineBytes, baseTime })
   return {
     bytes: writtenBytes,
     turns: turnId,
+    distinctTurns: manifestTurns.length,
     spikeLinesWritten,
+    tallRemindersWritten,
+    manifest: {
+      wirePath: filePath,
+      actualBytes: writtenBytes,
+      distinctTurnCount: manifestTurns.length,
+      spikeLinesWritten,
+      tallRemindersWritten,
+      turns: manifestTurns,
+    },
+  };
+}
+
+/**
+ * Independently scans a staged wire.jsonl file on disk (never trusting generator
+ * counters alone) to qualify actual byte size, distinct completed turn IDs,
+ * zero duplicate turn IDs, tall scrollable `<system-reminder>` presence, and
+ * produce an ordered manifest of addressable turns.
+ */
+export function qualifyGiantWireFixture(wirePath, { minBytes = 256 * MiB, minDistinctTurns = 300 } = {}) {
+  const failures = [];
+  if (!fs.existsSync(wirePath)) {
+    return {
+      ok: false,
+      wirePath,
+      actualBytes: 0,
+      distinctTurnCount: 0,
+      duplicateTurnIds: [],
+      tallReminderCount: 0,
+      turns: [],
+      failures: [`Wire fixture does not exist: ${wirePath}`],
+    };
+  }
+  const stat = fs.statSync(wirePath);
+  const actualBytes = stat.size;
+  const fd = fs.openSync(wirePath, 'r');
+  const seenPromptTurnIds = new Set();
+  const seenEndedTurnIds = new Set();
+  const seenPromptIds = new Set();
+  const seenUserMessageIds = new Set();
+  const seenMarkers = new Set();
+  const duplicateTurnIds = [];
+  const duplicateEndedTurnIds = [];
+  const duplicatePromptIds = [];
+  const duplicateUserMessageIds = [];
+  const duplicateMarkers = [];
+  const turnEntries = new Map();
+  let tallReminderCount = 0;
+  let lastTurnWithAssistantText = null;
+  let offset = 0;
+  const chunkSize = 4 * MiB;
+  const buf = Buffer.allocUnsafe(chunkSize);
+  let leftover = Buffer.alloc(0);
+
+  try {
+    while (offset < actualBytes) {
+      const bytesRead = fs.readSync(fd, buf, 0, Math.min(chunkSize, actualBytes - offset), offset);
+      if (bytesRead <= 0) break;
+      const chunkStart = offset - leftover.byteLength;
+      const combined = leftover.byteLength > 0
+        ? Buffer.concat([leftover, buf.subarray(0, bytesRead)])
+        : buf.subarray(0, bytesRead);
+      let lineStart = 0;
+      for (let i = 0; i < combined.byteLength; i += 1) {
+        if (combined[i] !== 0x0a) continue;
+        const lineBuf = combined.subarray(lineStart, i);
+        const lineByteOffset = chunkStart + lineStart;
+        lineStart = i + 1;
+        if (lineBuf.byteLength === 0) continue;
+        // Fast prefilter before JSON.parse so 256 MiB+ giant lines skip parsing giant RRR payloads
+        const headSlice = lineBuf.subarray(0, Math.min(512, lineBuf.byteLength)).toString('utf8');
+        if (headSlice.includes('"type":"turn.prompt"')) {
+          const rec = JSON.parse(lineBuf.toString('utf8'));
+          const tid = Number(rec.turnId);
+          if (seenPromptTurnIds.has(tid)) {
+            if (duplicateTurnIds.length < 20) duplicateTurnIds.push(tid);
+          } else {
+            seenPromptTurnIds.add(tid);
+          }
+          if (typeof rec.promptId === 'string' && rec.promptId.length > 0) {
+            if (seenPromptIds.has(rec.promptId)) {
+              if (duplicatePromptIds.length < 20) duplicatePromptIds.push(rec.promptId);
+            } else {
+              seenPromptIds.add(rec.promptId);
+            }
+          }
+          const umid = rec.userMessageId ?? rec.origin?.payload?.userMessageId ?? null;
+          if (typeof umid === 'string' && umid.length > 0) {
+            if (seenUserMessageIds.has(umid)) {
+              if (duplicateUserMessageIds.length < 20) duplicateUserMessageIds.push(umid);
+            } else {
+              seenUserMessageIds.add(umid);
+            }
+          }
+          const promptText = Array.isArray(rec.input)
+            ? rec.input.map((p) => (typeof p?.text === 'string' ? p.text : '')).join(' ')
+            : '';
+          const markerMatch = /TURN_MARKER_\d{6}/u.exec(promptText);
+          const markerVal = markerMatch ? markerMatch[0] : null;
+          if (markerVal) {
+            if (seenMarkers.has(markerVal)) {
+              if (duplicateMarkers.length < 20) duplicateMarkers.push(markerVal);
+            } else {
+              seenMarkers.add(markerVal);
+            }
+          }
+          turnEntries.set(tid, {
+            turnId: tid,
+            promptId: rec.promptId ?? null,
+            userMessageId: umid,
+            marker: markerVal ?? promptText.slice(0, 48),
+            byteOffset: lineByteOffset,
+            completed: false,
+            hasAssistantText: false,
+            hasSystemReminder: false,
+          });
+        } else if (headSlice.includes('"type":"turn.ended"')) {
+          const rec = JSON.parse(lineBuf.toString('utf8'));
+          const tid = Number(rec.turnId);
+          if (seenEndedTurnIds.has(tid)) {
+            if (duplicateEndedTurnIds.length < 20) duplicateEndedTurnIds.push(tid);
+          } else {
+            seenEndedTurnIds.add(tid);
+          }
+          if (rec.reason === 'completed') {
+            const entry = turnEntries.get(tid);
+            if (entry) entry.completed = true;
+          }
+        } else if (headSlice.includes('"type":"context.append_message"') && (headSlice.includes('reminder') || headSlice.includes('injection') || headSlice.includes('runtime_snapshot'))) {
+          const text = lineBuf.toString('utf8');
+          const rec = JSON.parse(text);
+          const originKind = rec?.message?.origin?.kind;
+          const bodyText = Array.isArray(rec?.message?.content)
+            ? rec.message.content.map((p) => (typeof p?.text === 'string' ? p.text : '')).join('\n')
+            : '';
+          if (
+            originKind === 'injection' &&
+            bodyText.includes('<system-reminder>') &&
+            bodyText.split('\n').length >= 40
+          ) {
+            tallReminderCount += 1;
+            const ownerPid = rec?.message?.origin?.ownerPromptId;
+            if (typeof ownerPid === 'string' && ownerPid.startsWith('prompt-')) {
+              const ownerTid = Number(ownerPid.slice('prompt-'.length));
+              const entry = turnEntries.get(ownerTid);
+              if (entry) entry.hasSystemReminder = true;
+            }
+          }
+        } else if (headSlice.includes('"type":"content.part"')) {
+          const rec = JSON.parse(lineBuf.toString('utf8'));
+          const rawTurnKey = rec?.event?.turnId;
+          const partText = rec?.event?.part?.text;
+          if (typeof partText === 'string' && partText.trim().length > 0) {
+            const parsedTid = typeof rawTurnKey === 'string' && rawTurnKey.startsWith('t')
+              ? Number(rawTurnKey.slice(1))
+              : Number(rawTurnKey);
+            if (Number.isFinite(parsedTid)) {
+              const entry = turnEntries.get(parsedTid);
+              if (entry) entry.hasAssistantText = true;
+              lastTurnWithAssistantText = parsedTid;
+            }
+          }
+        }
+      }
+      leftover = lineStart < combined.byteLength ? Buffer.from(combined.subarray(lineStart)) : Buffer.alloc(0);
+      offset += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const completedTurns = [...turnEntries.values()]
+    .filter((entry) => entry.completed)
+    .toSorted((a, b) => a.turnId - b.turnId);
+  const newestCompleted = completedTurns.at(-1) ?? null;
+  const nonemptyTailSlot = Boolean(newestCompleted && newestCompleted.hasAssistantText);
+  if (actualBytes < minBytes) {
+    failures.push(`Wire actualBytes=${actualBytes} < required minBytes=${minBytes}`);
+  }
+  if (completedTurns.length < minDistinctTurns) {
+    failures.push(`Wire distinct completed turns=${completedTurns.length} < required minDistinctTurns=${minDistinctTurns}`);
+  }
+  if (duplicateTurnIds.length > 0) {
+    failures.push(`Wire contains duplicate turn.prompt turnIds: ${duplicateTurnIds.slice(0, 10).join(', ')}`);
+  }
+  if (duplicateEndedTurnIds.length > 0) {
+    failures.push(`Wire contains duplicate turn.ended turnIds: ${duplicateEndedTurnIds.slice(0, 10).join(', ')}`);
+  }
+  if (duplicatePromptIds.length > 0) {
+    failures.push(`Wire contains duplicate promptIds: ${duplicatePromptIds.slice(0, 10).join(', ')}`);
+  }
+  if (duplicateUserMessageIds.length > 0) {
+    failures.push(`Wire contains duplicate userMessageIds: ${duplicateUserMessageIds.slice(0, 10).join(', ')}`);
+  }
+  if (duplicateMarkers.length > 0) {
+    failures.push(`Wire contains duplicate turn markers: ${duplicateMarkers.slice(0, 10).join(', ')}`);
+  }
+  if (tallReminderCount === 0) {
+    failures.push('Wire contains zero tall scrollable injection <system-reminder> entries (>=40 lines)');
+  }
+  if (!nonemptyTailSlot) {
+    failures.push(`Tail turn (${newestCompleted?.turnId ?? 'none'}) lacks nonempty assistant content (lastAssistantTurn=${lastTurnWithAssistantText})`);
+  }
+
+  return {
+    ok: failures.length === 0,
+    wirePath,
+    actualBytes,
+    distinctTurnCount: completedTurns.length,
+    duplicateTurnIds,
+    duplicateEndedTurnIds,
+    duplicatePromptIds,
+    duplicateUserMessageIds,
+    duplicateMarkers,
+    tallReminderCount,
+    nonemptyTailSlot,
+    turns: completedTurns,
+    failures,
   };
 }
 
@@ -248,6 +548,12 @@ export function buildChaosConfigToml({
     lines.push('[session_residency]');
     if (Number.isInteger(sessionResidency.maxLiveSessions)) {
       lines.push(`max_live_sessions = ${sessionResidency.maxLiveSessions}`);
+    }
+    if (Number.isInteger(sessionResidency.maxConcurrentRestores)) {
+      lines.push(`max_concurrent_restores = ${sessionResidency.maxConcurrentRestores}`);
+    }
+    if (Number.isInteger(sessionResidency.maxQueuedRestores)) {
+      lines.push(`max_queued_restores = ${sessionResidency.maxQueuedRestores}`);
     }
     if (Number.isInteger(sessionResidency.idleTtlMs)) {
       lines.push(`idle_ttl_ms = ${sessionResidency.idleTtlMs}`);
@@ -404,7 +710,10 @@ export function generateChaosCorpus(options = {}) {
     targetBytes: giantWireBytes,
     spikeLineBytes,
     baseTime,
+    minTurns: options.minMainTurns ?? null,
   });
+  const giantWireManifestPath = path.join(rootDir, 'giant-wire-manifest.json');
+  fs.writeFileSync(giantWireManifestPath, `${JSON.stringify(mainWireStats.manifest, null, 2)}\n`, 'utf8');
 
   const heavySubagentId = 'subagent_0001';
   const heavySubWirePath = path.join(giantSessionDir, 'agents', heavySubagentId, 'wire.jsonl');
@@ -523,6 +832,10 @@ export function generateChaosCorpus(options = {}) {
     giantMainWirePath,
     giantMainWireBytes: mainWireStats.bytes,
     giantMainWireGiB: Number((mainWireStats.bytes / GiB).toFixed(3)),
+    giantMainDistinctTurns: mainWireStats.distinctTurns,
+    giantMainTallReminders: mainWireStats.tallRemindersWritten,
+    giantWireManifestPath,
+    giantWireManifest: mainWireStats.manifest,
     spikeLinesWritten: mainWireStats.spikeLinesWritten,
     heavySubagentBytes: heavySubStats.bytes,
     subagentCount,

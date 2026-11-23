@@ -153,16 +153,23 @@ const ENFORCED_SLOS = {
 function evaluateSlos(report) {
   const breaches = [];
   const p = report.protocol.aggregates;
-  if (p.coldOpenTtfcMs.p95 > ENFORCED_SLOS.coldOpenP95Ms) {
+  if (p.coldOpenTtfcMs.count === 0) {
+    breaches.push('protocol.coldOpenTtfcMs.count=0 (unsampled)');
+  } else if (p.coldOpenTtfcMs.p95 > ENFORCED_SLOS.coldOpenP95Ms) {
     breaches.push(`protocol.coldOpenTtfcMs.p95=${p.coldOpenTtfcMs.p95}ms > ${ENFORCED_SLOS.coldOpenP95Ms}ms`);
   }
-  if (p.olderPageMs.p95 > ENFORCED_SLOS.olderPageP95Ms) {
+  const pageableSamples = (report.protocol.sampleResults ?? []).filter((r) => r.scrollOlder?.canPageOlder);
+  if (pageableSamples.length > 0 && p.olderPageMs.count === 0) {
+    breaches.push(`protocol.olderPageMs.count=0 despite ${pageableSamples.length} pageable sample(s)`);
+  } else if (p.olderPageMs.count > 0 && p.olderPageMs.p95 > ENFORCED_SLOS.olderPageP95Ms) {
     breaches.push(`protocol.olderPageMs.p95=${p.olderPageMs.p95}ms > ${ENFORCED_SLOS.olderPageP95Ms}ms`);
   }
   if (p.coldSubagentTtfcMs.count > 0 && p.coldSubagentTtfcMs.p95 > ENFORCED_SLOS.coldSubagentP95Ms) {
     breaches.push(`protocol.coldSubagentTtfcMs.p95=${p.coldSubagentTtfcMs.p95}ms > ${ENFORCED_SLOS.coldSubagentP95Ms}ms`);
   }
-  if (p.maxServerEldP99Ms > ENFORCED_SLOS.maxServerEldP99Ms) {
+  if (!Number.isFinite(p.maxServerEldP99Ms) || (p.totalEldSamples ?? 0) <= 0) {
+    breaches.push(`protocol.maxServerEldP99Ms unsampled (value=${String(p.maxServerEldP99Ms)}, samples=${p.totalEldSamples ?? 0})`);
+  } else if (p.maxServerEldP99Ms > ENFORCED_SLOS.maxServerEldP99Ms) {
     breaches.push(`protocol.maxServerEldP99Ms=${p.maxServerEldP99Ms}ms > ${ENFORCED_SLOS.maxServerEldP99Ms}ms`);
   }
   if ((p.maxColdRouteMs ?? 0) > ENFORCED_SLOS.protocolColdRouteMaxMs) {
@@ -410,18 +417,14 @@ if (isCliMain) {
   const cliOptions = parsePerfCliArgs(process.argv.slice(2));
   const outcome = await runRealCorpusBenchmark(cliOptions);
   if (outcome.skipped) {
-    if (cliOptions.enforce) {
-      process.stderr.write(`[perf:real-corpus] ENFORCE FAILED: ${outcome.reason}\n`);
-      process.exit(1);
-    }
-    process.stdout.write(`[perf:real-corpus] SKIPPED: ${outcome.reason}\n`);
-    process.exit(0);
+    process.stderr.write(`[perf:real-corpus] INELIGIBLE: ${outcome.reason}\n`);
+    process.exit(2);
   }
   process.stdout.write(`${outcome.summaryText}\n`);
   if (cliOptions.outPath) {
     process.stdout.write(`[perf:report] wrote anonymized JSON report to ${path.relative(REPO_ROOT, cliOptions.outPath)}\n`);
   }
-  if (cliOptions.enforce && !outcome.report.slo.passed) {
+  if (!outcome.report.slo.passed) {
     process.exit(1);
   }
 }

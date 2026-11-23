@@ -569,10 +569,12 @@ export async function runProtocolSuite({ endpoint, token, samples, warmupSession
               beforeTurn: cursorTurn,
               pageSize: 40,
             });
+            const pageData = res.page;
+            if (!pageData || !Array.isArray(pageData.items) || pageData.items.length === 0 || pageData.readiness === 'preparing') {
+              break;
+            }
             pageTimingsMs.push(res.elapsedMs);
             pageSlices.push({ slices: res.slices, httpRequests: netCounter.requests - reqBefore });
-            const pageData = res.page;
-            if (!pageData || !Array.isArray(pageData.items) || pageData.items.length === 0) break;
             fetchedPages.push(pageData);
             if (!candidateRef) {
               candidateRef = findHydratableContentRef(pageData.items);
@@ -729,6 +731,24 @@ export async function runProtocolSuite({ endpoint, token, samples, warmupSession
       }
     }
 
+        const eldP99Candidates = [
+          catalogSummary.eldP99Ms,
+          ...sampleResults.map((r) => r.coldOpen.eldP99Ms),
+          ...sampleResults.map((r) => r.scrollOlder.eldP99Ms),
+          ...sampleResults.map((r) => r.coldSubagent?.eldP99Ms ?? null),
+          ...sampleResults.map((r) => r.coldBranch?.eldP99Ms ?? null),
+        ].filter((v) => typeof v === 'number' && Number.isFinite(v));
+        const totalEldSamples =
+          (catalogSummary.eldSamples ?? 0) +
+          sampleResults.reduce(
+            (acc, r) =>
+              acc +
+              (r.coldOpen.eldSamples ?? 0) +
+              (r.scrollOlder.eldSamples ?? 0) +
+              (r.coldSubagent?.eldSamples ?? 0) +
+              (r.coldBranch?.eldSamples ?? 0),
+            0,
+          );
     return {
       transcriptCoverageVersion: TRANSCRIPT_COVERAGE_VERSION,
       catalogSummary,
@@ -744,15 +764,8 @@ export async function runProtocolSuite({ endpoint, token, samples, warmupSession
           Math.max(0, ...sampleResults.map((r) => r.coldOpen.maxColdRouteMs ?? 0)),
         ),
         coldRouteMaxQuantiles: quantiles(sampleResults.map((r) => r.coldOpen.maxColdRouteMs ?? 0)),
-        maxServerEldP99Ms: roundMs(
-          Math.max(
-            catalogSummary.eldP99Ms,
-            ...sampleResults.map((r) => r.coldOpen.eldP99Ms),
-            ...sampleResults.map((r) => r.scrollOlder.eldP99Ms),
-            ...sampleResults.map((r) => r.coldSubagent?.eldP99Ms ?? 0),
-            ...sampleResults.map((r) => r.coldBranch?.eldP99Ms ?? 0),
-          ),
-        ),
+        totalEldSamples,
+        maxServerEldP99Ms: eldP99Candidates.length > 0 ? roundMs(Math.max(...eldP99Candidates)) : null,
       },
     };
   } finally {
