@@ -1,221 +1,875 @@
-[
-  "apps/kiki-gui/src/App.sessionReturn.test.tsx",
-  "apps/kiki-gui/src/App.test.tsx",
-  "apps/kiki-gui/src/components/ActivityHistory.test.tsx",
-  "apps/kiki-gui/src/components/ActivityPage.test.tsx",
-  "apps/kiki-gui/src/components/AgentCapabilitiesPanel.test.tsx",
-  "apps/kiki-gui/src/components/AgentPanelContainer.test.tsx",
-  "apps/kiki-gui/src/components/AppConnectionBanner.test.tsx",
-  "apps/kiki-gui/src/components/ArchivedSessionsPage.test.tsx",
-  "apps/kiki-gui/src/components/Composer.agentMentions.test.tsx",
-  "apps/kiki-gui/src/components/Composer.executorModel.test.tsx",
-  "apps/kiki-gui/src/components/Composer.needsYou.test.tsx",
-  "apps/kiki-gui/src/components/Composer.remoteTarget.test.tsx",
-  "apps/kiki-gui/src/components/Composer.sendLifecycle.test.tsx",
-  "apps/kiki-gui/src/components/Composer.test.tsx",
-  "apps/kiki-gui/src/components/Composer.threadRefs.test.tsx",
-  "apps/kiki-gui/src/components/ContextMeter.test.tsx",
-  "apps/kiki-gui/src/components/EphemeralBar.test.tsx",
-  "apps/kiki-gui/src/components/GlobalCronPanel.test.tsx",
-  "apps/kiki-gui/src/components/GlobalTaskBoard.test.tsx",
-  "apps/kiki-gui/src/components/Interactions.planReview.test.tsx",
-  "apps/kiki-gui/src/components/Interactions.test.tsx",
-  "apps/kiki-gui/src/components/Markdown.document.test.tsx",
-  "apps/kiki-gui/src/components/Markdown.test.tsx",
-  "apps/kiki-gui/src/components/MemoryPage.test.tsx",
-  "apps/kiki-gui/src/components/NewSessionDraft.test.ts",
-  "apps/kiki-gui/src/components/NewSessionFirstRun.test.tsx",
-  "apps/kiki-gui/src/components/OAuthDeviceCard.test.tsx",
-  "apps/kiki-gui/src/components/PreviewWorkspace.test.tsx",
-  "apps/kiki-gui/src/components/ProviderFields.test.tsx",
-  "apps/kiki-gui/src/components/QueueStrip.test.tsx",
-  "apps/kiki-gui/src/components/QuickSwitcher.test.tsx",
-  "apps/kiki-gui/src/components/RequestGovernanceView.test.tsx",
-  "apps/kiki-gui/src/components/RestartBanner.test.tsx",
-  "apps/kiki-gui/src/components/RightRail.test.tsx",
-  "apps/kiki-gui/src/components/SessionHeader.test.tsx",
-  "apps/kiki-gui/src/components/SessionView.annotations.test.tsx",
-  "apps/kiki-gui/src/components/SessionView.overlayRail.test.tsx",
-  "apps/kiki-gui/src/components/SessionView.profileSwitch.test.tsx",
-  "apps/kiki-gui/src/components/SessionView.queueRecovery.test.tsx",
-  "apps/kiki-gui/src/components/SessionView.test.tsx",
-  "apps/kiki-gui/src/components/SettingsPage.test.tsx",
-  "apps/kiki-gui/src/components/Sidebar.test.tsx",
-  "apps/kiki-gui/src/components/SpaceSwitcher.test.tsx",
-  "apps/kiki-gui/src/components/SpaceViewState.test.tsx",
-  "apps/kiki-gui/src/components/SshProfilesPanel.test.tsx",
-  "apps/kiki-gui/src/components/TaskDetailModal.test.tsx",
-  "apps/kiki-gui/src/components/TasksPage.test.tsx",
-  "apps/kiki-gui/src/components/ThreadRefChip.test.tsx",
-  "apps/kiki-gui/src/components/Transcript.messageView.test.tsx",
-  "apps/kiki-gui/src/components/Transcript.test.tsx",
-  "apps/kiki-gui/src/components/UsagePage.test.tsx",
-  "apps/kiki-gui/src/components/agent-panel/AgentHooksSection.test.tsx",
-  "apps/kiki-gui/src/components/agent-panel/ContextRebuildControl.test.tsx",
-  "apps/kiki-gui/src/components/agent-panel/ProfileDetailSections.test.tsx",
-  "apps/kiki-gui/src/components/agent-panel/RecipeBindingStatus.test.tsx",
-  "apps/kiki-gui/src/components/agent-panel/useAgentPanelCatalog.test.tsx",
-  "apps/kiki-gui/src/components/agent-workspace/AgentWorkspace.test.tsx",
-  "apps/kiki-gui/src/components/askKiki.dirtyOrder.test.tsx",
-  "apps/kiki-gui/src/components/bot/SidebarBotRoomGroups.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/AddSourceDialog.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/CapabilitiesPage.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/ImportHistoryView.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/PluginImportArchive.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/PluginPanelHost.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/PluginSettingsForm.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/SessionPluginsPanel.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/rows.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/useMcpPicker.test.tsx",
-  "apps/kiki-gui/src/components/capabilities/usePluginPicker.draft.test.tsx",
-  "apps/kiki-gui/src/components/externalClients/ExternalClientSession.test.tsx",
-  "apps/kiki-gui/src/components/harness/executorSchedule.ui.test.tsx",
-  "apps/kiki-gui/src/components/im/ImSessionRailSwitch.test.tsx",
-  "apps/kiki-gui/src/components/im/SessionChannelsRail.test.tsx",
-  "apps/kiki-gui/src/components/localSessions/LocalSessionsDialog.test.tsx",
-  "apps/kiki-gui/src/components/markdown/annotationLateArrival.test.tsx",
-  "apps/kiki-gui/src/components/markdown/annotationMarks.test.tsx",
-  "apps/kiki-gui/src/components/media/MediaSourcesView.test.tsx",
-  "apps/kiki-gui/src/components/mediaPreview.gallery.test.tsx",
-  "apps/kiki-gui/src/components/mediaPreview.stream.test.tsx",
-  "apps/kiki-gui/src/components/mediaPreviewSession.test.tsx",
-  "apps/kiki-gui/src/components/message/MessageRow.test.tsx",
-  "apps/kiki-gui/src/components/model-switch/useModelSwitches.test.tsx",
-  "apps/kiki-gui/src/components/output-layer/OutputLayerSelect.test.tsx",
-  "apps/kiki-gui/src/components/output-layer/OutputPresetModal.test.tsx",
-  "apps/kiki-gui/src/components/output-layer/useOutputLayerClient.test.tsx",
-  "apps/kiki-gui/src/components/paneResize.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaAvatar.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaAvatarControl.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaConversationSwitcher.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaConversationsSection.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaEditor.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaSettingsUpdate.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonaTasksSection.test.tsx",
-  "apps/kiki-gui/src/components/persona/PersonasPage.test.tsx",
-  "apps/kiki-gui/src/components/persona/SidebarPersonaSection.test.tsx",
-  "apps/kiki-gui/src/components/persona/personaNavigation.test.ts",
-  "apps/kiki-gui/src/components/persona/usePersonaDirectory.test.ts",
-  "apps/kiki-gui/src/components/rail-variants/DefaultSections.test.tsx",
-  "apps/kiki-gui/src/components/rail-variants/SessionCronSection.test.tsx",
-  "apps/kiki-gui/src/components/room/RoomPage.test.tsx",
-  "apps/kiki-gui/src/components/settings/AboutSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/AccountQuotaPanel.test.tsx",
-  "apps/kiki-gui/src/components/settings/AgentsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/AppearanceSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/AutomationSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/BoardStorageSettings.test.tsx",
-  "apps/kiki-gui/src/components/settings/BrowserControlSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/CatalogImportCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/CommunicationSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ComputerControlSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ConfigGapCards.test.tsx",
-  "apps/kiki-gui/src/components/settings/ContextWindowSettings.test.tsx",
-  "apps/kiki-gui/src/components/settings/DecisionSources.test.tsx",
-  "apps/kiki-gui/src/components/settings/DesktopLogCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/ExperimentalSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ExternalClientsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ExternalConnectionSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ExternalEnginesSection.proof.test.tsx",
-  "apps/kiki-gui/src/components/settings/ExternalEnginesSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/GeneralSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/GlobalRequestIdentityCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/HostSkillInstallCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/IdentitySection.test.tsx",
-  "apps/kiki-gui/src/components/settings/McpConfigManager.test.tsx",
-  "apps/kiki-gui/src/components/settings/McpSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ModelGenerationMigration.test.tsx",
-  "apps/kiki-gui/src/components/settings/ModelsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/NbSearchSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/NotificationsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/PermissionRulesSettings.test.tsx",
-  "apps/kiki-gui/src/components/settings/PluginsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/PromptConfigCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/ProviderConnectionExtras.test.tsx",
-  "apps/kiki-gui/src/components/settings/ProvidersSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/QuestionGuardFields.test.tsx",
-  "apps/kiki-gui/src/components/settings/RecipesSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/ReviewerSettings.test.tsx",
-  "apps/kiki-gui/src/components/settings/SearchIndexStatusCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/SecretField.test.tsx",
-  "apps/kiki-gui/src/components/settings/SessionsImportPage.test.tsx",
-  "apps/kiki-gui/src/components/settings/ShortcutsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/SpacesSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/SubagentsSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/UnifiedAgentManager.test.tsx",
-  "apps/kiki-gui/src/components/settings/WebAccessSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/hooks/HooksSection.test.tsx",
-  "apps/kiki-gui/src/components/settings/modelPromptBodiesSave.test.tsx",
-  "apps/kiki-gui/src/components/settings/modelRecipeField.test.tsx",
-  "apps/kiki-gui/src/components/settings/modelSteerSourcesSave.test.tsx",
-  "apps/kiki-gui/src/components/settings/notifications/AwayNotificationsCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/notifications/ChannelsCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/plugins/PluginSettingsPanel.test.tsx",
-  "apps/kiki-gui/src/components/settings/profileEditor/fields.test.tsx",
-  "apps/kiki-gui/src/components/settings/recipeSteerSourcesAuthor.test.tsx",
-  "apps/kiki-gui/src/components/settings/remote/AddConnectionBySshDialog.test.tsx",
-  "apps/kiki-gui/src/components/settings/subagentTools/ToolSettingsCard.test.tsx",
-  "apps/kiki-gui/src/components/settings/workspaceTrustConsumers.test.tsx",
-  "apps/kiki-gui/src/components/settings/workspaces/WorkspaceSettingsPage.test.tsx",
-  "apps/kiki-gui/src/components/ssh/ComposerSsh.test.tsx",
-  "apps/kiki-gui/src/components/ssh/SshApprovalCard.test.tsx",
-  "apps/kiki-gui/src/components/ssh/SshSection.test.tsx",
-  "apps/kiki-gui/src/components/storage/StorageMigrationView.test.tsx",
-  "apps/kiki-gui/src/components/task-board/TaskBoardPersistence.test.tsx",
-  "apps/kiki-gui/src/components/timeline/FindBar.test.tsx",
-  "apps/kiki-gui/src/components/timeline/FoldRows.test.tsx",
-  "apps/kiki-gui/src/components/transcriptDetail.test.tsx",
-  "apps/kiki-gui/src/components/usage/PricingPanel.test.tsx",
-  "apps/kiki-gui/src/components/usage/ProviderQuotaPanel.test.tsx",
-  "apps/kiki-gui/src/components/usage/export/UsageExportPanel.test.tsx",
-  "apps/kiki-gui/src/components/useMemorySources.test.ts",
-  "apps/kiki-gui/src/components/workSurfaces.proof.test.tsx",
-  "apps/kiki-gui/src/host/ExternalLink.test.tsx",
-  "apps/kiki-gui/src/host/tauri.test.ts",
-  "apps/kiki-gui/src/lib/navScope.test.tsx",
-  "apps/kiki-gui/src/lib/navScopeRemoteEnter.test.tsx",
-  "apps/kiki-gui/src/lib/navScopeWindow.test.tsx",
-  "apps/kiki-gui/src/lib/spacePreferences.test.tsx",
-  "apps/kiki-gui/src/lib/useAwayNotifications.test.tsx",
-  "apps/kiki-gui/src/lib/useConversationList.test.tsx",
-  "apps/kiki-gui/src/state/connection.remote.test.tsx",
-  "apps/kiki-gui/src/state/connection.test.tsx",
-  "apps/kimi-code/test/cli/acp-native.test.ts",
-  "apps/kimi-code/test/cli/export.test.ts",
-  "apps/kimi-code/test/cli/goal-prompt.test.ts",
-  "apps/kimi-code/test/cli/login.test.ts",
-  "apps/kimi-code/test/cli/main.test.ts",
-  "apps/kimi-code/test/cli/provider.test.ts",
-  "apps/kimi-code/test/cli/run-shell-daemon.test.ts",
-  "apps/kimi-code/test/cli/run-shell.test.ts",
-  "apps/kimi-code/test/cli/session-access.test.ts",
-  "apps/kimi-code/test/cli/session-seal.test.ts",
-  "apps/kimi-code/test/cli/tools.test.ts",
-  "apps/kimi-code/test/cli/usage-export.test.ts",
-  "apps/kimi-code/test/cli/v2-run-print.test.ts",
-  "apps/kimi-code/test/native/nb-search-worker.test.ts",
-  "apps/kimi-code/test/tui/components/messages/assistant-message.test.ts",
-  "apps/kimi-code/test/tui/daemon/discovery.test.ts",
-  "apps/kimi-code/test/utils/clipboard/clipboard-text.test.ts",
-  "apps/kimi-code/test/utils/git/git-status.test.ts",
-  "apps/kimi-code/test/utils/process/fd-detect.test.ts",
-  "packages/agent-core-v2/test/app/agentExecutor/antigravityArchive.test.ts",
-  "packages/agent-core-v2/test/app/nbSearch/nbSearch.test.ts",
-  "packages/agent-core-v2/test/app/plugin/pluginService.test.ts",
-  "packages/agent-core-v2/test/os/backends/node-local/hostEnvironmentService.test.ts",
-  "packages/agent-core-v2/test/os/backends/node-local/hostProcessService.test.ts",
-  "packages/agent-core-v2/test/os/backends/node-local/tools/glob.test.ts",
-  "packages/agent-core-v2/test/os/backends/node-local/tools/grep.test.ts",
-  "packages/kap-server/test/documentPreview.officeRender.test.ts",
-  "packages/kap-server/test/externalDelegationRouteProjection.test.ts",
-  "packages/kap-server/test/externalDelegationSeats.test.ts",
-  "packages/kap-server/test/notifications.integration.ts",
-  "packages/kap-server/test/pluginOutboundIm.test.ts",
-  "packages/kap-server/test/prompts.delivery.integration.ts",
-  "packages/kap-server/test/prompts.integration.ts",
-  "packages/kap-server/test/prompts.lifecycle.integration.ts",
-  "packages/kap-server/test/prompts.media.integration.ts",
-  "packages/kap-server/test/prompts.queue.integration.ts",
-  "packages/kap-server/test/services/imSession/visibleReply.test.ts",
-  "packages/node-sdk/test/sdk-rpc-client.test.ts"
-]
+{
+  "apps/kiki-gui/src/App.sessionReturn.test.tsx": {
+    "./host": 1,
+    "./i18n": 1,
+    "./state/connection": 1
+  },
+  "apps/kiki-gui/src/App.test.tsx": {
+    "./components/SessionView": 1,
+    "./components/TerminalPanel": 1,
+    "./components/UsagePage": 1,
+    "./lib/skins/useAppearancePacks": 1,
+    "./lib/skins/useUserSkins": 1,
+    "./lib/useDesktopUpdateScheduler": 1,
+    "./state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ActivityHistory.test.tsx": {
+    "./TerminalPanel": 1
+  },
+  "apps/kiki-gui/src/components/ActivityPage.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/AgentCapabilitiesPanel.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/AgentPanelContainer.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/AppConnectionBanner.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ArchivedSessionsPage.test.tsx": {
+    "../lib/importHistory": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.agentMentions.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../lib/remoteConnections": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.executorModel.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.needsYou.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.remoteTarget.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.sendLifecycle.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Composer.threadRefs.test.tsx": {
+    "../host": 1,
+    "../host/vscode": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ContextMeter.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/EphemeralBar.test.tsx": {
+    "../lib/toasts": 1,
+    "../lib/worktrees": 1,
+    "../state/connection": 1,
+    "./dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/GlobalCronPanel.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/GlobalTaskBoard.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Interactions.planReview.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Interactions.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Markdown.document.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Markdown.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./markdown/streamdown-plugins": 1
+  },
+  "apps/kiki-gui/src/components/MemoryPage.test.tsx": {
+    "../lib/botRooms": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/NewSessionDraft.test.ts": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/NewSessionFirstRun.test.tsx": {
+    "../state/connection": 1,
+    "./Composer": 1,
+    "./ConversationShell": 1,
+    "./NewSessionDraft": 1,
+    "./discovery": 1
+  },
+  "apps/kiki-gui/src/components/OAuthDeviceCard.test.tsx": {
+    "../host": 1
+  },
+  "apps/kiki-gui/src/components/PreviewWorkspace.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./CodeEditor": 1,
+    "./agent-workspace/AgentWorkspace": 1
+  },
+  "apps/kiki-gui/src/components/ProviderFields.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/QueueStrip.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/QuickSwitcher.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/RequestGovernanceView.test.tsx": {
+    "../lib/liveAgentGovernance": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/RestartBanner.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/RightRail.test.tsx": {
+    "../state/connection": 1,
+    "./AgentPanelContainer": 1,
+    "./persona/PersonaSettingsUpdate": 1,
+    "./plugins/PluginComposerSlots": 1,
+    "./rail-variants/DefaultSections": 1,
+    "./rail-variants/SessionCronSection": 1
+  },
+  "apps/kiki-gui/src/components/SessionHeader.test.tsx": {
+    "../state/connection": 1,
+    "./TerminalPanel": 1
+  },
+  "apps/kiki-gui/src/components/SessionView.annotations.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./ConversationShell": 1,
+    "./SelectionQuoteButton": 1,
+    "./TerminalPanel": 1,
+    "./Transcript": 1,
+    "./mediaPreview": 1,
+    "@kiki/session-core/session": 1
+  },
+  "apps/kiki-gui/src/components/SessionView.overlayRail.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./ConversationShell": 1,
+    "./RightRail": 1,
+    "./SelectionQuoteButton": 1,
+    "./TerminalPanel": 1,
+    "./Transcript": 1,
+    "./mediaPreview": 1,
+    "@kiki/session-core/session": 1
+  },
+  "apps/kiki-gui/src/components/SessionView.profileSwitch.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./RightRail": 1,
+    "./SelectionQuoteButton": 1,
+    "./TerminalPanel": 1,
+    "./Transcript": 1,
+    "./mediaPreview": 1,
+    "@kiki/session-core/session": 1
+  },
+  "apps/kiki-gui/src/components/SessionView.queueRecovery.test.tsx": {
+    "../host": 1,
+    "../lib/toasts": 1,
+    "../state/connection": 1,
+    "./RightRail": 1,
+    "./SelectionQuoteButton": 1,
+    "./TerminalPanel": 1,
+    "./Transcript": 1,
+    "./mediaPreview": 1,
+    "@kiki/session-core/session": 1
+  },
+  "apps/kiki-gui/src/components/SessionView.test.tsx": {
+    "./AgentPanelContainer": 1,
+    "./TerminalPanel": 1,
+    "./persona/PersonaSettingsUpdate": 1,
+    "./rail-variants/DefaultSections": 1
+  },
+  "apps/kiki-gui/src/components/SettingsPage.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Sidebar.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/SpaceSwitcher.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1,
+    "./dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/SpaceViewState.test.tsx": {
+    "../host": 1,
+    "../i18n": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/SshProfilesPanel.test.tsx": {
+    "../host": 1,
+    "../i18n": 1
+  },
+  "apps/kiki-gui/src/components/TaskDetailModal.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/TasksPage.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ThreadRefChip.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/Transcript.messageView.test.tsx": {
+    "./markdown/streamdown-plugins": 1,
+    "./mediaPreviewContext": 1
+  },
+  "apps/kiki-gui/src/components/Transcript.test.tsx": {
+    "./markdown/streamdown-plugins": 1,
+    "./mediaPreviewContext": 1
+  },
+  "apps/kiki-gui/src/components/UsagePage.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/agent-panel/AgentHooksSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/agent-panel/ContextRebuildControl.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/agent-panel/ProfileDetailSections.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/agent-panel/RecipeBindingStatus.test.tsx": {
+    "./PromptEffectiveDrawer": 1,
+    "./useAgentPanelCatalog": 1
+  },
+  "apps/kiki-gui/src/components/agent-panel/useAgentPanelCatalog.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/agent-workspace/AgentWorkspace.test.tsx": {
+    "../../host": 1,
+    "../../host/vscode": 1,
+    "../../lib/toasts": 1,
+    "../../state/connection": 1,
+    "../ActivityHistory": 1,
+    "../AgentBreadcrumb": 1,
+    "../AgentPanelContainer": 1,
+    "../ConversationShell": 1,
+    "../PreviewToggleButton": 1,
+    "../RightRail": 1,
+    "../Transcript": 1,
+    "../mediaPreview": 1,
+    "../persona/PersonaSettingsUpdate": 1,
+    "../rail-variants/DefaultSections": 1,
+    "../rail-variants/SessionCronSection": 1,
+    "./ResyncStatusBanner": 1
+  },
+  "apps/kiki-gui/src/components/askKiki.dirtyOrder.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/bot/SidebarBotRoomGroups.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/AddSourceDialog.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/CapabilitiesPage.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/ImportHistoryView.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/PluginImportArchive.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/PluginPanelHost.test.tsx": {
+    "../../host": 1,
+    "../../host/external": 1,
+    "../../i18n": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/PluginSettingsForm.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/SessionPluginsPanel.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/rows.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/useMcpPicker.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/capabilities/usePluginPicker.draft.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/externalClients/ExternalClientSession.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/harness/executorSchedule.ui.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/im/ImSessionRailSwitch.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/im/SessionChannelsRail.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/localSessions/LocalSessionsDialog.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/markdown/annotationLateArrival.test.tsx": {
+    "./streamdown-plugins": 1
+  },
+  "apps/kiki-gui/src/components/markdown/annotationMarks.test.tsx": {
+    "./streamdown-plugins": 1
+  },
+  "apps/kiki-gui/src/components/media/MediaSourcesView.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/mediaPreview.gallery.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/mediaPreview.stream.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/mediaPreviewSession.test.tsx": {
+    "../state/connection": 1,
+    "./CodeEditor": 1
+  },
+  "apps/kiki-gui/src/components/message/MessageRow.test.tsx": {
+    "../mediaPreviewContext": 1
+  },
+  "apps/kiki-gui/src/components/model-switch/useModelSwitches.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/output-layer/OutputLayerSelect.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/output-layer/OutputPresetModal.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/output-layer/useOutputLayerClient.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/paneResize.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaAvatar.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaAvatarControl.test.tsx": {
+    "../../lib/toasts": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaConversationSwitcher.test.tsx": {
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaConversationsSection.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaEditor.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaSettingsUpdate.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonaTasksSection.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/persona/PersonasPage.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/persona/SidebarPersonaSection.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1,
+    "../room/CreateRoomDialog": 1,
+    "./usePersonaDirectory": 1
+  },
+  "apps/kiki-gui/src/components/persona/personaNavigation.test.ts": {
+    "../../host": 1,
+    "../../state/connection": 1,
+    "../NewSessionPage": 1,
+    "../dirtyGuard": 1,
+    "./usePersonas": 1
+  },
+  "apps/kiki-gui/src/components/persona/usePersonaDirectory.test.ts": {
+    "../../lib/botRooms": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/rail-variants/DefaultSections.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/rail-variants/SessionCronSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/room/RoomPage.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/AboutSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/AccountQuotaPanel.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/AgentsSection.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1,
+    "./profileEditor/ProfileEditor": 1
+  },
+  "apps/kiki-gui/src/components/settings/AppearanceSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/AutomationSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/BoardStorageSettings.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/BrowserControlSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/CatalogImportCard.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/CommunicationSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ComputerControlSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ConfigGapCards.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ContextWindowSettings.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/DecisionSources.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/DesktopLogCard.test.tsx": {
+    "../../host": 1
+  },
+  "apps/kiki-gui/src/components/settings/ExperimentalSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ExternalClientsSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ExternalConnectionSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ExternalEnginesSection.proof.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ExternalEnginesSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/GeneralSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/GlobalRequestIdentityCard.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/HostSkillInstallCard.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/IdentitySection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/McpConfigManager.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/McpSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ModelGenerationMigration.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ModelsSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/NbSearchSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/NotificationsSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/PermissionRulesSettings.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/PluginsSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/PromptConfigCard.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ProviderConnectionExtras.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ProvidersSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/QuestionGuardFields.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/RecipesSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ReviewerSettings.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/SearchIndexStatusCard.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/SecretField.test.tsx": {
+    "../../lib/clipboard": 1
+  },
+  "apps/kiki-gui/src/components/settings/SessionsImportPage.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/ShortcutsSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/SpacesSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/SubagentsSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/UnifiedAgentManager.test.tsx": {
+    "../../state/connection": 1,
+    "../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/WebAccessSection.test.tsx": {
+    "../../host": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/hooks/HooksSection.test.tsx": {
+    "../../../state/connection": 1,
+    "../../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/modelPromptBodiesSave.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/modelRecipeField.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/modelSteerSourcesSave.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/notifications/AwayNotificationsCard.test.tsx": {
+    "../../../host": 1,
+    "../../../host/tauri": 1
+  },
+  "apps/kiki-gui/src/components/settings/notifications/ChannelsCard.test.tsx": {
+    "../../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/plugins/PluginSettingsPanel.test.tsx": {
+    "../../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/profileEditor/fields.test.tsx": {
+    "../../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/recipeSteerSourcesAuthor.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/remote/AddConnectionBySshDialog.test.tsx": {
+    "../../../host": 1,
+    "../../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/settings/subagentTools/ToolSettingsCard.test.tsx": {
+    "../../../state/connection": 1,
+    "../../dirtyGuard": 1
+  },
+  "apps/kiki-gui/src/components/settings/workspaceTrustConsumers.test.tsx": {
+    "../../state/connection": 1,
+    "../SshProfilesPanel": 1,
+    "./McpConfigManager": 1,
+    "./WorktreesCard": 1
+  },
+  "apps/kiki-gui/src/components/settings/workspaces/WorkspaceSettingsPage.test.tsx": {
+    "../../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ssh/ComposerSsh.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ssh/SshApprovalCard.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/ssh/SshSection.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/storage/StorageMigrationView.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/task-board/TaskBoardPersistence.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/timeline/FindBar.test.tsx": {
+    "../markdown/streamdown-plugins": 1
+  },
+  "apps/kiki-gui/src/components/timeline/FoldRows.test.tsx": {
+    "../mediaPreviewContext": 1
+  },
+  "apps/kiki-gui/src/components/transcriptDetail.test.tsx": {
+    "../host": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/usage/PricingPanel.test.tsx": {
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/usage/ProviderQuotaPanel.test.tsx": {
+    "../../host": 1,
+    "../../lib/providerQuota": 1,
+    "../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/usage/export/UsageExportPanel.test.tsx": {
+    "../../../host": 1,
+    "../../../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/useMemorySources.test.ts": {
+    "../lib/botRooms": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/components/workSurfaces.proof.test.tsx": {
+    "../i18n": 1,
+    "../state/connection": 1,
+    "./Composer": 1,
+    "./ContextMeter": 1,
+    "./NewSessionDraft": 1,
+    "./host": 1,
+    "./preview/PdfPageView": 1,
+    "./preview/PreviewAssetImage": 1
+  },
+  "apps/kiki-gui/src/host/ExternalLink.test.tsx": {
+    "./index": 1
+  },
+  "apps/kiki-gui/src/host/tauri.test.ts": {
+    "@kiki/session-core/settings": 1
+  },
+  "apps/kiki-gui/src/lib/navScope.test.tsx": {
+    "../host": 1,
+    "../i18n": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/lib/navScopeRemoteEnter.test.tsx": {
+    "../host": 1,
+    "../i18n": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/lib/navScopeWindow.test.tsx": {
+    "../host": 1,
+    "../i18n": 1,
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/lib/spacePreferences.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/lib/useAwayNotifications.test.tsx": {
+    "../i18n": 1,
+    "../state/connection": 1,
+    "./threadTitles": 1
+  },
+  "apps/kiki-gui/src/lib/useConversationList.test.tsx": {
+    "../state/connection": 1
+  },
+  "apps/kiki-gui/src/state/connection.remote.test.tsx": {
+    "../components/ConnectScreen": 1,
+    "../host": 1,
+    "../host/vscode": 1,
+    "../i18n": 1,
+    "../lib/client": 1
+  },
+  "apps/kiki-gui/src/state/connection.test.tsx": {
+    "../lib/busySessionsHook": 1,
+    "../lib/client": 1
+  },
+  "apps/kimi-code/test/cli/acp-native.test.ts": {
+    "@kiki/acp-server": 1,
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/export.test.ts": {
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/goal-prompt.test.ts": {
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/login.test.ts": {
+    "#/utils/open-url": 1,
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/main.test.ts": {
+    "../../src/cli/commands": 1,
+    "../../src/cli/headless-exit": 1,
+    "../../src/cli/options": 1,
+    "../../src/cli/run-prompt": 1,
+    "../../src/cli/run-shell": 1,
+    "../../src/cli/version": 1,
+    "../../src/native/main-heap": 1,
+    "../../src/native/product-docs": 1,
+    "../../src/native/smoke": 1,
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/provider.test.ts": {
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/run-shell-daemon.test.ts": {
+    "../../src/cli/agent-selection": 1,
+    "../../src/tui/config": 1,
+    "../../src/tui/daemon/daemon-tui": 1,
+    "../../src/tui/daemon/discovery": 1,
+    "../../src/tui/daemon/workspace-trust": 1,
+    "../../src/tui/theme": 1,
+    "../../src/utils/process/resolve-command": 1,
+    "../../src/utils/startup-trace": 1,
+    "../../src/utils/terminal-restore": 1,
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/cli/run-shell.test.ts": {
+    "../../src/tui/config": 1,
+    "../../src/tui/daemon/daemon-tui": 1,
+    "../../src/tui/daemon/discovery": 1,
+    "../../src/tui/daemon/workspace-trust": 1,
+    "../../src/tui/theme/detect": 1,
+    "../../src/utils/process/resolve-command": 1,
+    "@kiki/node-sdk": 1,
+    "@kiki/oauth": 1
+  },
+  "apps/kimi-code/test/cli/session-access.test.ts": {
+    "../../src/kiki/serve": 1
+  },
+  "apps/kimi-code/test/cli/session-seal.test.ts": {
+    "#/kiki/home": 1
+  },
+  "apps/kimi-code/test/cli/tools.test.ts": {
+    "../../src/kiki/seat": 1,
+    "../../src/kiki/serve": 1,
+    "@kiki/klient/http": 1
+  },
+  "apps/kimi-code/test/cli/usage-export.test.ts": {
+    "../../src/kiki/serve": 1,
+    "@kiki/klient/http": 1
+  },
+  "apps/kimi-code/test/cli/v2-run-print.test.ts": {
+    "@kiki/agent-core-v2": 1,
+    "@kiki/agent-core-v2/session/agentLifecycle/mainAgent": 1,
+    "@kiki/node-sdk": 1,
+    "@kiki/oauth": 1
+  },
+  "apps/kimi-code/test/native/nb-search-worker.test.ts": {
+    "@kiki/node-sdk": 1
+  },
+  "apps/kimi-code/test/tui/components/messages/assistant-message.test.ts": {
+    "#/tui/components/media/code-highlight": 1
+  },
+  "apps/kimi-code/test/tui/daemon/discovery.test.ts": {
+    "#/kiki/home": 1,
+    "#/kiki/serve": 1
+  },
+  "apps/kimi-code/test/utils/clipboard/clipboard-text.test.ts": {
+    "#/utils/clipboard/clipboard-native": 1
+  },
+  "apps/kimi-code/test/utils/git/git-status.test.ts": {
+    "#/utils/process/resolve-command": 1
+  },
+  "apps/kimi-code/test/utils/process/fd-detect.test.ts": {
+    "#/utils/process/resolve-command": 1
+  },
+  "packages/agent-core-v2/test/app/agentExecutor/antigravityArchive.test.ts": {
+    "#/_base/utils/fs": 1
+  },
+  "packages/agent-core-v2/test/app/nbSearch/nbSearch.test.ts": {
+    "@nb-corp/nb-search": 1
+  },
+  "packages/agent-core-v2/test/app/plugin/pluginService.test.ts": {
+    "#/app/plugin/store": 1
+  },
+  "packages/agent-core-v2/test/os/backends/node-local/hostEnvironmentService.test.ts": {
+    "#/os/backends/node-local/kikiCliPath": 1,
+    "@kiki/kaos/exec-env": 1
+  },
+  "packages/agent-core-v2/test/os/backends/node-local/hostProcessService.test.ts": {
+    "#/os/backends/node-local/windowsCommandLine": 1
+  },
+  "packages/agent-core-v2/test/os/backends/node-local/tools/glob.test.ts": {
+    "#/os/backends/node-local/tools/rgLocator": 1
+  },
+  "packages/agent-core-v2/test/os/backends/node-local/tools/grep.test.ts": {
+    "#/os/backends/node-local/tools/rgLocator": 1
+  },
+  "packages/kap-server/test/documentPreview.officeRender.test.ts": {
+    "../src/services/documentPreview/officeCliPreview": 1
+  },
+  "packages/kap-server/test/externalDelegationRouteProjection.test.ts": {
+    "../src/transport/mainAgent": 1
+  },
+  "packages/kap-server/test/externalDelegationSeats.test.ts": {
+    "../src/mcp/externalDelegationAuthority": 1
+  },
+  "packages/kap-server/test/notifications.integration.ts": {
+    "@nb-corp/nb-im": 1
+  },
+  "packages/kap-server/test/pluginOutboundIm.test.ts": {
+    "@nb-corp/nb-im": 1
+  },
+  "packages/kap-server/test/prompts.delivery.integration.ts": {
+    "../../../apps/kiki-gui/src/components/TerminalPanel": 1,
+    "../../../apps/kiki-gui/src/components/preview/DocumentTabView": 1
+  },
+  "packages/kap-server/test/prompts.integration.ts": {
+    "../../../apps/kiki-gui/src/components/TerminalPanel": 1,
+    "../../../apps/kiki-gui/src/components/preview/DocumentTabView": 1
+  },
+  "packages/kap-server/test/prompts.lifecycle.integration.ts": {
+    "../../../apps/kiki-gui/src/components/TerminalPanel": 1,
+    "../../../apps/kiki-gui/src/components/preview/DocumentTabView": 1
+  },
+  "packages/kap-server/test/prompts.media.integration.ts": {
+    "../../../apps/kiki-gui/src/components/TerminalPanel": 1,
+    "../../../apps/kiki-gui/src/components/preview/DocumentTabView": 1
+  },
+  "packages/kap-server/test/prompts.queue.integration.ts": {
+    "../../../apps/kiki-gui/src/components/TerminalPanel": 1,
+    "../../../apps/kiki-gui/src/components/preview/DocumentTabView": 1
+  },
+  "packages/kap-server/test/services/imSession/visibleReply.test.ts": {
+    "../../../src/services/imSession/bridge": 1
+  },
+  "packages/node-sdk/test/sdk-rpc-client.test.ts": {
+    "@kiki/kaos/exec-env": 1
+  }
+}

@@ -131,6 +131,14 @@ async function startFixtureHttpServer(state) {
           res.end(JSON.stringify({ code: 40001, msg: 'page_size must be at most 100 without the ids projection', data: null }));
           return;
         }
+        if (Array.isArray(state.sessionsQueryPages)) {
+          const tokenParam = url.searchParams.get('page_token');
+          const pageIndex = tokenParam ? Number(tokenParam.replace(/^p/, '')) : 0;
+          const items = state.sessionsQueryPages[pageIndex] ?? [];
+          const nextPage = pageIndex + 1 < state.sessionsQueryPages.length ? `p${pageIndex + 1}` : null;
+          sendOk({ items, ...(nextPage ? { next_page_token: nextPage } : {}) });
+          return;
+        }
         sendOk({ items: state.sessionsQuery ?? [] });
         return;
       }
@@ -359,6 +367,53 @@ test('inspectRuntime queries live server, active sessions, tasks, and writes hot
     const classified = classifyRuntimeServerPath(runtimeRoot, legacyExe);
     assert.equal(classified.layout, 'releases');
     assert.equal(classified.releaseId, oldRelId);
+
+    // Follows >10 continuation pages completely and preserves upstream session-query errors instead of empty lists.
+    const pagedSrv = await startFixtureHttpServer({
+      serverId: 'srv-paged',
+      buildId: OLD_COMMIT,
+      workPending: [],
+      sessionsQueryPages: Array.from({ length: 12 }, (_, idx) => [
+        { id: `sess-page-${idx}`, meta: { title: `Page ${idx}` }, activity: { status: idx === 11 ? 'running' : 'idle' } },
+      ]),
+    });
+    try {
+      const pagedHome = join(root, 'home-paged');
+      registerInstance(pagedHome, { serverId: 'srv-paged', pid: 10001, port: pagedSrv.port, buildId: OLD_COMMIT });
+      const pagedLedger = await inspectRuntime({
+        runtimeRoot,
+        kikiHome: pagedHome,
+        resolveProcessPath: () => activeExe,
+      });
+      assert.equal(pagedLedger.activeSessionsError, null);
+      assert.equal(pagedLedger.activeSessions.length, 1);
+      assert.equal(pagedLedger.activeSessions[0].sessionId, 'sess-page-11');
+      assert.equal(pagedLedger.workPendingDetails.length, 1);
+      assert.equal(pagedLedger.workPendingDetails[0].sessionId, 'sess-page-11');
+    } finally {
+      await pagedSrv.close();
+    }
+
+    const failedQuerySrv = await startFixtureHttpServer({
+      serverId: 'srv-query-err',
+      buildId: OLD_COMMIT,
+      workPending: [],
+      failSessionsQuery: true,
+    });
+    try {
+      const failedHome = join(root, 'home-query-err');
+      registerInstance(failedHome, { serverId: 'srv-query-err', pid: 10001, port: failedQuerySrv.port, buildId: OLD_COMMIT });
+      const errLedger = await inspectRuntime({
+        runtimeRoot,
+        kikiHome: failedHome,
+        resolveProcessPath: () => activeExe,
+      });
+      assert.equal(errLedger.activeSessions, null);
+      assert.match(String(errLedger.activeSessionsError), /simulated query error/);
+      assert.equal(errLedger.readiness, 'session_inventory_unavailable');
+    } finally {
+      await failedQuerySrv.close();
+    }
   } finally {
     await srv.close();
     rmSync(root, { recursive: true, force: true });

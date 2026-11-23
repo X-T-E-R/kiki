@@ -503,8 +503,9 @@ export function bootstrapOps({
 
 async function queryActiveSessionsPaginated({ port, token, callApi }) {
   const items = [];
+  const seenTokens = new Set();
   let pageToken;
-  for (let page = 0; page < 10; page += 1) {
+  while (true) {
     const queryPath = pageToken
       ? `/api/sessions/query?page_size=100&archived=false&page_token=${encodeURIComponent(pageToken)}`
       : '/api/sessions/query?page_size=100&archived=false';
@@ -513,7 +514,12 @@ async function queryActiveSessionsPaginated({ port, token, callApi }) {
     items.push(...pageItems);
     const nextToken = resp?.next_page_token ?? resp?.page_token;
     if (!nextToken || pageItems.length === 0) break;
-    pageToken = String(nextToken);
+    const tokenKey = String(nextToken);
+    if (seenTokens.has(tokenKey)) {
+      throw new Error(`Repeated continuation token from /api/sessions/query: ${tokenKey}`);
+    }
+    seenTokens.add(tokenKey);
+    pageToken = tokenKey;
   }
   return items;
 }
@@ -522,8 +528,9 @@ async function readSessionActiveTaskCount({ port, token, sessionId, callApi }) {
   const encodedSid = encodeURIComponent(sessionId);
   try {
     let total = 0;
+    const seenTokens = new Set();
     let pageToken;
-    for (let page = 0; page < 10; page += 1) {
+    while (true) {
       const path = pageToken
         ? `/api/sessions/${encodedSid}/agent-tasks?page_size=100&page_token=${encodeURIComponent(pageToken)}`
         : `/api/sessions/${encodedSid}/agent-tasks?page_size=100`;
@@ -534,55 +541,84 @@ async function readSessionActiveTaskCount({ port, token, sessionId, callApi }) {
           total += 1;
         }
       }
-      if (!data?.has_more || !data?.next_page_token) break;
-      pageToken = String(data.next_page_token);
+      if (!data?.has_more || !data?.next_page_token || items.length === 0) break;
+      const tokenKey = String(data.next_page_token);
+      if (seenTokens.has(tokenKey)) {
+        throw new Error(`Repeated continuation token from /agent-tasks: ${tokenKey}`);
+      }
+      seenTokens.add(tokenKey);
+      pageToken = tokenKey;
     }
-    return { activeTaskCount: total, scope: 'all_owners' };
-  } catch {
-    // Fall back to main-owner /tasks for minimal fixtures or older servers.
-  }
-  try {
-    let total = 0;
-    let offset = 0;
-    for (let page = 0; page < 10; page += 1) {
-      const tasksResp = await callApi({
-        port,
-        token,
-        path: `/api/sessions/${encodedSid}/tasks?status=running&page_size=100&offset=${offset}`,
-        method: 'GET',
-      });
-      const items = Array.isArray(tasksResp?.items) ? tasksResp.items : [];
-      total += items.length;
-      if (!tasksResp?.has_more || items.length === 0) break;
-      offset = typeof tasksResp.next_offset === 'number' ? tasksResp.next_offset : offset + items.length;
+    return { activeTaskCount: total, scope: 'all_owners', error: null };
+  } catch (agentTasksError) {
+    try {
+      let total = 0;
+      let offset = 0;
+      while (true) {
+        const tasksResp = await callApi({
+          port,
+          token,
+          path: `/api/sessions/${encodedSid}/tasks?status=running&page_size=100&offset=${offset}`,
+          method: 'GET',
+        });
+        const items = Array.isArray(tasksResp?.items) ? tasksResp.items : [];
+        total += items.length;
+        if (!tasksResp?.has_more || items.length === 0) break;
+        const nextOffset = typeof tasksResp.next_offset === 'number' ? tasksResp.next_offset : offset + items.length;
+        if (nextOffset <= offset) {
+          throw new Error(`Non-advancing task pagination offset (${nextOffset} <= ${offset})`);
+        }
+        offset = nextOffset;
+      }
+      return { activeTaskCount: total, scope: 'main_only', error: null };
+    } catch (tasksError) {
+      return {
+        activeTaskCount: null,
+        scope: 'unavailable',
+        error: tasksError instanceof Error ? tasksError.message : String(agentTasksError),
+      };
     }
-    return { activeTaskCount: total, scope: 'main_only' };
-  } catch {
-    return { activeTaskCount: 0, scope: 'unavailable' };
   }
 }
 
 async function readSessionSubagentRoster({ port, token, sessionId, callApi }) {
   try {
-    const resp = await callApi({
-      port,
-      token,
-      path: `/api/sessions/${encodeURIComponent(sessionId)}/subagents?limit=100`,
-      method: 'GET',
-    });
-    const items = Array.isArray(resp?.items) ? resp.items : [];
-    const total = typeof resp?.total === 'number' ? resp.total : items.length;
+    const items = [];
+    let total = null;
+    let offset = 0;
+    while (true) {
+      const resp = await callApi({
+        port,
+        token,
+        path: `/api/sessions/${encodeURIComponent(sessionId)}/subagents?limit=100&offset=${offset}`,
+        method: 'GET',
+      });
+      const pageItems = Array.isArray(resp?.items) ? resp.items : [];
+      if (typeof resp?.total === 'number') total = resp.total;
+      for (const row of pageItems) {
+        items.push({
+          id: row.agent_id ?? row.id,
+          name: row.name ?? null,
+          status: row.status ?? null,
+          profile: row.profile ?? null,
+        });
+      }
+      if (pageItems.length === 0 || (total !== null && items.length >= total) || pageItems.length < 100) {
+        break;
+      }
+      offset += pageItems.length;
+    }
     return {
-      total,
-      items: items.map((row) => ({
-        id: row.agent_id ?? row.id,
-        name: row.name ?? null,
-        status: row.status ?? null,
-        profile: row.profile ?? null,
-      })),
+      total: total ?? items.length,
+      items,
+      error: null,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      total: null,
+      items: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -625,7 +661,8 @@ export async function inspectRuntime({
   }
 
   let lifecycle = null;
-  let activeSessions = [];
+  let activeSessions = null;
+  let activeSessionsError = null;
   const workPendingDetails = [];
 
   if (discovered.server) {
@@ -640,12 +677,12 @@ export async function inspectRuntime({
           status: item.activity.status,
           title: item.meta?.title ?? null,
         }));
-    } catch {
-      activeSessions = [];
+    } catch (error) {
+      activeSessionsError = error instanceof Error ? error.message : String(error);
     }
 
     const inspectIds = new Set(Array.isArray(lifecycle?.work_pending) ? lifecycle.work_pending : []);
-    for (const session of activeSessions) {
+    for (const session of activeSessions ?? []) {
       if (ACTIVE_ACTIVITY_STATUSES.has(session.status)) {
         inspectIds.add(session.sessionId);
       }
@@ -673,7 +710,7 @@ export async function inspectRuntime({
         readSessionSubagentRoster({ port, token, sessionId, callApi }),
       ]);
       const participants = Array.isArray(control?.agents) ? control.agents : [];
-      const activityStatus = activeSessions.find((item) => item.sessionId === sessionId)?.status ?? null;
+      const activityStatus = (activeSessions ?? []).find((item) => item.sessionId === sessionId)?.status ?? null;
       workPendingDetails.push({
         sessionId,
         inWorkPending: Array.isArray(lifecycle?.work_pending) && lifecycle.work_pending.includes(sessionId),
@@ -682,8 +719,10 @@ export async function inspectRuntime({
         pauseOperationId: control?.pauseOperationId ?? null,
         activeTaskCount: taskSummary.activeTaskCount,
         activeTaskScope: taskSummary.scope,
-        subagentCount: subagentRoster ? subagentRoster.total : 0,
-        subagents: subagentRoster ? subagentRoster.items : [],
+        activeTaskError: taskSummary.error,
+        subagentCount: subagentRoster.total,
+        subagents: subagentRoster.items,
+        subagentError: subagentRoster.error,
         pauseParticipantCount: participants.length,
         pauseParticipants: participants.map((agent) => ({
           agentId: agent.agentId,
@@ -699,6 +738,7 @@ export async function inspectRuntime({
   if (candidate && !candidate.valid) readiness = 'candidate_invalid';
   else if (!discovered.server) readiness = 'no_live_server';
   else if ((lifecycle?.work_pending?.length ?? 0) > 0) readiness = 'busy_will_pause';
+  else if (activeSessionsError !== null) readiness = 'session_inventory_unavailable';
 
   const ledger = {
     schemaVersion: 1,
@@ -722,6 +762,7 @@ export async function inspectRuntime({
       : null,
     lifecycle,
     activeSessions,
+    activeSessionsError,
     workPendingDetails,
     currentManifest,
     activeManifest,
@@ -774,13 +815,20 @@ export async function reconcileSwitch({
 
   const { port, token } = discovered.server;
   let workPendingSet = new Set();
+  let lifecycleState = 'ok';
+  let lifecycleError = null;
   try {
     const lifecycle = await callApi({ port, token, path: '/api/desktop-lifecycle', method: 'GET' });
     if (Array.isArray(lifecycle?.work_pending)) {
       workPendingSet = new Set(lifecycle.work_pending);
     }
-  } catch {
-    workPendingSet = new Set();
+  } catch (error) {
+    if (error?.statusCode === 404 || error?.apiCode === 40404) {
+      lifecycleState = 'unsupported';
+    } else {
+      lifecycleState = 'error';
+      lifecycleError = error instanceof Error ? error.message : String(error);
+    }
   }
   const activityStatusBySession = new Map();
   let activityQueryState = 'ok';
@@ -838,6 +886,18 @@ export async function reconcileSwitch({
     }
     if (controlPhase === 'paused') {
       results.push({ sessionId, activityStatus, controlPhase, nudged: false, reason: 'still_paused', readError });
+      continue;
+    }
+    if (lifecycleState === 'error') {
+      results.push({
+        sessionId,
+        activityStatus,
+        controlPhase,
+        nudged: false,
+        reason: 'lifecycle_unknown',
+        error: lifecycleError,
+        readError,
+      });
       continue;
     }
     if (activityStatus === null && activityQueryState === 'error') {
@@ -1126,14 +1186,18 @@ function formatSummary(command, result) {
   }
   if (command === 'inspect') {
     const srv = result.liveServer;
-    return [
+    const lines = [
       `Readiness: ${result.readiness}`,
       srv
         ? `  Server:  ${srv.server_id} (pid=${srv.pid}, layout=${srv.layout}, build=${srv.build_id}, exe=${srv.executablePath})`
         : `  Server:  none (${result.tokenError ?? 'not running'})`,
       `  Pending: ${result.workPendingDetails.length} session(s)`,
-      `  Ledger:  ${result.ledgerPath}`,
-    ].join('\n');
+    ];
+    if (result.activeSessionsError) {
+      lines.push(`  Sessions: unavailable (${result.activeSessionsError})`);
+    }
+    lines.push(`  Ledger:  ${result.ledgerPath}`);
+    return lines.join('\n');
   }
   if (command === 'reconcile') {
     return [

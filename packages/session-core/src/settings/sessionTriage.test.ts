@@ -202,7 +202,7 @@ describe('conversationTriage store', () => {
     expect(conversationTriageSnapshot()[keyB]).toBeDefined();
   });
 
-  it('prunes entries older than 30 days and caps total stored marks at 300', () => {
+  it('prunes entries older than 30 days while retaining active future snoozes and marks past 300 sessions', () => {
     const DAY = 24 * 60 * 60 * 1000;
     const base = 1_700_000_000_000;
     const seeded: Record<string, TriageRecord> = {};
@@ -219,11 +219,11 @@ describe('conversationTriage store', () => {
 
     settleConversation(refA, { seq: 1 }, 'completed', base + 400_000);
     const snap = conversationTriageSnapshot();
-    expect(Object.keys(snap)).toHaveLength(300);
+    expect(Object.keys(snap)).toHaveLength(312);
     expect(snap[staleKey]).toBeUndefined();
+    expect(snap[futureSnoozeKey]).toBeDefined();
     expect(snap[keyA]).toBeDefined();
-    // Oldest of the 310 entries were evicted past the 300-entry cap, newest retained.
-    expect(snap[encodeConversationRef({ spaceKey: 'main', kind: 'session', id: 's-0' })]).toBeUndefined();
+    expect(snap[encodeConversationRef({ spaceKey: 'main', kind: 'session', id: 's-0' })]).toBeDefined();
     expect(snap[encodeConversationRef({ spaceKey: 'main', kind: 'session', id: 's-309' })]).toBeDefined();
   });
 });

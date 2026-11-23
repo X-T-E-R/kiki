@@ -19,12 +19,9 @@ const WALK_SKIP_DIRS = new Set([
   'vendor',
 ]);
 
-export const LEGACY_DISABLED_TEST_ALLOWLIST = new Set([
-  'packages/kaos/test/internal.test.ts',
-  'packages/node-sdk/test/session-plan-compact-usage-resume.test.ts',
-]);
+export const LEGACY_DISABLED_TEST_ALLOWLIST = new Set();
 
-export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = new Set(
+export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = Object.freeze(
   JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'legacy-mock-allowlist.json'), 'utf8')),
 );
 
@@ -544,12 +541,29 @@ export function scanDisabledTests(repoRoot = DEFAULT_ROOT, { allowlist = LEGACY_
   return { violations, legacyExempted };
 }
 
+function consumeMockAllowlistQuota(allowlist, rel, target, perFileBudgets) {
+  if (!allowlist) return false;
+  if (allowlist instanceof Set) return allowlist.has(rel);
+  let remaining = perFileBudgets.get(rel);
+  if (remaining === undefined) {
+    const raw = allowlist instanceof Map ? allowlist.get(rel) : allowlist[rel];
+    remaining = raw && typeof raw === 'object' ? { ...raw } : null;
+    perFileBudgets.set(rel, remaining);
+  }
+  if (!remaining) return false;
+  const count = remaining[target] ?? 0;
+  if (count <= 0) return false;
+  remaining[target] = count - 1;
+  return true;
+}
+
 export function scanIntraMonorepoMocks(
   repoRoot = DEFAULT_ROOT,
   { allowlist = LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST, roots = ['packages', 'apps', 'scripts'] } = {},
 ) {
   const violations = [];
   const legacyExempted = [];
+  const perFileBudgets = new Map();
   for (const sub of roots) {
     const dir = path.join(repoRoot, sub);
     const files = walkFiles(dir, (_abs, name) => TEST_FILE_RE.test(name));
@@ -559,7 +573,7 @@ export function scanIntraMonorepoMocks(
       const lineNumberAtOffset = (offset) => content.slice(0, offset).split('\n').length;
       for (const found of findIntraMonorepoMocks(content, lineNumberAtOffset, rel)) {
         const hit = { file: rel, line: found.line, target: found.target, text: found.text };
-        if (allowlist.has(rel)) legacyExempted.push(hit);
+        if (consumeMockAllowlistQuota(allowlist, rel, found.target, perFileBudgets)) legacyExempted.push(hit);
         else violations.push(hit);
       }
     }
@@ -571,25 +585,53 @@ function resolveDefaultDiffArgs(repoRoot, baseRef) {
   if (baseRef) {
     const mb = spawnSync('git', ['merge-base', baseRef, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
     if (mb.status === 0 && mb.stdout.trim()) {
-      return ['diff', '-U0', mb.stdout.trim()];
+      return { ok: true, baseRef, args: ['diff', '-U0', mb.stdout.trim()] };
     }
-    return ['diff', '-U0', `${baseRef}...HEAD`];
+    const verified = spawnSync('git', ['rev-parse', '--verify', `${baseRef}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
+    if (verified.status === 0 && verified.stdout.trim()) {
+      return { ok: true, baseRef, args: ['diff', '-U0', `${baseRef}...HEAD`] };
+    }
+    return {
+      ok: false,
+      baseRef,
+      error: `Unable to establish comparison baseline for --base "${baseRef}".`,
+    };
   }
   for (const candidate of ['origin/kiki', 'origin/main']) {
     const mb = spawnSync('git', ['merge-base', candidate, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
     if (mb.status === 0 && mb.stdout.trim()) {
-      return ['diff', '-U0', mb.stdout.trim()];
+      return { ok: true, baseRef: candidate, args: ['diff', '-U0', mb.stdout.trim()] };
     }
   }
-  return ['diff', '-U0', 'HEAD'];
+  return {
+    ok: false,
+    baseRef: null,
+    error: 'Unable to establish comparison baseline (neither origin/kiki nor origin/main is available; pass --base <ref>).',
+  };
 }
 
 export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffText } = {}) {
   let rawDiff = diffText;
+  let baselineAvailable = true;
+  let baselineError = null;
+  let resolvedBaseRef = baseRef ?? null;
   if (rawDiff === undefined) {
-    const args = resolveDefaultDiffArgs(repoRoot, baseRef);
-    const res = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-    rawDiff = res.status === 0 ? res.stdout : '';
+    const resolved = resolveDefaultDiffArgs(repoRoot, baseRef);
+    resolvedBaseRef = resolved.baseRef;
+    if (!resolved.ok) {
+      baselineAvailable = false;
+      baselineError = resolved.error;
+      rawDiff = '';
+    } else {
+      const res = spawnSync('git', resolved.args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+      if (res.status === 0) {
+        rawDiff = res.stdout;
+      } else {
+        baselineAvailable = false;
+        baselineError = `git ${resolved.args.join(' ')} failed (exit ${String(res.status)}): ${(res.stderr ?? '').trim()}`;
+        rawDiff = '';
+      }
+    }
   }
 
   const mockViolations = [];
@@ -673,6 +715,9 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
   flushHunk();
 
   return {
+    baselineAvailable,
+    baselineError,
+    baseRef: resolvedBaseRef,
     mockViolations,
     weakAssertionViolations,
     disabledAddedViolations,
@@ -741,6 +786,7 @@ export function runTestHygieneCheck({ repoRoot = DEFAULT_ROOT, baseRef, diffText
     contractFailures.length === 0 &&
     disabled.violations.length === 0 &&
     intraMonorepoMocks.violations.length === 0 &&
+    diffRatchet.baselineAvailable &&
     diffRatchet.mockViolations.length === 0 &&
     diffRatchet.disabledAddedViolations.length === 0;
 
@@ -773,8 +819,11 @@ if (isMain) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     process.stdout.write(
-      `[test-hygiene] ok=${report.ok} flags=${report.discoveredFlagsCount} routes=${report.discoveredRoutesCount} contracts=${report.contractsChecked} contractFailures=${report.contractFailures.length} unexemptedDisabled=${report.disabledTests.violations.length} legacyDisabled=${report.disabledTests.legacyExempted.length} unexemptedTreeMocks=${report.intraMonorepoMocks.violations.length} legacyTreeMocks=${report.intraMonorepoMocks.legacyExempted.length} diffMocks=${report.diffRatchet.mockViolations.length}\n`,
+      `[test-hygiene] ok=${report.ok} baseline=${report.diffRatchet.baselineAvailable ? (report.diffRatchet.baseRef ?? 'inline') : 'unavailable'} flags=${report.discoveredFlagsCount} routes=${report.discoveredRoutesCount} contracts=${report.contractsChecked} contractFailures=${report.contractFailures.length} unexemptedDisabled=${report.disabledTests.violations.length} legacyDisabled=${report.disabledTests.legacyExempted.length} unexemptedTreeMocks=${report.intraMonorepoMocks.violations.length} legacyTreeMocks=${report.intraMonorepoMocks.legacyExempted.length} diffMocks=${report.diffRatchet.mockViolations.length}\n`,
     );
+    if (!report.diffRatchet.baselineAvailable) {
+      process.stderr.write(`  [BASELINE] ${report.diffRatchet.baselineError}\n`);
+    }
     for (const f of report.contractFailures) {
       process.stderr.write(`  [SUNSET] ${f.file}:${f.line} ${f.reason}\n`);
     }

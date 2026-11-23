@@ -245,6 +245,14 @@ async function requestModelStage(
   return JSON.parse(response) as unknown;
 }
 
+function meetsConfidenceThreshold(confidence: number, threshold: number): boolean {
+  return confidence > 0.5 && confidence >= threshold;
+}
+
+function meetsDenyProbability(probability: number, denyThreshold: number): boolean {
+  return probability < 0.5 && probability <= 1 - denyThreshold;
+}
+
 async function reviewWithModel(
   config: ReviewerConfig,
   input: string,
@@ -258,16 +266,16 @@ async function reviewWithModel(
   const fast = fastVerdictSchema.safeParse(await requestModelStage(requester, input, 1, signal, diagnostic, owner));
   if (!fast.success) return undefined;
   const threshold = fast.data.outcome === 'allow' ? config.allowThreshold : config.denyThreshold;
-  if (fast.data.outcome !== 'unsure' && fast.data.confidence >= threshold) {
+  if (fast.data.outcome !== 'unsure' && meetsConfidenceThreshold(fast.data.confidence, threshold)) {
     return { outcome: fast.data.outcome, confidence: fast.data.confidence,
       reason: 'Reviewer classified the action', backend: 'model' };
   }
   const explained = explainedVerdictSchema.safeParse(await requestModelStage(requester, input, 2, signal, diagnostic, owner));
   if (!explained.success) return undefined;
   const { outcome, confidence, rationale } = explained.data;
-  const accepted = outcome === 'allow' && confidence >= config.allowThreshold
+  const accepted = outcome === 'allow' && meetsConfidenceThreshold(confidence, config.allowThreshold)
     ? 'allow'
-    : outcome === 'deny' && confidence >= config.denyThreshold ? 'deny' : 'ask';
+    : outcome === 'deny' && meetsConfidenceThreshold(confidence, config.denyThreshold) ? 'deny' : 'ask';
   return { outcome: accepted, confidence, reason: redact(rationale), backend: 'model' };
 }
 
@@ -324,13 +332,13 @@ async function reviewWithJev(
   const values = config.categories.map((category) => parsed.data.answers[category]?.noul);
   if (values.some((value) => value === undefined)) return undefined;
   const probabilities = values as number[];
-  const denied = probabilities.findIndex((value) => value <= 1 - config.denyThreshold);
+  const denied = probabilities.findIndex((value) => meetsDenyProbability(value, config.denyThreshold));
   if (denied >= 0) return {
     outcome: 'deny', confidence: 1 - (probabilities[denied] ?? 1),
     reason: `Failed ${config.categories[denied]}`, backend: 'jev',
   };
   const confidence = Math.min(...probabilities);
-  return confidence >= config.allowThreshold
+  return meetsConfidenceThreshold(confidence, config.allowThreshold)
     ? { outcome: 'allow', confidence, reason: 'All reviewer checks passed', backend: 'jev' }
     : { outcome: 'ask', confidence, reason: 'Reviewer checks inconclusive', backend: 'jev' };
 }
@@ -361,7 +369,7 @@ async function reviewWithOpenAiDecisions(
   recordDecisionDiagnosticUsage(parsed.data.usage, diagnostic);
   const matched = matchOrderedAnswers(config.categories, parsed.data.answers);
   if (matched === undefined) return undefined;
-  const denied = matched.findIndex((answer) => answer.type === 'predicate' && answer.probability <= 1 - config.denyThreshold);
+  const denied = matched.findIndex((answer) => answer.type === 'predicate' && meetsDenyProbability(answer.probability, config.denyThreshold));
   if (denied >= 0) {
     const entry = matched[denied];
     const prob = entry?.type === 'predicate' ? entry.probability : 1;
@@ -372,7 +380,7 @@ async function reviewWithOpenAiDecisions(
   }
   const probabilities = matched.map((answer) => answer.type === 'predicate' ? answer.probability : 0);
   const confidence = Math.min(...probabilities);
-  return confidence >= config.allowThreshold
+  return meetsConfidenceThreshold(confidence, config.allowThreshold)
     ? { outcome: 'allow', confidence, reason: 'All reviewer checks passed', backend: 'jev' }
     : { outcome: 'ask', confidence, reason: 'Reviewer checks inconclusive', backend: 'jev' };
 }

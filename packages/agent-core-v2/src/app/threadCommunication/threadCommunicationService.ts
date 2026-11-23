@@ -91,7 +91,6 @@ const WAIT_POLL_MS = 200;
 const WAIT_ACTIVITY_LIMIT = 64;
 const DELIVERY_LEASE_MS = 30_000;
 const FAST_DELIVERY_TIMEOUT_MS = 5_000;
-const BRIDGED_FAST_DELIVERY_TIMEOUT_MS = 100;
 const MAX_BACKGROUND_TARGET_DRAINS = 4;
 const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
 const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
@@ -187,10 +186,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }): Promise<SendThreadMessageResult> {
     if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'No space bridge is installed.');
     await this.connector.beforeDelivery({ ...input, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
-    return this.sendProducedMessage({
-      ...input,
-      deliveryTimeoutMs: input.deliveryTimeoutMs ?? BRIDGED_FAST_DELIVERY_TIMEOUT_MS,
-    });
+    return this.sendProducedMessage(input);
   }
 
   private needsBridge(ref: ThreadRef): boolean {

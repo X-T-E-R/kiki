@@ -24,7 +24,6 @@ import {
 } from './sessionReadState';
 
 const TRIAGE_STORAGE_KEY = 'kiki.conversationTriage.v1';
-const MAX_TRIAGE_ENTRIES = 300;
 const STALE_TRIAGE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Reversible inbox-level triage disposition (distinct from backend `Session.archived`). */
@@ -293,17 +292,10 @@ function pruneTriageMap(map: ConversationTriageMap, nowMs: number): Conversation
     return !stale || activeFutureSnooze;
   });
 
-  if (fresh.length === entries.length && fresh.length <= MAX_TRIAGE_ENTRIES) return map;
-
-  const bounded = fresh.length <= MAX_TRIAGE_ENTRIES
-    ? fresh
-    : fresh
-      .toSorted(([leftKey, left], [rightKey, right]) => right.t - left.t || leftKey.localeCompare(rightKey))
-      .slice(0, MAX_TRIAGE_ENTRIES);
-
-  if (bounded.length === 0) return EMPTY_TRIAGE_MAP;
+  if (fresh.length === entries.length) return map;
+  if (fresh.length === 0) return EMPTY_TRIAGE_MAP;
   const out: Record<string, TriageRecord> = {};
-  for (const [key, record] of bounded) out[key] = record;
+  for (const [key, record] of fresh) out[key] = record;
   return out;
 }
 

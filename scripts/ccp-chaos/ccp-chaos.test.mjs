@@ -835,7 +835,7 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
           '',
         ].join('\n'),
       );
-      const scanned = scanIntraMonorepoMocks(tmpRepo, { allowlist: new Set() });
+      const scanned = scanIntraMonorepoMocks(tmpRepo, { allowlist: {} });
       assert.equal(scanned.violations.length, 2);
       assert.deepEqual(
         scanned.violations.map((entry) => entry.file).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
@@ -844,6 +844,29 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
           'packages/kap-server/test/bad.test.ts',
         ],
       );
+      fs.writeFileSync(
+        path.join(kapTestDir, 'bad.test.ts'),
+        [
+          "vi.mock('@nb-corp/nb-im', () => ({ createHub: () => ({}) }));",
+          "vi.mock('../state/connection', () => ({}));",
+          '',
+        ].join('\n'),
+      );
+      const partialExempt = scanIntraMonorepoMocks(tmpRepo, {
+        allowlist: {
+          'packages/kap-server/test/bad.test.ts': { '@nb-corp/nb-im': 1 },
+          'packages/agent-core-v2/test/bad.integration.ts': { '#/app/sessionIndex/sessionIndexService': 1 },
+        },
+      });
+      assert.equal(partialExempt.legacyExempted.length, 2);
+      assert.equal(partialExempt.violations.length, 1);
+      assert.equal(partialExempt.violations[0].file, 'packages/kap-server/test/bad.test.ts');
+      assert.equal(partialExempt.violations[0].target, '../state/connection');
+
+      const missingBaseline = checkDiffMockRatchet({ repoRoot: tmpRepo });
+      assert.equal(missingBaseline.baselineAvailable, false);
+      assert.match(String(missingBaseline.baselineError), /Unable to establish comparison baseline/);
+
       const disabledScan = scanDisabledTests(tmpRepo, { allowlist: new Set() });
       assert.equal(disabledScan.violations.length, 1);
       assert.equal(disabledScan.violations[0].file, 'packages/kap-server/test/regex-quote.test.ts');

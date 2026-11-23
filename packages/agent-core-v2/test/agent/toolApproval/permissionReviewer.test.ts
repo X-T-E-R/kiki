@@ -243,7 +243,8 @@ describe('permission reviewer', () => {
     };
 
     const allowFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://api.example.test/v1/decisions');
+      const resolvedUrl = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      expect(resolvedUrl).toBe('https://api.example.test/v1/decisions');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-key');
       const body = JSON.parse(init?.body as string) as {
         model: string;
@@ -309,6 +310,77 @@ describe('permission reviewer', () => {
     expect(await reviewPermission(makeDeps(refusalPlusDenyFetch), context, 'ask', {})).toMatchObject({
       outcome: 'deny',
       reason: 'Failed no_secret_egress',
+    });
+  });
+
+  it('keeps exact 0.5 ties inconclusive across model, jev, and openai_decisions backends under default thresholds', async () => {
+    const modelAllowTie = dependencies(
+      { backend: 'model', model: 'reviewer' },
+      {
+        output: JSON.stringify({ outcome: 'allow', confidence: 0.5 }),
+        explainedOutput: JSON.stringify({ outcome: 'allow', confidence: 0.5, rationale: 'Exact tie' }),
+      },
+    );
+    expect(await reviewPermission(modelAllowTie, context, 'ask', {})).toMatchObject({
+      outcome: 'ask',
+      backend: 'model',
+      confidence: 0.5,
+    });
+
+    const modelDenyTie = dependencies(
+      { backend: 'model', model: 'reviewer' },
+      {
+        output: JSON.stringify({ outcome: 'deny', confidence: 0.5 }),
+        explainedOutput: JSON.stringify({ outcome: 'deny', confidence: 0.5, rationale: 'Exact tie' }),
+      },
+    );
+    expect(await reviewPermission(modelDenyTie, context, 'ask', {})).toMatchObject({
+      outcome: 'ask',
+      backend: 'model',
+      confidence: 0.5,
+    });
+
+    const jevTieFetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ answers: { policy_compliance: { type: 'noul', noul: 0.5 } } }),
+    } as Response)) as unknown as typeof fetch;
+    const jevTie = dependencies(
+      { backend: 'jev', categories: ['policy_compliance'] },
+      { fetcher: jevTieFetch, apiKey: 'test-key' },
+    );
+    expect(await reviewPermission(jevTie, context, 'ask', {})).toMatchObject({
+      outcome: 'ask',
+      backend: 'jev',
+      confidence: 0.5,
+    });
+
+    const openAiTieDeps = dependencies(
+      {
+        source: { kind: 'connection', connection: 'openai', protocol: 'openai_decisions' },
+        categories: ['policy_compliance'],
+      },
+      {
+        fetcher: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ answers: [{ type: 'predicate', name: 'policy_compliance', probability: 0.5 }] }),
+        } as Response)) as unknown as typeof fetch,
+      },
+    );
+    openAiTieDeps.catalog = {
+      getConnectionEndpoint: (id: string, protocol?: string) => ({
+        providerName: id,
+        protocol,
+        defaultModel: 'decisions-alpha',
+        baseUrl: 'https://api.example.test/v1',
+        headers: {},
+        authProvider: { getAuth: async () => ({ apiKey: 'synthetic-key' }) },
+        credentialSource: 'provider',
+      }),
+    } as unknown as IModelCatalog;
+    expect(await reviewPermission(openAiTieDeps, context, 'ask', {})).toMatchObject({
+      outcome: 'ask',
+      backend: 'jev',
+      confidence: 0.5,
     });
   });
 });

@@ -1006,8 +1006,38 @@ describe('ThreadCommunicationService', () => {
     await expect(service.shutdown()).resolves.toBeUndefined();
   });
 
-  it('bounds bridged peer fast-delivery wait to 100ms on slow cold resume while completing delivery in background', async () => {
+  it('preserves normal fast-delivery wait by default on bridged peer messages while honoring explicit deliveryTimeoutMs', async () => {
     promptState = 'pending';
+    resume.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            events.push('resume-normal');
+            resolve({
+              id: 'target',
+              kind: LifecycleScope.Session,
+              accessor: accessor([[IAgentLifecycleService, {
+                create: async () => ({
+                  id: 'main',
+                  kind: LifecycleScope.Agent,
+                  accessor: accessor([[IAgentPromptService, {
+                    lookup: () => undefined,
+                    enqueue: promptEnqueue,
+                    inject: promptInject,
+                    steer: promptSteer,
+                    abort: promptAbort,
+                  }]]),
+                  dispose: () => {},
+                }),
+                get: () => undefined,
+                list: () => [],
+              } as unknown as IAgentLifecycleService]]),
+              dispose: () => {},
+            } as ISessionScopeHandle);
+          }, 150);
+        }),
+    );
+
     let unblockResume!: () => void;
     resume.mockImplementationOnce(() => new Promise((resolve) => {
       unblockResume = () => {
@@ -1047,6 +1077,28 @@ describe('ThreadCommunicationService', () => {
       beforeDelivery: async () => 'deliver',
     });
 
+    const delivered = await space[ACCEPT_BRIDGED_THREAD_MESSAGE]({
+      producer: {
+        kind: 'bridged_peer',
+        source: { hostId: 'remote-host', workspaceId: 'workspace-a', sessionId: 'source' },
+        bridgeId: '00000000-0000-4000-8000-000000000001',
+        revision: 1,
+        sourceHomeId: '00000000-0000-4000-8000-000000000002',
+        targetHomeId: '00000000-0000-4000-8000-000000000003',
+        location: 'network',
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        sourceSeq: 1,
+        causeId: 'cause-normal',
+        hop: 0,
+      },
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'bridged-normal-resume',
+      idempotencyKey: 'bridged-normal-resume-key',
+    });
+    expect(delivered.delivery).toBe('delivered');
+
+    events.length = 0;
     const started = performance.now();
     const result = await space[ACCEPT_BRIDGED_THREAD_MESSAGE]({
       producer: {
@@ -1059,13 +1111,14 @@ describe('ThreadCommunicationService', () => {
         location: 'network',
         createdAt: Date.now(),
         expiresAt: Date.now() + 60_000,
-        sourceSeq: 1,
+        sourceSeq: 2,
         causeId: 'cause-1',
         hop: 0,
       },
       target: ref(service.hostId, 'workspace-b', 'target'),
       content: 'bridged-slow-resume',
       idempotencyKey: 'bridged-slow-resume-key',
+      deliveryTimeoutMs: 50,
     });
     const elapsedMs = performance.now() - started;
 
