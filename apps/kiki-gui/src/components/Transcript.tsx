@@ -23,7 +23,6 @@ import {
   useInsertionEffect,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
@@ -39,6 +38,7 @@ import { useStickToBottom } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer, SessionSeedMode } from '@kiki/protocol';
 import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
+import { cssZoomFactor } from '../lib/uiZoom';
 import type { TimelineOffshootItem } from './fork/forkLineageModel';
 import { TimelineOffshootRail } from './fork/TimelineOffshootRail';
 
@@ -152,6 +152,8 @@ import { FloorNavRail } from './FloorNavRail';
 import {
   TRANSCRIPT_END_THRESHOLD,
   TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
+  TRANSCRIPT_ROW_GAP,
+  TRANSCRIPT_TAIL_GAP,
   installTranscriptAnchoring,
   measureTranscriptRow,
   observeRowMutations,
@@ -3657,8 +3659,9 @@ function nodeKey(node: TimelineNode): string {
  * on the page, so turns read as chapters.
  *
  * A margin on the row content, on top of the virtualizer's uniform 16px gap.
- * The absolutely positioned row box does not collapse margins, so its
- * measured height moves by exactly the same amount as its content: positions,
+ * Each normal-flow row box (`flow-root` flex item) establishes a BFC so margins
+ * never collapse across rows, and its measured height moves by the exact same
+ * amount as its content inside the `16px` row-gap virtual window: positions,
  * anchoring and the overlap gate all see one consistent geometry.
  */
 function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode, view: 'process' | 'message' = 'process'): string {
@@ -4322,10 +4325,9 @@ function captureTranscriptAnchor(
   };
 }
 
-function MeasuredTranscriptRow({ index, rowKey, start, virtualizer, onDetach, arriving, children }: {
+function MeasuredTranscriptRow({ index, rowKey, virtualizer, onDetach, arriving, children }: {
   index: number;
   rowKey: string;
-  start: number;
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
   onDetach: (element: HTMLDivElement) => void;
   /** The row was appended after the previous commit's last row. Read once, at mount. */
@@ -4333,20 +4335,11 @@ function MeasuredTranscriptRow({ index, rowKey, start, virtualizer, onDetach, ar
   children: ReactNode;
 }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
-  const startRef = useRef(start);
-  startRef.current = start;
   const [entering] = useState(arriving);
   const measure = useCallback((element: HTMLDivElement | null) => {
     if (element === null && rowRef.current !== null) onDetach(rowRef.current);
-    if (element !== null) {
-      // Seed transform position synchronously on first mount so directDomUpdates
-      // never paints a brand-new row at y=0 before its post-commit layout pass.
-      if (element.style.transform === '') {
-        element.style.transform = `translate3d(0, ${startRef.current - virtualizer.options.scrollMargin}px, 0)`;
-      }
-      if (!entering) {
-        element.querySelectorAll<HTMLElement>('.anim-enter').forEach((entrance) => { entrance.style.animation = 'none'; });
-      }
+    if (element !== null && !entering) {
+      element.querySelectorAll<HTMLElement>('.anim-enter').forEach((entrance) => { entrance.style.animation = 'none'; });
     }
     rowRef.current = element;
     virtualizer.measureElement(element);
@@ -4366,7 +4359,7 @@ function MeasuredTranscriptRow({ index, rowKey, start, virtualizer, onDetach, ar
           event.target.style.animation = 'none';
         }
       }}
-      className="absolute top-0 left-0 w-full hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
+      className="relative flow-root w-full hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
     >
       {children}
     </div>
@@ -4884,6 +4877,8 @@ export const TurnTailLine = memo(function TurnTailLine({
   onContinueFailed,
   onRetryFailed,
   failedHasWork,
+  errorOpen: controlledErrorOpen,
+  onToggleErrorOpen,
 }: {
   tail: TurnTailInfo;
   /**
@@ -4903,10 +4898,15 @@ export const TurnTailLine = memo(function TurnTailLine({
   onRetryFailed?: () => void;
   /** True when the failed turn already executed tool/subagent steps. */
   failedHasWork?: boolean;
+  /** Controlled error disclosure state so scrolling into history preserves expansion. */
+  errorOpen?: boolean;
+  onToggleErrorOpen?: () => void;
 }) {
   const { t, time, locale } = useI18n();
   const [copied, setCopied] = useState(false);
-  const [errorOpen, setErrorOpen] = useState(false);
+  const [localErrorOpen, setLocalErrorOpen] = useState(false);
+  const errorOpen = controlledErrorOpen ?? localErrorOpen;
+  const toggleErrorOpen = onToggleErrorOpen ?? (() => { setLocalErrorOpen((value) => !value); });
   const isFailed = tail.state === 'failed';
   const isCancelled = tail.state === 'cancelled';
   // Failure and a stop each own their line; an empty completion only exists
@@ -5050,7 +5050,7 @@ export const TurnTailLine = memo(function TurnTailLine({
           data-turn-tail-error-toggle
           aria-expanded={errorOpen}
           title={errorOpen ? undefined : fullErrorText}
-          onClick={() => { setErrorOpen((value) => !value); }}
+          onClick={toggleErrorOpen}
           className={`mx-auto mt-1 flex w-full max-w-[var(--kiki-chat-content-width,760px)] cursor-pointer gap-1.5 rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink ${
             errorOpen ? 'items-start text-left' : 'items-center justify-center text-center'
           }`}
@@ -6160,8 +6160,7 @@ export const Transcript = memo(function Transcript({
   const pendingResetRestoreRef = useRef<PendingResetRestore | null>(null);
   // Measurement + anchoring model: see transcriptVirtualizer.ts.
   const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
-  const [, rerenderVirtualWindow] = useReducer((count: number) => count + 1, 0);
-  const renderedVirtualRangeRef = useRef<{ startIndex: number; endIndex: number } | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const lastTotalSizeRef = useRef<number>(0);
   const lastObservedScrollTopRef = useRef<number>(0);
   const programmaticScrollTopRef = useRef<number | null>(null);
@@ -6241,22 +6240,30 @@ export const Transcript = memo(function Transcript({
     || (showTurnStatus && view !== 'message')
     || (!state.busy && state.turnTail !== undefined)
     || state.refreshing === true;
-  const tailSlotRef = useRef<HTMLDivElement | null>(null);
   const [tailSlotElement, setTailSlotElement] = useState<HTMLDivElement | null>(null);
   const handleTailSlotRef = useCallback((node: HTMLDivElement | null) => {
-    tailSlotRef.current = node;
     setTailSlotElement(node);
   }, []);
+  const tailErrorKey = state.turnTail === undefined
+    ? null
+    : `${state.turnTail.turnId ?? ''}\0${state.turnTail.error ?? ''}\0${state.turnTail.errorDetails ?? ''}`;
+  const [tailErrorOpenKey, setTailErrorOpenKey] = useState<string | null>(null);
+  const tailErrorOpen = tailErrorKey !== null && tailErrorOpenKey === tailErrorKey;
+  const handleToggleTailErrorOpen = useCallback(() => {
+    if (tailErrorKey === null) return;
+    setTailErrorOpenKey((prev) => (prev === tailErrorKey ? null : tailErrorKey));
+  }, [tailErrorKey]);
   const [tailSlotHeight, setTailSlotHeight] = useState(0);
   useLayoutEffect(() => {
-    if (!hasTailContent || tailSlotElement === null) {
+    if (!hasTailContent) {
       setTailSlotHeight(0);
       return;
     }
+    if (tailSlotElement === null) return;
     const readHeight = (entry?: ResizeObserverEntry): number => {
       const boxHeight = entry?.borderBoxSize?.[0]?.blockSize ?? entry?.contentRect?.height ?? 0;
       if (boxHeight > 0) return Math.ceil(boxHeight);
-      const rectHeight = Math.ceil(tailSlotElement.getBoundingClientRect().height);
+      const rectHeight = Math.ceil(tailSlotElement.getBoundingClientRect().height / cssZoomFactor());
       return rectHeight > 0 ? rectHeight : Math.ceil(tailSlotElement.offsetHeight);
     };
     const sync = (entries?: readonly ResizeObserverEntry[]) => {
@@ -6271,16 +6278,7 @@ export const Transcript = memo(function Transcript({
   }, [hasTailContent, tailSlotElement]);
   const baseSeatPaddingEnd = 60 + Math.max(0, seatHeight - 36);
   const effectiveTailHeight = hasTailContent ? tailSlotHeight : 0;
-  const seatPaddingEnd = baseSeatPaddingEnd + (effectiveTailHeight > 0 ? effectiveTailHeight + 12 : 0);
-  const seatPaddingEndRef = useRef(seatPaddingEnd);
-  seatPaddingEndRef.current = seatPaddingEnd;
-  const computeTailSlotY = useCallback((instance: Virtualizer<HTMLDivElement, HTMLDivElement>): number => {
-    const appliedPaddingEnd = instance.options.paddingEnd ?? 0;
-    const virtualContentEnd = Math.max(0, instance.getTotalSize() - appliedPaddingEnd);
-    const lastIdx = virtualNodesRef.current.length - 1;
-    const lastItemEnd = lastIdx >= 0 ? (instance.measurementsCache[lastIdx]?.end ?? 0) : 0;
-    return Math.max(virtualContentEnd, lastItemEnd) + 12;
-  }, []);
+  const seatPaddingEnd = baseSeatPaddingEnd + (effectiveTailHeight > 0 ? effectiveTailHeight + TRANSCRIPT_TAIL_GAP : 0);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
@@ -6293,12 +6291,11 @@ export const Transcript = memo(function Transcript({
     paddingStart: 24,
     paddingEnd: seatPaddingEnd,
     // The base gap; rowSpacing tightens or widens it per lane transition.
-    gap: 16,
+    gap: TRANSCRIPT_ROW_GAP,
     initialRect: { width: 760, height: 600 },
     useAnimationFrameWithResizeObserver: false,
     useFlushSync: false,
-    directDomUpdates: true,
-    directDomUpdatesMode: 'transform',
+    directDomUpdates: false,
     scrollToFn: (offset, options, instance) => {
       const el = instance.scrollElement;
       if (el !== null && options?.behavior !== 'smooth') {
@@ -6310,23 +6307,9 @@ export const Transcript = memo(function Transcript({
       }
     },
     onChange: (instance) => {
-      // `@tanstack/react-virtual`'s `directDomUpdates` only updates `prevRange`
-      // inside `onChange`, not during React prop renders. If a prop render
-      // narrows the range and a measurement widens it back to `prevRange`,
-      // `directDomUpdates` skips rerendering and leaves the tail unmounted.
-      const range = instance.range;
-      const renderedRange = renderedVirtualRangeRef.current;
-      if (
-        (range === null) !== (renderedRange === null) ||
-        (range !== null &&
-          renderedRange !== null &&
-          (range.startIndex !== renderedRange.startIndex || range.endIndex !== renderedRange.endIndex))
-      ) {
-        rerenderVirtualWindow();
-      }
-      if (tailSlotRef.current !== null) {
-        const tailY = computeTailSlotY(instance);
-        tailSlotRef.current.style.transform = `translate3d(0, ${tailY}px, 0)`;
+      const nextTotalSize = instance.getTotalSize();
+      if (contentRef.current !== null) {
+        contentRef.current.style.height = `${nextTotalSize}px`;
       }
       // A hidden (display:none) box reports scrollTop 0 on every tick, and a
       // pending transcript reset has not restored the pre-reset anchor yet.
@@ -6338,7 +6321,6 @@ export const Transcript = memo(function Transcript({
         return;
       }
       const el = scrollRef.current;
-      const nextTotalSize = instance.getTotalSize();
       const prevTotalSize = lastTotalSizeRef.current;
       lastTotalSizeRef.current = nextTotalSize;
       // Sync user-initiated scroll changes BEFORE checking `isFollowingBottom()`,
@@ -6369,9 +6351,9 @@ export const Transcript = memo(function Transcript({
         lastObservedScrollTopRef.current = currentTop;
       }
       const following = isFollowingBottom();
-      // `react-virtual`'s `applyDirectStyles` has just updated `content.style.height`
-      // right before this callback; ONLY when content actually grew while genuinely
-      // following bottom (never on a user scroll up!), pin cleanly to the new bottom.
+      // `contentRef.current.style.height` has just been synced above; ONLY when
+      // content actually grew while genuinely following bottom (never on a user
+      // scroll up!), pin cleanly to the new bottom.
       if (
         following &&
         nextTotalSize > prevTotalSize &&
@@ -6397,10 +6379,6 @@ export const Transcript = memo(function Transcript({
   });
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
-  useLayoutEffect(() => {
-    if (!hasTailContent || tailSlotRef.current === null) return;
-    tailSlotRef.current.style.transform = `translate3d(0, ${computeTailSlotY(virtualizer)}px, 0)`;
-  }, [hasTailContent, seatPaddingEnd, virtualNodes.length, state.transcriptResetVersion, visible, computeTailSlotY, virtualizer]);
   const prevSeatPaddingEndRef = useRef(seatPaddingEnd);
   useLayoutEffect(() => {
     const prev = prevSeatPaddingEndRef.current;
@@ -6450,14 +6428,17 @@ export const Transcript = memo(function Transcript({
     landAtEnd,
   }), [isFollowingBottom, landAtEnd]);
   const handleContentRef = useCallback((node: HTMLDivElement | null) => {
-    virtualizer.containerRef(node);
+    contentRef.current = node;
     stickToBottomRef.current.contentRef(node);
-  }, [virtualizer]);
+  }, []);
   const virtualItems = virtualizer.getVirtualItems();
-  renderedVirtualRangeRef.current =
-    virtualizer.range === null
-      ? null
-      : { startIndex: virtualizer.range.startIndex, endIndex: virtualizer.range.endIndex };
+  const virtualTotalSize = virtualizer.getTotalSize();
+  const firstVirtualItem = virtualItems[0];
+  const lastVirtualItem = virtualItems.at(-1);
+  const virtualWindowStart = firstVirtualItem === undefined ? 0 : firstVirtualItem.start - virtualizer.options.scrollMargin;
+  const endIsMounted =
+    virtualNodes.length === 0 ||
+    (lastVirtualItem !== undefined && lastVirtualItem.index === virtualNodes.length - 1);
   const rangeKey = virtualizer.range === null ? 'empty' : `${virtualizer.range.startIndex}:${virtualizer.range.endIndex}`;
   useLayoutEffect(() => {
     const cleanup = installTranscriptAnchoring(virtualizer, stickController);
@@ -7838,125 +7819,153 @@ export const Transcript = memo(function Transcript({
           ref={handleContentRef}
           data-transcript-virtual-content
           className="relative w-full"
+          style={{ height: `${virtualTotalSize}px` }}
         >
-          {virtualItems.map((virtualItem) => {
-            const node = virtualNodes[virtualItem.index];
-            const first = virtualItem.index === 0;
-            const spacing = first ? '' : rowSpacing(virtualNodes[virtualItem.index - 1], node, view);
-            // The turn's own tail: the last row that still belongs to this
-            // turn. The turn's structure can be cut by the window (its step
-            // list, or one step's frames), and that outlet belongs here rather
-            // than at the end of the whole page.
-            const turnTailId = node === undefined ? undefined : displayNodeTurnId(node);
-            const normalizedTurnId = turnTailId === undefined ? undefined : normalizeTurnId(turnTailId);
-            const nextNode = virtualNodes[virtualItem.index + 1];
-            const isTurnTail =
-              turnTailId !== undefined &&
-              (nextNode === undefined || displayNodeTurnId(nextNode) !== turnTailId);
-            const gapLoadStatus = turnTailId === undefined
-              ? undefined
-              : state.detailLoads[`structure:${turnTailId}`]?.status ?? (normalizedTurnId === undefined ? undefined : state.detailLoads[`structure:${normalizedTurnId}`]?.status);
-            const gapReadStatus: 'idle' | 'loading' | 'error' | undefined =
-              node !== undefined && nodeContainsTurnGap(node)
-                ? gapLoadStatus === 'error' ? 'error' : gapLoadStatus === 'loading' ? 'loading' : 'idle'
-                : undefined;
-            return (
-              <MeasuredTranscriptRow
-                key={virtualItem.key}
-                rowKey={String(virtualItem.key)}
-                start={virtualItem.start}
-                virtualizer={virtualizer}
-                index={virtualItem.index}
-                arriving={previousLastIndex !== undefined && virtualItem.index > previousLastIndex}
-                onDetach={captureRekeyedFold}
-              >
-                <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
-                  {first ? <TopEdge state={topEdgeState} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : () => requestOlderAtReadingAnchor()} /> : null}
-                  {visible && turnTailId !== undefined ? <TurnPreviewLease agentId={agentId} turnId={turnTailId} /> : null}
-                  {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
-                    <div data-transcript-lane="agent" className={AGENT_LANE}>
-                      <MessageViewRow
-                        node={node}
-                        previous={virtualNodes[virtualItem.index - 1] as MessageTimelineNode | undefined}
-                        blockById={blockById}
-                        agentId={agentId}
-                        agentNames={agentNames}
-                        onOpenAgent={onOpenAgent}
-                        onOpenProcess={openProcessAt}
-                        blockOrder={blockOrder}
-                        rowActions={readOnly ? undefined : rowActions}
-                        latestFinalAssistantId={latestFinalAssistantId}
-                        forkableAssistantIds={forkableAssistantIds}
-                      />
-                    </div>
-                  ) : (
-                    <div data-transcript-lane={node.kind === 'user' ? 'user' : 'agent'} className={node.kind === 'user' ? undefined : AGENT_LANE}>
-                      {view === 'message' && node.kind === 'question'
-                        && messageSpeakerKey(virtualNodes[virtualItem.index - 1]) !== 'bot:self' ? (
-                          // A question in Bot mode is the Bot talking: its face
-                          // and name lead the card (design §4.6).
-                          <SpeakerHead persona={messageContext.persona ?? { id: 'kiki-agent', name: t('agentMessage.agent') }} />
-                        ) : null}
-                      <TranscriptRow
-                        node={node as RenderNode}
-                        agentId={agentId}
-                        readOnly={readOnly}
-                        approvalShortcutHints={hasUnresolvedApproval}
-                        agentNames={agentNames}
-                        senderIdentities={senderIdentities}
-                        childBlocks={childBlocks}
-                        forest={stableForest}
-                        rowActions={rowActions}
-                        latestFinalAssistantId={latestFinalAssistantId}
-                        annotations={annotationTargets.get(virtualNodeKey(node))}
-                        executionBadge={executionBadges.get(virtualNodeKey(node))}
-                        stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
-                        subagentFormOverrides={cardForms}
-                        onToggleSubagentForm={handleToggleSubagentForm}
-                        openFolds={openFolds}
-                        foldIncomplete={node.kind === 'history-fold' && normalizedTurnId !== undefined && incompleteTurns.has(normalizedTurnId)}
-                        gapReadStatus={gapReadStatus}
-                        onToggleFold={handleToggleFold}
-                        onResolveApproval={onResolveApproval}
-                        onAnswerQuestion={onAnswerQuestion}
-                        onDismissQuestion={onDismissQuestion}
-                        onCancelQueued={onCancelQueued}
-                        onRetryPending={onRetryPending}
-                        onOpenAgent={onOpenAgent}
-                        onLocateDispatch={handleLocateDispatch}
-                        blockOrder={blockOrder}
-                        promotedReplyIds={promotedReplyIds}
-                        forkableAssistantIds={forkableAssistantIds}
-                        nonUserTurn={normalizedTurnId !== undefined && nonUserTurns.has(normalizedTurnId)}
-                      />
-                      {(node.kind === 'user' || node.kind === 'assistant') && offshootsByBlockId?.has(node.id) === true ? (
-                        <TimelineOffshootRail
-                          items={offshootsByBlockId.get(node.id)}
-                          align={node.kind === 'user' ? 'right' : 'left'}
-                          onOpenFork={(forkSessionId) => { onOpenForkSession?.(forkSessionId); }}
-                          onOpenBranch={(branchAgentId) => { (onOpenBranchAgent ?? onOpenAgent)?.(branchAgentId); }}
+          <div
+            data-transcript-virtual-window
+            className="absolute top-0 left-0 flex w-full flex-col"
+            style={{
+              transform: `translate3d(0, ${virtualWindowStart}px, 0)`,
+              rowGap: `${TRANSCRIPT_ROW_GAP}px`,
+            }}
+          >
+          {(() => {
+            const rendered: ReactNode[] = [];
+            for (let itemPos = 0; itemPos < virtualItems.length; itemPos += 1) {
+              const virtualItem = virtualItems[itemPos]!;
+              if (itemPos > 0) {
+                const prevVirtualItem = virtualItems[itemPos - 1]!;
+                if (virtualItem.index > prevVirtualItem.index + 1) {
+                  const gapHeight = Math.max(0, virtualItem.start - prevVirtualItem.end - TRANSCRIPT_ROW_GAP * 2);
+                  rendered.push(
+                    <div
+                      key={`__virtual-gap-${prevVirtualItem.index}-${virtualItem.index}`}
+                      data-transcript-virtual-gap
+                      aria-hidden="true"
+                      className="w-full shrink-0"
+                      style={{ height: `${gapHeight}px` }}
+                    />,
+                  );
+                }
+              }
+              const node = virtualNodes[virtualItem.index];
+              const first = virtualItem.index === 0;
+              const spacing = first ? '' : rowSpacing(virtualNodes[virtualItem.index - 1], node, view);
+              // The turn's own tail: the last row that still belongs to this
+              // turn. The turn's structure can be cut by the window (its step
+              // list, or one step's frames), and that outlet belongs here rather
+              // than at the end of the whole page.
+              const turnTailId = node === undefined ? undefined : displayNodeTurnId(node);
+              const normalizedTurnId = turnTailId === undefined ? undefined : normalizeTurnId(turnTailId);
+              const nextNode = virtualNodes[virtualItem.index + 1];
+              const isTurnTail =
+                turnTailId !== undefined &&
+                (nextNode === undefined || displayNodeTurnId(nextNode) !== turnTailId);
+              const gapLoadStatus = turnTailId === undefined
+                ? undefined
+                : state.detailLoads[`structure:${turnTailId}`]?.status ?? (normalizedTurnId === undefined ? undefined : state.detailLoads[`structure:${normalizedTurnId}`]?.status);
+              const gapReadStatus: 'idle' | 'loading' | 'error' | undefined =
+                node !== undefined && nodeContainsTurnGap(node)
+                  ? gapLoadStatus === 'error' ? 'error' : gapLoadStatus === 'loading' ? 'loading' : 'idle'
+                  : undefined;
+              rendered.push(
+                <MeasuredTranscriptRow
+                  key={virtualItem.key}
+                  rowKey={String(virtualItem.key)}
+                  virtualizer={virtualizer}
+                  index={virtualItem.index}
+                  arriving={previousLastIndex !== undefined && virtualItem.index > previousLastIndex}
+                  onDetach={captureRekeyedFold}
+                >
+                  <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
+                    {first ? <TopEdge state={topEdgeState} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : () => requestOlderAtReadingAnchor()} /> : null}
+                    {visible && turnTailId !== undefined ? <TurnPreviewLease agentId={agentId} turnId={turnTailId} /> : null}
+                    {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
+                      <div data-transcript-lane="agent" className={AGENT_LANE}>
+                        <MessageViewRow
+                          node={node}
+                          previous={virtualNodes[virtualItem.index - 1] as MessageTimelineNode | undefined}
+                          blockById={blockById}
+                          agentId={agentId}
+                          agentNames={agentNames}
+                          onOpenAgent={onOpenAgent}
+                          onOpenProcess={openProcessAt}
+                          blockOrder={blockOrder}
+                          rowActions={readOnly ? undefined : rowActions}
+                          latestFinalAssistantId={latestFinalAssistantId}
+                          forkableAssistantIds={forkableAssistantIds}
                         />
-                      ) : null}
-                    </div>
-                  )}
-                  {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
-                    <TurnStepsContinuation turnId={turnTailId} visible={visible} foldOpen={!closedFoldTurns.has(turnTailId)} />
-                  ) : null}
-                  {/* The session's own remainder moved to the composer's footer,
-                      which is where a reader looking at the input sees it and
-                      where it does not perturb this cell's measurement: it used
-                      to be rendered here, after the last row, and that is no
-                      longer part of what this cell measures. */}
-                </div>
-              </MeasuredTranscriptRow>
-            );
-          })}
-          {hasTailContent ? (
+                      </div>
+                    ) : (
+                      <div data-transcript-lane={node.kind === 'user' ? 'user' : 'agent'} className={node.kind === 'user' ? undefined : AGENT_LANE}>
+                        {view === 'message' && node.kind === 'question'
+                          && messageSpeakerKey(virtualNodes[virtualItem.index - 1]) !== 'bot:self' ? (
+                            // A question in Bot mode is the Bot talking: its face
+                            // and name lead the card (design §4.6).
+                            <SpeakerHead persona={messageContext.persona ?? { id: 'kiki-agent', name: t('agentMessage.agent') }} />
+                          ) : null}
+                        <TranscriptRow
+                          node={node as RenderNode}
+                          agentId={agentId}
+                          readOnly={readOnly}
+                          approvalShortcutHints={hasUnresolvedApproval}
+                          agentNames={agentNames}
+                          senderIdentities={senderIdentities}
+                          childBlocks={childBlocks}
+                          forest={stableForest}
+                          rowActions={rowActions}
+                          latestFinalAssistantId={latestFinalAssistantId}
+                          annotations={annotationTargets.get(virtualNodeKey(node))}
+                          executionBadge={executionBadges.get(virtualNodeKey(node))}
+                          stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
+                          subagentFormOverrides={cardForms}
+                          onToggleSubagentForm={handleToggleSubagentForm}
+                          openFolds={openFolds}
+                          foldIncomplete={node.kind === 'history-fold' && normalizedTurnId !== undefined && incompleteTurns.has(normalizedTurnId)}
+                          gapReadStatus={gapReadStatus}
+                          onToggleFold={handleToggleFold}
+                          onResolveApproval={onResolveApproval}
+                          onAnswerQuestion={onAnswerQuestion}
+                          onDismissQuestion={onDismissQuestion}
+                          onCancelQueued={onCancelQueued}
+                          onRetryPending={onRetryPending}
+                          onOpenAgent={onOpenAgent}
+                          onLocateDispatch={handleLocateDispatch}
+                          blockOrder={blockOrder}
+                          promotedReplyIds={promotedReplyIds}
+                          forkableAssistantIds={forkableAssistantIds}
+                          nonUserTurn={normalizedTurnId !== undefined && nonUserTurns.has(normalizedTurnId)}
+                        />
+                        {(node.kind === 'user' || node.kind === 'assistant') && offshootsByBlockId?.has(node.id) === true ? (
+                          <TimelineOffshootRail
+                            items={offshootsByBlockId.get(node.id)}
+                            align={node.kind === 'user' ? 'right' : 'left'}
+                            onOpenFork={(forkSessionId) => { onOpenForkSession?.(forkSessionId); }}
+                            onOpenBranch={(branchAgentId) => { (onOpenBranchAgent ?? onOpenAgent)?.(branchAgentId); }}
+                          />
+                        ) : null}
+                      </div>
+                    )}
+                    {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
+                      <TurnStepsContinuation turnId={turnTailId} visible={visible} foldOpen={!closedFoldTurns.has(turnTailId)} />
+                    ) : null}
+                    {/* The session's own remainder moved to the composer's footer,
+                        which is where a reader looking at the input sees it and
+                        where it does not perturb this cell's measurement: it used
+                        to be rendered here, after the last row, and that is no
+                        longer part of what this cell measures. */}
+                  </div>
+                </MeasuredTranscriptRow>,
+              );
+            }
+            return rendered;
+          })()}
+          {hasTailContent && endIsMounted ? (
             <div
               ref={handleTailSlotRef}
               data-transcript-tail-slot
-              className="pointer-events-none absolute top-0 left-0 w-full"
-              style={{ transform: `translate3d(0, ${computeTailSlotY(virtualizer)}px, 0)` }}
+              className="pointer-events-none w-full"
+              style={{ marginTop: `${TRANSCRIPT_TAIL_GAP - TRANSCRIPT_ROW_GAP}px` }}
             >
               <div className="pointer-events-auto mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6">
                 {view === 'message' && presence !== undefined ? (
@@ -7991,6 +8000,8 @@ export const Transcript = memo(function Transcript({
                       onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
                       onRetryFailed={!readOnly && onRetryFailedTurn !== undefined ? () => { onRetryFailedTurn(failedTurnUserBlock); } : undefined}
                       failedHasWork={failedTurnHasWork}
+                      errorOpen={tailErrorOpen}
+                      onToggleErrorOpen={handleToggleTailErrorOpen}
                     />
                   </div>
                 ) : null}
@@ -8002,6 +8013,7 @@ export const Transcript = memo(function Transcript({
               </div>
             </div>
           ) : null}
+          </div>
         </div>
         </PhoneMergedPendingLeadContext.Provider>
         </CompactionRecoveryContext.Provider>

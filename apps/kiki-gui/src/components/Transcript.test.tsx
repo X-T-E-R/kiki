@@ -4343,13 +4343,35 @@ function virtualQuestionBlock(id = 'question-q1'): Block {
   };
 }
 
+function parseTranslateY(transform: string): number {
+  const match = /translate(?:3d\(\s*[^,]+,\s*|Y\()(-?[\d.]+)px/.exec(transform);
+  return match?.[1] !== undefined ? Number.parseFloat(match[1]) : 0;
+}
+
 function virtualItemStart(item: Element): number {
-  const style = (item as HTMLElement).style;
-  if (style.transform) {
-    const match = /translate(?:3d\(\s*[^,]+,\s*|Y\()(-?[\d.]+)px/.exec(style.transform);
-    if (match?.[1] !== undefined) return Number.parseFloat(match[1]);
+  const html = item as HTMLElement;
+  if (html.style.transform) {
+    return parseTranslateY(html.style.transform);
   }
-  return Number.parseFloat(style.top || '0');
+  const windowEl = html.closest<HTMLElement>('[data-transcript-virtual-window]');
+  if (windowEl !== null) {
+    let y = parseTranslateY(windowEl.style.transform);
+    let firstChild = true;
+    for (const child of Array.from(windowEl.children) as HTMLElement[]) {
+      if (child === html) {
+        if (!firstChild) y += Object.hasOwn(child.dataset, 'transcriptTailSlot') ? 12 : 16;
+        return y;
+      }
+      if (!firstChild) y += 16;
+      firstChild = false;
+      if (Object.hasOwn(child.dataset, 'transcriptVirtualGap')) {
+        y += Number.parseFloat(child.style.height || '0');
+      } else {
+        y += child.offsetHeight;
+      }
+    }
+  }
+  return Number.parseFloat(html.style.top || '0');
 }
 
 function currentVirtualAnchor(container: HTMLDivElement): { blockId: string; offset: number } {
@@ -11753,8 +11775,13 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     await settleVirtualizer();
 
     const heightWithTail = Number.parseFloat(content.style.height);
-    const tailYMatch = /translate3d\(0px,\s*([0-9.]+)px,\s*0px\)|translate3d\(0,\s*([0-9.]+)px,\s*0\)/.exec(tailSlot.style.transform);
-    const tailY = Number(tailYMatch?.[1] ?? tailYMatch?.[2] ?? 'NaN');
+    const windowEl = tailSlot.closest<HTMLElement>('[data-transcript-virtual-window]')!;
+    expect(windowEl).not.toBeNull();
+    expect(windowEl.style.rowGap).toBe('16px');
+    expect(tailSlot.className).not.toContain('absolute');
+    expect(tailSlot.style.transform).toBe('');
+    expect(tailSlot.style.marginTop).toBe('-4px');
+    const tailY = virtualItemStart(tailSlot);
     expect(Math.abs(tailY - (lastItemEnd + 12))).toBeLessThanOrEqual(2);
     expect(heightWithTail).toBeGreaterThanOrEqual(lastItemEnd + 12 + initialTailHeight + seatHeight);
     expect(scroll.scrollTop).toBeGreaterThanOrEqual(scroll.scrollHeight - scroll.clientHeight - 2);
@@ -11770,6 +11797,20 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(heightExpanded - heightWithTail).toBe(expandedTailHeight - initialTailHeight);
     expect(scroll.scrollTop).toBeGreaterThanOrEqual(scroll.scrollHeight - scroll.clientHeight - 2);
 
+    // Expanding the failure disclosure survives scrolling away into history and returning to the bottom.
+    const errorToggle = tailSlot.querySelector<HTMLButtonElement>('[data-turn-tail-error-toggle]')!;
+    expect(errorToggle.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { click(errorToggle); });
+    expect(errorToggle.getAttribute('aria-expanded')).toBe('true');
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(container.querySelector('[data-transcript-tail-slot]')).toBeNull();
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    const remountedToggle = container.querySelector<HTMLButtonElement>('[data-turn-tail-error-toggle]')!;
+    expect(remountedToggle).not.toBeNull();
+    expect(remountedToggle.getAttribute('aria-expanded')).toBe('true');
+
     // Clearing turnTail removes the tail slot and drops the extra tail reserve cleanly.
     await renderSettled(
       root,
@@ -11781,5 +11822,147 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(container.querySelector('[data-transcript-tail-slot]')).toBeNull();
     const heightCleared = Number.parseFloat(content.style.height);
     expect(heightCleared).toBeLessThan(heightWithTail - 100);
+  });
+
+  it('keeps expanded system-reminder, rapid streaming Read/thinking/shell tool calls, and live tail slot strictly non-overlapping in single-offset flow', async () => {
+    const turnId = 't-overlap-repro';
+    const history = virtualBlocks(20, 'overlap-hist');
+    const reminderBlock: Block = {
+      kind: 'system-reminder',
+      id: 'reminder-tall-repro',
+      turnId,
+      text: Array.from({ length: 30 }, (_, idx) =>
+        `Line ${idx + 1}: 拆清供体的具体组织流程、状态流转、判分或实现机制、真实规模与本地留砍边界。`,
+      ).join('\n'),
+      createdAt: '2026-01-01T00:01:00.000Z',
+    };
+    const readTool = (id: string, path: string, status: 'running' | 'done' = 'done'): Block => toolBlock({
+      id,
+      toolCallId: id,
+      turnId,
+      name: 'Read',
+      status,
+      args: { path },
+      output: status === 'done' ? 'ok' : undefined,
+    });
+    const bashTool = (id: string, cmd: string, status: 'running' | 'done' = 'running'): Block => toolBlock({
+      id,
+      toolCallId: id,
+      turnId,
+      name: 'Bash',
+      status,
+      args: { command: cmd },
+      output: status === 'done' ? 'done' : undefined,
+    });
+    const thinkingBlock: Block = {
+      kind: 'thinking',
+      id: 'think-repro',
+      turnId,
+      text: 'Examining the logs and report data is crucial before continuing.',
+      streaming: false,
+      createdAt: '2026-01-01T00:01:02.000Z',
+    };
+
+    const assertNoOverlap = (container: HTMLDivElement) => {
+      const windows = container.querySelectorAll<HTMLElement>('[data-transcript-virtual-window]');
+      expect(windows).toHaveLength(1);
+      const windowEl = windows[0]!;
+      expect(windowEl.style.rowGap).toBe('16px');
+      const items = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')]
+        .toSorted((left, right) => Number(left.dataset['index']) - Number(right.dataset['index']));
+      expect(items.length).toBeGreaterThan(0);
+      for (const item of items) {
+        expect(item.parentElement).toBe(windowEl);
+        expect(item.className).not.toContain('absolute');
+        expect(item.style.transform).toBe('');
+      }
+      for (let i = 0; i + 1 < items.length; i += 1) {
+        const curr = items[i]!;
+        const next = items[i + 1]!;
+        const currBottom = virtualItemStart(curr) + curr.offsetHeight;
+        const nextTop = virtualItemStart(next);
+        expect(nextTop).toBeGreaterThanOrEqual(currBottom - 0.5);
+      }
+      const tailSlot = container.querySelector<HTMLElement>('[data-transcript-tail-slot]');
+      if (tailSlot !== null) {
+        expect(tailSlot.parentElement).toBe(windowEl);
+        expect(tailSlot.className).not.toContain('absolute');
+        expect(tailSlot.style.transform).toBe('');
+        expect(tailSlot.style.marginTop).toBe('-4px');
+        const last = items.at(-1)!;
+        const lastBottom = virtualItemStart(last) + last.offsetHeight;
+        expect(virtualItemStart(tailSlot)).toBeGreaterThanOrEqual(lastBottom - 0.5);
+      }
+    };
+
+    const initialBlocks: Block[] = [
+      ...history,
+      userBlock({ id: 'u-repro', text: 'Check hot-switch logs and running processes', turnId }),
+      reminderBlock,
+      readTool('read-1', 'C:/Users/example/multi-space-hot-switch.log', 'done'),
+      thinkingBlock,
+      readTool('read-2', 'C:/Users/example/hot-switch-report.json', 'done'),
+      bashTool('bash-1', 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like \'kiki*\' }"', 'running'),
+    ];
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      virtualTranscript({
+        ...transcriptState(initialBlocks),
+        busy: true,
+        turnStartedAt: Date.now() - 138_000,
+      }),
+    );
+    await settleVirtualizer();
+    assertNoOverlap(container);
+
+    // Open the live-turn fold if settled earlier steps were folded, then expand the tall system-reminder block.
+    const foldToggle = container.querySelector<HTMLButtonElement>('[data-history-fold] [data-activity-toggle]');
+    if (container.querySelector('[data-block-id="reminder-tall-repro"]') === null && foldToggle !== null) {
+      await act(async () => {
+        click(foldToggle);
+      });
+      await settleVirtualizer();
+      assertNoOverlap(container);
+    }
+    const reminderEl = container.querySelector<HTMLElement>('[data-block-id="reminder-tall-repro"]')!;
+    expect(reminderEl).not.toBeNull();
+    const reminderToggle = reminderEl.querySelector<HTMLButtonElement>('[data-activity-toggle]')!;
+    await act(async () => {
+      click(reminderToggle);
+    });
+    const reminderRow = reminderEl.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    act(() => {
+      resizeElement(reminderRow, 468);
+      // Even synchronously before settleVirtualizer, flow layout keeps all successors non-overlapping.
+      assertNoOverlap(container);
+    });
+    await settleVirtualizer();
+    assertNoOverlap(container);
+
+    // Stream a second rapid shell tool call while busy and grow the last tool row + tail slot.
+    const streamedBlocks: Block[] = [
+      ...initialBlocks.slice(0, -1),
+      bashTool('bash-1', 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like \'kiki*\' }"', 'done'),
+      bashTool('bash-2', 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match \'kiki\' }"', 'running'),
+    ];
+    await renderSettled(
+      root,
+      virtualTranscript({
+        ...transcriptState(streamedBlocks),
+        busy: true,
+        turnStartedAt: Date.now() - 140_000,
+      }),
+    );
+    const tailSlot = container.querySelector<HTMLElement>('[data-transcript-tail-slot]')!;
+    expect(tailSlot).not.toBeNull();
+    const lastRow = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')].at(-1)!;
+    act(() => {
+      resizeElement(lastRow, 220);
+      resizeElement(tailSlot, 44);
+      assertNoOverlap(container);
+    });
+    await settleVirtualizer();
+    assertNoOverlap(container);
   });
 });

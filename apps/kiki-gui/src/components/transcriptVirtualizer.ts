@@ -6,7 +6,8 @@
  *   streaming growth while locked to bottom, and immediately disengaging on
  *   upward user intent so streaming never yanks a scrolled-up reader downward).
  * - `@tanstack/react-virtual` owns windowing, `ResizeObserver` measurement,
- *   direct DOM positioning (`directDomUpdates: true`), and above-viewport
+ *   virtual window sizing/offsetting (rendered via a single shifted normal-flow
+ *   window container with `directDomUpdates: false`), and above-viewport
  *   scroll compensation via `shouldAdjustScrollPositionOnItemSizeChange`.
  *
  * This module supplies only the pure measurement guard (ignoring 0px readings
@@ -18,10 +19,13 @@
  */
 
 import type { VirtualItem, Virtualizer } from '@tanstack/react-virtual';
+import { cssZoomFactor } from '../lib/uiZoom';
 
 export type TranscriptVirtualizer = Virtualizer<HTMLDivElement, HTMLDivElement>;
 
 export const TRANSCRIPT_ESTIMATED_ROW_HEIGHT = 120;
+export const TRANSCRIPT_ROW_GAP = 16;
+export const TRANSCRIPT_TAIL_GAP = 12;
 export const TRANSCRIPT_END_THRESHOLD = 80;
 
 /** Bridge from `use-stick-to-bottom` (or a test stub) into virtualizer anchoring. */
@@ -39,7 +43,11 @@ const READER_SCROLL_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 function readRowHeight(element: HTMLElement, entry?: ResizeObserverEntry): number {
-  return Math.round(entry?.borderBoxSize?.[0]?.blockSize ?? element.offsetHeight);
+  const boxSize = entry?.borderBoxSize?.[0]?.blockSize;
+  if (boxSize !== undefined && boxSize > 0) return boxSize;
+  const rectHeight = element.getBoundingClientRect().height;
+  if (rectHeight > 0) return rectHeight / cssZoomFactor();
+  return element.offsetHeight;
 }
 
 /**
@@ -359,7 +367,8 @@ export function reconcileMountedRows(
       const domKey = element.dataset['rowKey'];
       if (domKey !== undefined && domKey !== String(key)) continue;
       const size = readRowHeight(element);
-      if (size > 0 && instance.itemSizeCache.get(key) !== size) updates.push({ index, size });
+      const cached = instance.itemSizeCache.get(key);
+      if (size > 0 && (cached === undefined || Math.abs(cached - size) > 0.01)) updates.push({ index, size });
     }
   } else {
     for (const [key, element] of instance.elementsCache) {
@@ -369,7 +378,8 @@ export function reconcileMountedRows(
       const domKey = element.dataset['rowKey'];
       if (domKey !== undefined && domKey !== String(key)) continue;
       const size = readRowHeight(element);
-      if (size > 0 && instance.itemSizeCache.get(key) !== size) updates.push({ index, size });
+      const cached = instance.itemSizeCache.get(key);
+      if (size > 0 && (cached === undefined || Math.abs(cached - size) > 0.01)) updates.push({ index, size });
     }
   }
   for (const { index, size } of updates) {

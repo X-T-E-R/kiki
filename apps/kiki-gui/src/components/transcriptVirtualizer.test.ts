@@ -5,7 +5,9 @@ import { Virtualizer, type VirtualItem } from '@tanstack/react-virtual';
 
 import {
   installTranscriptAnchoring,
+  measureTranscriptRow,
   observeRowMutations,
+  reconcileMountedRows,
   shouldCompensateRowResize,
   type RowResize,
   type TranscriptStickController,
@@ -356,5 +358,43 @@ describe('hydrated row measurement', () => {
     await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
     expect(resize).not.toHaveBeenCalled();
     scroll.remove();
+  });
+
+  it('normalizes fractional getBoundingClientRect heights by root CSS zoom so reconciliation matches ResizeObserver', () => {
+    const scroll = document.createElement('div');
+    const row = document.createElement('div');
+    row.dataset['index'] = '0';
+    row.dataset['rowKey'] = 'row';
+    scroll.append(row);
+    document.body.append(scroll);
+    Object.defineProperty(scroll, 'clientHeight', { value: 600, configurable: true });
+    const previousZoom = document.documentElement.style.zoom;
+    document.documentElement.style.zoom = '1.25';
+    try {
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        x: 0, y: 0, top: 0, bottom: 100.625, left: 0, right: 760, width: 760, height: 100.625, toJSON: () => ({}),
+      });
+      const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+        count: 1, getScrollElement: () => scroll, estimateSize: () => 120, getItemKey: () => 'row',
+        scrollToFn: () => {}, observeElementRect: () => {}, observeElementOffset: () => {},
+      });
+      instance.scrollElement = scroll;
+      instance.elementsCache.set('row', row);
+
+      const resizeEntry = { borderBoxSize: [{ blockSize: 80.5, inlineSize: 760 }] } as unknown as ResizeObserverEntry;
+      const measuredFromRo = measureTranscriptRow(row, resizeEntry, instance);
+      const measuredFromRect = measureTranscriptRow(row, undefined, instance);
+      expect(measuredFromRo).toBe(80.5);
+      expect(measuredFromRect).toBe(80.5);
+
+      instance.itemSizeCache.set('row', 80.5);
+      const resize = vi.spyOn(instance, 'resizeItem');
+      expect(reconcileMountedRows(instance, [row])).toBe(false);
+      expect(resize).not.toHaveBeenCalled();
+    } finally {
+      document.documentElement.style.zoom = previousZoom;
+      scroll.remove();
+      vi.restoreAllMocks();
+    }
   });
 });
