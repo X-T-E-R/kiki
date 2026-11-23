@@ -23,6 +23,7 @@ import { createKlient } from '@kiki/klient/http';
 import {
   CcpTunnelConnector,
   SystemCcpTunnelRunner,
+  type CcpKeepaliveScheduler,
   type CcpRuntimeInfo,
   type CcpTunnelProcess,
   type CcpTunnelRunner,
@@ -547,10 +548,12 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
 
       const protectedTarget = join(sandbox, 'protected-hardlink-origin.txt');
       const hardlinkDest = join(sandbox, 'hardlinked-dest.txt');
+      const hardlinkExportSource = join(sandbox, 'hardlinked-export-source.txt');
       writeFileSync(protectedTarget, 'ORIGINAL-UNTOUCHED\n');
       let hardlinkCreated = false;
       try {
         linkSync(protectedTarget, hardlinkDest);
+        linkSync(protectedTarget, hardlinkExportSource);
         hardlinkCreated = true;
       } catch {
         hardlinkCreated = false;
@@ -564,6 +567,13 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
           }),
         ).rejects.toThrow(/Hardlinked destination/i);
         expect(readFileSync(protectedTarget, 'utf8')).toBe('ORIGINAL-UNTOUCHED\n');
+
+        await expect(
+          clientA.rest!.sync.pullFilesFromPeer(trustedConn.id, {
+            remotePath: hardlinkExportSource,
+            localPath: join(sandbox, 'hardlinked-export-pull.txt'),
+          }),
+        ).rejects.toThrow(/Hardlinked source file/i);
       }
 
       const symlinkDir = join(sandbox, 'remote-symlink-dir');
@@ -863,8 +873,8 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
     }
   }, 60_000);
 
-  it('handles SystemCcpTunnelRunner cancel without hanging, warm-pool idle keepalive, and RELEASED terminal stop', async () => {
-    const fakeHost: Pick<IHostProcessService, 'spawn'> = {
+  it('handles SystemCcpTunnelRunner cancel and stream errors, dynamic warm-pool prepare keepalive, and RELEASED stop deterministically', async () => {
+    const cancelHost: Pick<IHostProcessService, 'spawn'> = {
       spawn: async (): Promise<IHostProcess> => {
         const stdin = new PassThrough();
         const stdout = new PassThrough();
@@ -887,17 +897,62 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
         } as unknown as IHostProcess;
       },
     };
-    const cancelRunner = new SystemCcpTunnelRunner(fakeHost);
+    const cancelRunner = new SystemCcpTunnelRunner(cancelHost);
     const abort = new AbortController();
     const preparePromise = cancelRunner.prepare('rt-cancel-1', abort.signal);
-    setTimeout(() => abort.abort(), 20);
+    queueMicrotask(() => abort.abort());
     await expect(preparePromise).rejects.toThrow(/ccp_operation_cancelled/);
     await cancelRunner.close();
+
+    const errorHost: Pick<IHostProcessService, 'spawn'> = {
+      spawn: async (): Promise<IHostProcess> => {
+        const stdin = new PassThrough();
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        let resolveWait!: (code: number) => void;
+        const waitPromise = new Promise<number>((resolve) => { resolveWait = resolve; });
+        setImmediate(() => {
+          stdout.write('{"id":"ssh_partial"');
+          stdout.destroy(new Error('pipe_broken'));
+          stderr.end();
+          resolveWait(0);
+        });
+        return {
+          pid: 4243,
+          stdin,
+          stdout,
+          stderr,
+          wait: () => waitPromise,
+          kill: async () => {},
+          dispose: () => {},
+        } as unknown as IHostProcess;
+      },
+    };
+    const errorRunner = new SystemCcpTunnelRunner(errorHost);
+    await expect(errorRunner.prepare('rt-stream-err', AbortSignal.timeout(5_000))).rejects.toThrow(/ccp_stream_error:pipe_broken/);
+    await errorRunner.close();
+
+    const scheduledIntervals: number[] = [];
+    let activeTick: (() => void) | undefined;
+    let activeHandle = 0;
+    const scheduler: CcpKeepaliveScheduler = {
+      setInterval(fn, intervalMs) {
+        activeHandle += 1;
+        scheduledIntervals.push(intervalMs);
+        activeTick = fn;
+        return activeHandle;
+      },
+      clearInterval(handle) {
+        if (handle === activeHandle) {
+          activeTick = undefined;
+        }
+      },
+    };
 
     let inspectCalls = 0;
     let disableCalls = 0;
     let prepareCalls = 0;
-    let currentRuntimeInfo: CcpRuntimeInfo = { state: 'RUNNING', idleTimeoutMinutes: 0.002 };
+    let currentRuntimeInfo: CcpRuntimeInfo = { state: 'RUNNING', idleTimeoutMinutes: 30 };
     const lifecycleRunner: CcpTunnelRunner = {
       async inspectRuntime() {
         inspectCalls += 1;
@@ -924,7 +979,16 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
       },
       async close() {},
     };
-    const connector = new CcpTunnelConnector(lifecycleRunner);
+    const warnings: string[] = [];
+    const connector = new CcpTunnelConnector(lifecycleRunner, {
+      scheduler,
+      logger: { warn: (_obj, msg) => { warnings.push(msg); } },
+    });
+    const flushAsync = async () => {
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve();
+      }
+    };
     try {
       const record = {
         id: 'conn-pool-1',
@@ -935,16 +999,25 @@ describe('CCP loopback interconnect, bridge-only pairing, and full-fidelity sync
       expect(resolved.endpoint).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
       expect(disableCalls).toBe(1);
       expect(prepareCalls).toBe(1);
+      expect(scheduledIntervals).toEqual([900_000]);
+      expect(activeTick).toBeDefined();
 
-      await new Promise((resolve) => setTimeout(resolve, 220));
-      expect(inspectCalls).toBeGreaterThanOrEqual(2);
+      currentRuntimeInfo = { state: 'RUNNING', idleTimeoutMinutes: 10 };
+      activeTick!();
+      await flushAsync();
+      expect(inspectCalls).toBe(2);
+      expect(prepareCalls).toBe(2);
+      expect(scheduledIntervals).toEqual([900_000, 300_000]);
 
       currentRuntimeInfo = { state: 'RELEASED', idleTimeoutMinutes: 0 };
-      await new Promise((resolve) => setTimeout(resolve, 160));
+      activeTick!();
+      await flushAsync();
+      expect(activeTick).toBeUndefined();
       const preparesBeforeReleased = prepareCalls;
       await expect(connector.acquire(record, AbortSignal.timeout(5_000))).rejects.toThrow(/CCP runtime ccp-pool-1 is RELEASED/);
       await expect(connector.acquire(record, AbortSignal.timeout(5_000))).rejects.toThrow(/CCP runtime ccp-pool-1 is RELEASED/);
       expect(prepareCalls).toBe(preparesBeforeReleased);
+      expect(warnings).toEqual([]);
     } finally {
       await connector.close();
     }

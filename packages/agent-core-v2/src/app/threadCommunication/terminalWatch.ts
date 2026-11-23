@@ -29,6 +29,13 @@ const UNRECOVERABLE_REASON_TOKENS = [
   'identity_changed',
 ] as const;
 
+function escapeXmlText(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
 export function extractTerminalPreview(readResult: ReadThreadResult): string | undefined {
   let raw = '';
   if (readResult.turns.length > 0) {
@@ -101,16 +108,21 @@ export function formatTerminalWatchMessage(
       source_kind: 'thread',
       source_id: target.sessionId,
       agent_id: options?.agentId,
-      title,
+      title: escapeXmlText(title),
       severity,
-      body,
+      body: escapeXmlText(body),
     });
   const fullBody = lines.join('\n');
   const full = render(fullBody);
   if (full.length <= THREAD_MESSAGE_PROTOCOL_MAX_CHARS) return full;
-  const overhead = render('').length + TRUNCATED_SUFFIX.length;
-  const allowedBodyChars = Math.max(0, THREAD_MESSAGE_PROTOCOL_MAX_CHARS - overhead);
-  return render(`${fullBody.slice(0, allowedBodyChars)}${TRUNCATED_SUFFIX}`);
+  const overhead = render('').length + escapeXmlText(TRUNCATED_SUFFIX).length;
+  let allowedChars = Math.max(0, THREAD_MESSAGE_PROTOCOL_MAX_CHARS - overhead);
+  let candidate = render(`${fullBody.slice(0, allowedChars)}${TRUNCATED_SUFFIX}`);
+  while (candidate.length > THREAD_MESSAGE_PROTOCOL_MAX_CHARS && allowedChars > 0) {
+    allowedChars = Math.max(0, allowedChars - Math.ceil((candidate.length - THREAD_MESSAGE_PROTOCOL_MAX_CHARS) / 2));
+    candidate = render(`${fullBody.slice(0, allowedChars)}${TRUNCATED_SUFFIX}`);
+  }
+  return candidate;
 }
 
 export function formatWatchStoppedMessage(
@@ -125,9 +137,9 @@ export function formatWatchStoppedMessage(
     source_kind: 'thread',
     source_id: target.sessionId,
     agent_id: options?.agentId,
-    title: `Thread watch stopped (${target.sessionId})`,
+    title: escapeXmlText(`Thread watch stopped (${target.sessionId})`),
     severity: 'warning',
-    body: `[Thread watch] Stopped watching target thread (session=${target.sessionId}, host=${target.hostId}, workspace=${target.workspaceId}): ${reason}`,
+    body: escapeXmlText(`[Thread watch] Stopped watching target thread (session=${target.sessionId}, host=${target.hostId}, workspace=${target.workspaceId}): ${reason}`),
   });
 }
 

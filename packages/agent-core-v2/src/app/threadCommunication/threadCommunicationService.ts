@@ -1003,6 +1003,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     readonly initialCursor: string | undefined;
   }): Promise<void> {
     const { key, watchId, controller, signal, caller, callerRef, target } = input;
+    const watchStartedAt = Date.now();
     let cursor = input.initialCursor;
     let transientErrors = 0;
     try {
@@ -1021,6 +1022,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             const nextCursor = extractResyncCursor(error);
             if (nextCursor !== undefined && nextCursor !== cursor) {
               cursor = nextCursor;
+              const reconciled = await this.reconcileAfterCursorResync(
+                caller,
+                callerRef,
+                target,
+                cursor,
+                watchId,
+                watchStartedAt,
+                signal,
+              );
+              if (reconciled.terminated) return;
+              if (reconciled.cursor !== undefined) cursor = reconciled.cursor;
               continue;
             }
           }
@@ -1090,6 +1102,99 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         this.terminalWatches.delete(key);
       }
     }
+  }
+
+  private async reconcileAfterCursorResync(
+    caller: ThreadCaller,
+    callerRef: ThreadRef,
+    target: ThreadRef,
+    resyncCursor: string,
+    watchId: string,
+    watchStartedAt: number,
+    signal: AbortSignal,
+  ): Promise<{ readonly terminated: boolean; readonly cursor?: string }> {
+    if (signal.aborted || this.closing) return { terminated: true };
+    let updatedCursor = resyncCursor;
+    try {
+      const probe = await this.waitThreads({
+        caller,
+        threads: [{ thread: target, cursor: resyncCursor }],
+        timeoutMs: 0,
+        signal,
+      });
+      const entry = probe.threads[0];
+      if (entry !== undefined) updatedCursor = entry.cursor;
+      if (entry !== undefined && entry.activities.length > 0) {
+        const hasTerminal = entry.activities.some((activity) => activity.kind === 'terminal');
+        const hasDeletedOrArchived = entry.activities.some(
+          (activity) => activity.kind === 'lifecycle' && (activity.reason === 'deleted' || activity.reason === 'archived'),
+        );
+        const hasAttention = entry.activities.some((activity) => activity.kind === 'attention');
+        const shouldTerminate = hasTerminal || hasDeletedOrArchived;
+        if (shouldTerminate || hasAttention) {
+          let preview: string | undefined;
+          let previewError: string | undefined;
+          if (hasTerminal && !hasDeletedOrArchived) {
+            try {
+              const readResult = await this.readThread({ caller, thread: target, limit: 1, signal });
+              preview = extractTerminalPreview(readResult);
+            } catch (readErr) {
+              previewError = readErr instanceof Error ? readErr.message : String(readErr);
+            }
+          }
+          if (signal.aborted || this.closing) return { terminated: true };
+          const lastSeq = entry.activities.at(-1)!.seq;
+          const notificationId = shouldTerminate
+            ? `notify-terminal:${watchId}:${lastSeq}`
+            : `notify-attention:${watchId}:${lastSeq}`;
+          await this.deliverWatchNotification(
+            caller,
+            callerRef,
+            target,
+            formatTerminalWatchMessage(target, entry.activities, preview, previewError, {
+              notificationId,
+              agentId: caller.agentId,
+            }),
+            notificationId,
+            signal,
+          );
+          if (shouldTerminate) return { terminated: true, cursor: updatedCursor };
+        }
+        return { terminated: false, cursor: updatedCursor };
+      }
+    } catch {
+      return { terminated: false, cursor: updatedCursor };
+    }
+    try {
+      const readResult = await this.readThread({ caller, thread: target, limit: 1, signal });
+      if (signal.aborted || this.closing) return { terminated: true };
+      const latestTurn = readResult.turns.at(-1);
+      if (latestTurn !== undefined && latestTurn.endedAt >= watchStartedAt) {
+        const preview = extractTerminalPreview(readResult);
+        const notificationId = `notify-terminal:${watchId}:reconciled:${latestTurn.turnId}`;
+        const synthesized: ThreadActivity = {
+          ref: target,
+          seq: latestTurn.turnId,
+          kind: 'terminal',
+          at: latestTurn.endedAt,
+          reason: latestTurn.reason,
+          turnId: latestTurn.turnId,
+        };
+        await this.deliverWatchNotification(
+          caller,
+          callerRef,
+          target,
+          formatTerminalWatchMessage(target, [synthesized], preview, undefined, {
+            notificationId,
+            agentId: caller.agentId,
+          }),
+          notificationId,
+          signal,
+        );
+        return { terminated: true, cursor: updatedCursor };
+      }
+    } catch {}
+    return { terminated: false, cursor: updatedCursor };
   }
 
   private async deliverWatchNotification(
@@ -1666,7 +1771,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
               v: 1,
               kind: 'activity',
               epoch: error.epoch,
-              seq: error.latestSeq,
+              seq: Math.max(0, error.minSeq - 1),
               thread: threadIdentity(ref),
             }),
           },

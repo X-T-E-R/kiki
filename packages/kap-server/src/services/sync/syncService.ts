@@ -320,12 +320,19 @@ export class SyncService {
 
   async importSyncBundle(rawBundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt> {
     const bundle = syncBundleImportInputSchema.parse(rawBundle);
+    const requiredOverrideRefs = collectConfinedPromptOverrideRefs(bundle.portableConfig, bundle.homeAssets);
     let homeAssetsApplied: number | undefined;
     let homeAssetsSkipped: number | undefined;
+    let installedPaths = new Set<string>();
     if (bundle.homeAssets !== undefined) {
-      const applied = await this.importPortableHomeAssets(bundle.homeAssets, bundle.portableConfig);
+      const applied = await this.importPortableHomeAssets(bundle.homeAssets, requiredOverrideRefs);
       homeAssetsApplied = applied.applied;
       homeAssetsSkipped = applied.skipped;
+      installedPaths = applied.installedPaths;
+    }
+
+    if (bundle.portableConfig !== undefined && requiredOverrideRefs.size > 0) {
+      await this.assertReferencedPromptOverridesInstalled(requiredOverrideRefs, installedPaths, bundle.homeAssets !== undefined);
     }
 
     const configDomainsApplied: string[] = [];
@@ -967,11 +974,11 @@ export class SyncService {
     );
     const addFile = async (relPath: string, fullPath: string, required: boolean): Promise<Buffer | undefined> => {
       const normalized = required
-        ? normalizeReferencedPromptOverridePath(relPath)
+        ? normalizeConfinedPromptOverridePath(relPath)
         : normalizeAllowedSyncHomeAssetPath(relPath);
       if (normalized === undefined) {
         if (required) {
-          throw new Error(`Referenced prompt override path is not transferable: '${relPath}'`);
+          throw new Error(`Referenced prompt override path must stay under prompt/ or agents/: '${relPath}'`);
         }
         return undefined;
       }
@@ -1086,51 +1093,29 @@ export class SyncService {
 
   private async importPortableHomeAssets(
     assets: readonly SyncHomeAssetEntry[],
-    portableConfig?: Record<string, unknown>,
-  ): Promise<{ readonly applied: number; readonly skipped: number }> {
+    requiredOverrideRefs: ReadonlySet<string>,
+  ): Promise<{ readonly applied: number; readonly skipped: number; readonly installedPaths: Set<string> }> {
     await mkdir(this.options.homeDir, { recursive: true });
     const realHomeDir = await realpath(this.options.homeDir);
-    const allowedOverrideRefs = new Set<string>();
-    if (portableConfig !== undefined) {
-      try {
-        for (const ref of extractPromptOverrideRefsFromConfig(portableConfig)) {
-          const safe = normalizeReferencedPromptOverridePath(ref);
-          if (safe !== undefined) allowedOverrideRefs.add(safe);
-        }
-      } catch {}
-    }
-    for (const entry of assets) {
-      const normalized = normalizeAllowedSyncHomeAssetPath(entry.relativePath);
-      if (normalized !== undefined && normalized.startsWith('agents/') && normalized.toLowerCase().endsWith('.md')) {
-        try {
-          const text = Buffer.from(entry.contentBase64, 'base64').toString('utf8');
-          for (const ref of extractPromptOverrideRefsFromAgentMarkdown(text, normalized)) {
-            const safe = normalizeReferencedPromptOverridePath(ref);
-            if (safe !== undefined) allowedOverrideRefs.add(safe);
-          }
-        } catch {}
-      }
-    }
     let applied = 0;
     let skipped = 0;
+    const installedPaths = new Set<string>();
     for (const entry of assets) {
-      const normalized =
-        normalizeAllowedSyncHomeAssetPath(entry.relativePath) ??
-        (() => {
-          const candidate = normalizeReferencedPromptOverridePath(entry.relativePath);
-          return candidate !== undefined && allowedOverrideRefs.has(candidate) ? candidate : undefined;
-        })();
+      const normalized = normalizeAllowedSyncHomeAssetPath(entry.relativePath);
       if (normalized === undefined) {
         skipped += 1;
         continue;
       }
+      const isRequired = requiredOverrideRefs.has(normalized);
       const dest = resolve(realHomeDir, normalized);
       const rel = relative(realHomeDir, dest);
       if (rel.startsWith('..') || isAbsolute(rel)) {
+        if (isRequired) throw new Error(`Referenced prompt override escapes Kiki home: '${normalized}'`);
         skipped += 1;
         continue;
       }
       if (!(await hasNoSymlinkSegments(realHomeDir, normalized))) {
+        if (isRequired) throw new Error(`Referenced prompt override contains a symlink segment: '${normalized}'`);
         skipped += 1;
         continue;
       }
@@ -1139,10 +1124,12 @@ export class SyncService {
       const confirmedParent = await realpath(destParent);
       const parentRel = relative(realHomeDir, confirmedParent);
       if (parentRel.startsWith('..') || isAbsolute(parentRel)) {
+        if (isRequired) throw new Error(`Referenced prompt override parent escapes Kiki home: '${normalized}'`);
         skipped += 1;
         continue;
       }
       if (!(await isSafeRegularWriteTarget(dest))) {
+        if (isRequired) throw new Error(`Referenced prompt override target is unsafe (symlink, directory, or hardlink): '${normalized}'`);
         skipped += 1;
         continue;
       }
@@ -1159,19 +1146,62 @@ export class SyncService {
         handle = undefined;
         if (!(await isSafeRegularWriteTarget(dest))) {
           await unlink(tmpPath).catch(() => {});
+          if (isRequired) throw new Error(`Referenced prompt override target became unsafe during install: '${normalized}'`);
           skipped += 1;
           continue;
         }
         await rename(tmpPath, dest);
-      } catch {
+      } catch (error) {
         if (handle !== undefined) await handle.close().catch(() => {});
         await unlink(tmpPath).catch(() => {});
+        if (isRequired) {
+          throw new Error(`Failed to install referenced prompt override '${normalized}'`, { cause: error });
+        }
         skipped += 1;
         continue;
       }
       applied += 1;
+      installedPaths.add(normalized);
     }
-    return { applied, skipped };
+    return { applied, skipped, installedPaths };
+  }
+
+  private async assertReferencedPromptOverridesInstalled(
+    requiredOverrideRefs: ReadonlySet<string>,
+    installedPaths: ReadonlySet<string>,
+    bundleCarriedHomeAssets: boolean,
+  ): Promise<void> {
+    await mkdir(this.options.homeDir, { recursive: true });
+    const realHomeDir = await realpath(this.options.homeDir);
+    for (const ref of requiredOverrideRefs) {
+      if (bundleCarriedHomeAssets && !installedPaths.has(ref)) {
+        const presentLocally = await this.verifyLocalPromptOverrideFile(realHomeDir, ref);
+        if (!presentLocally) {
+          throw new Error(`Referenced prompt override file is missing from incoming sync bundle: '${ref}'`);
+        }
+        continue;
+      }
+      const verified = await this.verifyLocalPromptOverrideFile(realHomeDir, ref);
+      if (!verified) {
+        throw new Error(`Referenced prompt override file could not be verified before applying config: '${ref}'`);
+      }
+    }
+  }
+
+  private async verifyLocalPromptOverrideFile(realHomeDir: string, normalized: string): Promise<boolean> {
+    const dest = resolve(realHomeDir, normalized);
+    const rel = relative(realHomeDir, dest);
+    if (rel.startsWith('..') || isAbsolute(rel)) return false;
+    if (!(await hasNoSymlinkSegments(realHomeDir, normalized))) return false;
+    try {
+      const info = await lstat(dest);
+      if (info.isSymbolicLink() || !info.isFile() || info.nlink > 1) return false;
+      const realDest = await realpath(dest);
+      const realRel = relative(realHomeDir, realDest);
+      return !realRel.startsWith('..') && !isAbsolute(realRel);
+    } catch {
+      return false;
+    }
   }
 
   private async readCredentialLayers(): Promise<{
@@ -1343,7 +1373,7 @@ function filterPulledSyncBundle(bundle: SyncBundle, input: SyncPeerTransferInput
   };
 }
 
-function normalizeReferencedPromptOverridePath(rawPath: string): string | undefined {
+function normalizeConfinedPromptOverridePath(rawPath: string): string | undefined {
   let validated: string;
   try {
     validated = safePortablePath(validatePromptOverridePath(rawPath));
@@ -1351,10 +1381,51 @@ function normalizeReferencedPromptOverridePath(rawPath: string): string | undefi
     return undefined;
   }
   const parts = validated.split('/');
+  if (parts.length < 2) return undefined;
   if (parts.some((part) => HOME_ASSET_EXCLUDED_SEGMENT.test(part) || isSyncConflictArtifact(part))) {
     return undefined;
   }
-  return validated;
+  const top = parts[0];
+  if (top === 'prompt') return validated;
+  if (top === 'agents' && parts[1]?.toLowerCase() !== 'builtin') return validated;
+  return undefined;
+}
+
+function collectConfinedPromptOverrideRefs(
+  portableConfig: Record<string, unknown> | undefined,
+  homeAssets: readonly SyncHomeAssetEntry[] | undefined,
+): Set<string> {
+  const refs = new Set<string>();
+  const addRef = (raw: string): void => {
+    const confined = normalizeConfinedPromptOverridePath(raw);
+    if (confined === undefined) {
+      throw new Error(`Referenced prompt override path must stay under prompt/ or agents/: '${raw}'`);
+    }
+    refs.add(confined);
+  };
+  if (portableConfig !== undefined) {
+    for (const ref of extractPromptOverrideRefsFromConfig(portableConfig)) {
+      addRef(ref);
+    }
+  }
+  if (homeAssets !== undefined) {
+    for (const entry of homeAssets) {
+      const normalized = normalizeAllowedSyncHomeAssetPath(entry.relativePath);
+      if (normalized !== undefined && normalized.startsWith('agents/') && normalized.toLowerCase().endsWith('.md')) {
+        const text = Buffer.from(entry.contentBase64, 'base64').toString('utf8');
+        let agentRefs: readonly string[];
+        try {
+          agentRefs = extractPromptOverrideRefsFromAgentMarkdown(text, normalized);
+        } catch {
+          continue;
+        }
+        for (const ref of agentRefs) {
+          addRef(ref);
+        }
+      }
+    }
+  }
+  return refs;
 }
 
 function normalizeAllowedSyncHomeAssetPath(rawPath: string): string | undefined {

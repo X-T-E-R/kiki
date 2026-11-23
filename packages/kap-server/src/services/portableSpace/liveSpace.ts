@@ -1,8 +1,11 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, join } from 'node:path';
 import { lstat, mkdir, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { ConfigTarget, isSkillSyncExcluded, openPinnedLogicalRead, planSkillSync, readPinnedRange, type IBootstrapService, type IConfigRegistry, type IConfigService, type IFileSystemStorageService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
+import { SESSION_LOCK_SCOPE, sessionLockKey } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
+import { isStorageError, StorageErrors, type IStorageLock } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
 import { applySectionToToml, snakeToCamel, transformTomlData } from '@kiki/agent-core-v2/app/config/toml';
 import { mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
@@ -420,11 +423,70 @@ function rewriteSessionMetaBytes(
   }
 }
 
+async function sha256FilePrefix(filePath: string, byteLength: number): Promise<string> {
+  const digest = createHash('sha256');
+  if (byteLength <= 0) return digest.digest('hex');
+  await new Promise<void>((resolve, reject) => {
+    const reader = createReadStream(filePath, { start: 0, end: byteLength - 1 });
+    reader.on('data', (chunk) => {
+      digest.update(chunk);
+    });
+    reader.once('error', reject);
+    reader.once('end', () => resolve());
+  });
+  return digest.digest('hex');
+}
+
+async function listLocalWireFiles(sessionDir: string): Promise<Array<{ readonly relativePath: string; readonly fullPath: string; readonly size: number }>> {
+  const result: Array<{ readonly relativePath: string; readonly fullPath: string; readonly size: number }> = [];
+  const rootWire = join(sessionDir, 'wire.jsonl');
+  const rootInfo = await missing(lstat(rootWire));
+  if (rootInfo !== undefined && !rootInfo.isSymbolicLink() && rootInfo.isFile()) {
+    result.push({ relativePath: 'wire.jsonl', fullPath: rootWire, size: rootInfo.size });
+  }
+  const agentsDir = join(sessionDir, 'agents');
+  const agentsInfo = await missing(lstat(agentsDir));
+  if (agentsInfo !== undefined && !agentsInfo.isSymbolicLink() && agentsInfo.isDirectory()) {
+    for (const id of await dirs(agentsDir)) {
+      const agentWire = join(agentsDir, id, 'wire.jsonl');
+      const info = await missing(lstat(agentWire));
+      if (info !== undefined && !info.isSymbolicLink() && info.isFile()) {
+        result.push({ relativePath: `agents/${id}/wire.jsonl`, fullPath: agentWire, size: info.size });
+      }
+    }
+  }
+  return result;
+}
+
 async function shouldUpdateExistingSession(
   existingDir: string,
+  stageDir: string,
   incomingUpdatedAt: number,
   incomingFiles: readonly { readonly relativePath: string; readonly size: number }[],
 ): Promise<boolean> {
+  const localWires = await listLocalWireFiles(existingDir);
+  let wireExtended = false;
+  for (const localWire of localWires) {
+    const incomingPath = join(stageDir, localWire.relativePath);
+    const incomingInfo = await missing(lstat(incomingPath));
+    if (incomingInfo === undefined || incomingInfo.isSymbolicLink() || !incomingInfo.isFile()) {
+      return false;
+    }
+    if (incomingInfo.size < localWire.size) {
+      return false;
+    }
+    const [localDigest, incomingPrefixDigest] = await Promise.all([
+      sha256FilePrefix(localWire.fullPath, localWire.size),
+      sha256FilePrefix(incomingPath, localWire.size),
+    ]);
+    if (localDigest !== incomingPrefixDigest) {
+      return false;
+    }
+    if (incomingInfo.size > localWire.size) {
+      wireExtended = true;
+    }
+  }
+  if (wireExtended) return true;
   const localMetaBytes =
     (await missing(readFile(join(existingDir, 'state.json')))) ??
     (await missing(readFile(join(existingDir, 'meta.json'))));
@@ -441,7 +503,42 @@ async function shouldUpdateExistingSession(
   return false;
 }
 
-/** Atomically commits a staged session directory, updating cold existing sessions when incoming state is newer. */
+async function acquireSessionSyncLocks(
+  live: SessionLiveServices,
+  sessionId: string,
+  workspaceIds: readonly string[],
+): Promise<IStorageLock[] | undefined> {
+  if (live.storage === undefined) return [];
+  const uniqueScopes = [...new Set(workspaceIds)].map((wsId) => ({
+    workspaceId: wsId,
+    scope: `${live.bootstrap.scope('sessions')}/${wsId}/${sessionId}`,
+  })).toSorted((a, b) => a.scope.localeCompare(b.scope));
+  const acquired: IStorageLock[] = [];
+  try {
+    for (const entry of uniqueScopes) {
+      const lock = await live.storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(entry.scope), {
+        waitForMs: 0,
+        owner: {
+          sessionId,
+          workspaceId: entry.workspaceId,
+          scope: entry.scope,
+        },
+      });
+      acquired.push(lock);
+    }
+    return acquired;
+  } catch (error) {
+    for (const lock of acquired.toReversed()) {
+      await lock.release().catch(() => undefined);
+    }
+    if (isStorageError(error, StorageErrors.codes.STORAGE_LOCKED)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/** Atomically commits a staged session directory under the session lock, preserving divergent local history. */
 export async function commitStagedSessionDirectory(
   live: SessionLiveServices,
   input: {
@@ -482,61 +579,83 @@ export async function commitStagedSessionDirectory(
     })();
   const workspaceId = remappedWorkspaceId ?? sourceWorkspaceId;
 
-  for (const metaRel of CANONICAL_SESSION_META_FILES) {
-    if (!input.files.some((entry) => entry.relativePath === metaRel)) continue;
-    const metaPath = join(input.stageDir, metaRel);
-    const rawBytes = await missing(readFile(metaPath));
-    if (rawBytes === undefined) return 'skipped';
-    const rewritten = rewriteSessionMetaBytes(rawBytes, workspaceId, input.remap);
-    if (rewritten === undefined) return 'skipped';
-    await writeFileAtomic(metaPath, rewritten);
-  }
-
-  const incomingUpdatedAt = parseSessionUpdatedAt(rawPrimaryMeta);
-  const workspaceDir = await checkedPath(live.bootstrap.sessionsDir, workspaceId);
-  await mkdir(workspaceDir, { recursive: true });
-  const targetSessionDir = await checkedPath(live.bootstrap.sessionsDir, `${workspaceId}/${safeSessionId}`);
   const existingIndexed = await live.index.get(safeSessionId);
-  const existingIndexedDir =
-    existingIndexed === undefined
-      ? undefined
-      : await checkedPath(live.bootstrap.sessionsDir, `${safePortablePath(existingIndexed.workspaceId)}/${safeSessionId}`).catch(() => undefined);
-  const targetExists = (await missing(lstat(targetSessionDir))) !== undefined;
-  const existingDir = targetExists
-    ? targetSessionDir
-    : existingIndexedDir !== undefined && existingIndexedDir !== input.stageDir && (await missing(lstat(existingIndexedDir))) !== undefined
-      ? existingIndexedDir
-      : undefined;
-
-  if (existingDir !== undefined) {
-    const newer = await shouldUpdateExistingSession(existingDir, incomingUpdatedAt, input.files);
-    if (!newer) return 'skipped';
+  const lockWorkspaces = existingIndexed === undefined ? [workspaceId] : [workspaceId, existingIndexed.workspaceId];
+  const locks = await acquireSessionSyncLocks(live, safeSessionId, lockWorkspaces);
+  if (locks === undefined) {
+    return 'skipped';
   }
 
-  for (const derived of STALE_DERIVED_SESSION_ENTRIES) {
-    await rm(join(input.stageDir, derived), { recursive: true, force: true }).catch(() => undefined);
-  }
-
-  if (!targetExists) {
-    await rename(input.stageDir, targetSessionDir);
-    if (existingIndexedDir !== undefined && existingIndexedDir !== targetSessionDir) {
-      await rm(existingIndexedDir, { recursive: true, force: true }).catch(() => undefined);
-    }
-    return 'applied';
-  }
-
-  const backupParent = join(dirname(live.bootstrap.sessionsDir), '.sync-staging');
-  await mkdir(backupParent, { recursive: true });
-  const backupDir = join(backupParent, `backup-${safeSessionId}-${randomBytes(6).toString('hex')}`);
-  await rename(targetSessionDir, backupDir);
   try {
-    await rename(input.stageDir, targetSessionDir);
-  } catch (error) {
-    await rename(backupDir, targetSessionDir).catch(() => undefined);
-    throw error;
+    if (live.sessions.get(safeSessionId) !== undefined) {
+      return 'skipped';
+    }
+    for (const metaRel of CANONICAL_SESSION_META_FILES) {
+      if (!input.files.some((entry) => entry.relativePath === metaRel)) continue;
+      const metaPath = join(input.stageDir, metaRel);
+      const rawBytes = await missing(readFile(metaPath));
+      if (rawBytes === undefined) return 'skipped';
+      const rewritten = rewriteSessionMetaBytes(rawBytes, workspaceId, input.remap);
+      if (rewritten === undefined) return 'skipped';
+      await writeFileAtomic(metaPath, rewritten);
+    }
+
+    const incomingUpdatedAt = parseSessionUpdatedAt(rawPrimaryMeta);
+    const workspaceDir = await checkedPath(live.bootstrap.sessionsDir, workspaceId);
+    await mkdir(workspaceDir, { recursive: true });
+    const targetSessionDir = await checkedPath(live.bootstrap.sessionsDir, `${workspaceId}/${safeSessionId}`);
+    const existingIndexedDir =
+      existingIndexed === undefined
+        ? undefined
+        : await checkedPath(live.bootstrap.sessionsDir, `${safePortablePath(existingIndexed.workspaceId)}/${safeSessionId}`).catch(() => undefined);
+    const targetExists = (await missing(lstat(targetSessionDir))) !== undefined;
+    const existingDir = targetExists
+      ? targetSessionDir
+      : existingIndexedDir !== undefined && existingIndexedDir !== input.stageDir && (await missing(lstat(existingIndexedDir))) !== undefined
+        ? existingIndexedDir
+        : undefined;
+
+    if (existingDir !== undefined) {
+      const shouldUpdate = await shouldUpdateExistingSession(existingDir, input.stageDir, incomingUpdatedAt, input.files);
+      if (!shouldUpdate) return 'skipped';
+    }
+
+    for (const derived of STALE_DERIVED_SESSION_ENTRIES) {
+      await rm(join(input.stageDir, derived), { recursive: true, force: true }).catch(() => undefined);
+    }
+
+    if (!targetExists) {
+      await rename(input.stageDir, targetSessionDir);
+      if (existingIndexedDir !== undefined && existingIndexedDir !== targetSessionDir) {
+        await rm(existingIndexedDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+      return 'applied';
+    }
+
+    const backupParent = join(dirname(live.bootstrap.sessionsDir), '.sync-staging');
+    await mkdir(backupParent, { recursive: true });
+    const backupDir = join(backupParent, `backup-${safeSessionId}-${randomBytes(6).toString('hex')}`);
+    await rename(targetSessionDir, backupDir);
+    try {
+      await rename(input.stageDir, targetSessionDir);
+    } catch (error) {
+      try {
+        await rename(backupDir, targetSessionDir);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `Session directory swap failed for '${safeSessionId}' and rollback also failed`,
+        );
+      }
+      throw error;
+    }
+    await rm(backupDir, { recursive: true, force: true }).catch(() => undefined);
+    return 'applied';
+  } finally {
+    for (const lock of locks.toReversed()) {
+      await lock.release().catch(() => undefined);
+    }
   }
-  await rm(backupDir, { recursive: true, force: true }).catch(() => undefined);
-  return 'applied';
 }
 
 export async function refreshSessionIndexAfterImport(index: SessionLiveServices['index']): Promise<void> {

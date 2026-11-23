@@ -533,6 +533,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     new SystemCcpTunnelRunner({
       spawn: (command, args, options) => core.accessor.get(IHostProcessService).spawn(command, args, options),
     }),
+    { logger },
   );
   const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger, ccpTunnel);
   await Promise.all([admission.ready(), remoteConnections.ready()]);
