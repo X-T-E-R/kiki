@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   statSync,
@@ -257,28 +258,51 @@ export function callLocalApi({ port, token, path, method = 'GET', body, timeoutM
 export function defaultResolveProcessPath(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   if (process.platform === 'win32') {
+    const ps = join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     try {
-      const ps = join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       const output = execFileSync(
         ps,
         [
           '-NoProfile',
           '-NonInteractive',
           '-Command',
-          `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; if ($null -ne $p -and $p.ExecutablePath) { Write-Output $p.ExecutablePath }`,
+          `$ErrorActionPreference = 'Stop'; $p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($null -ne $p -and $p.ExecutablePath) { Write-Output $p.ExecutablePath }`,
         ],
-        { encoding: 'utf8', windowsHide: true, timeout: 5000 },
+        { encoding: 'utf8', windowsHide: true },
       ).trim();
       return output === '' ? null : output;
-    } catch {
-      return null;
+    } catch (error) {
+      throw new Error(
+        `Failed to query executable path for PID ${pid}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  const procExe = `/proc/${pid}/exe`;
+  if (existsSync('/proc')) {
+    try {
+      return readlinkSync(procExe);
+    } catch (error) {
+      if (error && typeof error === 'object' && (error.code === 'ENOENT' || error.code === 'ESRCH')) {
+        return null;
+      }
+      throw new Error(
+        `Failed to read ${procExe}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   }
   try {
     process.kill(pid, 0);
     return null;
-  } catch {
-    return null;
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ESRCH') {
+      return null;
+    }
+    throw new Error(
+      `Failed to probe PID ${pid}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 }
 
@@ -286,20 +310,24 @@ export function resolveActiveReleaseId(runtimeRoot) {
   const activeDir = join(resolve(runtimeRoot), 'active');
   const desktopPath = join(activeDir, 'kiki-desktop.exe');
   const serverPath = join(activeDir, 'kiki-server.exe');
-  if (existsSync(desktopPath) && existsSync(serverPath)) {
-    try {
-      const desktop = sha256File(desktopPath);
-      const server = sha256File(serverPath);
-      return `${desktop.sha256.slice(0, 24)}-${server.sha256.slice(0, 24)}`;
-    } catch {
-      // fall through to manifest
-    }
+  if (!existsSync(desktopPath) || !existsSync(serverPath)) {
+    throw new Error(
+      `Active runtime binaries are missing under ${activeDir} (expected kiki-desktop.exe and kiki-server.exe).`,
+    );
   }
+  const desktop = sha256File(desktopPath);
+  const server = sha256File(serverPath);
+  const computed = `${desktop.sha256.slice(0, 24)}-${server.sha256.slice(0, 24)}`;
   const activeManifest = readJsonIfExists(join(activeDir, 'active-release.json'));
-  if (activeManifest?.schemaVersion === 1 && RELEASE_ID_RE.test(String(activeManifest.releaseId ?? ''))) {
-    return activeManifest.releaseId;
+  if (
+    activeManifest !== null &&
+    (activeManifest.schemaVersion !== 1 || activeManifest.releaseId !== computed)
+  ) {
+    throw new Error(
+      `Active release manifest mismatch under ${activeDir}: active-release.json reports ${JSON.stringify(activeManifest.releaseId)}, verified binaries hash to ${computed}.`,
+    );
   }
-  return null;
+  return computed;
 }
 
 export function classifyRuntimeServerPath(runtimeRoot, executablePath) {
@@ -310,7 +338,6 @@ export function classifyRuntimeServerPath(runtimeRoot, executablePath) {
   const expectedActive = normalizeComparePath(join(normRoot, 'active', 'kiki-server.exe'));
   if (normExe === expectedActive) {
     const releaseId = resolveActiveReleaseId(normRoot);
-    if (!releaseId) return null;
     return { layout: 'active', releaseId, executablePath: cleanedExe };
   }
   const releasesDir = join(normRoot, 'releases');
@@ -319,6 +346,15 @@ export function classifyRuntimeServerPath(runtimeRoot, executablePath) {
     const rel = relative(releasesDir, resolve(cleanedExe));
     const parts = rel.split(/[/\\]+/);
     if (parts.length === 2 && RELEASE_ID_RE.test(parts[0]) && parts[1].toLowerCase() === 'kiki-server.exe') {
+      if (existsSync(cleanedExe)) {
+        const server = sha256File(cleanedExe);
+        const expectedServerPrefix = parts[0].split('-')[1];
+        if (server.sha256.slice(0, 24) !== expectedServerPrefix) {
+          throw new Error(
+            `Release server binary digest mismatch at ${cleanedExe}: expected prefix ${expectedServerPrefix}, got ${server.sha256.slice(0, 24)}.`,
+          );
+        }
+      }
       return { layout: 'releases', releaseId: parts[0], executablePath: cleanedExe };
     }
   }

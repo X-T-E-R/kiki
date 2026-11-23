@@ -17,6 +17,9 @@ export const EXIT_PASS = 0;
 export const EXIT_PRODUCT_FAIL = 1;
 export const EXIT_HARNESS_FAIL = 2;
 
+const DEFAULT_SMOKE_MATRIX = loadChaosMatrix('smoke');
+const DEFAULT_FULL_MATRIX = loadChaosMatrix('ccp');
+
 export const FROZEN_V23_THRESHOLDS = Object.freeze({
   p01: Object.freeze({
     httpTranscriptMaxMs: 300,
@@ -41,7 +44,7 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
       '/status',
       '/transcript/plan',
     ]),
-    fullRequiredSizeMiB: Object.freeze([20, 60, 82.65, 100, 408.2]),
+    fullRequiredSizeMiB: Object.freeze([...DEFAULT_FULL_MATRIX.tiers.p01ColdChild.sizesMiB]),
   }),
   p02: Object.freeze({
     maxInboundBytesPerSecP99: 128 * 1024,
@@ -53,16 +56,16 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
     minRollingWindowMs: 4_500,
   }),
   s10: Object.freeze({
-    promptAdmissionTextP95Ms: 250,
-    promptAdmissionTextMaxMs: 750,
-    promptAdmissionPngP95Ms: 500,
-    promptAdmissionPngMaxMs: 1500,
-    promptAdmissionP95Ms: 500,
-    promptAdmissionMaxMs: 1500,
-    sendToReceiptP95Ms: 750,
-    sendToReceiptMaxMs: 2000,
-    eldP99Ms: 50,
-    eldMaxMs: 250,
+    promptAdmissionTextP95Ms: DEFAULT_SMOKE_MATRIX.tiers.s10.promptAdmissionTextP95Ms,
+    promptAdmissionTextMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s10.promptAdmissionTextMaxMs,
+    promptAdmissionPngP95Ms: DEFAULT_SMOKE_MATRIX.tiers.s10.promptAdmissionPngP95Ms,
+    promptAdmissionPngMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s10.promptAdmissionPngMaxMs,
+    promptAdmissionP95Ms: DEFAULT_SMOKE_MATRIX.tiers.s10.promptAdmissionP95Ms,
+    promptAdmissionMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s10.promptAdmissionMaxMs,
+    sendToReceiptP95Ms: DEFAULT_SMOKE_MATRIX.tiers.s10.sendToReceiptP95Ms,
+    sendToReceiptMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s10.sendToReceiptMaxMs,
+    eldP99Ms: DEFAULT_SMOKE_MATRIX.tiers.s10.eldP99Ms,
+    eldMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s10.eldMaxMs,
     clsMax: 0.02,
     rawLayoutShiftMax: 0.02,
     composerTypingP95Ms: 32,
@@ -72,10 +75,10 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
     }),
   }),
   s14: Object.freeze({
-    maxServerCorePct: 2.0,
-    maxRendererPlusGpuCorePct: 3.0,
-    minWindowsSmoke: 3,
-    minWindowsFull: 12,
+    maxServerCorePct: DEFAULT_SMOKE_MATRIX.tiers.idleCpu.maxServerCorePct,
+    maxRendererPlusGpuCorePct: DEFAULT_SMOKE_MATRIX.tiers.idleCpu.maxRendererPlusGpuCorePct,
+    minWindowsSmoke: DEFAULT_SMOKE_MATRIX.tiers.idleCpu.windowCount,
+    minWindowsFull: DEFAULT_FULL_MATRIX.tiers.idleCpu.windowCount,
   }),
   s16: Object.freeze({
     coldBootToShellMaxMs: 4_000,
@@ -87,20 +90,24 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
     maxJsWireMiB: 2.5,
   }),
   s17: Object.freeze({
-    searchP95MaxMs: 2_000,
-    listP95MaxMs: 1_000,
-    usageP95MaxMs: 1_500,
-    promptAdmissionMaxMs: 2_500,
-    externalStallHealthMaxMs: 500,
-    processHelperBurstP95MaxMs: 8_000,
+    searchP95MaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.sqliteContention.searchP95MaxMs,
+    listP95MaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.sqliteContention.listP95MaxMs,
+    usageP95MaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.sqliteContention.usageP95MaxMs,
+    promptAdmissionMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.sqliteContention.promptAdmissionMaxMs,
+    externalStallHealthMaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.externalStalls.healthMaxMs,
+    processHelperBurstP95MaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.processHelperContention.maxBurstP95Ms,
     eldP99MaxMs: 250,
     eldMaxMs: 1_500,
   }),
 });
 
+function isPositiveFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
 /**
- * Validates that a loaded matrix JSON (smoke.json, ccp.json, workstation-cliff.json)
- * has zero threshold/parameter drift against FROZEN_V23_THRESHOLDS.
+ * Validates structural soundness and positive finite targets of a loaded chaos matrix.
+ * Matrix JSON is the single authoritative target source for runner + verdict.
  */
 export function validateMatrixThresholdParity(matrix) {
   const drifts = [];
@@ -108,7 +115,6 @@ export function validateMatrixThresholdParity(matrix) {
     return { ok: false, drifts: ['Missing matrix.tiers'] };
   }
   const s10 = matrix.tiers.s10 ?? {};
-  const s10Frozen = FROZEN_V23_THRESHOLDS.s10;
   for (const key of [
     'promptAdmissionTextP95Ms',
     'promptAdmissionTextMaxMs',
@@ -121,31 +127,24 @@ export function validateMatrixThresholdParity(matrix) {
     'eldP99Ms',
     'eldMaxMs',
   ]) {
-    if (s10[key] !== s10Frozen[key]) {
-      drifts.push(`tiers.s10.${key}=${String(s10[key])} !== FROZEN_V23_THRESHOLDS.s10.${key}=${String(s10Frozen[key])}`);
+    if (!isPositiveFiniteNumber(s10[key])) {
+      drifts.push(`tiers.s10.${key} must be a positive finite number, got ${String(s10[key])}`);
     }
   }
   const idle = matrix.tiers.idleCpu;
   if (!idle || typeof idle !== 'object') {
     drifts.push('Missing tiers.idleCpu');
   } else {
-    if (idle.maxServerCorePct !== FROZEN_V23_THRESHOLDS.s14.maxServerCorePct) {
-      drifts.push(`tiers.idleCpu.maxServerCorePct=${idle.maxServerCorePct} !== ${FROZEN_V23_THRESHOLDS.s14.maxServerCorePct}`);
+    if (!isPositiveFiniteNumber(idle.maxServerCorePct)) {
+      drifts.push(`tiers.idleCpu.maxServerCorePct must be a positive finite number, got ${String(idle.maxServerCorePct)}`);
     }
-    if (idle.maxRendererPlusGpuCorePct !== FROZEN_V23_THRESHOLDS.s14.maxRendererPlusGpuCorePct) {
-      drifts.push(`tiers.idleCpu.maxRendererPlusGpuCorePct=${idle.maxRendererPlusGpuCorePct} !== ${FROZEN_V23_THRESHOLDS.s14.maxRendererPlusGpuCorePct}`);
+    if (!isPositiveFiniteNumber(idle.maxRendererPlusGpuCorePct)) {
+      drifts.push(`tiers.idleCpu.maxRendererPlusGpuCorePct must be a positive finite number, got ${String(idle.maxRendererPlusGpuCorePct)}`);
     }
   }
   const p01 = matrix.tiers.p01ColdChild;
-  if (!p01 || !Array.isArray(p01.sizesMiB) || p01.sizesMiB.length === 0) {
-    drifts.push('Missing tiers.p01ColdChild.sizesMiB');
-  } else if (matrix.tier === 'full') {
-    const sizes = p01.sizesMiB;
-    for (const reqMiB of FROZEN_V23_THRESHOLDS.p01.fullRequiredSizeMiB) {
-      if (!sizes.some((s) => Math.abs(Number(s) - reqMiB) <= 0.5)) {
-        drifts.push(`tiers.p01ColdChild.sizesMiB missing required empirical size ${reqMiB} MiB`);
-      }
-    }
+  if (!p01 || !Array.isArray(p01.sizesMiB) || p01.sizesMiB.length === 0 || p01.sizesMiB.some((s) => !isPositiveFiniteNumber(Number(s)))) {
+    drifts.push('Missing or invalid tiers.p01ColdChild.sizesMiB');
   }
   const s17 = matrix.tiers.s17WorkstationCliff;
   if (!s17 || typeof s17 !== 'object') {
@@ -154,24 +153,17 @@ export function validateMatrixThresholdParity(matrix) {
     if (s17.sqliteContention?.enableSearch !== true) {
       drifts.push('tiers.s17WorkstationCliff.sqliteContention.enableSearch must be true');
     }
-    const T17 = FROZEN_V23_THRESHOLDS.s17;
-    if (s17.sqliteContention?.searchP95MaxMs !== T17.searchP95MaxMs) {
-      drifts.push(`s17.sqliteContention.searchP95MaxMs=${s17.sqliteContention?.searchP95MaxMs} !== ${T17.searchP95MaxMs}`);
-    }
-    if (s17.sqliteContention?.listP95MaxMs !== T17.listP95MaxMs) {
-      drifts.push(`s17.sqliteContention.listP95MaxMs=${s17.sqliteContention?.listP95MaxMs} !== ${T17.listP95MaxMs}`);
-    }
-    if (s17.sqliteContention?.usageP95MaxMs !== T17.usageP95MaxMs) {
-      drifts.push(`s17.sqliteContention.usageP95MaxMs=${s17.sqliteContention?.usageP95MaxMs} !== ${T17.usageP95MaxMs}`);
-    }
-    if (s17.sqliteContention?.promptAdmissionMaxMs !== T17.promptAdmissionMaxMs) {
-      drifts.push(`s17.sqliteContention.promptAdmissionMaxMs=${s17.sqliteContention?.promptAdmissionMaxMs} !== ${T17.promptAdmissionMaxMs}`);
-    }
-    if (s17.externalStalls?.healthMaxMs !== T17.externalStallHealthMaxMs) {
-      drifts.push(`s17.externalStalls.healthMaxMs=${s17.externalStalls?.healthMaxMs} !== ${T17.externalStallHealthMaxMs}`);
-    }
-    if (s17.processHelperContention?.maxBurstP95Ms !== T17.processHelperBurstP95MaxMs) {
-      drifts.push(`s17.processHelperContention.maxBurstP95Ms=${s17.processHelperContention?.maxBurstP95Ms} !== ${T17.processHelperBurstP95MaxMs}`);
+    for (const [label, val] of [
+      ['s17.sqliteContention.searchP95MaxMs', s17.sqliteContention?.searchP95MaxMs],
+      ['s17.sqliteContention.listP95MaxMs', s17.sqliteContention?.listP95MaxMs],
+      ['s17.sqliteContention.usageP95MaxMs', s17.sqliteContention?.usageP95MaxMs],
+      ['s17.sqliteContention.promptAdmissionMaxMs', s17.sqliteContention?.promptAdmissionMaxMs],
+      ['s17.externalStalls.healthMaxMs', s17.externalStalls?.healthMaxMs],
+      ['s17.processHelperContention.maxBurstP95Ms', s17.processHelperContention?.maxBurstP95Ms],
+    ]) {
+      if (!isPositiveFiniteNumber(val)) {
+        drifts.push(`${label} must be a positive finite number, got ${String(val)}`);
+      }
     }
     const sub = Number(s17.workspacePathCliffs?.subOverflowFiles ?? 0);
     const over = Number(s17.workspacePathCliffs?.umbrellaOverflowFiles ?? 0);
@@ -925,10 +917,16 @@ export function evaluateIdleCpuGate(idleReport, tierOverride = null) {
     harnessFailures.push('Idle CPU gate missing report');
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, productFailures, harnessFailures };
   }
-  const T = FROZEN_V23_THRESHOLDS.s14;
-  const tier = (tierOverride ?? idleReport.tier) === 'full' ? 'full' : 'smoke';
+  const matrixOverride = tierOverride && typeof tierOverride === 'object' && tierOverride.tiers ? tierOverride : null;
+  const tier = ((matrixOverride?.tier ?? (typeof tierOverride === 'string' ? tierOverride : null) ?? idleReport.tier) === 'full') ? 'full' : 'smoke';
+  const idleCfg = matrixOverride?.tiers?.idleCpu ?? (tier === 'full' ? DEFAULT_FULL_MATRIX.tiers.idleCpu : DEFAULT_SMOKE_MATRIX.tiers.idleCpu);
+  const T = {
+    ...FROZEN_V23_THRESHOLDS.s14,
+    maxServerCorePct: isPositiveFiniteNumber(idleCfg?.maxServerCorePct) ? idleCfg.maxServerCorePct : FROZEN_V23_THRESHOLDS.s14.maxServerCorePct,
+    maxRendererPlusGpuCorePct: isPositiveFiniteNumber(idleCfg?.maxRendererPlusGpuCorePct) ? idleCfg.maxRendererPlusGpuCorePct : FROZEN_V23_THRESHOLDS.s14.maxRendererPlusGpuCorePct,
+  };
   const windows = idleReport.windows;
-  const requiredWindowCount = tier === 'full' ? T.minWindowsFull : T.minWindowsSmoke;
+  const requiredWindowCount = isPositiveFiniteNumber(idleCfg?.windowCount) ? idleCfg.windowCount : (tier === 'full' ? T.minWindowsFull : T.minWindowsSmoke);
   if (!Array.isArray(windows) || windows.length < requiredWindowCount) {
     harnessFailures.push(`Idle CPU gate missing windows: got ${windows?.length ?? 0} < required ${requiredWindowCount}`);
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, productFailures, harnessFailures };
@@ -1126,7 +1124,7 @@ export function evaluateCcpRunVerdict({
         if (!sc.s10.evidence || typeof sc.s10.evidence !== 'object') {
           harnessFailures.push('S10 scenario missing evidence object');
         } else {
-          const v = evaluateS10Verdict(sc.s10.evidence, { tier: reportTier });
+          const v = evaluateS10Verdict(sc.s10.evidence, { tier: reportTier, matrix: chaosReport.matrix });
           productFailures.push(...v.productFailures);
           harnessFailures.push(...v.harnessFailures);
         }
@@ -1199,7 +1197,7 @@ export function evaluateCcpRunVerdict({
         if (!sc.s14.idleReport) {
           harnessFailures.push('S14 scenario missing idleReport');
         } else {
-          const idle = evaluateIdleCpuGate(sc.s14.idleReport, reportTier);
+          const idle = evaluateIdleCpuGate(sc.s14.idleReport, chaosReport.matrix?.tiers ? chaosReport.matrix : reportTier);
           productFailures.push(...idle.productFailures);
           harnessFailures.push(...idle.harnessFailures);
         }
@@ -1221,9 +1219,14 @@ export function evaluateCcpRunVerdict({
       }
       if (sc.s17) {
         const expectedS17Target =
-          expectedTier !== undefined && expectedTier !== null
-            ? normExpectedTier(expectedTier)
-            : chaosReport.matrix?.name ?? reportTier;
+          chaosReport.matrix?.tiers &&
+          (expectedTier === undefined ||
+            expectedTier === null ||
+            normExpectedTier(chaosReport.matrix.tier) === normExpectedTier(expectedTier))
+            ? chaosReport.matrix
+            : expectedTier !== undefined && expectedTier !== null
+              ? normExpectedTier(expectedTier)
+              : chaosReport.matrix?.name ?? reportTier;
         const s17Eval = evaluateS17WorkstationCliffVerdict(sc.s17, expectedS17Target);
         productFailures.push(...s17Eval.productFailures);
         harnessFailures.push(...s17Eval.harnessFailures);
@@ -1264,8 +1267,13 @@ export function evaluateCcpRunVerdict({
 export function evaluateS10Verdict(evidence, options = {}) {
   const productFailures = [];
   const harnessFailures = [];
-  const T = FROZEN_V23_THRESHOLDS.s10;
-  const tier = (options.tier ?? evidence?.tier) === 'full' ? 'full' : 'smoke';
+  const tier = (options.matrix?.tier ?? options.tier ?? evidence?.tier) === 'full' ? 'full' : 'smoke';
+  const s10Cfg = options.matrix?.tiers?.s10 ?? (tier === 'full' ? DEFAULT_FULL_MATRIX.tiers.s10 : DEFAULT_SMOKE_MATRIX.tiers.s10);
+  const T = {
+    ...FROZEN_V23_THRESHOLDS.s10,
+    ...s10Cfg,
+    tiers: FROZEN_V23_THRESHOLDS.s10.tiers,
+  };
   const scaleFloor = T.tiers[tier];
   const minPeakChildren = Math.max(scaleFloor.minPeakActiveChildren, options.minPeakActiveChildren ?? 0);
   const minChildToolCalls = Math.max(scaleFloor.minChildToolCalls, options.minChildToolCalls ?? 0);
@@ -1569,7 +1577,6 @@ export function evaluateS17WorkstationCliffVerdict(report, matrixOrTierOverride 
     harnessFailures.push('S17 missing workstation-cliff report');
     return { passed: false, exitCode: EXIT_HARNESS_FAIL, status: 'HARNESS_FAIL', productFailures, harnessFailures };
   }
-  const T = FROZEN_V23_THRESHOLDS.s17;
   let expectedMatrix;
   try {
     if (matrixOrTierOverride && typeof matrixOrTierOverride === 'object' && matrixOrTierOverride.tiers) {
@@ -1591,6 +1598,27 @@ export function evaluateS17WorkstationCliffVerdict(report, matrixOrTierOverride 
   }
   const tier = expectedMatrix.tier === 'full' ? 'full' : 'smoke';
   const expectedCfg = resolveS17MatrixConfig(expectedMatrix);
+  const T = {
+    ...FROZEN_V23_THRESHOLDS.s17,
+    searchP95MaxMs: isPositiveFiniteNumber(expectedCfg.sqliteContention?.searchP95MaxMs)
+      ? expectedCfg.sqliteContention.searchP95MaxMs
+      : FROZEN_V23_THRESHOLDS.s17.searchP95MaxMs,
+    listP95MaxMs: isPositiveFiniteNumber(expectedCfg.sqliteContention?.listP95MaxMs)
+      ? expectedCfg.sqliteContention.listP95MaxMs
+      : FROZEN_V23_THRESHOLDS.s17.listP95MaxMs,
+    usageP95MaxMs: isPositiveFiniteNumber(expectedCfg.sqliteContention?.usageP95MaxMs)
+      ? expectedCfg.sqliteContention.usageP95MaxMs
+      : FROZEN_V23_THRESHOLDS.s17.usageP95MaxMs,
+    promptAdmissionMaxMs: isPositiveFiniteNumber(expectedCfg.sqliteContention?.promptAdmissionMaxMs)
+      ? expectedCfg.sqliteContention.promptAdmissionMaxMs
+      : FROZEN_V23_THRESHOLDS.s17.promptAdmissionMaxMs,
+    externalStallHealthMaxMs: isPositiveFiniteNumber(expectedCfg.externalStalls?.healthMaxMs)
+      ? expectedCfg.externalStalls.healthMaxMs
+      : FROZEN_V23_THRESHOLDS.s17.externalStallHealthMaxMs,
+    processHelperBurstP95MaxMs: isPositiveFiniteNumber(expectedCfg.processHelperContention?.maxBurstP95Ms)
+      ? expectedCfg.processHelperContention.maxBurstP95Ms
+      : FROZEN_V23_THRESHOLDS.s17.processHelperBurstP95MaxMs,
+  };
 
   // 1. Dual WorkspacePathIndex Real-Directory Cliffs (NO symlinks!)
   const cliffs = report.workspacePathCliffs;

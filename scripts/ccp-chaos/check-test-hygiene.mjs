@@ -21,9 +21,7 @@ const WALK_SKIP_DIRS = new Set([
 
 export const LEGACY_DISABLED_TEST_ALLOWLIST = new Set();
 
-export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = Object.freeze(
-  JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'legacy-mock-allowlist.json'), 'utf8')),
-);
+export const LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST = null;
 
 function lexCommentsAndStrings(src, filePath = 'test.ts') {
   const lower = filePath.toLowerCase();
@@ -557,13 +555,107 @@ function consumeMockAllowlistQuota(allowlist, rel, target, perFileBudgets) {
   return true;
 }
 
+function countMockTargetsInContent(content, filePath) {
+  const counts = {};
+  const lineNumberAtOffset = (offset) => content.slice(0, offset).split('\n').length;
+  for (const found of findIntraMonorepoMocks(content, lineNumberAtOffset, filePath)) {
+    counts[found.target] = (counts[found.target] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function resolveDefaultDiffArgs(repoRoot, baseRef) {
+  if (baseRef) {
+    const mb = spawnSync('git', ['merge-base', baseRef, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+    if (mb.status === 0 && mb.stdout.trim()) {
+      const mergeBase = mb.stdout.trim();
+      return { ok: true, baseRef, mergeBase, args: ['diff', '-M', '-U0', mergeBase] };
+    }
+    const verified = spawnSync('git', ['rev-parse', '--verify', `${baseRef}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
+    if (verified.status === 0 && verified.stdout.trim()) {
+      const mergeBase = verified.stdout.trim();
+      return { ok: true, baseRef, mergeBase, args: ['diff', '-M', '-U0', mergeBase] };
+    }
+    return {
+      ok: false,
+      baseRef,
+      mergeBase: null,
+      error: `Unable to establish comparison baseline for --base "${baseRef}".`,
+    };
+  }
+  for (const candidate of ['origin/kiki', 'origin/main']) {
+    const mb = spawnSync('git', ['merge-base', candidate, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+    if (mb.status === 0 && mb.stdout.trim()) {
+      const mergeBase = mb.stdout.trim();
+      return { ok: true, baseRef: candidate, mergeBase, args: ['diff', '-M', '-U0', mergeBase] };
+    }
+  }
+  return {
+    ok: false,
+    baseRef: null,
+    mergeBase: null,
+    error: 'Unable to establish comparison baseline (neither origin/kiki nor origin/main is available; pass --base <ref>).',
+  };
+}
+
+function buildGitBaselineMockPlan(repoRoot, mergeBase) {
+  const statusRes = spawnSync('git', ['diff', '--name-status', '-M', mergeBase], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (statusRes.status !== 0) {
+    return null;
+  }
+  const changedByPath = new Map();
+  for (const rawLine of statusRes.stdout.split(/\r?\n/u)) {
+    if (!rawLine.trim()) continue;
+    const parts = rawLine.split('\t');
+    const code = parts[0] ?? '';
+    if (code.startsWith('R') && parts.length >= 3) {
+      changedByPath.set(parts[2], { status: 'R', oldPath: parts[1] });
+    } else if (code.startsWith('M') && parts.length >= 2) {
+      changedByPath.set(parts[1], { status: 'M', oldPath: parts[1] });
+    } else if ((code.startsWith('A') || code.startsWith('C')) && parts.length >= 2) {
+      const dest = code.startsWith('C') && parts.length >= 3 ? parts[2] : parts[1];
+      changedByPath.set(dest, { status: 'A', oldPath: null });
+    }
+  }
+  const baseBudgetsCache = new Map();
+  return {
+    resolveFileBudget(rel) {
+      const change = changedByPath.get(rel);
+      if (!change) return 'unchanged';
+      if (change.status === 'A' || !change.oldPath) return {};
+      let cached = baseBudgetsCache.get(change.oldPath);
+      if (cached === undefined) {
+        const showRes = spawnSync('git', ['show', `${mergeBase}:${change.oldPath}`], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        cached = showRes.status === 0 ? countMockTargetsInContent(showRes.stdout, change.oldPath) : {};
+        baseBudgetsCache.set(change.oldPath, cached);
+      }
+      return { ...cached };
+    },
+  };
+}
+
 export function scanIntraMonorepoMocks(
   repoRoot = DEFAULT_ROOT,
-  { allowlist = LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST, roots = ['packages', 'apps', 'scripts'] } = {},
+  { allowlist = LEGACY_INTRA_MONOREPO_MOCK_ALLOWLIST, baseRef, roots = ['packages', 'apps', 'scripts'] } = {},
 ) {
   const violations = [];
   const legacyExempted = [];
   const perFileBudgets = new Map();
+  let baselinePlan = null;
+  if (allowlist === null || allowlist === undefined) {
+    const resolved = resolveDefaultDiffArgs(repoRoot, baseRef);
+    if (resolved.ok && resolved.mergeBase) {
+      baselinePlan = buildGitBaselineMockPlan(repoRoot, resolved.mergeBase);
+    }
+  }
   for (const sub of roots) {
     const dir = path.join(repoRoot, sub);
     const files = walkFiles(dir, (_abs, name) => TEST_FILE_RE.test(name));
@@ -571,43 +663,31 @@ export function scanIntraMonorepoMocks(
       const rel = toPosix(path.relative(repoRoot, abs));
       const content = fs.readFileSync(abs, 'utf8');
       const lineNumberAtOffset = (offset) => content.slice(0, offset).split('\n').length;
-      for (const found of findIntraMonorepoMocks(content, lineNumberAtOffset, rel)) {
-        const hit = { file: rel, line: found.line, target: found.target, text: found.text };
-        if (consumeMockAllowlistQuota(allowlist, rel, found.target, perFileBudgets)) legacyExempted.push(hit);
-        else violations.push(hit);
+      const foundMocks = findIntraMonorepoMocks(content, lineNumberAtOffset, rel);
+      if (foundMocks.length === 0) continue;
+      if (baselinePlan) {
+        const budget = baselinePlan.resolveFileBudget(rel);
+        for (const found of foundMocks) {
+          const hit = { file: rel, line: found.line, target: found.target, text: found.text };
+          if (budget === 'unchanged') {
+            legacyExempted.push(hit);
+          } else if ((budget[found.target] ?? 0) > 0) {
+            budget[found.target] -= 1;
+            legacyExempted.push(hit);
+          } else {
+            violations.push(hit);
+          }
+        }
+      } else {
+        for (const found of foundMocks) {
+          const hit = { file: rel, line: found.line, target: found.target, text: found.text };
+          if (consumeMockAllowlistQuota(allowlist, rel, found.target, perFileBudgets)) legacyExempted.push(hit);
+          else violations.push(hit);
+        }
       }
     }
   }
   return { violations, legacyExempted };
-}
-
-function resolveDefaultDiffArgs(repoRoot, baseRef) {
-  if (baseRef) {
-    const mb = spawnSync('git', ['merge-base', baseRef, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
-    if (mb.status === 0 && mb.stdout.trim()) {
-      return { ok: true, baseRef, args: ['diff', '-U0', mb.stdout.trim()] };
-    }
-    const verified = spawnSync('git', ['rev-parse', '--verify', `${baseRef}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
-    if (verified.status === 0 && verified.stdout.trim()) {
-      return { ok: true, baseRef, args: ['diff', '-U0', `${baseRef}...HEAD`] };
-    }
-    return {
-      ok: false,
-      baseRef,
-      error: `Unable to establish comparison baseline for --base "${baseRef}".`,
-    };
-  }
-  for (const candidate of ['origin/kiki', 'origin/main']) {
-    const mb = spawnSync('git', ['merge-base', candidate, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
-    if (mb.status === 0 && mb.stdout.trim()) {
-      return { ok: true, baseRef: candidate, args: ['diff', '-U0', mb.stdout.trim()] };
-    }
-  }
-  return {
-    ok: false,
-    baseRef: null,
-    error: 'Unable to establish comparison baseline (neither origin/kiki nor origin/main is available; pass --base <ref>).',
-  };
 }
 
 export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffText } = {}) {
@@ -779,13 +859,14 @@ export function runTestHygieneCheck({ repoRoot = DEFAULT_ROOT, baseRef, diffText
   }
 
   const disabled = scanDisabledTests(repoRoot, { roots: scanRoots });
-  const intraMonorepoMocks = scanIntraMonorepoMocks(repoRoot, { roots: scanRoots });
+  const intraMonorepoMocks = scanIntraMonorepoMocks(repoRoot, { baseRef, roots: scanRoots });
   const diffRatchet = checkDiffMockRatchet({ repoRoot, baseRef, diffText });
+  const enforceTreeMocks = diffText === undefined;
 
   const ok =
     contractFailures.length === 0 &&
     disabled.violations.length === 0 &&
-    intraMonorepoMocks.violations.length === 0 &&
+    (!enforceTreeMocks || intraMonorepoMocks.violations.length === 0) &&
     diffRatchet.baselineAvailable &&
     diffRatchet.mockViolations.length === 0 &&
     diffRatchet.disabledAddedViolations.length === 0;

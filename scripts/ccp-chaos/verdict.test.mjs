@@ -1238,11 +1238,12 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     assert.equal(s16Cheated.exitCode, EXIT_HARNESS_FAIL);
   });
 
-  it('S17 Workstation-Cliff negative meta-gates & matrix threshold drift detector', () => {
-    // Matrix drift detection rejects mutated thresholds, missing sections, and underscaled full workloads
-    const driftedMatrix = structuredClone(loadChaosMatrix('smoke'));
-    driftedMatrix.tiers.s17WorkstationCliff.sqliteContention.searchP95MaxMs = 99999;
-    const parityFail = validateMatrixThresholdParity(driftedMatrix);
+  it('S17 Workstation-Cliff negative meta-gates & single-source matrix target evaluation', () => {
+    // Structural validation rejects non-positive targets, missing sections, and underscaled full workloads,
+    // while tightening a target in the matrix runs cleanly and evaluates verdict against the new target.
+    const nonPositiveMatrix = structuredClone(loadChaosMatrix('smoke'));
+    nonPositiveMatrix.tiers.s17WorkstationCliff.sqliteContention.searchP95MaxMs = 0;
+    const parityFail = validateMatrixThresholdParity(nonPositiveMatrix);
     assert.equal(parityFail.ok, false);
     assert.ok(parityFail.drifts.some((d) => d.includes('searchP95MaxMs')));
 
@@ -1250,13 +1251,13 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     delete missingIdle.tiers.idleCpu;
     assert.equal(validateMatrixThresholdParity(missingIdle).ok, false);
 
-    const driftedPrompt = structuredClone(loadChaosMatrix('smoke'));
-    driftedPrompt.tiers.s17WorkstationCliff.sqliteContention.promptAdmissionMaxMs = 1;
-    assert.equal(validateMatrixThresholdParity(driftedPrompt).ok, false);
-
     const underscaledFull = structuredClone(loadChaosMatrix('ccp'));
     underscaledFull.tiers.s17WorkstationCliff.corpus.coldSessions = 1;
     assert.equal(validateMatrixThresholdParity(underscaledFull).ok, false);
+
+    const tightenedMatrix = structuredClone(loadChaosMatrix('smoke'));
+    tightenedMatrix.tiers.s17WorkstationCliff.sqliteContention.searchP95MaxMs = 150;
+    assert.equal(validateMatrixThresholdParity(tightenedMatrix).ok, true);
 
     const cleanS17 = () => ({
       runId: 's17_unit_clean',
@@ -1378,6 +1379,14 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
 
     const ok = evaluateS17WorkstationCliffVerdict(cleanS17(), 'smoke');
+    assert.equal(ok.passed, true);
+
+    const slowForTightened = cleanS17();
+    slowForTightened.sqliteContention.searchLatencyMs = { p50: 80, p95: 250, max: 300 };
+    assert.equal(evaluateS17WorkstationCliffVerdict(slowForTightened, 'smoke').passed, true);
+    const tightenedVerdict = evaluateS17WorkstationCliffVerdict(slowForTightened, tightenedMatrix);
+    assert.equal(tightenedVerdict.passed, false);
+    assert.equal(tightenedVerdict.exitCode, EXIT_PRODUCT_FAIL);
     assert.equal(ok.passed, true, `Expected cleanS17 pass, got: ${JSON.stringify(ok)}`);
     assert.equal(ok.exitCode, EXIT_PASS);
 

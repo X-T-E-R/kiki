@@ -27,7 +27,6 @@ interface Plan {
 interface StoredFork extends ForkBase { source: string; destination: string; shared?: boolean }
 interface Preview { at: number; plan: Plan }
 const TTL = 5 * 60_000;
-const MAX_PREVIEWS = 6;
 const sourceListSchema = z.array(portableSpaceSourceRecordSchema);
 
 function agreedBase(left: Units, right: Units, key: string, prior: VerifiedBase | undefined): VerifiedBase {
@@ -331,7 +330,6 @@ export class PortableSpaceService {
     const previewToken = randomUUID();
     const now = Date.now();
     for (const [token, preview] of this.previews) if (preview.at + TTL <= now) this.previews.delete(token);
-    while (this.previews.size >= MAX_PREVIEWS) this.previews.delete(this.previews.keys().next().value!);
     this.previews.set(previewToken, { at: now, plan });
     const rows = plan.changes.map((change) => change.row);
     return { mode: input.mode, hasVerifiedBase: plan.base !== undefined, rows, previewToken,

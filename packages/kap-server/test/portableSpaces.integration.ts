@@ -755,6 +755,38 @@ describe('Portable Spaces authenticated locked protocol', () => {
     const rejected = await failedRequest(source, sourceBase, '/api/spaces/portable/export', { destination: gitDir, secretMode: 'plain', domains: ['credentials'] }, 400);
     expect(rejected.msg).toMatch(/ignor/i);
     expect(await exists(join(gitDir, PLAIN))).toBe(false);
+
+    const previewSource = join(root, 'preview-retention-src');
+    const previewTarget = join(root, 'preview-retention-dst');
+    await mkdir(previewSource);
+    await mkdir(previewTarget);
+    await writeFile(join(previewSource, 'config.toml'), 'default_model = "preview-retained"\n');
+    const firstPreview = await request(
+      source,
+      sourceBase,
+      '/api/spaces/portable/preview',
+      { mode: 'override', sources: [{ kind: 'dir', path: previewSource }], target: { kind: 'dir', path: previewTarget }, domains: ['config'] },
+      portableSpacePreviewResultSchema,
+    );
+    for (let idx = 0; idx < 8; idx += 1) {
+      const otherDir = join(root, `preview-other-${idx}`);
+      await mkdir(otherDir);
+      await request(
+        source,
+        sourceBase,
+        '/api/spaces/portable/preview',
+        { mode: 'override', sources: [{ kind: 'dir', path: previewSource }], target: { kind: 'dir', path: otherDir }, domains: ['config'] },
+        portableSpacePreviewResultSchema,
+      );
+    }
+    await request(
+      source,
+      sourceBase,
+      '/api/spaces/portable/apply',
+      { previewToken: firstPreview.previewToken, createBackup: false },
+      portableSpaceApplyReceiptSchema,
+    );
+    expect(await readFile(join(previewTarget, 'config.toml'), 'utf8')).toContain('preview-retained');
   });
 
 });

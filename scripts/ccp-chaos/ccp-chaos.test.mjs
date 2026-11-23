@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http2 from 'node:http2';
 import os from 'node:os';
@@ -866,6 +867,59 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
       const missingBaseline = checkDiffMockRatchet({ repoRoot: tmpRepo });
       assert.equal(missingBaseline.baselineAvailable, false);
       assert.match(String(missingBaseline.baselineError), /Unable to establish comparison baseline/);
+
+      // Pure git rename preserves baseline exemption without any filename allowlist, while new mock in renamed file fails.
+      const tmpGitRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-hygiene-rename-'));
+      try {
+        const gitEnv = {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'Test',
+          GIT_AUTHOR_EMAIL: 'test@example.test',
+          GIT_COMMITTER_NAME: 'Test',
+          GIT_COMMITTER_EMAIL: 'test@example.test',
+        };
+        execFileSync('git', ['init', '-q', '-b', 'kiki'], { cwd: tmpGitRepo, env: gitEnv });
+        const renameDir = path.join(tmpGitRepo, 'apps', 'kiki-gui', 'src', 'components');
+        fs.mkdirSync(renameDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(renameDir, 'ActivityHistory.test.tsx'),
+          [
+            "import { describe, it, vi } from 'vitest';",
+            "vi.mock('./TerminalPanel', () => ({}));",
+            "describe('ActivityHistory', () => { it('works', () => {}); });",
+            '',
+          ].join('\n'),
+        );
+        execFileSync('git', ['add', '.'], { cwd: tmpGitRepo, env: gitEnv });
+        execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: tmpGitRepo, env: gitEnv });
+        execFileSync('git', ['update-ref', 'refs/remotes/origin/kiki', 'HEAD'], { cwd: tmpGitRepo, env: gitEnv });
+        execFileSync('git', ['checkout', '-q', '-b', 'feat/rename'], { cwd: tmpGitRepo, env: gitEnv });
+        execFileSync(
+          'git',
+          ['mv', 'apps/kiki-gui/src/components/ActivityHistory.test.tsx', 'apps/kiki-gui/src/components/ActivityHistoryPanel.test.tsx'],
+          { cwd: tmpGitRepo, env: gitEnv },
+        );
+        execFileSync('git', ['commit', '-q', '-m', 'pure rename'], { cwd: tmpGitRepo, env: gitEnv });
+        const renamedReport = runTestHygieneCheck({ repoRoot: tmpGitRepo });
+        assert.equal(renamedReport.ok, true);
+        assert.equal(renamedReport.intraMonorepoMocks.violations.length, 0);
+        assert.equal(renamedReport.intraMonorepoMocks.legacyExempted.length, 1);
+        assert.equal(renamedReport.diffRatchet.mockViolations.length, 0);
+
+        fs.appendFileSync(
+          path.join(renameDir, 'ActivityHistoryPanel.test.tsx'),
+          "vi.mock('../state/connection', () => ({}));\n",
+        );
+        execFileSync('git', ['add', '.'], { cwd: tmpGitRepo, env: gitEnv });
+        execFileSync('git', ['commit', '-q', '-m', 'expanded mock'], { cwd: tmpGitRepo, env: gitEnv });
+        const expandedReport = runTestHygieneCheck({ repoRoot: tmpGitRepo });
+        assert.equal(expandedReport.ok, false);
+        assert.equal(expandedReport.intraMonorepoMocks.violations.length, 1);
+        assert.equal(expandedReport.intraMonorepoMocks.violations[0].target, '../state/connection');
+        assert.equal(expandedReport.diffRatchet.mockViolations.length, 1);
+      } finally {
+        fs.rmSync(tmpGitRepo, { recursive: true, force: true });
+      }
 
       const disabledScan = scanDisabledTests(tmpRepo, { allowlist: new Set() });
       assert.equal(disabledScan.violations.length, 1);

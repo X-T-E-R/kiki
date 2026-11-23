@@ -2021,7 +2021,7 @@ export async function runChaosScaleSuite(options = {}) {
     const parity = validateMatrixThresholdParity(loadedMatrix);
     if (!parity.ok) {
       throw new Error(
-        `Matrix threshold parity failed for ${loadedMatrix.name}: ${(parity.drifts ?? []).join('; ')}`,
+        `Invalid chaos matrix configuration for ${loadedMatrix.name}: ${(parity.drifts ?? []).join('; ')}`,
       );
     }
   }

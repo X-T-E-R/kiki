@@ -603,6 +603,27 @@ test('switchRuntime passes -CanaryCheck, verifies active executable + build_id +
         }),
       /instead of .*active.*kiki-server\.exe/i,
     );
+
+    // Empty or corrupted active binaries fail verification explicitly instead of falling back to active-release.json.
+    const corruptedRuntime = join(root, 'Kiki-corrupted');
+    seedActive(corruptedRuntime, oldRelId, OLD_COMMIT, '', 'srv-old');
+    assert.throws(
+      () => classifyRuntimeServerPath(corruptedRuntime, join(corruptedRuntime, 'active', 'kiki-server.exe')),
+      /Expected a non-empty file/,
+    );
+
+    // Probe execution errors propagate instead of being swallowed as null.
+    await assert.rejects(
+      () =>
+        inspectRuntime({
+          runtimeRoot,
+          kikiHome,
+          resolveProcessPath: () => {
+            throw new Error('CIM query failed');
+          },
+        }),
+      /CIM query failed/,
+    );
   } finally {
     await srv.close();
     rmSync(root, { recursive: true, force: true });
