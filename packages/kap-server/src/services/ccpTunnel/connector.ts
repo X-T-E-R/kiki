@@ -20,11 +20,21 @@ export interface CcpTunnelProcess {
   close(): Promise<void>;
 }
 
-/** Injectable runner abstraction for `ccp ssh prepare`, `ccp ssh connect --command`, and `ccp ssh connect -N -L`. */
+/** Parsed metadata from `ccp runtimes inspect` or `ccp runtimes update`. */
+export interface CcpRuntimeInfo {
+  readonly state?: string;
+  readonly idleTimeoutMinutes?: number;
+  readonly expiresAt?: string;
+  readonly releaseRequested?: boolean;
+}
+
+/** Injectable runner abstraction for `ccp ssh prepare`, `ccp ssh connect --command`, `ccp ssh connect -N -L`, and runtime lifecycle commands. */
 export interface CcpTunnelRunner {
   prepare(runtimeId: string, signal: AbortSignal): Promise<string>;
   exec(sessionId: string, script: string, signal: AbortSignal): Promise<string>;
   openTunnel(sessionId: string, localPort: number, remoteTlsPort: number, signal: AbortSignal): Promise<CcpTunnelProcess>;
+  inspectRuntime?(runtimeId: string, signal: AbortSignal): Promise<CcpRuntimeInfo | undefined>;
+  disableIdleTimeout?(runtimeId: string, signal: AbortSignal): Promise<CcpRuntimeInfo | undefined>;
   close(): Promise<void>;
 }
 
@@ -152,6 +162,62 @@ async function stopOwnedProcess(proc: IHostProcess): Promise<void> {
   } catch {}
 }
 
+function parseCcpRuntimeInfo(raw: string): CcpRuntimeInfo | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  const idleRaw = record['idle_timeout_minutes'];
+  const idleTimeoutMinutes =
+    typeof idleRaw === 'number' && Number.isFinite(idleRaw) ? idleRaw : undefined;
+  return {
+    state: typeof record['state'] === 'string' ? record['state'] : undefined,
+    idleTimeoutMinutes,
+    expiresAt: typeof record['expires_at'] === 'string' ? record['expires_at'] : undefined,
+    releaseRequested: record['release_requested'] === true,
+  };
+}
+
+function terminalRuntimeReason(info: CcpRuntimeInfo | undefined, runtimeId: string): string | undefined {
+  if (info === undefined) return undefined;
+  const state = info.state?.trim().toUpperCase();
+  if (state === 'RELEASED' || state === 'FAILED') {
+    return `CCP runtime ${runtimeId} is ${state}`;
+  }
+  if (info.releaseRequested === true) {
+    return `CCP runtime ${runtimeId} is RELEASED`;
+  }
+  return undefined;
+}
+
+function deriveKeepaliveIntervalMs(idleTimeoutMinutes: number | undefined): number | undefined {
+  if (idleTimeoutMinutes === undefined || !Number.isFinite(idleTimeoutMinutes) || idleTimeoutMinutes <= 0) {
+    return undefined;
+  }
+  return Math.max(1, Math.floor((idleTimeoutMinutes * 60_000) / 2));
+}
+
+function waitStreamSettled(stream: NodeJS.ReadableStream & { destroyed?: boolean; readableEnded?: boolean }): Promise<void> {
+  if (stream.destroyed === true || stream.readableEnded === true) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      stream.off('end', finish);
+      stream.off('close', finish);
+      stream.off('error', finish);
+      resolve();
+    };
+    stream.once('end', finish);
+    stream.once('close', finish);
+    stream.once('error', finish);
+  });
+}
+
 /** Default OS process runner that invokes `ccp` under `IHostProcessService` owned-tree supervision. */
 export class SystemCcpTunnelRunner implements CcpTunnelRunner {
   private readonly procs = new Set<IHostProcess>();
@@ -206,8 +272,8 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
     };
     proc.stdout.on('data', onStdout);
     proc.stderr.on('data', onStderr);
-    const stdoutDone = new Promise<void>((done) => { proc.stdout.once('end', done); });
-    const stderrDone = new Promise<void>((done) => { proc.stderr.once('end', done); });
+    const stdoutDone = waitStreamSettled(proc.stdout);
+    const stderrDone = waitStreamSettled(proc.stderr);
 
     let aborted = false;
     const onAbort = () => {
@@ -218,7 +284,8 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
     if (signal.aborted) onAbort();
 
     try {
-      const [code] = await Promise.all([proc.wait(), stdoutDone, stderrDone]);
+      const waitResult = proc.wait();
+      const [code] = await Promise.all([waitResult, stdoutDone, stderrDone]);
       if (aborted || signal.aborted) {
         throw new AdmissionError(499, 'ccp_operation_cancelled');
       }
@@ -249,6 +316,16 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
       throw new AdmissionError(502, 'ccp_prepare_missing_session_id');
     }
     return parsed.id;
+  }
+
+  async inspectRuntime(runtimeId: string, signal: AbortSignal): Promise<CcpRuntimeInfo | undefined> {
+    const raw = await this.runCommand(['runtimes', 'inspect', runtimeId], signal);
+    return parseCcpRuntimeInfo(raw);
+  }
+
+  async disableIdleTimeout(runtimeId: string, signal: AbortSignal): Promise<CcpRuntimeInfo | undefined> {
+    const raw = await this.runCommand(['runtimes', 'update', runtimeId, '--idle-timeout', '0'], signal);
+    return parseCcpRuntimeInfo(raw);
   }
 
   async exec(sessionId: string, script: string, signal: AbortSignal): Promise<string> {
@@ -319,6 +396,9 @@ interface CcpSlot {
   lifetime: AbortController;
   pending?: Promise<CcpTunnelResolved>;
   tunnel?: CcpTunnelProcess;
+  idleTimeoutDisabledAttempted?: boolean;
+  keepaliveTimer?: ReturnType<typeof setInterval>;
+  terminalError?: string;
 }
 
 /** Manages auto-reconnecting CCP SSH tunnels with fresh `ccp ssh prepare` tickets on connect and after tunnel exit. */
@@ -398,6 +478,8 @@ export class CcpTunnelConnector {
     };
     this.slots.set(record.id, slot);
     this.watchTunnelDrop(record.id, slot, tunnel);
+    const openSignal = AbortSignal.any([this.lifetime.signal, slot.lifetime.signal, tunnel.signal]);
+    void this.applyRuntimeLifecycle(record.id, slot, openSignal).catch(() => {});
   }
 
   async acquire(record: CcpTunnelRecord, signal: AbortSignal): Promise<CcpTunnelResolved> {
@@ -421,6 +503,9 @@ export class CcpTunnelConnector {
       this.slots.set(record.id, slot);
     }
     const current = slot;
+    if (current.terminalError !== undefined) {
+      throw new AdmissionError(410, current.terminalError);
+    }
     if (current.tunnel !== undefined) {
       if (!current.tunnel.signal.aborted) {
         return {
@@ -435,6 +520,7 @@ export class CcpTunnelConnector {
     if (current.pending === undefined) {
       const openSignal = AbortSignal.any([this.lifetime.signal, current.lifetime.signal]);
       current.pending = (async () => {
+        const runtimeInfo = await this.checkAndConfigureRuntime(current, openSignal);
         const sessionId = await this.runner.prepare(record.transport.runtimeId, openSignal);
         const localPort = await allocateLoopbackPort();
         const tunnel = await this.runner.openTunnel(
@@ -449,6 +535,7 @@ export class CcpTunnelConnector {
         }
         current.tunnel = tunnel;
         this.watchTunnelDrop(record.id, current, tunnel);
+        this.scheduleKeepalive(record.id, current, runtimeInfo?.idleTimeoutMinutes);
         return {
           id: record.id,
           endpoint: tunnel.endpoint,
@@ -468,6 +555,7 @@ export class CcpTunnelConnector {
     const slot = this.slots.get(id);
     if (slot === undefined) return;
     this.slots.delete(id);
+    this.clearKeepalive(slot);
     slot.lifetime.abort();
     const tunnel = slot.tunnel;
     slot.tunnel = undefined;
@@ -488,12 +576,127 @@ export class CcpTunnelConnector {
     await this.runner.close();
   }
 
+  private async inspectRuntimeSafe(runtimeId: string, signal: AbortSignal): Promise<CcpRuntimeInfo | undefined> {
+    if (this.runner.inspectRuntime === undefined) return undefined;
+    try {
+      return await this.runner.inspectRuntime(runtimeId, signal);
+    } catch (error) {
+      if (signal.aborted || this.lifetime.signal.aborted) throw error;
+      return undefined;
+    }
+  }
+
+  private async checkAndConfigureRuntime(slot: CcpSlot, signal: AbortSignal): Promise<CcpRuntimeInfo | undefined> {
+    const runtimeId = slot.record.transport.runtimeId;
+    let info = await this.inspectRuntimeSafe(runtimeId, signal);
+    const initialTerminal = terminalRuntimeReason(info, runtimeId);
+    if (initialTerminal !== undefined) {
+      slot.terminalError = initialTerminal;
+      this.clearKeepalive(slot);
+      throw new AdmissionError(410, initialTerminal);
+    }
+    if (
+      !slot.idleTimeoutDisabledAttempted &&
+      info?.idleTimeoutMinutes !== undefined &&
+      info.idleTimeoutMinutes > 0 &&
+      this.runner.disableIdleTimeout !== undefined
+    ) {
+      slot.idleTimeoutDisabledAttempted = true;
+      try {
+        const updated = await this.runner.disableIdleTimeout(runtimeId, signal);
+        if (updated !== undefined) {
+          info = updated;
+        } else {
+          info = (await this.inspectRuntimeSafe(runtimeId, signal)) ?? info;
+        }
+      } catch (error) {
+        if (signal.aborted || this.lifetime.signal.aborted) throw error;
+      }
+      const postUpdateTerminal = terminalRuntimeReason(info, runtimeId);
+      if (postUpdateTerminal !== undefined) {
+        slot.terminalError = postUpdateTerminal;
+        this.clearKeepalive(slot);
+        throw new AdmissionError(410, postUpdateTerminal);
+      }
+    }
+    return info;
+  }
+
+  private async applyRuntimeLifecycle(connectionId: string, slot: CcpSlot, signal: AbortSignal): Promise<void> {
+    try {
+      const info = await this.checkAndConfigureRuntime(slot, signal);
+      if (this.slots.get(connectionId) !== slot || signal.aborted) return;
+      this.scheduleKeepalive(connectionId, slot, info?.idleTimeoutMinutes);
+    } catch (error) {
+      if (error instanceof AdmissionError && error.status === 410 && this.slots.get(connectionId) === slot) {
+        const activeTunnel = slot.tunnel;
+        slot.tunnel = undefined;
+        if (activeTunnel !== undefined) void activeTunnel.close().catch(() => {});
+      }
+    }
+  }
+
+  private clearKeepalive(slot: CcpSlot): void {
+    if (slot.keepaliveTimer !== undefined) {
+      clearInterval(slot.keepaliveTimer);
+      slot.keepaliveTimer = undefined;
+    }
+  }
+
+  private scheduleKeepalive(connectionId: string, slot: CcpSlot, idleTimeoutMinutes: number | undefined): void {
+    this.clearKeepalive(slot);
+    const intervalMs = deriveKeepaliveIntervalMs(idleTimeoutMinutes);
+    if (intervalMs === undefined) return;
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (inFlight || this.slots.get(connectionId) !== slot || slot.lifetime.signal.aborted || this.lifetime.signal.aborted) {
+        return;
+      }
+      if (slot.tunnel === undefined || slot.tunnel.signal.aborted) {
+        this.clearKeepalive(slot);
+        return;
+      }
+      inFlight = true;
+      const tickSignal = AbortSignal.any([this.lifetime.signal, slot.lifetime.signal, slot.tunnel.signal]);
+      void (async () => {
+        const runtimeId = slot.record.transport.runtimeId;
+        const inspected = await this.inspectRuntimeSafe(runtimeId, tickSignal);
+        const terminal = terminalRuntimeReason(inspected, runtimeId);
+        if (terminal !== undefined) {
+          slot.terminalError = terminal;
+          this.clearKeepalive(slot);
+          const activeTunnel = slot.tunnel;
+          slot.tunnel = undefined;
+          if (activeTunnel !== undefined) {
+            await activeTunnel.close().catch(() => {});
+            this.onTunnelDropped?.(connectionId, activeTunnel.endpoint);
+          }
+          return;
+        }
+        if (inspected === undefined) {
+          await this.runner.prepare(runtimeId, tickSignal).catch(() => {});
+          return;
+        }
+        if (inspected.idleTimeoutMinutes !== undefined && inspected.idleTimeoutMinutes <= 0) {
+          this.clearKeepalive(slot);
+        }
+      })()
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    }, intervalMs);
+    timer.unref();
+    slot.keepaliveTimer = timer;
+  }
+
   private watchTunnelDrop(connectionId: string, slot: CcpSlot, tunnel: CcpTunnelProcess): void {
     tunnel.signal.addEventListener(
       'abort',
       () => {
         if (this.slots.get(connectionId) === slot && slot.tunnel === tunnel) {
           slot.tunnel = undefined;
+          this.clearKeepalive(slot);
           this.onTunnelDropped?.(connectionId, tunnel.endpoint);
         }
       },

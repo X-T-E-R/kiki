@@ -1,3 +1,4 @@
+import { renderNotificationXml } from '#/agent/task/notificationXml';
 import { ErrorCodes, isError2 } from '#/errors';
 import type { ReadThreadResult, ThreadActivity, ThreadRef } from './threadCommunication';
 
@@ -60,9 +61,11 @@ export function formatTerminalWatchMessage(
   activities: readonly ThreadActivity[],
   preview?: string,
   previewError?: string,
+  options?: { readonly notificationId?: string; readonly agentId?: string },
 ): string {
   const primary =
     activities.findLast((entry) => entry.kind === 'terminal') ??
+    activities.findLast((entry) => entry.kind === 'lifecycle' && (entry.reason === 'deleted' || entry.reason === 'archived')) ??
     activities.findLast((entry) => entry.kind === 'attention') ??
     activities.at(-1)!;
   const scopeParts = [
@@ -81,13 +84,51 @@ export function formatTerminalWatchMessage(
   } else if (previewError !== undefined && previewError.length > 0) {
     lines.push('', `Latest output unavailable: ${previewError}`);
   }
-  const full = lines.join('\n');
+  const type = primary.kind === 'attention' ? 'thread.attention' : 'thread.terminal';
+  const severity =
+    primary.kind === 'attention' || primary.reason === 'failed' || primary.reason === 'cancelled' || primary.reason === 'deleted'
+      ? 'warning'
+      : 'info';
+  const title =
+    primary.kind === 'attention'
+      ? `Thread needs attention (${target.sessionId})`
+      : `Thread ${primary.reason} (${target.sessionId})`;
+  const render = (body: string): string =>
+    renderNotificationXml({
+      id: options?.notificationId ?? `thread-watch:${target.sessionId}:${primary.seq}`,
+      category: 'thread',
+      type,
+      source_kind: 'thread',
+      source_id: target.sessionId,
+      agent_id: options?.agentId,
+      title,
+      severity,
+      body,
+    });
+  const fullBody = lines.join('\n');
+  const full = render(fullBody);
   if (full.length <= THREAD_MESSAGE_PROTOCOL_MAX_CHARS) return full;
-  return `${full.slice(0, THREAD_MESSAGE_PROTOCOL_MAX_CHARS - TRUNCATED_SUFFIX.length)}${TRUNCATED_SUFFIX}`;
+  const overhead = render('').length + TRUNCATED_SUFFIX.length;
+  const allowedBodyChars = Math.max(0, THREAD_MESSAGE_PROTOCOL_MAX_CHARS - overhead);
+  return render(`${fullBody.slice(0, allowedBodyChars)}${TRUNCATED_SUFFIX}`);
 }
 
-export function formatWatchStoppedMessage(target: ThreadRef, reason: string): string {
-  return `[Thread watch] Stopped watching target thread (session=${target.sessionId}, host=${target.hostId}, workspace=${target.workspaceId}): ${reason}`;
+export function formatWatchStoppedMessage(
+  target: ThreadRef,
+  reason: string,
+  options?: { readonly notificationId?: string; readonly agentId?: string },
+): string {
+  return renderNotificationXml({
+    id: options?.notificationId ?? `thread-watch-stop:${target.sessionId}`,
+    category: 'thread',
+    type: 'thread.watch_stopped',
+    source_kind: 'thread',
+    source_id: target.sessionId,
+    agent_id: options?.agentId,
+    title: `Thread watch stopped (${target.sessionId})`,
+    severity: 'warning',
+    body: `[Thread watch] Stopped watching target thread (session=${target.sessionId}, host=${target.hostId}, workspace=${target.workspaceId}): ${reason}`,
+  });
 }
 
 export function isUnrecoverableWatchError(error: unknown): boolean {

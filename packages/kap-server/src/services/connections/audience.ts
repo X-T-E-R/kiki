@@ -120,6 +120,8 @@ const PEER_SYNC_OPERATIONS = new Set([
   'syncCredentialsMerge',
   'syncFilesExport',
   'syncFilesImport',
+  'syncSessionsExportStream',
+  'syncSessionsImportStream',
 ]);
 const PEER_TRUSTED_PERSONAL_OPERATIONS = new Set([
   'syncFilesExport',

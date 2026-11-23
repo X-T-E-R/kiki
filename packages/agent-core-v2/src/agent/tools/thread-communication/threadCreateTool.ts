@@ -96,7 +96,11 @@ export class ThreadCreateTool implements IThreadCreateTool {
       description: bridged ? 'Creating a thread in another space' : input.from_subagent === undefined ? 'Creating a new thread' : `Opening subagent ${input.from_subagent} as a thread`,
       execute: async ({ signal, toolCallId }) => {
         const callerMode = this.callerPermission.mode;
-        const caller = { workspaceId: this.session.workspaceId, sessionId: this.session.sessionId };
+        const caller = {
+          workspaceId: this.session.workspaceId,
+          sessionId: this.session.sessionId,
+          agentId: this.caller.agentId,
+        };
         const crossSpaceCeiling = bridged
           ? (this.threadCommunication.resolveBridgePermissionCeiling?.({
               caller,

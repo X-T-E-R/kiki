@@ -1,6 +1,8 @@
+import type { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
+  portableSpaceSessionSelectionSchema,
   syncBundleExportInputSchema,
   syncBundleImportInputSchema,
   syncCredentialMergeInputSchema,
@@ -162,4 +164,42 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
       ),
     ),
   );
+
+  const sessionStreamExportSchema = z.object({
+    sessions: portableSpaceSessionSelectionSchema,
+  });
+
+  app.post('/api/sync/sessions/export', { bodyLimit: 65_536 }, async (req, reply) => {
+    try {
+      const parsed = sessionStreamExportSchema.parse(req.body);
+      const stream = await sync.exportSessionsStream(parsed.sessions);
+      reply.header('content-type', 'application/gzip');
+      return await reply.send(stream);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        reply.code(400);
+        return reply.send(errEnvelope(40001, error.message, req.id));
+      }
+      if (error instanceof Error && error.message.includes('not found')) {
+        reply.code(404);
+        return reply.send(errEnvelope(40401, error.message, req.id));
+      }
+      throw error;
+    }
+  });
+
+  app.register(async (scoped) => {
+    scoped.addContentTypeParser('application/gzip', (_req, payload, done) => {
+      done(null, payload);
+    });
+    scoped.post('/api/sync/sessions/import', async (req, reply) =>
+      handle(req.id, reply, async () => {
+        const query = req.query as { target_work_dir?: string; target_project_id?: string };
+        return sync.importSessionsStream(req.body as Readable, {
+          targetWorkDir: typeof query.target_work_dir === 'string' && query.target_work_dir.length > 0 ? query.target_work_dir : undefined,
+          targetProjectId: typeof query.target_project_id === 'string' && query.target_project_id.length > 0 ? query.target_project_id : undefined,
+        });
+      }),
+    );
+  });
 }
