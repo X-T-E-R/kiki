@@ -1607,8 +1607,8 @@ export class TranscriptService {
     const wait = <T>(promise: Promise<T>): Promise<T> => signal === undefined ? promise : abortable(promise, signal);
     const establish = async (transcript: AgentTranscript | undefined): Promise<AgentTranscript | undefined> => {
       if (transcript === undefined) return undefined;
-      if (!transcript.hasMoreOlder && (!options.fullHistory || transcript.snapshot().toolCallCountKnown === true)) return transcript;
-      if (!options.fullHistory && transcript.getItems().some(item => item.kind === 'turn')) return transcript;
+      if (!transcript.hasMoreOlder && !transcript.hasEvictedTail && (!options.fullHistory || transcript.snapshot().toolCallCountKnown === true)) return transcript;
+      if (!options.fullHistory && !transcript.hasEvictedTail && transcript.getItems().some(item => item.kind === 'turn')) return transcript;
       const snapshot = options.fullHistory
         ? await this.readFullAgentSnapshot(sessionId, agentId, transcript, signal)
         : await this.readScreenSnapshot(sessionId, agentId, undefined, signal, undefined, tailFirst);
