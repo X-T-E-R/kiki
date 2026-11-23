@@ -759,7 +759,9 @@ function enrichSnapshotSubagents(
     const userLabel = firstNonEmpty(subagentUserLabel(meta), subagent.label);
     const spawnedName = firstNonEmpty(subagent.profile, meta?.displayName);
     const terminalAt = meta?.completedAt;
-    const currentOutcome = meta?.status !== undefined && terminalAt !== undefined &&
+    const runtimeActive = subagent.status_source === 'runtime' &&
+      (subagent.activity_status === 'running' || subagent.activity_status === 'suspended');
+    const currentOutcome = !runtimeActive && meta?.status !== undefined && terminalAt !== undefined &&
       Number.isFinite(terminalAt) &&
       subagent.started_at !== undefined &&
       Date.parse(subagent.started_at) <= terminalAt &&

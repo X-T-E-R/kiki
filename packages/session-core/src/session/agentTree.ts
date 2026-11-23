@@ -1002,7 +1002,7 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor, now: number
   draft.usage = entry.usage ?? draft.usage;
   if (entry.busy !== undefined) draft.busy = entry.busy;
   setDraftStartedAtIfMissing(draft, firstPresent(entry.startedAt));
-  draft.endedAt ??= firstPresent(entry.endedAt);
+  draft.endedAt = authority === 4 ? (firstPresent(entry.endedAt) ?? draft.endedAt) : (draft.endedAt ?? firstPresent(entry.endedAt));
   draft.summary = firstPresent(entry.summary) ?? draft.summary;
   draft.error = firstPresent(entry.error) ?? draft.error;
 }
@@ -1346,8 +1346,15 @@ function applyStatus(
     draft.disposedAt !== undefined &&
     nextStartedAt > draft.disposedAt &&
     (draft.statusStartedAt === undefined || draft.statusStartedAt <= draft.disposedAt);
+  const runtimeRestartsTerminal =
+    authority === 4 &&
+    authority > draft.statusAuthority &&
+    currentRank === 2 &&
+    nextRank === 1 &&
+    (nextStartedAt === undefined || draft.statusEndedAt === undefined || nextStartedAt >= draft.statusEndedAt);
   const nextRunIsNewer =
     startsAfterDisposal ||
+    runtimeRestartsTerminal ||
     (currentRank <= 0 && nextRank === 1 && nextStartedAt !== undefined &&
       currentStartedAt !== undefined && nextStartedAt > currentStartedAt) ||
     (comparableRuns &&

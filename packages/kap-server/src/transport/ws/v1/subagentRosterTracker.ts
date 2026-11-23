@@ -70,13 +70,20 @@ export class SubagentRosterTracker {
   private readonly bySession = new Map<string, Map<string, TrackedSubagent>>();
   private readonly toolCallsBySession = new Map<string, Map<string, Set<string>>>();
   private readonly taskIdsBySession = new Map<string, Map<string, string>>();
+  private readonly retiredTaskIdsBySession = new Map<string, Map<string, Set<string>>>();
   private readonly generationStartedAtBySession = new Map<string, Map<string, number>>();
   private readonly disposedAtBySession = new Map<string, Map<string, number>>();
 
   apply(sessionId: string, event: Event): void {
     if (event.type === 'subagent.started' || event.type === 'subagent.completed' || event.type === 'subagent.failed') {
+      if (event.taskId !== undefined && this.retiredTaskIdsBySession.get(sessionId)?.get(event.subagentId)?.has(event.taskId) === true) {
+        return;
+      }
       const currentTaskId = this.taskIdsBySession.get(sessionId)?.get(event.subagentId);
-      if (event.taskId !== undefined && currentTaskId !== undefined && event.taskId !== currentTaskId) return;
+      if (event.taskId !== undefined && currentTaskId !== undefined && event.taskId !== currentTaskId) {
+        const entry = this.bySession.get(sessionId)?.get(event.subagentId);
+        if (!entry || !isTerminalStatus(entry.status)) return;
+      }
     }
     switch (event.type) {
       case 'agent.created': {
@@ -223,7 +230,7 @@ export class SubagentRosterTracker {
             : existing!.suspended_reason,
         });
         if (acceptedRun && event.taskId !== undefined) {
-          taskIds.set(event.subagentId, event.taskId);
+          this.setActiveTaskId(sessionId, event.subagentId, event.taskId);
         }
         return;
       }
@@ -251,6 +258,9 @@ export class SubagentRosterTracker {
               subagent_phase: 'working',
             },
           );
+          if (event.taskId !== undefined) {
+            this.setActiveTaskId(sessionId, event.subagentId, event.taskId);
+          }
           return;
         }
         if (entry.status === 'unknown' || entry.live === false) {
@@ -267,6 +277,9 @@ export class SubagentRosterTracker {
               subagent_phase: 'working',
             },
           );
+          if (event.taskId !== undefined) {
+            this.setActiveTaskId(sessionId, event.subagentId, event.taskId);
+          }
           return;
         }
         if (
@@ -283,6 +296,9 @@ export class SubagentRosterTracker {
         entry.suspended_reason = undefined;
         entry.completed_at = undefined;
         entry.started_at ??= isoTime(eventAt) ?? new Date().toISOString();
+        if (event.taskId !== undefined && !this.taskIds(sessionId).has(event.subagentId)) {
+          this.setActiveTaskId(sessionId, event.subagentId, event.taskId);
+        }
         return;
       }
       case 'subagent.suspended': {
@@ -330,6 +346,7 @@ export class SubagentRosterTracker {
           'completed',
           event.resultSummary,
           event.time,
+          event.taskId,
         );
         return;
       }
@@ -341,7 +358,51 @@ export class SubagentRosterTracker {
           event.error === 'terminated' ? undefined : 'failed',
           event.error,
           event.time,
+          event.taskId,
         );
+        return;
+      }
+      case 'turn.started': {
+        if (event.agentId === 'main') return;
+        const entry = this.bySession.get(sessionId)?.get(event.agentId);
+        if (!entry) return;
+        const eventAt = finiteTime(event.time);
+        const existingStartedAt = parsedTime(entry.started_at);
+        if (isTerminalStatus(entry.status) || entry.status === 'unknown' || entry.live === false) {
+          const endedAt = isTerminalStatus(entry.status) ? parsedTime(entry.completed_at) : undefined;
+          const disposedAt = this.disposals(sessionId).get(event.agentId);
+          if (
+            eventAt === undefined ||
+            !crossesBoundary(eventAt, endedAt) ||
+            !crossesBoundary(eventAt, disposedAt)
+          ) return;
+          Object.assign(
+            entry,
+            this.resetGeneration(sessionId, event.agentId, eventAt),
+            {
+              live: true,
+              refreshing: undefined,
+              refreshing_until: undefined,
+              status: 'running',
+              subagent_phase: 'working',
+            },
+          );
+          return;
+        }
+        if (
+          eventAt !== undefined &&
+          existingStartedAt !== undefined &&
+          eventAt < existingStartedAt
+        ) {
+          return;
+        }
+        entry.live = true;
+        clearRefreshing(entry);
+        entry.status = 'running';
+        entry.subagent_phase = 'working';
+        entry.suspended_reason = undefined;
+        entry.completed_at = undefined;
+        entry.started_at ??= isoTime(eventAt) ?? new Date().toISOString();
         return;
       }
       case 'agent.disposed': {
@@ -522,7 +583,7 @@ export class SubagentRosterTracker {
             : (info.stopReason ?? (restarted ? undefined : existing?.output_preview)),
         suspended_reason: restarted ? undefined : existing?.suspended_reason,
       });
-      taskIds.set(info.agentId, info.taskId);
+      this.setActiveTaskId(sessionId, info.agentId, info.taskId);
       return;
     }
 
@@ -594,7 +655,7 @@ export class SubagentRosterTracker {
       output_preview: undefined,
       suspended_reason: keepsSuspended ? existing?.suspended_reason : undefined,
     });
-    taskIds.set(info.agentId, info.taskId);
+    this.setActiveTaskId(sessionId, info.agentId, info.taskId);
   }
 
   markRefreshing(sessionId: string, agentId: string, time?: number): void {
@@ -633,6 +694,7 @@ export class SubagentRosterTracker {
     this.bySession.delete(sessionId);
     this.toolCallsBySession.delete(sessionId);
     this.taskIdsBySession.delete(sessionId);
+    this.retiredTaskIdsBySession.delete(sessionId);
     this.generationStartedAtBySession.delete(sessionId);
     this.disposedAtBySession.delete(sessionId);
   }
@@ -643,7 +705,12 @@ export class SubagentRosterTracker {
     startedAt: number,
   ): Partial<TrackedSubagent> {
     this.toolCalls(sessionId, agentId).clear();
-    this.taskIds(sessionId).delete(agentId);
+    const taskIds = this.taskIds(sessionId);
+    const previousTaskId = taskIds.get(agentId);
+    if (previousTaskId !== undefined) {
+      this.retiredTaskIds(sessionId, agentId).add(previousTaskId);
+      taskIds.delete(agentId);
+    }
     this.generationStarts(sessionId).set(agentId, startedAt);
     const timestamp = new Date(startedAt).toISOString();
     return {
@@ -667,12 +734,15 @@ export class SubagentRosterTracker {
     phase: 'completed' | 'failed' | undefined,
     output: string,
     time: number | undefined,
+    taskId?: string,
   ): void {
     const entry = this.bySession.get(sessionId)?.get(agentId);
     if (!entry || isTerminalStatus(entry.status)) return;
+    const currentTaskId = this.taskIdsBySession.get(sessionId)?.get(agentId);
     if (
       entry.run_in_background === true &&
-      this.taskIdsBySession.get(sessionId)?.has(agentId) === true
+      currentTaskId !== undefined &&
+      taskId !== currentTaskId
     ) {
       return;
     }
@@ -690,6 +760,29 @@ export class SubagentRosterTracker {
     entry.status = status;
     entry.completed_at ??= isoTime(eventAt) ?? new Date().toISOString();
     entry.output_preview = output;
+  }
+
+  private setActiveTaskId(sessionId: string, agentId: string, taskId: string): void {
+    const taskIds = this.taskIds(sessionId);
+    const previousTaskId = taskIds.get(agentId);
+    if (previousTaskId !== undefined && previousTaskId !== taskId) {
+      this.retiredTaskIds(sessionId, agentId).add(previousTaskId);
+    }
+    taskIds.set(agentId, taskId);
+  }
+
+  private retiredTaskIds(sessionId: string, agentId: string): Set<string> {
+    let byAgent = this.retiredTaskIdsBySession.get(sessionId);
+    if (byAgent === undefined) {
+      byAgent = new Map();
+      this.retiredTaskIdsBySession.set(sessionId, byAgent);
+    }
+    let retired = byAgent.get(agentId);
+    if (retired === undefined) {
+      retired = new Set();
+      byAgent.set(agentId, retired);
+    }
+    return retired;
   }
 
   private roster(sessionId: string): Map<string, TrackedSubagent> {

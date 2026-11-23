@@ -1448,6 +1448,114 @@ describe('SubagentRosterTracker', () => {
     expect(t.get(SID)[0]).toMatchObject({ status: 'running', subagent_phase: 'queued' });
   });
 
+  it('completes a task-bound background subagent immediately on matching taskId and accepts unseen post-terminal autonomous receipts while rejecting retired tasks', () => {
+    const tracker = new SubagentRosterTracker();
+    tracker.apply(SID, spawn('agent-1', { time: 100, taskId: 'task-bg-1', runInBackground: true }));
+    tracker.apply(SID, ev({
+      type: 'task.started',
+      time: 100,
+      info: {
+        taskId: 'task-bg-1',
+        kind: 'agent',
+        agentId: 'agent-1',
+        detached: true,
+        description: 'bg run',
+        status: 'running',
+        startedAt: 100,
+        endedAt: null,
+      },
+    }));
+    tracker.apply(SID, ev({
+      type: 'subagent.completed',
+      subagentId: 'agent-1',
+      taskId: 'task-bg-1',
+      resultSummary: 'done fast',
+      time: 200,
+    }));
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'completed',
+      subagent_phase: 'completed',
+      completed_at: new Date(200).toISOString(),
+      output_preview: 'done fast',
+      refreshing: undefined,
+    });
+
+    tracker.apply(SID, ev({ type: 'agent.created', agentId: 'agent-1', time: 250 }));
+    expect(tracker.get(SID)[0]?.refreshing).toBe(true);
+    tracker.apply(SID, ev({ type: 'turn.started', agentId: 'agent-1', turnId: 2, time: 300 }));
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'running',
+      subagent_phase: 'working',
+      live: true,
+      refreshing: undefined,
+      started_at: new Date(300).toISOString(),
+      completed_at: undefined,
+    });
+
+    tracker.apply(SID, ev({
+      type: 'subagent.started',
+      subagentId: 'agent-1',
+      taskId: 'task-bg-1',
+      time: 350,
+    }));
+    tracker.apply(SID, ev({
+      type: 'subagent.completed',
+      subagentId: 'agent-1',
+      taskId: 'task-bg-1',
+      resultSummary: 'stale retired task',
+      time: 360,
+    }));
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'running',
+      subagent_phase: 'working',
+    });
+
+    tracker.apply(SID, ev({
+      type: 'task.terminated',
+      time: 400,
+      info: {
+        taskId: 'task-bg-2',
+        kind: 'agent',
+        agentId: 'agent-1',
+        detached: true,
+        description: 'run 2',
+        status: 'completed',
+        startedAt: 300,
+        endedAt: 400,
+      },
+    }));
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'completed',
+      completed_at: new Date(400).toISOString(),
+    });
+
+    tracker.apply(SID, ev({
+      type: 'subagent.started',
+      subagentId: 'agent-1',
+      taskId: 'agent-receipt-turn-3',
+      time: 500,
+    }));
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'running',
+      subagent_phase: 'working',
+      refreshing: undefined,
+      started_at: new Date(500).toISOString(),
+    });
+    tracker.apply(SID, ev({
+      type: 'subagent.completed',
+      subagentId: 'agent-1',
+      taskId: 'agent-receipt-turn-3',
+      resultSummary: 'autonomous reply',
+      time: 501,
+    }));
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'completed',
+      subagent_phase: 'completed',
+      completed_at: new Date(501).toISOString(),
+      output_preview: 'autonomous reply',
+    });
+  });
+
   it('returns fresh copies that callers cannot mutate back into the tracker', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawn('agent-1'));

@@ -313,6 +313,12 @@ export function overlayLiveSourcesWithSnapshotSubagents(
         ? false
         : source.toolCallCountKnown !== false
       : mergeKnown(source.toolCallCountKnown, snapshot.toolCallCountKnown);
+    const snapshotRuntimeActive = snapshot.statusSource === 'runtime' &&
+      (snapshot.status === 'running' || snapshot.status === 'suspended' || snapshot.status === 'background');
+    const sourceTerminal = source.status === 'completed' || source.status === 'failed' || source.status === 'cancelled';
+    const runtimeRestarted = snapshotRuntimeActive && sourceTerminal;
+    const snapshotRuntimeTerminal = snapshot.statusSource === 'runtime' &&
+      (snapshot.status === 'completed' || snapshot.status === 'failed' || snapshot.status === 'cancelled');
     return {
       ...source,
       createdAt: presentSnapshotText(source.createdAt) ?? snapshot.createdAt,
@@ -330,10 +336,16 @@ export function overlayLiveSourcesWithSnapshotSubagents(
         : source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
       disposedAt: source.disposedAt ?? snapshot.disposedAt,
       description: source.description ?? snapshot.description,
-      summary: source.summary ?? snapshot.summary,
-      error: source.error ?? snapshot.error,
-      startedAt: presentSnapshotText(source.startedAt) ?? snapshot.startedAt,
-      endedAt: source.endedAt ?? snapshot.endedAt,
+      summary: runtimeRestarted ? undefined : (source.summary ?? snapshot.summary),
+      error: runtimeRestarted ? undefined : (source.error ?? snapshot.error),
+      startedAt: runtimeRestarted
+        ? (presentSnapshotText(snapshot.startedAt) ?? presentSnapshotText(source.startedAt))
+        : (presentSnapshotText(source.startedAt) ?? snapshot.startedAt),
+      endedAt: runtimeRestarted
+        ? undefined
+        : snapshotRuntimeTerminal
+          ? (snapshot.endedAt ?? source.endedAt)
+          : (source.endedAt ?? snapshot.endedAt),
       toolCallCount: nextToolCallCount,
       toolCallCountKnown: nextToolCallCountKnown,
     };
@@ -381,6 +393,7 @@ function overlayForestDisplayFields(
       node.label !== node.name && node.label !== node.agentId
         ? node.label
         : source.label ?? (source.name !== source.subagentId ? source.name : node.label);
+    const nodeActive = node.status === 'running' || node.status === 'suspended' || node.status === 'background';
     const next = {
       ...node,
       name: nextName,
@@ -393,10 +406,10 @@ function overlayForestDisplayFields(
       toolCallCount: nextToolCallCount,
       toolCallCountKnown: nextToolCallCountKnown,
       startedAt: presentSnapshotText(node.startedAt) ?? source.startedAt,
-      endedAt: node.endedAt ?? source.endedAt,
+      endedAt: nodeActive ? node.endedAt : (node.endedAt ?? source.endedAt),
       description: node.description ?? source.description,
-      summary: node.summary ?? source.summary,
-      error: node.error ?? source.error,
+      summary: nodeActive ? node.summary : (node.summary ?? source.summary),
+      error: nodeActive ? node.error : (node.error ?? source.error),
     };
     if (
       next.model !== node.model ||
