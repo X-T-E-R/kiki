@@ -201,20 +201,32 @@ function deriveKeepaliveIntervalMs(idleTimeoutMinutes: number | undefined): numb
   return Math.max(1, Math.floor((idleTimeoutMinutes * 60_000) / 2));
 }
 
-function waitStreamSettled(stream: NodeJS.ReadableStream & { destroyed?: boolean; readableEnded?: boolean }): Promise<void> {
-  if (stream.destroyed === true || stream.readableEnded === true) {
-    return Promise.resolve();
+function waitStreamSettled(
+  stream: NodeJS.ReadableStream & { destroyed?: boolean; readableEnded?: boolean; errored?: Error | null },
+): Promise<Error | undefined> {
+  if (stream.errored) {
+    return Promise.resolve(stream.errored);
   }
-  return new Promise<void>((resolve) => {
-    const finish = () => {
-      stream.off('end', finish);
-      stream.off('close', finish);
-      stream.off('error', finish);
-      resolve();
+  if (stream.destroyed === true || stream.readableEnded === true) {
+    return Promise.resolve(undefined);
+  }
+  return new Promise<Error | undefined>((resolve) => {
+    let settled = false;
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      stream.off('end', onDone);
+      stream.off('close', onDone);
+      stream.off('error', onError);
+      resolve(err);
     };
-    stream.once('end', finish);
-    stream.once('close', finish);
-    stream.once('error', finish);
+    const onDone = () => {
+      finish(stream.errored ?? undefined);
+    };
+    const onError = (err: Error) => { finish(err instanceof Error ? err : new Error(String(err))); };
+    stream.once('end', onDone);
+    stream.once('close', onDone);
+    stream.once('error', onError);
   });
 }
 
@@ -285,12 +297,16 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
 
     try {
       const waitResult = proc.wait();
-      const [code] = await Promise.all([waitResult, stdoutDone, stderrDone]);
+      const [code, stdoutErr, stderrErr] = await Promise.all([waitResult, stdoutDone, stderrDone]);
       if (aborted || signal.aborted) {
         throw new AdmissionError(499, 'ccp_operation_cancelled');
       }
       if (overflowed) {
         throw new AdmissionError(502, 'ccp_command_output_too_large');
+      }
+      const streamError = stdoutErr ?? stderrErr;
+      if (streamError !== undefined) {
+        throw new AdmissionError(502, `ccp_stream_error:${streamError.message}`);
       }
       if (code !== 0) {
         throw new AdmissionError(502, `ccp_command_failed:${code}:${stderr.trim()}`);
@@ -391,25 +407,56 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
   }
 }
 
+/** Interval scheduler abstraction used by `CcpTunnelConnector` keepalives (injectable for deterministic tests). */
+export interface CcpKeepaliveScheduler {
+  setInterval(fn: () => void, intervalMs: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+/** Optional constructor dependencies for `CcpTunnelConnector`. */
+export interface CcpTunnelConnectorOptions {
+  readonly logger?: { warn(obj: Record<string, unknown>, msg: string): void };
+  readonly scheduler?: CcpKeepaliveScheduler;
+}
+
 interface CcpSlot {
   record: CcpTunnelRecord;
   lifetime: AbortController;
   pending?: Promise<CcpTunnelResolved>;
   tunnel?: CcpTunnelProcess;
   idleTimeoutDisabledAttempted?: boolean;
-  keepaliveTimer?: ReturnType<typeof setInterval>;
+  keepaliveTimer?: unknown;
+  keepaliveIntervalMs?: number;
   terminalError?: string;
 }
+
+const DEFAULT_KEEPALIVE_SCHEDULER: CcpKeepaliveScheduler = {
+  setInterval: (fn, intervalMs) => {
+    const timer = setInterval(fn, intervalMs);
+    timer.unref();
+    return timer;
+  },
+  clearInterval: (handle) => {
+    clearInterval(handle as ReturnType<typeof setInterval>);
+  },
+};
 
 /** Manages auto-reconnecting CCP SSH tunnels with fresh `ccp ssh prepare` tickets on connect and after tunnel exit. */
 export class CcpTunnelConnector {
   private readonly slots = new Map<string, CcpSlot>();
   private readonly lifetime = new AbortController();
   private readonly runner: CcpTunnelRunner;
+  private readonly logger?: { warn(obj: Record<string, unknown>, msg: string): void };
+  private readonly scheduler: CcpKeepaliveScheduler;
   private onTunnelDropped?: (connectionId: string, endpoint: string) => void;
 
-  constructor(runner: CcpTunnelRunner = new SystemCcpTunnelRunner()) {
+  constructor(
+    runner: CcpTunnelRunner = new SystemCcpTunnelRunner(),
+    options?: CcpTunnelConnectorOptions,
+  ) {
     this.runner = runner;
+    this.logger = options?.logger;
+    this.scheduler = options?.scheduler ?? DEFAULT_KEEPALIVE_SCHEDULER;
   }
 
   setOnTunnelDropped(listener: (connectionId: string, endpoint: string) => void): void {
@@ -582,6 +629,7 @@ export class CcpTunnelConnector {
       return await this.runner.inspectRuntime(runtimeId, signal);
     } catch (error) {
       if (signal.aborted || this.lifetime.signal.aborted) throw error;
+      this.logger?.warn({ runtimeId, error: error instanceof Error ? error.message : String(error) }, 'CCP runtime inspect failed');
       return undefined;
     }
   }
@@ -611,6 +659,7 @@ export class CcpTunnelConnector {
         }
       } catch (error) {
         if (signal.aborted || this.lifetime.signal.aborted) throw error;
+        this.logger?.warn({ runtimeId, error: error instanceof Error ? error.message : String(error) }, 'CCP runtime idle-timeout disable failed');
       }
       const postUpdateTerminal = terminalRuntimeReason(info, runtimeId);
       if (postUpdateTerminal !== undefined) {
@@ -632,23 +681,34 @@ export class CcpTunnelConnector {
         const activeTunnel = slot.tunnel;
         slot.tunnel = undefined;
         if (activeTunnel !== undefined) void activeTunnel.close().catch(() => {});
+        return;
+      }
+      if (!signal.aborted && !this.lifetime.signal.aborted) {
+        this.logger?.warn({ connectionId, runtimeId: slot.record.transport.runtimeId, error: error instanceof Error ? error.message : String(error) }, 'CCP runtime lifecycle check failed');
       }
     }
   }
 
   private clearKeepalive(slot: CcpSlot): void {
     if (slot.keepaliveTimer !== undefined) {
-      clearInterval(slot.keepaliveTimer);
+      this.scheduler.clearInterval(slot.keepaliveTimer);
       slot.keepaliveTimer = undefined;
+      slot.keepaliveIntervalMs = undefined;
     }
   }
 
   private scheduleKeepalive(connectionId: string, slot: CcpSlot, idleTimeoutMinutes: number | undefined): void {
-    this.clearKeepalive(slot);
     const intervalMs = deriveKeepaliveIntervalMs(idleTimeoutMinutes);
-    if (intervalMs === undefined) return;
+    if (intervalMs === undefined) {
+      this.clearKeepalive(slot);
+      return;
+    }
+    if (slot.keepaliveTimer !== undefined && slot.keepaliveIntervalMs === intervalMs) {
+      return;
+    }
+    this.clearKeepalive(slot);
     let inFlight = false;
-    const timer = setInterval(() => {
+    const timer = this.scheduler.setInterval(() => {
       if (inFlight || this.slots.get(connectionId) !== slot || slot.lifetime.signal.aborted || this.lifetime.signal.aborted) {
         return;
       }
@@ -673,21 +733,35 @@ export class CcpTunnelConnector {
           }
           return;
         }
-        if (inspected === undefined) {
-          await this.runner.prepare(runtimeId, tickSignal).catch(() => {});
-          return;
+        if (inspected?.idleTimeoutMinutes !== undefined) {
+          if (inspected.idleTimeoutMinutes <= 0) {
+            this.clearKeepalive(slot);
+            return;
+          }
+          const updatedIntervalMs = deriveKeepaliveIntervalMs(inspected.idleTimeoutMinutes);
+          if (updatedIntervalMs !== undefined && updatedIntervalMs !== slot.keepaliveIntervalMs) {
+            this.scheduleKeepalive(connectionId, slot, inspected.idleTimeoutMinutes);
+          }
         }
-        if (inspected.idleTimeoutMinutes !== undefined && inspected.idleTimeoutMinutes <= 0) {
-          this.clearKeepalive(slot);
+        try {
+          await this.runner.prepare(runtimeId, tickSignal);
+        } catch (error) {
+          if (!tickSignal.aborted && !this.lifetime.signal.aborted) {
+            this.logger?.warn({ connectionId, runtimeId, error: error instanceof Error ? error.message : String(error) }, 'CCP runtime keepalive prepare failed');
+          }
         }
       })()
-        .catch(() => {})
+        .catch((error: unknown) => {
+          if (!tickSignal.aborted && !this.lifetime.signal.aborted) {
+            this.logger?.warn({ connectionId, runtimeId: slot.record.transport.runtimeId, error: error instanceof Error ? error.message : String(error) }, 'CCP runtime keepalive tick failed');
+          }
+        })
         .finally(() => {
           inFlight = false;
         });
     }, intervalMs);
-    timer.unref();
     slot.keepaliveTimer = timer;
+    slot.keepaliveIntervalMs = intervalMs;
   }
 
   private watchTunnelDrop(connectionId: string, slot: CcpSlot, tunnel: CcpTunnelProcess): void {

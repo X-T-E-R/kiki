@@ -28,6 +28,9 @@ async function readRegularFileNoFollow(filePath: string, maxBytes: number): Prom
     if (!info.isFile()) {
       throw new SyncPathForbiddenError(`Non-regular file '${filePath}' is not allowed`);
     }
+    if (info.nlink > 1) {
+      throw new SyncPathForbiddenError(`Hardlinked source file '${filePath}' is not allowed`);
+    }
     if (info.size > maxBytes) {
       throw new SyncArchiveInvalidError('Transfer exceeds the 64 MiB archive limit');
     }

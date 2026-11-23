@@ -19,6 +19,8 @@ import { checkedPath } from '../portableSpace/spaceFiles';
 import { safePortablePath } from '../portableSpace/tarArchive';
 
 const TAR_BLOCK = 512;
+const MAX_TAR_LONG_NAME_BYTES = 4096;
+const MAX_TAR_PAX_BYTES = 1024 * 1024;
 const PINNED_READ_CHUNK_BYTES = 256 * 1024;
 const NOFOLLOW_FLAG = fsConstants.O_NOFOLLOW ?? 0;
 
@@ -175,13 +177,25 @@ async function writeSourcePayload(
   if (source.filePath !== undefined) {
     let written = 0;
     const reader = createReadStream(source.filePath);
-    for await (const rawChunk of reader) {
-      const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk as string);
-      const remaining = source.size - written;
-      if (remaining <= 0) break;
-      const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
-      await writeChunk(out, slice);
-      written += slice.byteLength;
+    const onOutClosed = () => {
+      if (!reader.destroyed) reader.destroy();
+    };
+    out.once('close', onOutClosed);
+    out.once('error', onOutClosed);
+    try {
+      for await (const rawChunk of reader) {
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk as string);
+        const remaining = source.size - written;
+        if (remaining <= 0) break;
+        const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+        await writeChunk(out, slice);
+        written += slice.byteLength;
+      }
+    } finally {
+      out.off('close', onOutClosed);
+      out.off('error', onOutClosed);
+      reader.on('error', () => {});
+      if (!reader.destroyed) reader.destroy();
     }
     return written;
   }
@@ -196,6 +210,12 @@ export async function exportSessionsTarGzStream(
   const sources = await collectCanonicalSessionSources(live, selection);
   const tarStream = new PassThrough();
   const gzip = createGzip();
+  tarStream.once('error', (err) => {
+    if (!gzip.destroyed) gzip.destroy(err);
+  });
+  gzip.once('close', () => {
+    if (!tarStream.destroyed) tarStream.destroy();
+  });
   tarStream.pipe(gzip);
 
   void (async () => {
@@ -215,12 +235,31 @@ export async function exportSessionsTarGzStream(
       tarStream.end();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      tarStream.destroy(err);
-      gzip.destroy(err);
+      if (!tarStream.destroyed) tarStream.destroy(err);
+      if (!gzip.destroyed) gzip.destroy(err);
     }
   })();
 
   return gzip;
+}
+
+function parsePaxPath(payload: Buffer): string | undefined {
+  let offset = 0;
+  let pathValue: string | undefined;
+  while (offset < payload.byteLength) {
+    const space = payload.indexOf(0x20, offset);
+    if (space <= offset) throw new Error('Invalid PAX extended header');
+    const recordLength = Number.parseInt(payload.subarray(offset, space).toString('ascii'), 10);
+    if (!Number.isSafeInteger(recordLength) || recordLength <= space - offset + 1 || offset + recordLength > payload.byteLength) {
+      throw new Error('Invalid PAX record length');
+    }
+    const record = payload.subarray(space + 1, offset + recordLength).toString('utf8');
+    if (record.startsWith('path=') && record.endsWith('\n')) {
+      pathValue = record.slice('path='.length, -1);
+    }
+    offset += recordLength;
+  }
+  return pathValue;
 }
 
 function isZeroBlock(block: Buffer): boolean {
@@ -276,12 +315,17 @@ export async function importSessionsTarGzStream(
     gzipInput.once('error', onInputError);
     gzipInput.pipe(gunzip);
 
-    let mode: 'header' | 'data' | 'pad' | 'longname' = 'header';
+    let mode: 'header' | 'data' | 'pad' | 'longname' | 'pax' = 'header';
     let headerBuf: Buffer = Buffer.alloc(0);
     let remainingData = 0;
     let remainingPad = 0;
+    let consecutiveZeroBlocks = 0;
+    let sawEndOfArchive = false;
     let pendingLongName: string | undefined;
+    let longNameBytes = 0;
     let longNameChunks: Buffer[] = [];
+    let paxBytes = 0;
+    let paxChunks: Buffer[] = [];
     let currentWriter: WriteStream | undefined;
 
     const closeWriter = async (): Promise<void> => {
@@ -330,7 +374,14 @@ export async function importSessionsTarGzStream(
 
             const block = headerBuf;
             headerBuf = Buffer.alloc(0);
-            if (isZeroBlock(block)) continue;
+            if (isZeroBlock(block)) {
+              consecutiveZeroBlocks += 1;
+              if (consecutiveZeroBlocks >= 2) sawEndOfArchive = true;
+              continue;
+            }
+            if (consecutiveZeroBlocks > 0) {
+              throw new Error('Malformed session tar archive: unexpected block after zero trailer');
+            }
 
             const parsed = verifyTarHeader(block);
             const entryName = pendingLongName ?? parsed.name;
@@ -338,9 +389,23 @@ export async function importSessionsTarGzStream(
             remainingPad = (TAR_BLOCK - (parsed.size % TAR_BLOCK)) % TAR_BLOCK;
 
             if (parsed.typeFlag === 'L') {
+              if (parsed.size > MAX_TAR_LONG_NAME_BYTES) {
+                throw new Error('Session tar long-name header exceeds path limit');
+              }
               remainingData = parsed.size;
+              longNameBytes = 0;
               longNameChunks = [];
               mode = remainingData > 0 ? 'longname' : (remainingPad > 0 ? 'pad' : 'header');
+              continue;
+            }
+            if (parsed.typeFlag === 'x') {
+              if (parsed.size > MAX_TAR_PAX_BYTES) {
+                throw new Error('Session tar PAX header exceeds size limit');
+              }
+              remainingData = parsed.size;
+              paxBytes = 0;
+              paxChunks = [];
+              mode = remainingData > 0 ? 'pax' : (remainingPad > 0 ? 'pad' : 'header');
               continue;
             }
             if (parsed.typeFlag !== '0' && parsed.typeFlag !== '\0') {
@@ -388,12 +453,33 @@ export async function importSessionsTarGzStream(
             }
           } else if (mode === 'longname') {
             const take = Math.min(remainingData, chunk.byteLength);
+            longNameBytes += take;
+            if (longNameBytes > MAX_TAR_LONG_NAME_BYTES) {
+              throw new Error('Session tar long-name header exceeds path limit');
+            }
             longNameChunks.push(Buffer.from(chunk.subarray(0, take)));
             chunk = chunk.subarray(take);
             remainingData -= take;
             if (remainingData === 0) {
               pendingLongName = Buffer.concat(longNameChunks).toString('utf8').replace(/\0.*$/u, '');
               longNameChunks = [];
+              longNameBytes = 0;
+              mode = remainingPad > 0 ? 'pad' : 'header';
+            }
+          } else if (mode === 'pax') {
+            const take = Math.min(remainingData, chunk.byteLength);
+            paxBytes += take;
+            if (paxBytes > MAX_TAR_PAX_BYTES) {
+              throw new Error('Session tar PAX header exceeds size limit');
+            }
+            paxChunks.push(Buffer.from(chunk.subarray(0, take)));
+            chunk = chunk.subarray(take);
+            remainingData -= take;
+            if (remainingData === 0) {
+              const paxPath = parsePaxPath(Buffer.concat(paxChunks));
+              if (paxPath !== undefined) pendingLongName = paxPath;
+              paxChunks = [];
+              paxBytes = 0;
               mode = remainingPad > 0 ? 'pad' : 'header';
             }
           } else if (mode === 'data') {
@@ -417,7 +503,14 @@ export async function importSessionsTarGzStream(
       await closeWriter().catch(() => {});
     }
 
-    if (mode !== 'header' || headerBuf.byteLength !== 0 || remainingData !== 0 || remainingPad !== 0) {
+    if (
+      !sawEndOfArchive ||
+      pendingLongName !== undefined ||
+      mode !== 'header' ||
+      headerBuf.byteLength !== 0 ||
+      remainingData !== 0 ||
+      remainingPad !== 0
+    ) {
       throw new Error('Truncated session tar archive stream');
     }
 

@@ -1,8 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { IConfigRegistry, IConfigService, IMemoryStore } from '@kiki/agent-core-v2';
+import type { IConfigRegistry, IConfigService, IFileSystemStorageService, IMemoryStore } from '@kiki/agent-core-v2';
+import { StorageError, StorageErrors } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { SyncService } from '../../src/services/sync/syncService';
 import { exportSessionsTarGzStream, importSessionsTarGzStream } from '../../src/services/sync/sessionArchiveStream';
 import type { SessionLiveServices } from '../../src/services/portableSpace/liveSpace';
@@ -140,19 +143,20 @@ describe('SyncService home assets sync', () => {
     expect(existsSync(join(sandbox, 'escape.txt'))).toBe(false);
   });
 
-  it('syncs prompt_overrides.files referenced outside prompt/ and fails on missing referenced override files', async () => {
+  it('confines prompt_overrides.files to prompt/ and agents/ and verifies installation before applying config', async () => {
     const sandbox = makeTempDir('kiki-sync-ref-overrides-');
     const sourceHome = join(sandbox, 'source-home');
     const targetHome = join(sandbox, 'target-home');
     const osHome = join(sandbox, 'os-home');
-    mkdirSync(join(sourceHome, 'custom-overrides'), { recursive: true });
-    mkdirSync(join(sourceHome, 'profile-overrides'), { recursive: true });
-    mkdirSync(join(sourceHome, 'agents', 'custom'), { recursive: true });
+    mkdirSync(join(sourceHome, 'prompt', 'nested'), { recursive: true });
+    mkdirSync(join(sourceHome, 'agents', 'custom', 'overrides'), { recursive: true });
+    mkdirSync(join(sourceHome, 'outside-root'), { recursive: true });
     mkdirSync(targetHome, { recursive: true });
     mkdirSync(osHome, { recursive: true });
 
-    writeFileSync(join(sourceHome, 'custom-overrides', 'model-tune.toml'), 'system_prompt = "tuned"\n');
-    writeFileSync(join(sourceHome, 'profile-overrides', 'agent-tune.toml'), 'system_prompt = "agent-tuned"\n');
+    writeFileSync(join(sourceHome, 'prompt', 'nested', 'model-tune.toml'), 'system_prompt = "tuned"\n');
+    writeFileSync(join(sourceHome, 'agents', 'custom', 'overrides', 'agent-tune.toml'), 'system_prompt = "agent-tuned"\n');
+    writeFileSync(join(sourceHome, 'outside-root', 'sneaky.toml'), 'system_prompt = "escape"\n');
     writeFileSync(
       join(sourceHome, 'agents', 'custom', 'builder.md'),
       [
@@ -161,7 +165,7 @@ describe('SyncService home assets sync', () => {
         'description: Custom builder',
         'prompt_overrides:',
         '  files:',
-        '    - profile-overrides/agent-tune.toml',
+        '    - agents/custom/overrides/agent-tune.toml',
         '---',
         'Build cleanly.',
         '',
@@ -173,22 +177,24 @@ describe('SyncService home assets sync', () => {
         'gemini-4-neon': {
           provider: 'axon',
           model: 'gemini-4-neon',
-          prompt_overrides: { files: ['custom-overrides/model-tune.toml'] },
+          prompt_overrides: { files: ['prompt/nested/model-tune.toml'] },
         },
       },
     };
     const sourceConfig: Pick<IConfigService, 'ready' | 'get' | 'inspect' | 'replace'> = {
       ready: Promise.resolve(),
       get: (<T>(domain: string) => sourceConfigValues[domain] as T) as IConfigService['get'],
-      inspect: ((domain: string) => ({ userValue: sourceConfigValues[domain] })) as IConfigService['inspect'],
+      inspect: ((domain: string) => ({ userValue: sourceConfigValues[domain] })) as unknown as IConfigService['inspect'],
       replace: async () => undefined,
     };
     const targetConfigValues: Record<string, unknown> = {};
+    const replaceCalls: string[] = [];
     const targetConfig: Pick<IConfigService, 'ready' | 'get' | 'inspect' | 'replace'> = {
       ready: Promise.resolve(),
       get: (<T>(domain: string) => targetConfigValues[domain] as T) as IConfigService['get'],
-      inspect: ((domain: string) => ({ userValue: targetConfigValues[domain] })) as IConfigService['inspect'],
+      inspect: ((domain: string) => ({ userValue: targetConfigValues[domain] })) as unknown as IConfigService['inspect'],
       replace: async (domain: string, value: unknown) => {
+        replaceCalls.push(domain);
         targetConfigValues[domain] = value;
       },
     };
@@ -208,23 +214,70 @@ describe('SyncService home assets sync', () => {
       includeSkills: false,
     });
     const exportedPaths = (bundle.homeAssets ?? []).map((entry) => entry.relativePath);
-    expect(exportedPaths).toContain('custom-overrides/model-tune.toml');
-    expect(exportedPaths).toContain('profile-overrides/agent-tune.toml');
+    expect(exportedPaths).toContain('prompt/nested/model-tune.toml');
+    expect(exportedPaths).toContain('agents/custom/overrides/agent-tune.toml');
 
     const receipt = await targetSync.importSyncBundle({
       ...bundle,
       homeAssets: [
         ...(bundle.homeAssets ?? []),
-        { relativePath: 'unreferenced-dir/sneaky.toml', contentBase64: Buffer.from('nope').toString('base64') },
+        { relativePath: 'outside-root/sneaky.toml', contentBase64: Buffer.from('nope').toString('base64') },
       ],
     });
     expect(receipt.homeAssetsApplied).toBe(3);
     expect(receipt.homeAssetsSkipped).toBe(1);
-    expect(readFileSync(join(targetHome, 'custom-overrides', 'model-tune.toml'), 'utf8')).toBe('system_prompt = "tuned"\n');
-    expect(readFileSync(join(targetHome, 'profile-overrides', 'agent-tune.toml'), 'utf8')).toBe('system_prompt = "agent-tuned"\n');
-    expect(existsSync(join(targetHome, 'unreferenced-dir', 'sneaky.toml'))).toBe(false);
+    expect(replaceCalls).toEqual(['models']);
+    expect(readFileSync(join(targetHome, 'prompt', 'nested', 'model-tune.toml'), 'utf8')).toBe('system_prompt = "tuned"\n');
+    expect(readFileSync(join(targetHome, 'agents', 'custom', 'overrides', 'agent-tune.toml'), 'utf8')).toBe('system_prompt = "agent-tuned"\n');
+    expect(existsSync(join(targetHome, 'outside-root', 'sneaky.toml'))).toBe(false);
 
-    unlinkSync(join(sourceHome, 'custom-overrides', 'model-tune.toml'));
+    replaceCalls.length = 0;
+    await expect(
+      targetSync.importSyncBundle({
+        format: 'kiki.sync-bundle.v1',
+        exportedAt: new Date().toISOString(),
+        portableConfig: {
+          models: {
+            'gemini-4-neon': {
+              provider: 'axon',
+              model: 'gemini-4-neon',
+              prompt_overrides: { files: ['outside-root/sneaky.toml'] },
+            },
+          },
+        },
+        homeAssets: [
+          { relativePath: 'outside-root/sneaky.toml', contentBase64: Buffer.from('escape').toString('base64') },
+        ],
+      }),
+    ).rejects.toThrow(/must stay under prompt\/ or agents\//i);
+    expect(replaceCalls).toEqual([]);
+    expect(existsSync(join(targetHome, 'outside-root', 'sneaky.toml'))).toBe(false);
+
+    await expect(
+      targetSync.importSyncBundle({
+        format: 'kiki.sync-bundle.v1',
+        exportedAt: new Date().toISOString(),
+        portableConfig: {
+          models: {
+            'gemini-4-neon': {
+              provider: 'axon',
+              model: 'gemini-4-neon',
+              prompt_overrides: { files: ['prompt/missing-override.toml'] },
+            },
+          },
+        },
+        homeAssets: [],
+      }),
+    ).rejects.toThrow(/missing from incoming sync bundle/i);
+    expect(replaceCalls).toEqual([]);
+
+    sourceConfigValues['models'] = {
+      'gemini-4-neon': {
+        provider: 'axon',
+        model: 'gemini-4-neon',
+        prompt_overrides: { files: ['outside-root/sneaky.toml'] },
+      },
+    };
     await expect(
       sourceSync.exportSyncBundle({
         includeConfig: true,
@@ -233,7 +286,25 @@ describe('SyncService home assets sync', () => {
         includeMemories: false,
         includeSkills: false,
       }),
-    ).rejects.toThrow(/custom-overrides\/model-tune\.toml/);
+    ).rejects.toThrow(/must stay under prompt\/ or agents\//i);
+
+    sourceConfigValues['models'] = {
+      'gemini-4-neon': {
+        provider: 'axon',
+        model: 'gemini-4-neon',
+        prompt_overrides: { files: ['prompt/nested/model-tune.toml'] },
+      },
+    };
+    unlinkSync(join(sourceHome, 'prompt', 'nested', 'model-tune.toml'));
+    await expect(
+      sourceSync.exportSyncBundle({
+        includeConfig: true,
+        includeHomeAssets: true,
+        includeCredentials: false,
+        includeMemories: false,
+        includeSkills: false,
+      }),
+    ).rejects.toThrow(/prompt\/nested\/model-tune\.toml/);
   });
 
   it('enforces requested domains and selectors on pull even when peer returns unrequested data', async () => {
@@ -390,5 +461,67 @@ describe('SyncService home assets sync', () => {
     const updated = await importSessionsTarGzStream(liveA, stream3, { workspaceId: wsA, workDir: '/a' });
     expect(updated).toEqual({ sessionsApplied: 1, sessionsSkipped: 0 });
     expect(readFileSync(join(sessionsDirA, wsA, 'sess-stream-1', 'agents', 'main', 'wire.jsonl'), 'utf8')).toContain('"seq":2');
+
+    writeFileSync(join(sessDirB, 'state.json'), JSON.stringify({ id: 'sess-stream-1', workspaceId: wsB, updatedAt: 3000 }));
+    writeFileSync(join(sessDirB, 'agents', 'main', 'wire.jsonl'), '{"seq":99}\n{"seq":100}\n{"seq":101}\n');
+    const divergentStream = await exportSessionsTarGzStream(liveB, { mode: 'ids', sessionIds: ['sess-stream-1'] });
+    const divergentResult = await importSessionsTarGzStream(liveA, divergentStream, { workspaceId: wsA, workDir: '/a' });
+    expect(divergentResult).toEqual({ sessionsApplied: 0, sessionsSkipped: 1 });
+    expect(readFileSync(join(sessionsDirA, wsA, 'sess-stream-1', 'agents', 'main', 'wire.jsonl'), 'utf8')).toBe('{"seq":1}\n{"seq":2}\n');
+
+    writeFileSync(join(sessDirB, 'state.json'), JSON.stringify({ id: 'sess-stream-1', workspaceId: wsB, updatedAt: 4000 }));
+    writeFileSync(join(sessDirB, 'agents', 'main', 'wire.jsonl'), '{"seq":1}\n{"seq":2}\n{"seq":3}\n');
+    const lockedLiveA: SessionLiveServices = {
+      ...liveA,
+      storage: {
+        acquireLock: async () => {
+          throw new StorageError(StorageErrors.codes.STORAGE_LOCKED, 'Session lock held');
+        },
+      } as unknown as IFileSystemStorageService,
+    };
+    const lockedStream = await exportSessionsTarGzStream(liveB, { mode: 'ids', sessionIds: ['sess-stream-1'] });
+    const lockedResult = await importSessionsTarGzStream(lockedLiveA, lockedStream, { workspaceId: wsA, workDir: '/a' });
+    expect(lockedResult).toEqual({ sessionsApplied: 0, sessionsSkipped: 1 });
+    expect(readFileSync(join(sessionsDirA, wsA, 'sess-stream-1', 'agents', 'main', 'wire.jsonl'), 'utf8')).toBe('{"seq":1}\n{"seq":2}\n');
+
+    const fullChunks: Buffer[] = [];
+    const fullStream = await exportSessionsTarGzStream(liveB, { mode: 'ids', sessionIds: ['sess-stream-1'] });
+    for await (const chunk of fullStream) fullChunks.push(Buffer.from(chunk as Uint8Array));
+    const rawTar = gunzipSync(Buffer.concat(fullChunks));
+    const truncatedTar = rawTar.subarray(0, rawTar.byteLength - 1024);
+    await expect(
+      importSessionsTarGzStream(liveA, Readable.from([gzipSync(truncatedTar)]), { workspaceId: wsA, workDir: '/a' }),
+    ).rejects.toThrow(/Truncated session tar archive stream/);
+
+    const oversizedHeader = Buffer.alloc(512, 0);
+    oversizedHeader.write('././@LongLink', 0, 100, 'utf8');
+    oversizedHeader.write('0000644\0', 100, 8, 'ascii');
+    oversizedHeader.write('0000000\0', 108, 8, 'ascii');
+    oversizedHeader.write('0000000\0', 116, 8, 'ascii');
+    oversizedHeader.write(`${(8192).toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+    oversizedHeader.write('00000000000\0', 136, 12, 'ascii');
+    oversizedHeader.fill(0x20, 148, 156);
+    oversizedHeader.write('L', 156, 1, 'ascii');
+    oversizedHeader.write('ustar\0', 257, 6, 'ascii');
+    oversizedHeader.write('00', 263, 2, 'ascii');
+    let sum = 0;
+    for (let i = 0; i < 512; i += 1) sum += oversizedHeader[i]!;
+    oversizedHeader.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+    await expect(
+      importSessionsTarGzStream(
+        liveA,
+        Readable.from([gzipSync(Buffer.concat([oversizedHeader, Buffer.alloc(1024)]))]),
+        { workspaceId: wsA, workDir: '/a' },
+      ),
+    ).rejects.toThrow(/long-name header exceeds path limit/i);
+
+    const exportErrStream = await exportSessionsTarGzStream(liveB, { mode: 'ids', sessionIds: ['sess-stream-1'] });
+    unlinkSync(join(sessDirB, 'agents', 'main', 'wire.jsonl'));
+    const readExportStream = async () => {
+      for await (const _chunk of exportErrStream) {
+        void _chunk;
+      }
+    };
+    await expect(readExportStream()).rejects.toThrow(/ENOENT|size changed/i);
   });
 });
