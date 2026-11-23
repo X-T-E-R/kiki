@@ -1008,16 +1008,6 @@ describe('TaskWait tool', () => {
     for (const timeout of [86_401, 1.5, NaN, Infinity, -Infinity, '60', null]) {
       expect(TaskWaitInputSchema.safeParse({ timeout }).success).toBe(false);
     }
-    for (const exception of [
-      { sync_wait: false },
-      { sync_wait: true },
-      { sync_reason: 'User requires this response to contain the result' },
-      { task_id: 'agent-1', sync_wait: true, sync_reason: 'Host consumes only this final response' },
-    ]) {
-      expect(TaskWaitInputSchema.safeParse({ timeout: 60, ...exception }).success).toBe(true);
-    }
-    expect(TaskWaitInputSchema.safeParse({ timeout: 60, sync_wait: 'true' }).success).toBe(false);
-    expect(TaskWaitInputSchema.safeParse({ timeout: 60, sync_reason: 1 }).success).toBe(false);
     expect(tool.parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
@@ -1025,10 +1015,9 @@ describe('TaskWait tool', () => {
       properties: {
         timeout: { type: 'integer', maximum: 86_400 },
         task_id: { type: 'string' },
-        sync_wait: { type: 'boolean' },
-        sync_reason: { type: 'string' },
       },
     });
+    expect(Object.keys((tool.parameters['properties'] as Record<string, unknown>))).toEqual(['timeout', 'task_id']);
   });
 
   it.each([
@@ -1037,8 +1026,9 @@ describe('TaskWait tool', () => {
     { sync_wait: true },
     { sync_wait: true, sync_reason: '' },
     { sync_wait: true, sync_reason: '   ' },
+    { sync_wait: true, sync_reason: 'The next operation requires this result' },
     { sync_reason: 'The next operation requires this result' },
-  ])('refuses an accidental main wait on an automatically notifying background subagent: %j', async (extra) => {
+  ])('unconditionally refuses a main wait outside goal mode on an automatically notifying background subagent: %j', async (extra) => {
     const tasks = new FakeTaskService();
     const taskId = tasks.add(agentTaskInfo({ status: 'running' }));
     tasks.waitDelegate = async (id) => {
@@ -1047,16 +1037,19 @@ describe('TaskWait tool', () => {
     };
     const result = await executeTool(
       createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
-      context('wait_agent', { timeout: 86_400, task_id: taskId, ...extra }),
+      context('wait_agent', { timeout: 86_400, task_id: taskId, ...(extra as Record<string, unknown>) } as never),
     );
     expect(result.isError).toBe(true);
-    expect(outputString(result)).toContain('end the turn and continue on notification');
+    const output = outputString(result);
+    expect(output).toContain('end your turn now');
+    expect(output).not.toContain('sync_wait');
+    expect(output).not.toContain('sync_reason');
     expect(tasks.waitCalls).toEqual([]);
     expect(tasks.waitDeliveries).toEqual([]);
     expect(tasks.getTask(taskId)?.status).toBe('running');
   });
 
-  it('allows an explicit main same-turn dependency on a background subagent', async () => {
+  it('allows an active goal main agent to wait on a running background subagent', async () => {
     const tasks = new FakeTaskService();
     const taskId = tasks.add(agentTaskInfo({ status: 'running' }));
     tasks.waitDelegate = async (id) => {
@@ -1064,9 +1057,29 @@ describe('TaskWait tool', () => {
       return tasks.getTask(id);
     };
     const startedAt = Date.now();
+    const activeGoal: GoalSnapshot = {
+      goalId: 'goal-1',
+      objective: 'finish slice',
+      status: 'active',
+      turnsUsed: 1,
+      tokensUsed: 100,
+      wallClockMs: 1_000,
+      budget: {
+        tokenBudget: null,
+        turnBudget: null,
+        wallClockBudgetMs: null,
+        remainingTokens: null,
+        remainingTurns: null,
+        remainingWallClockMs: null,
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    };
     const result = await executeTool(
-      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
-      context('wait_sync_agent', { timeout: 86_400, task_id: taskId, sync_wait: true, sync_reason: 'The next operation requires this result' }),
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true), undefined, activeGoal),
+      context('wait_goal_agent', { timeout: 86_400, task_id: taskId }),
     );
     expect(result.isError).toBe(false);
     expect(tasks.waitCalls).toEqual([{ taskId, timeoutMs: expect.any(Number) }]);
@@ -1929,7 +1942,7 @@ describe('TaskWait tool (harness)', () => {
     try {
       const taskId = owner.get(IAgentTaskService).registerTask(new ProcessTask(process.proc, 'sleep 60', 'private work'));
       const result = await executeTool(other.get(ITaskWaitTool), context('wait_foreign', {
-        timeout: 86_400, task_id: taskId, sync_wait: true, sync_reason: 'Host needs this result now',
+        timeout: 86_400, task_id: taskId,
       }));
       expect(result.isError).toBe(true);
       expect(outputString(result)).toBe(`Task not found: ${taskId}`);
@@ -1956,14 +1969,13 @@ describe('TaskWait tool (harness)', () => {
       vi.useFakeTimers();
       const taskId = tasks.registerTask(new SubagentTask(
         { agentId: 'long-child', profileName: 'coder', completion }, 'bounded work', childController,
-      ), { timeoutMs: ending === 'task_budget' ? 120_000 : undefined });
+      ), { timeoutMs: ending === 'task_budget' ? 120_000 : undefined, terminalNotificationSuppressed: true });
       const cancelled = new AbortController();
       const steered = new AbortController();
       const onUpdate = vi.fn();
       const pending = executeTool(ctx.get(ITaskWaitTool), {
         ...context('wait_long', {
-          timeout: 86_400, task_id: taskId, sync_wait: true,
-          sync_reason: 'The host needs the result in this synchronous response',
+          timeout: 86_400, task_id: taskId,
         }, cancelled.signal),
         steerSignal: steered.signal, onUpdate,
       });
@@ -2015,12 +2027,12 @@ describe('TaskWait tool (harness)', () => {
           'hung work',
           new AbortController(),
         ),
+        { terminalNotificationSuppressed: true },
       );
 
       vi.useFakeTimers();
       const pending = executeTool(tool, context('wait_hang', {
-        timeout: 86_400, task_id: taskId, sync_wait: true,
-        sync_reason: 'The user explicitly requires a result in this response',
+        timeout: 86_400, task_id: taskId,
       }));
       await vi.advanceTimersByTimeAsync(86_400_000);
       const result = await pending;

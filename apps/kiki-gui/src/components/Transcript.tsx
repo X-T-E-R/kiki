@@ -4441,6 +4441,9 @@ function subagentBranchEqual(
   if (node.kind === 'subagent-group') {
     return node.members.every((member) => subagentBranchEqual(member, previousForest, nextForest));
   }
+  if (node.kind === 'subagent-ended') {
+    return previousForest?.byId[node.agentId] === nextForest?.byId[node.agentId];
+  }
   if (node.kind !== 'subagent') return true;
   return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
 }
@@ -5369,7 +5372,22 @@ export const Transcript = memo(function Transcript({
       return next;
     });
   }, []);
-  const visibleTailTurnId = state.busy ? undefined : state.turnTail?.turnId;
+  // The session names its running turn; a turn whose text already settled is
+  // still running until that turn ends. Background tasks/subagents can keep
+  // session-level `state.busy` true even after `main`'s own turn has ended:
+  // only a genuinely active turn on this agent should hold the last process
+  // row open or keep `TurnStatusLine` / `PresenceLine` dangling at the bottom.
+  // Child views track their own turn via `state.busy` and ignore `main_turn_active`.
+  const runningTurnId = state.abortableTurnId === undefined ? undefined : `t${state.abortableTurnId}`;
+  const mainIdleWithBackgroundWork =
+    agentId === MAIN_AGENT_ID &&
+    runningTurnId === undefined &&
+    state.activePromptId === undefined &&
+    (state.session?.main_turn_active === false ||
+      state.turnTail !== undefined ||
+      state.tasks.some((task) => task.status === 'running'));
+  const turnBusy = state.busy && !mainIdleWithBackgroundWork;
+  const visibleTailTurnId = turnBusy ? undefined : state.turnTail?.turnId;
   // A user stop reads as ONE line: the tail's "Stopped by you · Resume". The
   // same turn's "Prompt aborted" / interruption notices would repeat it.
   const stoppedTailTurnId =
@@ -5497,16 +5515,13 @@ export const Transcript = memo(function Transcript({
   // latest turn folds everything but its newest process row, which stays in
   // view until the next one arrives. Rows the reader is looking at while
   // scrolled up (`heldRows`) are left in place until they return.
-  const liveTurnId = state.busy ? latestTurnId(mergedNodes) : undefined;
+  const liveTurnId = runningTurnId ?? (turnBusy ? latestTurnId(mergedNodes) : undefined);
   const [heldRows, setHeldRows] = useState<ReadonlySet<string>>(EMPTY_HELD);
   // Message view: the same blocks through the delivery projection — speech,
   // your cards, one activity line per stretch, outcomes. Nothing is dropped:
   // every block stays inside a summary's members, except the turn's own reply
   // which becomes speech itself.
   const messageContext = useMessageViewContext();
-  // The session names its running turn; a turn whose text already settled is
-  // still running until that turn ends.
-  const runningTurnId = state.abortableTurnId === undefined ? undefined : `t${state.abortableTurnId}`;
   // Every loaded turn the transcript reports as failed: its partial text is not
   // a reply the reader received, and it says on its own bubble why it stopped.
   const failedTurnIds = state.failedTurnIds ?? EMPTY_TURN_IDS;
@@ -5536,10 +5551,10 @@ export const Transcript = memo(function Transcript({
     () => (view === 'message'
       // A silent stretch draws nothing; as a virtual row it would still
       // take a gap, so it is not a row at all.
-      ? buildMessageNodes(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId, failedTurnIds, personaName: messageContext.persona?.name })
+      ? buildMessageNodes(timelineBlocks, { busy: turnBusy, liveTurnId: runningTurnId, failedTurnIds, personaName: messageContext.persona?.name })
         .filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node))
       : []),
-    [view, timelineBlocks, state.busy, runningTurnId, failedTurnIds, messageContext.persona?.name],
+    [view, timelineBlocks, turnBusy, runningTurnId, failedTurnIds, messageContext.persona?.name],
   );
   const messageNodes = useMemo<readonly MessageTimelineNode[]>(
     () => (view === 'message'
@@ -5606,10 +5621,10 @@ export const Transcript = memo(function Transcript({
   const promotedReplyIds = useMemo<ReadonlySet<string>>(() => {
     if (view !== 'process' || !messageContext.internalProse) return EMPTY_PROMOTED;
     return new Set(projectMessageView(timelineBlocks, {
-      completedTurnIds: completedTurnIds(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId }),
+      completedTurnIds: completedTurnIds(timelineBlocks, { busy: turnBusy, liveTurnId: runningTurnId }),
       failedTurnIds,
     }).flatMap((node) => (node.kind === 'message' && node.sourceBlock !== undefined ? [node.sourceBlock.id] : [])));
-  }, [view, messageContext.internalProse, timelineBlocks, state.busy, runningTurnId, failedTurnIds]);
+  }, [view, messageContext.internalProse, timelineBlocks, turnBusy, runningTurnId, failedTurnIds]);
   // Only the message view's rows read it (the message a reply quotes); the
   // process view would rebuild it on every streamed frame for nothing.
   const blockById = useMemo<ReadonlyMap<string, Block>>(
@@ -5624,7 +5639,7 @@ export const Transcript = memo(function Transcript({
     pendingProcessTarget.current = { turnId, blockId };
     writeTimelineView(sessionIdForLocate, 'process');
   }, [sessionIdForLocate]);
-  const presence = useMemo(() => (view === 'message' ? presenceOf(baseMessageNodes, state.busy) : undefined), [view, baseMessageNodes, state.busy]);
+  const presence = useMemo(() => (view === 'message' ? presenceOf(baseMessageNodes, turnBusy) : undefined), [view, baseMessageNodes, turnBusy]);
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -5707,19 +5722,19 @@ export const Transcript = memo(function Transcript({
   const streamingNow = blocks.some(
     (b) => (b.kind === 'assistant' || b.kind === 'thinking') && b.streaming,
   );
-  const showTurnStatus = state.busy && !streamingNow;
+  const showTurnStatus = turnBusy && !streamingNow;
   // Regenerate/fork anchor: the latest completed turn's final assistant reply.
   // Changes only at turn boundaries, so the page memos survive token deltas.
   const latestFinalAssistantId = useMemo(() => latestFinalAssistantBlockId(blocks, {
-    busy: state.busy,
+    busy: turnBusy,
     liveTurnId: runningTurnId,
     incompleteTurnIds: state.incompleteTurnIds,
-  }), [blocks, state.busy, runningTurnId, state.incompleteTurnIds]);
+  }), [blocks, turnBusy, runningTurnId, state.incompleteTurnIds]);
   const forkableAssistantIds = useMemo(() => settledFinalAssistantBlockIds(blocks, {
-    busy: state.busy,
+    busy: turnBusy,
     liveTurnId: runningTurnId,
     incompleteTurnIds: state.incompleteTurnIds,
-  }), [blocks, state.busy, runningTurnId, state.incompleteTurnIds]);
+  }), [blocks, turnBusy, runningTurnId, state.incompleteTurnIds]);
   // Resume = regenerate the stopped turn's reply; offered only when that reply
   // exists and the session is writable.
   const stoppedAssistant = useMemo(
@@ -6238,7 +6253,7 @@ export const Transcript = memo(function Transcript({
   const hasTailContent =
     (view === 'message' && presence !== undefined)
     || (showTurnStatus && view !== 'message')
-    || (!state.busy && state.turnTail !== undefined)
+    || (!turnBusy && state.turnTail !== undefined)
     || state.refreshing === true;
   const [tailSlotElement, setTailSlotElement] = useState<HTMLDivElement | null>(null);
   const handleTailSlotRef = useCallback((node: HTMLDivElement | null) => {
@@ -7988,7 +8003,7 @@ export const Transcript = memo(function Transcript({
                     <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
                   </div>
                 ) : null}
-                {!state.busy && state.turnTail !== undefined ? (
+                {!turnBusy && state.turnTail !== undefined ? (
                   <div className={AGENT_LANE}>
                     <TurnTailLine
                       tail={state.turnTail}

@@ -1275,12 +1275,12 @@ describe('AgentTaskService', () => {
         'parent work',
         new AbortController(),
       ),
+      { terminalNotificationSuppressed: true },
     );
     const mainWait = executeTool(
       mainTool,
       waitContext('wait_main', {
-        timeout: 30, task_id: taskM, sync_wait: true,
-        sync_reason: 'The host needs the nested result in this synchronous response',
+        timeout: 30, task_id: taskM,
       }),
     );
     void mainWait.then(() => {

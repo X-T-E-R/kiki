@@ -77,7 +77,7 @@ function skippedSubagentsNote(skipped: readonly AgentTaskInfo[]): string[] {
   if (skipped.length === 0) return [];
   const ids = skipped.map((task) => task.taskId).join(', ');
   return [
-    `Not waited for: subagent ${skipped.length === 1 ? 'task' : 'tasks'} ${ids}. A wait without task_id leaves out subagent tasks, because their results reach you by notification. Do independent work or end the turn and continue on notification. For a genuine same-turn dependency, specify task_id, sync_wait=true and a concrete sync_reason.`,
+    `Not waited for: subagent ${skipped.length === 1 ? 'task' : 'tasks'} ${ids}. Background subagent results arrive via automatic completion notification. Do independent work or end the turn now and continue when notified.`,
   ];
 }
 
@@ -191,12 +191,16 @@ export class TaskWaitTool implements ITaskWaitTool {
     }
 
     const target = args.task_id === undefined ? undefined : this.tasks.getTask(args.task_id);
-    if (mainOutsideGoal && target?.kind === 'agent' && target.detached !== false &&
-      target.terminalNotificationSuppressed !== true && !TERMINAL_STATUSES.has(target.status) &&
-      !(args.sync_wait === true && args.sync_reason?.trim())) {
+    if (
+      mainOutsideGoal &&
+      target?.kind === 'agent' &&
+      target.detached !== false &&
+      target.terminalNotificationSuppressed !== true &&
+      !TERMINAL_STATUSES.has(target.status)
+    ) {
       return {
         isError: true,
-        output: 'TaskWait did not wait: this background subagent sends an automatic completion notification. Do independent work or end the turn and continue on notification; the task remains running and its notification has not been consumed. For a genuine same-turn dependency, specify task_id, sync_wait=true and a non-empty concrete sync_reason.',
+        output: 'TaskWait refused: this background subagent delivers its result via automatic completion notification. Do not wait on it from a main turn outside active goal mode; finish any independent work and end your turn now to continue when the notification arrives. The subagent remains running and its notification has not been consumed.',
       };
     }
 

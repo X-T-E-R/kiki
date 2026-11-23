@@ -71,12 +71,21 @@ export function sessionAgentRoster(
     const outcomeAt = registration?.completedAt;
     const trackedStart = row?.started_at !== undefined ? Date.parse(row.started_at) : Number.NaN;
     const hasTrackedStart = Number.isFinite(trackedStart);
+    const trackedEnd = row?.completed_at !== undefined ? Date.parse(row.completed_at) : Number.NaN;
+    const hasTrackedEnd = Number.isFinite(trackedEnd);
+    const lastOutcomeAt = outcomeAt !== undefined && hasTrackedEnd
+      ? Math.max(outcomeAt, trackedEnd)
+      : outcomeAt ?? (hasTrackedEnd ? trackedEnd : undefined);
     const newerRun = hasTrackedStart && outcomeAt !== undefined && trackedStart > outcomeAt;
     const outcome = !newerRun ? terminalStatus(registration?.status) : undefined;
     const trackedOutcome = row === undefined ? undefined : terminalStatus(row.status);
     const activityOutcome = activity === undefined ? undefined : lastTurnOutcome(activity, hasTrackedStart ? trackedStart : undefined);
     const activityTerminalAt = activityOutcome === undefined ? undefined : activity?.lastTurn?.at;
-    const terminalOutcome = outcome ?? trackedOutcome ?? activityOutcome ?? (branchSealed === true ? 'completed' : undefined);
+    const activityNewerThanOutcome = activityOutcome !== undefined &&
+      (outcomeAt === undefined || (activityTerminalAt !== undefined && activityTerminalAt > outcomeAt));
+    const terminalOutcome = activityNewerThanOutcome
+      ? activityOutcome
+      : outcome ?? trackedOutcome ?? activityOutcome ?? (branchSealed === true ? 'completed' : undefined);
     const current = activity?.lifecycle === 'ready';
     const phaseOpen = row !== undefined && (row.subagent_phase === 'working' || row.subagent_phase === 'queued' || row.subagent_phase === 'suspended');
     const taskOpen = row?.status === 'running';
@@ -92,23 +101,33 @@ export function sessionAgentRoster(
       : current ? (branchSealed === true && (terminalOutcome === undefined || terminalOutcome === 'completed') ? 'completed' : terminalOutcome ?? 'idle')
       : terminalOutcome ?? (phaseOpen && row?.live === true ? row?.subagent_phase === 'suspended' ? 'suspended' : 'running' : isBranch === true ? 'idle' : 'unknown');
     const terminal = activityStatus === 'completed' || activityStatus === 'failed' || activityStatus === 'cancelled';
+    const runtimeActive = persistenceFailure === undefined && (activityStatus === 'running' || activityStatus === 'suspended') && current && (activity.turn !== undefined || loopOpen);
+    const settledRefresh = persistenceFailure !== undefined || (current && (activity.turn !== undefined || loopOpen || activityOutcome !== undefined));
+    const runtimeTurnStart = current && activity.turn !== undefined &&
+      (row?.started_at === undefined || !hasTrackedStart || (lastOutcomeAt !== undefined && trackedStart <= lastOutcomeAt));
     const branchBaseTurnIdRaw = labels?.['branchBaseTurnId'];
     const branchBaseMessageIdRaw = labels?.['branchBaseMessageId'];
     const projected: SnapshotSubagent = {
       ...row,
+      ...(settledRefresh ? { refreshing: undefined, refreshing_until: undefined } : {}),
       id, agent_id: id, session_id: sessionId, kind: 'subagent',
       description: resolveSubagentDisplayName(label, profile, row?.description ?? id),
       label, profile, name_source: nameSource,
       status: persistenceFailure !== undefined ? 'failed' : activityStatus === 'running' || activityStatus === 'suspended' ? 'running' : status,
+      subagent_phase: runtimeActive
+        ? (activityStatus === 'suspended' ? 'suspended' : 'working')
+        : activityNewerThanOutcome
+          ? (activityOutcome === 'completed' || activityOutcome === 'failed' ? activityOutcome : undefined)
+          : row?.subagent_phase,
       activity_status: activityStatus,
-      status_source: current && activity.turn !== undefined || outcome === undefined && (current || trackedActive) ? 'runtime' : 'metadata',
+      status_source: current && (activity.turn !== undefined || loopOpen || activityNewerThanOutcome) || outcome === undefined && (current || trackedActive) ? 'runtime' : 'metadata',
       live: current || trackedActive && outcome === undefined,
       created_at: registration?.createdAt === undefined ? undefined : new Date(registration.createdAt).toISOString(),
-      started_at: current && activity.turn !== undefined && (row?.started_at === undefined || outcomeAt !== undefined && trackedStart <= outcomeAt)
-        ? new Date(activity.turn.since).toISOString() : row?.started_at,
+      started_at: runtimeTurnStart
+        ? new Date(activity.turn!.since).toISOString() : row?.started_at,
       completed_at: persistenceFailure !== undefined || activityStatus === 'running' || activityStatus === 'suspended' ? undefined
-        : terminal && (outcomeAt !== undefined || activityTerminalAt !== undefined)
-          ? new Date(outcomeAt ?? activityTerminalAt!).toISOString()
+        : terminal && (activityNewerThanOutcome ? activityTerminalAt !== undefined : (outcomeAt !== undefined || activityTerminalAt !== undefined))
+          ? new Date(activityNewerThanOutcome ? activityTerminalAt! : (outcomeAt ?? activityTerminalAt!)).toISOString()
           : row?.completed_at,
       parent_agent_id: subagentParentAgentId(registration) ?? row?.parent_agent_id,
       is_branch: isBranch,
@@ -131,8 +150,10 @@ export function sessionAgentRoster(
       thinking_effort_explicit: registration?.thinkingEffort !== undefined ? registration.thinkingEffortExplicit : row?.thinking_effort_explicit,
       executor_id: registration?.executor ?? row?.executor_id,
       executor_protocol: registration?.executor !== undefined ? registration.executorProtocol : row?.executor_protocol,
-      output_preview: row?.output_preview ?? (registration?.resultSummary !== undefined ? detachSlicedString(registration.resultSummary.slice(0, 2048)) : undefined),
-      stop_reason: persistenceFailure?.message ?? row?.stop_reason ?? (registration?.error !== undefined ? detachSlicedString(registration.error.slice(0, 2048)) : undefined),
+      output_preview: runtimeActive && runtimeTurnStart
+        ? undefined
+        : row?.output_preview ?? (registration?.resultSummary !== undefined ? detachSlicedString(registration.resultSummary.slice(0, 2048)) : undefined),
+      stop_reason: persistenceFailure?.message ?? (runtimeActive ? undefined : row?.stop_reason ?? (registration?.error !== undefined ? detachSlicedString(registration.error.slice(0, 2048)) : undefined)),
       tool_call_count: row?.tool_call_count ?? registration?.toolCallCount,
     };
     result.push(projected);

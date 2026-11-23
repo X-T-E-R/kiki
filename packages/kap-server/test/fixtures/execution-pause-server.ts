@@ -34,8 +34,7 @@ const catalog: IModelCatalog = {
     process.send?.({ type: 'model', count, pid: process.pid });
     if (firstBoot && observer !== 'resume' && count === (observer === 'agent' ? 2 : 1)) await firstReleased;
     const tool = firstBoot && observer === 'task' && count === 2
-      ? { name: 'TaskWait', arguments: JSON.stringify({ task_id: 'agent-checkpoint-00000001', timeout: 86400, sync_wait: true,
-        sync_reason: 'Use the original fixture result in this turn' }) }
+      ? { name: 'TaskWait', arguments: JSON.stringify({ task_id: 'agent-checkpoint-00000001', timeout: 86400 }) }
       : firstBoot && observer === 'agent' && count === 1
         ? { name: 'AgentRun', arguments: JSON.stringify({ description: 'Retain original child', prompt: 'child work once', background: false,
           model_alias: 'stub', effort: 'high' }) }
@@ -130,7 +129,7 @@ process.on('message', (message: { type: string; sessionId?: string; sequence?: n
         deferStarted: true, resolveTaskId: () => 'agent-checkpoint-00000001' });
       main.accessor.get(IAgentTaskService).registerTask(new SubagentTask({ agentId: child.id, profileName: 'agent',
         model: 'stub', thinkingEffort: 'high', completion: completion.then(result => ({ result: result.summary, usage: result.usage })) },
-        'Retained child', controller), { taskId: 'agent-checkpoint-00000001', detached: true });
+        'Retained child', controller), { taskId: 'agent-checkpoint-00000001', detached: true, terminalNotificationSuppressed: true });
       process.send?.({ type: 'child-started', tasks: main.accessor.get(IAgentTaskService).list(false) });
     } else if (message.type === 'finite') {
       const session = getLiveSessionById(server.core.accessor, message.sessionId!)!;

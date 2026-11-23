@@ -18,6 +18,7 @@ import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent, TranscriptTurn } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
+import { effectiveSubagentStatus } from './grouping';
 import { mergeSessionQueueRows, resolveModelSwitchQueueIndex } from './modelSwitchQueue';
 import { turnContentOps } from './transcript/content';
 import { buildFloorEntries, queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
@@ -1036,6 +1037,202 @@ describe('SessionController pipeline', () => {
       expect(child()).toMatchObject({ model: 'example/new', busy: false });
       expect(subscribe.mock.calls.map((args) => args[2])).toEqual([{ '*': 'off', main: 'delta' }]);
       expect(page).not.toHaveBeenCalled();
+    } finally {
+      controller.close();
+    }
+  });
+
+  it('syncs background subagent running -> completed on both timeline and right rail while main is idle, even when hints arrive mid-flight', async () => {
+    const runningRow = {
+      id: 'child-bg', agent_id: 'child-bg', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'Background worker', status: 'running' as const,
+      activity_status: 'running' as const, subagent_phase: 'working' as const, status_source: 'runtime' as const,
+      live: true, started_at: '2026-01-01T00:00:02.000Z', model: 'example/worker',
+    };
+    const completedRow = {
+      ...runningRow,
+      status: 'completed' as const,
+      activity_status: 'completed' as const,
+      subagent_phase: 'completed' as const,
+      completed_at: '2026-01-01T00:00:05.000Z',
+      output_preview: 'finished while main idle',
+    };
+    const firstRead = deferred<SessionSnapshotResponse>();
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 10, subagents: [], agent_counts: { total: 1, subagents: 0, active: 0, idle: 0, unknown: 0, completed: 0, failed: 0, cancelled: 0 } }))
+      .mockReturnValueOnce(firstRead.promise)
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 13, subagents: [completedRow], agent_counts: { total: 2, subagents: 1, active: 0, idle: 0, unknown: 0, completed: 1, failed: 0, cancelled: 0 } }));
+    const controller = new SessionController({} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test');
+    try {
+      await controller.open();
+      controller.handleTranscript(resetEvent('main', {
+        ...emptySnapshot(),
+        items: [{ kind: 'taskref', refId: 'ref-bg', taskId: 'task-bg', at: '2026-01-01T00:00:02.000Z' }],
+        tasks: [subagentTask('task-bg', 'child-bg', { state: 'running', startedAt: '2026-01-01T00:00:02.000Z' })],
+      }, 1));
+      controller.flushFrames();
+      const card = () => controller.getState().blocks.find((block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'child-bg')!;
+      expect(card()).toBeDefined();
+      expect(effectiveSubagentStatus(card(), controller.getForest())).toBe('running');
+
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'epoch-1' }, rosterAgentId: 'child-bg', generation: 0 });
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 12, epoch: 'epoch-1' }, rosterAgentId: 'child-bg', generation: 0 });
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 13, epoch: 'epoch-1' }, rosterAgentId: 'child-bg', generation: 0 });
+      firstRead.resolve(snapshot({ as_of_seq: 11, subagents: [runningRow], agent_counts: { total: 2, subagents: 1, active: 1, idle: 0, unknown: 0, completed: 0, failed: 0, cancelled: 0 } }));
+
+      await waitFor(() => controller.getForest()?.byId['child-bg']?.status === 'completed');
+      expect(effectiveSubagentStatus(card(), controller.getForest())).toBe('completed');
+      expect(controller.getState().agentCounts).toMatchObject({ active: 0, completed: 1, unknown: 0 });
+      expect(reads).toHaveBeenCalledTimes(3);
+    } finally {
+      controller.close();
+    }
+  });
+
+  it('re-activates a completed subagent on resume/direct message and refreshes rows dropped from a truncated roster window', async () => {
+    const completedOld = {
+      id: 'child-resume', agent_id: 'child-resume', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'Resumed worker', status: 'completed' as const,
+      activity_status: 'completed' as const, subagent_phase: 'completed' as const, status_source: 'runtime' as const,
+      live: true, started_at: '2026-01-01T00:00:01.000Z', completed_at: '2026-01-01T00:00:04.000Z',
+      output_preview: 'old summary',
+    };
+    const runningSameMs = {
+      ...completedOld,
+      status: 'running' as const,
+      activity_status: 'running' as const,
+      subagent_phase: 'working' as const,
+      started_at: '2026-01-01T00:00:04.000Z',
+      completed_at: undefined,
+      output_preview: undefined,
+    };
+    const completedNew = {
+      ...runningSameMs,
+      status: 'completed' as const,
+      activity_status: 'completed' as const,
+      subagent_phase: 'completed' as const,
+      completed_at: '2026-01-01T00:00:09.000Z',
+      output_preview: 'new summary',
+    };
+    const truncatedRef = (revision: string) => [{ source: { kind: 'snapshot' as const, id: '' }, path: ['subagents'], kind: 'array' as const, offset: 0, total: 100, revision }];
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 10, subagents: [completedOld], contentRefs: truncatedRef('rev-1'), agent_counts: { total: 101, subagents: 100, active: 0, idle: 0, unknown: 0, completed: 100, failed: 0, cancelled: 0 } }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 11, subagents: [runningSameMs], contentRefs: truncatedRef('rev-2'), agent_counts: { total: 101, subagents: 100, active: 1, idle: 0, unknown: 0, completed: 99, failed: 0, cancelled: 0 } }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 12, subagents: [], contentRefs: truncatedRef('rev-3'), agent_counts: { total: 101, subagents: 100, active: 0, idle: 0, unknown: 0, completed: 100, failed: 0, cancelled: 0 } }));
+    const subagentsLookup = vi.fn().mockResolvedValue({ items: [completedNew] });
+    const controller = new SessionController({} as KikiClient, { ...fakeView({ snapshot: reads }, {}), subagents: subagentsLookup }, 'session_test');
+    try {
+      await controller.open();
+      controller.handleTranscript(resetEvent('main', {
+        ...emptySnapshot(),
+        items: [{ kind: 'taskref', refId: 'ref-old', taskId: 'task-old', at: '2026-01-01T00:00:01.000Z' }],
+        tasks: [subagentTask('task-old', 'child-resume', {
+          state: 'completed',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: '2026-01-01T00:00:04.000Z',
+          resultSummary: 'old summary',
+        })],
+      }, 1));
+      controller.flushFrames();
+      const card = () => controller.getState().blocks.find((block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'child-resume')!;
+      expect(controller.getForest()?.byId['child-resume']?.status).toBe('completed');
+      expect(effectiveSubagentStatus(card(), controller.getForest())).toBe('completed');
+
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'epoch-1' }, rosterAgentId: 'child-resume', generation: 0 });
+      await waitFor(() => controller.getForest()?.byId['child-resume']?.status === 'running');
+      expect(effectiveSubagentStatus(card(), controller.getForest())).toBe('running');
+      expect(controller.getForest()?.byId['child-resume']).toMatchObject({
+        status: 'running',
+        busy: true,
+        endedAt: undefined,
+        summary: undefined,
+      });
+
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 12, epoch: 'epoch-1' }, rosterAgentId: 'child-resume', generation: 0 });
+      await waitFor(() => controller.getForest()?.byId['child-resume']?.status === 'completed');
+      expect(subagentsLookup).toHaveBeenCalledWith({ agentId: 'child-resume', limit: 1 });
+      expect(effectiveSubagentStatus(card(), controller.getForest())).toBe('completed');
+      expect(controller.getForest()?.byId['child-resume']).toMatchObject({
+        status: 'completed',
+        busy: false,
+        endedAt: '2026-01-01T00:00:09.000Z',
+      });
+    } finally {
+      controller.close();
+    }
+  });
+
+  it('converges multiple concurrent subagents completing while main is busy across interleaved volatile same-seq hints', async () => {
+    const makeRow = (id: string, status: 'running' | 'completed' | 'failed', endedAt?: string) => ({
+      id, agent_id: id, session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: id, status,
+      activity_status: status, subagent_phase: status === 'running' ? 'working' as const : status,
+      status_source: 'runtime' as const, live: true, started_at: '2026-01-01T00:00:01.000Z',
+      ...(endedAt !== undefined ? { completed_at: endedAt } : {}),
+    });
+    const inFlightRead = deferred<SessionSnapshotResponse>();
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot({
+        as_of_seq: 10,
+        subagents: [makeRow('child-a', 'running'), makeRow('child-b', 'running'), makeRow('child-c', 'running')],
+        agent_counts: { total: 4, subagents: 3, active: 3, idle: 0, unknown: 0, completed: 0, failed: 0, cancelled: 0 },
+      }))
+      .mockReturnValueOnce(inFlightRead.promise)
+      .mockResolvedValueOnce(snapshot({
+        as_of_seq: 11,
+        subagents: [
+          makeRow('child-a', 'completed', '2026-01-01T00:00:03.000Z'),
+          makeRow('child-b', 'failed', '2026-01-01T00:00:04.000Z'),
+          makeRow('child-c', 'completed', '2026-01-01T00:00:05.000Z'),
+        ],
+        agent_counts: { total: 4, subagents: 3, active: 0, idle: 0, unknown: 0, completed: 2, failed: 1, cancelled: 0 },
+      }));
+    const controller = new SessionController({} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test');
+    try {
+      await controller.open();
+      const mainBusy = userTurnSnapshot({ prompt: 'working', assistantText: 'busy', streaming: true });
+      controller.handleTranscript(resetEvent('main', {
+        ...mainBusy,
+        items: [
+          ...mainBusy.items,
+          { kind: 'taskref', refId: 'ref-a', taskId: 't-a', at: '2026-01-01T00:00:01.000Z' },
+          { kind: 'taskref', refId: 'ref-b', taskId: 't-b', at: '2026-01-01T00:00:01.000Z' },
+          { kind: 'taskref', refId: 'ref-c', taskId: 't-c', at: '2026-01-01T00:00:01.000Z' },
+        ],
+        tasks: [
+          subagentTask('t-a', 'child-a', { state: 'running', startedAt: '2026-01-01T00:00:01.000Z' }),
+          subagentTask('t-b', 'child-b', { state: 'running', startedAt: '2026-01-01T00:00:01.000Z' }),
+          subagentTask('t-c', 'child-c', { state: 'running', startedAt: '2026-01-01T00:00:01.000Z' }),
+        ],
+      }, 1));
+      controller.flushFrames();
+      expect(controller.getState().busy).toBe(true);
+
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'epoch-1' }, rosterAgentId: 'child-a', generation: 0 });
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'epoch-1' }, rosterAgentId: 'child-b', generation: 0 });
+      controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'epoch-1' }, rosterAgentId: 'child-c', generation: 0 });
+      inFlightRead.resolve(snapshot({
+        as_of_seq: 11,
+        subagents: [
+          makeRow('child-a', 'completed', '2026-01-01T00:00:03.000Z'),
+          makeRow('child-b', 'running'),
+          makeRow('child-c', 'running'),
+        ],
+        agent_counts: { total: 4, subagents: 3, active: 2, idle: 0, unknown: 0, completed: 1, failed: 0, cancelled: 0 },
+      }));
+
+      await waitFor(() =>
+        controller.getForest()?.byId['child-a']?.status === 'completed' &&
+        controller.getForest()?.byId['child-b']?.status === 'failed' &&
+        controller.getForest()?.byId['child-c']?.status === 'completed',
+      );
+      const blocks = controller.getState().blocks.filter((block): block is SubagentBlock => block.kind === 'subagent');
+      const byAgent = new Map(blocks.map((block) => [block.subagentId, block]));
+      expect(effectiveSubagentStatus(byAgent.get('child-a')!, controller.getForest())).toBe('completed');
+      expect(effectiveSubagentStatus(byAgent.get('child-b')!, controller.getForest())).toBe('failed');
+      expect(effectiveSubagentStatus(byAgent.get('child-c')!, controller.getForest())).toBe('completed');
+      expect(controller.getState().agentCounts).toMatchObject({ active: 0, completed: 2, failed: 1, unknown: 0 });
+      expect(controller.getState().busy).toBe(true);
     } finally {
       controller.close();
     }

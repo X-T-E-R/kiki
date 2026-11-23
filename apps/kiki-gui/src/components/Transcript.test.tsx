@@ -1619,6 +1619,72 @@ describe('reasoning completion chrome', () => {
     await renderSettled(root, <TurnTailLine tail={{ turnId: 't1', endedAt: new Date().toISOString(), durationMs: undefined, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined }} />);
     expect(container.textContent).not.toContain('Turn finished');
   });
+
+  it('hides TurnStatusLine and folds the settled main turn when busy stays true only from background subagents, while keeping child TurnStatusLine visible', async () => {
+    const settledBlocks: Block[] = [
+      userBlock({ id: 'u-1', text: 'Run background audit', turnId: 't1' }),
+      toolBlock({ id: 'tool-1', toolCallId: 'tc-1', name: 'Read', turnId: 't1' }),
+      toolBlock({ id: 'tool-2', toolCallId: 'tc-2', name: 'TodoList', args: {}, turnId: 't1' }),
+      assistantBlock('a-1', 'Dispatched background audit.', { turnId: 't1' }),
+    ];
+    const mainIdleContainer = await renderTranscript(settledBlocks, undefined, {
+      busy: true,
+      abortableTurnId: undefined,
+      activePromptId: undefined,
+      turnStartedAt: Date.now() - 25_000,
+      turnTail: turnTailFixture({ turnId: 't1', durationMs: 4_000 }),
+      tasks: [{
+        id: 'agent-bg-1',
+        session_id: 'session_test',
+        kind: 'subagent',
+        agent_id: 'child-1',
+        status: 'running',
+        description: 'background audit',
+        created_at: '2026-01-01T00:00:01.000Z',
+        started_at: '2026-01-01T00:00:01.000Z',
+      }],
+    });
+    expect(mainIdleContainer.querySelector('[data-turn-status]')).toBeNull();
+    expect(mainIdleContainer.querySelector('[data-turn-tail]')).not.toBeNull();
+    expect(mainIdleContainer.querySelector('[data-history-fold]')).not.toBeNull();
+
+    const childRunningContainer = await renderTranscript(
+      [userBlock({ id: 'cu-1', text: 'Audit', turnId: 't1' })],
+      undefined,
+      {
+        busy: true,
+        abortableTurnId: undefined,
+        turnStartedAt: Date.now() - 20_000,
+        session: {
+          id: 'session_test',
+          workspace_id: 'ws_1',
+          metadata: { cwd: '/tmp' },
+          title: 'Main',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+          last_seq: 1,
+          message_count: 1,
+          archived: false,
+          busy: true,
+          main_turn_active: false,
+          agent_config: { model: 'example/model' },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_cost_usd: 0,
+            context_tokens: 0,
+            context_limit: 0,
+            turn_count: 0,
+          },
+          permission_rules: [],
+        },
+      },
+      { agentId: 'child-1' },
+    );
+    expect(childRunningContainer.querySelector('[data-turn-status]')?.textContent).toContain('Working');
+  });
 });
 
 describe('live and event chrome', () => {

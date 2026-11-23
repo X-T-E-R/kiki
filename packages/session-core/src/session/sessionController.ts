@@ -546,6 +546,8 @@ export class SessionController {
   private resyncGeneration = 0;
   private readonly resyncIdleWaiters = new Set<() => void>();
   private rosterRefreshInFlight = false;
+  private rosterRefreshDirty = false;
+  private readonly pendingHintRosterAgents = new Set<string>();
   private rosterReadQueued = false;
   private rosterReadInFlight = false;
   private rosterReadController: AbortController | undefined;
@@ -1825,7 +1827,10 @@ export class SessionController {
         this.publish(MAIN_AGENT_ID);
         const queued = this.rosterRefreshQueuedCursor;
         this.rosterRefreshQueuedCursor = undefined;
-        if (queued !== undefined && this.requestedRosterAgents.size > 0) void this.refreshRoster(queued);
+        this.rosterRefreshDirty = false;
+        if (queued !== undefined && (this.requestedRosterAgents.size > 0 || (queued.epoch === snapshot.epoch && queued.seq > snapshot.as_of_seq))) {
+          void this.refreshRoster(queued);
+        }
         void this.refreshDurableIngress();
         return;
       }
@@ -1855,6 +1860,7 @@ export class SessionController {
         // only exists in the session snapshot, so ask for it — the spawn's
         // transcript op asks again if this read raced the row's creation.
         if (signal.rosterAgentId !== undefined) {
+          this.pendingHintRosterAgents.add(signal.rosterAgentId);
           if (this.hasRosterRow(signal.rosterAgentId)) void this.refreshRoster(signal.cursor);
           else this.requestRosterRows([signal.rosterAgentId], signal.cursor);
         }
@@ -1960,8 +1966,8 @@ export class SessionController {
     return true;
   }
 
-  private async lookupMissingRosterAgent(agentId: string): Promise<void> {
-    if (this.closed || this.isSuspended || agentId === '' || agentId === MAIN_AGENT_ID || this.hasRosterRow(agentId)) return;
+  private async lookupMissingRosterAgent(agentId: string, force = false): Promise<void> {
+    if (this.closed || this.isSuspended || agentId === '' || agentId === MAIN_AGENT_ID || (!force && this.hasRosterRow(agentId))) return;
     const remoteSearch = this.view.subagents !== undefined || this.client.searchSubagents !== undefined;
     if (!remoteSearch) return;
     const inFlight = this.subagentLookupsInFlight.get(agentId);
@@ -2111,24 +2117,34 @@ export class SessionController {
 
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
     if (this.closed || this.isSuspended || this.resyncInFlight) return;
+    const effectiveCursor: SessionCursor = cursor.epoch !== undefined || this.shell.cursor.epoch === undefined
+      ? cursor
+      : { seq: cursor.seq, epoch: this.shell.cursor.epoch };
     if (this.rosterRefreshInFlight || this.bootstrapOpening !== undefined) {
       const queued = this.rosterRefreshQueuedCursor;
-      if (queued === undefined || cursor.epoch !== queued.epoch || cursor.seq > queued.seq) {
-        this.rosterRefreshQueuedCursor = cursor;
+      if (queued === undefined || effectiveCursor.epoch !== queued.epoch || effectiveCursor.seq >= queued.seq) {
+        this.rosterRefreshQueuedCursor = effectiveCursor;
       }
+      this.rosterRefreshDirty = true;
       return;
     }
     this.rosterRefreshInFlight = true;
+    const hintedAgents = [...this.pendingHintRosterAgents];
+    this.pendingHintRosterAgents.clear();
     const attachment = this.viewAttachment;
     const generation = this.connectionGeneration;
     const bindings = new Map([...this.storeTimelines].map(({ agentId, store }) => [agentId, store.getMeta().agent]));
     try {
       const snapshot = await this.readSnapshot(true);
       const queued = this.rosterRefreshQueuedCursor;
+      const expectedEpoch = effectiveCursor.epoch ?? this.shell.cursor.epoch;
       if (
         this.closed || this.isSuspended || this.resyncInFlight || attachment !== this.viewAttachment ||
-        generation !== this.connectionGeneration || snapshot.epoch !== cursor.epoch || snapshot.epoch !== this.shell.cursor.epoch ||
-        snapshot.as_of_seq < cursor.seq || (queued !== undefined && queued.epoch === cursor.epoch && snapshot.as_of_seq < queued.seq) ||
+        generation !== this.connectionGeneration ||
+        (expectedEpoch !== undefined && snapshot.epoch !== expectedEpoch) ||
+        (this.shell.cursor.epoch !== undefined && snapshot.epoch !== this.shell.cursor.epoch) ||
+        snapshot.as_of_seq < effectiveCursor.seq ||
+        (queued !== undefined && expectedEpoch !== undefined && queued.epoch === expectedEpoch && snapshot.as_of_seq < queued.seq) ||
         snapshot.subagents === undefined
       ) return;
       const previous = this.latestSnapshot;
@@ -2146,8 +2162,10 @@ export class SessionController {
         agentCounts: snapshot.agent_counts,
         contentRefs: stableContentRefs(this.viewOf(MAIN_AGENT_ID).contentRefs, [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(this.latestSnapshot.contentRefs ?? [])]),
       }, false);
+      const returnedIds = new Set<string>();
       for (const row of roster.subagents ?? []) {
         const id = snapshotSubagentAgentId(row);
+        returnedIds.add(id);
         const binding = this.timelines.get(id)?.store?.getMeta().agent;
         if (gradeFor(this.transcriptGrades, id) === 'off' && binding !== undefined && binding === bindings.get(id)) {
           this.rosterTranscriptBindings.set(id, binding);
@@ -2156,13 +2174,24 @@ export class SessionController {
       this.retireRequestedRosterAgents();
       this.publishForest();
       this.publish(MAIN_AGENT_ID);
+      if (hintedAgents.length > 0 && this.hasTruncatedRoster() && (this.view.subagents !== undefined || this.client.searchSubagents !== undefined)) {
+        for (const agentId of hintedAgents) {
+          if (agentId !== '' && agentId !== MAIN_AGENT_ID && !returnedIds.has(agentId) && this.hasRosterRow(agentId)) {
+            void this.lookupMissingRosterAgent(agentId, true);
+          }
+        }
+      }
     } catch {
       // Best-effort: task ops and reconnect snapshots still recover the row.
     } finally {
       this.rosterRefreshInFlight = false;
       const queued = this.rosterRefreshQueuedCursor;
+      const dirty = this.rosterRefreshDirty;
       this.rosterRefreshQueuedCursor = undefined;
-      if (queued !== undefined && !this.closed && !this.resyncInFlight) void this.refreshRoster(queued);
+      this.rosterRefreshDirty = false;
+      if (queued !== undefined && (dirty || queued.seq > effectiveCursor.seq || queued.epoch !== effectiveCursor.epoch) && !this.closed && !this.resyncInFlight) {
+        void this.refreshRoster(queued);
+      }
     }
   }
 
@@ -2195,18 +2224,25 @@ export class SessionController {
   ): void {
     if (this.closed || this.isSuspended) return;
     let wanted = false;
+    let queueInFlight = false;
     const missingForDirectLookup: string[] = [];
     for (const agentId of agentIds) {
       if (agentId === '' || agentId === MAIN_AGENT_ID) continue;
       if (this.hasRosterRow(agentId)) continue;
       const attempts = this.requestedRosterAgents.get(agentId) ?? 0;
       if (attempts >= MAX_ROSTER_ROW_READS) continue;
-      if (!fresh && attempts > 0) continue;
+      if (!fresh && attempts > 0) {
+        if (this.rosterRefreshInFlight || this.bootstrapOpening !== undefined) queueInFlight = true;
+        continue;
+      }
       this.requestedRosterAgents.set(agentId, attempts + 1);
       wanted = true;
       missingForDirectLookup.push(agentId);
     }
-    if (!wanted) return;
+    if (!wanted) {
+      if (queueInFlight) void this.refreshRoster(cursor ?? this.shell.cursor);
+      return;
+    }
     if (this.hasTruncatedRoster() && (this.view.subagents !== undefined || this.client.searchSubagents !== undefined)) {
       for (const agentId of missingForDirectLookup) void this.lookupMissingRosterAgent(agentId);
       return;

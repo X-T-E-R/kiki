@@ -262,4 +262,62 @@ describe('lightweight metadata roster', () => {
       unknown: 0,
     });
   });
+
+  it('clears refreshing lease when live runtime confirms active turn or newer terminal outcome without reporting unknown', () => {
+    const agents: Record<string, AgentMeta> = {
+      main: {},
+      resumed: { type: 'sub', parentAgentId: 'main', status: 'completed', completedAt: 100, resultSummary: 'old run', error: 'old err' },
+    };
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 100, archived: false, agents };
+    const refreshingRow: SnapshotSubagent = {
+      ...row('resumed', 'completed'),
+      started_at: new Date(50).toISOString(),
+      completed_at: new Date(100).toISOString(),
+      subagent_phase: 'completed',
+      output_preview: 'old run',
+      stop_reason: 'old err',
+      live: undefined,
+      refreshing: true,
+      refreshing_until: new Date(Date.now() + 120_000).toISOString(),
+    };
+    const activeTurn = {
+      turnId: 2, origin: { kind: 'user' as const }, phase: 'running' as const, step: 1, ending: false,
+      pendingApprovals: [], activeToolCalls: [], since: 200,
+    };
+    const runningRoster = sessionAgentRoster(meta.id, meta, [refreshingRow], new Map([
+      ['resumed', { lifecycle: 'ready', background: [], turn: activeTurn }],
+    ]));
+    expect(runningRoster[0]).toMatchObject({
+      status: 'running',
+      activity_status: 'running',
+      subagent_phase: 'working',
+      status_source: 'runtime',
+      live: true,
+      refreshing: undefined,
+      refreshing_until: undefined,
+      started_at: new Date(200).toISOString(),
+      completed_at: undefined,
+      output_preview: undefined,
+      stop_reason: undefined,
+    });
+    expect(sessionAgentCounts(agents, runningRoster)).toEqual({
+      total: 2, subagents: 1, completed: 0, failed: 0, cancelled: 0, active: 1, idle: 0, unknown: 0,
+    });
+
+    const settledRoster = sessionAgentRoster(meta.id, meta, [refreshingRow], new Map([
+      ['resumed', { lifecycle: 'ready', background: [], lastTurn: { turnId: 2, reason: 'failed', at: 300 } }],
+    ]));
+    expect(settledRoster[0]).toMatchObject({
+      status: 'failed',
+      activity_status: 'failed',
+      subagent_phase: 'failed',
+      status_source: 'runtime',
+      refreshing: undefined,
+      refreshing_until: undefined,
+      completed_at: new Date(300).toISOString(),
+    });
+    expect(sessionAgentCounts(agents, settledRoster)).toEqual({
+      total: 2, subagents: 1, completed: 0, failed: 1, cancelled: 0, active: 0, idle: 0, unknown: 0,
+    });
+  });
 });

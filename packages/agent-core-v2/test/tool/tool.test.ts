@@ -1782,6 +1782,7 @@ describe('AgentRun tool execution contract', () => {
     });
     await bgStartPrompt.completion;
     const bgTaskId = context.get(IAgentTaskService).list(false).find((t) => t.kind === 'agent' && t.agentId === 'agent-bg-review')!.taskId;
+    await context.get(IAgentTaskService).suppressTerminalNotification(bgTaskId);
 
     context.mockNextResponse(
       { type: 'text', text: 'Waiting synchronously for background review.' },
@@ -1792,8 +1793,6 @@ describe('AgentRun tool execution contract', () => {
         arguments: JSON.stringify({
           timeout: 10,
           task_id: bgTaskId,
-          sync_wait: true,
-          sync_reason: 'Need review verdict before editing in the same turn',
         }),
       },
     );
