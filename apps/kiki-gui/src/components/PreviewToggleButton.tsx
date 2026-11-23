@@ -15,6 +15,7 @@ import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 
 const INLINE_MAX = 4;
 const INLINE_OVERFLOW_KEEP = 3;
+const COMPACT_FOLD_HEADER_WIDTH = 460;
 
 export function WorkspacePanelsControl({
   className,
@@ -28,6 +29,7 @@ export function WorkspacePanelsControl({
   const { t, locale } = useI18n();
   const preview = useMediaPreview();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [headerWidth, setHeaderWidth] = useState<number | null>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menuOpen) return;
@@ -52,13 +54,59 @@ export function WorkspacePanelsControl({
   }, [slots]);
 
   const tabCount = preview?.previewTabCount ?? 0;
-  if (tabCount === 0 && panelSlots.length === 0) return null;
+  const hasVisibleControls = tabCount > 0 || panelSlots.length > 0;
+
+  useEffect(() => {
+    if (!hasVisibleControls) return;
+    const node = anchorRef.current;
+    if (node === null || typeof ResizeObserver === 'undefined') return;
+    const target = node.closest('header') ?? node.parentElement;
+    if (target === null) return;
+    const sync = () => {
+      const next = target.getBoundingClientRect().width || target.clientWidth;
+      if (next > 0) setHeaderWidth((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(target);
+    return () => { observer.disconnect(); };
+  }, [hasVisibleControls]);
+
+  if (!hasVisibleControls) return null;
 
   const panelsLabel = locale === 'zh' ? '工作台面板' : 'Workspace panels';
-  const hasOverflow = panelSlots.length > INLINE_MAX;
-  const inlineSlots = hasOverflow ? panelSlots.slice(0, INLINE_OVERFLOW_KEEP) : panelSlots;
-  const overflowSlots = hasOverflow ? panelSlots.slice(INLINE_OVERFLOW_KEEP) : [];
-  const overflowHasActive = overflowSlots.some((slot) => activePluginIds.has(slot.pluginId));
+  const compactFold = headerWidth !== null && headerWidth < COMPACT_FOLD_HEADER_WIDTH;
+  const hasOverflow = compactFold ? panelSlots.length > 0 : panelSlots.length > INLINE_MAX;
+  const inlineSlots = compactFold ? [] : (hasOverflow ? panelSlots.slice(0, INLINE_OVERFLOW_KEEP) : panelSlots);
+  const overflowSlots = compactFold ? panelSlots : (hasOverflow ? panelSlots.slice(INLINE_OVERFLOW_KEEP) : []);
+  const overflowHasActive = overflowSlots.some((slot) => {
+    if (activePluginIds.has(slot.pluginId)) return true;
+    const panelIdHint = slot.action.kind === 'open_plugin_panel' ? slot.action.panelId : undefined;
+    return (
+      panelIdHint !== undefined &&
+      preview?.previewPanelOpen === true &&
+      preview.activePluginPanelKey === `${slot.pluginId}:${panelIdHint}`
+    );
+  });
+  const labelExpandAt = inlineSlots.length >= 4 ? '880' : inlineSlots.length === 3 ? '800' : '680';
+  const btnExpandClass =
+    labelExpandAt === '880'
+      ? '@[880px]/center:w-auto @[880px]/center:px-2'
+      : labelExpandAt === '800'
+        ? '@[800px]/center:w-auto @[800px]/center:px-2'
+        : '@[680px]/center:w-auto @[680px]/center:px-2';
+  const textExpandClass =
+    labelExpandAt === '880'
+      ? '@[880px]/center:inline'
+      : labelExpandAt === '800'
+        ? '@[800px]/center:inline'
+        : '@[680px]/center:inline';
+  const dotExpandClass =
+    labelExpandAt === '880'
+      ? '@[880px]/center:static @[880px]/center:ring-0'
+      : labelExpandAt === '800'
+        ? '@[800px]/center:static @[800px]/center:ring-0'
+        : '@[680px]/center:static @[680px]/center:ring-0';
 
   const activatePanelSlot = (slot: PluginComposerToolbarSlotContribution, key: string, label: string, isPanelActive: boolean) => {
     setMenuOpen(false);
@@ -109,12 +157,12 @@ export function WorkspacePanelsControl({
         aria-label={panelsLabel}
         className="relative flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8"
       >
-        <Icon name="more" size={16} className="h-[15px] w-[15px]" />
+        <Icon name={compactFold ? 'plugin' : 'more'} size={16} className="h-[15px] w-[15px]" />
         {overflowHasActive ? (
           <span
             data-workspace-panels-active=""
             aria-hidden
-            className="pointer-events-none absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-ink-soft"
+            className="pointer-events-none absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-ink-soft ring-1 ring-paper"
           />
         ) : null}
       </Popover.Trigger>
@@ -198,7 +246,7 @@ export function WorkspacePanelsControl({
             data-workspace-panel-item={key}
             data-plugin-composer-slot={key}
             onClick={() => { activatePanelSlot(slot, key, label, isPanelActive); }}
-            className={`relative flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 lg:h-8 lg:w-8 xl:w-auto xl:px-2 ${
+            className={`relative flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 lg:h-8 lg:w-8 ${btnExpandClass} ${
               isPanelActive
                 ? 'bg-canvas text-ink'
                 : 'text-ink-faint hover:bg-canvas hover:text-ink'
@@ -209,12 +257,12 @@ export function WorkspacePanelsControl({
             ) : (
               <Icon name={iconName} size={16} className="h-[15px] w-[15px] shrink-0" />
             )}
-            <span className="hidden xl:inline text-[12.5px] leading-none">{label}</span>
+            <span className={`hidden max-w-[4.5rem] truncate text-[12.5px] leading-none ${textExpandClass}`}>{label}</span>
             {hasActiveCapsule ? (
               <span
                 data-workspace-panel-active={slot.pluginId}
                 aria-hidden
-                className="pointer-events-none h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft max-xl:absolute max-xl:top-1.5 max-xl:right-1.5"
+                className={`pointer-events-none absolute top-1 right-1 h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft ring-1 ${isPanelActive ? 'ring-canvas' : 'ring-paper'} ${dotExpandClass}`}
               />
             ) : null}
           </button>
@@ -232,7 +280,7 @@ export function WorkspacePanelsControl({
           aria-label={t('preview.toggleAria')}
           aria-expanded={preview!.previewPanelOpen}
           data-preview-toggle
-          className={`flex h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
+          className={`flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-0 text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8 @[620px]/center:w-auto @[620px]/center:px-2.5 ${
             preview!.previewPanelOpen
               ? 'bg-canvas text-ink'
               : 'text-ink-faint hover:bg-canvas hover:text-ink'
@@ -242,7 +290,7 @@ export function WorkspacePanelsControl({
             <path d="M4.5 2.5h4.8l2.7 2.7v7.3a1 1 0 0 1-1 1H4.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" />
             <path d="M9 2.5v3h3" />
           </svg>
-          {t('preview.toggle')}
+          <span className="hidden @[620px]/center:inline">{t('preview.toggle')}</span>
         </button>
       ) : null}
     </div>

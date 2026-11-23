@@ -53,7 +53,7 @@ export function PluginStatusCapsules({
       role="group"
       aria-label={t('pluginSlot.statusAria')}
       data-plugin-status-capsules
-      className="flex min-w-0 shrink items-center gap-0.5 overflow-hidden @max-[32rem]/toolbar:hidden"
+      className="flex min-w-0 shrink items-center gap-0.5 overflow-hidden"
     >
       {capsules.map((capsule) => {
         const key = `${capsule.pluginId}:${capsule.id}`;
@@ -75,11 +75,11 @@ export function PluginStatusCapsules({
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_TONE_CLASSES[capsule.dotTone]}`}
               />
             )}
-            <span className="min-w-0 truncate text-[12px] leading-4 text-ink-soft">{label}</span>
+            <span className="shrink-0 whitespace-nowrap text-[12px] leading-4 text-ink-soft">{label}</span>
             {capsule.valueText !== undefined && capsule.valueText !== '' ? (
               <span
                 data-plugin-capsule-value
-                className="max-w-28 shrink-0 truncate font-mono text-[11.5px] leading-4 text-ink-faint tabular-nums @max-[38rem]/toolbar:hidden"
+                className="min-w-0 truncate font-mono text-[11.5px] leading-4 text-ink-faint tabular-nums @max-[260px]/statusline:hidden"
               >
                 {capsule.valueText}
               </span>
@@ -93,7 +93,7 @@ export function PluginStatusCapsules({
               key={key}
               title={fullText}
               data-plugin-status-capsule={key}
-              className="inline-flex h-7 max-w-44 min-w-0 items-center gap-1.5 rounded-md px-2 select-none"
+              className="inline-flex h-6 max-w-52 min-w-0 items-center gap-1.5 rounded-md px-1.5 select-none"
             >
               {content}
             </span>
@@ -122,7 +122,7 @@ export function PluginStatusCapsules({
                 key,
               );
             }}
-            className={`${STATUS_SEGMENT_CLASS} max-w-48`}
+            className={`${STATUS_SEGMENT_CLASS} h-6 max-w-52 px-1.5 text-[12px]`}
           >
             {content}
           </button>

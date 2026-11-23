@@ -510,12 +510,43 @@ describe('Composer host compatibility', () => {
     writeSettings({ sendShortcut: 'enter' });
   });
 
-  it('shows the working line with the latest response age while working', async () => {
+  it('omits redundant working prose from the status line and keeps actionable queued state', async () => {
     const at = Date.now() - 12_000;
-    const { container } = await renderComposer({ value: '', busy: true, working: { lastResponseAt: at } });
-    const line = container.querySelector('[data-composer-working]');
-    expect(line?.textContent).toContain('Working · last response 12s ago');
+    const { container, rerender } = await renderComposer({ value: '', busy: true, working: { lastResponseAt: at } });
+    expect(container.querySelector('[data-composer-working]')).toBeNull();
     expect(container.querySelector('[data-composer-hints]')).toBeNull();
+
+    await rerender({ value: '', busy: true, working: { lastResponseAt: at, queued: { waitedMs: 4_000, modelId: 'fixture/kiki-pro' } } });
+    const queuedLine = container.querySelector('[data-composer-working]');
+    expect(queuedLine).not.toBeNull();
+    expect(queuedLine?.querySelector('[data-composer-queued-trigger]')).not.toBeNull();
+  });
+
+  it('keeps permission chip visible and renders profile mark plus effort in CompactModelSheet', async () => {
+    const { container } = await renderComposer({
+      execution: { executor: 'native' },
+      onChangeExecution: vi.fn(),
+      model: 'fixture/kiki-pro',
+      efforts: ['low', 'medium', 'high'],
+      effort: 'high',
+      permissionMode: 'yolo',
+    });
+    const status = container.querySelector('[data-composer-status]')!;
+    const segments = [...status.querySelectorAll<HTMLElement>(':scope > [data-status-segment]')];
+    const compactIdx = segments.findIndex((el) => el.dataset['statusSegment'] === 'compact-model');
+    const permIdx = segments.findIndex((el) => el.dataset['statusSegment'] === 'permission');
+    expect(compactIdx).toBeGreaterThanOrEqual(0);
+    expect(permIdx).toBeGreaterThan(compactIdx);
+    expect(segments[permIdx]!.className).not.toContain('@max-[30rem]/toolbar:hidden');
+
+    const compactTrigger = container.querySelector<HTMLButtonElement>('[data-compact-model-sheet-trigger]')!;
+    expect(compactTrigger).not.toBeNull();
+    expect(compactTrigger.querySelector('[data-compact-model-effort]')?.textContent).toContain('High');
+    expect(compactTrigger.querySelector('svg path[d*="M7 2.5"]')).not.toBeNull();
+    expect(compactTrigger.querySelector('.lucide-star')).toBeNull();
+
+    const permTrigger = container.querySelector<HTMLButtonElement>('[data-mode-select] > button')!;
+    expect(permTrigger.getAttribute('aria-label')).toContain('Full access');
   });
 
   it('submits browser prompts synchronously without VS Code preflight state', async () => {

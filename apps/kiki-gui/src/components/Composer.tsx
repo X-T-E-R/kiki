@@ -130,6 +130,7 @@ import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';
 import { useConnection } from '../state/connection';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
+import { resolveProfileIcon } from '../lib/profileIcon';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerNotes } from './ComposerNotes';
 import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAvailability, type ContextMeterUsage } from './ContextMeter';
@@ -3359,6 +3360,15 @@ export function Composer({
   // while the persona's own manager is reached from its dedicated surface.
   const pickedPersona = personaPick?.value;
 
+  const contextRatio = contextUsage !== undefined && contextUsage.used !== undefined && contextUsage.limit > 0
+    ? contextUsage.used / contextUsage.limit
+    : 0;
+  const keepContextOnNarrow = contextUsage !== undefined && (
+    contextRatio >= 0.6 || (compactAvailability !== undefined && compactAvailability.available === false && compactAvailability.reason !== undefined)
+  );
+  const toolbarCrowded = (busy && canSend && !queueEditing && !messageEditing && onAbort !== undefined)
+    || (keepContextOnNarrow && runMode !== 'normal');
+
   // The status line under the input: ordered segments, each a quiet trigger
   // for its own picker. Order and grouping live only in this list.
   const statusSegments: { key: string; node: ReactNode }[] = [];
@@ -3366,6 +3376,7 @@ export function Composer({
     const chip = (
       <RunModeChip
         runMode={runMode}
+        compact={toolbarCrowded}
         onOpen={() => { setAddView('mode'); }}
         onClear={() => { changeRunMode('normal'); }}
       />
@@ -3449,6 +3460,56 @@ export function Composer({
             onPicked={focusEditorAfterPick}
           />
         </ComposerPanelOrigin>
+      ),
+    });
+    const compactAgentLabel = pickedPersona?.name
+      ?? (execution.profile !== undefined && execution.profile !== '' && execution.profile !== 'agent'
+        ? execution.profile
+        : t('composer.agentDefaultName'));
+    const compactEfforts = externalExecution ? executorEfforts : efforts;
+    const compactEffortValue = isNativeExecutor(execution.executor)
+      ? statusEffort
+      : (execution.overrides?.thinking ?? undefined);
+    const compactEffortLabel =
+      compactEffortValue !== undefined &&
+      compactEffortValue !== '' &&
+      (compactEfforts === undefined || compactEfforts.length > 0)
+        ? formatThinkingEffortWord(compactEffortValue, t)
+        : undefined;
+    const compactIdentityLabel = [compactAgentLabel, modelShortLabel]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join(' · ');
+    const compactFullLabel = [compactIdentityLabel, compactEffortLabel]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join(' · ');
+    const compactLeadingIcon = pickedPersona !== undefined ? (
+      <PersonaAvatar persona={pickedPersona} size={16} decorative className="!rounded-full shrink-0" />
+    ) : (
+      <Icon
+        name={resolveProfileIcon({
+          profile: execution.profile,
+          executor: execution.executor,
+          main: variant !== 'subagent',
+          hasFile: execution.profile_file !== undefined,
+        })}
+        size={14}
+        className={`shrink-0 ${STATUS_SEGMENT_ICON_CLASS}`}
+      />
+    );
+    const profileSegmentNode = statusSegments.at(-2)?.node;
+    const executionSegmentNode = statusSegments.at(-1)?.node;
+    statusSegments.push({
+      key: 'compact-model',
+      node: (
+        <CompactModelSheet
+          icon={compactLeadingIcon}
+          label={compactIdentityLabel}
+          effortLabel={compactEffortLabel}
+          title={compactFullLabel}
+          ariaLabel={compactFullLabel}
+          profileNode={profileSegmentNode}
+          executionNode={executionSegmentNode}
+        />
       ),
     });
   }
@@ -3561,6 +3622,7 @@ export function Composer({
       node: (
         <PermissionSelect
           open={modeOpen}
+          compact={toolbarCrowded}
           onOpenChange={setModeOpen}
           value={permissionMode}
           onChange={onChangePermissionMode}
@@ -3577,7 +3639,8 @@ export function Composer({
 
   return (
     <ComposerCardContext.Provider value={cardRef}>
-    <div className="group/composer px-3 pb-3 sm:px-6 sm:pb-5" data-composer-variant={variant}>
+    <div className="@container/composer-shell">
+    <div className="group/composer px-3 pb-3 @[560px]/composer-shell:px-6 @[560px]/composer-shell:pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       {ssh.dialog}
       <ConfirmDialog
@@ -4171,7 +4234,7 @@ export function Composer({
               so regrouping them stays a local change. */}
           <div
             data-composer-toolbar
-            className="@container/toolbar flex items-center gap-0.5 px-2 pt-1 pb-2 [contain:layout_style]"
+            className="@container/toolbar flex min-w-0 items-center gap-0.5 px-2 pt-1 pb-2 [contain:layout_style]"
           >
             <input
               ref={fileInputRef}
@@ -4264,7 +4327,7 @@ export function Composer({
                   data-status-segment={segment.key}
                   className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
                     segment.key === 'permission'
-                      ? 'ml-auto shrink-0 pl-1 @max-[30rem]/toolbar:hidden'
+                      ? 'ml-auto shrink-0 pl-1'
                       : segment.key === 'output-layer'
                         ? 'shrink-0 pl-0.5 @max-[34rem]/toolbar:hidden'
                       : segment.key === 'run-mode'
@@ -4273,50 +4336,35 @@ export function Composer({
                         ? 'min-w-0 shrink @max-[30rem]/toolbar:hidden'
                       : segment.key === 'execution'
                         ? 'min-w-0 shrink @max-[30rem]/toolbar:hidden'
+                      : segment.key === 'compact-model'
+                        ? 'hidden min-w-0 flex-1 @max-[30rem]/toolbar:flex'
                       : 'min-w-0 shrink'
                   }`}
                 >
                   {segment.node}
                 </div>
               ))}
-              {!messageEditing && onChangeExecution !== undefined && execution !== undefined ? (
-                <CompactModelSheet
-                  label={[
-                    pickedPersona?.name
-                      ?? (execution.profile !== undefined && execution.profile !== '' && execution.profile !== 'agent'
-                        ? execution.profile
-                        : t('composer.agentDefaultName')),
-                    modelShortLabel,
-                  ].filter((part): part is string => part !== undefined && part !== '').join(' · ')}
-                  ariaLabel={`${t('composer.agentDefaultName')} / ${modelShortLabel ?? ''}`}
-                  profileNode={statusSegments.find((seg) => seg.key === 'profile')?.node}
-                  executionNode={statusSegments.find((seg) => seg.key === 'execution')?.node}
-                />
-              ) : null}
+              {/* CompactModelSheet renders via statusSegments right before
+                  permission so narrow toolbars keep [Persona·Model·Effort] on
+                  the left and [Permission] anchored on the right. */}
             </div>
             <div className="ml-1 flex shrink-0 items-center gap-1">
-              {contextUsage !== undefined ? (() => {
-                const ratio = contextUsage.used !== undefined && contextUsage.limit > 0
-                  ? contextUsage.used / contextUsage.limit
-                  : 0;
-                const keepOnNarrow = ratio >= 0.6 || (compactAvailability !== undefined && compactAvailability.available === false && compactAvailability.reason !== undefined);
-                return (
-                  <div className={keepOnNarrow ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center @max-[26.25rem]/toolbar:hidden'}>
-                    <ContextMeter
-                      used={contextUsage.used}
-                      limit={contextUsage.limit}
-                      usage={sessionUsage}
-                      usageError={sessionUsageError}
-                      usageScope={variant === 'subagent' ? 'agent' : 'session'}
-                      sessionId={sessionId}
-                      agentId={agentId}
-                      onCompact={onCompactContext}
-                      autoCompact={contextAutoCompact}
-                      compactAvailability={compactAvailability}
-                    />
-                  </div>
-                );
-              })() : null}
+              {contextUsage !== undefined ? (
+                <div className={keepContextOnNarrow ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center @max-[26.25rem]/toolbar:hidden'}>
+                  <ContextMeter
+                    used={contextUsage.used}
+                    limit={contextUsage.limit}
+                    usage={sessionUsage}
+                    usageError={sessionUsageError}
+                    usageScope={variant === 'subagent' ? 'agent' : 'session'}
+                    sessionId={sessionId}
+                    agentId={agentId}
+                    onCompact={onCompactContext}
+                    autoCompact={contextAutoCompact}
+                    compactAvailability={compactAvailability}
+                  />
+                </div>
+              ) : null}
               {queueEditing && onQueueEditRemove !== undefined ? (
                 // Queue-edit mode: the stop button becomes the remove control
                 // for the queued message being edited (two-step: arm, then
@@ -4556,66 +4604,87 @@ export function Composer({
         </div>
         {/* External bare ContextStrip below the composer card:
             Left: SSH summary trigger (`>_ GPU box +2 ▾` opening upward), active
-            plugin status capsules, and working line.
-            Right: SessionRemainder, statusNotice, takenOver Stop, or idle focus hints. */}
-        <div data-composer-status-line className="mt-1.5 flex min-h-6 min-w-0 items-center gap-2.5 px-1 [contain:layout_style]">
-          {ssh.resident !== null || hasPluginStatusCapsules || working !== undefined || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
-            <>
-              {ssh.resident}
-              {hasPluginStatusCapsules ? (
-                <PluginStatusCapsules
-                  slots={pluginGuiSlots.slots}
-                  sessionId={sessionId}
-                  workspaceId={workspaceId}
-                  disabled={disabled}
-                />
+            plugin status capsules, and actionable queue/send-now line (ordinary
+            working state is already owned by the timeline tail and header).
+            Right: SessionRemainder, statusNotice, or takenOver Stop. */}
+        {(() => {
+          const sendNowHint =
+            working !== undefined &&
+            text.trim() !== '' &&
+            onSendNow !== undefined &&
+            !busySendsNow &&
+            !queueEditing &&
+            !takenOver &&
+            !sendNowDegrades
+              ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
+              : undefined;
+          const showWorkingAction = working !== undefined && (working.queued !== undefined || sendNowHint !== undefined);
+          return (
+            <div data-composer-status-line className="@container/statusline mt-1.5 flex min-h-6 min-w-0 items-center gap-2 px-1 [contain:layout_style]">
+              {ssh.resident !== null || hasPluginStatusCapsules || showWorkingAction || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
+                <>
+                  {ssh.resident}
+                  {hasPluginStatusCapsules ? (
+                    <PluginStatusCapsules
+                      slots={pluginGuiSlots.slots}
+                      sessionId={sessionId}
+                      workspaceId={workspaceId}
+                      disabled={disabled}
+                    />
+                  ) : null}
+                  {showWorkingAction ? (
+                    <ComposerWorkingLine
+                      lastResponseAt={working.lastResponseAt}
+                      queued={working.queued}
+                      sendNowHint={sendNowHint}
+                    />
+                  ) : null}
+                  <span className="flex-1" />
+                  {sessionRemainder === undefined ? null : (
+                    <SessionRemainder className="shrink" handle={sessionRemainder} />
+                  )}
+                  {statusNotice === undefined ? null : (
+                    <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium text-amber-ink">
+                      {statusNotice}
+                    </span>
+                  )}
+                  {takenOver && busy && onAbort !== undefined ? (
+                    <button
+                      type="button"
+                      data-composer-status-stop
+                      onClick={onAbort}
+                      disabled={abortPending}
+                      className="relative inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-top-1.5 pointer-coarse:after:-bottom-4.5"
+                    >
+                      <Icon name="stop" size={12} />
+                      {abortPending ? t('tasks.stopping') : t('composer.status.stop')}
+                    </button>
+                  ) : null}
+                </>
               ) : null}
-              {working !== undefined ? (
-                <ComposerWorkingLine
-                  lastResponseAt={working.lastResponseAt}
-                  queued={working.queued}
-                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver && !sendNowDegrades
-                    ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
-                    : undefined}
-                />
-              ) : null}
-              <span className="flex-1" />
-              {sessionRemainder === undefined ? null : (
-                <SessionRemainder className="shrink" handle={sessionRemainder} />
-              )}
-              {statusNotice === undefined ? null : (
-                <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium text-amber-ink">
-                  {statusNotice}
-                </span>
-              )}
-              {takenOver && busy && onAbort !== undefined ? (
-                <button
-                  type="button"
-                  data-composer-status-stop
-                  onClick={onAbort}
-                  disabled={abortPending}
-                  className="relative inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-top-1.5 pointer-coarse:after:-bottom-4.5"
-                >
-                  <Icon name="stop" size={12} />
-                  {abortPending ? t('tasks.stopping') : t('composer.status.stop')}
-                </button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
+            </div>
+          );
+        })()}
       </div>
+    </div>
     </div>
     </ComposerCardContext.Provider>
   );
 }
 
 function CompactModelSheet({
+  icon,
   label,
+  effortLabel,
+  title,
   ariaLabel,
   profileNode,
   executionNode,
 }: {
+  readonly icon: ReactNode;
   readonly label: string;
+  readonly effortLabel?: string;
+  readonly title: string;
   readonly ariaLabel: string;
   readonly profileNode: ReactNode;
   readonly executionNode: ReactNode;
@@ -4633,7 +4702,7 @@ function CompactModelSheet({
   }, [open]);
   const triggerEl = triggerRef.current;
   return (
-    <div className="hidden min-w-0 shrink @max-[30rem]/toolbar:flex">
+    <div className="flex min-w-0 flex-1">
       <Popover.Root
         open={open}
         modal={false}
@@ -4658,11 +4727,17 @@ function CompactModelSheet({
           ref={triggerRef}
           type="button"
           data-compact-model-sheet-trigger=""
+          title={title}
           aria-label={ariaLabel}
-          className={`${STATUS_SEGMENT_CLASS} max-w-[14rem]`}
+          className={`${STATUS_SEGMENT_CLASS} max-w-full overflow-hidden @max-[30rem]/toolbar:gap-1 @max-[30rem]/toolbar:px-1.5`}
         >
-          <Icon name="star" size={14} className={STATUS_SEGMENT_ICON_CLASS} />
+          {icon}
           <span className="min-w-0 truncate">{label}</span>
+          {effortLabel !== undefined ? (
+            <span data-compact-model-effort="" className="shrink-0 whitespace-nowrap text-ink-faint">
+              · {effortLabel}
+            </span>
+          ) : null}
           <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
         </Popover.Trigger>
         <Popover.Portal>
@@ -5619,13 +5694,10 @@ function EffortGauge({
 }
 
 /**
- * "Working · last response 12s ago" under the composer card. One faint line
- * led by the busy pulse, ticking once a second; before the turn's first
- * output it just says "Working". When waiting on governance admission, the
- * line shows a concise "Queued" status without noisy second counts or page
- * jumping, offering an inline popover on click for exact details and rules.
- * With a draft typed it also teaches the send-now key, while background work
- * shows "N more still running" (composer.continuing).
+ * Actionable status line under the composer card while a turn is active:
+ * governance admission queue ("Queued" with click popover) and the send-now
+ * shortcut hint while typing a draft. Ordinary working status lives in the
+ * timeline tail and header rather than repeating below the composer.
  */
 function ComposerWorkingLine({
   lastResponseAt,
@@ -5640,12 +5712,11 @@ function ComposerWorkingLine({
   };
   readonly sendNowHint: string | undefined;
 }) {
-  const { t, time } = useI18n();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  useNow();
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
@@ -5668,6 +5739,7 @@ function ComposerWorkingLine({
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       e.preventDefault();
       setDetailsOpen(false);
+      triggerRef.current?.focus();
     };
     window.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKeyDown);
@@ -5678,11 +5750,10 @@ function ComposerWorkingLine({
     };
   }, [detailsOpen]);
 
-  const status = lastResponseAt === undefined
-    ? t('composer.working')
-    : t('composer.workingLastResponse', { ago: time.relativeTime(new Date(lastResponseAt).toISOString()) });
   const isQueued = queued !== undefined;
   const waitedSec = queued !== undefined ? Math.max(1, Math.round(queued.waitedMs / 1000)) : 1;
+
+  if (!isQueued && sendNowHint === undefined) return null;
 
   return (
     <div className="relative flex min-w-0 items-center">
@@ -5691,67 +5762,99 @@ function ComposerWorkingLine({
         data-last-response-at={lastResponseAt}
         className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
       >
-        <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
         {isQueued ? (
-          <span data-composer-queued className="flex shrink-0 items-center gap-1">
-            <button
-              ref={triggerRef}
-              type="button"
-              data-composer-queued-trigger
-              aria-expanded={detailsOpen}
-              onClick={() => { setDetailsOpen((v) => !v); }}
-              className="font-medium text-ink-soft underline decoration-dotted transition-colors hover:text-ink hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
-            >
-              {t('composer.queued')}
-            </button>
-          </span>
-        ) : (
-          <span className="min-w-0 truncate tabular-nums">{status}</span>
-        )}
+          <>
+            <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+            <span data-composer-queued className="flex shrink-0 items-center gap-1">
+              <button
+                ref={triggerRef}
+                type="button"
+                data-composer-queued-trigger
+                aria-expanded={detailsOpen}
+                onClick={() => { setDetailsOpen((v) => !v); }}
+                className="font-medium text-ink-soft underline decoration-dotted transition-colors hover:text-ink hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {t('composer.queued')}
+              </button>
+            </span>
+          </>
+        ) : null}
         {sendNowHint !== undefined ? (
-          <span data-composer-send-now-hint className="hidden shrink-0 sm:inline pointer-coarse:hidden">· {sendNowHint}</span>
+          <span
+            data-composer-send-now-hint
+            className="min-w-0 truncate @max-[360px]/statusline:hidden pointer-coarse:hidden"
+          >
+            {isQueued ? `· ${sendNowHint}` : sendNowHint}
+          </span>
         ) : null}
       </p>
 
       {isQueued && detailsOpen ? (
-        <div
-          ref={panelRef}
-          data-composer-queued-popover
-          className="anim-enter absolute bottom-full left-0 z-30 mb-2 w-72 rounded-lg border border-hairline bg-paper p-3 shadow-lg text-[12px] text-ink"
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (nextOpen) return;
+            setDetailsOpen(false);
+            if (eventDetails.reason === 'escape-key') {
+              triggerRef.current?.focus();
+            }
+          }}
         >
-          <div className="flex items-center justify-between pb-1.5 border-b border-hairline/60">
-            <span className="font-semibold">{t('composer.queuedTitle')}</span>
-            <span className="font-mono text-[11px] text-ink-faint tabular-nums">
-              {t('composer.queuedWaited', { seconds: waitedSec })}
-            </span>
-          </div>
-          <p className="mt-1.5 leading-snug text-ink-soft text-[11.5px]">
-            {t('composer.queuedBody')}
-          </p>
-          {queued.modelId !== undefined ? (
-            <p className="mt-1 font-mono text-[11px] text-ink-faint">
-              {t('composer.queuedModel', { model: queued.modelId })}
-            </p>
-          ) : null}
-          {queued.blockingRules !== undefined && queued.blockingRules.length > 0 ? (
-            <p className="mt-0.5 text-[11px] text-ink-faint">
-              {t('composer.queuedRules', { rules: queued.blockingRules.join(', ') })}
-            </p>
-          ) : null}
-          <div className="mt-2.5 pt-1.5 border-t border-hairline/60">
-            <button
-              type="button"
-              data-composer-queued-usage
-              onClick={() => {
-                setDetailsOpen(false);
-                void navigate('/usage');
-              }}
-              className="text-[11.5px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="top"
+              align="start"
+              sideOffset={8}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+              className="outline-none"
             >
-              {t('composer.queuedUsageLink')}
-            </button>
-          </div>
-        </div>
+              <Popover.Popup
+                ref={panelRef}
+                data-composer-queued-popover
+                initialFocus={false}
+                finalFocus={false}
+                className="anim-enter w-72 max-w-[calc(100vw-24px)] rounded-lg border border-hairline bg-paper p-3 shadow-lg text-[12px] text-ink outline-none"
+              >
+                <div className="flex items-center justify-between pb-1.5 border-b border-hairline/60">
+                  <span className="font-semibold">{t('composer.queuedTitle')}</span>
+                  <span className="font-mono text-[11px] text-ink-faint tabular-nums">
+                    {t('composer.queuedWaited', { seconds: waitedSec })}
+                  </span>
+                </div>
+                <p className="mt-1.5 leading-snug text-ink-soft text-[11.5px]">
+                  {t('composer.queuedBody')}
+                </p>
+                {queued.modelId !== undefined ? (
+                  <p className="mt-1 font-mono text-[11px] text-ink-faint">
+                    {t('composer.queuedModel', { model: queued.modelId })}
+                  </p>
+                ) : null}
+                {queued.blockingRules !== undefined && queued.blockingRules.length > 0 ? (
+                  <p className="mt-0.5 text-[11px] text-ink-faint">
+                    {t('composer.queuedRules', { rules: queued.blockingRules.join(', ') })}
+                  </p>
+                ) : null}
+                <div className="mt-2.5 pt-1.5 border-t border-hairline/60">
+                  <button
+                    type="button"
+                    data-composer-queued-usage
+                    onClick={() => {
+                      setDetailsOpen(false);
+                      void navigate('/usage');
+                    }}
+                    className="text-[11.5px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  >
+                    {t('composer.queuedUsageLink')}
+                  </button>
+                </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </div>
   );

@@ -497,12 +497,29 @@ const Header = memo(function Header({
   // the header's rail toggle is dead weight there (same rule the cockpit
   // switch already follows inside the rail).
   const railToggleVisible = useMediaQuery('(min-width: 1024px)');
+  const headerRef = useRef<HTMLElement>(null);
+  const [headerNarrow, setHeaderNarrow] = useState(false);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    const sync = () => {
+      const width = el.getBoundingClientRect().width || el.clientWidth;
+      if (width > 0) setHeaderNarrow((prev) => {
+        const next = width < 560;
+        return prev === next ? prev : next;
+      });
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(el);
+    return () => { observer.disconnect(); };
+  }, []);
 
   const { sidebarOpen } = useSidebarContext();
 
 
   return (
-    <WorkspaceHeader main>
+    <WorkspaceHeader main headerRef={headerRef}>
       <button
         type="button"
         onClick={onToggleSidebar}
@@ -589,14 +606,19 @@ const Header = memo(function Header({
               themselves. The header keeps one quiet state word and ONE
               overflow menu. */}
           {state.busy ? (
-            <span data-header-working className="hidden shrink-0 items-center gap-1.5 text-[12px] text-ink-soft sm:flex">
-              <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
-              {t('sv.working')}
+            <span
+              data-header-working
+              title={t('sv.working')}
+              aria-label={t('sv.working')}
+              className="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-soft"
+            >
+              <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+              <span className="hidden @[560px]/center:inline">{t('sv.working')}</span>
             </span>
           ) : null}
           {/* 消息 | 过程 exists for a message-delivering conversation, on the
-              header from sm up; the ⋯ menu carries it below. */}
-          {deliveryCapable ? <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" /> : null}
+              header from 560px container width up; the ⋯ menu carries it below. */}
+          {deliveryCapable ? <TimelineViewSwitch view={view} onChange={onView} className="hidden @[560px]/center:flex" /> : null}
           {forkLineage !== undefined &&
           onOpenForkSession !== undefined &&
           onOpenBranchAgent !== undefined &&
@@ -677,9 +699,9 @@ const Header = memo(function Header({
                   delivery={session.delivery ?? 'reply'}
                   onDelivery={(next) => { close(); onDelivery(next); }}
                   deliveryPending={deliveryPending}
-                  // When the header switch hides (narrow), the view choice has
-                  // to be reachable somewhere — the same menu carries it.
-                  showView={isNarrow && deliveryCapable}
+                  // When the header switch hides (narrow viewport or <560px center
+                  // column), the view choice stays reachable in this menu.
+                  showView={(isNarrow || headerNarrow) && deliveryCapable}
                 />
               </>
             ) : undefined}
@@ -702,7 +724,7 @@ const Header = memo(function Header({
           aria-expanded={railOpen}
           data-rail-toggle
           data-rail-hint={waiting > 0 ? 'needs-you' : state.busy || runningTasks > 0 ? 'running' : undefined}
-          className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:min-w-8 ${
+          className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-1.5 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:min-w-8 @[480px]/center:px-2 ${
             railOpen
               ? 'bg-canvas text-ink'
               : 'text-ink-faint hover:bg-canvas hover:text-ink'
@@ -885,7 +907,7 @@ export function SessionTitle({
             data-session-cwd
             onClick={onOpenRail}
             title={cwd}
-            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
+            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft @[720px]/center:block"
           >
             {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
             {shortCwd(worktree?.source_root ?? cwd)}
@@ -894,16 +916,16 @@ export function SessionTitle({
           <span
             data-session-cwd
             title={cwd}
-            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint sm:block"
+            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint @[720px]/center:block"
           >
             {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
             {shortCwd(worktree?.source_root ?? cwd)}
           </span>
         )
       ) : null}
-      {!editing ? <WorktreeMark worktree={worktree} className="max-w-[8rem] shrink-[50] self-center sm:max-w-[12rem]" /> : null}
-      {!editing ? <PromotedFromMark origin={promotedFrom} className="max-w-[10rem] shrink-[60] self-center sm:max-w-[14rem]" /> : null}
-      {!editing ? <ForkProvenanceMark origin={forkOrigin} className="max-w-[12rem] shrink-[55] self-center sm:max-w-[16rem]" /> : null}
+      {!editing ? <WorktreeMark worktree={worktree} className="hidden max-w-[8rem] shrink-[50] self-center @[560px]/center:inline-flex @[680px]/center:max-w-[12rem]" /> : null}
+      {!editing ? <PromotedFromMark origin={promotedFrom} className="hidden max-w-[10rem] shrink-[60] self-center @[560px]/center:inline-flex @[680px]/center:max-w-[14rem]" /> : null}
+      {!editing ? <ForkProvenanceMark origin={forkOrigin} className="hidden max-w-[12rem] shrink-[55] self-center @[560px]/center:inline-flex @[680px]/center:max-w-[16rem]" /> : null}
     </div>
   );
 }

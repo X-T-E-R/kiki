@@ -4173,4 +4173,42 @@ describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
       cleanup();
     }
   });
+
+  it('folds panel slots into the overflow popover when the enclosing header is narrower than 460px', async () => {
+    const prevResizeObserver = globalThis.ResizeObserver;
+    let resizeCallback: ResizeObserverCallback | undefined;
+    class MockResizeObserver {
+      constructor(cb: ResizeObserverCallback) { resizeCallback = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+    const { probe, cleanup } = await mountWithSlots([
+      makePanelSlot('kiki-v42', 'workbench', '远端工位', 'workbench'),
+      makePanelSlot('kiki-phone', 'screen', '手机预览', 'screen'),
+      makePanelSlot('kiki-uu-remote', 'uu', 'UU远程', 'uu'),
+      makeCapsuleSlot('kiki-v42'),
+    ]);
+    try {
+      const group = probe.container.querySelector<HTMLElement>('[data-workspace-panels-group]')!;
+      const parent = group.parentElement!;
+      Object.defineProperty(parent, 'clientWidth', { value: 420, configurable: true });
+      parent.getBoundingClientRect = () => ({ width: 420, height: 48, top: 0, left: 0, right: 420, bottom: 48, x: 0, y: 0, toJSON: () => ({}) });
+      await act(async () => {
+        resizeCallback?.([], {} as ResizeObserver);
+      });
+      expect(probe.container.querySelectorAll('[data-workspace-panel-item]')).toHaveLength(0);
+      const trigger = probe.container.querySelector<HTMLButtonElement>('[data-workspace-panels-trigger]')!;
+      expect(trigger).not.toBeNull();
+      expect(trigger.querySelector('[data-workspace-panels-active]')).not.toBeNull();
+      await act(async () => { trigger.click(); });
+      expect(document.querySelector('[data-workspace-panel-item="kiki-v42:workbench"]')).not.toBeNull();
+      expect(document.querySelector('[data-workspace-panel-item="kiki-phone:screen"]')).not.toBeNull();
+      expect(document.querySelector('[data-workspace-panel-item="kiki-uu-remote:uu"]')).not.toBeNull();
+    } finally {
+      globalThis.ResizeObserver = prevResizeObserver;
+      cleanup();
+    }
+  });
 });

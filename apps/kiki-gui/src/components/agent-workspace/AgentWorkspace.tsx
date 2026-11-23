@@ -399,10 +399,22 @@ const emptyAgentView = createViewState('');
  * kept read-only and settles as an unavailable target instead of becoming a
  * send gate by accident.
  */
-export function WorkspaceHeader({ children }: { children: ReactNode; main?: boolean }) {
+export function WorkspaceHeader({
+  children,
+  headerRef,
+}: {
+  children: ReactNode;
+  main?: boolean;
+  headerRef?: RefObject<HTMLElement | null>;
+}) {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-hairline/70 bg-paper pr-2.5 pl-4 lg:pl-5">
-      {children}
+    <header
+      ref={headerRef}
+      className="@container/center h-12 w-full min-w-0 shrink-0 border-b border-hairline/70 bg-paper"
+    >
+      <div className="flex h-full w-full min-w-0 items-center gap-1 pr-2 pl-3 @[480px]/center:gap-1.5 @[480px]/center:pr-2.5 @[480px]/center:pl-4 @[600px]/center:pl-5">
+        {children}
+      </div>
     </header>
   );
 }
@@ -579,7 +591,7 @@ function AgentWorkspaceHeader({
             disabled={branchUnlocking}
             title={t('transcript.branch.unlockTools')}
             onClick={onUnlockBranchTools}
-            className="hidden h-6 shrink-0 cursor-pointer items-center rounded-md border border-hairline bg-paper px-2 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
+            className="hidden h-6 shrink-0 cursor-pointer items-center rounded-md border border-hairline bg-paper px-2 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 @[560px]/center:inline-flex"
           >
             {readOnlyBadgeLabel}
           </button>
@@ -587,7 +599,7 @@ function AgentWorkspaceHeader({
           <span
             data-branch-seam-header
             title={branchSeamLabel}
-            className="hidden h-5 shrink-0 items-center rounded bg-ink/[0.04] px-1.5 text-[11px] text-ink-soft sm:inline-flex"
+            className="hidden h-5 shrink-0 items-center rounded bg-ink/[0.04] px-1.5 text-[11px] text-ink-soft @[560px]/center:inline-flex"
           >
             {branchSeedLabel}
           </span>
@@ -601,7 +613,7 @@ function AgentWorkspaceHeader({
             data-promote-branch-action
             disabled={promote.pending}
             onClick={promote.promote}
-            className="hidden h-7 shrink-0 cursor-pointer rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint sm:inline-flex sm:items-center"
+            className="hidden h-7 shrink-0 cursor-pointer rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint @[560px]/center:inline-flex @[560px]/center:items-center"
           >
             {t(promote.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
           </button>
@@ -621,7 +633,7 @@ function AgentWorkspaceHeader({
         ) : null}
         {showPreviewToggle ? <PreviewToggleButton sessionId={target.sessionId} workspaceId={workspaceId} /> : null}
         {hasActionsMenu ? (
-          <div className={`relative shrink-0${hasDesktopMenuActions ? '' : ' sm:hidden'}`} data-agent-actions>
+          <div className={`relative shrink-0${hasDesktopMenuActions ? '' : ' @[560px]/center:hidden'}`} data-agent-actions>
             <button
               type="button"
               onClick={() => { setMenuOpen((value) => !value); }}
@@ -678,7 +690,7 @@ function AgentWorkspaceHeader({
                     role="menuitem"
                     data-agent-promote
                     disabled={promote.pending}
-                    className={`${isBranch && !branchSealed ? 'flex sm:hidden' : 'flex'} h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent`}
+                    className={`${isBranch && !branchSealed ? 'flex @[560px]/center:hidden' : 'flex'} h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent`}
                     onClick={() => { setMenuOpen(false); promote.promote(); }}
                   >
                     {t(promote.pending ? 'agent.promotePending' : (isBranch ? 'transcript.branch.promote' : 'agent.promote'))}

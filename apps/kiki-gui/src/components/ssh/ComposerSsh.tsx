@@ -392,7 +392,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     <div
       data-composer-ssh-strip
       data-composer-ssh-open={listOpen ? '' : undefined}
-      className="inline-flex shrink-0 items-center"
+      className="inline-flex min-w-0 shrink items-center"
     >
       <Popover.Root open={listOpen} onOpenChange={setListOpen}>
         <Popover.Trigger
@@ -402,7 +402,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
           data-composer-ssh-summary=""
           aria-controls={listId}
           title={triggerTitle}
-          className={`inline-flex h-6 max-w-52 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] leading-4 text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 ${listOpen ? 'bg-ink/[0.06] text-ink' : ''}`}
+          className={`inline-flex h-6 max-w-44 min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] leading-4 text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 @[480px]/statusline:max-w-52 ${listOpen ? 'bg-ink/[0.06] text-ink' : ''}`}
         >
           <Icon name="terminal" size={12} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 truncate">{summaryLabel}</span>

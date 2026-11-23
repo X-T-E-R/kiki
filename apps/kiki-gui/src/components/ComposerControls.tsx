@@ -2029,10 +2029,12 @@ export function RunModeChip({
   runMode,
   onOpen,
   onClear,
+  compact = false,
 }: {
   readonly runMode: RunMode;
   readonly onOpen: () => void;
   readonly onClear: () => void;
+  readonly compact?: boolean;
 }) {
   const { t } = useI18n();
   if (runMode === 'normal') return null;
@@ -2049,11 +2051,13 @@ export function RunModeChip({
         onClick={onOpen}
         aria-label={`${t('composer.runModeHeading')}: ${label}`}
         title={t(RUN_MODES.find((mode) => mode.id === runMode)!.hintKey)}
-        className="flex h-full items-center gap-1.5 rounded-l-md pr-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+        className={`flex h-full items-center gap-1.5 rounded-l-md pr-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
+          compact ? '@max-[460px]/composer-shell:pr-0.5 @max-[460px]/composer-shell:pl-1.5' : ''
+        }`}
       >
         <Icon name={runMode === 'goal' ? 'goal' : 'plan'} size={14} className="text-ink-soft" />
-        {/* Narrow composers keep the icon; the name stays in aria-label/title. */}
-        <span className="@max-[24rem]/toolbar:sr-only">{label}</span>
+        {/* Ultra-narrow composers (<360px center pane, or <460px when crowded by busy split-send/context) keep the icon; the name stays in aria-label/title. */}
+        <span className={compact ? '@max-[460px]/composer-shell:sr-only' : '@max-[360px]/composer-shell:sr-only'}>{label}</span>
       </button>
       <button
         type="button"
@@ -2078,11 +2082,13 @@ export function PermissionSelect({
   onOpenChange,
   value,
   onChange,
+  compact = false,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly value: PermissionMode;
   readonly onChange: (mode: PermissionMode) => void;
+  readonly compact?: boolean;
 }) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -2114,20 +2120,24 @@ export function PermissionSelect({
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={t('composer.permAria')}
-        title={t(current.hintKey)}
+        aria-label={`${t('composer.permAria')}: ${t(current.labelKey)}`}
+        title={`${t(current.labelKey)} — ${t(current.hintKey)}`}
         data-permission-tone={current.tone}
         onClick={() => { onOpenChange(!open); }}
         data-segment-set={value !== RECOMMENDED_PERMISSION_MODE ? '' : undefined}
-        className={`${STATUS_SEGMENT_CLASS} max-w-56 ${
+        className={`${STATUS_SEGMENT_CLASS} max-w-56 @max-[30rem]/toolbar:gap-1 @max-[30rem]/toolbar:px-1.5 ${
+          compact
+            ? '@max-[420px]/composer-shell:w-7 @max-[420px]/composer-shell:justify-center @max-[420px]/composer-shell:px-0'
+            : '@max-[360px]/composer-shell:w-7 @max-[360px]/composer-shell:justify-center @max-[360px]/composer-shell:px-0'
+        } ${
           danger
             ? 'bg-danger/10 font-medium text-danger hover:bg-danger/15 hover:text-danger aria-expanded:bg-danger/15 aria-expanded:text-danger'
             : value !== RECOMMENDED_PERMISSION_MODE ? STATUS_SEGMENT_SET : ''
         }`}
       >
-        <Icon name="gate" size={14} className={danger ? '' : STATUS_SEGMENT_ICON_CLASS} />
-        {/* Narrow composers keep the shield; the mode name stays in the tooltip. */}
-        <span className="min-w-0 truncate @max-[28rem]/toolbar:sr-only">{t(current.labelKey)}</span>
+        <Icon name="gate" size={14} className={`shrink-0 ${danger ? '' : STATUS_SEGMENT_ICON_CLASS}`} />
+        {/* Ultra-narrow composers (<360px center pane, or <420px when crowded by busy split-send/context) keep the shield; the mode name stays in the tooltip & aria-label. */}
+        <span className={`min-w-0 truncate ${compact ? '@max-[420px]/composer-shell:sr-only' : '@max-[360px]/composer-shell:sr-only'}`}>{t(current.labelKey)}</span>
       </button>
       {open ? (
         <Popover.Root
