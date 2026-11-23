@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 export const REMOTE_POSIX_PATH =
@@ -31,7 +30,6 @@ export async function remoteCommand(
   const child = spawn(bashCcp ? 'bash.exe' : program, bashCcp ? ['-lc', 'exec ccp "$@"', 'ccp', ...args] : args, {
     stdio: [archive ? 'pipe' : 'ignore', 'pipe', 'inherit'],
     windowsHide: true,
-    timeout: 180_000,
   });
   const exitPromise = new Promise<void>((resolveExit, rejectExit) => {
     child.once('error', rejectExit);
@@ -43,19 +41,7 @@ export async function remoteCommand(
   const readStdout =
     outputArchive !== undefined
       ? (async () => {
-          let size = 0;
-          const limit = new Transform({
-            transform(chunk: Buffer, _encoding, done) {
-              size += chunk.length;
-              if (size > 128 * 1024 * 1024) {
-                child.kill();
-                done(new Error('Remote archive output exceeds 128 MiB'));
-              } else {
-                done(null, chunk);
-              }
-            },
-          });
-          await pipeline(child.stdout!, limit, createWriteStream(outputArchive, { flags: 'wx', mode: 0o600 }));
+          await pipeline(child.stdout!, createWriteStream(outputArchive, { flags: 'wx', mode: 0o600 }));
           return '';
         })()
       : new Promise<string>((resolveStdout, rejectStdout) => {

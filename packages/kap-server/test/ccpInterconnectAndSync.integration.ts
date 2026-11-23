@@ -19,8 +19,10 @@ import {
 } from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
 import { CcpTunnelConnector, type CcpTunnelProcess, type CcpTunnelRunner } from '../src/services/ccpTunnel/connector';
-import { startServer, type RunningServer, type StartServerOptions } from '../src/start';
+import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+
+type StartServerOptions = Parameters<typeof startServer>[0];
 
 const servers: RunningServer[] = [];
 const tempDirs: string[] = [];

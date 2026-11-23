@@ -1,7 +1,8 @@
 import { ErrorCodes, isError2 } from '#/errors';
 import type { ReadThreadResult, ThreadActivity, ThreadRef } from './threadCommunication';
 
-export const TERMINAL_WATCH_PREVIEW_MAX_CHARS = 2_000;
+const THREAD_MESSAGE_PROTOCOL_MAX_CHARS = 100_000;
+const TRUNCATED_SUFFIX = '\n... [truncated to thread message limit]';
 
 const UNRECOVERABLE_ERROR_CODES = new Set<string>([
   ErrorCodes.THREAD_DISABLED,
@@ -27,10 +28,7 @@ const UNRECOVERABLE_REASON_TOKENS = [
   'identity_changed',
 ] as const;
 
-export function extractTerminalPreview(
-  readResult: ReadThreadResult,
-  maxChars = TERMINAL_WATCH_PREVIEW_MAX_CHARS,
-): string | undefined {
+export function extractTerminalPreview(readResult: ReadThreadResult): string | undefined {
   let raw = '';
   if (readResult.turns.length > 0) {
     raw = readResult.turns.at(-1)!.output.trim();
@@ -54,15 +52,14 @@ export function extractTerminalPreview(
       }
     }
   }
-  if (raw.length === 0) return undefined;
-  if (raw.length <= maxChars) return raw;
-  return `${raw.slice(0, maxChars)}\n... [truncated]`;
+  return raw.length > 0 ? raw : undefined;
 }
 
 export function formatTerminalWatchMessage(
   target: ThreadRef,
   activities: readonly ThreadActivity[],
   preview?: string,
+  previewError?: string,
 ): string {
   const primary =
     activities.findLast((entry) => entry.kind === 'terminal') ??
@@ -81,8 +78,12 @@ export function formatTerminalWatchMessage(
   }
   if (preview !== undefined && preview.length > 0) {
     lines.push('', 'Latest output:', preview);
+  } else if (previewError !== undefined && previewError.length > 0) {
+    lines.push('', `Latest output unavailable: ${previewError}`);
   }
-  return lines.join('\n');
+  const full = lines.join('\n');
+  if (full.length <= THREAD_MESSAGE_PROTOCOL_MAX_CHARS) return full;
+  return `${full.slice(0, THREAD_MESSAGE_PROTOCOL_MAX_CHARS - TRUNCATED_SUFFIX.length)}${TRUNCATED_SUFFIX}`;
 }
 
 export function formatWatchStoppedMessage(target: ThreadRef, reason: string): string {

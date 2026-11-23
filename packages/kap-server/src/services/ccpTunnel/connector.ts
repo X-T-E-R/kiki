@@ -1,6 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createConnection, createServer } from 'node:net';
+import { HostProcessService } from '@kiki/agent-core-v2/os/backends/node-local/hostProcessService';
+import type { IHostProcess, IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
 import {
   pairCodeCreateOutputSchema,
   type CcpTunnelTransport,
@@ -86,9 +87,8 @@ async function allocateLoopbackPort(): Promise<number> {
   return port;
 }
 
-async function waitForLoopbackTcp(port: number, signal: AbortSignal, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+async function waitForLoopbackTcp(port: number, signal: AbortSignal): Promise<void> {
+  for (;;) {
     signal.throwIfAborted();
     const connected = await new Promise<boolean>((resolve) => {
       const socket = createConnection({ host: '127.0.0.1', port });
@@ -97,11 +97,19 @@ async function waitForLoopbackTcp(port: number, signal: AbortSignal, timeoutMs: 
         socket.destroy();
         resolve(ok);
       };
-      socket.setTimeout(500, () => { done(false); });
-      socket.once('connect', () => { done(true); });
-      socket.once('error', () => { done(false); });
+      const onAbort = () => { done(false); };
+      signal.addEventListener('abort', onAbort, { once: true });
+      socket.once('connect', () => {
+        signal.removeEventListener('abort', onAbort);
+        done(true);
+      });
+      socket.once('error', () => {
+        signal.removeEventListener('abort', onAbort);
+        done(false);
+      });
     });
     if (connected) return;
+    signal.throwIfAborted();
     await new Promise<void>((resolve) => {
       let settled = false;
       const done = () => {
@@ -111,12 +119,11 @@ async function waitForLoopbackTcp(port: number, signal: AbortSignal, timeoutMs: 
         signal.removeEventListener('abort', done);
         resolve();
       };
-      const timer = setTimeout(done, 100);
+      const timer = setTimeout(done, 50);
       timer.unref();
       signal.addEventListener('abort', done, { once: true });
     });
   }
-  throw new AdmissionError(502, 'ccp_tunnel_forward_timeout');
 }
 
 function parseLoopbackTlsPort(loopbackEndpoint: string | undefined): number {
@@ -136,124 +143,98 @@ function parseLoopbackTlsPort(loopbackEndpoint: string | undefined): number {
   return port;
 }
 
-function terminateProcessTree(child: ChildProcess): void {
-  const pid = child.pid;
-  if (pid === undefined) {
-    return;
-  }
-  if (process.platform === 'win32') {
-    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-      stdio: 'ignore',
-      windowsHide: true,
-      shell: false,
-    });
-    killer.unref();
-    killer.once('error', () => {
-      try { child.kill(); } catch {}
-    });
-    return;
-  }
+async function stopOwnedProcess(proc: IHostProcess): Promise<void> {
   try {
-    process.kill(-pid, 'SIGTERM');
-  } catch {
-    if (child.exitCode === null && child.signalCode === null) {
-      try { child.kill('SIGTERM'); } catch {}
-    }
-  }
+    await proc.kill();
+  } catch {}
+  try {
+    await Promise.resolve(proc.dispose());
+  } catch {}
 }
 
-async function waitForChildClose(child: ChildProcess, timeoutMs = 1_500): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const done = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.off('close', done);
-      child.off('exit', done);
-      resolve();
-    };
-    const timer = setTimeout(done, timeoutMs);
-    timer.unref();
-    child.once('close', done);
-    child.once('exit', done);
-  });
-}
-
-/** Default OS process runner that invokes `ccp` (via `bash.exe` on Windows with `windowsHide: true`). */
+/** Default OS process runner that invokes `ccp` under `IHostProcessService` owned-tree supervision. */
 export class SystemCcpTunnelRunner implements CcpTunnelRunner {
-  private readonly children = new Set<ChildProcess>();
+  private readonly procs = new Set<IHostProcess>();
   private closed = false;
 
-  constructor(private readonly timeoutMs = 20_000) {}
+  constructor(private readonly host: Pick<IHostProcessService, 'spawn'> = new HostProcessService()) {}
 
-  private spawnCcp(args: readonly string[], tunnelMode = false): ChildProcess {
+  private async spawnCcp(args: readonly string[]): Promise<IHostProcess> {
     if (this.closed) throw new AdmissionError(499, 'ccp_tunnel_owner_closed');
     const bashCcp = process.platform === 'win32';
-    const child = spawn(
-      bashCcp ? 'bash.exe' : 'ccp',
-      bashCcp ? ['-lc', 'exec ccp "$@"', 'ccp', ...args] : [...args],
-      {
-        stdio: tunnelMode ? ['ignore', 'ignore', 'pipe'] : ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-        shell: false,
-        detached: !bashCcp,
-      },
-    );
-    this.children.add(child);
-    child.once('close', () => { this.children.delete(child); });
-    return child;
+    let proc: IHostProcess;
+    try {
+      proc = await this.host.spawn(
+        bashCcp ? 'bash.exe' : 'ccp',
+        bashCcp ? ['-lc', 'exec ccp "$@"', 'ccp', ...args] : [...args],
+        {
+          windowsHide: true,
+          shell: false,
+          ownedProcessTree: true,
+          ownedProcessLifetime: 'process',
+        },
+      );
+    } catch {
+      throw new AdmissionError(502, 'ccp_process_failed');
+    }
+    proc.stdin.end();
+    this.procs.add(proc);
+    void proc.wait().finally(() => { this.procs.delete(proc); }).catch(() => {});
+    return proc;
   }
 
-  private runCommand(args: readonly string[], parent: AbortSignal): Promise<string> {
-    const signal = AbortSignal.any([parent, AbortSignal.timeout(this.timeoutMs)]);
+  private async runCommand(args: readonly string[], signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
-    const child = this.spawnCcp(args);
+    const proc = await this.spawnCcp(args);
     let stdout = '';
     let stderr = '';
     let bytes = 0;
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    return new Promise<string>((resolve, reject) => {
-      let settled = false;
-      const finish = (error?: unknown, result?: string) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        if (error !== undefined) {
-          terminateProcessTree(child);
-          reject(error);
-        } else {
-          resolve(result ?? '');
-        }
-      };
-      const onAbort = () => { finish(new AdmissionError(499, 'ccp_operation_cancelled')); };
-      signal.addEventListener('abort', onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
+    let overflowed = false;
+    const onStdout = (chunk: Uint8Array | string) => {
+      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      bytes += Buffer.byteLength(text);
+      if (bytes > 65_536) {
+        overflowed = true;
+        void stopOwnedProcess(proc);
         return;
       }
-      child.stdout?.on('data', (chunk: string) => {
-        bytes += Buffer.byteLength(chunk);
-        if (bytes > 65_536) {
-          finish(new AdmissionError(502, 'ccp_command_output_too_large'));
-          return;
-        }
-        stdout += chunk;
-      });
-      child.stderr?.on('data', (chunk: string) => {
-        stderr = (stderr + chunk).slice(-4096);
-      });
-      child.once('error', () => { finish(new AdmissionError(502, 'ccp_process_failed')); });
-      child.once('close', (code) => {
-        if (code !== 0) {
-          finish(new AdmissionError(502, `ccp_command_failed:${code ?? 'signal'}:${stderr.trim().slice(0, 160)}`));
-          return;
-        }
-        finish(undefined, stdout);
-      });
-    });
+      stdout += text;
+    };
+    const onStderr = (chunk: Uint8Array | string) => {
+      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      stderr += text;
+    };
+    proc.stdout.on('data', onStdout);
+    proc.stderr.on('data', onStderr);
+    const stdoutDone = new Promise<void>((done) => { proc.stdout.once('end', done); });
+    const stderrDone = new Promise<void>((done) => { proc.stderr.once('end', done); });
+
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      void stopOwnedProcess(proc);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+
+    try {
+      const [code] = await Promise.all([proc.wait(), stdoutDone, stderrDone]);
+      if (aborted || signal.aborted) {
+        throw new AdmissionError(499, 'ccp_operation_cancelled');
+      }
+      if (overflowed) {
+        throw new AdmissionError(502, 'ccp_command_output_too_large');
+      }
+      if (code !== 0) {
+        throw new AdmissionError(502, `ccp_command_failed:${code}:${stderr.trim()}`);
+      }
+      return stdout;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      proc.stdout.off('data', onStdout);
+      proc.stderr.off('data', onStderr);
+      await stopOwnedProcess(proc);
+    }
   }
 
   async prepare(runtimeId: string, signal: AbortSignal): Promise<string> {
@@ -281,40 +262,45 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
     parent: AbortSignal,
   ): Promise<CcpTunnelProcess> {
     parent.throwIfAborted();
-    const child = this.spawnCcp([
+    const proc = await this.spawnCcp([
       'ssh',
       'connect',
       sessionId,
       '-N',
       '-L',
       `127.0.0.1:${localPort}:127.0.0.1:${remoteTlsPort}`,
-    ], true);
-    child.stderr?.resume();
+    ]);
+    proc.stdout.resume();
+    proc.stderr.resume();
     const lifetime = new AbortController();
-    let alive = true;
-    const abort = () => {
-      lifetime.abort(new AdmissionError(499, 'ccp_tunnel_closed'));
-      if (alive) terminateProcessTree(child);
+    let closingPromise: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      closingPromise ??= (async () => {
+        lifetime.abort(new AdmissionError(499, 'ccp_tunnel_closed'));
+        parent.removeEventListener('abort', onParentAbort);
+        await stopOwnedProcess(proc);
+      })();
+      return closingPromise;
     };
-    parent.addEventListener('abort', abort, { once: true });
-    if (parent.aborted) abort();
-    child.once('error', () => {
-      alive = false;
-      lifetime.abort(new AdmissionError(502, 'ccp_process_failed'));
-    });
-    child.once('exit', (code) => {
-      alive = false;
-      terminateProcessTree(child);
-      lifetime.abort(new AdmissionError(502, `ccp_tunnel_exited_${code ?? 'signal'}`));
-      parent.removeEventListener('abort', abort);
-    });
-    const close = async () => {
-      abort();
-      await waitForChildClose(child);
-      parent.removeEventListener('abort', abort);
-    };
+    const onParentAbort = () => { void close(); };
+    parent.addEventListener('abort', onParentAbort, { once: true });
+    if (parent.aborted) onParentAbort();
+
+    void proc.wait().then(
+      (code) => {
+        lifetime.abort(new AdmissionError(502, `ccp_tunnel_exited_${code}`));
+        parent.removeEventListener('abort', onParentAbort);
+        void stopOwnedProcess(proc);
+      },
+      () => {
+        lifetime.abort(new AdmissionError(502, 'ccp_process_failed'));
+        parent.removeEventListener('abort', onParentAbort);
+        void stopOwnedProcess(proc);
+      },
+    );
+
     try {
-      await waitForLoopbackTcp(localPort, AbortSignal.any([parent, lifetime.signal]), this.timeoutMs);
+      await waitForLoopbackTcp(localPort, AbortSignal.any([parent, lifetime.signal]));
       return { endpoint: `https://127.0.0.1:${localPort}`, signal: lifetime.signal, close };
     } catch (error) {
       await close();
@@ -324,12 +310,7 @@ export class SystemCcpTunnelRunner implements CcpTunnelRunner {
 
   async close(): Promise<void> {
     this.closed = true;
-    await Promise.all(
-      [...this.children].map(async (child) => {
-        terminateProcessTree(child);
-        await waitForChildClose(child);
-      }),
-    );
+    await Promise.all([...this.procs].map((proc) => stopOwnedProcess(proc)));
   }
 }
 

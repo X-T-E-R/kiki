@@ -16,6 +16,7 @@ import {
   IConfigService,
   IEventService,
   IFileSystemStorageService,
+  IHostProcessService,
   ILogService,
   IMcpOAuthService,
   IMemoryScopes,
@@ -133,7 +134,7 @@ import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpa
 import { OutboundPeerBridgeClient } from './services/threadBridge/outboundPeerBridgeClient';
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
-import { CcpTunnelConnector } from './services/ccpTunnel/connector';
+import { CcpTunnelConnector, SystemCcpTunnelRunner } from './services/ccpTunnel/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { registerMeshRoutes } from './routes/mesh';
 import { registerSyncRoutes } from './routes/sync';
@@ -528,7 +529,11 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const serverVersion = opts.serverVersion ?? getServerVersion();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info', async: true });
   const sshRemote = opts.sshRemoteConnector ?? new SshRemoteConnector({ serverVersion });
-  const ccpTunnel = opts.ccpTunnelConnector ?? new CcpTunnelConnector();
+  const ccpTunnel = opts.ccpTunnelConnector ?? new CcpTunnelConnector(
+    new SystemCcpTunnelRunner({
+      spawn: (command, args, options) => core.accessor.get(IHostProcessService).spawn(command, args, options),
+    }),
+  );
   const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger, ccpTunnel);
   await Promise.all([admission.ready(), remoteConnections.ready()]);
   const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
