@@ -4,10 +4,13 @@ import { contentRefSchema, contentSegmentSchema, transcriptResponseSchema } from
 
 export const bridgeThreadRefSchema = /* @__PURE__ */ z.object({ hostId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256) }).strict();
 export const bridgeScopeSchema = /* @__PURE__ */ z.object({ workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256).optional() }).strict();
+export const bridgePermissionCeilingSchema = /* @__PURE__ */ z.enum(['manual', 'auto', 'review', 'yolo']);
+export type BridgePermissionCeiling = z.infer<typeof bridgePermissionCeilingSchema>;
 export const bridgePolicySchema = /* @__PURE__ */ z.object({
   source: connectionIdentitySchema, target: connectionIdentitySchema,
   sourceScope: bridgeScopeSchema, targetScope: bridgeScopeSchema,
   operations: bridgeOperationsSchema,
+  permissionCeiling: bridgePermissionCeilingSchema.optional(),
   expiresAt: z.number().int().positive(), pendingLimit: z.number().int().min(1).max(100).default(20),
   messagesPerMinute: z.number().int().min(1).max(600).default(10),
   location: z.enum(['local', 'network']), label: z.string().min(1).max(128),
@@ -41,6 +44,7 @@ export const bridgeCreateSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   permissionMode: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
   planMode: z.boolean().optional(),
   prompt: z.string().min(1).max(100000).optional(),
+  notifyOnTerminal: z.boolean().optional(),
 }).strict();
 export type BridgeCreate = z.infer<typeof bridgeCreateSchema>;
 export interface BridgeCreateResult {
@@ -48,6 +52,7 @@ export interface BridgeCreateResult {
   title: string;
   profile: string;
   promptStarted: boolean;
+  activityCursor?: string;
 }
 export const remoteExportedToolSchema = /* @__PURE__ */ z.object({
   remoteName: z.string().min(1).max(256),

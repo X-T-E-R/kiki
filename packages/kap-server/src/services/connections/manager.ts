@@ -11,6 +11,7 @@ import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import { AdmissionError, sameIdentity } from './admission';
 import { isPeerProcedureAllowed } from './audience';
+import type { CcpTunnelConnector, CcpTunnelProcess } from '../ccpTunnel/connector';
 import { parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
 
 interface Credential { ownerToken: string; grant: string; grantId: string; revision: number }
@@ -178,9 +179,14 @@ export class RemoteConnectionManager {
     } finally { this.summaryPolling = false; }
   }
   readonly secrets: ConnectionSecretStore;
-  constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly ssh?: ConnectionSshConnector, private readonly resolveLocal?: (localSpaceId: string, target: ConnectionIdentity, signal: AbortSignal) => Promise<Omit<ConnectionTransport, 'id'>>, private readonly logger?: { warn(obj: Record<string, unknown>, msg: string): void }) {
+  constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly ssh?: ConnectionSshConnector, private readonly resolveLocal?: (localSpaceId: string, target: ConnectionIdentity, signal: AbortSignal) => Promise<Omit<ConnectionTransport, 'id'>>, private readonly logger?: { warn(obj: Record<string, unknown>, msg: string): void }, readonly ccpTunnel?: CcpTunnelConnector) {
     this.path = join(homeDir, 'server', 'outbound-connections.json');
     this.secrets = new ConnectionSecretStore(homeDir);
+    this.ccpTunnel?.setOnTunnelDropped((connectionId, endpoint) => {
+      const record = this.records.find((entry) => entry.id === connectionId);
+      if (record?.pinnedFingerprint !== undefined) evictPinnedAgent(endpoint, record.pinnedFingerprint);
+      this.invalidateProof(connectionId);
+    });
   }
   async ready(): Promise<void> {
     try {
@@ -276,19 +282,19 @@ export class RemoteConnectionManager {
       throw error;
     }
   }
-  async storePeer(record: RemoteConnection, credential: Credential, label?: string): Promise<RemoteConnection> { return this.storeGui(record, credential, label, 'paired'); }
-  private async storeGui(record: RemoteConnection, credential: Credential, label?: string, reason?: RemoteConnectionChange['reason']): Promise<RemoteConnection> {
+  async storePeer(record: RemoteConnection, credential: Credential, label?: string, ccpTunnelProcess?: CcpTunnelProcess): Promise<RemoteConnection> { return this.storeGui(record, credential, label, 'paired', ccpTunnelProcess); }
+  private async storeGui(record: RemoteConnection, credential: Credential, label?: string, reason?: RemoteConnectionChange['reason'], ccpTunnelProcess?: CcpTunnelProcess): Promise<RemoteConnection> {
     return this.serialize(async () => {
       let existing = this.records.find((entry) => entry.purposes.includes('gui') && sameIdentity(entry.target, record.target));
       if (existing === undefined) {
         for (const entry of this.records) {
-          if (entry.transport === undefined && sameIdentity(entry.target, record.target) && await this.hasPeerCredential(entry)) {
+          if ((entry.transport === undefined || entry.transport.kind === 'ccp_tunnel') && sameIdentity(entry.target, record.target) && await this.hasPeerCredential(entry)) {
             existing = entry;
             break;
           }
         }
       }
-      if (existing?.pinnedFingerprint !== undefined && record.transport === undefined && record.pinnedFingerprint === undefined) throw new AdmissionError(409, 'connection_requires_tls');
+      if (existing?.pinnedFingerprint !== undefined && (record.transport === undefined || record.transport.kind === 'ccp_tunnel') && record.pinnedFingerprint === undefined) throw new AdmissionError(409, 'connection_requires_tls');
       const saved = existing === undefined ? record : { ...record, id: existing.id, credentialRef: existing.credentialRef,
         label: label?.trim() || existing.label, backgroundSummary: existing.purposes.includes('gui') === record.purposes.includes('gui') ? existing.backgroundSummary : record.backgroundSummary };
       const ref = { connectionId: saved.credentialRef, purpose: 'gui' } as const;
@@ -318,6 +324,12 @@ export class RemoteConnectionManager {
           catch { throw new PairingBridgeRetirementError(); }
         }
       } finally { this.replacing.delete(saved.id); }
+      if (ccpTunnelProcess !== undefined && saved.transport?.kind === 'ccp_tunnel') {
+        this.ccpTunnel?.adoptTunnel(
+          { id: saved.id, target: saved.target, pinnedFingerprint: saved.pinnedFingerprint, transport: saved.transport },
+          ccpTunnelProcess,
+        );
+      }
       for (const listener of this.changeListeners) listener({ reason: reason ?? (existing === undefined ? 'created' : 'updated'), connection_id: saved.id });
       return { ...saved };
     });
@@ -345,7 +357,7 @@ export class RemoteConnectionManager {
   }
   async retry(id: string): Promise<RemoteConnection> {
     const record = this.get(id); if (!record.enabled) throw new AdmissionError(403, 'connection_disabled');
-    if (!record.purposes.includes('gui') && (record.transport !== undefined || !(await this.hasPeerCredential(record)))) throw new AdmissionError(403, 'gui_connection_required');
+    if (!record.purposes.includes('gui') && ((record.transport !== undefined && record.transport.kind !== 'ccp_tunnel') || !(await this.hasPeerCredential(record)))) throw new AdmissionError(403, 'gui_connection_required');
     const epoch = this.credentialEpoch(id);
     this.stop(id, 'gui'); delete record.lastError;
     const lease = this.lease(id, AbortSignal.timeout(15000));
@@ -388,20 +400,35 @@ export class RemoteConnectionManager {
     this.requireEpoch(id, epoch); this.resolveTransport(id); signal.throwIfAborted();
     const leases = (purpose === 'gui' ? this.active : this.bridgeActive).get(id);
     if (![...leases ?? []].some((lease) => lease.signal === signal)) throw new AdmissionError(409, 'connection_lease_required');
+    const transportSpec = record.transport;
+    if (transportSpec?.kind === 'ccp_tunnel') {
+      if (this.ccpTunnel === undefined) throw new AdmissionError(503, 'ccp_tunnel_transport_unavailable');
+      const resolved = await this.ccpTunnel.acquire(
+        { id: record.id, target: record.target, pinnedFingerprint: record.pinnedFingerprint, transport: transportSpec },
+        signal,
+      );
+      signal.throwIfAborted();
+      if (!sameIdentity(resolved.target, record.target)) {
+        const err = new AdmissionError(409, 'identity_changed');
+        this.failed(id, err, epoch);
+        throw err;
+      }
+      return { id, endpoint: validateEndpoint(resolved.endpoint), target: { ...resolved.target }, pinnedFingerprint: record.pinnedFingerprint };
+    }
     const pending = this.transports.get(signal) ?? new Map<string, Promise<ConnectionTransport>>(); this.transports.set(signal, pending);
     const key = `${id}:${purpose}`;
     let acquired = pending.get(key);
     if (acquired === undefined) {
       acquired = (async () => {
-        if (record.transport === undefined || record.transport.kind === 'peer_socket') return this.resolveTransport(id);
+        if (transportSpec === undefined || transportSpec.kind === 'peer_socket') return this.resolveTransport(id);
         try {
           let transport: Omit<ConnectionTransport, 'id'>;
-          if (record.transport.kind === 'local_space') {
+          if (transportSpec.kind === 'local_space') {
             if (this.resolveLocal === undefined) throw new AdmissionError(503, 'local_space_transport_unavailable');
-            transport = await this.resolveLocal(record.transport.localSpaceId, record.target, signal);
+            transport = await this.resolveLocal(transportSpec.localSpaceId, record.target, signal);
           } else {
             if (this.ssh === undefined) throw new AdmissionError(503, 'ssh_transport_unavailable');
-            transport = await this.ssh.acquire({ id: record.id, target: record.target, transport: record.transport }, signal, purpose);
+            transport = await this.ssh.acquire({ id: record.id, target: record.target, transport: transportSpec }, signal, purpose);
           }
           signal.throwIfAborted();
           if (!sameIdentity(transport.target, record.target)) throw new AdmissionError(409, 'identity_changed');
@@ -439,6 +466,7 @@ export class RemoteConnectionManager {
     this.failureStrikes.clear();
     closePinnedAgents();
     await this.ssh?.close();
+    await this.ccpTunnel?.close();
     await this.serialize(async () => {
       if (this.summaryRevision <= this.persistedSummaryRevision) return;
       const revision = this.summaryRevision;
@@ -466,6 +494,7 @@ export class RemoteConnectionManager {
       const set = leases.get(id); leases.delete(id); for (const controller of set ?? []) controller.abort(new AdmissionError(409, 'connection_stopped'));
     }
     this.ssh?.stop(id, purpose);
+    if (purpose === undefined) this.ccpTunnel?.stop(id);
   }
   notePeerSuccess(id: string, epoch = this.credentialEpoch(id)): void {
     if (epoch !== this.credentialEpoch(id) || this.replacing.has(id) || this.stopped) return;
@@ -531,7 +560,7 @@ export class RemoteConnectionManager {
     const record = this.get(id); const epoch = this.credentialEpoch(id);
     this.requireEpoch(id, epoch);
     if (!record.enabled || record.state === 'identity_changed') throw new AdmissionError(409, record.lastError ?? 'connection_paused');
-    if (!record.purposes.includes('gui') && record.transport !== undefined) throw new AdmissionError(403, 'gui_connection_required');
+    if (!record.purposes.includes('gui') && record.transport !== undefined && record.transport.kind !== 'ccp_tunnel') throw new AdmissionError(403, 'gui_connection_required');
     try {
       const transport = await this.acquireTransport(id, signal, 'gui');
       this.requireEpoch(id, epoch);
@@ -676,6 +705,8 @@ export class RemoteConnectionManager {
             || (['sessionCreate', 'fsSearch', 'draftFsSearch'].includes(operation) && refusal.msg === 'peer_workspace_not_registered')
             || (operation === 'approval' && refusal.msg === 'local_owner_required')
             || operation === 'meshInboundExecute'
+            || operation === 'syncFilesExport'
+            || operation === 'syncFilesImport'
           ))
         ) {
           this.notePeerSuccess(id, epoch);
@@ -782,6 +813,7 @@ export class RemoteConnectionManager {
 function descriptorEndpoint(transport: NonNullable<RemoteConnection['transport']>): string {
   if (transport.kind === 'ssh') return sshEndpoint(transport.profile);
   if (transport.kind === 'peer_socket') return `peer://${encodeURIComponent(transport.grantId)}`;
+  if (transport.kind === 'ccp_tunnel') return `ccp://${encodeURIComponent(transport.runtimeId)}`;
   return `space://${encodeURIComponent(transport.localSpaceId)}`;
 }
 function sshEndpoint(profile: SshRemoteProfile): string { return `ssh://${encodeURIComponent(profile.id)}`; }

@@ -9,6 +9,12 @@ import type {
   SyncCredentialMergeInput,
   SyncCredentialMergeReceipt,
   SyncCredentialSealInput,
+  SyncFilesExportInput,
+  SyncFilesExportResult,
+  SyncFilesImportInput,
+  SyncFilesTransferReceipt,
+  SyncPeerFilesPullInput,
+  SyncPeerFilesPushInput,
   SyncPeerTransferInput,
   SyncProjectIdentityResolveInput,
 } from '@kiki/protocol';
@@ -28,4 +34,8 @@ export interface SyncFacade {
   importBundle(bundle: SyncBundleImportInput): Promise<SyncBundleImportReceipt>;
   pushToPeer(peerId: string, input?: Partial<SyncPeerTransferInput>, options?: HttpRestRequestOptions): Promise<SyncBundleImportReceipt>;
   pullFromPeer(peerId: string, input?: Partial<SyncPeerTransferInput>, options?: HttpRestRequestOptions): Promise<SyncBundleImportReceipt>;
+  exportFiles(input: SyncFilesExportInput, options?: HttpRestRequestOptions): Promise<SyncFilesExportResult>;
+  importFiles(input: SyncFilesImportInput, options?: HttpRestRequestOptions): Promise<SyncFilesTransferReceipt>;
+  pullFilesFromPeer(peerId: string, input: SyncPeerFilesPullInput, options?: HttpRestRequestOptions): Promise<SyncFilesTransferReceipt>;
+  pushFilesToPeer(peerId: string, input: SyncPeerFilesPushInput, options?: HttpRestRequestOptions): Promise<SyncFilesTransferReceipt>;
 }

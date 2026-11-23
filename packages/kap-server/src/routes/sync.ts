@@ -1,18 +1,39 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   syncBundleExportInputSchema,
   syncBundleImportInputSchema,
   syncCredentialMergeInputSchema,
   syncCredentialSealInputSchema,
+  syncFilesExportInputSchema,
+  syncFilesImportInputSchema,
+  syncPeerFilesPullInputSchema,
+  syncPeerFilesPushInputSchema,
   syncPeerTransferInputSchema,
   syncProjectIdentityResolveInputSchema,
 } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { AdmissionError } from '../services/connections/admission';
+import { peerAudience } from '../services/connections/audience';
+import {
+  SyncArchiveInvalidError,
+  SyncPathForbiddenError,
+  SyncPathNotFoundError,
+} from '../services/sync/fileSync';
 import type { SyncService } from '../services/sync/syncService';
 
-/** Registers REST endpoints for device X25519 keys, per-entry credential envelopes, project identity resolution, portable config/memory/skill bundles, and peer push/pull sync. */
+const SYNC_FILES_BODY_LIMIT_BYTES = 96 * 1024 * 1024;
+
+function requireTrustedFileSyncPeer(req: FastifyRequest): void {
+  const peer = peerAudience(req);
+  if (peer === undefined) return;
+  if (peer.trustTier !== 'trusted_personal' || peer.meshCapabilities?.includes('file_sync') !== true) {
+    throw new AdmissionError(403, 'mesh_capability_denied');
+  }
+}
+
+/** Registers REST endpoints for device X25519 keys, per-entry credential envelopes, project identity resolution, portable config/memory/skill bundles, peer push/pull sync, and bounded file/directory transfer. */
 export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): void {
   const handle = async <T>(
     requestId: string,
@@ -22,11 +43,19 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
     try {
       return reply.send(okEnvelope(await work(), requestId));
     } catch (error) {
-      if (error instanceof z.ZodError) {
+      if (error instanceof z.ZodError || error instanceof SyncArchiveInvalidError) {
         reply.code(400);
         return reply.send(errEnvelope(40001, error.message, requestId));
       }
-      if (error instanceof Error && error.message.includes('not found')) {
+      if (error instanceof SyncPathForbiddenError) {
+        reply.code(403);
+        return reply.send(errEnvelope(40301, error.message, requestId));
+      }
+      if (error instanceof AdmissionError) {
+        reply.code(error.status);
+        return reply.send(errEnvelope(error.reason === 'mesh_capability_denied' ? 40302 : 40101, error.reason, requestId));
+      }
+      if (error instanceof SyncPathNotFoundError || (error instanceof Error && error.message.includes('not found'))) {
         reply.code(404);
         return reply.send(errEnvelope(40401, error.message, requestId));
       }
@@ -98,6 +127,38 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
       sync.pullFromPeer(
         (req.params as { peerId: string }).peerId,
         syncPeerTransferInputSchema.parse(req.body ?? {}),
+      ),
+    ),
+  );
+
+  app.post('/api/sync/files::export', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, async () => {
+      requireTrustedFileSyncPeer(req);
+      return sync.exportFiles(syncFilesExportInputSchema.parse(req.body));
+    }),
+  );
+
+  app.post('/api/sync/files::import', { bodyLimit: SYNC_FILES_BODY_LIMIT_BYTES }, async (req, reply) =>
+    handle(req.id, reply, async () => {
+      requireTrustedFileSyncPeer(req);
+      return sync.importFiles(syncFilesImportInputSchema.parse(req.body));
+    }),
+  );
+
+  app.post('/api/sync/peers/:peerId/files::pull', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.pullFilesFromPeer(
+        (req.params as { peerId: string }).peerId,
+        syncPeerFilesPullInputSchema.parse(req.body),
+      ),
+    ),
+  );
+
+  app.post('/api/sync/peers/:peerId/files::push', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.pushFilesToPeer(
+        (req.params as { peerId: string }).peerId,
+        syncPeerFilesPushInputSchema.parse(req.body),
       ),
     ),
   );

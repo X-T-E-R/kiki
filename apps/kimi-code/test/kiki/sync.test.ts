@@ -1,8 +1,34 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
-import type { ConnectionPairRequest, PairCodeCreateInput, PairCodeCreateOutput, RemoteConnection, SyncBundleImportReceipt, SyncPeerTransferInput } from '@kiki/protocol';
+import type {
+  BridgePolicy,
+  ConnectionPairRequest,
+  PairCodeCreateInput,
+  PairCodeCreateOutput,
+  RemoteConnection,
+  SyncBundleImportReceipt,
+  SyncFilesExportInput,
+  SyncFilesImportInput,
+  SyncPeerFilesPullInput,
+  SyncPeerFilesPushInput,
+  SyncPeerTransferInput,
+} from '@kiki/protocol';
 import { registerSyncCommand } from '../../src/kiki/sync';
 import { registerConnectionsCommand } from '../../src/kiki/connections';
+import { registerThreadBridgesCommand } from '../../src/kiki/thread-bridges';
+import type { RemoteCommandRunner } from '../../src/kiki/remote-transport';
+
+const STUB_SERVER = {
+  url: 'http://127.0.0.1:41000',
+  token: 'tok',
+  homeDir: '/tmp/home',
+  port: 41000,
+  started: false,
+  serverId: 'srv-1',
+};
 
 function createReceipt(overrides: Partial<SyncBundleImportReceipt> = {}): SyncBundleImportReceipt {
   return {
@@ -25,7 +51,7 @@ describe('kiki sync CLI', () => {
     const close = vi.fn(async () => undefined);
     const program = new Command().exitOverride();
     registerSyncCommand(program, {
-      ensureServer: async () => ({ url: 'http://127.0.0.1:41000', token: 'tok', homeDir: '/tmp/home', port: 41000, started: false }),
+      ensureServer: async () => STUB_SERVER,
       createKlient: (() => ({
         rest: {
           sync: {
@@ -83,7 +109,7 @@ describe('kiki sync CLI', () => {
     const stdout: string[] = [];
     const program = new Command().exitOverride();
     registerSyncCommand(program, {
-      ensureServer: async () => ({ url: 'http://127.0.0.1:41000', token: 'tok', homeDir: '/tmp/home', port: 41000, started: false }),
+      ensureServer: async () => STUB_SERVER,
       createKlient: (() => ({
         rest: {
           sync: {
@@ -147,15 +173,17 @@ describe('kiki pair CLI enhancements', () => {
       label: 'colab',
       endpoint: 'https://127.0.0.1:59123',
       target: { homeId: 'home-b', hostId: 'host-b', protocol: 1 },
+      credentialRef: 'cred-1',
       enabled: true,
       backgroundSummary: false,
       state: 'online',
       purposes: ['bridge'],
+      activeLeases: 0,
       pinnedFingerprint: sampleCode.tlsFingerprint,
       trustTier: 'trusted_personal',
     };
     const deps = {
-      ensureServer: async () => ({ url: 'http://127.0.0.1:41000', token: 'tok', homeDir: '/tmp/home', port: 41000, started: false }),
+      ensureServer: async () => STUB_SERVER,
       createKlient: (() => ({
         rest: {
           connections: {
@@ -202,5 +230,168 @@ describe('kiki pair CLI enhancements', () => {
       backgroundSummary: false,
     });
     expect(JSON.parse(stdout.join(''))).toMatchObject({ id: 'conn-1', purposes: ['bridge'] });
+
+    stdout.length = 0;
+    const p4 = new Command().exitOverride();
+    registerConnectionsCommand(p4, deps);
+    await p4.parseAsync(['node', 'kiki', 'pair', 'ccp:rt-build-1', '--bridge-only', '--trusted', '--json']);
+    expect(pairCalls[1]).toMatchObject({
+      endpoint: 'ccp:rt-build-1',
+      includeGui: false,
+      trusted: true,
+      backgroundSummary: false,
+    });
+    expect(pairCalls[1]?.code).toBeUndefined();
+  });
+});
+
+describe('kiki sync files and bridges approve CLI', () => {
+  it('supports kiki sync files pull/push for paired peers and ccp:<runtimeId> targets with secret path guards', async () => {
+    const peerPulls: Array<{ peerId: string; input: SyncPeerFilesPullInput }> = [];
+    const peerPushes: Array<{ peerId: string; input: SyncPeerFilesPushInput }> = [];
+    const importedFiles: SyncFilesImportInput[] = [];
+    const exportedFiles: SyncFilesExportInput[] = [];
+    const remoteInvocations: Array<{ command: string; args: readonly string[] }> = [];
+    const stdout: string[] = [];
+
+    const runRemote: RemoteCommandRunner = async (command, args, _inputFile, outputFile) => {
+      remoteInvocations.push({ command, args });
+      if (args[0] === 'ssh' && args[1] === 'prepare') {
+        return JSON.stringify({ id: 'ssh_abc123' });
+      }
+      if (outputFile !== undefined) {
+        const framed = Buffer.concat([Buffer.from('KIKI-DIR\n'), Buffer.from('fake-gzip-bytes')]);
+        await writeFile(outputFile, framed);
+      }
+      return '';
+    };
+
+    const makeProgram = () => {
+      const program = new Command().exitOverride();
+      registerSyncCommand(program, {
+        ensureServer: async () => STUB_SERVER,
+        runRemote,
+        createKlient: (() => ({
+          rest: {
+            sync: {
+              pullFilesFromPeer: async (peerId: string, input: SyncPeerFilesPullInput) => {
+                peerPulls.push({ peerId, input });
+                return { kind: 'directory' as const, destinationPath: input.localPath, fileCount: 2, totalBytes: 512, files: ['a.so', 'b.json'] };
+              },
+              pushFilesToPeer: async (peerId: string, input: SyncPeerFilesPushInput) => {
+                peerPushes.push({ peerId, input });
+                return { kind: 'file' as const, destinationPath: input.remotePath, fileCount: 1, totalBytes: 64, files: ['plugin.clap'] };
+              },
+              importFiles: async (input: SyncFilesImportInput) => {
+                importedFiles.push(input);
+                return { kind: input.kind, destinationPath: input.destinationPath, fileCount: 3, totalBytes: 1024, files: ['Contents/Info.plist'] };
+              },
+              exportFiles: async (input: SyncFilesExportInput) => {
+                exportedFiles.push(input);
+                return { kind: 'directory' as const, rootName: 'dist', fileCount: 2, totalBytes: 256, archiveBase64: Buffer.from('tar-gz-data').toString('base64') };
+              },
+            },
+          },
+          close: async () => undefined,
+        })) as unknown as typeof import('@kiki/klient/http').createKlient,
+        stdout: { write: (chunk: string) => stdout.push(chunk) },
+      });
+      return program;
+    };
+
+    await makeProgram().parseAsync(['node', 'kiki', 'sync', 'files', 'pull', 'peer-gpu', '/content/MyPlugin.vst3', '/tmp/MyPlugin.vst3', '--json']);
+    expect(peerPulls).toHaveLength(1);
+    expect(peerPulls[0]?.peerId).toBe('peer-gpu');
+    expect(peerPulls[0]?.input.remotePath).toBe('/content/MyPlugin.vst3');
+    expect(JSON.parse(stdout.join(''))).toMatchObject({ kind: 'directory', fileCount: 2 });
+
+    stdout.length = 0;
+    await makeProgram().parseAsync(['node', 'kiki', 'sync', 'files', 'push', 'peer-gpu', '/tmp/plugin.clap', '/content/plugin.clap', '--json']);
+    expect(peerPushes).toHaveLength(1);
+    expect(peerPushes[0]?.input.remotePath).toBe('/content/plugin.clap');
+
+    stdout.length = 0;
+    await makeProgram().parseAsync(['node', 'kiki', 'sync', 'files', 'pull', 'ccp:rt-build-1', '/content/build/MyPlugin.vst3', '/tmp/out/MyPlugin.vst3', '--json']);
+    expect(importedFiles).toHaveLength(1);
+    expect(importedFiles[0]?.kind).toBe('directory');
+    expect(Buffer.from(importedFiles[0]!.archiveBase64, 'base64').toString('utf8')).toBe('fake-gzip-bytes');
+
+    stdout.length = 0;
+    await makeProgram().parseAsync(['node', 'kiki', 'sync', 'files', 'push', 'ccp:rt-build-1', '/tmp/dist', '/content/dist', '--json']);
+    expect(exportedFiles).toHaveLength(1);
+    expect(remoteInvocations.some((entry) => entry.command === 'ccp' && entry.args[1] === 'connect')).toBe(true);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({ kind: 'directory', destinationPath: '/content/dist', fileCount: 2 });
+
+    await expect(
+      makeProgram().parseAsync(['node', 'kiki', 'sync', 'files', 'pull', 'ccp:rt-build-1', '~/.ssh/id_ed25519', '/tmp/stolen']),
+    ).rejects.toThrow('forbidden secret location');
+  });
+
+  it('passes permissionCeiling yolo on kiki bridges approve --allow-yolo', async () => {
+    const approvedPolicies: BridgePolicy[] = [];
+    const stdout: string[] = [];
+    const program = new Command().exitOverride();
+    registerThreadBridgesCommand(program, {
+      ensureServer: async () => STUB_SERVER,
+      createKlient: (() => ({
+        rest: {
+          connections: {
+            inbound: async () => ({
+              identity: { homeId: 'home-target', hostId: 'host-target', protocol: 1 },
+            }),
+          },
+          threadBridges: {
+            approve: async (policy: BridgePolicy) => {
+              approvedPolicies.push(policy);
+              return {
+                grant: {
+                  ...policy,
+                  id: 'grant-1',
+                  revision: 1,
+                  enabled: true,
+                  createdAt: Date.now(),
+                },
+                credential: 'cred-secret',
+              };
+            },
+          },
+        },
+        close: async () => undefined,
+      })) as unknown as typeof import('@kiki/klient/http').createKlient,
+      stdout: { write: (chunk: string) => stdout.push(chunk) },
+    });
+
+    const scratch = await mkdtemp(join(tmpdir(), 'kiki-bridge-approve-'));
+    const policyFile = join(scratch, 'policy.json');
+    await writeFile(
+      policyFile,
+      JSON.stringify({
+        source: { homeId: '11111111-1111-4111-8111-111111111111', hostId: 'host-a', protocol: 1 },
+        target: { homeId: '22222222-2222-4222-8222-222222222222', hostId: 'host-target', protocol: 1 },
+        sourceScope: { workspaceId: '*' },
+        targetScope: { workspaceId: '*' },
+        operations: ['read', 'send', 'wait', 'wake', 'create'],
+        expiresAt: Date.now() + 60_000,
+        pendingLimit: 20,
+        messagesPerMinute: 60,
+        location: 'network',
+        label: 'trusted-cli-bridge',
+      }),
+    );
+    try {
+      await program.parseAsync([
+        'node',
+        'kiki',
+        'bridges',
+        'approve',
+        '--input',
+        policyFile,
+        '--allow-yolo',
+      ]);
+      expect(approvedPolicies).toHaveLength(1);
+      expect(approvedPolicies[0]?.permissionCeiling).toBe('yolo');
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
   });
 });

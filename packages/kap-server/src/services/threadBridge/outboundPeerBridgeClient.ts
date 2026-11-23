@@ -221,7 +221,7 @@ function rawDataToString(data: RawData): string {
 function isEligiblePeerBridgeRecord(record: RemoteConnection): boolean {
   return (
     record.enabled &&
-    record.transport === undefined &&
+    (record.transport === undefined || record.transport.kind === 'ccp_tunnel') &&
     record.purposes.includes('bridge') &&
     record.state !== 'disabled' &&
     record.state !== 'identity_changed'

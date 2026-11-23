@@ -133,6 +133,7 @@ import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpa
 import { OutboundPeerBridgeClient } from './services/threadBridge/outboundPeerBridgeClient';
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
+import { CcpTunnelConnector } from './services/ccpTunnel/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { registerMeshRoutes } from './routes/mesh';
 import { registerSyncRoutes } from './routes/sync';
@@ -152,6 +153,7 @@ import {
 } from './services/mesh/meshService';
 import { createInboundMeshExecutor } from './services/mesh/inboundExecute';
 import { SyncService } from './services/sync/syncService';
+import { SyncPathForbiddenError } from './services/sync/fileSync';
 import { createPluginPanelStreamServer, PLUGIN_PANEL_STREAM_PATH } from './routes/pluginPanelStreams';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
 import { loadPeerTlsIdentity } from './services/connections/tlsIdentity';
@@ -267,6 +269,7 @@ export interface ServerStartOptions {
   readonly localOwnerToken?: string;
   readonly disableAuth?: boolean;
   readonly sshRemoteConnector?: SshRemoteConnector;
+  readonly ccpTunnelConnector?: CcpTunnelConnector;
   /**
    * Custom browser tab title for this web UI instance (the CLI's
    * `--web-title`). Surfaced as `web_title` in `GET /api/meta` so the web
@@ -525,7 +528,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const serverVersion = opts.serverVersion ?? getServerVersion();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info', async: true });
   const sshRemote = opts.sshRemoteConnector ?? new SshRemoteConnector({ serverVersion });
-  const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger);
+  const ccpTunnel = opts.ccpTunnelConnector ?? new CcpTunnelConnector();
+  const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger, ccpTunnel);
   await Promise.all([admission.ready(), remoteConnections.ready()]);
   const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
   const buildChannel = opts.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'];
@@ -1385,7 +1389,14 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   };
   const forwardPeerJson = async <T>(
     peerId: string,
-    operation: 'meshInboundExecute' | 'syncDeviceKey' | 'syncBundleExport' | 'syncBundleImport' | 'syncCredentialsMerge',
+    operation:
+      | 'meshInboundExecute'
+      | 'syncDeviceKey'
+      | 'syncBundleExport'
+      | 'syncBundleImport'
+      | 'syncCredentialsMerge'
+      | 'syncFilesExport'
+      | 'syncFilesImport',
     body?: unknown,
   ): Promise<{ readonly status: number; readonly envelope: { readonly code?: number; readonly msg?: string; readonly data?: T } }> => {
     const record = resolveOutboundConnection(peerId);
@@ -1395,7 +1406,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const lease = remoteConnections.lease(record.id);
     try {
       const response = await remoteConnections.forward(record.id, { operation, body }, lease.signal);
-      const parsed = (await readBoundedJsonBody(response, 64 * 1024 * 1024, lease.signal).catch(() => ({}))) as {
+      const limitBytes = operation === 'syncFilesExport' || operation === 'syncFilesImport' ? 96 * 1024 * 1024 : 64 * 1024 * 1024;
+      const parsed = (await readBoundedJsonBody(response, limitBytes, lease.signal).catch(() => ({}))) as {
         readonly code?: number;
         readonly msg?: string;
         readonly data?: T;
@@ -1446,6 +1458,40 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         );
         if (status >= 400 || envelope.code !== 0 || envelope.data === undefined) {
           throw new Error(envelope.msg ?? `Peer sync pull failed (HTTP ${status})`);
+        }
+        return envelope.data;
+      },
+      exportPeerFiles: async (peerId, input) => {
+        const { status, envelope } = await forwardPeerJson<import('@kiki/protocol').SyncFilesExportResult>(
+          peerId,
+          'syncFilesExport',
+          input,
+        );
+        if (status >= 400 || envelope.code !== 0 || envelope.data === undefined) {
+          if (status === 403 && envelope.msg === 'mesh_capability_denied') {
+            throw new AdmissionError(403, 'mesh_capability_denied');
+          }
+          if (status === 403 && envelope.code === 40301) {
+            throw new SyncPathForbiddenError(envelope.msg ?? 'Peer file export forbidden');
+          }
+          throw new Error(envelope.msg ?? `Peer file export failed (HTTP ${status})`);
+        }
+        return envelope.data;
+      },
+      importPeerFiles: async (peerId, input) => {
+        const { status, envelope } = await forwardPeerJson<import('@kiki/protocol').SyncFilesTransferReceipt>(
+          peerId,
+          'syncFilesImport',
+          input,
+        );
+        if (status >= 400 || envelope.code !== 0 || envelope.data === undefined) {
+          if (status === 403 && envelope.msg === 'mesh_capability_denied') {
+            throw new AdmissionError(403, 'mesh_capability_denied');
+          }
+          if (status === 403 && envelope.code === 40301) {
+            throw new SyncPathForbiddenError(envelope.msg ?? 'Peer file import forbidden');
+          }
+          throw new Error(envelope.msg ?? `Peer file import failed (HTTP ${status})`);
         }
         return envelope.data;
       },

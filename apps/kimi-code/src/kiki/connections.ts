@@ -81,10 +81,13 @@ export function registerConnectionsCommand(program: Command, dependencies: Conne
           stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n${loopbackLine}${fingerprintLine}`);
           return;
         }
-        const parsedUri = endpoint !== undefined && code === undefined ? parsePairingUri(endpoint) : undefined;
+        const isCcpTarget = endpoint !== undefined && endpoint.startsWith('ccp:');
+        const parsedUri = endpoint !== undefined && code === undefined && !isCcpTarget ? parsePairingUri(endpoint) : undefined;
         const targetEndpoint = parsedUri?.endpoint ?? endpoint;
         const targetCode = parsedUri?.code ?? code;
-        if (targetEndpoint === undefined || targetCode === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
+        if (targetEndpoint === undefined || (targetCode === undefined && !isCcpTarget)) {
+          throw new Error('Usage: kiki pair <endpoint|ccp:runtimeId> [code]');
+        }
         const bridgeOnly = options.bridgeOnly === true;
         const record = await connections.pair(connectionPairInputSchema.parse({
           endpoint: targetEndpoint,
@@ -92,6 +95,7 @@ export function registerConnectionsCommand(program: Command, dependencies: Conne
           label: options.label,
           includeGui: bridgeOnly ? false : undefined,
           backgroundSummary: !bridgeOnly,
+          trusted: options.trusted === true ? true : undefined,
           fingerprint: options.fingerprint ?? parsedUri?.fingerprint,
         }));
         if (options.json) {
