@@ -103,9 +103,12 @@ interface TailPreparation {
   replay?: { head: Head; end: number; turnId: number };
 }
 
-const SCAN_BYTES = 4 * 1024 * 1024;
-const SCAN_RECORDS = 10_000;
-const YIELD_BUDGET_MS = 4;
+const SCAN_BYTES = 2 * 1024 * 1024;
+const SCAN_RECORDS = 8_192;
+const SCAN_COMMIT_OPS = 128;
+const COMMIT_BATCH_OPS = 64;
+const COMMIT_BATCH_BYTES = 1024 * 1024;
+const YIELD_BUDGET_MS = 2;
 const SEGMENT_UNITS = 16_384;
 const INLINE_UNITS = 4096;
 const PREVIEW_UNITS = 512;
@@ -125,6 +128,7 @@ async function yieldIfTimeBudgetExceeded(budget: YieldBudget, signal?: AbortSign
 export class ThreadTurnStore implements IThreadTurnStore {
   declare readonly _serviceBrand: undefined;
   private readonly operations = new Map<string, Promise<unknown>>();
+  private preparationTail: Promise<void> = Promise.resolve();
 
   constructor(
     @IAppendLogStore private readonly logs: IAppendLogStore,
@@ -177,50 +181,57 @@ export class ThreadTurnStore implements IThreadTurnStore {
           if (!prepared.ready) return { turns: [], source: { ...selected, prepared: prepared.offset }, preparing: true, hasMore: true };
         }
         if (!useTail && head.covered < selected.watermark) {
-          const operations = new Map<string, WriteOp>();
-          const next = structuredClone(head);
-          const startedAt = Date.now();
-          const yieldBudget = createYieldBudget();
-          let records = 0;
-          let consumed = 0;
-          for await (const line of lines(pinned, next.offset, selected.watermark, signal, yieldBudget)) {
-            signal?.throwIfAborted();
-            const record = await this.decode(line, scope, signal);
-            if (record === undefined && line.unterminated) break;
-            records++;
-            consumed += line.end - line.start;
-            if (record !== undefined) this.fold(collection, next, record, line, operations);
-            next.offset = line.end;
-            if (line.bytes.byteLength > SCAN_BYTES) {
-              this.log.warn('Thread history record exceeds preparation byte slice', {
-                record_bytes: line.bytes.byteLength, cancellation_check_bytes: 64 * 1024, duration_ms: Date.now() - startedAt,
-              });
+          const baseHead = head;
+          head = await this.withPreparationSlot(signal, async () => {
+            const operations = new Map<string, WriteOp>();
+            const next = structuredClone(baseHead);
+            const startedAt = Date.now();
+            const yieldBudget = createYieldBudget();
+            let records = 0;
+            let consumed = 0;
+            const hitSliceBudget = (): boolean =>
+              records >= SCAN_RECORDS || consumed >= SCAN_BYTES || operations.size >= SCAN_COMMIT_OPS;
+            for await (const line of lines(pinned, next.offset, selected.watermark, signal, yieldBudget)) {
+              signal?.throwIfAborted();
+              const record = await this.decode(line, scope, signal);
+              if (record === undefined && line.unterminated) break;
+              records++;
+              consumed += line.end - line.start;
+              if (record !== undefined) this.fold(collection, next, record, line, operations);
+              next.offset = line.end;
+              if (line.bytes.byteLength > SCAN_BYTES) {
+                this.log.warn('Thread history record exceeds preparation byte slice', {
+                  record_bytes: line.bytes.byteLength, cancellation_check_bytes: 64 * 1024, duration_ms: Date.now() - startedAt,
+                });
+              }
+              await yieldIfTimeBudgetExceeded(yieldBudget, signal);
+              if (hitSliceBudget()) break;
             }
-            await yieldIfTimeBudgetExceeded(yieldBudget, signal);
-            if (records >= SCAN_RECORDS || consumed >= SCAN_BYTES) break;
-          }
-          if (next.offset >= selected.watermark || consumed < SCAN_BYTES && records < SCAN_RECORDS) {
-            next.covered = Math.max(next.covered, selected.watermark);
-          }
-          const scannedAt = Date.now();
-          next.size = size;
-          next.mtime = mtime;
-          next.boundary = await proof(pinned, next.offset, signal);
-          await this.validate(scope, pinned, next, selected, signal);
-          signal?.throwIfAborted();
-          const validatedAt = Date.now();
-          const ops: WriteOp[] = [...operations.values(), { kind: 'put', collection, key: 'head', value: next }];
-          if (this.query.batchIf !== undefined) {
-            if (!await this.query.batchIf([{ collection, key: 'head', value: expectedHead }], ops)) changed();
-          } else await this.query.batch(ops);
-          head = next;
-          const committedAt = Date.now();
-          this.log.info('Thread history preparation slice', {
-            records_count: records, source_bytes: consumed, source_offset: head.offset,
-            source_watermark: selected.watermark, duration_ms: committedAt - startedAt,
-            scan_duration_ms: scannedAt - startedAt,
-            validation_duration_ms: validatedAt - scannedAt,
-            projection_commit_duration_ms: committedAt - validatedAt,
+            if (next.offset >= selected.watermark || !hitSliceBudget()) {
+              next.covered = Math.max(next.covered, selected.watermark);
+            }
+            const scannedAt = Date.now();
+            next.size = size;
+            next.mtime = mtime;
+            next.boundary = await proof(pinned, next.offset, signal);
+            await this.validate(scope, pinned, next, selected, signal);
+            signal?.throwIfAborted();
+            const validatedAt = Date.now();
+            await this.commitProjectionOps(
+              [{ collection, key: 'head', value: expectedHead }],
+              operations,
+              [{ kind: 'put', collection, key: 'head', value: next }],
+              signal,
+            );
+            const committedAt = Date.now();
+            this.log.info('Thread history preparation slice', {
+              records_count: records, source_bytes: consumed, source_offset: next.offset,
+              source_watermark: selected.watermark, duration_ms: committedAt - startedAt,
+              scan_duration_ms: scannedAt - startedAt,
+              validation_duration_ms: validatedAt - scannedAt,
+              projection_commit_duration_ms: committedAt - validatedAt,
+            });
+            return next;
           });
         }
         if (!useTail && head.covered < selected.watermark) {
@@ -298,110 +309,184 @@ export class ThreadTurnStore implements IThreadTurnStore {
     }, signal);
     let count = page.items.length;
     if (count > limit || tail.complete) return { ready: true, offset: tail.offset };
-    const startedAt = Date.now();
-    const yieldBudget = createYieldBudget();
-    const operations = new Map<string, WriteOp>();
-    let consumed = 0;
-    let records = 0;
-    const available = (): boolean => consumed < SCAN_BYTES && records < SCAN_RECORDS;
-    while (available() && count <= limit && !tail.complete && !tail.fallback) {
-      if (tail.replay !== undefined) {
-        const replay = tail.replay;
-        for await (const line of lines(pinned, replay.head.offset, replay.end, signal, yieldBudget)) {
+    return this.withPreparationSlot(signal, async () => {
+      const startedAt = Date.now();
+      const yieldBudget = createYieldBudget();
+      const operations = new Map<string, WriteOp>();
+      let consumed = 0;
+      let records = 0;
+      const available = (): boolean =>
+        consumed < SCAN_BYTES && records < SCAN_RECORDS && operations.size < SCAN_COMMIT_OPS;
+      while (available() && count <= limit && !tail.complete && !tail.fallback) {
+        if (tail.replay !== undefined) {
+          const replay = tail.replay;
+          for await (const line of lines(pinned, replay.head.offset, replay.end, signal, yieldBudget)) {
+            signal?.throwIfAborted();
+            const record = await this.decode(line, scope, signal);
+            if (record !== undefined) this.fold(collection, replay.head, record, line, operations);
+            replay.head.offset = line.end;
+            consumed += line.end - line.start;
+            records++;
+            await yieldIfTimeBudgetExceeded(yieldBudget, signal);
+            if (!available()) break;
+          }
+          if (replay.head.offset < replay.end) break;
+          const row = operations.get(`turn:${replay.turnId}`);
+          if (row?.kind === 'put' && replay.turnId < before) count++;
+          tail.floor = Math.min(tail.floor, replay.turnId);
+          tail.replay = undefined;
+          if (tail.offset === 0) tail.complete = true;
+          continue;
+        }
+        let progressed = false;
+        for await (const line of reverseLines(pinned, tail.offset, signal, yieldBudget)) {
           signal?.throwIfAborted();
-          const record = await this.decode(line, scope, signal);
-          if (record !== undefined) this.fold(collection, replay.head, record, line, operations);
-          replay.head.offset = line.end;
+          progressed = true;
+          tail.offset = line.start;
           consumed += line.end - line.start;
           records++;
+          const record = await this.decode(line, scope, signal);
+          if (record?.type === 'turn.ended') {
+            const id = number(record['turnId']);
+            if (id !== undefined && ['completed', 'cancelled', 'failed', 'blocked'].includes(String(record['reason']))) {
+              if (tail.group.terminal !== undefined && tail.group.terminal !== id) tail.group.ambiguous = true;
+              tail.group.terminal = id;
+              tail.group.end = line.end;
+            }
+          } else if (record?.type === 'context.append_loop_event') {
+            const event = record['event'] as LoopRecordedEvent | undefined;
+            const id = event?.type === 'tool.result' || event?.turnId === undefined ? undefined : Number.parseInt(event.turnId, 10);
+            if (id !== undefined && Number.isSafeInteger(id)) {
+              if (tail.group.eventTurn !== undefined && tail.group.eventTurn !== id) tail.group.ambiguous = true;
+              tail.group.eventTurn = id;
+            }
+          } else if (record?.type === 'turn.prompt') {
+            const group = tail.group;
+            const id = group.terminal;
+            tail.group = { ambiguous: false };
+            if (group.ambiguous || number(record['turnId']) === undefined || id !== undefined && (
+              group.eventTurn !== undefined && group.eventTurn !== id || number(record['turnId']) !== id || id >= tail.floor)) {
+              tail.fallback = true;
+            } else if (id !== undefined) {
+              const existing = await this.query.get<TurnRow>(collection, `turn:${id}`, signal);
+              if (existing !== undefined && (existing.promptStart !== line.start || existing.terminalEnd !== group.end)) {
+                tail.fallback = true;
+                break;
+              }
+              const origin = record['origin'] as PromptOrigin | undefined;
+              if (origin !== undefined && origin !== null && publicOrigin(origin) !== undefined) {
+                tail.replay = {
+                  head: { ...head, offset: line.start, nextTurnId: id, cancelled: [], pending: [] },
+                  end: group.end!, turnId: id,
+                };
+              } else tail.floor = id;
+            } else if (tail.floor < Number.MAX_SAFE_INTEGER) tail.fallback = true;
+            await yieldIfTimeBudgetExceeded(yieldBudget, signal);
+            break;
+          }
           await yieldIfTimeBudgetExceeded(yieldBudget, signal);
           if (!available()) break;
         }
-        if (replay.head.offset < replay.end) break;
-        const row = operations.get(`turn:${replay.turnId}`);
-        if (row?.kind === 'put' && replay.turnId < before) count++;
-        tail.floor = Math.min(tail.floor, replay.turnId);
-        tail.replay = undefined;
-        if (tail.offset === 0) tail.complete = true;
-        continue;
-      }
-      let progressed = false;
-      for await (const line of reverseLines(pinned, tail.offset, signal, yieldBudget)) {
-        signal?.throwIfAborted();
-        progressed = true;
-        tail.offset = line.start;
-        consumed += line.end - line.start;
-        records++;
-        const record = await this.decode(line, scope, signal);
-        if (record?.type === 'turn.ended') {
-          const id = number(record['turnId']);
-          if (id !== undefined && ['completed', 'cancelled', 'failed', 'blocked'].includes(String(record['reason']))) {
-            if (tail.group.terminal !== undefined && tail.group.terminal !== id) tail.group.ambiguous = true;
-            tail.group.terminal = id;
-            tail.group.end = line.end;
-          }
-        } else if (record?.type === 'context.append_loop_event') {
-          const event = record['event'] as LoopRecordedEvent | undefined;
-          const id = event?.type === 'tool.result' || event?.turnId === undefined ? undefined : Number.parseInt(event.turnId, 10);
-          if (id !== undefined && Number.isSafeInteger(id)) {
-            if (tail.group.eventTurn !== undefined && tail.group.eventTurn !== id) tail.group.ambiguous = true;
-            tail.group.eventTurn = id;
-          }
-        } else if (record?.type === 'turn.prompt') {
-          const group = tail.group;
-          const id = group.terminal;
-          tail.group = { ambiguous: false };
-          if (group.ambiguous || number(record['turnId']) === undefined || id !== undefined && (
-            group.eventTurn !== undefined && group.eventTurn !== id || number(record['turnId']) !== id || id >= tail.floor)) {
-            tail.fallback = true;
-          } else if (id !== undefined) {
-            const existing = await this.query.get<TurnRow>(collection, `turn:${id}`, signal);
-            if (existing !== undefined && (existing.promptStart !== line.start || existing.terminalEnd !== group.end)) {
-              tail.fallback = true;
-              break;
-            }
-            const origin = record['origin'] as PromptOrigin | undefined;
-            if (origin !== undefined && origin !== null && publicOrigin(origin) !== undefined) {
-              tail.replay = {
-                head: { ...head, offset: line.start, nextTurnId: id, cancelled: [], pending: [] },
-                end: group.end!, turnId: id,
-              };
-            } else tail.floor = id;
-          } else if (tail.floor < Number.MAX_SAFE_INTEGER) tail.fallback = true;
-          await yieldIfTimeBudgetExceeded(yieldBudget, signal);
-          break;
+        if ((!progressed || tail.offset === 0) && tail.replay === undefined) {
+          if (tail.group.terminal !== undefined) tail.fallback = true;
+          else tail.complete = true;
         }
-        await yieldIfTimeBudgetExceeded(yieldBudget, signal);
-        if (!available()) break;
       }
-      if ((!progressed || tail.offset === 0) && tail.replay === undefined) {
-        if (tail.group.terminal !== undefined) tail.fallback = true;
-        else tail.complete = true;
+      const scannedAt = Date.now();
+      tail.boundary = await proof(pinned, tail.offset, signal);
+      const tails = [source.watermark, ...(head.tails ?? []).filter((value) => value !== source.watermark)];
+      const nextHead = { ...head, size: pinned.size ?? 0, mtime, tails: tails.slice(0, 4) };
+      await this.validate(scope, pinned, head, source, signal);
+      signal?.throwIfAborted();
+      const validatedAt = Date.now();
+      const tailOps: WriteOp[] = [
+        ...tails.slice(4).map((value): WriteOp => ({ kind: 'delete', collection, key: `tail:${value}` })),
+        { kind: 'put', collection, key, value: tail },
+        { kind: 'put', collection, key: 'head', value: nextHead },
+      ];
+      await this.commitProjectionOps(
+        [{ collection, key: 'head', value: expectedHead }, { collection, key, value: previous }],
+        operations,
+        tailOps,
+        signal,
+      );
+      const committedAt = Date.now();
+      this.log.info('Thread history tail preparation slice', {
+        records_count: records, source_bytes: consumed, source_offset: tail.offset, source_watermark: source.watermark,
+        duration_ms: committedAt - startedAt, scan_duration_ms: scannedAt - startedAt,
+        validation_duration_ms: validatedAt - scannedAt, projection_commit_duration_ms: committedAt - validatedAt,
+      });
+      return { ready: !tail.fallback && (count > limit || tail.complete), offset: tail.offset };
+    });
+  }
+
+  private async withPreparationSlot<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+    signal?.throwIfAborted();
+    const prior = this.preparationTail;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const nextTail = prior.then(() => gate, () => gate);
+    this.preparationTail = nextTail;
+    try {
+      await (signal === undefined ? prior : abortable(prior, signal));
+      signal?.throwIfAborted();
+      return await work();
+    } finally {
+      try {
+        await yieldToEventLoop();
+      } finally {
+        release();
       }
     }
-    const scannedAt = Date.now();
-    tail.boundary = await proof(pinned, tail.offset, signal);
-    const tails = [source.watermark, ...(head.tails ?? []).filter((value) => value !== source.watermark)];
-    const nextHead = { ...head, size: pinned.size ?? 0, mtime, tails: tails.slice(0, 4) };
-    await this.validate(scope, pinned, head, source, signal);
+  }
+
+  private async commitProjectionOps(
+    conditions: readonly { readonly collection: string; readonly key: string; readonly value: unknown }[],
+    operations: ReadonlyMap<string, WriteOp>,
+    tailOps: readonly WriteOp[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const textWrites: WriteOp[] = [];
+    const turnWrites: WriteOp[] = [];
+    let totalBytes = 0;
+    for (const [opKey, op] of operations) {
+      totalBytes += estimateOpBytes(op);
+      if (opKey.startsWith('text:')) textWrites.push(op);
+      else turnWrites.push(op);
+    }
+    const commitChunk = async (ops: readonly WriteOp[]): Promise<void> => {
+      if (ops.length === 0) return;
+      if (this.query.batchIf !== undefined) {
+        if (!await this.query.batchIf(conditions, ops)) changed();
+      } else await this.query.batch(ops);
+    };
+    const totalCount = textWrites.length + turnWrites.length + tailOps.length;
+    if (totalCount <= COMMIT_BATCH_OPS && totalBytes <= COMMIT_BATCH_BYTES) {
+      await commitChunk([...textWrites, ...turnWrites, ...tailOps]);
+      return;
+    }
+    let chunk: WriteOp[] = [];
+    let chunkBytes = 0;
+    for (const op of textWrites) {
+      signal?.throwIfAborted();
+      const opBytes = estimateOpBytes(op);
+      if (chunk.length > 0 && (chunk.length >= COMMIT_BATCH_OPS || chunkBytes + opBytes > COMMIT_BATCH_BYTES)) {
+        await commitChunk(chunk);
+        await yieldToEventLoop(undefined, { signal });
+        chunk = [];
+        chunkBytes = 0;
+      }
+      chunk.push(op);
+      chunkBytes += opBytes;
+    }
+    if (chunk.length > 0) {
+      await commitChunk(chunk);
+      await yieldToEventLoop(undefined, { signal });
+    }
     signal?.throwIfAborted();
-    const validatedAt = Date.now();
-    const ops: WriteOp[] = [
-      ...operations.values(),
-      ...tails.slice(4).map((value): WriteOp => ({ kind: 'delete', collection, key: `tail:${value}` })),
-      { kind: 'put', collection, key, value: tail },
-      { kind: 'put', collection, key: 'head', value: nextHead },
-    ];
-    if (this.query.batchIf !== undefined) {
-      if (!await this.query.batchIf([{ collection, key: 'head', value: expectedHead }, { collection, key, value: previous }], ops)) changed();
-    } else await this.query.batch(ops);
-    const committedAt = Date.now();
-    this.log.info('Thread history tail preparation slice', {
-      records_count: records, source_bytes: consumed, source_offset: tail.offset, source_watermark: source.watermark,
-      duration_ms: committedAt - startedAt, scan_duration_ms: scannedAt - startedAt,
-      validation_duration_ms: validatedAt - scannedAt, projection_commit_duration_ms: committedAt - validatedAt,
-    });
-    return { ready: !tail.fallback && (count > limit || tail.complete), offset: tail.offset };
+    await commitChunk([...turnWrites, ...tailOps]);
   }
 
   private async validate(scope: string, pinned: PinnedLogicalRead, head: Head, source: ThreadTurnSource, signal?: AbortSignal): Promise<void> {
@@ -597,6 +682,14 @@ function collectionOf(scope: string): string { return `thread-turns-v1:${Buffer.
 function changed(): never { throw new Error2(ErrorCodes.THREAD_CURSOR_INVALID, 'Thread history changed; restart from the first page.'); }
 function contentText(value: unknown): string {
   return Array.isArray(value) ? value.filter((part) => part !== null && typeof part === 'object' && part.type === 'text').map((part) => part.text).join('') : '';
+}
+
+function estimateOpBytes(op: WriteOp): number {
+  if (op.kind === 'put') {
+    const value = op.value as { readonly text?: unknown } | undefined;
+    if (typeof value?.text === 'string') return value.text.length;
+  }
+  return 512;
 }
 
 function textOps(collection: string, turnId: number, field: string, offset: number, text: string, operations: Map<string, WriteOp>): void {

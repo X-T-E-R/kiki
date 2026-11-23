@@ -432,4 +432,51 @@ describe('ThreadTurnStore', () => {
       clearInterval(timer);
     }
   }, 30_000);
+
+  it('throttles concurrent multi-scope tail preparations and chunks large commits', async () => {
+    const scopes = Array.from({ length: 4 }, (_, index) => `sessions/example/session-${index}/agents/main`);
+    await Promise.all(
+      scopes.map((scope, scopeIndex) =>
+        seed(
+          Array.from({ length: 40 }, (_, id) => [
+            { ...prompt(`s${scopeIndex}-in-${id} ${'a'.repeat(4000)}`), turnId: id },
+            part(id, `s${scopeIndex}-out-${id} ${'b'.repeat(24_000)}`),
+            ended(id),
+          ]).flat(),
+          scope,
+        ),
+      ),
+    );
+    const batchSizes: number[] = [];
+    const originalBatchIf = query.batchIf?.bind(query);
+    if (originalBatchIf !== undefined) {
+      vi.spyOn(query, 'batchIf').mockImplementation((conditions, ops, staged) => {
+        batchSizes.push(ops.length);
+        return originalBatchIf(conditions, ops, staged);
+      });
+    }
+    const tickGaps: number[] = [];
+    let lastTick = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      tickGaps.push(now - lastTick);
+      lastTick = now;
+    }, 5);
+    try {
+      const pages = await Promise.all(scopes.map((scope) => ready(Number.MAX_SAFE_INTEGER, 20, scope)));
+      for (let index = 0; index < scopes.length; index++) {
+        expect(pages[index]?.turns).toHaveLength(20);
+        expect(pages[index]?.turns.at(-1)?.turnId).toBe(39);
+        expect(pages[index]?.turns.at(-1)?.input.startsWith(`s${index}-in-39`)).toBe(true);
+      }
+      if (batchSizes.length > 0) {
+        expect(Math.max(...batchSizes)).toBeLessThanOrEqual(132);
+      }
+      const sorted = tickGaps.toSorted((left, right) => left - right);
+      const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
+      expect(p95).toBeLessThan(100);
+    } finally {
+      clearInterval(timer);
+    }
+  }, 30_000);
 });

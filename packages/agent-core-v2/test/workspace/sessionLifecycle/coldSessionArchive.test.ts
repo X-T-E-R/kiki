@@ -502,4 +502,72 @@ describe('updateColdSessionProfile', () => {
     expect(unrelatedFamily.map((s) => s.id)).toEqual(['unrelated-1']);
     expect(reads).toEqual(['sessions/wd/unrelated-1']);
   });
+
+  it('uses ready indexed summaries without scanning directories and falls back when unindexed', async () => {
+    const metas = new Map<string, SessionMeta>([
+      ['sessions/wd/root', { id: 'root', createdAt: 1, updatedAt: 1, archived: false }],
+      ['sessions/wd/child', { id: 'child', createdAt: 2, updatedAt: 2, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+      ['sessions/wd/grandchild', { id: 'grandchild', createdAt: 3, updatedAt: 3, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'child' } }],
+      ['sessions/wd/excluded', { id: 'excluded', createdAt: 4, updatedAt: 4, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+    ]);
+    let listCalls = 0;
+    const storage = {
+      list: async (scope: string) => {
+        listCalls += 1;
+        if (scope === 'sessions') return ['wd'];
+        if (scope === 'sessions/wd') return ['root', 'child', 'grandchild', 'excluded'];
+        return [];
+      },
+      mtime: async (scope: string, key: string) => (key === 'state.json' && metas.has(scope) ? 1000 : undefined),
+      size: async (scope: string, key: string) => (key === 'state.json' && metas.has(scope) ? 128 : undefined),
+    } as unknown as IFileSystemStorageService;
+    const reads: string[] = [];
+    const docs = {
+      get: async (scope: string, key: string) => {
+        if (key !== 'state.json') return undefined;
+        reads.push(scope);
+        return metas.get(scope);
+      },
+    } as unknown as IAtomicDocumentStore;
+    const infoLogs: Array<Record<string, unknown>> = [];
+    const log = {
+      level: 'off',
+      setLevel: () => {},
+      flush: async () => {},
+      error: () => {},
+      warn: () => {},
+      info: (_msg: string, fields?: Record<string, unknown>) => {
+        if (fields !== undefined) infoLogs.push(fields);
+      },
+      debug: () => {},
+      child: () => log,
+    } as unknown as ILogService;
+
+    const indexedSummaries = new Map<string, SessionSummary>([
+      ['root', { id: 'root', workspaceId: 'wd', createdAt: 1, updatedAt: 1, archived: false }],
+      ['child', { id: 'child', workspaceId: 'wd', createdAt: 2, updatedAt: 2, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+      ['grandchild', { id: 'grandchild', workspaceId: 'wd', createdAt: 3, updatedAt: 3, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'child' } }],
+      ['excluded', { id: 'excluded', workspaceId: 'wd', createdAt: 4, updatedAt: 4, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+    ]);
+    const indexed = {
+      getSummary: async (id: string) => indexedSummaries.get(id),
+      listAttachedChildren: async (parentId: string) =>
+        [...indexedSummaries.values()].filter((s) => s.custom?.[CREATED_BY_SESSION_ID_KEY] === parentId),
+    };
+
+    const fast = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', ['excluded'], log, undefined, indexed);
+    expect(fast.map((s) => s.id)).toEqual(['root', 'child', 'grandchild']);
+    expect(listCalls).toBe(0);
+    expect(reads.toSorted()).toEqual(['sessions/wd/child', 'sessions/wd/grandchild', 'sessions/wd/root']);
+    expect(infoLogs.at(-1)?.['source']).toBe('index');
+
+    reads.length = 0;
+    const fallback = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', ['excluded'], log, undefined, {
+      getSummary: async () => undefined,
+      listAttachedChildren: async () => [],
+    });
+    expect(fallback.map((s) => s.id)).toEqual(['root', 'child', 'grandchild']);
+    expect(listCalls).toBeGreaterThan(0);
+    expect(infoLogs.at(-1)?.['source']).toBe('scan');
+  });
 });

@@ -13,6 +13,11 @@ export interface ArchiveFamilySummaryCache {
   set(workspaceId: string, sessionId: string, fingerprint: SessionSourceFingerprint, summary: SessionSummary): void;
 }
 
+export interface ArchiveFamilyIndexedReader {
+  getSummary(sessionId: string): Promise<SessionSummary | undefined>;
+  listAttachedChildren(parentId: string): Promise<readonly SessionSummary[]>;
+}
+
 const fallbackSummaryCaches = new WeakMap<IAtomicDocumentStore, Map<string, { readonly fingerprint: SessionSourceFingerprint; readonly summary: SessionSummary }>>();
 
 function getFallbackSummaryCache(docs: IAtomicDocumentStore): ArchiveFamilySummaryCache {
@@ -48,17 +53,78 @@ export async function readSessionArchiveFamily(
   excludedIds: readonly string[],
   log: ILogService,
   summaryCache?: ArchiveFamilySummaryCache,
+  indexed?: ArchiveFamilyIndexedReader,
 ): Promise<SessionSummary[]> {
   const started = Date.now();
   const deadline = started + 30_000;
   const entries: { workspaceId: string; sessionId: string }[] = [];
   const cache = summaryCache ?? getFallbackSummaryCache(docs);
-  const checkBudget = (): void => {
-    if (entries.length > 100_000 || Date.now() > deadline) {
+  const checkBudget = (count = entries.length): void => {
+    if (count > 100_000 || Date.now() > deadline) {
       throw new Error2('internal', 'Attached conversation discovery exceeded its budget; no conversations were archived. Retry after reducing the session inventory.');
     }
   };
   try {
+    if (indexed !== undefined) {
+      let indexedRoot: SessionSummary | undefined;
+      try {
+        indexedRoot = await indexed.getSummary(rootId);
+      } catch {
+        indexedRoot = undefined;
+      }
+      if (indexedRoot !== undefined) {
+        const rootResult = await readSessionSummaryResult(docs, sessionsScope, indexedRoot.workspaceId, indexedRoot.id, log);
+        checkBudget(1);
+        if (rootResult.kind === 'error') {
+          throw new Error2('internal', `Cannot discover attached conversations: metadata for session ${indexedRoot.id} is unreadable. No conversations were archived.`, { cause: rootResult.error });
+        }
+        if (rootResult.kind === 'found') {
+          const excluded = new Set(excludedIds);
+          const seen = new Set([rootId]);
+          const family = [rootResult.summary];
+          let indexedComplete = true;
+          for (let position = 0; position < family.length; position++) {
+            checkBudget(family.length);
+            const parent = family[position]!;
+            let candidates: readonly SessionSummary[];
+            try {
+              candidates = await indexed.listAttachedChildren(parent.id);
+            } catch {
+              indexedComplete = false;
+              break;
+            }
+            const nextCandidates: SessionSummary[] = [];
+            for (const candidate of candidates) {
+              if (attachedSessionParent(candidate) !== parent.id) continue;
+              if (seen.has(candidate.id) || excluded.has(candidate.id)) continue;
+              seen.add(candidate.id);
+              nextCandidates.push(candidate);
+            }
+            if (nextCandidates.length === 0) continue;
+            const verified = await mapBounded(nextCandidates, 16, async (candidate) => {
+              checkBudget(family.length);
+              const result = await readSessionSummaryResult(docs, sessionsScope, candidate.workspaceId, candidate.id, log);
+              checkBudget(family.length);
+              if (result.kind === 'error') {
+                throw new Error2('internal', `Cannot discover attached conversations: metadata for session ${candidate.id} is unreadable. No conversations were archived.`, { cause: result.error });
+              }
+              if (result.kind !== 'found') return undefined;
+              return attachedSessionParent(result.summary) === parent.id ? result.summary : undefined;
+            });
+            for (const item of verified) family.push(item);
+          }
+          if (indexedComplete) {
+            log.info('session archive family discovered', {
+              sessions_scanned: family.length,
+              family_count: family.length,
+              duration_ms: Date.now() - started,
+              source: 'index',
+            });
+            return family;
+          }
+        }
+      }
+    }
     const workspaceIds = await listWorkspaceIds(storage, sessionsScope, log);
     const workspaceSessionLists = await mapBounded(workspaceIds, 16, async (workspaceId) => {
       checkBudget();
@@ -73,29 +139,59 @@ export async function readSessionArchiveFamily(
     }
     const useFastStatMeta =
       storage.statMeta !== undefined && storage.constructor?.name === 'FileStorageService';
-    const fastFingerprint = async (workspaceId: string, sessionId: string): Promise<SessionSourceFingerprint> => {
-      if (!useFastStatMeta) return sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log);
-      const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
-      const nestedScope = `${base}/session-meta`;
-      const statMeta = storage.statMeta!.bind(storage);
-      const [direct, nested] = await Promise.all([
-        statMeta(base, 'state.json').catch(() => undefined),
-        statMeta(nestedScope, 'state.json').catch(() => undefined),
-      ]);
-      if (direct === undefined && nested === undefined) {
-        return sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log);
+    const fastFingerprint = async (
+      workspaceId: string,
+      sessionId: string,
+    ): Promise<{ readonly fingerprint: SessionSourceFingerprint; readonly confirmedMissing: boolean }> => {
+      if (!useFastStatMeta) {
+        return {
+          fingerprint: await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log),
+          confirmedMissing: false,
+        };
       }
-      return {
-        directMtimeMs: direct?.mtimeMs ?? 0,
-        directSize: direct?.size ?? 0,
-        nestedMtimeMs: nested?.mtimeMs ?? 0,
-        nestedSize: nested?.size ?? 0,
-      };
+      const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
+      const statMeta = storage.statMeta!.bind(storage);
+      try {
+        const direct = await statMeta(base, 'state.json');
+        if (direct !== undefined) {
+          return {
+            fingerprint: {
+              directMtimeMs: direct.mtimeMs,
+              directSize: direct.size,
+              nestedMtimeMs: 0,
+              nestedSize: 0,
+            },
+            confirmedMissing: false,
+          };
+        }
+        const nested = await statMeta(`${base}/session-meta`, 'state.json');
+        if (nested !== undefined) {
+          return {
+            fingerprint: {
+              directMtimeMs: 0,
+              directSize: 0,
+              nestedMtimeMs: nested.mtimeMs,
+              nestedSize: nested.size,
+            },
+            confirmedMissing: false,
+          };
+        }
+        return {
+          fingerprint: { directMtimeMs: 0, directSize: 0, nestedMtimeMs: 0, nestedSize: 0 },
+          confirmedMissing: true,
+        };
+      } catch {
+        return {
+          fingerprint: await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log),
+          confirmedMissing: false,
+        };
+      }
     };
     const cachedOrigins = new Map<string, { readonly workspaceId: string; readonly fingerprint: SessionSourceFingerprint }>();
     const summaries = await mapBounded(entries, 32, async ({ workspaceId, sessionId }) => {
       checkBudget();
-      const fingerprint = await fastFingerprint(workspaceId, sessionId);
+      const { fingerprint, confirmedMissing } = await fastFingerprint(workspaceId, sessionId);
+      if (sessionId !== rootId && confirmedMissing) return undefined;
       if (sessionId !== rootId && (fingerprint.directSize > 0 || fingerprint.nestedSize > 0)) {
         const cached = cache.get(workspaceId, sessionId, fingerprint);
         if (cached !== undefined) {
@@ -156,7 +252,7 @@ export async function readSessionArchiveFamily(
         return undefined;
       });
     }
-    log.info('session archive family discovered', { sessions_scanned: entries.length, family_count: family.length, duration_ms: Date.now() - started });
+    log.info('session archive family discovered', { sessions_scanned: entries.length, family_count: family.length, duration_ms: Date.now() - started, source: 'scan' });
     return family;
   } catch (error) {
     log.warn('session archive family discovery failed', { sessions_scanned: entries.length, duration_ms: Date.now() - started, error: String(error) });

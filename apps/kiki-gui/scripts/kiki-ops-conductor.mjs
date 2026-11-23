@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Out-of-band Kiki-Ops switch conductor for managing EasyAgent\Kiki desktop runtime switches.
- * Commands: bootstrap-ops | inspect | switch | reconcile
+ * Commands: bootstrap-ops | inspect | switch | rollback | reconcile
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -136,6 +136,73 @@ export function copyFileVerified(sourcePath, destinationPath) {
     rmSync(tempPath, { force: true });
     throw error;
   }
+}
+
+const OPS_DISABLED_CONFIG_SECTIONS = new Set([
+  'search',
+  'mcp',
+  'plugins',
+  'plugin_settings',
+  'hooks',
+  'external_hooks',
+  'cron',
+  'bot',
+  'browser_control',
+  'computer_control',
+]);
+
+export function sanitizeOpsConfigToml(raw) {
+  const text = typeof raw === 'string' ? raw : '';
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const sectionRe = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*(?:#.*)?$/;
+  const kept = [];
+  let skipSection = false;
+  let inTopLevel = true;
+  for (const line of lines) {
+    const match = sectionRe.exec(line);
+    if (match) {
+      inTopLevel = false;
+      const rootSection = match[1].trim().replace(/^["']|["']$/g, '').split('.')[0].trim().toLowerCase();
+      skipSection = OPS_DISABLED_CONFIG_SECTIONS.has(rootSection);
+      if (!skipSection) kept.push(line);
+      continue;
+    }
+    if (skipSection) continue;
+    if (inTopLevel && /^\s*hooks\s*=/.test(line)) continue;
+    kept.push(line);
+  }
+  const body = kept.join(eol).replace(/[\r\n]+$/, '');
+  const overrides = [`[search]`, `enabled = false`, ``, `[mcp]`].join(eol);
+  return body === '' ? `${overrides}${eol}` : `${body}${eol}${eol}${overrides}${eol}`;
+}
+
+function copyDirectoryTreeSafe(sourceDir, destinationDir) {
+  if (!existsSync(sourceDir)) return 0;
+  const srcStats = lstatSync(sourceDir);
+  if (srcStats.isSymbolicLink() || !srcStats.isDirectory()) return 0;
+  assertNotSymlinkOrReparse(destinationDir, 'Destination directory');
+  mkdirSync(destinationDir, { recursive: true });
+  let copiedCount = 0;
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.name.endsWith('.lock') || entry.name.endsWith('.tmp') || entry.name.endsWith('.bak')) continue;
+    const srcPath = join(sourceDir, entry.name);
+    const dstPath = join(destinationDir, entry.name);
+    if (entry.isDirectory()) {
+      copiedCount += copyDirectoryTreeSafe(srcPath, dstPath);
+    } else if (entry.isFile()) {
+      const info = statSync(srcPath);
+      if (info.size > 0) {
+        copyFileVerified(srcPath, dstPath);
+      } else {
+        assertNotSymlinkOrReparse(dstPath, 'Destination file');
+        writeTextAtomic(dstPath, '');
+      }
+      copiedCount += 1;
+    }
+  }
+  return copiedCount;
 }
 
 export function ensureSearchDisabledConfig(configPath) {
@@ -481,13 +548,16 @@ export function bootstrapOps({
   opsHome = defaultOpsHome(),
   sourceCli,
   sourceRuntime = defaultRuntimeRoot(),
+  sourceHome,
   targetRuntime = defaultRuntimeRoot(),
   targetHome = defaultKikiHome(),
+  syncConfig = true,
 } = {}) {
   const resolvedOpsRuntime = resolve(opsRuntime);
   const resolvedOpsHome = resolve(opsHome);
   const resolvedTargetRuntime = resolve(targetRuntime);
   const resolvedTargetHome = resolve(targetHome);
+  const resolvedSourceHome = resolve(sourceHome ?? targetHome);
 
   if (normalizeComparePath(resolvedOpsRuntime) === normalizeComparePath(resolvedTargetRuntime)) {
     throw new Error(`Refusing to bootstrap Kiki-Ops into the live target runtime: ${resolvedOpsRuntime}`);
@@ -527,7 +597,44 @@ export function bootstrapOps({
   writeJsonAtomic(manifestPath, manifest);
 
   mkdirSync(resolvedOpsHome, { recursive: true });
-  const configPath = ensureSearchDisabledConfig(join(resolvedOpsHome, 'config.toml'));
+  const configPath = join(resolvedOpsHome, 'config.toml');
+  const mcpConfigPath = join(resolvedOpsHome, 'mcp.json');
+  let syncedConfig = false;
+  let syncedCredentials = false;
+  let syncedOAuthFiles = 0;
+  let syncedAgentsCount = 0;
+
+  if (syncConfig !== false) {
+    const sourceConfigPath = join(resolvedSourceHome, 'config.toml');
+    if (existsSync(sourceConfigPath) && statSync(sourceConfigPath).isFile()) {
+      const sanitized = sanitizeOpsConfigToml(readFileSync(sourceConfigPath, 'utf8'));
+      writeTextAtomic(configPath, sanitized);
+      syncedConfig = true;
+    } else {
+      ensureSearchDisabledConfig(configPath);
+    }
+    writeJsonAtomic(mcpConfigPath, { mcpServers: {} });
+
+    const credCandidates = [
+      join(resolvedSourceHome, 'credentials', 'credentials.toml'),
+      join(resolvedSourceHome, 'credentials.toml'),
+    ];
+    const sourceCredPath = credCandidates.find((p) => existsSync(p) && statSync(p).isFile() && statSync(p).size > 0);
+    if (sourceCredPath) {
+      copyFileVerified(sourceCredPath, join(resolvedOpsHome, 'credentials', 'credentials.toml'));
+      syncedCredentials = true;
+    }
+    const sourceOAuthDir = join(resolvedSourceHome, 'oauth');
+    if (existsSync(sourceOAuthDir)) {
+      syncedOAuthFiles = copyDirectoryTreeSafe(sourceOAuthDir, join(resolvedOpsHome, 'oauth'));
+    }
+    const sourceAgentsDir = join(resolvedSourceHome, 'agents');
+    if (existsSync(sourceAgentsDir)) {
+      syncedAgentsCount = copyDirectoryTreeSafe(sourceAgentsDir, join(resolvedOpsHome, 'agents'));
+    }
+  } else {
+    ensureSearchDisabledConfig(configPath);
+  }
 
   if (/["%&|<>^\r\n]/.test(resolvedOpsHome)) {
     throw new Error(`ops-home path contains unsupported shell characters: ${resolvedOpsHome}`);
@@ -547,11 +654,17 @@ export function bootstrapOps({
     ok: true,
     opsRuntime: resolvedOpsRuntime,
     opsHome: resolvedOpsHome,
+    sourceHome: resolvedSourceHome,
     cliPath: cliDest,
     launcherPath,
     invocation: `"${launcherPath}"`,
     manifestPath,
     configPath,
+    mcpConfigPath: syncConfig !== false ? mcpConfigPath : null,
+    syncedConfig,
+    syncedCredentials,
+    syncedOAuthFiles,
+    syncedAgentsCount,
     sha256: copied.sha256,
     bytes: copied.bytes,
   };
@@ -1143,6 +1256,340 @@ export function defaultRunHotSwitch(scriptPath, args) {
   });
 }
 
+export async function defaultInspectSpaces({
+  hotSwitchScript = join(SCRIPT_DIR, 'desktop-hot-switch.ps1'),
+  runtimeRoot,
+  kikiHome,
+  runHotSwitch = defaultRunHotSwitch,
+}) {
+  const res = await runHotSwitch(resolve(hotSwitchScript), [
+    '-RuntimeRoot',
+    resolve(runtimeRoot),
+    '-KikiHome',
+    resolve(kikiHome),
+    '-InspectOnly',
+    '-AppScopeOnly',
+  ]);
+  const parsed = JSON.parse(String(res.stdout ?? '').trim());
+  return Array.isArray(parsed?.spaces) ? parsed.spaces : [];
+}
+
+export async function verifySpaceHealth({
+  runtimeRoot,
+  kikiHome,
+  expectedCommit,
+  expectedReleaseId,
+  previousPid,
+  allowSamePid = false,
+  resolveProcessPath = defaultResolveProcessPath,
+  callApi = callLocalApi,
+}) {
+  const resolvedRuntime = resolve(runtimeRoot);
+  const resolvedHome = resolve(kikiHome);
+  const expectedActiveServer = join(resolvedRuntime, 'active', 'kiki-server.exe');
+  let discovered;
+  try {
+    discovered = await discoverLiveServer({
+      runtimeRoot: resolvedRuntime,
+      kikiHome: resolvedHome,
+      resolveProcessPath,
+      callApi,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: null,
+      healthz: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!discovered.server) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: null,
+      healthz: 'unreachable',
+      error: `Post-switch verification failed for ${resolvedHome}: no live managed Kiki server found (${discovered.tokenError ?? 'not running'}).`,
+    };
+  }
+  const srv = discovered.server;
+  if (normalizeComparePath(srv.executablePath) !== normalizeComparePath(expectedActiveServer)) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: srv,
+      healthz: 'skipped',
+      error: `Post-switch verification failed: server is running from '${srv.executablePath}' instead of '${expectedActiveServer}'.`,
+    };
+  }
+  if (expectedCommit && srv.meta.build_id !== expectedCommit) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: srv,
+      healthz: 'skipped',
+      error: `Post-switch verification failed: build_id '${srv.meta.build_id}' !== expected '${expectedCommit}'.`,
+    };
+  }
+  if (expectedReleaseId && srv.releaseId !== expectedReleaseId) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: srv,
+      healthz: 'skipped',
+      error: `Post-switch verification failed: releaseId '${srv.releaseId}' !== expected '${expectedReleaseId}'.`,
+    };
+  }
+  if (!allowSamePid && previousPid && srv.pid === previousPid) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: srv,
+      healthz: 'skipped',
+      error: `Post-switch verification failed: server PID did not change (${srv.pid}).`,
+    };
+  }
+  let healthz = 'ok';
+  try {
+    const hz = await callApi({
+      port: srv.port,
+      token: srv.token,
+      path: '/api/healthz',
+      method: 'GET',
+      timeoutMs: 5000,
+    });
+    if (hz && typeof hz === 'object' && 'ok' in hz && hz.ok === false) {
+      return {
+        ok: false,
+        kikiHome: resolvedHome,
+        server: srv,
+        healthz: 'unhealthy',
+        error: `Post-switch verification failed for ${resolvedHome}: /api/healthz returned ok=false.`,
+      };
+    }
+  } catch (error) {
+    if (error?.statusCode === 404 || error?.apiCode === 40404) {
+      healthz = 'unsupported';
+    } else {
+      return {
+        ok: false,
+        kikiHome: resolvedHome,
+        server: srv,
+        healthz: 'error',
+        error: `Post-switch verification failed for ${resolvedHome}: /api/healthz failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  return {
+    ok: true,
+    kikiHome: resolvedHome,
+    server: srv,
+    healthz,
+    error: null,
+  };
+}
+
+function summarizeSpaceCheck(check) {
+  return {
+    ok: check.ok,
+    kikiHome: check.kikiHome,
+    healthz: check.healthz,
+    error: check.error,
+    server: check.server
+      ? {
+          server_id: check.server.meta.server_id,
+          pid: check.server.pid,
+          port: check.server.port,
+          executablePath: check.server.executablePath,
+          layout: check.server.layout,
+          releaseId: check.server.releaseId,
+          build_id: check.server.meta.build_id,
+          desktop_managed: Boolean(check.server.meta.desktop_managed),
+        }
+      : null,
+  };
+}
+
+function normalizeSpaceSnapshots(rawSpaces, primaryHome, primaryServer) {
+  const byKey = new Map();
+  const add = (sp) => {
+    if (!sp || typeof sp.kikiHome !== 'string' || sp.kikiHome.trim() === '') return;
+    const normHome = resolve(sp.kikiHome);
+    const key = normalizeComparePath(normHome);
+    const existing = byKey.get(key);
+    const srv = sp.liveServer ?? sp.preServerMeta ?? sp.server ?? null;
+    const merged = {
+      kikiHome: normHome,
+      isPrimary: sp.isPrimary ?? key === normalizeComparePath(primaryHome),
+      passHomeArg: sp.passHomeArg ?? key !== normalizeComparePath(primaryHome),
+      hadDesktop: sp.hadDesktop ?? existing?.hadDesktop ?? true,
+      headlessLaunchArgs: sp.headlessLaunchArgs ?? existing?.headlessLaunchArgs ?? null,
+      desktopManaged: sp.desktopManaged ?? srv?.desktop_managed ?? existing?.desktopManaged ?? true,
+      oldReleaseId: sp.oldReleaseId ?? srv?.releaseId ?? existing?.oldReleaseId ?? null,
+      oldBuildId: sp.oldBuildId ?? srv?.build_id ?? existing?.oldBuildId ?? null,
+      oldServerId: sp.oldServerId ?? srv?.server_id ?? existing?.oldServerId ?? null,
+      serverHomeId: sp.serverHomeId ?? srv?.server_home_id ?? existing?.serverHomeId ?? null,
+      spaceId: sp.spaceId ?? srv?.current_space_id ?? existing?.spaceId ?? null,
+      pid: sp.pid ?? srv?.pid ?? existing?.pid ?? null,
+    };
+    byKey.set(key, merged);
+  };
+  for (const sp of Array.isArray(rawSpaces) ? rawSpaces : []) add(sp);
+  if (!byKey.has(normalizeComparePath(primaryHome))) {
+    add({
+      kikiHome: primaryHome,
+      isPrimary: true,
+      passHomeArg: false,
+      hadDesktop: true,
+      liveServer: primaryServer,
+    });
+  }
+  return [...byKey.values()];
+}
+
+export async function rollbackRuntime({
+  runtimeRoot = defaultRuntimeRoot(),
+  kikiHome = defaultKikiHome(),
+  releaseId,
+  expectedCommit,
+  hotSwitchScript = join(SCRIPT_DIR, 'desktop-hot-switch.ps1'),
+  startupSeconds = 90,
+  stopGraceSeconds = 30,
+  ledgerPath,
+  spaces,
+  resolveProcessPath = defaultResolveProcessPath,
+  callApi = callLocalApi,
+  runHotSwitch = defaultRunHotSwitch,
+} = {}) {
+  const resolvedRuntime = resolve(runtimeRoot);
+  const resolvedHome = resolve(kikiHome);
+  const resolvedLedger = resolve(ledgerPath ?? join(resolvedRuntime, 'hot-switch-ledger.json'));
+  const statePath = join(resolvedRuntime, 'hot-switch.json');
+  const existingState = readJsonIfExists(statePath);
+  const existingLedger = readJsonIfExists(resolvedLedger);
+
+  const resolvedReleaseId =
+    releaseId ??
+    existingState?.oldReleaseId ??
+    existingLedger?.switchSnapshot?.previousReleaseId ??
+    existingLedger?.liveServer?.releaseId ??
+    null;
+  const resolvedBuildId =
+    expectedCommit ??
+    existingState?.oldBuildId ??
+    existingLedger?.switchSnapshot?.previousBuildId ??
+    existingLedger?.liveServer?.build_id ??
+    null;
+
+  if (!resolvedReleaseId || !RELEASE_ID_RE.test(String(resolvedReleaseId))) {
+    throw new Error('Cannot determine a valid previous releaseId to roll back to; pass --release-id.');
+  }
+
+  const candidateSpaces = normalizeSpaceSnapshots(
+    spaces ?? existingState?.spaces ?? existingLedger?.switchSnapshot?.spaces ?? [],
+    resolvedHome,
+    existingLedger?.liveServer ?? null,
+  );
+
+  // Ensure hot-switch.json is in an unfinished state pointing to resolvedReleaseId so -Recover -Rollback can execute cleanly.
+  const needsRollbackStateSeed =
+    !existingState ||
+    existingState.schemaVersion !== 1 ||
+    existingState.phase === 'complete' ||
+    existingState.oldReleaseId !== resolvedReleaseId ||
+    normalizeComparePath(existingState.kikiHome ?? '') !== normalizeComparePath(resolvedHome);
+
+  if (needsRollbackStateSeed) {
+    const primarySnap = candidateSpaces.find((s) => normalizeComparePath(s.kikiHome) === normalizeComparePath(resolvedHome)) ?? candidateSpaces[0];
+    const seededState = {
+      schemaVersion: 1,
+      phase: 'starting_failed',
+      kikiHome: resolvedHome,
+      oldReleaseId: resolvedReleaseId,
+      oldBuildId: resolvedBuildId ?? primarySnap?.oldBuildId ?? '',
+      oldServerId: primarySnap?.oldServerId ?? 'rollback-prior-server',
+      serverHomeId: primarySnap?.serverHomeId ?? existingState?.serverHomeId ?? '',
+      spaceId: primarySnap?.spaceId ?? existingState?.spaceId ?? 'main',
+      priorPointerReleaseId: resolvedReleaseId,
+      targetReleaseId: existingState?.targetReleaseId ?? existingLedger?.switchSnapshot?.targetReleaseId ?? resolvedReleaseId,
+      targetBuildId: existingState?.targetBuildId ?? existingLedger?.switchSnapshot?.targetCommit ?? resolvedBuildId ?? '',
+      hadDesktop: primarySnap?.hadDesktop ?? true,
+      headlessLaunchArgs: primarySnap?.headlessLaunchArgs ?? null,
+      desktopManaged: primarySnap?.desktopManaged ?? true,
+      fenceOperationId: existingState?.fenceOperationId ?? null,
+      sessions: [],
+      spaces: candidateSpaces.map((sp) => ({
+        kikiHome: sp.kikiHome,
+        isPrimary: sp.isPrimary,
+        passHomeArg: sp.passHomeArg,
+        oldReleaseId: resolvedReleaseId,
+        oldBuildId: resolvedBuildId ?? sp.oldBuildId ?? '',
+        oldServerId: sp.oldServerId ?? 'rollback-prior-server',
+        serverHomeId: sp.serverHomeId ?? '',
+        spaceId: sp.spaceId ?? 'main',
+        hadDesktop: sp.hadDesktop,
+        headlessLaunchArgs: sp.headlessLaunchArgs,
+        desktopManaged: sp.desktopManaged,
+        fenceOperationId: null,
+        sessions: [],
+      })),
+    };
+    writeJsonAtomic(statePath, seededState);
+  }
+
+  const psArgs = [
+    '-RuntimeRoot',
+    resolvedRuntime,
+    '-KikiHome',
+    resolvedHome,
+    '-Recover',
+    '-Rollback',
+    '-StartupSeconds',
+    String(startupSeconds),
+    '-StopGraceSeconds',
+    String(stopGraceSeconds),
+  ];
+
+  const rollbackRun = await runHotSwitch(resolve(hotSwitchScript), psArgs);
+  const checks = [];
+  for (const sp of candidateSpaces) {
+    checks.push(
+      await verifySpaceHealth({
+        runtimeRoot: resolvedRuntime,
+        kikiHome: sp.kikiHome,
+        expectedCommit: resolvedBuildId ?? undefined,
+        expectedReleaseId: resolvedReleaseId,
+        allowSamePid: true,
+        resolveProcessPath,
+        callApi,
+      }),
+    );
+  }
+  const failedChecks = checks.filter((c) => !c.ok);
+  const summaryChecks = checks.map(summarizeSpaceCheck);
+  const rollbackResult = {
+    schemaVersion: 1,
+    rolledBackAtUtc: new Date().toISOString(),
+    ok: failedChecks.length === 0,
+    runtimeRoot: resolvedRuntime,
+    kikiHome: resolvedHome,
+    releaseId: resolvedReleaseId,
+    buildId: resolvedBuildId,
+    spaces: summaryChecks,
+    stdout: rollbackRun.stdout?.trim() ?? '',
+  };
+  writeJsonAtomic(resolvedLedger, { ...(existingLedger ?? {}), lastRollback: rollbackResult });
+  if (failedChecks.length > 0) {
+    const err = new Error(
+      `Rollback verification failed for ${failedChecks.length} space(s): ${failedChecks.map((f) => `${f.kikiHome}: ${f.error}`).join('; ')}`,
+    );
+    err.failureReport = rollbackResult;
+    throw err;
+  }
+  return rollbackResult;
+}
+
 export async function switchRuntime({
   runtimeRoot = defaultRuntimeRoot(),
   kikiHome = defaultKikiHome(),
@@ -1158,10 +1605,12 @@ export async function switchRuntime({
   noInterruptAfterSettle = false,
   nudgeInterrupted = false,
   nudgePrompt = DEFAULT_NUDGE_PROMPT,
+  autoRollback = true,
   ledgerPath,
   resolveProcessPath = defaultResolveProcessPath,
   callApi = callLocalApi,
   runHotSwitch = defaultRunHotSwitch,
+  inspectSpaces,
 } = {}) {
   const resolvedRuntime = resolve(runtimeRoot);
   const resolvedHome = resolve(kikiHome);
@@ -1193,6 +1642,42 @@ export async function switchRuntime({
     throw new Error(`Candidate validation failed: ${preInspect.candidate.error}`);
   }
   const targetCommit = resolvedCommit ?? preInspect.candidate?.sourceCommit;
+  const targetReleaseId = preInspect.candidate?.releaseId ?? null;
+  const previousReleaseId =
+    preInspect.liveServer?.releaseId ??
+    preInspect.activeManifest?.releaseId ??
+    preInspect.currentManifest?.releaseId ??
+    null;
+  const previousBuildId =
+    preInspect.liveServer?.build_id ??
+    preInspect.activeManifest?.gitSha ??
+    preInspect.currentManifest?.gitSha ??
+    null;
+
+  let discoveredPreSpaces = [];
+  const spaceInspector =
+    typeof inspectSpaces === 'function'
+      ? inspectSpaces
+      : runHotSwitch === defaultRunHotSwitch
+        ? () => defaultInspectSpaces({ hotSwitchScript, runtimeRoot: resolvedRuntime, kikiHome: resolvedHome })
+        : null;
+  if (spaceInspector) {
+    try {
+      discoveredPreSpaces = await spaceInspector();
+    } catch {
+      discoveredPreSpaces = [];
+    }
+  }
+  const preSpaces = normalizeSpaceSnapshots(discoveredPreSpaces, resolvedHome, preInspect.liveServer);
+  const switchSnapshot = {
+    capturedAtUtc: new Date().toISOString(),
+    previousReleaseId,
+    previousBuildId,
+    targetReleaseId,
+    targetCommit,
+    spaces: preSpaces,
+  };
+  writeJsonAtomic(resolvedLedger, { ...preInspect, switchSnapshot });
 
   const psArgs = [
     '-RuntimeRoot',
@@ -1220,71 +1705,176 @@ export async function switchRuntime({
   if (background) psArgs.push('-Background');
   if (noInterruptAfterSettle) psArgs.push('-NoInterruptAfterSettle');
 
-  const switchRun = await runHotSwitch(resolve(hotSwitchScript), psArgs);
   const reportPath = join(resolvedRuntime, 'hot-switch-report.json');
-  const report = readJsonIfExists(reportPath);
+  let switchRun;
+  let stage = 'hot_switch_exec';
+  let spaceChecks = [];
 
-  const postDiscovered = await discoverLiveServer({
-    runtimeRoot: resolvedRuntime,
-    kikiHome: resolvedHome,
-    resolveProcessPath,
-    callApi,
-  });
-  if (!postDiscovered.server) {
-    throw new Error('Post-switch verification failed: no live managed Kiki server found.');
-  }
-  const expectedActiveServer = join(resolvedRuntime, 'active', 'kiki-server.exe');
-  if (normalizeComparePath(postDiscovered.server.executablePath) !== normalizeComparePath(expectedActiveServer)) {
-    throw new Error(
-      `Post-switch verification failed: server is running from '${postDiscovered.server.executablePath}' instead of '${expectedActiveServer}'.`,
+  try {
+    switchRun = await runHotSwitch(resolve(hotSwitchScript), psArgs);
+    stage = 'post_switch_verify';
+    const report = readJsonIfExists(reportPath);
+    const verifyTargets = normalizeSpaceSnapshots(
+      [...preSpaces, ...(Array.isArray(report?.spaces) ? report.spaces : [])],
+      resolvedHome,
+      preInspect.liveServer,
     );
-  }
-  if (targetCommit && postDiscovered.server.meta.build_id !== targetCommit) {
-    throw new Error(
-      `Post-switch verification failed: build_id '${postDiscovered.server.meta.build_id}' !== expected '${targetCommit}'.`,
-    );
-  }
-  if (
-    preInspect.liveServer &&
-    report?.outcome !== 'already_running' &&
-    postDiscovered.server.pid === preInspect.liveServer.pid
-  ) {
-    throw new Error(`Post-switch verification failed: server PID did not change (${postDiscovered.server.pid}).`);
-  }
+    const preByKey = new Map(preSpaces.map((sp) => [normalizeComparePath(sp.kikiHome), sp]));
+    for (const sp of verifyTargets) {
+      const preSp = preByKey.get(normalizeComparePath(sp.kikiHome));
+      const check = await verifySpaceHealth({
+        runtimeRoot: resolvedRuntime,
+        kikiHome: sp.kikiHome,
+        expectedCommit: targetCommit,
+        previousPid: preSp?.pid ?? null,
+        allowSamePid: report?.outcome === 'already_running',
+        resolveProcessPath,
+        callApi,
+      });
+      spaceChecks.push(check);
+    }
+    const failedVerify = spaceChecks.filter((c) => !c.ok);
+    if (failedVerify.length > 0) {
+      throw new Error(failedVerify.map((f) => f.error).join('; '));
+    }
 
-  const reconcile = await reconcileSwitch({
-    runtimeRoot: resolvedRuntime,
-    kikiHome: resolvedHome,
-    reportPath,
-    nudge: nudgeInterrupted,
-    prompt: nudgePrompt,
-    resolveProcessPath,
-    callApi,
-  });
+    const primaryCheck = spaceChecks.find((c) => normalizeComparePath(c.kikiHome) === normalizeComparePath(resolvedHome)) ?? spaceChecks[0];
+    const postServer = primaryCheck.server;
+    const reconcile = await reconcileSwitch({
+      runtimeRoot: resolvedRuntime,
+      kikiHome: resolvedHome,
+      reportPath,
+      nudge: nudgeInterrupted,
+      prompt: nudgePrompt,
+      resolveProcessPath,
+      callApi,
+    });
 
-  const result = {
-    schemaVersion: 1,
-    completedAtUtc: new Date().toISOString(),
-    ok: true,
-    runtimeRoot: resolvedRuntime,
-    kikiHome: resolvedHome,
-    preSwitch: preInspect.liveServer,
-    postSwitch: {
-      server_id: postDiscovered.server.meta.server_id,
-      pid: postDiscovered.server.pid,
-      port: postDiscovered.server.port,
-      executablePath: postDiscovered.server.executablePath,
-      layout: postDiscovered.server.layout,
-      releaseId: postDiscovered.server.releaseId,
-      build_id: postDiscovered.server.meta.build_id,
-    },
-    reportPath,
-    report,
-    reconcile,
-    switchStdout: switchRun.stdout?.trim() ?? '',
-  };
-  writeJsonAtomic(resolvedLedger, { ...preInspect, lastSwitch: result });
-  return result;
+    const result = {
+      schemaVersion: 1,
+      completedAtUtc: new Date().toISOString(),
+      ok: true,
+      runtimeRoot: resolvedRuntime,
+      kikiHome: resolvedHome,
+      previousReleaseId,
+      previousBuildId,
+      preSwitch: preInspect.liveServer,
+      postSwitch: {
+        server_id: postServer.meta.server_id,
+        pid: postServer.pid,
+        port: postServer.port,
+        executablePath: postServer.executablePath,
+        layout: postServer.layout,
+        releaseId: postServer.releaseId,
+        build_id: postServer.meta.build_id,
+      },
+      spaceChecks: spaceChecks.map(summarizeSpaceCheck),
+      reportPath,
+      report,
+      reconcile,
+      switchStdout: switchRun.stdout?.trim() ?? '',
+    };
+    writeJsonAtomic(resolvedLedger, { ...preInspect, switchSnapshot, lastSwitch: result });
+    return result;
+  } catch (switchError) {
+    const report = readJsonIfExists(reportPath);
+    let rollbackInfo = { triggered: false, ok: false, reason: 'disabled_or_no_previous_release' };
+    const shouldAttemptRollback =
+      autoRollback !== false &&
+      Boolean(previousReleaseId) &&
+      RELEASE_ID_RE.test(String(previousReleaseId));
+
+    if (shouldAttemptRollback) {
+      let alreadyRolledBack = false;
+      if (report?.outcome === 'rolled_back') {
+        const internalChecks = [];
+        for (const sp of preSpaces) {
+          internalChecks.push(
+            await verifySpaceHealth({
+              runtimeRoot: resolvedRuntime,
+              kikiHome: sp.kikiHome,
+              expectedCommit: previousBuildId ?? undefined,
+              expectedReleaseId: previousReleaseId,
+              allowSamePid: true,
+              resolveProcessPath,
+              callApi,
+            }),
+          );
+        }
+        if (internalChecks.length > 0 && internalChecks.every((c) => c.ok)) {
+          alreadyRolledBack = true;
+          rollbackInfo = {
+            triggered: true,
+            source: 'hot_switch_internal',
+            ok: true,
+            releaseId: previousReleaseId,
+            buildId: previousBuildId,
+            spaces: internalChecks.map(summarizeSpaceCheck),
+            error: null,
+          };
+        }
+      }
+      if (!alreadyRolledBack) {
+        try {
+          const rb = await rollbackRuntime({
+            runtimeRoot: resolvedRuntime,
+            kikiHome: resolvedHome,
+            releaseId: previousReleaseId,
+            expectedCommit: previousBuildId ?? undefined,
+            hotSwitchScript,
+            startupSeconds,
+            stopGraceSeconds,
+            ledgerPath: resolvedLedger,
+            spaces: preSpaces,
+            resolveProcessPath,
+            callApi,
+            runHotSwitch,
+          });
+          rollbackInfo = {
+            triggered: true,
+            source: 'conductor_auto_rollback',
+            ok: rb.ok,
+            releaseId: rb.releaseId,
+            buildId: rb.buildId,
+            spaces: rb.spaces,
+            error: null,
+          };
+        } catch (rollbackError) {
+          rollbackInfo = {
+            triggered: true,
+            source: 'conductor_auto_rollback',
+            ok: false,
+            releaseId: previousReleaseId,
+            buildId: previousBuildId,
+            spaces: rollbackError?.failureReport?.spaces ?? [],
+            error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          };
+        }
+      }
+    }
+
+    const failureReport = {
+      schemaVersion: 1,
+      ok: false,
+      failedAtUtc: new Date().toISOString(),
+      stage,
+      error: switchError instanceof Error ? switchError.message : String(switchError),
+      runtimeRoot: resolvedRuntime,
+      kikiHome: resolvedHome,
+      previousReleaseId,
+      previousBuildId,
+      targetReleaseId,
+      targetCommit,
+      spaceChecks: spaceChecks.map(summarizeSpaceCheck),
+      rollback: rollbackInfo,
+      reportPath,
+      report,
+    };
+    writeJsonAtomic(resolvedLedger, { ...preInspect, switchSnapshot, lastSwitch: failureReport });
+    const wrapped = switchError instanceof Error ? switchError : new Error(String(switchError));
+    wrapped.failureReport = failureReport;
+    throw wrapped;
+  }
 }
 
 export function parseConductorArgs(argv) {
@@ -1292,14 +1882,16 @@ export function parseConductorArgs(argv) {
   if (!command || command === '--help' || command === '-h') {
     return { command: 'help', options: {} };
   }
-  if (!['bootstrap-ops', 'inspect', 'switch', 'reconcile'].includes(command)) {
-    throw new Error(`Unknown command '${command}'. Expected one of: bootstrap-ops, inspect, switch, reconcile.`);
+  if (!['bootstrap-ops', 'inspect', 'switch', 'rollback', 'reconcile'].includes(command)) {
+    throw new Error(`Unknown command '${command}'. Expected one of: bootstrap-ops, inspect, switch, rollback, reconcile.`);
   }
   const booleanFlags = new Set([
     '--json',
     '--skip-canary',
     '--background',
     '--no-interrupt-after-settle',
+    '--no-auto-rollback',
+    '--no-sync-config',
     '--nudge',
     '--nudge-interrupted',
   ]);
@@ -1336,10 +1928,10 @@ function formatSummary(command, result) {
   if (command === 'bootstrap-ops') {
     return [
       `Kiki-Ops bootstrapped:`,
-      `  Launcher: ${result.launcherPath} (forces KIKI_HOME=${result.opsHome})`,
-      `  CLI:      ${result.cliPath} (${result.bytes} bytes, sha256=${result.sha256.slice(0, 12)}...)`,
-      `  Home:     ${result.opsHome}`,
-      `  Config:   ${result.configPath} ([search] enabled = false)`,
+      `  Launcher:    ${result.launcherPath} (forces KIKI_HOME=${result.opsHome})`,
+      `  CLI:         ${result.cliPath} (${result.bytes} bytes, sha256=${result.sha256.slice(0, 12)}...)`,
+      `  Home:        ${result.opsHome}`,
+      `  Config:      ${result.configPath} (synced=${result.syncedConfig}, creds=${result.syncedCredentials}, agents=${result.syncedAgentsCount}, [search] enabled=false, [mcp] empty)`,
     ].join('\n');
   }
   if (command === 'inspect') {
@@ -1357,6 +1949,13 @@ function formatSummary(command, result) {
     lines.push(`  Ledger:  ${result.ledgerPath}`);
     return lines.join('\n');
   }
+  if (command === 'rollback') {
+    return [
+      `Rollback complete: ${result.releaseId}`,
+      `  Build:   ${result.buildId ?? 'unknown'}`,
+      `  Spaces:  ${result.spaces.length} verified`,
+    ].join('\n');
+  }
   if (command === 'reconcile') {
     return [
       `Reconcile (${result.nudgeEnabled ? 'nudge' : 'report-only'}): ${result.interruptedCount} session(s)`,
@@ -1370,6 +1969,7 @@ function formatSummary(command, result) {
     `Switch complete: ${result.postSwitch.releaseId}`,
     `  Server:  ${result.postSwitch.server_id} (pid=${result.postSwitch.pid}, build=${result.postSwitch.build_id})`,
     `  Binary:  ${result.postSwitch.executablePath}`,
+    `  Spaces:  ${(result.spaceChecks ?? []).length} verified`,
     `  Interrupted sessions: ${result.reconcile.interruptedCount}`,
   ].join('\n');
 }
@@ -1379,10 +1979,11 @@ async function main() {
   if (command === 'help') {
     process.stdout.write(
       [
-        'Usage: node kiki-ops-conductor.mjs <bootstrap-ops|inspect|switch|reconcile> [options]',
-        '  bootstrap-ops  --ops-runtime <dir> --ops-home <dir> [--source-cli <exe>] [--source-runtime <dir>] [--json]',
+        'Usage: node kiki-ops-conductor.mjs <bootstrap-ops|inspect|switch|rollback|reconcile> [options]',
+        '  bootstrap-ops  --ops-runtime <dir> --ops-home <dir> [--source-cli <exe>] [--source-runtime <dir>] [--source-home <dir>] [--no-sync-config] [--json]',
         '  inspect        [--runtime-root <dir>] [--kiki-home <dir>] [--candidate-root <dir>] [--expected-commit <sha>] [--ledger-path <file>] [--json]',
-        '  switch         [--runtime-root <dir>] [--kiki-home <dir>] --candidate-root <dir> [--expected-commit <sha>] [--settle-seconds <n>] [--skip-canary] [--nudge-interrupted] [--json]',
+        '  switch         [--runtime-root <dir>] [--kiki-home <dir>] --candidate-root <dir> [--expected-commit <sha>] [--settle-seconds <n>] [--skip-canary] [--no-auto-rollback] [--nudge-interrupted] [--json]',
+        '  rollback       [--runtime-root <dir>] [--kiki-home <dir>] [--release-id <id>] [--expected-commit <sha>] [--startup-seconds <n>] [--stop-grace-seconds <n>] [--json]',
         '  reconcile      [--runtime-root <dir>] [--kiki-home <dir>] [--report-path <file>] [--sessions <id1,id2>] [--nudge] [--prompt <text>] [--json]',
       ].join('\n') + '\n',
     );
@@ -1390,54 +1991,75 @@ async function main() {
   }
 
   let result;
-  if (command === 'bootstrap-ops') {
-    result = bootstrapOps({
-      opsRuntime: options['ops-runtime'],
-      opsHome: options['ops-home'],
-      sourceCli: options['source-cli'],
-      sourceRuntime: options['source-runtime'],
-      targetRuntime: options['runtime-root'],
-      targetHome: options['kiki-home'],
-    });
-  } else if (command === 'inspect') {
-    result = await inspectRuntime({
-      runtimeRoot: options['runtime-root'],
-      kikiHome: options['kiki-home'],
-      candidateRoot: options['candidate-root'],
-      expectedCommit: options['expected-commit'],
-      ledgerPath: options['ledger-path'],
-    });
-  } else if (command === 'reconcile') {
-    const sessions = options.sessions ? String(options.sessions).split(',').map((s) => s.trim()).filter(Boolean) : undefined;
-    result = await reconcileSwitch({
-      runtimeRoot: options['runtime-root'],
-      kikiHome: options['kiki-home'],
-      reportPath: options['report-path'],
-      sessions,
-      nudge: Boolean(options.nudge),
-      prompt: options.prompt,
-    });
-  } else if (command === 'switch') {
-    result = await switchRuntime({
-      runtimeRoot: options['runtime-root'],
-      kikiHome: options['kiki-home'],
-      candidateRoot: options['candidate-root'],
-      expectedCommit: options['expected-commit'],
-      hotSwitchScript: options['hot-switch-script'],
-      settleSeconds: parsePositiveInt(options['settle-seconds'], 600, '--settle-seconds'),
-      startupSeconds: parsePositiveInt(options['startup-seconds'], 90, '--startup-seconds'),
-      stopGraceSeconds: parsePositiveInt(options['stop-grace-seconds'], 30, '--stop-grace-seconds'),
-      canaryTimeoutSeconds:
-        options['canary-timeout-seconds'] === undefined
-          ? undefined
-          : parsePositiveInt(options['canary-timeout-seconds'], 0, '--canary-timeout-seconds'),
-      skipCanary: Boolean(options['skip-canary']),
-      background: Boolean(options.background),
-      noInterruptAfterSettle: Boolean(options['no-interrupt-after-settle']),
-      nudgeInterrupted: Boolean(options['nudge-interrupted']),
-      nudgePrompt: options['nudge-prompt'],
-      ledgerPath: options['ledger-path'],
-    });
+  try {
+    if (command === 'bootstrap-ops') {
+      result = bootstrapOps({
+        opsRuntime: options['ops-runtime'],
+        opsHome: options['ops-home'],
+        sourceCli: options['source-cli'],
+        sourceRuntime: options['source-runtime'],
+        sourceHome: options['source-home'],
+        targetRuntime: options['runtime-root'],
+        targetHome: options['kiki-home'],
+        syncConfig: !options['no-sync-config'],
+      });
+    } else if (command === 'inspect') {
+      result = await inspectRuntime({
+        runtimeRoot: options['runtime-root'],
+        kikiHome: options['kiki-home'],
+        candidateRoot: options['candidate-root'],
+        expectedCommit: options['expected-commit'],
+        ledgerPath: options['ledger-path'],
+      });
+    } else if (command === 'rollback') {
+      result = await rollbackRuntime({
+        runtimeRoot: options['runtime-root'],
+        kikiHome: options['kiki-home'],
+        releaseId: options['release-id'],
+        expectedCommit: options['expected-commit'],
+        hotSwitchScript: options['hot-switch-script'],
+        startupSeconds: parsePositiveInt(options['startup-seconds'], 90, '--startup-seconds'),
+        stopGraceSeconds: parsePositiveInt(options['stop-grace-seconds'], 30, '--stop-grace-seconds'),
+        ledgerPath: options['ledger-path'],
+      });
+    } else if (command === 'reconcile') {
+      const sessions = options.sessions ? String(options.sessions).split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+      result = await reconcileSwitch({
+        runtimeRoot: options['runtime-root'],
+        kikiHome: options['kiki-home'],
+        reportPath: options['report-path'],
+        sessions,
+        nudge: Boolean(options.nudge),
+        prompt: options.prompt,
+      });
+    } else if (command === 'switch') {
+      result = await switchRuntime({
+        runtimeRoot: options['runtime-root'],
+        kikiHome: options['kiki-home'],
+        candidateRoot: options['candidate-root'],
+        expectedCommit: options['expected-commit'],
+        hotSwitchScript: options['hot-switch-script'],
+        settleSeconds: parsePositiveInt(options['settle-seconds'], 600, '--settle-seconds'),
+        startupSeconds: parsePositiveInt(options['startup-seconds'], 90, '--startup-seconds'),
+        stopGraceSeconds: parsePositiveInt(options['stop-grace-seconds'], 30, '--stop-grace-seconds'),
+        canaryTimeoutSeconds:
+          options['canary-timeout-seconds'] === undefined
+            ? undefined
+            : parsePositiveInt(options['canary-timeout-seconds'], 0, '--canary-timeout-seconds'),
+        skipCanary: Boolean(options['skip-canary']),
+        background: Boolean(options.background),
+        noInterruptAfterSettle: Boolean(options['no-interrupt-after-settle']),
+        autoRollback: !options['no-auto-rollback'],
+        nudgeInterrupted: Boolean(options['nudge-interrupted']),
+        nudgePrompt: options['nudge-prompt'],
+        ledgerPath: options['ledger-path'],
+      });
+    }
+  } catch (error) {
+    if (options.json && error?.failureReport) {
+      process.stdout.write(`${JSON.stringify(error.failureReport, null, 2)}\n`);
+    }
+    throw error;
   }
 
   if (options.json) {
