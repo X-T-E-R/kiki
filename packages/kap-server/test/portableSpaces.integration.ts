@@ -11,6 +11,7 @@ import { IMemoryStore } from '@kiki/agent-core-v2/app/memory/memoryStore';
 import { DEFAULT_NOTIFICATIONS_CONFIG, NotificationsConfigSchema } from '@kiki/agent-core-v2/app/notifications/configSection';
 import { IRecipeService } from '@kiki/agent-core-v2/app/recipes/recipes';
 import { packTarGz, unpackTarGz } from '../src/services/portableSpace/tarArchive';
+import { decodeAge, encodeAge } from '../src/services/portableSpace/ageCodec';
 import {
   portableSpaceApplyReceiptSchema,
   portableSpaceExportReceiptSchema,
@@ -787,6 +788,37 @@ describe('Portable Spaces authenticated locked protocol', () => {
       portableSpaceApplyReceiptSchema,
     );
     expect(await readFile(join(previewTarget, 'config.toml'), 'utf8')).toContain('preview-retained');
+
+    const authNative = createRequire(createRequire(import.meta.url).resolve('@kiki/oauth'))('@kiki/auth-native') as {
+      generateX25519Keypair: () => { recipient: string; identity: string };
+    };
+    const keypairs = Array.from({ length: 65 }, () => authNative.generateX25519Keypair());
+    const stubSync = {
+      ensureDeviceKeypair: async () => keypairs[0]!,
+    } as unknown as Parameters<typeof encodeAge>[3];
+    const encoded65 = await encodeAge(
+      Buffer.from('portable-65-recipients', 'utf8'),
+      { mode: 'x25519', recipients: keypairs.map((kp) => kp.recipient) },
+      [],
+      stubSync,
+    );
+    expect(encoded65.recipients).toHaveLength(65);
+    const decoded65 = await decodeAge(encoded65.bytes, { identity: keypairs[64]!.identity }, stubSync);
+    expect(decoded65.bytes.toString('utf8')).toBe('portable-65-recipients');
+
+    await expect(
+      decodeAge(encoded65.bytes, { identity: keypairs[64]!.identity }, stubSync, () => {
+        throw new TypeError('Portable age codec is unavailable');
+      }),
+    ).rejects.toThrow('Portable age codec is unavailable');
+
+    const wrongKey = authNative.generateX25519Keypair();
+    const failSync = {
+      ensureDeviceKeypair: async () => wrongKey,
+    } as unknown as Parameters<typeof encodeAge>[3];
+    await expect(
+      decodeAge(encoded65.bytes, { identity: wrongKey.identity }, failSync),
+    ).rejects.toThrow('Unable to decrypt portable age archive');
   });
 
 });

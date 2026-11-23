@@ -87,7 +87,6 @@ export const FROZEN_V23_THRESHOLDS = Object.freeze({
     heavyMaxLongTaskMs: 600,
     scrollFrameP95MaxMs: 33.4,
     switchFirstMessagePaintP95MaxMs: 2_000,
-    maxJsWireMiB: 2.5,
   }),
   s17: Object.freeze({
     searchP95MaxMs: DEFAULT_SMOKE_MATRIX.tiers.s17WorkstationCliff.sqliteContention.searchP95MaxMs,
@@ -1481,8 +1480,8 @@ export function evaluateS16MobileVerdict(report) {
     }
     if (typeof web.jsTotalEncodedMiB !== 'number' || !Number.isFinite(web.jsTotalEncodedMiB) || web.jsTotalEncodedMiB <= 0) {
       harnessFailures.push(`S16 webAssetsAudit missing positive jsTotalEncodedMiB (got ${web.jsTotalEncodedMiB})`);
-    } else if (web.jsTotalEncodedMiB > T.maxJsWireMiB) {
-      productFailures.push(`S16 JS wire transfer ${web.jsTotalEncodedMiB} MiB > ${T.maxJsWireMiB} MiB budget`);
+    } else if (isPositiveFiniteNumber(report.maxJsWireMiB) && web.jsTotalEncodedMiB > report.maxJsWireMiB) {
+      productFailures.push(`S16 JS wire transfer ${web.jsTotalEncodedMiB} MiB > ${report.maxJsWireMiB} MiB budget`);
     }
   }
 

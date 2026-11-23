@@ -30,7 +30,7 @@ export type PortableSpaceSecretMode = z.infer<typeof portableSpaceSecretModeSche
 export const portableSpaceEncryptionSchema = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal('x25519'),
-    recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).max(64).optional(),
+    recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).optional(),
   }).strict(),
   z.object({
     mode: z.literal('passphrase'),

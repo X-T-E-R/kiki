@@ -11,7 +11,7 @@ export const encryptedCredentialEnvelopeSchema = /* @__PURE__ */ z.object({
   credentialId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._-]+$/),
   revision: z.string().min(1).max(128),
   updatedAt: z.string().datetime({ offset: true }),
-  recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).min(1).max(64),
+  recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).min(1),
   ciphertextBase64: z.string().min(1).max(1_048_576),
 }).strict();
 export type EncryptedCredentialEnvelope = z.infer<typeof encryptedCredentialEnvelopeSchema>;
@@ -45,7 +45,7 @@ export const skillRootSyncPlanSchema = /* @__PURE__ */ z.object({
 export type SkillRootSyncPlan = z.infer<typeof skillRootSyncPlanSchema>;
 
 export const syncCredentialSealInputSchema = /* @__PURE__ */ z.object({
-  recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).min(1).max(64),
+  recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).min(1),
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
 }).strict();
 export type SyncCredentialSealInput = z.infer<typeof syncCredentialSealInputSchema>;
@@ -105,7 +105,7 @@ export const syncBundleSchema = /* @__PURE__ */ z.object({
 export type SyncBundle = z.infer<typeof syncBundleSchema>;
 
 export const syncBundleExportInputSchema = /* @__PURE__ */ z.object({
-  recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).max(64).optional(),
+  recipients: z.array(z.string().regex(/^age1[a-z0-9]+$/)).optional(),
   credentialIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   projectIds: z.array(z.string().min(1).max(128)).max(128).optional(),
   workDir: z.string().min(1).max(4096).optional(),

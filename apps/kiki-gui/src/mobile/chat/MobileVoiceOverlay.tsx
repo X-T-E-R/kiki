@@ -22,12 +22,16 @@ interface SpeechRecognitionEventLike {
   };
 }
 
+interface SpeechRecognitionErrorEventLike {
+  readonly error?: string;
+}
+
 interface SpeechRecognitionInstance {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
   onend: (() => void) | null;
   start(): void;
   stop(): void;
@@ -55,11 +59,14 @@ export function MobileVoiceOverlay({ open, onClose, onSubmitText }: MobileVoiceO
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [unavailable, setUnavailable] = useState(false);
+  const [errorKind, setErrorKind] = useState<'permission' | 'failed' | null>(null);
   const recRef = useRef<SpeechRecognitionInstance | null>(null);
+  const manualStopRef = useRef(false);
 
   useLayerHistory('mobile-voice-overlay', open, onClose);
 
   const stopRecognition = useCallback(() => {
+    manualStopRef.current = true;
     try {
       recRef.current?.stop();
     } catch {
@@ -73,11 +80,14 @@ export function MobileVoiceOverlay({ open, onClose, onSubmitText }: MobileVoiceO
     const Ctor = resolveSpeechRecognition();
     if (Ctor === null) {
       setUnavailable(true);
+      setErrorKind(null);
       setListening(false);
       return;
     }
     setUnavailable(false);
     stopRecognition();
+    manualStopRef.current = false;
+    setErrorKind(null);
     const recognition = new Ctor();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -88,9 +98,16 @@ export function MobileVoiceOverlay({ open, onClose, onSubmitText }: MobileVoiceO
         const piece = event.results[i]?.[0]?.transcript;
         if (piece !== undefined) parts.push(piece);
       }
+      setErrorKind(null);
       setTranscript(parts.join(' ').trim());
     };
-    recognition.onerror = () => { setListening(false); };
+    recognition.onerror = (event) => {
+      setListening(false);
+      if (manualStopRef.current && event.error === 'aborted') return;
+      setErrorKind(
+        event.error === 'not-allowed' || event.error === 'service-not-allowed' ? 'permission' : 'failed',
+      );
+    };
     recognition.onend = () => { setListening(false); };
     recRef.current = recognition;
     try {
@@ -98,6 +115,7 @@ export function MobileVoiceOverlay({ open, onClose, onSubmitText }: MobileVoiceO
       setListening(true);
     } catch {
       setListening(false);
+      setErrorKind('failed');
     }
   }, [locale, stopRecognition]);
 
@@ -128,20 +146,42 @@ export function MobileVoiceOverlay({ open, onClose, onSubmitText }: MobileVoiceO
       <div className="flex max-w-[340px] flex-col items-center gap-4 text-center">
         <div
           className={`flex h-20 w-20 items-center justify-center rounded-full transition-transform duration-300 ${
-            listening ? 'scale-105 bg-accent/15 text-accent' : 'bg-ink/[0.06] text-ink-soft'
+            listening
+              ? 'scale-105 bg-accent/15 text-accent'
+              : errorKind !== null
+                ? 'bg-danger/12 text-danger'
+                : 'bg-ink/[0.06] text-ink-soft'
           }`}
         >
-          <Mic className="h-8 w-8" strokeWidth={1.75} aria-hidden="true" />
+          {errorKind !== null ? (
+            <MicOff className="h-8 w-8" strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <Mic className="h-8 w-8" strokeWidth={1.75} aria-hidden="true" />
+          )}
         </div>
-        <h2 className="font-display text-[26px] font-medium leading-[1.2] text-ink">
+        <h2
+          data-voice-error={errorKind ?? undefined}
+          className={`font-display text-[26px] font-medium leading-[1.2] ${
+            errorKind !== null && transcript === '' ? 'text-danger' : 'text-ink'
+          }`}
+        >
           {unavailable
             ? t('mobile.voice.unavailable')
             : transcript !== ''
               ? transcript
               : listening
                 ? t('mobile.voice.listening')
-                : t('mobile.voice.start')}
+                : errorKind === 'permission'
+                  ? t('mobile.voice.permissionDenied')
+                  : errorKind === 'failed'
+                    ? t('mobile.voice.failed')
+                    : t('mobile.voice.start')}
         </h2>
+        {errorKind !== null && transcript !== '' ? (
+          <p role="alert" className="text-[13px] leading-snug text-danger">
+            {errorKind === 'permission' ? t('mobile.voice.permissionDenied') : t('mobile.voice.failed')}
+          </p>
+        ) : null}
       </div>
 
       <div className="kiki-mobile-glass-pill flex items-center gap-3 rounded-full p-2">

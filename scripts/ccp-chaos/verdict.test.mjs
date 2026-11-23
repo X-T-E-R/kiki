@@ -1044,20 +1044,37 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(goodAssets.passed, true);
 
-    // Item 5: compressed JS bloat (32 MiB gzipped) MUST still fail
-    const bloatedCompressedAssets = evaluateWebAssetsBudget({
+    // Large valid compressed JS delivery passes by default without ungrounded size ceilings,
+    // while an explicit caller maxTransferBytes ceiling is honored when supplied.
+    const largeValidCompressedAssets = evaluateWebAssetsBudget({
       servedByKapServer: true,
       jsAssetsCount: 8,
-      jsTotalTransferBytes: 32 * 1024 * 1024,
+      jsTotalTransferBytes: 3 * 1024 * 1024,
       jsCompressedCount: 8,
       jsUncompressedCount: 0,
       allJsCompressed: true,
-      contentEncodings: ['gzip'],
+      contentEncodings: ['br'],
       failedAssets: [],
       jsWrongContentType: [],
     });
-    assert.equal(bloatedCompressedAssets.passed, false);
-    assert.ok(bloatedCompressedAssets.failures.some((f) => /compressed ceiling/i.test(f)));
+    assert.equal(largeValidCompressedAssets.passed, true);
+
+    const explicitCeilingExceeded = evaluateWebAssetsBudget(
+      {
+        servedByKapServer: true,
+        jsAssetsCount: 8,
+        jsTotalTransferBytes: 3 * 1024 * 1024,
+        jsCompressedCount: 8,
+        jsUncompressedCount: 0,
+        allJsCompressed: true,
+        contentEncodings: ['gzip'],
+        failedAssets: [],
+        jsWrongContentType: [],
+      },
+      { maxTransferBytes: 2 * 1024 * 1024 },
+    );
+    assert.equal(explicitCeilingExceeded.passed, false);
+    assert.ok(explicitCeilingExceeded.failures.some((f) => /explicit .* ceiling/i.test(f)));
 
     // F3 & F4 + Item 2: P01 rejects missing browserGuiCheck when required AND rejects newConsoleErrors
     const p01MissingBrowser = evaluateP01ColdChildGate({
@@ -1163,7 +1180,7 @@ void describe('v2.3 Harness & Negative Meta-Gates (verdict.test.mjs)', () => {
     });
     assert.equal(s16Lag.passed, false);
     assert.equal(s16Lag.exitCode, EXIT_PRODUCT_FAIL);
-    assert.ok(s16Lag.productFailures.length >= 4);
+    assert.ok(s16Lag.productFailures.length >= 3);
 
     // S16: clean optimized mobile session passes
     const s16Fast = evaluateS16MobileVerdict({

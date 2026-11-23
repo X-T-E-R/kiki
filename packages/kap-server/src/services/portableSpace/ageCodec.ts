@@ -22,7 +22,6 @@ const ARMOR_BEGIN = '-----BEGIN AGE ENCRYPTED FILE-----';
 const ARMOR_END = '-----END AGE ENCRYPTED FILE-----';
 const AGE_HEADER = 'age-encryption.org/v1';
 const AGE_RECIPIENT_PATTERN = /^age1[a-z0-9]+$/u;
-const MAX_RECIPIENTS = 64;
 let nativeAge: NativeAge | undefined;
 
 type DecodedAge = { bytes: Buffer; mode: 'x25519' } | { bytes: Buffer; mode: 'passphrase'; matchedPassphrase: string };
@@ -32,51 +31,48 @@ export async function decodeAge(
   bytes: Buffer,
   unlock: PortableSpaceUnlock | undefined,
   sync: SyncService,
+  codecLoader: () => NativeAge = loadNativeAge,
 ): Promise<DecodedAge> {
-  try {
-    const ciphertext = dearmorAge(bytes);
-    const header = inspectAge(ciphertext);
-    const native = loadNativeAge();
-    const attempts: { readonly mode: AgeMode; readonly value: string }[] = [];
-    const seenIdentities = new Set<string>();
-    const seenPassphrases = new Set<string>();
-    const addIdentities = async (value: string | undefined): Promise<void> => {
-      if (value === undefined || !header.modes.has('x25519')) return;
-      for (const identity of await resolveIdentityCandidates(value)) {
-        if (seenIdentities.has(identity)) continue;
-        seenIdentities.add(identity);
-        attempts.push({ mode: 'x25519', value: identity });
-      }
-    };
-    const addPassphrase = (value: string | undefined): void => {
-      if (value === undefined || value.length === 0 || !header.modes.has('passphrase') || seenPassphrases.has(value)) return;
-      seenPassphrases.add(value);
-      attempts.push({ mode: 'passphrase', value });
-    };
-    await addIdentities(unlock?.identity);
-    addPassphrase(unlock?.passphrase);
-    await addIdentities(process.env['KIKI_AGE_KEY']);
-    await addIdentities(process.env['KIKI_PACK_KEY']);
-    addPassphrase(process.env['KIKI_PACK_KEY']);
-    addPassphrase(effectivePassphrase());
-    for (const attempt of attempts) {
-      const plaintext = attempt.mode === 'x25519'
-        ? await tryDecryptIdentity(native, ciphertext, attempt.value)
-        : await tryDecryptPassphrase(native, ciphertext, attempt.value);
-      if (plaintext !== undefined) return attempt.mode === 'passphrase' ? { bytes: plaintext, mode: attempt.mode, matchedPassphrase: attempt.value } : { bytes: plaintext, mode: attempt.mode };
+  const ciphertext = dearmorAge(bytes);
+  const header = inspectAge(ciphertext);
+  const native = codecLoader();
+  const attempts: { readonly mode: AgeMode; readonly value: string }[] = [];
+  const seenIdentities = new Set<string>();
+  const seenPassphrases = new Set<string>();
+  const addIdentities = async (value: string | undefined): Promise<void> => {
+    if (value === undefined || !header.modes.has('x25519')) return;
+    for (const identity of await resolveIdentityCandidates(value)) {
+      if (seenIdentities.has(identity)) continue;
+      seenIdentities.add(identity);
+      attempts.push({ mode: 'x25519', value: identity });
     }
-    if (header.modes.has('x25519')) {
-      const keypair = await sync.ensureDeviceKeypair().catch(() => undefined);
-      const identity = keypair === undefined ? undefined : resolveInlineIdentity(keypair.identity);
-      if (identity !== undefined && !seenIdentities.has(identity)) {
-        const plaintext = await tryDecryptIdentity(native, ciphertext, identity);
-        if (plaintext !== undefined) return { bytes: plaintext, mode: 'x25519' };
-      }
-    }
-    throw new Error('Unable to decrypt portable age archive');
-  } catch {
-    throw new Error('Unable to decrypt portable age archive');
+  };
+  const addPassphrase = (value: string | undefined): void => {
+    if (value === undefined || value.length === 0 || !header.modes.has('passphrase') || seenPassphrases.has(value)) return;
+    seenPassphrases.add(value);
+    attempts.push({ mode: 'passphrase', value });
+  };
+  await addIdentities(unlock?.identity);
+  addPassphrase(unlock?.passphrase);
+  await addIdentities(process.env['KIKI_AGE_KEY']);
+  await addIdentities(process.env['KIKI_PACK_KEY']);
+  addPassphrase(process.env['KIKI_PACK_KEY']);
+  addPassphrase(effectivePassphrase());
+  for (const attempt of attempts) {
+    const plaintext = attempt.mode === 'x25519'
+      ? await tryDecryptIdentity(native, ciphertext, attempt.value)
+      : await tryDecryptPassphrase(native, ciphertext, attempt.value);
+    if (plaintext !== undefined) return attempt.mode === 'passphrase' ? { bytes: plaintext, mode: attempt.mode, matchedPassphrase: attempt.value } : { bytes: plaintext, mode: attempt.mode };
   }
+  if (header.modes.has('x25519')) {
+    const keypair = await sync.ensureDeviceKeypair().catch(() => undefined);
+    const identity = keypair === undefined ? undefined : resolveInlineIdentity(keypair.identity);
+    if (identity !== undefined && !seenIdentities.has(identity)) {
+      const plaintext = await tryDecryptIdentity(native, ciphertext, identity);
+      if (plaintext !== undefined) return { bytes: plaintext, mode: 'x25519' };
+    }
+  }
+  throw new Error('Unable to decrypt portable age archive');
 }
 
 /** Resolves an explicit passphrase or the KIKI_AGE_PASSPHRASE / KIKI_SPACE_PASSPHRASE environment value. */
@@ -94,27 +90,32 @@ export async function encodeAge(
   encryption: PortableSpaceEncryption | undefined,
   roster: string[],
   sync: SyncService,
+  codecLoader: () => NativeAge = loadNativeAge,
 ): Promise<{ readonly bytes: Buffer; readonly mode: AgeMode; readonly recipients: string[] }> {
-  try {
-    const native = loadNativeAge();
-    if (encryption?.mode === 'passphrase') {
-      const passphrase = effectivePassphrase(encryption.passphrase);
-      if (passphrase === undefined) {
-        throw new Error('Portable age passphrase is required');
-      }
+  const native = codecLoader();
+  if (encryption?.mode === 'passphrase') {
+    const passphrase = effectivePassphrase(encryption.passphrase);
+    if (passphrase === undefined) {
+      throw new Error('Portable age passphrase is required');
+    }
+    try {
       const encrypted = await native.ageEncrypt(bytes, passphrase);
       return { bytes: Buffer.from(encrypted), mode: 'passphrase', recipients: [] };
+    } catch {
+      throw new Error('Unable to encrypt portable age archive');
     }
-    const configured = encryption?.mode === 'x25519' ? encryption.recipients ?? [] : [];
-    const explicit = normalizeRecipients(configured);
-    const known = explicit.length > 0 ? explicit : normalizeRecipients(roster);
-    const recipients = known.length > 0 ? known : [
-      (await sync.ensureDeviceKeypair()).recipient,
-    ];
-    const normalized = normalizeRecipients(recipients);
-    if (normalized.length === 0) {
-      throw new Error('Portable age recipient is required');
-    }
+  }
+  const configured = encryption?.mode === 'x25519' ? encryption.recipients ?? [] : [];
+  const explicit = normalizeRecipients(configured);
+  const known = explicit.length > 0 ? explicit : normalizeRecipients(roster);
+  const recipients = known.length > 0 ? known : [
+    (await sync.ensureDeviceKeypair()).recipient,
+  ];
+  const normalized = normalizeRecipients(recipients);
+  if (normalized.length === 0) {
+    throw new Error('Portable age recipient is required');
+  }
+  try {
     const encrypted = native.encryptMultiRecipient(bytes, normalized);
     return { bytes: Buffer.from(encrypted), mode: 'x25519', recipients: normalized };
   } catch {
@@ -264,11 +265,7 @@ function loadNativeAge(): NativeAge {
 }
 
 function normalizeRecipients(values: readonly string[]): string[] {
-  const entries = parseRecipients(values.join('\n'));
-  if (entries.length > MAX_RECIPIENTS) {
-    throw new Error('Portable age recipient list is too large');
-  }
-  return entries.map((entry) => entry.recipient);
+  return parseRecipients(values.join('\n')).map((entry) => entry.recipient);
 }
 
 function validLabel(value: string): boolean {
