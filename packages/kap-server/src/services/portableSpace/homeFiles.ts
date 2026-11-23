@@ -4,7 +4,6 @@ import { checkedPath, missing, readBounded, readTree } from './spaceFiles';
 import { encodeToml, PLAIN } from './treeProjection';
 
 export const GUI_CREDENTIALS = 'secrets/nb-search/gui-credentials.json';
-export const MAX_GUI_CREDENTIAL_BYTES = 256 * 1024;
 
 export function readGuiCredentials(bytes: Buffer) {
   try {
@@ -27,7 +26,7 @@ export async function readHomeFiles(home: string, osHome: string, includeCredent
     files.set(RECIPE_INSTALLATIONS, installBytes(records));
   }
   if (includeCredentials) {
-    const guiCredentials = await missing(readBounded(await checkedPath(home, GUI_CREDENTIALS), MAX_GUI_CREDENTIAL_BYTES));
+    const guiCredentials = await missing(readBounded(await checkedPath(home, GUI_CREDENTIALS)));
     if (guiCredentials) {
       const { slots } = readGuiCredentials(guiCredentials);
       if (Object.keys(slots).length > 0) files.set(PLAIN, encodeToml({ nb_search_gui: slots }));

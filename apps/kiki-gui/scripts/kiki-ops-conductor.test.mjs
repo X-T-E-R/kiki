@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   bootstrapOps,
+  callLocalApi,
   classifyRuntimeServerPath,
   ensureSearchDisabledConfig,
   inspectRuntime,
@@ -624,6 +625,44 @@ test('switchRuntime passes -CanaryCheck, verifies active executable + build_id +
         }),
       /CIM query failed/,
     );
+
+    // Whitespace-only acceptanceRef or checkRef is rejected identically to assertEvidenceRef.
+    const badReceiptCand = join(root, 'bad-receipt-cand');
+    writeCandidate(badReceiptCand, NEW_COMMIT, 'desk-new', 'srv-new');
+    const badReceiptPath = join(badReceiptCand, 'desktop-build-receipt.json');
+    const badReceipt = JSON.parse(readFileSync(badReceiptPath, 'utf8'));
+    badReceipt.acceptanceRef = '   ';
+    writeFileSync(badReceiptPath, JSON.stringify(badReceipt));
+    const badReceiptInspect = await inspectRuntime({
+      runtimeRoot,
+      kikiHome,
+      candidateRoot: badReceiptCand,
+      resolveProcessPath: () => null,
+    });
+    assert.equal(badReceiptInspect.candidate.valid, false);
+    assert.match(badReceiptInspect.candidate.error, /acceptanceRef reference is required/);
+
+    // /agent-tasks failure is preserved on activeTaskError even when /tasks fallback succeeds.
+    state.workPending = ['sess-cut'];
+    const partialInspect = await inspectRuntime({
+      runtimeRoot,
+      kikiHome,
+      resolveProcessPath: (pid) => (pid === activePid ? activeExePath : null),
+      callApi: async (req) => {
+        if (req.path.includes('/agent-tasks')) {
+          throw new Error('HTTP 500 for GET /agent-tasks: upstream failure');
+        }
+        if (req.path.includes('/tasks?status=running')) {
+          return { items: [{ id: 't1', status: 'running' }], has_more: false };
+        }
+        return callLocalApi(req);
+      },
+    });
+    state.workPending = [];
+    const partialSession = partialInspect.workPendingDetails.find((item) => item.sessionId === 'sess-cut');
+    assert.equal(partialSession.activeTaskScope, 'partial_main_only');
+    assert.equal(partialSession.activeTaskCount, 1);
+    assert.match(partialSession.activeTaskError, /HTTP 500 for GET \/agent-tasks/);
   } finally {
     await srv.close();
     rmSync(root, { recursive: true, force: true });

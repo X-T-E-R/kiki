@@ -906,6 +906,24 @@ describe('Scenario S7 Soak Slopes & Scenario S8 Extreme Media Generator', () => 
         assert.equal(renamedReport.intraMonorepoMocks.legacyExempted.length, 1);
         assert.equal(renamedReport.diffRatchet.mockViolations.length, 0);
 
+        const untrackedTest = path.join(tmpGitRepo, 'packages', 'kap-server', 'test', 'untracked-new.test.ts');
+        fs.mkdirSync(path.dirname(untrackedTest), { recursive: true });
+        fs.writeFileSync(
+          untrackedTest,
+          [
+            "import { describe, it, vi } from 'vitest';",
+            "vi.mock('../src/start', () => ({}));",
+            "describe('untracked', () => { it('works', () => {}); });",
+            '',
+          ].join('\n'),
+        );
+        const untrackedReport = runTestHygieneCheck({ repoRoot: tmpGitRepo });
+        assert.equal(untrackedReport.ok, false);
+        assert.equal(untrackedReport.intraMonorepoMocks.violations.length, 1);
+        assert.equal(untrackedReport.intraMonorepoMocks.violations[0].file, 'packages/kap-server/test/untracked-new.test.ts');
+        assert.equal(untrackedReport.diffRatchet.mockViolations.length, 1);
+        fs.rmSync(untrackedTest, { force: true });
+
         fs.appendFileSync(
           path.join(renameDir, 'ActivityHistoryPanel.test.tsx'),
           "vi.mock('../state/connection', () => ({}));\n",

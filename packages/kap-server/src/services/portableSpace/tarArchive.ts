@@ -1,10 +1,9 @@
+import { constants as bufferConstants } from 'node:buffer';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
 const BLOCK_SIZE = 512;
-const MAX_CONTENT_BYTES = 64 * 1024 * 1024;
 const MAX_PATH_BYTES = 4096;
 const MAX_PAX_BYTES = 1024 * 1024;
-const MAX_TAR_BYTES = 128 * 1024 * 1024;
 const USTAR_MAGIC = 'ustar\0';
 const USTAR_VERSION = '00';
 const GNU_MAGIC = 'ustar  \0';
@@ -72,7 +71,7 @@ export function packTarGz(files: ReadonlyMap<string, Buffer>): Buffer {
     }
     seen.add(alias);
     contentBytes += value.byteLength;
-    if (!Number.isSafeInteger(contentBytes) || contentBytes > MAX_CONTENT_BYTES) {
+    if (!Number.isSafeInteger(contentBytes) || contentBytes > bufferConstants.MAX_LENGTH) {
       throw invalidArchiveInput();
     }
     entries.push({ path, bytes: value });
@@ -97,7 +96,7 @@ export function packTarGz(files: ReadonlyMap<string, Buffer>): Buffer {
   }
   chunks.push(Buffer.alloc(BLOCK_SIZE * 2));
   const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  if (size > MAX_TAR_BYTES) throw invalidArchiveInput();
+  if (!Number.isSafeInteger(size) || size > bufferConstants.MAX_LENGTH) throw invalidArchiveInput();
   const tar = Buffer.concat(chunks, size);
   const gzip = gzipSync(tar, { level: 9 });
   gzip[4] = 0;
@@ -116,7 +115,7 @@ export function unpackTarGz(bytes: Buffer): Map<string, Buffer> {
   }
   let tar: Buffer;
   try {
-    tar = gunzipSync(bytes, { maxOutputLength: MAX_TAR_BYTES });
+    tar = gunzipSync(bytes);
   } catch {
     throw invalidArchiveInput();
   }
@@ -190,7 +189,7 @@ export function unpackTarGz(bytes: Buffer): Map<string, Buffer> {
     if (seen.has(alias)) throw invalidArchiveInput();
     seen.add(alias);
     contentBytes += size;
-    if (!Number.isSafeInteger(contentBytes) || contentBytes > MAX_CONTENT_BYTES) {
+    if (!Number.isSafeInteger(contentBytes) || contentBytes > bufferConstants.MAX_LENGTH) {
       throw invalidArchiveInput();
     }
     files.set(path, Buffer.from(body));

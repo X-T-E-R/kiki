@@ -9,7 +9,6 @@ import { domainForFile, FORK, PLAIN, RECIPIENTS, SEALED } from './treeProjection
 import { safePortablePath } from './tarArchive';
 import { RECIPE_STORE } from './recipeStore';
 
-export const MAX_SPACE_BYTES = 64 * 1024 * 1024;
 const exec = promisify(execFile);
 const SENSITIVE = /^(?:\.git|\.ssh|\.gnupg|credentials|sessions|secrets?|\.secrets?|\.env(?:\..*)?|config\.local\.toml|server[.-](?:local-owner|token)|.*\.(?:pem|key|pfx))$/i;
 
@@ -53,11 +52,13 @@ function within(root: string, path: string): boolean {
   return !isAbsolute(sub) && sub !== '..' && !sub.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`);
 }
 
-export async function readBounded(path: string, limit = MAX_SPACE_BYTES): Promise<Buffer> {
+export async function readBounded(path: string, limit?: number): Promise<Buffer> {
   const handle = await open(path, 'r');
   try {
     const info = await handle.stat();
-    if (!info.isFile() || info.size > limit) throw new Error(`Portable Space file exceeds its limit: ${basename(path)}`);
+    if (!info.isFile() || (limit !== undefined && info.size > limit)) {
+      throw new Error(`Portable Space file exceeds its limit: ${basename(path)}`);
+    }
     const buffer = Buffer.allocUnsafe(info.size + 1);
     let count = 0;
     while (count < buffer.length) {
@@ -75,7 +76,6 @@ export async function readTree(root: string, live: boolean, include: (path: stri
   const actualRoot = await realpath(root);
   const allowed = [actualRoot, dirname(actualRoot), await missing(realpath(osHome)) ?? osHome];
   const names = new Set<string>();
-  let total = 0;
   const walk = async (directory: string, prefix: string, trail: readonly string[]): Promise<void> => {
     for (const dirent of await readdir(directory, { withFileTypes: true })) {
       const path = prefix ? `${prefix}/${dirent.name}` : dirent.name;
@@ -110,9 +110,7 @@ export async function readTree(root: string, live: boolean, include: (path: stri
         const alias = canonical.toLowerCase();
         if (names.has(alias)) throw new Error(`Portable Space paths overlap: ${canonical}`);
         names.add(alias);
-        const bytes = await readBounded(current, MAX_SPACE_BYTES - total);
-        total += bytes.length;
-        if (total > MAX_SPACE_BYTES) throw new Error('Portable Space tree exceeds 64 MiB');
+        const bytes = await readBounded(current);
         files.set(canonical, bytes);
       }
     }

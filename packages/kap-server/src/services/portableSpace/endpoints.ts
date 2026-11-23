@@ -12,7 +12,7 @@ import { decodeAge, encodeAge, formatRecipients, parseRecipients } from './ageCo
 import { readLive, type LiveServices } from './liveSpace';
 import { readHomeFiles } from './homeFiles';
 import { sameUnit } from './mergeEngine';
-import { checkedPath, git, gitRemote, MAX_SPACE_BYTES, missing, pathFormat, readBounded, readTree, scratch, writeFileAtomic, writeTree } from './spaceFiles';
+import { checkedPath, git, gitRemote, missing, pathFormat, readBounded, readTree, scratch, writeFileAtomic, writeTree } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
 import { encodeToml, filesFromUnits, FORK, object, parseToml, PLAIN, RECIPIENTS, SEALED, toUnits, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
 
@@ -158,7 +158,7 @@ export class SpaceEndpoints {
   }
 
   async knownRecipients(): Promise<ReturnType<typeof parseRecipients>> {
-    return parseRecipients((await missing(readBounded(this.recipientsFile, 64 * 1024)))?.toString('utf8') ?? '');
+    return parseRecipients((await missing(readBounded(this.recipientsFile)))?.toString('utf8') ?? '');
   }
 
   private legacy(bytes: Buffer): Map<string, Buffer> {
@@ -202,7 +202,7 @@ export class SpaceEndpoints {
         break;
       case 'archive': {
         label = basename(resolve(endpoint.path));
-        const bytes = await readBounded(endpoint.path, MAX_SPACE_BYTES * 2);
+        const bytes = await readBounded(endpoint.path);
         format = pathFormat(endpoint.path) === 'age' || bytes.subarray(0, 21).toString('ascii') === 'age-encryption.org/v1' || bytes.subarray(0, 14).toString('ascii') === '-----BEGIN AGE' ? 'age' : 'tgz';
         if (format === 'age') {
           const decoded = await decodeAge(bytes, options.unlock, this.sync);
@@ -308,7 +308,6 @@ export class SpaceEndpoints {
       } else if (tree.recipients.length) attachRoster(tree.recipients.map((entry) => entry.recipient));
       if (format === 'dir') {
         bytes = [...files.values()].reduce((total, file) => total + file.length, 0);
-        if (bytes > MAX_SPACE_BYTES) throw new Error('Portable Space tree exceeds 64 MiB');
         await this.assertPortableDirectory(destination);
         await writeTree(destination, files, options.gitInit === true, options.replaceManaged === true);
       } else {

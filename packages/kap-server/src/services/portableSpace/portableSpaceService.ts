@@ -9,7 +9,7 @@ import { formatRecipients, parseRecipients } from './ageCodec';
 import { endpointForPath, endpointKey, inspectTree, resealOptions, SpaceEndpoints, type LoadedSpaceTree } from './endpoints';
 import { writeLive } from './liveSpace';
 import { applyUnset, assignPath, isUnitId, modelDependencies, planChanges, reconcile, sameUnit, unitHashes, type Change, type VerifiedBase } from './mergeEngine';
-import { MAX_SPACE_BYTES, missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
+import { missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
 import { commonUnits, domainForFile, encodeToml, filesFromUnits, object, parseToml, platformUnits, PLAIN, putUnit, RECIPIENTS, SEALED, selectedUnits, toUnits, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
 
@@ -495,7 +495,7 @@ export class PortableSpaceService {
         } else if (action.op === 'writeFile') {
           const path = admit(action.path);
           const bytes = Buffer.from(action.contentBase64, 'base64');
-          if (bytes.length > MAX_SPACE_BYTES || bytes.toString('base64') !== action.contentBase64) throw new Error('Invalid portable file content');
+          if (bytes.toString('base64') !== action.contentBase64) throw new Error('Invalid portable file content');
           assign(path, bytes);
         } else {
           const from = await this.endpoints.load(action.from, { unlock: action.fromUnlock });

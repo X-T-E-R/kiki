@@ -1176,6 +1176,41 @@ export interface QuestionItemAnswer {
   otherText: string;
 }
 
+export function questionAllowsOther(item: QuestionItem): boolean {
+  return item.allow_other !== false;
+}
+
+export function isQuestionItemAnswered(item: QuestionItem, selection: QuestionItemAnswer): boolean {
+  return selection.optionIds.length > 0 || (questionAllowsOther(item) && selection.otherText.trim() !== '');
+}
+
+export function buildQuestionAnswers(
+  questions: readonly QuestionItem[],
+  selections: Readonly<Record<string, QuestionItemAnswer | undefined>>,
+): Record<string, QuestionAnswer> | undefined {
+  const answers: Record<string, QuestionAnswer> = {};
+  for (const item of questions) {
+    const selection = selections[item.id] ?? { optionIds: [], otherText: '' };
+    const optionIds = selection.optionIds;
+    const other = questionAllowsOther(item) ? selection.otherText.trim() : '';
+    if (optionIds.length === 0 && other === '') return undefined;
+    if (optionIds.length > 0 && other !== '') {
+      answers[item.id] = {
+        kind: 'multi_with_other',
+        option_ids: [...optionIds],
+        other_text: other,
+      };
+    } else if (other !== '') {
+      answers[item.id] = { kind: 'other', text: other };
+    } else if (optionIds.length === 1) {
+      answers[item.id] = { kind: 'single', option_id: optionIds[0]! };
+    } else {
+      answers[item.id] = { kind: 'multi', option_ids: [...optionIds] };
+    }
+  }
+  return Object.keys(answers).length === questions.length ? answers : undefined;
+}
+
 function QuestionItemView({
   item,
   answer,
@@ -1234,16 +1269,18 @@ function QuestionItemView({
             </button>
           );
         })}
-        <label className="flex items-center gap-2 rounded-md px-3 pt-1.5">
-          <span className="shrink-0 text-[13px] font-medium text-ink-soft">{otherLabel}</span>
-          <input
-            aria-label={otherLabel}
-            className="min-h-8 w-full min-w-0 rounded-md border border-hairline bg-panel px-3 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-            placeholder={item.other_description ?? t('ia.otherPlaceholder')}
-            value={answer.otherText}
-            onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}
-          />
-        </label>
+        {questionAllowsOther(item) ? (
+          <label className="flex items-center gap-2 rounded-md px-3 pt-1.5">
+            <span className="shrink-0 text-[13px] font-medium text-ink-soft">{otherLabel}</span>
+            <input
+              aria-label={otherLabel}
+              className="min-h-8 w-full min-w-0 rounded-md border border-hairline bg-panel px-3 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+              placeholder={item.other_description ?? t('ia.otherPlaceholder')}
+              value={answer.otherText}
+              onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}
+            />
+          </label>
+        ) : null}
       </div>
     </div>
   );
@@ -1283,36 +1320,16 @@ function QuestionCardContent({ block, onAnswer, onDismiss, originAgentName }: Qu
   // An item counts as answered when at least one option is checked OR the
   // always-present Other input carries text — zero options plus a note is a
   // valid answer.
-  const isItemAnswered = (item: (typeof block.request.questions)[number]): boolean => {
-    const selection = answerFor(item.id);
-    return selection.optionIds.length > 0 || selection.otherText.trim() !== '';
-  };
+  const isItemAnswered = (item: (typeof block.request.questions)[number]): boolean =>
+    isQuestionItemAnswered(item, answerFor(item.id));
   // Gate submit: unanswered sub-questions would be silently dropped from the
   // payload (and the server rejects partial answers with 40001 anyway).
   const unansweredCount = block.request.questions.filter((item) => !isItemAnswered(item)).length;
 
   const submit = () => {
     if (responding.current || block.outcome !== undefined || unansweredCount > 0) return;
-    const answers: Record<string, QuestionAnswer> = {};
-    for (const item of block.request.questions) {
-      const selection = answerFor(item.id);
-      const optionIds = selection.optionIds;
-      const other = selection.otherText.trim();
-      if (optionIds.length > 0 && other !== '') {
-        answers[item.id] = {
-          kind: 'multi_with_other',
-          option_ids: optionIds,
-          other_text: other,
-        };
-      } else if (other !== '') {
-        answers[item.id] = { kind: 'other', text: other };
-      } else if (optionIds.length === 1) {
-        answers[item.id] = { kind: 'single', option_id: optionIds[0]! };
-      } else if (optionIds.length > 1) {
-        answers[item.id] = { kind: 'multi', option_ids: optionIds };
-      }
-    }
-    if (Object.keys(answers).length === 0) return;
+    const answers = buildQuestionAnswers(block.request.questions, selections);
+    if (answers === undefined) return;
     responding.current = true;
     setBusy(true);
     setFailed(null);

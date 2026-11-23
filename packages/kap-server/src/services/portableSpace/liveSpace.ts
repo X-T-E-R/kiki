@@ -18,7 +18,7 @@ import type { PortableSpaceOperationMode, PortableSpaceSessionSelection } from '
 import { checkedPath, git, gitRemote, missing, readBounded, writeFileAtomic } from './spaceFiles';
 import { configProjection, encodeToml, filesFromUnits, mcpProjection, object, parseToml, sections, type Data, type Units } from './treeProjection';
 import { hydrateRecipeInstallation, installBytes, readRecipeInstallations, RECIPE_INSTALLATIONS } from './recipeStore';
-import { GUI_CREDENTIALS, MAX_GUI_CREDENTIAL_BYTES, readGuiCredentials, readHomeFiles } from './homeFiles';
+import { GUI_CREDENTIALS, readGuiCredentials, readHomeFiles } from './homeFiles';
 import { writePrivateFile } from '../auth/privateFiles';
 import { sameUnit } from './mergeEngine';
 import { safePortablePath } from './tarArchive';
@@ -305,7 +305,7 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
     await writeFileAtomic(installationPath, installBytes(records));
   }
   if (guiCredentialPath) {
-    const previous = await missing(readBounded(guiCredentialPath, MAX_GUI_CREDENTIAL_BYTES));
+    const previous = await missing(readBounded(guiCredentialPath));
     const doc = previous ? readGuiCredentials(previous) : { schema_version: '1' as const, slots: {} };
     const proposed = nbSearchManagedCredentialsSchema.parse({ schema_version: '1', slots: credential['nb_search_gui'] ?? {} }).slots;
     for (const unit of guiCredentialChanges) {
@@ -314,7 +314,6 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
       else delete doc.slots[id];
     }
     const bytes = JSON.stringify(doc);
-    if (Buffer.byteLength(bytes) > MAX_GUI_CREDENTIAL_BYTES) throw new Error('Managed nb-search credentials exceed 256 KiB');
     await writePrivateFile(guiCredentialPath, bytes);
   }
   if (changes.some((unit) => unit.domain === 'plugins' || unit.domain === 'skills' && unit.key[0] === 'skill_repos')) {

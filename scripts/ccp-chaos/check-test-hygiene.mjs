@@ -599,6 +599,15 @@ function resolveDefaultDiffArgs(repoRoot, baseRef) {
 }
 
 function buildGitBaselineMockPlan(repoRoot, mergeBase) {
+  const treeRes = spawnSync('git', ['ls-tree', '-r', '--name-only', mergeBase], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (treeRes.status !== 0) {
+    return null;
+  }
+  const baselineFiles = new Set(treeRes.stdout.split(/\r?\n/u).filter(Boolean));
   const statusRes = spawnSync('git', ['diff', '--name-status', '-M', mergeBase], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -625,7 +634,7 @@ function buildGitBaselineMockPlan(repoRoot, mergeBase) {
   return {
     resolveFileBudget(rel) {
       const change = changedByPath.get(rel);
-      if (!change) return 'unchanged';
+      if (!change) return baselineFiles.has(rel) ? 'unchanged' : {};
       if (change.status === 'A' || !change.oldPath) return {};
       let cached = baseBudgetsCache.get(change.oldPath);
       if (cached === undefined) {
@@ -705,7 +714,29 @@ export function checkDiffMockRatchet({ repoRoot = DEFAULT_ROOT, baseRef, diffTex
     } else {
       const res = spawnSync('git', resolved.args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
       if (res.status === 0) {
-        rawDiff = res.stdout;
+        const untrackedChunks = [];
+        const untrackedRes = spawnSync(
+          'git',
+          ['ls-files', '--others', '--exclude-standard', '--', 'packages', 'apps', 'scripts'],
+          { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+        );
+        if (untrackedRes.status === 0) {
+          for (const rel of untrackedRes.stdout.split(/\r?\n/u).filter(Boolean)) {
+            if (!TEST_FILE_RE.test(rel)) continue;
+            const abs = path.join(repoRoot, rel);
+            if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+            const lines = fs.readFileSync(abs, 'utf8').split(/\r?\n/u);
+            untrackedChunks.push(
+              `diff --git a/${rel} b/${rel}`,
+              'new file mode 100644',
+              '--- /dev/null',
+              `+++ b/${rel}`,
+              `@@ -0,0 +1,${lines.length} @@`,
+              ...lines.map((line) => `+${line}`),
+            );
+          }
+        }
+        rawDiff = untrackedChunks.length > 0 ? `${res.stdout}\n${untrackedChunks.join('\n')}\n` : res.stdout;
       } else {
         baselineAvailable = false;
         baselineError = `git ${resolved.args.join(' ')} failed (exit ${String(res.status)}): ${(res.stderr ?? '').trim()}`;

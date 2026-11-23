@@ -24,6 +24,15 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  assertEvidenceRef,
+  assertFullCommit,
+  DESKTOP_EXE,
+  RECEIPT_FILE_NAME,
+  RECEIPT_SCHEMA_VERSION,
+  SERVER_EXE,
+} from './desktop-build-source.mjs';
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const FULL_COMMIT_RE = /^[0-9a-f]{40}$/;
 const FULL_HASH_RE = /^[0-9a-f]{64}$/;
@@ -173,7 +182,7 @@ export function ensureSearchDisabledConfig(configPath) {
   return configPath;
 }
 
-export function callLocalApi({ port, token, path, method = 'GET', body, timeoutMs = 15000 }) {
+export function callLocalApi({ port, token, path, method = 'GET', body, timeoutMs }) {
   return new Promise((resolveRequest, rejectRequest) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
     const headers = {
@@ -191,7 +200,9 @@ export function callLocalApi({ port, token, path, method = 'GET', body, timeoutM
         path: path.startsWith('/') ? path : `/api/${path}`,
         method,
         headers,
-        timeout: timeoutMs,
+        ...(typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+          ? { timeout: timeoutMs }
+          : {}),
       },
       (res) => {
         const chunks = [];
@@ -246,9 +257,11 @@ export function callLocalApi({ port, token, path, method = 'GET', body, timeoutM
         });
       },
     );
-    req.on('timeout', () => {
-      req.destroy(new Error(`Request timed out after ${timeoutMs}ms: ${method} ${path}`));
-    });
+    if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      req.on('timeout', () => {
+        req.destroy(new Error(`Request timed out after ${timeoutMs}ms: ${method} ${path}`));
+      });
+    }
     req.on('error', rejectRequest);
     if (payload !== undefined) req.write(payload);
     req.end();
@@ -363,27 +376,32 @@ export function classifyRuntimeServerPath(runtimeRoot, executablePath) {
 
 export function validateCandidateReceipt(candidateRoot, expectedCommit) {
   const fullCandidate = resolve(candidateRoot);
-  const receiptPath = join(fullCandidate, 'desktop-build-receipt.json');
+  const receiptPath = join(fullCandidate, RECEIPT_FILE_NAME);
   if (!existsSync(receiptPath)) {
     throw new Error(`Build receipt is missing: ${receiptPath}`);
   }
   const receipt = JSON.parse(readFileSync(receiptPath, 'utf8').replace(/^\uFEFF/, ''));
-  if (!receipt || receipt.schemaVersion !== 1 || !FULL_COMMIT_RE.test(String(receipt.sourceCommit ?? ''))) {
+  if (!receipt || receipt.schemaVersion !== RECEIPT_SCHEMA_VERSION) {
     throw new Error(`Build receipt is invalid: ${receiptPath}`);
   }
-  if (expectedCommit && receipt.sourceCommit !== expectedCommit) {
-    throw new Error(`Build receipt source ${receipt.sourceCommit} does not match expected commit ${expectedCommit}.`);
+  let sourceCommit;
+  try {
+    sourceCommit = assertFullCommit(receipt.sourceCommit);
+  } catch {
+    throw new Error(`Build receipt is invalid: ${receiptPath}`);
   }
-  if (!receipt.acceptanceRef || !receipt.checkRef) {
-    throw new Error('Build receipt is missing acceptanceRef or checkRef.');
+  if (expectedCommit && sourceCommit !== expectedCommit) {
+    throw new Error(`Build receipt source ${sourceCommit} does not match expected commit ${expectedCommit}.`);
   }
-  const desktopPath = join(fullCandidate, 'kiki-desktop.exe');
-  const serverPath = join(fullCandidate, 'kiki-server.exe');
+  const acceptanceRef = assertEvidenceRef(receipt.acceptanceRef, 'acceptanceRef');
+  const checkRef = assertEvidenceRef(receipt.checkRef, 'checkRef');
+  const desktopPath = join(fullCandidate, DESKTOP_EXE);
+  const serverPath = join(fullCandidate, SERVER_EXE);
   const desktop = sha256File(desktopPath);
   const server = sha256File(serverPath);
   for (const [name, actual] of [
-    ['kiki-desktop.exe', desktop],
-    ['kiki-server.exe', server],
+    [DESKTOP_EXE, desktop],
+    [SERVER_EXE, server],
   ]) {
     const expected = receipt.files?.[name];
     if (
@@ -397,7 +415,9 @@ export function validateCandidateReceipt(candidateRoot, expectedCommit) {
   }
   return {
     candidateRoot: fullCandidate,
-    sourceCommit: receipt.sourceCommit,
+    sourceCommit,
+    acceptanceRef,
+    checkRef,
     releaseId: `${desktop.sha256.slice(0, 24)}-${server.sha256.slice(0, 24)}`,
     desktop,
     server,
@@ -587,6 +607,7 @@ async function readSessionActiveTaskCount({ port, token, sessionId, callApi }) {
     }
     return { activeTaskCount: total, scope: 'all_owners', error: null };
   } catch (agentTasksError) {
+    const allOwnerError = agentTasksError instanceof Error ? agentTasksError.message : String(agentTasksError);
     try {
       let total = 0;
       let offset = 0;
@@ -606,12 +627,17 @@ async function readSessionActiveTaskCount({ port, token, sessionId, callApi }) {
         }
         offset = nextOffset;
       }
-      return { activeTaskCount: total, scope: 'main_only', error: null };
+      return {
+        activeTaskCount: total,
+        scope: 'partial_main_only',
+        error: allOwnerError,
+      };
     } catch (tasksError) {
+      const fallbackError = tasksError instanceof Error ? tasksError.message : String(tasksError);
       return {
         activeTaskCount: null,
         scope: 'unavailable',
-        error: tasksError instanceof Error ? tasksError.message : String(agentTasksError),
+        error: `${allOwnerError}; fallback /tasks failed: ${fallbackError}`,
       };
     }
   }
