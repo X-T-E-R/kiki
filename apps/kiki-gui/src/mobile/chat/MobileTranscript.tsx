@@ -272,6 +272,7 @@ export function MobileTranscript({
           <div className="flex justify-center pb-1">
             <button
               type="button"
+              data-mobile-load-older=""
               disabled={loadingOlder}
               onClick={onLoadOlder}
               className="h-11 rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong disabled:opacity-55"

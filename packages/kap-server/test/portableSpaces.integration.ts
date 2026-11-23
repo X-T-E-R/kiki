@@ -769,6 +769,27 @@ describe('Portable Spaces authenticated locked protocol', () => {
     expect(rejected.msg).toMatch(/ignor/i);
     expect(await exists(join(gitDir, PLAIN))).toBe(false);
 
+    const nonGitPlainDir = join(root, 'plain-outside-git-localized');
+    await mkdir(nonGitPlainDir);
+    const oldLcAll = process.env['LC_ALL'];
+    const oldLang = process.env['LANG'];
+    try {
+      vi.stubEnv('LC_ALL', 'zh_CN.UTF-8');
+      vi.stubEnv('LANG', 'zh_CN.UTF-8');
+      const plainOutsideReceipt = await request(
+        source,
+        sourceBase,
+        '/api/spaces/portable/export',
+        { destination: nonGitPlainDir, secretMode: 'plain', domains: ['credentials'] },
+        portableSpaceExportReceiptSchema,
+      );
+      expect(plainOutsideReceipt.secretMode).toBe('plain');
+      expect(await exists(join(nonGitPlainDir, PLAIN))).toBe(true);
+    } finally {
+      vi.stubEnv('LC_ALL', oldLcAll);
+      vi.stubEnv('LANG', oldLang);
+    }
+
     const previewSource = join(root, 'preview-retention-src');
     const previewTarget = join(root, 'preview-retention-dst');
     await mkdir(previewSource);

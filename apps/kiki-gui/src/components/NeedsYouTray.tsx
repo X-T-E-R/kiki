@@ -227,7 +227,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
       const next = natural[(index + delta + natural.length) % natural.length];
       if (next !== undefined) setPinned(itemId(next));
     };
-    const stepButton = 'flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
+    const stepButton = 'flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11 pointer-coarse:w-11';
     return (
       <section ref={rootRef} data-needs-you-tray data-needs-you-card aria-label={t('tray.aria')} className="anim-enter">
         <header className="flex min-h-10 items-center gap-2 px-3 pt-1.5">

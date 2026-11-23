@@ -273,8 +273,8 @@ async function captureShot(page, outDir, name) {
 
 async function openFixtureSession(page, guard, origin, sessionId, { useDeepLink = true } = {}) {
   const target = useDeepLink
-    ? `${origin}/s/${sessionId}?server=${encodeURIComponent(origin)}&token=${FIXTURE_TOKEN}`
-    : `${origin}/s/${sessionId}`;
+    ? `${origin}/s/${sessionId}?server=${encodeURIComponent(origin)}&token=${FIXTURE_TOKEN}&desktop=1`
+    : `${origin}/s/${sessionId}?desktop=1`;
   await gotoChecked(page, guard, target);
   await guard(page.waitForSelector('[data-session-sidebar]', { timeout: 0 }));
   await guard(page.waitForSelector('[data-composer-card]', { timeout: 0 }));
@@ -474,7 +474,7 @@ const SCENARIOS = [
       const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
         // Navigate without ?server= deep link so ConnectionProvider adopts the real `app-shell` credential!
-        await gotoChecked(page, guard, `${origin}/s/session_space_one`);
+        await gotoChecked(page, guard, `${origin}/s/session_space_one?desktop=1`);
         await guard(page.waitForSelector('[data-session-sidebar]', { timeout: 0 }));
         await page.waitForTimeout(450);
 
@@ -584,28 +584,61 @@ const SCENARIOS = [
       const origin = `http://127.0.0.1:${proxy.address().port}`;
       const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, { appShellToken: FIXTURE_TOKEN });
       try {
-        await openFixtureSession(page, guard, origin, 'session_fixture_extreme_dirty', { useDeepLink: false });
-        await guard(page.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 0 }));
+        await gotoChecked(page, guard, `${origin}/s/session_fixture_extreme_dirty`);
+        await guard(page.waitForSelector('[data-mobile-screen="chat"] [data-mobile-transcript] [data-mobile-msg]', { timeout: 0 }));
         await page.waitForTimeout(300);
+        const initialUrl = page.url();
+        const initialCount = await page.locator('[data-mobile-transcript] [data-mobile-msg]').count();
+        const scrollInfoBefore = await page.evaluate(() => {
+          const el = document.querySelector('[data-mobile-transcript]');
+          if (!(el instanceof HTMLElement)) return null;
+          const beforeTop = el.scrollTop;
+          el.scrollTop = 0;
+          el.dispatchEvent(new Event('scroll'));
+          return { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, beforeTop, afterTop: el.scrollTop };
+        });
+        const loadOlderBtn = page.locator('[data-mobile-load-older]').first();
+        let olderLoaded = false;
+        if ((await loadOlderBtn.count()) > 0 && (await loadOlderBtn.isVisible())) {
+          await loadOlderBtn.click();
+          await page.waitForFunction(
+            (prev) => document.querySelectorAll('[data-mobile-transcript] [data-mobile-msg]').length > prev || !document.querySelector('[data-mobile-load-older]')?.hasAttribute('disabled'),
+            initialCount,
+          );
+          olderLoaded = true;
+        }
+        await page.waitForTimeout(200);
         const snap = await page.evaluate(collectMobileDomSnapshot);
         const shots = [await captureShot(page, outDir, 'extreme-dirty-transcript-mobile')];
-        const renderedCount = await page.locator('[data-transcript-scroll] [data-transcript-virtual-item]').count();
+        const renderedCount = await page.locator('[data-mobile-transcript] [data-mobile-msg]').count();
+        const userCount = await page.locator('[data-mobile-transcript] [data-mobile-msg="user"]').count();
+        const assistantCount = await page.locator('[data-mobile-transcript] [data-mobile-msg="assistant"]').count();
+        const routedToMobileChat = initialUrl.includes('/m/c/local/session_fixture_extreme_dirty');
         const findings = [
           ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
           ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
           ...evaluateUnintendedBlankVoids(snap.blankVoidBlocks),
           ...evaluateContradictoryUiState({
             toasts: snap.toasts,
-            atT0Top: true,
+            atT0Top: !olderLoaded,
             hasRedLoadError: snap.toasts.some((t) => t.tone === 'error'),
           }),
-          ...(renderedCount === 0
+          ...(!routedToMobileChat
+            ? [{
+                ruleId: 'MOBILE_SESSION_ROUTE_MISMATCH',
+                severity: 'error',
+                standard: 'Default mobile session navigation must preserve sessionId onto /m/c/local/:sessionId',
+                actual: { url: initialUrl },
+                expected: { pathIncludes: '/m/c/local/session_fixture_extreme_dirty' },
+              }]
+            : []),
+          ...(renderedCount === 0 || userCount === 0 || assistantCount === 0
             ? [{
                 ruleId: 'DIRTY_TRANSCRIPT_EMPTY',
                 severity: 'error',
-                standard: 'Extreme 220-turn CJK/code/error/attachment transcript must mount visible virtualized items on mobile',
-                actual: { renderedCount },
-                expected: { minRenderedItems: 1 },
+                standard: 'Extreme 220-turn CJK/code/error/attachment transcript must render user and assistant messages on shipped mobile chat route',
+                actual: { renderedCount, userCount, assistantCount },
+                expected: { minRenderedItems: 1, minUserMessages: 1, minAssistantMessages: 1 },
               }]
             : []),
         ];
@@ -615,7 +648,12 @@ const SCENARIOS = [
           shots,
           findings,
           metrics: {
+            routedToMobileChat,
             renderedCount,
+            userCount,
+            assistantCount,
+            olderLoaded,
+            scrollInfoBefore,
             horizontalOverflowPx: snap.horizontalOverflowPx,
             headerRect: snap.headerRect,
             composerRect: snap.composerRect,

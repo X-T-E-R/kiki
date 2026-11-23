@@ -557,11 +557,19 @@ export function collectMobileDomSnapshot() {
     document.querySelector('[data-main-header]')
     ?? document.querySelector('.workspace-header')
     ?? document.querySelector('.conversation-header-slot > header')
+    ?? document.querySelector('[data-mobile-screen] > header')
     ?? document.querySelector('header.topbar');
 
-  const composerEl = document.querySelector('[data-composer-card]');
-  const tabbarEl = document.querySelector('nav.tabbar');
-  const stageEl = document.querySelector('.app-stage') ?? document.querySelector('.shell');
+  const composerEl =
+    document.querySelector('[data-composer-card]')
+    ?? document.querySelector('[data-mobile-composer] > div');
+  const tabbarEl =
+    document.querySelector('nav.tabbar')
+    ?? document.querySelector('[data-mobile-tabbar]');
+  const stageEl =
+    document.querySelector('.app-stage')
+    ?? document.querySelector('[data-mobile-shell]')
+    ?? document.querySelector('.shell');
 
   const stageCs = stageEl ? getComputedStyle(stageEl) : null;
   const stagePadding = stageCs

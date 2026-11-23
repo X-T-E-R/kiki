@@ -123,7 +123,10 @@ async function start(): Promise<void> {
     { startZoomSync },
     { NavScopeBoundary },
   ] = await Promise.all([
-    import('./ShellEntry'),
+    import('./ShellEntry').then((mod) => {
+      void mod.preloadActiveShell();
+      return mod;
+    }),
     import('./components/AppErrorBoundary'),
     import('./i18n'),
     import('./state/connection'),

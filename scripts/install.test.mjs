@@ -366,7 +366,7 @@ void test('--channel beta selects newest non-draft kiki-v0.6.0-beta.1 tag from m
 
   const server = createServer((req, res) => {
     requests.push(req.url ?? '');
-    if (req.url === '/repos/X-T-E-R/kiki/releases?per_page=20') {
+    if (req.url === '/repos/X-T-E-R/kiki/releases?per_page=100&page=1') {
       apiAuthHeader = String(req.headers.authorization ?? '');
       res.setHeader('content-type', 'application/json');
       res.end(releasesPayload);
@@ -412,7 +412,7 @@ void test('--channel beta selects newest non-draft kiki-v0.6.0-beta.1 tag from m
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(apiAuthHeader, 'Bearer fixture-gh-token');
   assert.deepEqual(requests, [
-    '/repos/X-T-E-R/kiki/releases?per_page=20',
+    '/repos/X-T-E-R/kiki/releases?per_page=100&page=1',
     '/X-T-E-R/kiki/releases/download/kiki-v0.6.0-beta.1/kiki-darwin-arm64',
     '/X-T-E-R/kiki/releases/download/kiki-v0.6.0-beta.1/kiki-darwin-arm64.sha256',
   ]);
@@ -439,7 +439,17 @@ void test('stable channel falls back from latest/download to first non-prereleas
 
   const server = createServer((req, res) => {
     requests.push(req.url ?? '');
-    if (req.url === '/repos/X-T-E-R/kiki/releases?per_page=20') {
+    if (req.url === '/repos/X-T-E-R/kiki/releases?per_page=100&page=1') {
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify([
+          { tag_name: 'kiki-v0.6.0-beta.2', draft: false, prerelease: true },
+          { tag_name: 'other-tool-v2.0.0', draft: false, prerelease: false },
+        ]),
+      );
+      return;
+    }
+    if (req.url === '/repos/X-T-E-R/kiki/releases?per_page=100&page=2') {
       res.setHeader('content-type', 'application/json');
       res.end(releasesPayload);
       return;
@@ -482,7 +492,8 @@ void test('stable channel falls back from latest/download to first non-prereleas
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.deepEqual(requests, [
     '/X-T-E-R/kiki/releases/latest/download/kiki-linux-arm64',
-    '/repos/X-T-E-R/kiki/releases?per_page=20',
+    '/repos/X-T-E-R/kiki/releases?per_page=100&page=1',
+    '/repos/X-T-E-R/kiki/releases?per_page=100&page=2',
     '/X-T-E-R/kiki/releases/download/kiki-v0.5.9/kiki-linux-arm64',
     '/X-T-E-R/kiki/releases/download/kiki-v0.5.9/kiki-linux-arm64.sha256',
   ]);

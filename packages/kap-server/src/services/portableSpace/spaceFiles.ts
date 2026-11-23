@@ -149,19 +149,26 @@ async function ensureLines(path: string, lines: readonly string[], prepend = fal
   await writeFileAtomic(path, `${bom}${insert.join(newline)}${newline}${content}`);
 }
 
+async function hasEnclosingGitMarker(root: string): Promise<boolean> {
+  if (process.env['GIT_DIR'] || process.env['GIT_WORK_TREE']) return true;
+  let directory = root;
+  for (;;) {
+    if (await missing(lstat(join(directory, '.git'))) !== undefined) return true;
+    const parent = dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
+}
+
 async function guardPlain(root: string): Promise<boolean> {
   let inside = false;
   try { inside = await git(root, ['rev-parse', '--is-inside-work-tree']) === 'true'; }
   catch (error) {
+    if (!(await hasEnclosingGitMarker(root))) return false;
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      let directory = root;
-      for (;;) {
-        if (await missing(lstat(join(directory, '.git'))) !== undefined) throw new Error('Git is required to verify plaintext credential safety', { cause: error });
-        const parent = dirname(directory);
-        if (parent === directory) break;
-        directory = parent;
-      }
-    } else if (!String((error as { stderr?: string }).stderr).includes('not a git repository')) throw error;
+      throw new Error('Git is required to verify plaintext credential safety', { cause: error });
+    }
+    throw error;
   }
   if (inside) {
     try { await git(root, ['ls-files', '--error-unmatch', '--', PLAIN]); }

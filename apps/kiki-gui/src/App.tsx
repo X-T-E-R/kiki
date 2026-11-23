@@ -64,7 +64,6 @@ import { shouldHideFromSessionGroups } from './components/persona/personaSession
 import { usePersonaDirectory } from './components/persona/usePersonaDirectory';
 import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
 import { Toasts } from './components/Toasts';
-import { WorkPage } from './components/WorkPage';
 import { WorkSetupSheet } from './components/WorkSetupSheet';
 import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
 import { readWindowModeId, writeWindowModeId } from './lib/workModes';
@@ -161,6 +160,7 @@ const CronPage = lazyPage(() => import('./components/GlobalCronPanel').then((m) 
 const ArchivedSessionsPage = lazyPage(() => import('./components/ArchivedSessionsPage').then((m) => m.ArchivedSessionsPage));
 const RoomPage = lazyPage(() => import('./components/room/RoomPage').then((m) => m.RoomPage));
 const TasksPage = lazyPage(() => import('./components/TasksPage').then((m) => m.TasksPage));
+const WorkPage = lazyPage(() => import('./components/WorkPage').then((m) => m.WorkPage));
 
 // The sidebar's entries for those pages, by their nav hook attribute.
 const NAV_ENTRY_PAGES: readonly (readonly [string, { preload(): void }])[] = [
@@ -613,6 +613,7 @@ function NormalApp() {
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: sessionsKey,
+    enabled: !drawerClosed || backgroundReady,
     queryFn: ({ pageParam, signal }) =>
       client.listSessions({
         page_size: 50,
@@ -761,6 +762,7 @@ function NormalApp() {
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces', 'catalog'],
+    enabled: !drawerClosed || backgroundReady || isNewRoute,
     queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
     retry: retryRootReadModelQuery,

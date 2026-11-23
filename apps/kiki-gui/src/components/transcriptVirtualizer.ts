@@ -180,9 +180,9 @@ export function installTranscriptAnchoring(
       viewportOffset = scroll.scrollTop;
       viewportHeight = scroll.clientHeight;
     }
-    captureProseAnchor();
-    if (frame !== undefined) cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => { frame = undefined; captureProseAnchor(); });
+    if (frame === undefined) {
+      frame = requestAnimationFrame(() => { frame = undefined; captureProseAnchor(); });
+    }
   };
   const onWheel = (event: WheelEvent) => {
     if (event.deltaY < 0) disengage();
@@ -339,15 +339,17 @@ export function observeRowMutations(
 }
 
 /**
- * Re-read connected mounted rows (or a mutated subset) and update the virtualizer
- * where a row's rendered height diverged from `itemSizeCache`. Hidden rows keep their last size.
+ * Re-read connected mounted rows (or a mutated subset) in a single read pass
+ * before applying batched virtualizer resizes so DOM writes never interleave
+ * with `offsetHeight` layout reads.
  */
 export function reconcileMountedRows(
   instance: TranscriptVirtualizer,
   subset?: readonly HTMLDivElement[],
-): void {
+): boolean {
   const scroll = instance.scrollElement;
-  if (scroll instanceof HTMLElement && (!scroll.isConnected || scroll.clientHeight === 0)) return;
+  if (scroll instanceof HTMLElement && (!scroll.isConnected || scroll.clientHeight === 0)) return false;
+  const updates: { index: number; size: number }[] = [];
   if (subset !== undefined) {
     for (const element of subset) {
       if (!element.isConnected) continue;
@@ -357,17 +359,21 @@ export function reconcileMountedRows(
       const domKey = element.dataset['rowKey'];
       if (domKey !== undefined && domKey !== String(key)) continue;
       const size = readRowHeight(element);
-      if (size > 0 && instance.itemSizeCache.get(key) !== size) instance.resizeItem(index, size);
+      if (size > 0 && instance.itemSizeCache.get(key) !== size) updates.push({ index, size });
     }
-    return;
+  } else {
+    for (const [key, element] of instance.elementsCache) {
+      if (!element.isConnected) continue;
+      const index = instance.indexFromElement(element);
+      if (index < 0 || index >= instance.options.count || instance.options.getItemKey(index) !== key) continue;
+      const domKey = element.dataset['rowKey'];
+      if (domKey !== undefined && domKey !== String(key)) continue;
+      const size = readRowHeight(element);
+      if (size > 0 && instance.itemSizeCache.get(key) !== size) updates.push({ index, size });
+    }
   }
-  for (const [key, element] of instance.elementsCache) {
-    if (!element.isConnected) continue;
-    const index = instance.indexFromElement(element);
-    if (index < 0 || index >= instance.options.count || instance.options.getItemKey(index) !== key) continue;
-    const domKey = element.dataset['rowKey'];
-    if (domKey !== undefined && domKey !== String(key)) continue;
-    const size = readRowHeight(element);
-    if (size > 0 && instance.itemSizeCache.get(key) !== size) instance.resizeItem(index, size);
+  for (const { index, size } of updates) {
+    instance.resizeItem(index, size);
   }
+  return updates.length > 0;
 }

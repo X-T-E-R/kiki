@@ -264,6 +264,7 @@ export async function inspectTranscriptVisibility(page, targetAgentId = 'main') 
       '[data-block-id^="fold-reminder-"]',
       '[data-block-id^="fold-skill-"]',
       '[data-block-id^="fold-shell-"]',
+      '[data-turn-origin="non-user"]',
     ].join(', ');
     let nonSystemTurnsChecked = 0;
     for (let i = 1; i < turnIds.length; i += 1) {

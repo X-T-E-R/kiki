@@ -583,7 +583,19 @@ function resolveDefaultDiffArgs(repoRoot, baseRef) {
       error: `Unable to establish comparison baseline for --base "${baseRef}".`,
     };
   }
-  for (const candidate of ['origin/kiki', 'origin/main']) {
+  const candidates = [];
+  const upstream = spawnSync('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { cwd: repoRoot, encoding: 'utf8' });
+  if (upstream.status === 0 && upstream.stdout.trim()) {
+    candidates.push(upstream.stdout.trim());
+  }
+  const remoteHead = spawnSync('git', ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+  if (remoteHead.status === 0 && remoteHead.stdout.trim()) {
+    candidates.push(remoteHead.stdout.trim());
+  }
+  for (const fallback of ['origin/kiki', 'origin/main']) {
+    if (!candidates.includes(fallback)) candidates.push(fallback);
+  }
+  for (const candidate of candidates) {
     const mb = spawnSync('git', ['merge-base', candidate, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
     if (mb.status === 0 && mb.stdout.trim()) {
       const mergeBase = mb.stdout.trim();
@@ -594,7 +606,7 @@ function resolveDefaultDiffArgs(repoRoot, baseRef) {
     ok: false,
     baseRef: null,
     mergeBase: null,
-    error: 'Unable to establish comparison baseline (neither origin/kiki nor origin/main is available; pass --base <ref>).',
+    error: 'Unable to establish comparison baseline (no upstream or origin default branch is available; pass --base <ref>).',
   };
 }
 
@@ -893,12 +905,13 @@ export function runTestHygieneCheck({ repoRoot = DEFAULT_ROOT, baseRef, diffText
   const intraMonorepoMocks = scanIntraMonorepoMocks(repoRoot, { baseRef, roots: scanRoots });
   const diffRatchet = checkDiffMockRatchet({ repoRoot, baseRef, diffText });
   const enforceTreeMocks = diffText === undefined;
+  const requireBaseline = Boolean(baseRef) || diffText !== undefined;
 
   const ok =
     contractFailures.length === 0 &&
     disabled.violations.length === 0 &&
     (!enforceTreeMocks || intraMonorepoMocks.violations.length === 0) &&
-    diffRatchet.baselineAvailable &&
+    (!requireBaseline || diffRatchet.baselineAvailable) &&
     diffRatchet.mockViolations.length === 0 &&
     diffRatchet.disabledAddedViolations.length === 0;
 

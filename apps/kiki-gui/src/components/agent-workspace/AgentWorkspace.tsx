@@ -1885,16 +1885,18 @@ function ChildAgentWorkspace({
           abortPending={stoppingTaskId !== null}
         />
       </div>}
-      rail={<RightRail
-        className={`app-rail ${railOpen ? 'open' : ''}`} state={agentState} forest={forest}
-        selectedAgentId={agentId}
-        subagent={{ agentId, block: selectedSubagent,
-          pendingInteractionCount: agentPendingInteractionCount, onJumpToSpawn: timelineActions.jumpToSpawn }}
-        taskOwnerAgentId={agentId} onCancelTask={onCancelTask}
-        onStopAgentTask={onStopAgentTask} onOpenSubagent={navigation.openAgent}
-        onSearchSubagents={searchSubagents}
-        onClose={onCloseRail}
-      />}
+      rail={railOpen ? (
+        <RightRail
+          className={`app-rail ${railOpen ? 'open' : ''}`} state={agentState} forest={forest}
+          selectedAgentId={agentId}
+          subagent={{ agentId, block: selectedSubagent,
+            pendingInteractionCount: agentPendingInteractionCount, onJumpToSpawn: timelineActions.jumpToSpawn }}
+          taskOwnerAgentId={agentId} onCancelTask={onCancelTask}
+          onStopAgentTask={onStopAgentTask} onOpenSubagent={navigation.openAgent}
+          onSearchSubagents={searchSubagents}
+          onClose={onCloseRail}
+        />
+      ) : null}
       railOpen={railOpen} railIsOverlay={railIsOverlay} onCloseRail={onCloseRail}
     />
     </AdmissionScope>

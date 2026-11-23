@@ -4188,17 +4188,10 @@ async function settleRestoredAnchor(
     if (cancelled() || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
     const hit = resolveAnchor();
     if (hit === undefined) continue;
-    const needsMeasurement = [...virtualizer.elementsCache].some(([key, element]) => {
-      const rowIndex = virtualizer.indexFromElement(element);
-      return element.isConnected && rowIndex >= 0 && rowIndex < virtualizer.options.count
-        && virtualizer.options.getItemKey(rowIndex) === key && element.offsetHeight > 0
-        && virtualizer.itemSizeCache.get(key) !== element.offsetHeight;
-    });
     // An estimated row can already be at the right DOM offset. Its first
     // measurement still compensates scroll and positions on the following
     // frame; drain that existing measurement path before accepting geometry.
-    reconcileMountedRows(virtualizer);
-    if (needsMeasurement) { stableFrames = 0; continue; }
+    if (reconcileMountedRows(virtualizer)) { stableFrames = 0; continue; }
     const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
     if (row === null) {
       if (hit.index !== requestedIndex) {
@@ -4429,6 +4422,7 @@ type TranscriptRowProps = {
    */
   promotedReplyIds?: ReadonlySet<string>;
   forkableAssistantIds?: ReadonlySet<string>;
+  nonUserTurn?: boolean;
 };
 
 function nodeUsesAgentNames(node: RenderNode): boolean {
@@ -4519,6 +4513,7 @@ const TranscriptRow = memo(
     blockOrder,
     promotedReplyIds,
     forkableAssistantIds,
+    nonUserTurn,
   }: TranscriptRowProps) {
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
@@ -4594,6 +4589,7 @@ const TranscriptRow = memo(
       <div
         data-block-id={nodeKey(node)}
         data-turn-id={rowTurnId}
+        data-turn-origin={nonUserTurn ? 'non-user' : undefined}
         data-timeline-lane={timelineLane(node)}
         className={timelineLane(node) === 'activity' ? ACTIVITY_GUTTER : undefined}
       >
@@ -4630,7 +4626,8 @@ const TranscriptRow = memo(
     prev.onOpenAgent === next.onOpenAgent &&
     prev.onLocateDispatch === next.onLocateDispatch &&
     promotionEqual(prev, next) &&
-    forkableAssistantEqual(prev, next),
+    forkableAssistantEqual(prev, next) &&
+    prev.nonUserTurn === next.nonUserTurn,
 );
 
 /**
@@ -5513,6 +5510,10 @@ export const Transcript = memo(function Transcript({
   // Every loaded turn the transcript reports as failed: its partial text is not
   // a reply the reader received, and it says on its own bubble why it stopped.
   const failedTurnIds = state.failedTurnIds ?? EMPTY_TURN_IDS;
+  const nonUserTurns = useMemo(
+    () => new Set((state.nonUserTurnIds ?? EMPTY_TURN_IDS).map(normalizeTurnId)),
+    [state.nonUserTurnIds],
+  );
   const visibleTurnGaps = useMemo(
     () => resolveVisibleTurnGaps(state, runningTurnId ?? liveTurnId),
     [state, runningTurnId, liveTurnId],
@@ -6773,18 +6774,10 @@ export const Transcript = memo(function Transcript({
       viewportAnchorRef.current = { ...viewportAnchorRef.current, atEnd: false };
     }
   }, []);
-  // Reconcile mounted rows on media decode/load completions and scroll idle.
+  // Reconcile mounted rows on media decode/load completions.
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const onScroll = () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
-        reconcileMountedRows(virtualizer);
-      }, 160);
-    };
     let mediaFrame: number | null = null;
     const onMediaSettled = (event: Event) => {
       if (!(event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement)) return;
@@ -6794,15 +6787,12 @@ export const Transcript = memo(function Transcript({
         if (element.isConnected) reconcileMountedRows(virtualizer);
       });
     };
-    element.addEventListener('scroll', onScroll, { passive: true });
     element.addEventListener('load', onMediaSettled, true);
     element.addEventListener('error', onMediaSettled, true);
     return () => {
-      element.removeEventListener('scroll', onScroll);
       element.removeEventListener('load', onMediaSettled, true);
       element.removeEventListener('error', onMediaSettled, true);
       if (mediaFrame !== null) cancelAnimationFrame(mediaFrame);
-      if (timer !== null) clearTimeout(timer);
     };
   }, [scrollElement, loaded, loadError, virtualizer]);
   // Content that grows a mounted row after it painted (a tool card's output,
@@ -7937,6 +7927,7 @@ export const Transcript = memo(function Transcript({
                         blockOrder={blockOrder}
                         promotedReplyIds={promotedReplyIds}
                         forkableAssistantIds={forkableAssistantIds}
+                        nonUserTurn={normalizedTurnId !== undefined && nonUserTurns.has(normalizedTurnId)}
                       />
                       {(node.kind === 'user' || node.kind === 'assistant') && offshootsByBlockId?.has(node.id) === true ? (
                         <TimelineOffshootRail

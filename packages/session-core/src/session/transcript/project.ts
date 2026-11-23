@@ -5625,6 +5625,7 @@ export function projectAgentTranscriptView(
     // Every loaded turn that failed, not just the tail: its partial text is not
     // a reply the reader received, whatever the prompt window still holds.
     failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),
+    nonUserTurnIds: keepEqual(previous.nonUserTurnIds ?? [], snapshot.items.flatMap((item) => (item.kind === 'turn' && item.origin.kind !== 'user' ? [item.turnId] : []))),
     turnRetry: turnRetryFromItem(lastTurn),
   };
 }

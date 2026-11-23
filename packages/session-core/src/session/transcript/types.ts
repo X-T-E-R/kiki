@@ -908,6 +908,7 @@ export interface SessionViewState {
    * it can be a memo key.
    */
   readonly incompleteTurnIds: readonly string[];
+  readonly nonUserTurnIds?: readonly string[];
   /**
    * Where each incomplete loaded turn is missing content, by turn id (see
    * {@link TurnGap}); absent or empty when every loaded turn is complete. The
@@ -979,6 +980,7 @@ export function createViewState(sessionId: string): SessionViewState {
     loadError: undefined,
     hasMoreHistory: false,
     incompleteTurnIds: [],
+    nonUserTurnIds: [],
     historyCoverageKind: undefined,
     historyRead: undefined,
     oldestMessageId: undefined,

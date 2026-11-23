@@ -566,42 +566,47 @@ export function stageCorpusSandbox({
   }
 
   for (const sample of samples) {
-    tracker.trackSession(sample.label, sample.sourceSessionDir, sample.maxChildAgentId);
+    const scope = sample.sourceWorkspaceId && sample.sourceSessionId
+      ? { wsId: sample.sourceWorkspaceId, sessionId: sample.sourceSessionId }
+      : null;
+    tracker.trackSession(sample.label, sample.sourceSessionDir, sample.maxChildAgentId, scope);
     const dstSessionDir = path.join(homeDir, 'sessions', workspaceId, sample.sandboxId);
     writeScrubbedStateJson(path.join(sample.sourceSessionDir, 'state.json'), path.join(dstSessionDir, 'state.json'), {
       sandboxId: sample.sandboxId,
       title: `Perf ${sample.label} (${sample.stratum})`,
       cwd: workspaceRoot,
     });
-    copySessionOutcomes(sample.sourceSessionDir, dstSessionDir, copyStats, tracker);
-    copyDirectoryBounded(path.join(sample.sourceSessionDir, 'media'), path.join(dstSessionDir, 'media'), copyStats, extremeFullSize
-      ? { maxFileBytes: Number.POSITIVE_INFINITY, maxTotalBytes: Number.POSITIVE_INFINITY }
-      : undefined);
+    copySessionOutcomes(sample.sourceSessionDir, dstSessionDir, copyStats, tracker, scope);
+    copyDirectoryBounded(path.join(sample.sourceSessionDir, 'media'), path.join(dstSessionDir, 'media'), copyStats, {
+      maxFileBytes: Number.POSITIVE_INFINITY,
+      maxTotalBytes: Number.POSITIVE_INFINITY,
+    });
     stageSessionAgentTree(sample.sourceSessionDir, dstSessionDir, copyStats, {
       fullWires: true,
       primaryAgentIds: ['main', sample.maxChildAgentId, sample.branchAgentId],
-      ...(extremeFullSize
-        ? {
-            maxSessionWireBytes: Number.POSITIVE_INFINITY,
-            maxSecondaryWireBytes: Number.POSITIVE_INFINITY,
-            maxSecondaryAgents: Number.POSITIVE_INFINITY,
-            maxAgentBlobsBytes: Number.POSITIVE_INFINITY,
-          }
-        : {}),
+      maxCheckpointBytes: Number.POSITIVE_INFINITY,
+      maxSessionWireBytes: Number.POSITIVE_INFINITY,
+      maxSecondaryWireBytes: Number.POSITIVE_INFINITY,
+      maxSecondaryAgents: Number.POSITIVE_INFINITY,
+      maxAgentBlobsBytes: Number.POSITIVE_INFINITY,
       tracker,
+      scope,
     });
   }
 
   for (let i = 0; i < backgroundRecords.length; i += 1) {
     const bg = backgroundRecords[i];
-    tracker.trackSession(`catalog#${i + 1}`, bg.sourceSessionDir, null);
+    const scope = bg.sourceWorkspaceId && bg.sourceSessionId
+      ? { wsId: bg.sourceWorkspaceId, sessionId: bg.sourceSessionId }
+      : null;
+    tracker.trackSession(`catalog#${i + 1}`, bg.sourceSessionDir, null, scope);
     const dstSessionDir = path.join(homeDir, 'sessions', workspaceId, bg.sandboxId);
     writeScrubbedStateJson(path.join(bg.sourceSessionDir, 'state.json'), path.join(dstSessionDir, 'state.json'), {
       sandboxId: bg.sandboxId,
       title: `Perf Catalog #${i + 1}`,
       cwd: workspaceRoot,
     });
-    stageSessionAgentTree(bg.sourceSessionDir, dstSessionDir, copyStats, { fullWires: false, tracker });
+    stageSessionAgentTree(bg.sourceSessionDir, dstSessionDir, copyStats, { fullWires: false, tracker, scope });
   }
 
   const restoreOsHome = isolateProcessEnv ? isolateProcessOsHome(osHomeDir) : () => {};

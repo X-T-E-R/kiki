@@ -554,31 +554,47 @@ export async function verifyViewedSessionClearsUnreadDot(page, sessionId) {
   return page.evaluate((sid) => {
     const escaped = CSS.escape(sid);
     const row = document.querySelector(`[data-session-row="${escaped}"]`);
-    if (!row) {
+    if (row) {
+      const rowState = row.dataset.sessionRowState ?? '';
+      const lifeEl = row.querySelector('[data-life]');
+      const life = lifeEl?.dataset.life ?? '';
+      const unreadEl = row.querySelector('[data-life="unread"], [data-unread-dot], [data-session-unread="true"]');
+      const hasUnreadDot =
+        rowState === 'unread' ||
+        life === 'unread' ||
+        row.dataset.sessionUnread === 'true' ||
+        Boolean(unreadEl);
       return {
         applicable: true,
-        ok: false,
-        reason: `target_session_row_not_rendered:${sid}`,
-        matchedRows: 0,
-        hasUnreadDot: false,
+        ok: !hasUnreadDot,
+        reason: hasUnreadDot ? `sticky_unread_dot_on_viewed_session(state=${rowState},life=${life})` : null,
+        matchedRows: 1,
+        rowState,
+        hasUnreadDot,
       };
     }
-    const rowState = row.dataset.sessionRowState ?? '';
-    const lifeEl = row.querySelector('[data-life]');
-    const life = lifeEl.dataset.life ?? '';
-    const unreadEl = row.querySelector('[data-life="unread"], [data-unread-dot], [data-session-unread="true"]');
-    const hasUnreadDot =
-      rowState === 'unread' ||
-      life === 'unread' ||
-      row.dataset.sessionUnread === 'true' ||
-      Boolean(unreadEl);
+    const inboxRow = document.querySelector(`[data-inbox-row="${escaped}"]`);
+    if (inboxRow) {
+      const inboxUnread = inboxRow.dataset.inboxUnread ?? '';
+      const statusEl = inboxRow.querySelector('[data-inbox-status]');
+      const status = statusEl?.dataset.inboxStatus ?? '';
+      const unreadEl = inboxRow.querySelector('[data-inbox-status="unread"], [data-life="unread"], [data-unread-dot]');
+      const hasUnreadDot = inboxUnread === 'true' || status === 'unread' || Boolean(unreadEl);
+      return {
+        applicable: true,
+        ok: !hasUnreadDot,
+        reason: hasUnreadDot ? `sticky_unread_dot_on_viewed_inbox_session(unread=${inboxUnread},status=${status})` : null,
+        matchedRows: 1,
+        rowState: status || (inboxUnread === 'true' ? 'unread' : 'seen'),
+        hasUnreadDot,
+      };
+    }
     return {
       applicable: true,
-      ok: !hasUnreadDot,
-      reason: hasUnreadDot ? `sticky_unread_dot_on_viewed_session(state=${rowState},life=${life})` : null,
-      matchedRows: 1,
-      rowState,
-      hasUnreadDot,
+      ok: false,
+      reason: `target_session_row_not_rendered:${sid}`,
+      matchedRows: 0,
+      hasUnreadDot: false,
     };
   }, sessionId);
 }

@@ -133,7 +133,7 @@ parse_release_tag() {
   releases_file="$2"
   awk -v channel="$target_channel" '
     BEGIN {
-      in_str = 0; esc = 0; obj = 0; arr = 0;
+      in_str = 0; esc = 0; obj = 0; arr = 0; items = 0; found = 0;
       expect = ""; cur_key = ""; str_buf = ""; raw_val = "";
       tag = ""; draft = ""; prerelease = "";
     }
@@ -201,6 +201,7 @@ parse_release_tag() {
           if (arr > 0) arr--
         } else if (c == "{") {
           if (arr == 1 && obj == 0) {
+            items++
             tag = ""; draft = ""; prerelease = "";
             cur_key = ""; raw_val = ""; expect = "key"
           } else if (arr == 1 && obj == 1 && expect == "val") {
@@ -212,7 +213,8 @@ parse_release_tag() {
           if (arr == 1 && obj == 1) {
             if (substr(tag, 1, 6) == "kiki-v" && draft == "false") {
               if (channel == "beta" || prerelease == "false") {
-                print tag
+                found = 1
+                print "FOUND:" tag
                 exit 0
               }
             }
@@ -230,6 +232,9 @@ parse_release_tag() {
         }
       }
     }
+    END {
+      if (!found) print "COUNT:" items
+    }
   ' "$releases_file"
 }
 
@@ -238,13 +243,22 @@ resolve_tag_via_api() {
   repo="$2"
   channel="$3"
   releases_json="$TMP_DIR/releases.json"
-  api_url="${api_base%/}/repos/${repo}/releases?per_page=20"
-  fetch_releases_json "$api_url" "$releases_json" || die "failed to query GitHub Releases API: $api_url"
-  tag="$(parse_release_tag "$channel" "$releases_json")"
-  if [ -z "$tag" ]; then
-    die "no matching $channel kiki-v* release found in $repo"
-  fi
-  printf '%s\n' "$tag"
+  page=1
+  while :; do
+    api_url="${api_base%/}/repos/${repo}/releases?per_page=100&page=${page}"
+    fetch_releases_json "$api_url" "$releases_json" || die "failed to query GitHub Releases API: $api_url"
+    parsed="$(parse_release_tag "$channel" "$releases_json")"
+    case "$parsed" in
+      FOUND:*)
+        printf '%s\n' "${parsed#FOUND:}"
+        return 0
+        ;;
+      COUNT:0|'')
+        die "no matching $channel kiki-v* release found in $repo"
+        ;;
+    esac
+    page=$((page + 1))
+  done
 }
 
 extract_expected_sha256() {

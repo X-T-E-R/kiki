@@ -156,6 +156,16 @@ function entriesFromSources(sources: readonly SpaceConversationSource[]): readon
   return entries;
 }
 
+function DesktopSessionRouteRedirect() {
+  const params = useParams<{ readonly connectionId?: string; readonly sessionId?: string }>();
+  const sessionId = decodeURIComponent(params.sessionId ?? '');
+  if (sessionId === '') {
+    return <Navigate to={MOBILE_CHATS_PATH} replace />;
+  }
+  const spaceKey = params.connectionId ? remoteSpaceKey(decodeURIComponent(params.connectionId)) : 'local';
+  return <Navigate to={mobileChatPath(spaceKey, sessionId)} replace />;
+}
+
 export function MobileAppShell() {
   useVisualViewportHeightVar();
   const { t } = useI18n();
@@ -550,6 +560,9 @@ export function MobileAppShell() {
             />
           }
         />
+        <Route path="/s/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
+        <Route path="/sessions/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
+        <Route path="/p/:connectionId/s/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
         <Route path="*" element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
       </Routes>
 

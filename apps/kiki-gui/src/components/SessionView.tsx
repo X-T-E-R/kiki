@@ -6020,17 +6020,19 @@ boundExecution,
     handleRecoveryConfirm, locale, handleRestoreArchivedSession, t, handleRefreshSessionSaved,
   ]);
   const mainRailNode = useMemo(() => (
-    controller !== null ? <RightRail
-      className={`app-rail ${railOpen ? 'open' : ''}`}
-      state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
-      subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
-      onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
-      onOpenSubagent={openAgent} onClose={closeRail}
-      onInspectMain={inspectMain} onOpenFile={openFileInPreview}
-      onReviewPending={reviewPending}
-      onSearchSubagents={searchSubagents}
-      sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
-    /> : null
+    controller !== null && railOpen ? (
+      <RightRail
+        className={`app-rail ${railOpen ? 'open' : ''}`}
+        state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
+        subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
+        onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
+        onOpenSubagent={openAgent} onClose={closeRail}
+        onInspectMain={inspectMain} onOpenFile={openFileInPreview}
+        onReviewPending={reviewPending}
+        onSearchSubagents={searchSubagents}
+        sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
+      />
+    ) : null
   ), [
     controller, railOpen, focusState, forest, panelFocusAgent, focusSubagent, focusTaskOwner,
     handleCancelTask, stopAgentTask, openAgent, closeRail, inspectMain, openFileInPreview,
