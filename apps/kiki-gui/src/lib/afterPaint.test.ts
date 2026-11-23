@@ -11,8 +11,9 @@ describe('afterPaint', () => {
   const animationFrame = vi.fn((callback: FrameRequestCallback) =>
     setTimeout(() => { callback(performance.now()); }, frameDelay),
   );
-  const idleCallback = vi.fn((callback: IdleRequestCallback) =>
-    setTimeout(() => { callback({ didTimeout: false, timeRemaining: () => 10 }); }, idleDelay),
+  const idleCallback = vi.fn(
+    (callback: IdleRequestCallback, _options?: IdleRequestOptions) =>
+      setTimeout(() => { callback({ didTimeout: false, timeRemaining: () => 10 }); }, idleDelay),
   );
 
   beforeEach(() => {
