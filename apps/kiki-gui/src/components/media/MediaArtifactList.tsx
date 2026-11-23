@@ -42,6 +42,7 @@ import { useMediaPreview } from '../mediaPreviewContext';
 import { QUIET_BUTTON } from '../capabilities/primitives';
 import { MediaKindGlyph } from './MediaKindGlyph';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
+import { inlineMediaCleanupRef, notifyInlineMediaPlay, unregisterInlineMediaElement } from '../inlineMediaCoordinator';
 import { isOnKikiComputer } from '../imageActions';
 
 /** An SDK artifact as the existing media surface already understands. */
@@ -398,12 +399,18 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
   if (readyUrl !== undefined) {
     return (
       <audio
+        ref={inlineMediaCleanupRef}
         controls
         preload="none"
         data-media-audio={artifact.id}
         data-media-audio-state="ready"
         src={readyUrl}
-        onError={onAudioError}
+        onPlay={(event) => { notifyInlineMediaPlay(event.currentTarget); }}
+        onEnded={(event) => { unregisterInlineMediaElement(event.currentTarget); }}
+        onError={(event) => {
+          unregisterInlineMediaElement(event.currentTarget);
+          onAudioError();
+        }}
         className="h-8 max-w-[min(100%,17rem)]"
       >
         {t('cap.media.artifact.audioUnsupported')}

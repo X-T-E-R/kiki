@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { appendToDraft, mentionToken, resolveActiveDraftKey } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { openExternalUrl, useHost } from '../host';
@@ -19,6 +20,7 @@ import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './med
 import { RemoteImageGate } from './RemoteImageGate';
 import { useHostMediaPreview, useSessionMediaPlayback } from './useSessionMediaPlayback';
 import { useTranscriptDetail } from './transcriptDetail';
+import { activateInlineVideo, inlineMediaCleanupRef, notifyInlineMediaPlay, unregisterInlineMediaElement } from './inlineMediaCoordinator';
 
 const ActiveDraftKeyContext = createContext<{
   readonly sessionId: string | undefined;
@@ -813,10 +815,16 @@ function AudioPart({ item }: { item: MediaRef }) {
     <span ref={hostRef} className="inline-flex max-w-full">
       {src !== undefined ? (
         <audio
+          ref={inlineMediaCleanupRef}
           controls
           src={src}
-          preload="metadata"
-          onError={playback.status === 'ready' ? playback.fail : undefined}
+          preload="none"
+          onPlay={(event) => { notifyInlineMediaPlay(event.currentTarget); }}
+          onEnded={(event) => { unregisterInlineMediaElement(event.currentTarget); }}
+          onError={(event) => {
+            unregisterInlineMediaElement(event.currentTarget);
+            if (playback.status === 'ready') playback.fail();
+          }}
           className="h-10 max-w-full"
         />
       ) : failed ? (
@@ -1120,6 +1128,102 @@ const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: str
 };
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
+function InlineUrlVideo({
+  url,
+  name,
+  byteSize,
+  size,
+  attempt,
+  onError,
+}: {
+  readonly url: string;
+  readonly name: string;
+  readonly byteSize?: number;
+  readonly size: MediaThumbSize;
+  readonly attempt: number;
+  readonly onError: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  const tokenRef = useRef<symbol | null>(null);
+  const releaseRef = useRef<(() => void) | null>(null);
+
+  const releaseSlot = useCallback(() => {
+    tokenRef.current = null;
+    const release = releaseRef.current;
+    releaseRef.current = null;
+    release?.();
+  }, []);
+
+  useEffect(() => {
+    releaseSlot();
+    setArmed(false);
+  }, [url, attempt, releaseSlot]);
+
+  useEffect(() => () => {
+    releaseSlot();
+  }, [releaseSlot]);
+
+  const handleArm = useCallback(() => {
+    const token = Symbol('inline-video');
+    releaseRef.current?.();
+    tokenRef.current = token;
+    releaseRef.current = activateInlineVideo(token, () => {
+      if (tokenRef.current !== token) return;
+      tokenRef.current = null;
+      releaseRef.current = null;
+      flushSync(() => {
+        setArmed(false);
+      });
+    });
+    setArmed(true);
+  }, []);
+
+  if (!armed) {
+    const meta = byteSize !== undefined && byteSize > 0 ? formatBytes(byteSize) : undefined;
+    return (
+      <button
+        type="button"
+        data-inline-video-facade=""
+        data-inline-video-url={url}
+        title={name}
+        aria-label={name}
+        onClick={handleArm}
+        className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1.5 ${THUMB_SIZE[size].frame} border border-hairline bg-panel px-2.5 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
+      >
+        <span aria-hidden className={`flex items-center justify-center rounded-full bg-ink/10 ${size === 'strip' ? 'h-5 w-5' : 'h-8 w-8'}`}>
+          <span className={`ml-0.5 h-0 w-0 border-y-transparent border-l-ink ${size === 'strip' ? 'border-y-[3.5px] border-l-[6px]' : 'border-y-[5px] border-l-[8px]'}`} />
+        </span>
+        {size === 'strip' ? null : (
+          <span className="max-w-full text-center">
+            <span className="block max-w-full truncate font-mono text-[11px] text-ink">{name}</span>
+            {meta !== undefined ? <span className="block font-mono text-[10px] text-ink-faint">{meta}</span> : null}
+          </span>
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <video
+      ref={inlineMediaCleanupRef}
+      key={attempt}
+      src={url}
+      controls
+      autoPlay
+      playsInline
+      preload="none"
+      onPlay={(event) => { notifyInlineMediaPlay(event.currentTarget); }}
+      onEnded={(event) => { unregisterInlineMediaElement(event.currentTarget); }}
+      onError={(event) => {
+        unregisterInlineMediaElement(event.currentTarget);
+        releaseSlot();
+        onError();
+      }}
+      className="max-h-52 rounded-lg border border-hairline"
+    />
+  );
+}
+
 function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }; size: MediaThumbSize; onOpen?: () => void }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
@@ -1145,7 +1249,7 @@ function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }
   if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
   const body = imageFailed ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
     : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
-    : item.kind === 'video' ? <video key={attempt} src={item.url} controls preload="metadata" onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
+    : item.kind === 'video' ? <InlineUrlVideo url={item.url} name={name} byteSize={item.size} size={size} attempt={attempt} onError={() => { setFailed(source); }} />
     : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} onContextMenu={imageMenu.openMenu} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} referrerPolicy="no-referrer" decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
   return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }

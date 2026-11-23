@@ -8,6 +8,7 @@ import type { WorkspacePathEntry } from './workspacePathInventory';
 const TRIGRAM_MIN_FILES = 1500;
 const TRIGRAM_REBUILD_BATCH_SIZE = 64;
 const TRIGRAM_PATCH_BATCH_SIZE = 256;
+const TRIGRAM_FLUSH_DEBOUNCE_MS = 200;
 
 export function requiredGrepLiteral(pattern: string, literal: boolean): string | undefined {
   if (/[\n\r\0]/u.test(pattern)) return undefined;
@@ -42,11 +43,13 @@ export class WorkspaceTrigramIndex {
   private revision = -1;
   private count = 0;
   private generation = 0;
+  private flushTimer?: ReturnType<typeof setTimeout>;
   private pending?: Promise<void>;
   private latest?: WorkspacePathSnapshot;
   private rebuildRequested = false;
   private readonly updates = new Map<string, WorkspacePathEntry | undefined>();
   private readonly eligibleCache = new WeakMap<WorkspacePathSnapshot, ReadonlySet<string>>();
+  private readonly progressWaiters = new Set<() => void>();
   error?: unknown;
 
   constructor(private readonly root: string, cacheDir: string, private readonly cpu: ICpuWorkerService) {
@@ -58,9 +61,13 @@ export class WorkspaceTrigramIndex {
     this.dirtyPaths.add(path.replaceAll('\\', '/'));
   }
 
-  invalidate(): void { this.revision = -1; }
+  invalidate(): void {
+    this.revision = -1;
+    this.notifyProgress();
+  }
 
   reset(): void {
+    this.clearFlushTimer();
     this.generation += 1;
     this.revision = -1;
     this.epoch = undefined;
@@ -69,6 +76,7 @@ export class WorkspaceTrigramIndex {
     this.rebuildRequested = false;
     this.updates.clear();
     this.dirtyPaths.clear();
+    this.notifyProgress();
   }
 
   reconcile(
@@ -92,9 +100,10 @@ export class WorkspaceTrigramIndex {
       return;
     }
     this.revision = snapshot.revision;
+    this.notifyProgress();
     if (patches.length === 0) {
       for (const path of this.dirtyPaths) if (!this.updates.has(path)) this.dirtyPaths.delete(path);
-      this.flushUpdates();
+      this.scheduleFlushUpdates();
       return;
     }
     this.patchBatch(snapshot, patches);
@@ -114,11 +123,43 @@ export class WorkspaceTrigramIndex {
       this.dirtyPaths.add(path);
       this.updates.set(path, entry?.kind === 'file' && !entry.sensitive ? entry : undefined);
     }
-    if (this.epoch !== undefined && this.revision !== -1) this.revision = snapshot.revision;
-    this.flushUpdates();
+    if (this.epoch !== undefined && this.revision !== -1) {
+      this.revision = snapshot.revision;
+      this.notifyProgress();
+    }
+    this.scheduleFlushUpdates();
+  }
+
+  private notifyProgress(): void {
+    if (this.progressWaiters.size === 0) return;
+    const waiters = Array.from(this.progressWaiters);
+    this.progressWaiters.clear();
+    for (const wake of waiters) wake();
+  }
+
+  private waitForProgress(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.progressWaiters.add(resolve);
+    });
+  }
+
+  private clearFlushTimer(): void {
+    if (this.flushTimer === undefined) return;
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+  }
+
+  private scheduleFlushUpdates(): void {
+    if (this.pending !== undefined || this.flushTimer !== undefined || this.epoch === undefined || this.revision === -1 || this.updates.size === 0 || this.controller.signal.aborted) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      this.flushUpdates();
+    }, TRIGRAM_FLUSH_DEBOUNCE_MS);
+    this.flushTimer.unref?.();
   }
 
   private flushUpdates(): void {
+    this.clearFlushTimer();
     if (this.pending !== undefined || this.epoch === undefined || this.revision === -1 || this.updates.size === 0 || this.controller.signal.aborted) return;
     const epoch = this.epoch;
     const generation = this.generation;
@@ -150,6 +191,7 @@ export class WorkspaceTrigramIndex {
           }
         }
         chunkIndex += 1;
+        this.notifyProgress();
       }
     })().catch(error => {
       if (generation !== this.generation) return;
@@ -158,17 +200,19 @@ export class WorkspaceTrigramIndex {
       this.epoch = undefined;
     }).finally(() => {
       this.pending = undefined;
+      this.notifyProgress();
       if (this.rebuildRequested && this.latest !== undefined) {
         this.rebuildRequested = false;
         this.rebuild(this.latest);
       } else {
         this.rebuildRequested = false;
-        this.flushUpdates();
+        this.scheduleFlushUpdates();
       }
     });
   }
 
   rebuild(snapshot: WorkspacePathSnapshot): void {
+    this.clearFlushTimer();
     const files = snapshot.entries.filter(entry => entry.kind === 'file' && !entry.sensitive);
     if (files.length < TRIGRAM_MIN_FILES) {
       this.reset();
@@ -178,6 +222,7 @@ export class WorkspaceTrigramIndex {
     this.count = files.length;
     this.revision = -1;
     this.epoch = undefined;
+    this.notifyProgress();
     if (this.pending !== undefined) {
       this.generation += 1;
       this.rebuildRequested = true;
@@ -215,17 +260,42 @@ export class WorkspaceTrigramIndex {
         this.rebuild(this.latest);
       } else {
         this.rebuildRequested = false;
-        this.flushUpdates();
+        this.scheduleFlushUpdates();
       }
     });
   }
 
-  async whenReady(): Promise<void> { while (this.pending !== undefined) await this.pending; }
+  async whenReady(): Promise<void> {
+    if (this.flushTimer !== undefined) {
+      this.clearFlushTimer();
+      this.flushUpdates();
+    }
+    while (this.pending !== undefined) {
+      await this.pending;
+      if (this.flushTimer !== undefined) {
+        this.clearFlushTimer();
+        this.flushUpdates();
+      }
+    }
+  }
 
   async candidates(snapshot: WorkspacePathSnapshot, pattern: string, literal: boolean, insensitive: boolean): Promise<readonly string[] | undefined> {
     const required = requiredGrepLiteral(pattern, literal);
     if (required === undefined || insensitive && /[^\u0000-\u007F]/u.test(required) ||
       this.epoch === undefined || this.revision !== snapshot.revision) return undefined;
+    if (this.flushTimer !== undefined || this.updates.size > 0) {
+      this.clearFlushTimer();
+      this.flushUpdates();
+      while (
+        !this.controller.signal.aborted &&
+        this.epoch !== undefined &&
+        this.revision === snapshot.revision &&
+        (this.updates.size > 0 || this.pending !== undefined)
+      ) {
+        await this.waitForProgress();
+      }
+      if (this.controller.signal.aborted || this.epoch === undefined || this.revision !== snapshot.revision) return undefined;
+    }
     const limit = Math.min(2000, Math.max(0, Math.ceil(this.count / 4) - 1));
     let paths: readonly string[] | undefined;
     try {
@@ -249,5 +319,10 @@ export class WorkspaceTrigramIndex {
     return candidates.length > limit ? undefined : candidates;
   }
 
-  async dispose(): Promise<void> { this.controller.abort(); await this.whenReady(); }
+  async dispose(): Promise<void> {
+    this.clearFlushTimer();
+    this.controller.abort();
+    this.notifyProgress();
+    await this.whenReady();
+  }
 }

@@ -573,14 +573,71 @@ describe('ReadMediaFile tool result preview', () => {
     // A host path video is read through the host route, not the session one.
     expect(cold.querySelector('img, video')?.getAttribute('src')).toBe('blob:kiki-session-media');
 
-    // An inline video is shown as it is: no host read, no object URL.
+    // An inline video renders a click-to-play facade first (no decoder mounted until Play); no host read, no object URL.
     const live = await renderReadMedia({ ...readMediaBlock('/workspace/live.mp4', 'ms://uploaded-id', 'video'), output: [
       { type: 'text', text: '<video path="/workspace/live.mp4">' },
       { type: 'video', source: { kind: 'base64', media_type: 'video/mp4', data: 'AAA' } },
       { type: 'text', text: '</video>' },
     ] });
+    expect(live.querySelector('video')).toBeNull();
+    const facade = live.querySelector<HTMLButtonElement>('[data-inline-video-facade]');
+    expect(facade).not.toBeNull();
+    await act(async () => { facade!.click(); });
     expect(live.querySelector('video')?.getAttribute('src')).toBe('data:video/mp4;base64,AAA');
     expect(mocks.readHostMediaPreviewBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps simultaneous active inline timeline video decoders to 2 and pauses sibling inline media on play', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await renderSettled(
+        root,
+        <MediaPreviewProvider sessionId="session_test">
+          <MediaPartList
+            media={[
+              { kind: 'video', url: 'https://example.test/v1.mp4', name: 'v1.mp4' },
+              { kind: 'video', url: 'https://example.test/v2.mp4', name: 'v2.mp4' },
+              { kind: 'video', url: 'https://example.test/v3.mp4', name: 'v3.mp4' },
+            ]}
+          />
+        </MediaPreviewProvider>,
+      );
+      expect(container.querySelectorAll('video')).toHaveLength(0);
+      expect(container.querySelectorAll('[data-inline-video-facade]')).toHaveLength(3);
+
+      const facades = () => [...container.querySelectorAll<HTMLButtonElement>('[data-inline-video-facade]')];
+      await act(async () => { facades()[0]!.click(); });
+      expect(container.querySelectorAll('video')).toHaveLength(1);
+
+      await act(async () => { facades()[0]!.click(); });
+      expect(container.querySelectorAll('video')).toHaveLength(2);
+
+      const videosBefore = [...container.querySelectorAll<HTMLVideoElement>('video')];
+      const pauseFirst = vi.spyOn(videosBefore[0]!, 'pause').mockImplementation(() => {});
+      Object.defineProperty(videosBefore[0]!, 'paused', { value: false, configurable: true });
+      await act(async () => {
+        videosBefore[0]!.dispatchEvent(new Event('play'));
+        videosBefore[1]!.dispatchEvent(new Event('play'));
+      });
+      expect(pauseFirst).toHaveBeenCalledTimes(1);
+
+      let peakVideos = container.querySelectorAll('video').length;
+      const observer = new MutationObserver(() => {
+        peakVideos = Math.max(peakVideos, container.querySelectorAll('video').length);
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      await act(async () => { facades()[0]!.click(); });
+      observer.disconnect();
+      expect(peakVideos).toBeLessThanOrEqual(2);
+      const activeSrcs = [...container.querySelectorAll<HTMLVideoElement>('video')].map((el) => el.getAttribute('src'));
+      expect(activeSrcs).toEqual(['https://example.test/v2.mp4', 'https://example.test/v3.mp4']);
+      expect(container.querySelectorAll('[data-inline-video-facade]')).toHaveLength(1);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
   });
 
   it('reports missing saved media rather than displaying the current host file', async () => {

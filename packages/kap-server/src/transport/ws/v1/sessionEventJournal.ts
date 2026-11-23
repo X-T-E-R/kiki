@@ -1,11 +1,15 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { SessionAttentionCursor } from '@kiki/protocol';
 import { ulid } from 'ulid';
 
 const JOURNAL_VERSION = 1;
 const WATERMARK_READ_BYTES = 64 * 1024;
+const DEFAULT_MAX_RETAINED_BYTES = 4 * 1024 * 1024;
+const BACKGROUND_FLUSH_COALESCE_MS = 25;
+const DEFAULT_STALE_JOURNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const STALE_TEMP_JOURNAL_TTL_MS = 60 * 60 * 1000;
 
 const ATTENTION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'turn.started',
@@ -81,18 +85,30 @@ export interface JournalLogger {
 
 const noopLogger: JournalLogger = { warn: () => {} };
 
+interface RetainedJournalEntry {
+  readonly raw: string;
+  readonly bytes: number;
+  readonly seq: number;
+  readonly attentionSeq: number;
+}
+
 export class SessionEventJournal {
   private _seq: number;
   private _attentionSeq: number;
-  private pendingLines: string[] = [];
+  private pendingEntries: RetainedJournalEntry[] = [];
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private flushPromise: Promise<void> | undefined;
   private headerPending: boolean;
   private writeFailed = false;
   private compactFailed = false;
   private appendSeparator = false;
-  private retainedLines: string[] | undefined;
+  private dirtySinceSync = false;
+  private retainedEntries: RetainedJournalEntry[] | undefined;
+  private retainedBytes = 0;
   private diskEventCount = 0;
+  private diskBytes = 0;
   private compactPending = false;
+  private closeSyncFailed = false;
   private closing = false;
   private durableSeq: number;
   private durableAttentionSeq: number;
@@ -106,13 +122,14 @@ export class SessionEventJournal {
     attentionSeq: number,
     isFresh: boolean,
     private readonly capacity: number,
+    private readonly maxRetainedBytes: number,
   ) {
     this._seq = lastSeq;
     this._attentionSeq = attentionSeq;
     this.durableSeq = lastSeq;
     this.durableAttentionSeq = attentionSeq;
     this.headerPending = isFresh;
-    if (isFresh) this.retainedLines = [];
+    if (isFresh) this.retainedEntries = [];
   }
 
   /** Highest durable seq appended (0 if none). */
@@ -133,8 +150,10 @@ export class SessionEventJournal {
     filePath: string,
     logger: JournalLogger = noopLogger,
     capacity = 1000,
+    maxRetainedBytes = DEFAULT_MAX_RETAINED_BYTES,
   ): Promise<SessionEventJournal> {
     if (!Number.isSafeInteger(capacity) || capacity < 0) throw new RangeError('journal capacity must be a nonnegative integer');
+    if (!Number.isSafeInteger(maxRetainedBytes) || maxRetainedBytes < 0) throw new RangeError('journal maxRetainedBytes must be a nonnegative integer');
     let epoch: string | undefined;
     let lastSeq = 0;
     let attentionSeq = 0;
@@ -168,9 +187,9 @@ export class SessionEventJournal {
         }
       };
       await truncateStaleTailBeforeFreshHeader();
-      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, 0, true, capacity);
+      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, 0, true, capacity, maxRetainedBytes);
     }
-    return new SessionEventJournal(filePath, logger, epoch, lastSeq, attentionSeq, false, capacity);
+    return new SessionEventJournal(filePath, logger, epoch, lastSeq, attentionSeq, false, capacity, maxRetainedBytes);
   }
 
   /**
@@ -211,14 +230,22 @@ export class SessionEventJournal {
     if (advancesAttention && seq > this._attentionSeq) {
       this._attentionSeq = seq;
     }
+    const attentionSeq = this._attentionSeq;
     const line: JournalEventLine = {
       kind: 'event',
       seq,
-      attention_seq: this._attentionSeq,
+      attention_seq: attentionSeq,
       envelope,
     };
-    this.pendingLines.push(JSON.stringify(line));
-    this.scheduleFlush();
+    const raw = JSON.stringify(line);
+    this.pendingEntries.push({
+      raw,
+      bytes: Buffer.byteLength(raw, 'utf8') + 1,
+      seq,
+      attentionSeq,
+    });
+    this.writeFailed = false;
+    this.scheduleBackgroundFlush();
   }
 
   /** Read journal entries with `seq > fromSeqExclusive`, capped at `limit`. */
@@ -241,11 +268,13 @@ export class SessionEventJournal {
   }
 
   async flush(): Promise<void> {
-    while (this.flushPromise !== undefined || this.pendingLines.length > 0 ||
-      (this.closing && (this.headerPending || this.retainedLines !== undefined && (this.compactPending || this.diskEventCount > this.capacity)))) {
+    this.clearFlushTimer();
+    this.closeSyncFailed = false;
+    while (this.flushPromise !== undefined || this.pendingEntries.length > 0 ||
+      (this.closing && (this.headerPending || (this.dirtySinceSync && !this.closeSyncFailed) || (this.needsCompaction() && !this.compactFailed)))) {
       this.scheduleFlush();
       await this.flushPromise;
-      if (this.writeFailed || (this.compactFailed && this.pendingLines.length === 0 && this.flushPromise === undefined)) return;
+      if (this.writeFailed || ((this.compactFailed || this.closeSyncFailed) && this.pendingEntries.length === 0 && this.flushPromise === undefined)) return;
     }
   }
 
@@ -254,12 +283,43 @@ export class SessionEventJournal {
     await this.flush();
   }
 
+  private clearFlushTimer(): void {
+    if (this.flushTimer === undefined) return;
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+  }
+
+  private scheduleBackgroundFlush(): void {
+    if (this.closing) {
+      this.clearFlushTimer();
+      this.scheduleFlush();
+      return;
+    }
+    if (this.flushPromise !== undefined || this.flushTimer !== undefined) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      if (!this.writeFailed && this.pendingEntries.length > 0) this.scheduleFlush();
+    }, BACKGROUND_FLUSH_COALESCE_MS);
+    this.flushTimer.unref?.();
+  }
+
   private scheduleFlush(): void {
+    this.clearFlushTimer();
     if (this.flushPromise !== undefined) return;
     this.flushPromise = this.flushOnce().finally(() => {
       this.flushPromise = undefined;
-      if (!this.writeFailed && this.pendingLines.length > 0) this.scheduleFlush();
+      if (!this.writeFailed && this.pendingEntries.length > 0) {
+        if (this.closing) this.scheduleFlush();
+        else this.scheduleBackgroundFlush();
+      }
     });
+  }
+
+  private needsCompaction(): boolean {
+    if (this.retainedEntries === undefined) return false;
+    if (this.compactPending) return true;
+    if (this.diskEventCount > this.capacity * (this.closing ? 1 : 2)) return true;
+    return this.diskBytes > Math.max(this.maxRetainedBytes, this.retainedBytes);
   }
 
   private header(): JournalHeaderLine {
@@ -274,8 +334,9 @@ export class SessionEventJournal {
   }
 
   private async loadRetention(): Promise<void> {
-    if (this.retainedLines !== undefined) return;
-    const retained: string[] = [];
+    if (this.retainedEntries !== undefined) return;
+    const retained: RetainedJournalEntry[] = [];
+    let retainedBytes = 0;
     try {
       const file = await open(this.filePath, 'r');
       try {
@@ -301,17 +362,22 @@ export class SessionEventJournal {
           this.compactPending = true;
           continue;
         }
-        if (retained.length === this.capacity) {
+        const bytes = Buffer.byteLength(raw, 'utf8') + 1;
+        if (this.capacity === 0 || retained.length >= this.capacity ||
+          (retained.length > 0 && retainedBytes + bytes > this.maxRetainedBytes)) {
           this.compactPending = true;
           break;
         }
-        retained.push(raw);
+        retained.push({ raw, bytes, seq: parsed.seq, attentionSeq: lineAttentionSeq(parsed) });
+        retainedBytes += bytes;
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    this.retainedLines = retained.toReversed();
-    this.diskEventCount = this.retainedLines.length;
+    this.retainedEntries = retained.toReversed();
+    this.retainedBytes = retainedBytes;
+    this.diskEventCount = this.retainedEntries.length;
+    this.diskBytes = retainedBytes;
   }
 
   private async flushOnce(): Promise<void> {
@@ -323,50 +389,153 @@ export class SessionEventJournal {
       this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal retention read failed; append retained for retry');
       return;
     }
-    const events = this.pendingLines;
-    this.pendingLines = [];
-    const lines = this.headerPending ? [JSON.stringify(this.header()), ...events] : events;
+    const events = this.pendingEntries;
+    this.pendingEntries = [];
+    const lines = this.headerPending
+      ? [JSON.stringify(this.header()), ...events.map((entry) => entry.raw)]
+      : events.map((entry) => entry.raw);
     if (lines.length > 0) {
       try {
         await mkdir(dirname(this.filePath), { recursive: true });
         const file = await open(this.filePath, 'a');
         try {
           await file.appendFile((this.appendSeparator ? '\n' : '') + lines.join('\n') + '\n', 'utf8');
-          await file.sync();
         } finally {
           await file.close();
         }
       } catch (error) {
-        this.pendingLines = events.concat(this.pendingLines);
-        this.writeFailed = true;
+        const hadNewerAppend = this.pendingEntries.length > 0;
+        this.pendingEntries = events.concat(this.pendingEntries);
+        this.writeFailed = !hadNewerAppend;
         this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal write failed; lines requeued for the next flush');
         return;
       }
       this.headerPending = false;
       this.appendSeparator = false;
-      const retained = this.retainedLines!;
+      this.dirtySinceSync = true;
+      const retained = this.retainedEntries!;
       this.diskEventCount += events.length;
-      for (const raw of events) {
-        const parsed = parseJournalLine(raw);
-        if (parsed?.kind === 'event') {
-          this.durableSeq = Math.max(this.durableSeq, parsed.seq);
-          this.durableAttentionSeq = Math.max(this.durableAttentionSeq, lineAttentionSeq(parsed));
-        }
+      for (const entry of events) {
+        this.diskBytes += entry.bytes;
+        this.durableSeq = Math.max(this.durableSeq, entry.seq);
+        this.durableAttentionSeq = Math.max(this.durableAttentionSeq, entry.attentionSeq);
       }
-      this.retainedLines = this.capacity === 0 ? [] : retained.concat(events).slice(-this.capacity);
+      const trimmed = trimRetainedEntries(retained.concat(events), this.capacity, this.maxRetainedBytes);
+      this.retainedEntries = trimmed.entries;
+      this.retainedBytes = trimmed.bytes;
     }
     this.writeFailed = false;
-    if (!this.compactPending && this.diskEventCount <= this.capacity * (this.closing ? 1 : 2)) return;
-    try {
-      await replaceJournal(this.filePath, [JSON.stringify(this.header()), ...this.retainedLines!].join('\n') + '\n');
-      this.diskEventCount = this.retainedLines!.length;
-      this.compactPending = false;
-    } catch (error) {
-      this.compactPending = true;
-      this.compactFailed = true;
-      this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal compaction failed; durable source retained for retry');
+    if (this.needsCompaction()) {
+      try {
+        const content = [JSON.stringify(this.header()), ...this.retainedEntries!.map((entry) => entry.raw)].join('\n') + '\n';
+        await replaceJournal(this.filePath, content);
+        this.diskEventCount = this.retainedEntries!.length;
+        this.diskBytes = this.retainedBytes;
+        this.compactPending = false;
+        this.dirtySinceSync = false;
+        return;
+      } catch (error) {
+        this.compactPending = true;
+        this.compactFailed = true;
+        this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal compaction failed; durable source retained for retry');
+      }
+    }
+    if (this.closing && this.dirtySinceSync) {
+      try {
+        const file = await open(this.filePath, 'a');
+        try {
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        this.dirtySinceSync = false;
+      } catch (error) {
+        this.closeSyncFailed = true;
+        this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal close sync failed');
+      }
     }
   }
+}
+
+function trimRetainedEntries(
+  entries: readonly RetainedJournalEntry[],
+  capacity: number,
+  maxRetainedBytes: number,
+): { entries: RetainedJournalEntry[]; bytes: number } {
+  if (capacity === 0 || entries.length === 0) return { entries: [], bytes: 0 };
+  const floor = Math.max(0, entries.length - capacity);
+  let bytes = 0;
+  let kept = 0;
+  for (let index = entries.length - 1; index >= floor; index -= 1) {
+    const entry = entries[index]!;
+    if (kept >= 1 && bytes + entry.bytes > maxRetainedBytes) break;
+    bytes += entry.bytes;
+    kept += 1;
+  }
+  return { entries: entries.slice(entries.length - kept), bytes };
+}
+
+/** Remove expired inactive session event journals and stale temp files from `eventsDir`. */
+export async function pruneExpiredEventJournals(
+  eventsDir: string,
+  options?: {
+    readonly maxAgeMs?: number;
+    readonly activeSessionIds?: ReadonlySet<string>;
+    readonly isSessionActive?: (sessionId: string) => boolean;
+    readonly beforeUnlink?: (sessionId: string) => (() => void) | undefined;
+    readonly now?: number;
+    readonly logger?: JournalLogger;
+  },
+): Promise<number> {
+  const maxAgeMs = options?.maxAgeMs ?? DEFAULT_STALE_JOURNAL_TTL_MS;
+  const activeSessionIds = options?.activeSessionIds;
+  const isSessionActive = options?.isSessionActive;
+  const beforeUnlink = options?.beforeUnlink;
+  const now = options?.now ?? Date.now();
+  const logger = options?.logger ?? noopLogger;
+  let entries;
+  try {
+    entries = await readdir(eventsDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    logger.warn({ eventsDir, err: String(error) }, 'event journal cleanup scan failed');
+    return 0;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    const isTemp = name.includes('.jsonl.tmp.');
+    const isJournal = !isTemp && name.endsWith('.jsonl');
+    if (!isTemp && !isJournal) continue;
+    const sessionId = isJournal
+      ? name.slice(0, -'.jsonl'.length)
+      : name.slice(0, name.indexOf('.jsonl.tmp.'));
+    if (isJournal && (sessionId === '_global' || activeSessionIds?.has(sessionId) === true || isSessionActive?.(sessionId) === true)) continue;
+    const fullPath = join(eventsDir, name);
+    try {
+      const info = await stat(fullPath);
+      const ttl = isTemp ? STALE_TEMP_JOURNAL_TTL_MS : maxAgeMs;
+      if (now - info.mtimeMs < ttl) continue;
+      if (isJournal && (activeSessionIds?.has(sessionId) === true || isSessionActive?.(sessionId) === true)) continue;
+      let release: (() => void) | undefined;
+      if (isJournal && beforeUnlink !== undefined) {
+        release = beforeUnlink(sessionId);
+        if (release === undefined) continue;
+      }
+      try {
+        await rm(fullPath, { force: true });
+        removed += 1;
+      } finally {
+        release?.();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn({ filePath: fullPath, err: String(error) }, 'event journal cleanup failed');
+      }
+    }
+  }
+  return removed;
 }
 
 /** Default per-session journal path under `<eventsDir>/<sessionId>.jsonl`. */

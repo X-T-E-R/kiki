@@ -10,7 +10,7 @@ import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp
 import { registerTranscriptRoutes } from '../src/routes/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { readColdSessionViewBaseline, readPlanInteractions, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage, sessionViewSnapshotHistoryCursor } from '../src/transport/klient/sessionViewReads';
+import { readColdSessionViewBaseline, readPlanInteractions, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage, resolveFreshTailTranscript, sessionViewSnapshotHistoryCursor } from '../src/transport/klient/sessionViewReads';
 
 function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService {
   const transcript = new AgentTranscript('main');
@@ -1876,5 +1876,74 @@ describe('bounded session-view canonical reads', () => {
     expect(page?.has_more).toBe(false);
     expect(page?.read?.stale).toBeUndefined();
     expect(page?.items).toEqual([expect.objectContaining({ kind: 'turn', turnId: 't0' })]);
+  });
+
+  it('reconstructs the newest tail with live running overlay when residency trimming evicted newer turns', async () => {
+    const staleOldTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't11',
+      ordinal: 11,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'five-days-ago',
+      steps: [],
+    };
+    const todayCompletedTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't12',
+      ordinal: 12,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'today-completed',
+      steps: [],
+    };
+    const todayRunningTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't13',
+      ordinal: 13,
+      state: 'running',
+      origin: { kind: 'user' },
+      prompt: 'today-running',
+      steps: [],
+    };
+    const liveTranscript = new AgentTranscript('main');
+    liveTranscript.apply([{
+      op: 'reset',
+      agentId: 'main',
+      snapshot: { ...empty(), items: [staleOldTurn, todayCompletedTurn], hasMoreOlder: true },
+    }]);
+    liveTranscript.releaseDurableTurns([liveTranscript.getTurn('t12')!], { tailTurns: 0, maxBytes: 1 });
+    expect(liveTranscript.hasEvictedTail).toBe(true);
+    expect(liveTranscript.getItems().map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t11']);
+
+    liveTranscript.apply([{ op: 'turn.upsert', turn: { ...todayCompletedTurn, state: 'completed', prompt: 'today-completed-live' } }]);
+    liveTranscript.apply([{ op: 'turn.upsert', turn: todayRunningTurn }]);
+    const coldTailSnapshot: AgentTranscriptSnapshot = {
+      ...empty(),
+      items: [{ ...todayCompletedTurn, state: 'cancelled', prompt: 'today-cancelled-cold' }, { ...todayRunningTurn, state: 'cancelled' }],
+      hasMoreOlder: true,
+    };
+    const readColdPageSnapshot = vi.fn(async (_sid: string, _aid: string, project: (s: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(coldTailSnapshot));
+    const service = {
+      forSessionLive: () => ({ agents: () => [], getAgent: () => liveTranscript }),
+      ensureAgentHistory: async () => liveTranscript,
+      isTranscriptLiveCoverageVerified: () => false,
+      verifyTranscriptLiveCoverage: async () => false,
+      getTranscriptCursor: () => ({ seq: 9, epoch: 'live-epoch' }),
+      readColdPageSnapshot,
+      reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+
+    const fresh = await resolveFreshTailTranscript(service, 'fixture-session', 'main', liveTranscript);
+    expect(readColdPageSnapshot).toHaveBeenCalledTimes(1);
+    const freshTurns = fresh.getItems().filter((item): item is TranscriptTurn => item.kind === 'turn');
+    expect(freshTurns.map((turn) => [turn.turnId, turn.state, turn.prompt])).toEqual([
+      ['t12', 'completed', 'today-completed-live'],
+      ['t13', 'running', 'today-running'],
+    ]);
+
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', pageSize: 20 });
+    const pageTurns = (page?.items ?? []).filter((item): item is TranscriptTurn => item.kind === 'turn');
+    expect(pageTurns.map((turn) => [turn.turnId, turn.state])).toEqual([['t12', 'completed'], ['t13', 'running']]);
   });
 });

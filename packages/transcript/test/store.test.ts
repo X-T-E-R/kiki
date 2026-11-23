@@ -1571,4 +1571,26 @@ describe('TranscriptStore', () => {
       rebuildSpy.mockRestore();
     }
   });
+
+  it('tracks hasEvictedTail when residency trimming evicts newer turns while older unreleasable turns remain', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'old-day-1' } },
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'old-day-1-b' } },
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'today-latest' } },
+    ]);
+    expect(tx.hasEvictedTail).toBe(false);
+
+    const releasedPrefix = tx.releaseDurableTurns([tx.getTurn('t0')!], { tailTurns: 2, maxBytes: 1 << 20 });
+    expect(releasedPrefix).toEqual(['t0']);
+    expect(tx.hasEvictedTail).toBe(false);
+
+    const releasedTail = tx.releaseDurableTurns([tx.getTurn('t2')!], { tailTurns: 0, maxBytes: 1 });
+    expect(releasedTail).toEqual(['t2']);
+    expect(tx.getItems().map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t1']);
+    expect(tx.hasEvictedTail).toBe(true);
+
+    tx.apply([{ op: 'reset', agentId: 'main', snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} } }]);
+    expect(tx.hasEvictedTail).toBe(false);
+  });
 });

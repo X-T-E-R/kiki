@@ -82,7 +82,7 @@ import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { recordSessionViewTiming, timeSessionViewPhase, type SessionViewTimingContext } from '../../klient/sessionViewTiming';
 import { boundedTranscriptOps, boundedTranscriptSnapshot, TRANSCRIPT_WINDOW_BYTES } from '../../klient/boundedTranscript';
-import { sessionViewSnapshotHistoryCursor } from '../../klient/sessionViewReads';
+import { resolveFreshTailResetBaseline, sessionViewSnapshotHistoryCursor } from '../../klient/sessionViewReads';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
@@ -90,6 +90,7 @@ import { buildResyncRequired } from './protocol';
 import {
   type EventEnvelope,
   type JournalLogger,
+  pruneExpiredEventJournals,
   SessionEventJournal,
   sessionJournalPath,
   toAttentionCursor,
@@ -281,6 +282,9 @@ export class SessionEventBroadcaster {
   private pluginTopicSubscription?: IDisposable;
   private attachedPluginPort?: PluginExtensionBrokerHostPort;
   private readonly pluginGenerations = new Map<string, number>();
+  private readonly activePruneUnlinks = new Map<string, Promise<void>>();
+  private journalPruneTimer?: ReturnType<typeof setTimeout>;
+  private journalPruneInterval?: ReturnType<typeof setInterval>;
   private closed = false;
 
   constructor(
@@ -310,6 +314,40 @@ export class SessionEventBroadcaster {
       },
     };
     this.syncPluginTopicSubscription();
+    this.scheduleJournalPrune();
+  }
+
+  private scheduleJournalPrune(): void {
+    const isSessionActive = (sessionId: string): boolean =>
+      this.sessions.has(sessionId) || this.pendingStates.has(sessionId) || this.evictions.has(sessionId);
+    const runPrune = (): void => {
+      if (this.closed) return;
+      void pruneExpiredEventJournals(this.opts.eventsDir, {
+        isSessionActive,
+        beforeUnlink: (sessionId) => {
+          if (this.closed || isSessionActive(sessionId) || this.activePruneUnlinks.has(sessionId)) {
+            return undefined;
+          }
+          let release!: () => void;
+          const wait = new Promise<void>((resolve) => { release = resolve; });
+          this.activePruneUnlinks.set(sessionId, wait);
+          return () => {
+            if (this.activePruneUnlinks.get(sessionId) === wait) {
+              this.activePruneUnlinks.delete(sessionId);
+            }
+            release();
+          };
+        },
+        logger: this.opts.logger,
+      }).catch(() => undefined);
+    };
+    this.journalPruneTimer = setTimeout(() => {
+      this.journalPruneTimer = undefined;
+      runPrune();
+    }, 30_000);
+    this.journalPruneTimer.unref?.();
+    this.journalPruneInterval = setInterval(runPrune, 6 * 60 * 60 * 1000);
+    this.journalPruneInterval.unref?.();
   }
 
   /**
@@ -936,9 +974,9 @@ export class SessionEventBroadcaster {
             return true;
           }
         }
-        const transcript = await ensureHistory(agentId);
+        const rawTranscript = await ensureHistory(agentId);
         if (!current()) return false;
-        if (transcript === undefined) return true;
+        if (rawTranscript === undefined) return true;
         let sent = delivered.get(agentId);
         for (;;) {
           await yieldIfNeeded();
@@ -961,28 +999,57 @@ export class SessionEventBroadcaster {
             const visible = catchup.batches
               .map((batch) => ({ ...batch, ops: filterOpsForGrade(grade, batch.ops) }))
               .filter((batch) => batch.ops.length > 0);
+            let fallbackToReset = false;
             for (let index = 0; index < visible.length; index += 1) {
               await yieldIfNeeded();
               if (!current()) return false;
               const batch = visible[index]!;
-              if (!this.sendTranscriptOps(
+              const outcome = this.sendTranscriptOpsInternal(
                 state, target, agentId, grade, batch.ops,
                 { epoch: catchup.epoch, seq: batch.seq },
                 index === visible.length - 1 ? catchup.throughSeq : batch.seq,
                 seed.generation,
-              )) return false;
+                true,
+              );
+              if (outcome === 'failed') return false;
+              if (outcome === 'needs_async_reset') {
+                fallbackToReset = true;
+                break;
+              }
               await target.drain?.();
             }
-            sent = { seq: catchup.throughSeq, epoch: catchup.epoch };
-          } else {
-            if (since !== undefined || needsReset) {
-              if (!this.sendTranscriptReset(state, target, transcript, grade, cursor, seed.generation)) return false;
+            if (fallbackToReset) {
+              const baseline = await resolveFreshTailResetBaseline(
+                service,
+                state.sessionId,
+                agentId,
+                rawTranscript,
+                timing.signal,
+              );
+              if (!current()) return false;
+              if (!this.sendTranscriptReset(state, target, baseline.transcript, grade, baseline.cursor, seed.generation)) return false;
               await timeSessionViewPhase('agent_drain', { ...fields, agentId }, async () => target.drain?.(), timing);
-              if (!firstDetail && priority.has(agentId)) {
-                firstDetail = true;
-                recordSessionViewTiming('first_detail_reset', startedAt, { ...fields, agentId }, timing);
-              }
+              sent = baseline.cursor;
+            } else {
+              sent = { seq: catchup.throughSeq, epoch: catchup.epoch };
             }
+          } else if (since !== undefined || needsReset) {
+            const baseline = await resolveFreshTailResetBaseline(
+              service,
+              state.sessionId,
+              agentId,
+              rawTranscript,
+              timing.signal,
+            );
+            if (!current()) return false;
+            if (!this.sendTranscriptReset(state, target, baseline.transcript, grade, baseline.cursor, seed.generation)) return false;
+            await timeSessionViewPhase('agent_drain', { ...fields, agentId }, async () => target.drain?.(), timing);
+            if (!firstDetail && priority.has(agentId)) {
+              firstDetail = true;
+              recordSessionViewTiming('first_detail_reset', startedAt, { ...fields, agentId }, timing);
+            }
+            sent = baseline.cursor;
+          } else {
             sent = cursor;
           }
         }
@@ -1056,20 +1123,39 @@ export class SessionEventBroadcaster {
     throughSeq: number,
     generation?: number,
   ): boolean {
+    return this.sendTranscriptOpsInternal(state, target, agentId, grade, ops, cursor, throughSeq, generation, false) === 'sent';
+  }
+
+  private sendTranscriptOpsInternal(
+    state: SessionState,
+    target: BroadcastTarget,
+    agentId: string,
+    grade: TranscriptGrade,
+    ops: readonly TranscriptOperation[],
+    cursor: TranscriptCursor,
+    throughSeq: number,
+    generation: number | undefined,
+    deferEvictedTailReset: boolean,
+  ): 'sent' | 'failed' | 'needs_async_reset' {
     const transcript = this.opts.transcriptService?.forSessionLive(state.sessionId)?.getAgent(agentId);
-    if (transcript === undefined) return false;
+    if (transcript === undefined) return 'failed';
     const filtered = boundedTranscriptOps(filterOpsForGrade(grade, ops), transcript);
-    if (filtered.length === 0) return true;
+    if (filtered.length === 0) return 'sent';
     const envelope = this.buildTranscriptEnvelope(state, 'transcript.ops', {
       session_id: state.sessionId, agent_id: agentId, ops: filtered, cursor, through_seq: throughSeq,
     });
     const needsWindowSizeCheck = filtered.length > 8 || filtered.some((op) => op.op === 'reset' || op.op === 'turn.upsert');
     if (needsWindowSizeCheck && jsonBytes(envelope) > TRANSCRIPT_WINDOW_BYTES) {
-      if (grade === 'off') return true;
+      if (grade === 'off') return 'sent';
+      if (transcript.hasEvictedTail) {
+        if (deferEvictedTailReset) return 'needs_async_reset';
+        this.sendLiveTranscriptReset(state, target, transcript, grade, generation);
+        return 'sent';
+      }
       const current = this.opts.transcriptService!.getTranscriptCursor(state.sessionId, agentId);
-      return this.sendTranscriptReset(state, target, transcript, grade, current, generation);
+      return this.sendTranscriptReset(state, target, transcript, grade, current, generation) ? 'sent' : 'failed';
     }
-    return this.sendTranscriptEnvelope(state, target, envelope, generation);
+    return this.sendTranscriptEnvelope(state, target, envelope, generation) ? 'sent' : 'failed';
   }
 
   private sendTranscriptEnvelope(
@@ -1181,20 +1267,67 @@ export class SessionEventBroadcaster {
   ): void {
     const service = this.opts.transcriptService;
     if (service === undefined) return;
-    const deliver = () => {
-      if (generation !== undefined && !this.isTranscriptGeneration(state, target, generation)) return;
-      if (generation === undefined && !state.targets.has(target)) return;
-      if (service.forSessionLive(state.sessionId)?.getAgent(transcript.agentId) !== transcript) return;
-      if (!this.hasTranscriptBaseline(state, target, transcript.agentId)) return;
-      const cursor = service.getTranscriptCursor(state.sessionId, transcript.agentId);
+    const isCurrentTarget = (): boolean => {
+      if (generation !== undefined && !this.isTranscriptGeneration(state, target, generation)) return false;
+      if (generation === undefined && !state.targets.has(target)) return false;
+      if (service.forSessionLive(state.sessionId)?.getAgent(transcript.agentId) !== transcript) return false;
+      return this.hasTranscriptBaseline(state, target, transcript.agentId);
+    };
+    const deliverResolved = (resolved: AgentTranscript, cursor: TranscriptCursor): void => {
+      if (!isCurrentTarget()) return;
       const seed = state.pendingTranscriptSeeds.get(target);
-      const sent = this.sendTranscriptReset(state, target, transcript, grade, cursor, generation);
+      const sent = this.sendTranscriptReset(state, target, resolved, grade, cursor, generation);
       if (seed?.delivered.has(transcript.agentId)) {
         if (sent) seed.delivered.set(transcript.agentId, cursor);
         else seed.delivered.delete(transcript.agentId);
       }
+      if (!sent) return;
+      const liveCursor = service.getTranscriptCursor(state.sessionId, transcript.agentId);
+      if (liveCursor.seq === cursor.seq && liveCursor.epoch === cursor.epoch) return;
+      const catchup = service.getOpsSince(state.sessionId, transcript.agentId, cursor);
+      if (catchup?.complete !== true) return;
+      const visible = catchup.batches
+        .map((batch) => ({ ...batch, ops: filterOpsForGrade(grade, batch.ops) }))
+        .filter((batch) => batch.ops.length > 0);
+      for (let index = 0; index < visible.length; index += 1) {
+        const batch = visible[index]!;
+        if (!this.sendTranscriptOps(
+          state,
+          target,
+          transcript.agentId,
+          grade,
+          batch.ops,
+          { epoch: catchup.epoch, seq: batch.seq },
+          index === visible.length - 1 ? catchup.throughSeq : batch.seq,
+          generation,
+        )) return;
+      }
+      if (seed?.delivered.has(transcript.agentId)) {
+        seed.delivered.set(transcript.agentId, { epoch: catchup.epoch, seq: catchup.throughSeq });
+      }
     };
-    deliver();
+    if (!transcript.hasEvictedTail) {
+      deliverResolved(transcript, service.getTranscriptCursor(state.sessionId, transcript.agentId));
+      return;
+    }
+    void resolveFreshTailResetBaseline(service, state.sessionId, transcript.agentId, transcript)
+      .then((baseline) => {
+        deliverResolved(baseline.transcript, baseline.cursor);
+      })
+      .catch((error: unknown) => {
+        this.opts.logger?.warn(
+          { sessionId: state.sessionId, agentId: transcript.agentId, err: String(error) },
+          'fresh tail transcript reset failed; requesting client resync',
+        );
+        if (!isCurrentTarget()) return;
+        const seed = state.pendingTranscriptSeeds.get(target);
+        seed?.delivered.delete(transcript.agentId);
+        try {
+          target.sendControl?.(buildResyncRequired(state.sessionId, 'journal_gap', state.journal.seq, state.journal.epoch));
+        } catch {
+          return;
+        }
+      });
   }
 
   /**
@@ -1529,6 +1662,14 @@ export class SessionEventBroadcaster {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.journalPruneTimer !== undefined) {
+      clearTimeout(this.journalPruneTimer);
+      this.journalPruneTimer = undefined;
+    }
+    if (this.journalPruneInterval !== undefined) {
+      clearInterval(this.journalPruneInterval);
+      this.journalPruneInterval = undefined;
+    }
     for (const pending of this.pendingSubscriptions.values()) for (const controller of pending.values()) controller.abort();
     this.pendingSubscriptions.clear();
     void this.pluginTopicSubscription?.dispose();
@@ -1595,6 +1736,10 @@ export class SessionEventBroadcaster {
 
     const session = getLiveSessionById(this.opts.core.accessor, sessionId);
     if (session === undefined) return undefined;
+
+    const pendingUnlink = this.activePruneUnlinks.get(sessionId);
+    if (pendingUnlink !== undefined) await pendingUnlink;
+    if (this.closed) return undefined;
 
     const journal = await SessionEventJournal.open(
       sessionJournalPath(this.opts.eventsDir, sessionId),
