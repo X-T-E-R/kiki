@@ -789,7 +789,7 @@ async function runClone(remote: string, command: Command, dependencies: SpaceCom
   const channel = options.channel ?? 'beta';
   if (channel !== 'stable' && channel !== 'beta') throw new Error('Clone channel must be stable or beta');
   const { invoke, ready } = await resolveRemoteTarget(remote, run);
-  const bootstrap = `${REMOTE_POSIX_PATH}if ! command -v kiki >/dev/null 2>&1; then (curl -fsSL ${INSTALL_SCRIPT_URL} | sh -s -- --channel ${channel} >&2) || exit 1; fi; exec kiki space key show --json`;
+  const bootstrap = `${REMOTE_POSIX_PATH}if ! command -v kiki >/dev/null 2>&1; then (curl -fsSL ${INSTALL_SCRIPT_URL} | sh -s -- --channel ${channel} >&2) || exit 1; fi; if command -v git >/dev/null 2>&1; then git config --global user.name >/dev/null 2>&1 || git config --global user.name Kiki; git config --global user.email >/dev/null 2>&1 || git config --global user.email kiki@localhost; fi; exec kiki space key show --json`;
   const keys = portableSpaceSourcesListResponseSchema.parse(JSON.parse(await invoke(bootstrap)));
   const root = await mkdtemp(join(tmpdir(), 'kiki-space-clone-'));
   try {

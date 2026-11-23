@@ -105,9 +105,6 @@ const FAST_DELIVERY_TIMEOUT_MS = 5_000;
 const MAX_BACKGROUND_TARGET_DRAINS = 4;
 const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
 const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
-const TERMINAL_WATCH_SLICE_TIMEOUT_MS = 30_000;
-const TERMINAL_WATCH_MAX_TRANSIENT_ERRORS = 5;
-const TERMINAL_WATCH_MAX_CURSOR_RESETS = 2;
 
 type CursorPayload = ListCursor | ReadCursor | ActivityCursor;
 
@@ -1008,7 +1005,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const { key, watchId, controller, signal, caller, callerRef, target } = input;
     let cursor = input.initialCursor;
     let transientErrors = 0;
-    let cursorResets = 0;
     try {
       while (!signal.aborted && !this.closing) {
         let result: WaitThreadsResult;
@@ -1016,17 +1012,19 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           result = await this.waitThreads({
             caller,
             threads: [{ thread: target, cursor }],
-            timeoutMs: TERMINAL_WATCH_SLICE_TIMEOUT_MS,
+            timeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
             signal,
           });
         } catch (error) {
           if (signal.aborted || this.closing) return;
-          if (isCursorInvalidWatchError(error) && cursorResets < TERMINAL_WATCH_MAX_CURSOR_RESETS) {
-            cursorResets += 1;
-            cursor = extractResyncCursor(error);
-            continue;
+          if (isCursorInvalidWatchError(error)) {
+            const nextCursor = extractResyncCursor(error);
+            if (nextCursor !== undefined && nextCursor !== cursor) {
+              cursor = nextCursor;
+              continue;
+            }
           }
-          if (isUnrecoverableWatchError(error) || transientErrors >= TERMINAL_WATCH_MAX_TRANSIENT_ERRORS) {
+          if (isUnrecoverableWatchError(error) || isCursorInvalidWatchError(error)) {
             const reason = error instanceof Error ? error.message : String(error);
             await this.deliverWatchNotification(
               caller,
@@ -1039,7 +1037,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             return;
           }
           transientErrors += 1;
-          await delay(1_000 * 2 ** (transientErrors - 1), undefined, { signal, ref: false }).catch(() => {});
+          const backoffMs = Math.min(DEFAULT_WAIT_TIMEOUT_MS, 1_000 * 2 ** Math.min(transientErrors - 1, 5));
+          await delay(backoffMs, undefined, { signal, ref: false }).catch(() => {});
           continue;
         }
         transientErrors = 0;
@@ -1047,17 +1046,22 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         if (entry !== undefined) cursor = entry.cursor;
         if (result.timedOut || entry === undefined || entry.activities.length === 0) continue;
         let preview: string | undefined;
+        let previewError: string | undefined;
         const hasTerminal = entry.activities.some((activity) => activity.kind === 'terminal');
         const hasDeletedOrArchived = entry.activities.some(
           (activity) => activity.kind === 'lifecycle' && (activity.reason === 'deleted' || activity.reason === 'archived'),
         );
         if (hasTerminal && !hasDeletedOrArchived) {
-          const readResult = await this.readThread({ caller, thread: target, limit: 1, signal }).catch(() => undefined);
-          if (readResult !== undefined) preview = extractTerminalPreview(readResult);
+          try {
+            const readResult = await this.readThread({ caller, thread: target, limit: 1, signal });
+            preview = extractTerminalPreview(readResult);
+          } catch (error) {
+            previewError = error instanceof Error ? error.message : String(error);
+          }
         }
         if (signal.aborted || this.closing) return;
         const lastSeq = entry.activities.at(-1)!.seq;
-        const content = formatTerminalWatchMessage(target, entry.activities, preview);
+        const content = formatTerminalWatchMessage(target, entry.activities, preview, previewError);
         await this.deliverWatchNotification(
           caller,
           callerRef,
