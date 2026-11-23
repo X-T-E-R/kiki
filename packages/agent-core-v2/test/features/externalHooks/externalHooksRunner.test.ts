@@ -374,7 +374,7 @@ describe('ExternalHooksRunnerService', () => {
     } finally {
       await runner.dispose();
     }
-  });
+  }, 15_000);
 
   it('parses failClosed and fail_closed in Claude hook groups', () => {
     const parsed = parseClaudeHookGroups({

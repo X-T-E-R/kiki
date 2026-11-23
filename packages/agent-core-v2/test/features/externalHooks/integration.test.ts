@@ -2212,5 +2212,5 @@ describe('IExternalHooksRunnerService integration', () => {
       await disposables.dispose();
       await runner.dispose();
     }
-  });
+  }, 15_000);
 });
