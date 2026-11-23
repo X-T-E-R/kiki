@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 import type { ContextRecord } from '@kiki/transcript-live';
 
 import { openLogicalWire } from '../history/logicalWireRead';
+import { WIRE_YIELD_BUDGET_MS } from './prefixWitness';
 
 export interface BoundedWireScanOptions {
   readonly maxBytes: number;
@@ -56,10 +57,14 @@ export async function readWireRecordsBounded(
         pending = pending.subarray(newline + 1);
         lineNumber += 1;
         parseLine(wirePath, line, lineNumber, options.onRecord, options.decodeRecord);
-        if (performance.now() - yieldedAt >= 4) {
+        if (performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
           await new Promise<void>((resolve) => { setImmediate(resolve); });
           yieldedAt = performance.now();
         }
+      }
+      if (performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        yieldedAt = performance.now();
       }
     }
     if (pending.length > 0) {

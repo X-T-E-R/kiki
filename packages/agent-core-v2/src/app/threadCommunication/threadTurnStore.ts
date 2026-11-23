@@ -136,7 +136,9 @@ export class ThreadTurnStore implements IThreadTurnStore {
 
   private async decode(line: Line, scope: string, signal?: AbortSignal): Promise<WireRecord | undefined> {
     try {
-      if (line.bytes.byteLength <= 64 * 1024) return parseThreadTurnRecord(Buffer.from(line.bytes).toString('utf8'));
+      if (line.bytes.byteLength <= 64 * 1024) {
+        return parseThreadTurnRecord(Buffer.from(line.bytes.buffer, line.bytes.byteOffset, line.bytes.byteLength).toString('utf8'));
+      }
       return await runCpuStream<WireRecord | undefined>(this.cpu.request.bind(this.cpu), { type: 'wire.threadTurnRecord' },
         async function* () { yield line.bytes; }, signal);
     } catch (error) {
@@ -230,6 +232,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
         }, signal);
         const rows = page.items.slice(0, limit).toSorted((left, right) => left.turnId - right.turnId);
         const turns: ThreadTurn[] = [];
+        const rowYieldBudget = createYieldBudget();
         for (const row of rows) {
           signal?.throwIfAborted();
           await this.record(pinned, scope, row.promptStart, row.promptEnd, row.promptDigest, signal);
@@ -243,6 +246,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
             origin: row.origin, peer: row.peer, bridgedPeer: row.bridgedPeer, input, output,
             contentRefs: refs.length === 0 ? undefined : refs,
           });
+          await yieldIfTimeBudgetExceeded(rowYieldBudget, signal);
         }
         await this.validate(scope, pinned, head, selected, signal);
         return { turns, source: selected, preparing: false, hasMore: page.items.length > limit };
@@ -364,6 +368,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
               };
             } else tail.floor = id;
           } else if (tail.floor < Number.MAX_SAFE_INTEGER) tail.fallback = true;
+          await yieldIfTimeBudgetExceeded(yieldBudget, signal);
           break;
         }
         await yieldIfTimeBudgetExceeded(yieldBudget, signal);
@@ -540,7 +545,7 @@ async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal: Abo
     for (let index = chunk.byteLength - 1; index >= 0; index--) {
       if (chunk[index] !== 10 || start + index + 1 === lineEnd) continue;
       const from = start + index + 1;
-      const bytes = Buffer.concat([chunk.subarray(index + 1, to), ...parts.toReversed()]);
+      const bytes = parts.length === 0 ? chunk.subarray(index + 1, to) : Buffer.concat([chunk.subarray(index + 1, to), ...parts.toReversed()]);
       yield { start: from, end: lineEnd, bytes, unterminated: lineEnd === end && bytes.at(-1) !== 10 };
       lineEnd = from;
       parts = [];
@@ -565,8 +570,7 @@ async function* lines(pinned: PinnedLogicalRead, start: number, end: number, sig
     let from = 0;
     for (let index = 0; index < chunk.byteLength; index++) {
       if (chunk[index] !== 10) continue;
-      parts.push(chunk.subarray(from, index + 1));
-      const bytes = Buffer.concat(parts);
+      const bytes = parts.length === 0 ? chunk.subarray(from, index + 1) : Buffer.concat([...parts, chunk.subarray(from, index + 1)]);
       yield { start: offset, end: offset + bytes.byteLength, bytes };
       offset += bytes.byteLength;
       parts = [];

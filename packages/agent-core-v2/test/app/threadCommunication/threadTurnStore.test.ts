@@ -403,4 +403,33 @@ describe('ThreadTurnStore', () => {
     await storage.write(SCOPE, KEY, Buffer.from('{"type": invalid}\n'));
     await expect(ready()).rejects.toBeInstanceOf(AppendLogCorruptedError);
   });
+
+  it('keeps concurrent timers responsive while preparing multi-megabyte tail slices', async () => {
+    const records = Array.from({ length: 180 }, (_, id) => [
+      { ...prompt(`input-${id} ${'q'.repeat(4000)}`), turnId: id },
+      part(id, `output-${id} ${'r'.repeat(16_000)}`),
+      ended(id),
+    ]).flat();
+    await seed(records);
+    const tickGaps: number[] = [];
+    let lastTick = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      tickGaps.push(now - lastTick);
+      lastTick = now;
+    }, 5);
+    try {
+      const page = await ready(Number.MAX_SAFE_INTEGER, 20);
+      expect(page.turns).toHaveLength(20);
+      expect(page.turns.at(-1)?.turnId).toBe(179);
+      expect(tickGaps.length).toBeGreaterThan(0);
+      const sorted = tickGaps.toSorted((left, right) => left - right);
+      const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
+      const maxGap = sorted.at(-1) ?? 0;
+      expect(p95).toBeLessThan(100);
+      expect(maxGap).toBeLessThan(250);
+    } finally {
+      clearInterval(timer);
+    }
+  }, 30_000);
 });

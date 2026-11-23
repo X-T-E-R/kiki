@@ -105,6 +105,18 @@ import {
 } from './configSection';
 import { HistoryReadLane } from './historyReadLane';
 import {
+  captureWirePrefixWitness,
+  createYieldBudget,
+  rangeHasHardClear,
+  verifyWitnessAppendSafe,
+  WIRE_YIELD_BUDGET_MS,
+  wireExactFingerprint,
+  wrapYieldingRecordCallback,
+  yieldIfTimeBudgetExceeded,
+  type WireFileStat,
+  type WirePrefixWitness,
+} from './prefixWitness';
+import {
   estimateResidentTurnBytes,
   estimateResidentValueBytes,
   failureSetSignature,
@@ -167,6 +179,10 @@ const UNVERIFIED_RESIDENT_MAX_BYTES = 4 << 20;
 const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
 const TURN_START_INDEX_MAX_WIRES = 64;
 const ANCHOR_OPENING_MAX_RECORDS = 8;
+const ANCHOR_PROXIMITY_MAX_TURN_GAP = 32;
+const ANCHOR_PROXIMITY_MAX_BYTES = 4 << 20;
+const ANCHOR_PROXIMITY_MAX_RECORDS = 16_384;
+const PROXIMITY_MISS_MAX_ENTRIES = 128;
 const COLD_TODOS_CACHE_MAX_ENTRIES = 64;
 const VALID_PERSISTED_TASK_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
 const VALID_OUTCOME_REF = /^agent-outcomes\/[a-f0-9-]+\.json$/;
@@ -741,14 +757,18 @@ interface ColdTurnByteSpan {
 }
 
 interface ColdTurnSpanIndex {
-  readonly fingerprint: string;
+  fingerprint: string;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
   readonly spans: Map<string, ColdTurnByteSpan>;
   readonly promptStarts: Map<string, number>;
   visibilityResetOffset?: number;
 }
 
 interface ColdToolTurnIndex {
-  readonly fingerprint: string;
+  fingerprint: string;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
   readonly toolTurnIds: Map<string, string>;
 }
 
@@ -768,6 +788,9 @@ interface ColdWireRecord {
 
 interface ColdWireWindow {
   readonly fingerprint: string;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
+  reachedTail?: boolean;
   start: number;
   end: number;
   entire: boolean;
@@ -1061,14 +1084,40 @@ function hasImplicitTurnRecords(records: readonly ColdWireRecord[]): boolean {
   return false;
 }
 
+function hasVisibilityResetRecord(records: readonly ColdWireRecord[]): boolean {
+  for (let index = 0; index < records.length; index += 1) {
+    const type = records[index]!.record.type;
+    if (type === 'context.undo' || type === 'context.clear' || type === 'branch.base') return true;
+  }
+  return false;
+}
+
 interface TurnStartIndex {
   fingerprint: string;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
   scannedTo: number;
   complete: boolean;
   continuation?: WireRecordsStreamResult['continuation'];
   proofThrough?: number;
-  proof?: Awaited<ReturnType<typeof historyNavigationProof>>;
   readonly starts: Map<string, number>;
+}
+
+function parseTurnOrdinal(turnId: string): number | undefined {
+  if (!/^t(0|[1-9]\d*)$/.test(turnId)) return undefined;
+  const ordinal = Number(turnId.slice(1));
+  return Number.isSafeInteger(ordinal) && ordinal >= 0 ? ordinal : undefined;
+}
+
+function oldestTurnOrdinal(items: readonly AgentTranscriptSnapshot['items'][number][]): number | undefined {
+  let oldest: number | undefined;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]!;
+    if (item.kind !== 'turn') continue;
+    const ordinal = parseTurnOrdinal(item.turnId);
+    if (ordinal !== undefined && (oldest === undefined || ordinal < oldest)) oldest = ordinal;
+  }
+  return oldest;
 }
 
 function isWireInitOnlyRecord(record: ContextRecord, index: number): boolean {
@@ -1101,6 +1150,8 @@ function isNonHistoryMetaOnlyOp(op: TranscriptOperation): boolean {
 
 interface AnchorOpeningSeek {
   fingerprint: string;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
   from: number;
   offset: number;
   continuation?: WireRecordsStreamResult['continuation'];
@@ -1133,6 +1184,8 @@ interface AnchorReadBudget {
 
 interface AnchorSeek {
   fingerprint: string;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
   at: number;
   window?: AnchorWindowRead;
 }
@@ -1143,6 +1196,82 @@ export class TranscriptService {
 
   scheduleHistoryRead<T>(signal: AbortSignal | undefined, read: (signal: AbortSignal) => Promise<T>, priority = false): Promise<T> {
     return this.historyReads.run(signal, read, priority);
+  }
+
+  private readWireRecordsYielding(wirePath: string, options: WireRecordsStreamOptions): Promise<WireRecordsStreamResult> {
+    return this.wireRecordReader(wirePath, {
+      ...options,
+      onRecord: wrapYieldingRecordCallback(options.onRecord, options.signal),
+    });
+  }
+
+  private async matchesAppendSafeWitness(
+    wirePath: string,
+    entry: { readonly fingerprint: string; witness?: WirePrefixWitness; visibilityCheckedTo?: number },
+    currentInfo: WireFileStat,
+    signal?: AbortSignal,
+    currentSealStamp?: string,
+  ): Promise<boolean> {
+    const currentExact = currentSealStamp === undefined
+      ? wireExactFingerprint(currentInfo)
+      : `${wireExactFingerprint(currentInfo)}:${currentSealStamp}`;
+    if (entry.fingerprint === currentExact) {
+      const completeTarget = entry.witness?.completeTailOffset;
+      if (entry.visibilityCheckedTo === undefined || completeTarget === undefined || entry.visibilityCheckedTo >= completeTarget) {
+        return true;
+      }
+    }
+    if (entry.witness === undefined) return false;
+    const checked = await verifyWitnessAppendSafe(
+      wirePath,
+      entry.witness,
+      currentInfo,
+      entry.visibilityCheckedTo,
+      FIRST_SCREEN_WINDOW_BYTES,
+      signal,
+      currentSealStamp,
+    );
+    if (!checked.valid) return false;
+    if (checked.witness !== undefined) entry.witness = checked.witness;
+    entry.visibilityCheckedTo = checked.visibilityCheckedTo;
+    return true;
+  }
+
+  private async reconcileColdSpanIndexes(
+    wirePath: string,
+    info: WireFileStat,
+    stamp: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const spanFingerprint = `${wireExactFingerprint(info)}:${stamp}`;
+    const spans = this.coldTurnSpans.get(wirePath);
+    if (spans !== undefined) {
+      if (await this.matchesAppendSafeWitness(wirePath, spans, info, signal, stamp)) {
+        spans.fingerprint = spanFingerprint;
+      } else {
+        this.coldTurnSpans.delete(wirePath);
+        this.coldToolTurnIds.delete(wirePath);
+      }
+    }
+    const tools = this.coldToolTurnIds.get(wirePath);
+    if (tools !== undefined) {
+      if (await this.matchesAppendSafeWitness(wirePath, tools, info, signal, stamp)) {
+        tools.fingerprint = spanFingerprint;
+      } else {
+        this.coldToolTurnIds.delete(wirePath);
+      }
+    }
+    return spanFingerprint;
+  }
+
+  private rememberProximityMiss(key: string, identity: string): void {
+    this.proximityMisses.delete(key);
+    this.proximityMisses.set(key, identity);
+    while (this.proximityMisses.size > PROXIMITY_MISS_MAX_ENTRIES) {
+      const oldest = this.proximityMisses.keys().next().value;
+      if (oldest === undefined) break;
+      this.proximityMisses.delete(oldest);
+    }
   }
 
   private readonly live = new Map<string, LiveEntry>();
@@ -1177,10 +1306,11 @@ export class TranscriptService {
   private readonly coldToolTurnIds = new Map<string, ColdToolTurnIndex>();
   private coldWireWindowBytes = 0;
   private readonly anchorSeeks = new Map<string, AnchorSeek>();
-  private readonly anchorWindows = new Map<string, { fingerprint: string; at: number; snapshot: AgentTranscriptSnapshot; bytes: number }>();
+  private readonly anchorWindows = new Map<string, { fingerprint: string; witness?: WirePrefixWitness; visibilityCheckedTo?: number; at: number; snapshot: AgentTranscriptSnapshot; bytes: number }>();
   private readonly anchorReads = new WeakMap<AgentTranscriptSnapshot, 'window' | 'continues' | 'pending'>();
   private readonly turnStartIndexes = new Map<string, TurnStartIndex>();
   private readonly anchorOpeningSeeks = new Map<string, AnchorOpeningSeek>();
+  private readonly proximityMisses = new Map<string, string>();
   private coldSnapshotCacheBytes = 0;
   private readonly unverifiedResident = new Map<string, { transcript: AgentTranscript; bytes: number }>();
   private unverifiedResidentBytes = 0;
@@ -2865,19 +2995,24 @@ export class TranscriptService {
       if (extended === undefined) {
         return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, false);
       }
-      return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, extended, project, opened);
+      return this.publishColdWindow(sessionId, agentId, wirePath, extended.fingerprint, extended, project, opened);
     }
     const cached = this.coldSnapshotCache.get(wirePath);
     const cachedWindow = this.coldWireWindows.get(wirePath);
+    const cachedWindowValid = cachedWindow !== undefined && await this.matchesAppendSafeWitness(wirePath, cachedWindow, info, opened);
     const windowCoversTail = cachedWindow !== undefined &&
       (cachedWindow.entire || (cachedWindow.end >= info.size && cachedWindow.droppedTail !== true));
-    const windowReusable = cachedWindow !== undefined && (preserveWindow
+    const windowReusable = cachedWindow !== undefined && cachedWindowValid && (preserveWindow
       ? tailFirst || cachedWindow.entire || cachedWindow.start === 0 || cachedWindow.headers !== undefined
       : windowCoversTail && (tailFirst || cachedWindow.entire || cachedWindow.headers !== undefined));
-    if (cached !== undefined && cached.fingerprint === fingerprint && cached.expiresAt > Date.now() && cached.pageOnly && windowReusable) {
+    const cacheMatches = cached !== undefined && (cached.fingerprint === fingerprint || (preserveWindow && cachedWindow !== undefined && cached.fingerprint === cachedWindow.fingerprint));
+    if (cached !== undefined && cacheMatches && cached.expiresAt > Date.now() && cached.pageOnly && windowReusable) {
       signal?.throwIfAborted();
       this.assertReadableAgent(sessionId, agentId);
-      this.admitColdSnapshotCache(wirePath, fingerprint, cached.snapshot, true);
+      if (preserveWindow && cachedWindow !== undefined && info.size > cachedWindow.end) {
+        cachedWindow.droppedTail = true;
+      }
+      this.admitColdSnapshotCache(wirePath, cached.fingerprint, cached.snapshot, true);
       const projected = project(cached.snapshot);
       this.contiguousColdSnapshots.add(projected);
       return projected;
@@ -2891,7 +3026,8 @@ export class TranscriptService {
     const after = await stat(wirePath);
     signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
-    if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
+    const afterValid = await this.matchesAppendSafeWitness(wirePath, window, after, opened);
+    if (!afterValid) {
       this.forgetColdWindow(wirePath);
       this.deleteRetainedColdTurns(wirePath);
       this.coldTurnSpans.delete(wirePath);
@@ -2900,7 +3036,8 @@ export class TranscriptService {
       this.contiguousColdSnapshots.add(projected);
       return projected;
     }
-    return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, window, project, opened);
+    if (after.size > window.end) window.droppedTail = true;
+    return this.publishColdWindow(sessionId, agentId, wirePath, window.fingerprint, window, project, opened);
   }
 
   private publishColdWindow(sessionId: string, agentId: string, wirePath: string, fingerprint: string,
@@ -3138,8 +3275,13 @@ export class TranscriptService {
   ): Promise<ColdWireWindow | undefined> {
     const resolveHeaders = mode === 'headers';
     const existing = this.coldWireWindows.get(wirePath);
-    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true &&
-        (allowDroppedTail || (existing.droppedTail !== true && existing.end >= info.size))) {
+    const existingMatches = existing !== undefined && existing.payloadEvicted !== true && (
+      allowDroppedTail
+        ? await this.matchesAppendSafeWitness(wirePath, existing, info, signal)
+        : existing.fingerprint === fingerprint && existing.droppedTail !== true && existing.end >= info.size
+    );
+    if (existing !== undefined && existingMatches) {
+      if (allowDroppedTail && info.size > existing.end) existing.droppedTail = true;
       if (resolveHeaders && !existing.entire && existing.end >= info.size && existing.headers === undefined) {
         await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, existing, signal, undefined, undefined);
         existing.bytes = this.coldWindowBytes(existing.snapshot, existing.records);
@@ -3229,16 +3371,19 @@ export class TranscriptService {
     captureReplayState?: (state: TranscriptReplayState) => void, mode: 'headers' | 'records' | 'first-screen' = 'headers',
   ): Promise<ColdWireWindow | undefined> {
     const resolveHeaders = mode === 'headers';
+    const witness = await captureWirePrefixWitness(wirePath, info, signal);
     const discovered = mode === 'first-screen' ? await this.firstScreenRecords(agentId, wirePath, info.size, signal) : undefined;
     const start = discovered?.start ?? await this.tailRecordStart(wirePath, info.size, signal);
     const read = discovered ?? await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
-    const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
+    const stamp = await sealStamp(wirePath);
+    const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, info, stamp, signal);
+    const spanWitness = witness === undefined ? undefined : { ...witness, sealStamp: stamp };
     if (discovered !== undefined) {
-      this.recordColdTurnSpans(wirePath, spanFingerprint, discovered.spanMarkers, start, info.size, discovered.complete, info.size);
-      this.recordColdToolTurnIds(wirePath, spanFingerprint, discovered.toolTurnIds);
+      await this.recordColdTurnSpans(wirePath, spanFingerprint, discovered.spanMarkers, start, info.size, discovered.complete, info.size, undefined, spanWitness, signal);
+      this.recordColdToolTurnIds(wirePath, spanFingerprint, discovered.toolTurnIds, spanWitness, spanWitness?.completeTailOffset);
     } else {
-      this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, read.records, start, info.size, read.complete, info.size);
-      this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, read.records);
+      await this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, read.records, start, info.size, read.complete, info.size, undefined, spanWitness, signal);
+      this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, read.records, spanWitness, spanWitness?.completeTailOffset);
     }
     if (start > 0 && read.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(read.records)) {
       return undefined;
@@ -3255,6 +3400,9 @@ export class TranscriptService {
     const snapshot = await this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureForWindow, undefined, signal);
     const window: ColdWireWindow = {
       fingerprint,
+      witness,
+      visibilityCheckedTo: witness?.completeTailOffset,
+      reachedTail: true,
       start,
       end: info.size,
       entire,
@@ -3289,18 +3437,21 @@ export class TranscriptService {
     captureReplayState?: (state: TranscriptReplayState) => void, spanBytes = FIRST_SCREEN_WINDOW_BYTES, resolveHeaders = true,
   ): Promise<ColdWireWindow | undefined> {
     const retained = this.coldWireWindows.get(wirePath);
-    const window = retained?.fingerprint === fingerprint && retained.payloadEvicted === true ? retained :
+    const retainedValid = retained !== undefined && await this.matchesAppendSafeWitness(wirePath, retained, info, signal);
+    const window = retainedValid && retained.payloadEvicted === true ? retained :
       await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, resolveHeaders ? 'headers' : 'records', true);
     if (window === undefined || window.start === 0) return window;
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;
     const read = await this.readWireRange(wirePath, next, window.start, signal, !resolveHeaders);
-    const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
+    const stamp = await sealStamp(wirePath);
+    const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, info, stamp, signal);
+    const spanWitness = window.witness === undefined ? undefined : { ...window.witness, sealStamp: stamp };
     const nextBoundary = firstTurnOpeningOffset(window.records)
       ?? this.nextKnownTurnStartAtOrAfter(wirePath, spanFingerprint, window.start)
       ?? (window.end === info.size && window.droppedTail !== true ? info.size : undefined);
-    this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, read.records, next, window.start, read.complete, info.size, nextBoundary);
-    this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, read.records);
+    await this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, read.records, next, window.start, read.complete, info.size, nextBoundary, spanWitness, signal);
+    this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, read.records, spanWitness, window.visibilityCheckedTo);
     const merged = [...read.records, ...window.records];
     if (next > 0 && merged[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(merged)) {
       this.forgetColdWindow(wirePath);
@@ -3381,9 +3532,15 @@ export class TranscriptService {
     };
     const allOld = window.records.length;
     const olderPrefix = new Float64Array(older.length + 1);
-    for (let i = 0; i < older.length; i += 1) olderPrefix[i + 1] = olderPrefix[i]! + estimateColdRecordWeight(older[i]!);
+    for (let i = 0; i < older.length; i += 1) {
+      olderPrefix[i + 1] = olderPrefix[i]! + estimateColdRecordWeight(older[i]!);
+      if ((i & 15) === 15) await maybeYield();
+    }
     const windowPrefix = new Float64Array(allOld + 1);
-    for (let i = 0; i < allOld; i += 1) windowPrefix[i + 1] = windowPrefix[i]! + estimateColdRecordWeight(window.records[i]!);
+    for (let i = 0; i < allOld; i += 1) {
+      windowPrefix[i + 1] = windowPrefix[i]! + estimateColdRecordWeight(window.records[i]!);
+      if ((i & 15) === 15) await maybeYield();
+    }
     const olderTotalWeight = olderPrefix[older.length]!;
     const windowTotalWeight = windowPrefix[allOld]!;
     let ratio = windowTotalWeight > 0 && window.bytes > 0
@@ -3494,7 +3651,7 @@ export class TranscriptService {
   private rememberColdWindow(wirePath: string, window: ColdWireWindow): void {
     this.forgetColdWindow(wirePath);
     const retained: ColdWireWindow = window.bytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES ? {
-      fingerprint: window.fingerprint, start: window.start, end: window.end, entire: false,
+      fingerprint: window.fingerprint, witness: window.witness, start: window.start, end: window.end, entire: false,
       records: [], snapshot: { ...unknownSnapshot(), hasMoreOlder: window.start > 0 }, bytes: 0, droppedTail: true, payloadEvicted: true,
     } : window;
     this.coldWireWindows.set(wirePath, retained);
@@ -3592,6 +3749,9 @@ export class TranscriptService {
     for (const key of this.anchorSeeks.keys()) {
       if (key.split(/[/\\]/).includes(sessionId)) this.anchorSeeks.delete(key);
     }
+    for (const key of this.proximityMisses.keys()) {
+      if (key.split(/[/\\]/).includes(sessionId)) this.proximityMisses.delete(key);
+    }
   }
 
   private async projectColdRecords(agentId: string, records: readonly ColdWireRecord[], sawEntireFile: boolean,
@@ -3617,9 +3777,9 @@ export class TranscriptService {
     let yieldedAt = performance.now();
     const startOrdinal = records[0]?.position.ordinal;
     for (let index = 0; index < records.length; index += 1) {
-      if ((index & 63) === 0) {
+      if ((index & 7) === 0) {
         signal?.throwIfAborted();
-        if (index > 0 && performance.now() - yieldedAt >= 4) {
+        if (index > 0 && performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
           await new Promise<void>((resolve) => { setImmediate(resolve); });
           signal?.throwIfAborted();
           yieldedAt = performance.now();
@@ -3747,6 +3907,11 @@ export class TranscriptService {
             records.push({ record: opaque, position: { startByteOffset: boundary, endByteOffset: recordEnd } });
             recordEnd = boundary;
             lineEnd = previous;
+            if (performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
+              await new Promise<void>(resolve => { setImmediate(resolve); });
+              signal.throwIfAborted();
+              yieldedAt = performance.now();
+            }
             continue;
           }
           const line = suffix.length === 0 ? prefix : Buffer.concat([prefix, ...suffix.toReversed()]);
@@ -3786,7 +3951,7 @@ export class TranscriptService {
                 if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
                 recordEnd = boundary;
                 lineEnd = previous;
-                if ((scannedRecords & 15) === 0 && performance.now() - yieldedAt >= 4) {
+                if ((line.byteLength >= 16_384 || (scannedRecords & 15) === 0) && performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
                   await new Promise<void>(resolve => { setImmediate(resolve); });
                   signal.throwIfAborted();
                   yieldedAt = performance.now();
@@ -3811,7 +3976,7 @@ export class TranscriptService {
                 if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS) return finish();
                 recordEnd = boundary;
                 lineEnd = previous;
-                if ((scannedRecords & 15) === 0 && performance.now() - yieldedAt >= 4) {
+                if ((line.byteLength >= 16_384 || (scannedRecords & 15) === 0) && performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
                   await new Promise<void>(resolve => { setImmediate(resolve); });
                   signal.throwIfAborted();
                   yieldedAt = performance.now();
@@ -3899,7 +4064,7 @@ export class TranscriptService {
           }
           recordEnd = boundary;
           lineEnd = previous;
-          if (performance.now() - yieldedAt >= 4) {
+          if (performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
             await new Promise<void>(resolve => { setImmediate(resolve); });
             signal.throwIfAborted();
             yieldedAt = performance.now();
@@ -3932,6 +4097,7 @@ export class TranscriptService {
       return { start: 0, next: 0 };
     }
     let cursor = offset;
+    const yieldBudget = createYieldBudget();
     try {
       while (cursor > 0) {
         signal.throwIfAborted();
@@ -3946,6 +4112,7 @@ export class TranscriptService {
         const newline = Buffer.from(bytes).lastIndexOf(0x0a);
         if (newline >= 0) return { start: position + newline + 1, next: position + newline + 1 };
         cursor = position;
+        await yieldIfTimeBudgetExceeded(yieldBudget, signal);
       }
     } finally {
       opened.close();
@@ -3965,7 +4132,7 @@ export class TranscriptService {
     const records: ColdWireRecord[] = [];
     const recordStarts: number[] = [];
     const startedAt = Date.now();
-    const read = await this.wireRecordReader(wirePath, {
+    const read = await this.readWireRecordsYielding(wirePath, {
       startByteOffset: start === 0 ? undefined : start,
       endByteOffset: end,
       chunkBytes: this.coldReadLimits.chunkBytes,
@@ -3997,7 +4164,8 @@ export class TranscriptService {
       throw error;
     });
     signal?.throwIfAborted();
-    if (info === undefined || window.fingerprint !== `${fileIdentity(info)}:${fileFingerprint(info)}`) return undefined;
+    if (info === undefined || !await this.matchesAppendSafeWitness(location.wirePath, window, info, signal)) return undefined;
+    if (info.size > window.end) window.droppedTail = true;
     const item = window.snapshot.items.find(candidate => candidate.kind === 'turn' && candidate.turnId === turnId);
     return item?.kind !== 'turn' ? undefined : completeColdWindowTurn(window, turnId) ?? { ...item, stepsPartial: true };
   }
@@ -4019,11 +4187,13 @@ export class TranscriptService {
     const turnOf = (window: ColdWireWindow | undefined): TranscriptTurn | undefined =>
       window === undefined ? undefined : completeColdWindowTurn(window, turnId);
     const existing = this.coldWireWindows.get(location.wirePath);
-    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true) {
+    if (existing !== undefined && existing.payloadEvicted !== true &&
+        await this.matchesAppendSafeWitness(location.wirePath, existing, info, opened)) {
+      if (info.size > existing.end) existing.droppedTail = true;
       const existingTurn = turnOf(existing);
       if (existingTurn !== undefined) return existingTurn;
     }
-    const direct = await this.readDirectColdTurn(agentId, location.wirePath, fingerprint, turnId, opened);
+    const direct = await this.readDirectColdTurn(agentId, location.wirePath, info, fingerprint, turnId, opened);
     if (direct !== undefined) return direct;
     const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, 'records');
     const found = turnOf(window);
@@ -4081,7 +4251,7 @@ export class TranscriptService {
     );
   }
 
-  private recordColdTurnSpansFromRecords(
+  private async recordColdTurnSpansFromRecords(
     wirePath: string,
     fingerprint: string,
     records: readonly ColdWireRecord[],
@@ -4090,17 +4260,21 @@ export class TranscriptService {
     complete: boolean,
     fileSize: number,
     contiguousNextBoundary?: number,
-  ): void {
+    witness?: WirePrefixWitness,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const markers: ScannedSpanMarker[] = [];
+    const yieldBudget = createYieldBudget();
     for (let index = 0; index < records.length; index += 1) {
       const entry = records[index]!;
       const marker = classifySpanMarker(entry.record, entry.position.startByteOffset, entry.position.endByteOffset);
       if (marker !== undefined) markers.push(marker);
+      if ((index & 255) === 255) await yieldIfTimeBudgetExceeded(yieldBudget, signal);
     }
-    this.recordColdTurnSpans(wirePath, fingerprint, markers, rangeStart, rangeEnd, complete, fileSize, contiguousNextBoundary);
+    await this.recordColdTurnSpans(wirePath, fingerprint, markers, rangeStart, rangeEnd, complete, fileSize, contiguousNextBoundary, witness, signal);
   }
 
-  private recordColdTurnSpans(
+  private async recordColdTurnSpans(
     wirePath: string,
     fingerprint: string,
     markers: readonly ScannedSpanMarker[],
@@ -4109,18 +4283,29 @@ export class TranscriptService {
     complete: boolean,
     fileSize: number,
     contiguousNextBoundary?: number,
-  ): void {
+    witness?: WirePrefixWitness,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (markers.length === 0) return;
     const maxTurns = this.resolveColdTurnSpanMaxTurns();
     const maxWires = this.resolveColdTurnSpanMaxWires();
+    const checkedTo = rangeEnd >= fileSize ? witness?.completeTailOffset : rangeEnd;
     let index = this.coldTurnSpans.get(wirePath);
     if (index !== undefined && index.fingerprint !== fingerprint) {
       this.coldTurnSpans.delete(wirePath);
       index = undefined;
     }
     if (index === undefined) {
-      index = { fingerprint, spans: new Map(), promptStarts: new Map() };
+      index = { fingerprint, witness, visibilityCheckedTo: checkedTo, spans: new Map(), promptStarts: new Map() };
     } else {
+      if (index.witness === undefined && witness !== undefined) {
+        index.witness = witness;
+      }
+      if (index.visibilityCheckedTo === undefined) {
+        index.visibilityCheckedTo = checkedTo;
+      } else if (checkedTo !== undefined && rangeStart <= index.visibilityCheckedTo && checkedTo > index.visibilityCheckedTo) {
+        index.visibilityCheckedTo = checkedTo;
+      }
       this.coldTurnSpans.delete(wirePath);
     }
     this.coldTurnSpans.set(wirePath, index);
@@ -4179,7 +4364,9 @@ export class TranscriptService {
       openTurn = undefined;
     };
 
+    const markerYieldBudget = createYieldBudget();
     for (let i = 0; i < markers.length; i += 1) {
+      if ((i & 255) === 255) await yieldIfTimeBudgetExceeded(markerYieldBudget, signal);
       const marker = markers[i]!;
       if (marker.kind === 'visibility_reset') {
         index.visibilityResetOffset = Math.max(index.visibilityResetOffset ?? 0, marker.endByteOffset);
@@ -4288,6 +4475,8 @@ export class TranscriptService {
     wirePath: string,
     fingerprint: string,
     records: readonly ColdWireRecord[],
+    witness?: WirePrefixWitness,
+    visibilityCheckedTo?: number,
   ): void {
     const pairs: Array<readonly [string, string]> = [];
     let currentTurnId: string | undefined;
@@ -4305,13 +4494,15 @@ export class TranscriptService {
         pairs.push([toolId, effectiveTurn]);
       }
     }
-    this.recordColdToolTurnIds(wirePath, fingerprint, pairs);
+    this.recordColdToolTurnIds(wirePath, fingerprint, pairs, witness, visibilityCheckedTo);
   }
 
   private recordColdToolTurnIds(
     wirePath: string,
     fingerprint: string,
     pairs: readonly (readonly [string, string])[],
+    witness?: WirePrefixWitness,
+    visibilityCheckedTo?: number,
   ): void {
     if (pairs.length === 0) return;
     const maxWires = this.resolveColdTurnSpanMaxWires();
@@ -4322,8 +4513,16 @@ export class TranscriptService {
       index = undefined;
     }
     if (index === undefined) {
-      index = { fingerprint, toolTurnIds: new Map() };
+      index = { fingerprint, witness, visibilityCheckedTo, toolTurnIds: new Map() };
     } else {
+      if (index.witness === undefined && witness !== undefined) {
+        index.witness = witness;
+      }
+      if (index.visibilityCheckedTo === undefined) {
+        index.visibilityCheckedTo = visibilityCheckedTo;
+      } else if (visibilityCheckedTo !== undefined && visibilityCheckedTo < index.visibilityCheckedTo) {
+        index.visibilityCheckedTo = visibilityCheckedTo;
+      }
       this.coldToolTurnIds.delete(wirePath);
     }
     this.coldToolTurnIds.set(wirePath, index);
@@ -4378,6 +4577,7 @@ export class TranscriptService {
   private async readDirectColdTurn(
     agentId: string,
     wirePath: string,
+    info: WireFileStat,
     fingerprint: string,
     turnId: string,
     signal: AbortSignal,
@@ -4386,17 +4586,19 @@ export class TranscriptService {
     if (maxDirectTurnBytes <= 0) return undefined;
     const stampBefore = await sealStamp(wirePath);
     signal.throwIfAborted();
-    const spanFingerprint = `${fingerprint}:${stampBefore}`;
+    const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, info, stampBefore, signal);
+    const spanIndex = this.coldTurnSpans.get(wirePath);
     const span = this.lookupColdTurnSpan(wirePath, spanFingerprint, turnId);
     if (span === undefined) return undefined;
     const spanLength = span.endOffset - span.startOffset;
     if (spanLength <= 0 || spanLength > maxDirectTurnBytes) return undefined;
+    const beforeWitness = spanIndex?.witness ?? await captureWirePrefixWitness(wirePath, info, signal, stampBefore);
     const records: ColdWireRecord[] = [];
     let sawPromptForTurn = false;
     let sawVisibilityReset = false;
     let sawImplicitTurn = false;
     const startedAt = Date.now();
-    const read = await this.scheduleHistoryRead(signal, (owned) => this.wireRecordReader(wirePath, {
+    const read = await this.scheduleHistoryRead(signal, (owned) => this.readWireRecordsYielding(wirePath, {
       startByteOffset: span.startOffset === 0 ? undefined : span.startOffset,
       endByteOffset: span.endOffset,
       maxBytes: maxDirectTurnBytes,
@@ -4450,10 +4652,25 @@ export class TranscriptService {
     });
     const stampAfter = after === undefined ? undefined : await sealStamp(wirePath);
     signal.throwIfAborted();
-    if (after === undefined || `${fileIdentity(after)}:${fileFingerprint(after)}:${stampAfter}` !== spanFingerprint) {
+    if (after === undefined || stampAfter === undefined) {
       this.coldTurnSpans.delete(wirePath);
       this.coldToolTurnIds.delete(wirePath);
       return undefined;
+    }
+    const exactAfter = `${fileIdentity(after)}:${fileFingerprint(after)}:${stampAfter}` === spanFingerprint;
+    if (!exactAfter) {
+      const checked = beforeWitness === undefined
+        ? { valid: false }
+        : await verifyWitnessAppendSafe(wirePath, beforeWitness, after, spanIndex?.visibilityCheckedTo, FIRST_SCREEN_WINDOW_BYTES, signal, stampAfter);
+      if (!checked.valid) {
+        this.coldTurnSpans.delete(wirePath);
+        this.coldToolTurnIds.delete(wirePath);
+        return undefined;
+      }
+      if (spanIndex !== undefined) {
+        if (checked.witness !== undefined) spanIndex.witness = checked.witness;
+        spanIndex.visibilityCheckedTo = checked.visibilityCheckedTo;
+      }
     }
     const snapshot = await this.projectColdRecords(agentId, records, span.startOffset === 0, undefined, undefined, undefined, signal);
     signal.throwIfAborted();
@@ -4465,7 +4682,7 @@ export class TranscriptService {
     ) {
       return undefined;
     }
-    this.retainDirectColdTurn(wirePath, fingerprint, turn);
+    if (exactAfter) this.retainDirectColdTurn(wirePath, fingerprint, turn);
     return turn;
   }
 
@@ -4819,7 +5036,8 @@ export class TranscriptService {
       const hit = findToolCallInTurns(retained.turns.values(), toolCallId);
       if (hit !== undefined) return hit;
     }
-    if (hasWindow && window.fingerprint === fingerprint) {
+    if (hasWindow && await this.matchesAppendSafeWitness(location.wirePath, window, info, signal)) {
+      if (info.size > window.end) window.droppedTail = true;
       const completeTurns = window.snapshot.items.flatMap((item) => {
         if (item.kind !== 'turn') return [];
         const complete = completeColdWindowTurn(window, item.turnId);
@@ -4857,7 +5075,8 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return undefined;
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    const spanFingerprint = `${fingerprint}:${await sealStamp(location.wirePath)}`;
+    const stamp = await sealStamp(location.wirePath);
+    const spanFingerprint = await this.reconcileColdSpanIndexes(location.wirePath, info, stamp, signal);
     signal?.throwIfAborted();
     const indexedTurnId = this.lookupColdToolTurnId(location.wirePath, spanFingerprint, toolCallId);
     const candidates: string[] = [];
@@ -4868,7 +5087,7 @@ export class TranscriptService {
     const opened = signal ?? new AbortController().signal;
     for (const candidateTurnId of candidates) {
       if (transcript?.getTurn(candidateTurnId)?.state === 'running') continue;
-      const direct = await this.readDirectColdTurn(agentId, location.wirePath, fingerprint, candidateTurnId, opened);
+      const direct = await this.readDirectColdTurn(agentId, location.wirePath, info, fingerprint, candidateTurnId, opened);
       if (direct === undefined) continue;
       const hit = findToolCallInTurns([direct], toolCallId);
       if (hit !== undefined) return hit;
@@ -4931,12 +5150,15 @@ export class TranscriptService {
               ? retained.turns.get(turnId)
               : undefined;
             const window = this.coldWireWindows?.get(location.wirePath);
-            const windowTurn = window !== undefined && window.fingerprint === fingerprint && window.payloadEvicted !== true
+            const windowValid = window !== undefined && window.payloadEvicted !== true &&
+              await this.matchesAppendSafeWitness(location.wirePath, window, info, signal);
+            if (windowValid && info.size > window.end) window.droppedTail = true;
+            const windowTurn = windowValid
               ? completeColdWindowTurn(window, turnId)
               : undefined;
             const fastTurn = retainedTurn
               ?? windowTurn
-              ?? await this.readDirectColdTurn(agentId, location.wirePath, fingerprint, turnId, signal ?? new AbortController().signal);
+              ?? await this.readDirectColdTurn(agentId, location.wirePath, info, fingerprint, turnId, signal ?? new AbortController().signal);
             if (fastTurn !== undefined) {
               if (source.kind === 'turn') return fastTurn;
               const frame = fastTurn.steps.find((step) => step.stepId === source.stepId)
@@ -5120,7 +5342,7 @@ export class TranscriptService {
           const sliceStartOffset = nextByteOffset;
           const sliceStartOrdinal = recordCount;
           const sliceOversized: boolean = oversizedRecord;
-          const read: WireRecordsStreamResult = await this.coldTodoReads.run(signal, (owned) => this.wireRecordReader(wirePath, {
+          const read: WireRecordsStreamResult = await this.coldTodoReads.run(signal, (owned) => this.readWireRecordsYielding(wirePath, {
             startByteOffset: sliceStartOffset === 0 ? undefined : sliceStartOffset,
             startRecordOrdinal: sliceStartOrdinal,
             chunkBytes: readLimits.chunkBytes,
@@ -5512,7 +5734,7 @@ export class TranscriptService {
         const sliceStartOffset = nextByteOffset;
         const sliceStartOrdinal = (checkpoint?.recordCount ?? 0) + recordCount;
         const sliceOversized: boolean = oversizedRecord;
-        const read: WireRecordsStreamResult = await this.wireRecordReader(wirePath, {
+        const read: WireRecordsStreamResult = await this.readWireRecordsYielding(wirePath, {
           startByteOffset: sliceStartOffset === 0 ? undefined : sliceStartOffset,
           startRecordOrdinal: sliceStartOrdinal,
           chunkBytes: readLimits.chunkBytes,
@@ -5753,35 +5975,232 @@ export class TranscriptService {
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     const key = `${location.wirePath}\0${beforeTurn}`;
     const cached = this.anchorSeeks.get(key);
-    const resume = cached !== undefined && cached.fingerprint === fingerprint ? cached : undefined;
+    const resume = cached !== undefined && await this.matchesAppendSafeWitness(location.wirePath, cached, info, signal)
+      ? cached : undefined;
+    if (cached !== undefined && resume === undefined) {
+      this.anchorSeeks.delete(key);
+    }
     const budget: AnchorReadBudget = { bytes: FIRST_SCREEN_WINDOW_MAX_BYTES, records: 50_000 };
     try {
-      if (resume !== undefined) return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, key, resume, budget, signal);
-      const spanFingerprint = `${fingerprint}:${await sealStamp(location.wirePath)}`;
+      if (resume !== undefined) return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info, key, resume, budget, signal);
+      const stamp = await sealStamp(location.wirePath);
+      const spanFingerprint = await this.reconcileColdSpanIndexes(location.wirePath, info, stamp, signal);
       const knownSpan = this.lookupColdTurnSpan(location.wirePath, spanFingerprint, beforeTurn);
       if (knownSpan !== undefined && knownSpan.startOffset <= info.size) {
-        const seek = { fingerprint, at: knownSpan.startOffset };
+        const witness = await captureWirePrefixWitness(location.wirePath, info, signal);
+        const seek: AnchorSeek = { fingerprint, witness, visibilityCheckedTo: witness?.completeTailOffset, at: knownSpan.startOffset };
         this.rememberAnchorSeek(key, seek);
-        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, key, seek, budget, signal);
+        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info, key, seek, budget, signal);
       }
       const indexed = await this.indexedTurnByte(sessionId, agentId, beforeTurn);
       if (indexed !== undefined && indexed <= info.size) {
-        const seek = { fingerprint, at: indexed };
+        const witness = await captureWirePrefixWitness(location.wirePath, info, signal);
+        const seek: AnchorSeek = { fingerprint, witness, visibilityCheckedTo: witness?.completeTailOffset, at: indexed };
         this.rememberAnchorSeek(key, seek);
-        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, key, seek, budget, signal);
+        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info, key, seek, budget, signal);
+      }
+      if (this.deps.wireRecordReader === undefined) {
+        const identity = fileIdentity(info);
+        const existingIndex = this.turnStartIndexes.get(location.wirePath);
+        const alreadyScanningForward = existingIndex !== undefined && existingIndex.scannedTo > 0 &&
+          await this.matchesAppendSafeWitness(location.wirePath, existingIndex, info, signal);
+        if (!alreadyScanningForward && this.proximityMisses.get(key) !== identity) {
+          const nearTail = await this.trySeekTurnOffsetNearTail(sessionId, agentId, location.wirePath, info, beforeTurn, signal, budget);
+          if (nearTail !== undefined) {
+            const seek: AnchorSeek = {
+              fingerprint,
+              witness: nearTail.witness,
+              visibilityCheckedTo: nearTail.witness?.completeTailOffset,
+              at: nearTail.at,
+            };
+            this.rememberAnchorSeek(key, seek);
+            return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info, key, seek, budget, signal);
+          }
+          this.rememberProximityMiss(key, identity);
+        }
       }
       const started = await this.scheduleHistoryRead(signal, owned => this.turnStartOffset(location.wirePath, info, beforeTurn, owned, budget));
       const startAt = started.kind === 'found' ? started.at : started.kind === 'absent' ? started.following : undefined;
-      if (startAt !== undefined) {
-        const seek = { fingerprint, at: startAt, window: started.kind === 'found' ? started.window : undefined };
+      if (startAt !== undefined && started.kind !== 'pending') {
+        const seek: AnchorSeek = {
+          fingerprint,
+          witness: started.witness,
+          visibilityCheckedTo: started.witness?.completeTailOffset,
+          at: startAt,
+          window: started.kind === 'found' ? started.window : undefined,
+        };
         this.rememberAnchorSeek(key, seek);
-        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, key, seek, budget, signal);
+        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info, key, seek, budget, signal);
       }
       if (started.kind === 'absent') return undefined;
       return this.pendingAnchor(agentId);
     } catch (error) {
       if (signal?.aborted === true) this.coldReadsCancelled += 1;
       throw error;
+    }
+  }
+
+  private async trySeekTurnOffsetNearTail(
+    sessionId: string,
+    agentId: string,
+    wirePath: string,
+    info: WireFileStat,
+    beforeTurn: string,
+    signal: AbortSignal | undefined,
+    budget: AnchorReadBudget,
+  ): Promise<{ readonly at: number; readonly witness?: WirePrefixWitness } | undefined> {
+    const targetOrdinal = parseTurnOrdinal(beforeTurn);
+    if (targetOrdinal === undefined || budget.bytes <= 0 || budget.records <= 0) return undefined;
+    const existingWindow = this.coldWireWindows.get(wirePath);
+    const validWindow = existingWindow !== undefined &&
+      await this.matchesAppendSafeWitness(wirePath, existingWindow, info, signal)
+      ? existingWindow : undefined;
+    let searchEnd: number | undefined;
+    if (validWindow !== undefined && validWindow.start > 0 &&
+        validWindow.reachedTail === true &&
+        !hasVisibilityResetRecord(validWindow.records)) {
+      const windowOldest = oldestTurnOrdinal(validWindow.snapshot.items);
+      if (windowOldest !== undefined && targetOrdinal < windowOldest && windowOldest - targetOrdinal <= ANCHOR_PROXIMITY_MAX_TURN_GAP) {
+        searchEnd = validWindow.start;
+      }
+    } else if (validWindow === undefined) {
+      const resident = this.live.get(sessionId)?.store.getAgent(agentId);
+      const residentOldest = resident === undefined ? undefined : oldestTurnOrdinal(resident.getItems());
+      if (residentOldest !== undefined && targetOrdinal <= residentOldest &&
+          residentOldest - targetOrdinal <= ANCHOR_PROXIMITY_MAX_TURN_GAP &&
+          targetOrdinal >= DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns) {
+        searchEnd = info.size;
+      }
+    }
+    if (searchEnd === undefined || searchEnd <= 0) return undefined;
+    return this.scheduleHistoryRead(signal, owned => this.seekTurnOffsetNearTailInLane(wirePath, info, searchEnd, beforeTurn, owned, budget));
+  }
+
+  private async seekTurnOffsetNearTailInLane(
+    wirePath: string,
+    info: WireFileStat,
+    searchEnd: number,
+    beforeTurn: string,
+    signal: AbortSignal,
+    budget: AnchorReadBudget,
+  ): Promise<{ readonly at: number; readonly witness?: WirePrefixWitness } | undefined> {
+    const beforeWitness = await captureWirePrefixWitness(wirePath, info, signal);
+    if (beforeWitness === undefined) return undefined;
+    const opened = await openLogicalWire(wirePath, signal);
+    if (opened === undefined) return undefined;
+    const maxScanBytes = Math.min(Math.floor(budget.bytes / 2), ANCHOR_PROXIMITY_MAX_BYTES);
+    const maxScanRecords = Math.min(Math.floor(budget.records / 2), ANCHOR_PROXIMITY_MAX_RECORDS);
+    if (maxScanBytes <= 0 || maxScanRecords <= 0) {
+      opened.close();
+      return undefined;
+    }
+    const floor = Math.max(0, searchEnd - maxScanBytes);
+    let position = searchEnd;
+    let recordEnd = searchEnd;
+    const suffix: Buffer[] = [];
+    let suffixBytes = 0;
+    let oversizedLine = false;
+    let scannedRecords = 0;
+    const markers: ScannedSpanMarker[] = [];
+    const yieldBudget = createYieldBudget();
+    const startedAt = performance.now();
+    try {
+      while (position > floor && scannedRecords < maxScanRecords) {
+        signal.throwIfAborted();
+        const start = Math.max(floor, position - FIRST_SCREEN_CHUNK_BYTES);
+        const rawChunk = await opened.readAt(start, position - start);
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength);
+        this.coldReadBytes += chunk.byteLength;
+        budget.bytes -= chunk.byteLength;
+        let lineEnd = chunk.length;
+        if (position === searchEnd && chunk.at(-1) === 0x0a) lineEnd -= 1;
+        while (lineEnd > 0) {
+          const previous = chunk.lastIndexOf(0x0a, lineEnd - 1);
+          if (previous < 0 && start > 0) {
+            if (oversizedLine || suffixBytes + lineEnd > FIRST_SCREEN_WINDOW_MAX_BYTES) {
+              oversizedLine = true;
+              suffix.length = 0;
+              suffixBytes = 0;
+            } else {
+              suffix.push(chunk.subarray(0, lineEnd));
+              suffixBytes += lineEnd;
+            }
+            break;
+          }
+          const lineStart = previous + 1;
+          const prefix = chunk.subarray(lineStart, lineEnd);
+          const boundary = start + lineStart;
+          if (oversizedLine) {
+            oversizedLine = false;
+            recordEnd = boundary;
+            lineEnd = previous;
+            await yieldIfTimeBudgetExceeded(yieldBudget, signal);
+            continue;
+          }
+          const line = suffix.length === 0 ? prefix : Buffer.concat([prefix, ...suffix.toReversed()]);
+          suffix.length = 0;
+          suffixBytes = 0;
+          if (line.length > 0) {
+            scannedRecords += 1;
+            budget.records -= 1;
+            const skippableLoopEvent =
+              line.length >= LOOP_EVENT_LINE_PREFIX.length &&
+              line.subarray(0, LOOP_EVENT_LINE_PREFIX.length).equals(LOOP_EVENT_LINE_PREFIX) &&
+              hasClosedJsonObjectFrame(line);
+            const opaqueRecord = skippableLoopEvent ? undefined : transcriptWindowRecord(line);
+            if (!skippableLoopEvent && opaqueRecord === undefined) {
+              let record: ContextRecord;
+              try {
+                record = JSON.parse(line.toString('utf8')) as ContextRecord;
+              } catch (error) {
+                if (!(error instanceof SyntaxError) || recordEnd !== info.size) throw error;
+                recordEnd = boundary;
+                lineEnd = previous;
+                await yieldIfTimeBudgetExceeded(yieldBudget, signal);
+                continue;
+              }
+              if (record === null || typeof record !== 'object' || typeof record.type !== 'string') {
+                throw new Error('wire.jsonl: invalid record');
+              }
+              const marker = classifySpanMarker(record, boundary, recordEnd);
+              if (marker !== undefined) {
+                if (marker.kind === 'visibility_reset' || marker.kind === 'implicit_turn' || marker.kind === 'turn_begin') {
+                  return undefined;
+                }
+                markers.push(marker);
+                if (marker.kind === 'turn.prompt' && marker.turnId !== undefined) {
+                  if (marker.turnId === beforeTurn) {
+                    const after = await stat(wirePath);
+                    signal.throwIfAborted();
+                    const checked = await verifyWitnessAppendSafe(wirePath, beforeWitness, after, beforeWitness.completeTailOffset, FIRST_SCREEN_WINDOW_BYTES, signal);
+                    if (!checked.valid) return undefined;
+                    const afterWitness = checked.witness
+                      ?? (after.size === beforeWitness.observedSize ? beforeWitness : await captureWirePrefixWitness(wirePath, after, signal));
+                    if (afterWitness === undefined) return undefined;
+                    const stamp = await sealStamp(wirePath);
+                    const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, after, stamp, signal);
+                    markers.reverse();
+                    await this.recordColdTurnSpans(wirePath, spanFingerprint, markers, boundary, searchEnd, searchEnd >= after.size, after.size, undefined, { ...afterWitness, sealStamp: stamp }, signal);
+                    return { at: boundary, witness: afterWitness };
+                  }
+                  if (compareTurnIds(marker.turnId, beforeTurn) < 0) return undefined;
+                }
+              }
+            }
+            if (scannedRecords >= maxScanRecords) return undefined;
+          }
+          recordEnd = boundary;
+          lineEnd = previous;
+          await yieldIfTimeBudgetExceeded(yieldBudget, signal);
+        }
+        position = start;
+      }
+      return undefined;
+    } finally {
+      this.coldReadRecords += scannedRecords;
+      this.coldReadsCompleted += 1;
+      this.coldReadDurationMs += performance.now() - startedAt;
+      opened.close();
     }
   }
 
@@ -5792,18 +6211,28 @@ export class TranscriptService {
     return projected;
   }
 
-  private async readAnchorWindow(sessionId: string, agentId: string, wirePath: string, fileSize: number, key: string, seek: AnchorSeek,
-    budget: AnchorReadBudget, signal?: AbortSignal): Promise<AgentTranscriptSnapshot> {
+  private async readAnchorWindow(sessionId: string, agentId: string, wirePath: string, info: WireFileStat, key: string, seek: AnchorSeek,
+    budget: AnchorReadBudget, signal?: AbortSignal): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
     const { fingerprint } = seek;
+    const fileSize = info.size;
     const end = Math.min(fileSize, Math.max(0, seek.at));
     const cached = this.anchorWindows.get(wirePath);
     const current = this.coldWireWindows.get(wirePath);
-    if (cached !== undefined && cached.fingerprint === fingerprint && cached.at === end &&
-        current?.fingerprint === fingerprint && current.payloadEvicted !== true &&
-        current.start <= end && current.end >= end) return cached.snapshot;
+    if (cached !== undefined && cached.at === end && current !== undefined && current.payloadEvicted !== true &&
+        current.start <= end && current.end >= end &&
+        await this.matchesAppendSafeWitness(wirePath, cached, info, signal) &&
+        await this.matchesAppendSafeWitness(wirePath, current, info, signal)) {
+      if (fileSize > current.end) current.droppedTail = true;
+      return cached.snapshot;
+    }
     const opened = signal ?? new AbortController().signal;
+    const seekWitness = seek.witness ?? await captureWirePrefixWitness(wirePath, info, opened);
+    if (seekWitness === undefined) {
+      this.anchorSeeks.delete(key);
+      return this.pendingAnchor(agentId);
+    }
     const window: AnchorWindowRead = seek.window === undefined
       ? { alignAt: Math.max(0, end - FIRST_SCREEN_WINDOW_BYTES), offset: 0, records: [] }
       : { ...seek.window, records: [...seek.window.records] };
@@ -5815,7 +6244,7 @@ export class TranscriptService {
     }
     if (window.start !== undefined && window.end === undefined && budget.bytes > 0 && budget.records > 0) {
       const startedAt = Date.now();
-      const read = await this.scheduleHistoryRead(opened, owned => this.wireRecordReader(wirePath, {
+      const read = await this.scheduleHistoryRead(opened, owned => this.readWireRecordsYielding(wirePath, {
         startByteOffset: window.offset,
         continuation: window.continuation,
         retainIncompleteRecord: true,
@@ -5844,41 +6273,65 @@ export class TranscriptService {
     }
     const after = await stat(wirePath);
     opened.throwIfAborted();
-    if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
+    const afterChecked = await verifyWitnessAppendSafe(wirePath, seekWitness, after, seek.visibilityCheckedTo, FIRST_SCREEN_WINDOW_BYTES, opened);
+    if (!afterChecked.valid) {
       this.anchorSeeks.delete(key);
       return this.pendingAnchor(agentId);
     }
+    const updatedSeek: AnchorSeek = {
+      ...seek,
+      witness: afterChecked.witness ?? seekWitness,
+      visibilityCheckedTo: afterChecked.visibilityCheckedTo,
+      window,
+    };
     if (window.continuation !== undefined) this.clearRecordContinuations();
-    this.rememberAnchorSeek(key, { ...seek, window });
+    this.rememberAnchorSeek(key, updatedSeek);
     if (window.start === undefined || window.end === undefined) return this.pendingAnchor(agentId);
     const { start, end: readEnd } = window;
-    const opening = readEnd < fileSize ? await this.anchorOpeningRecords(wirePath, fingerprint, window.records, readEnd, fileSize, opened, budget) : undefined;
+    const afterWitness = afterChecked.witness
+      ?? (after.size === seekWitness.observedSize ? seekWitness : await captureWirePrefixWitness(wirePath, after, opened));
+    if (afterWitness === undefined) {
+      this.anchorSeeks.delete(key);
+      return this.pendingAnchor(agentId);
+    }
+    const stamp = await sealStamp(wirePath);
+    const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, after, stamp, opened);
+    const existingResetOffset = this.coldTurnSpans.get(wirePath)?.visibilityResetOffset;
+    if (
+      (existingResetOffset !== undefined && readEnd <= existingResetOffset) ||
+      (readEnd < after.size && await rangeHasHardClear(wirePath, readEnd, after.size, FIRST_SCREEN_WINDOW_BYTES, opened))
+    ) {
+      this.anchorSeeks.delete(key);
+      return undefined;
+    }
+    const afterFingerprint = wireExactFingerprint(after);
+    const opening = readEnd < after.size ? await this.anchorOpeningRecords(wirePath, after, afterFingerprint, afterWitness, window.records, readEnd, after.size, opened, budget) : undefined;
     if (opening === 'pending') return this.pendingAnchor(agentId);
     const records = opening === undefined ? window.records : [...window.records, opening];
-    const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
-    this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, window.records, start, readEnd, readEnd >= fileSize, fileSize);
-    this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, window.records);
+    const spanWitness = { ...afterWitness, sealStamp: stamp };
+    await this.recordColdTurnSpansFromRecords(wirePath, spanFingerprint, window.records, start, readEnd, readEnd >= after.size, after.size, undefined, spanWitness, opened);
+    this.recordColdToolTurnIdsFromRecords(wirePath, spanFingerprint, window.records, spanWitness, readEnd >= after.size ? spanWitness.completeTailOffset : readEnd);
     const snapshot = await this.projectColdRecords(agentId, records, start === 0, undefined, undefined, undefined, opened);
     opened.throwIfAborted();
-    this.rememberAnchorSeek(key, { fingerprint, at: seek.at });
+    this.rememberAnchorSeek(key, { fingerprint: afterFingerprint, witness: afterWitness, visibilityCheckedTo: afterWitness.completeTailOffset, at: seek.at });
     const openingTurn = opening === undefined ? undefined : wireTurnId(window.records.at(-1)!.record);
     const headers = opening === undefined ? undefined : snapshot.items.flatMap(item => item.kind === 'turn' && item.turnId === openingTurn ? [{ ...item, steps: [] }] : []);
-    const coldWindow: ColdWireWindow = { fingerprint, start, end: readEnd, entire: false, records: window.records,
+    const coldWindow: ColdWireWindow = { fingerprint: afterFingerprint, witness: afterWitness, visibilityCheckedTo: afterWitness.completeTailOffset, reachedTail: readEnd >= after.size, start, end: readEnd, entire: false, records: window.records,
       headers, headerAttachments: opening === undefined ? undefined : snapshot.attachments,
-      snapshot, bytes: 0, droppedTail: readEnd < fileSize };
+      snapshot, bytes: 0, droppedTail: readEnd < after.size };
     if (start > 0) {
       await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, coldWindow, opened);
     }
     coldWindow.bytes = this.coldWindowBytes(coldWindow.snapshot, window.records);
     const preview = partialColdWindowSnapshot(coldWindow);
     this.anchorReads.set(preview, start === 0 ? 'window' : 'continues');
-    this.rememberAnchorWindow(wirePath, fingerprint, end, preview);
+    this.rememberAnchorWindow(wirePath, afterFingerprint, afterWitness, end, preview);
     this.rememberColdWindow(wirePath, coldWindow);
     this.deleteColdSnapshotCache(wirePath);
     return preview;
   }
 
-  private async anchorOpeningRecords(wirePath: string, fingerprint: string, records: readonly ColdWireRecord[], from: number, fileSize: number,
+  private async anchorOpeningRecords(wirePath: string, info: WireFileStat, fingerprint: string, witness: WirePrefixWitness, records: readonly ColdWireRecord[], from: number, fileSize: number,
     signal: AbortSignal, budget: AnchorReadBudget): Promise<ColdWireRecord | 'pending' | undefined> {
     const opening = records.at(-1)?.record;
     if (opening?.type !== 'turn.prompt' || (opening as { managed?: unknown }).managed !== true) return undefined;
@@ -5887,11 +6340,13 @@ export class TranscriptService {
     if (turnId === undefined) return undefined;
     if (budget.bytes <= 0 || budget.records <= 0) return 'pending';
     const cached = this.anchorOpeningSeeks.get(wirePath);
-    const saved = cached?.fingerprint === fingerprint && cached.from === from ? cached : undefined;
+    const saved = cached !== undefined && cached.from === from &&
+      await this.matchesAppendSafeWitness(wirePath, cached, info, signal)
+      ? cached : undefined;
     const offset = saved?.offset ?? from;
     let deliveryRecord: ColdWireRecord | undefined;
     let ended = false;
-    const read = await this.scheduleHistoryRead(signal, owned => this.wireRecordReader(wirePath, {
+    const read = await this.scheduleHistoryRead(signal, owned => this.readWireRecordsYielding(wirePath, {
       startByteOffset: offset,
       continuation: saved?.continuation,
       retainIncompleteRecord: true,
@@ -5921,8 +6376,9 @@ export class TranscriptService {
     this.coldReadBytes += read.bytesRead;
     this.coldReadRecords += read.recordCount;
     if (read.continuation !== undefined) this.clearRecordContinuations();
+    const nextOffset = deliveryRecord?.position.startByteOffset ?? read.nextByteOffset;
     this.anchorOpeningSeeks.delete(wirePath);
-    this.anchorOpeningSeeks.set(wirePath, { fingerprint, from, offset: deliveryRecord?.position.startByteOffset ?? read.nextByteOffset, continuation: read.continuation });
+    this.anchorOpeningSeeks.set(wirePath, { fingerprint, witness, visibilityCheckedTo: witness.completeTailOffset, from, offset: nextOffset, continuation: read.continuation });
     while (this.anchorOpeningSeeks.size > COLD_WIRE_WINDOWS_MAX_ENTRIES) {
       const oldest = this.anchorOpeningSeeks.keys().next().value;
       if (oldest === undefined) break;
@@ -5949,14 +6405,13 @@ export class TranscriptService {
   }
 
   private async turnStartOffset(wirePath: string,
-    info: { size: number; mtimeMs: number; ctimeMs: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
-    turnId: string, signal: AbortSignal, budget: AnchorReadBudget): Promise<{ kind: 'found'; at: number; window?: AnchorWindowRead } | { kind: 'pending' } | { kind: 'absent'; following?: number }> {
+    info: WireFileStat,
+    turnId: string, signal: AbortSignal, budget: AnchorReadBudget): Promise<{ kind: 'found'; at: number; witness?: WirePrefixWitness; window?: AnchorWindowRead } | { kind: 'pending' } | { kind: 'absent'; following?: number; witness?: WirePrefixWitness }> {
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     let index = this.turnStartIndexes.get(wirePath);
     if (index !== undefined && index.fingerprint !== fingerprint) {
-      const proof = index.proof === undefined ? undefined : await historyNavigationProof(wirePath, Math.min(index.proofThrough ?? index.scannedTo, info.size), signal);
-      index = proof !== undefined && index.proof !== undefined && matchesNavigationProof(index.proof, proof)
-        ? { ...index, fingerprint, proof, complete: false } : undefined;
+      const witnessMatched = await this.matchesAppendSafeWitness(wirePath, index, info, signal);
+      index = witnessMatched ? { ...index, fingerprint, complete: false } : undefined;
     }
     index ??= { fingerprint, scannedTo: 0, complete: false, starts: new Map() };
     this.turnStartIndexes.delete(wirePath);
@@ -5967,15 +6422,17 @@ export class TranscriptService {
       this.turnStartIndexes.delete(oldest);
     }
     const known = index.starts.get(turnId);
-    if (known !== undefined) return { kind: 'found', at: known };
-    if (index.complete) return { kind: 'absent', following: followingTurnStart(index.starts, turnId) };
+    if (known !== undefined) return { kind: 'found', at: known, witness: index.witness };
+    if (index.complete) return { kind: 'absent', following: followingTurnStart(index.starts, turnId), witness: index.witness };
+    const beforeWitness = await captureWirePrefixWitness(wirePath, info, signal);
+    if (beforeWitness === undefined) return { kind: 'pending' };
     const starts = new Map(index.starts);
     const records: ColdWireRecord[] = [];
     const spanMarkers: ScannedSpanMarker[] = [];
     const toolTurnIds: Array<readonly [string, string]> = [];
     let scanTurnId: string | undefined;
     const startedAt = Date.now();
-    const read = await this.wireRecordReader(wirePath, {
+    const read = await this.readWireRecordsYielding(wirePath, {
       startByteOffset: index.scannedTo,
       continuation: index.continuation,
       retainIncompleteRecord: true,
@@ -6012,34 +6469,53 @@ export class TranscriptService {
     this.coldReadDurationMs += Date.now() - startedAt;
     if (!read.complete && read.incompleteReason !== 'partial_tail' && read.incompleteReason !== 'record_budget') this.coldReadsFenced += 1;
     const proofThrough = read.nextByteOffset + (read.continuation?.chunks.reduce((sum, bytes) => sum + bytes.byteLength, 0) ?? 0);
-    const proof = await historyNavigationProof(wirePath, proofThrough, signal);
     const after = await stat(wirePath);
     signal.throwIfAborted();
-    if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
+    const afterChecked = await verifyWitnessAppendSafe(wirePath, beforeWitness, after, beforeWitness.completeTailOffset, FIRST_SCREEN_WINDOW_BYTES, signal);
+    if (!afterChecked.valid) {
       this.turnStartIndexes.delete(wirePath);
       return { kind: 'pending' };
     }
-    const spanFingerprint = `${fingerprint}:${await sealStamp(wirePath)}`;
-    this.recordColdTurnSpans(wirePath, spanFingerprint, spanMarkers, index.scannedTo, read.nextByteOffset, read.complete, info.size);
-    this.recordColdToolTurnIds(wirePath, spanFingerprint, toolTurnIds);
+    const nextWitness = after.size === beforeWitness.observedSize
+      ? beforeWitness
+      : await captureWirePrefixWitness(wirePath, after, signal);
+    if (nextWitness === undefined) {
+      this.turnStartIndexes.delete(wirePath);
+      return { kind: 'pending' };
+    }
+    const stamp = await sealStamp(wirePath);
+    const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, after, stamp, signal);
+    const spanWitness = { ...nextWitness, sealStamp: stamp };
+    const fullyComplete = read.complete && after.size === info.size;
+    await this.recordColdTurnSpans(wirePath, spanFingerprint, spanMarkers, index.scannedTo, read.nextByteOffset, fullyComplete, after.size, undefined, spanWitness, signal);
+    this.recordColdToolTurnIds(wirePath, spanFingerprint, toolTurnIds, spanWitness, fullyComplete ? spanWitness.completeTailOffset : read.nextByteOffset);
     if (read.continuation !== undefined) this.clearRecordContinuations();
-    this.turnStartIndexes.set(wirePath, { fingerprint, scannedTo: read.nextByteOffset, complete: read.complete, proofThrough, proof, starts, continuation: read.continuation });
+    this.turnStartIndexes.set(wirePath, {
+      fingerprint: wireExactFingerprint(after),
+      witness: nextWitness,
+      visibilityCheckedTo: nextWitness.completeTailOffset,
+      scannedTo: read.nextByteOffset,
+      complete: fullyComplete,
+      proofThrough,
+      starts,
+      continuation: read.continuation,
+    });
     const found = starts.get(turnId);
     if (found !== undefined) {
       let keepFrom = records.length - 1;
       while (keepFrom > 0 && records[keepFrom - 1]!.position.endByteOffset > read.nextByteOffset - FIRST_SCREEN_WINDOW_BYTES) keepFrom -= 1;
       const retained = records.slice(keepFrom);
       const start = retained[0]!.position.startByteOffset;
-      return { kind: 'found', at: found, window: { start, alignAt: start, offset: read.nextByteOffset, end: read.nextByteOffset, records: retained } };
+      return { kind: 'found', at: found, witness: nextWitness, window: { start, alignAt: start, offset: read.nextByteOffset, end: read.nextByteOffset, records: retained } };
     }
-    return read.complete ? { kind: 'absent', following: followingTurnStart(starts, turnId) } : { kind: 'pending' };
+    return fullyComplete ? { kind: 'absent', following: followingTurnStart(starts, turnId), witness: nextWitness } : { kind: 'pending' };
   }
 
-  private rememberAnchorWindow(wirePath: string, fingerprint: string, at: number, snapshot: AgentTranscriptSnapshot): void {
+  private rememberAnchorWindow(wirePath: string, fingerprint: string, witness: WirePrefixWitness | undefined, at: number, snapshot: AgentTranscriptSnapshot): void {
     this.anchorWindows.delete(wirePath);
     const bytes = estimateColdSnapshotBytes(snapshot, COLD_WIRE_WINDOW_MAX_BYTES);
     if (bytes > COLD_WIRE_WINDOW_MAX_BYTES) return;
-    this.anchorWindows.set(wirePath, { fingerprint, at, snapshot, bytes });
+    this.anchorWindows.set(wirePath, { fingerprint, witness, visibilityCheckedTo: witness?.completeTailOffset, at, snapshot, bytes });
     while (this.anchorWindows.size > COLD_WIRE_WINDOWS_MAX_ENTRIES) {
       const oldest = this.anchorWindows.keys().next().value;
       if (oldest === undefined) break;
@@ -6166,6 +6642,7 @@ export class TranscriptService {
     this.anchorWindows.clear();
     this.turnStartIndexes.clear();
     this.anchorOpeningSeeks.clear();
+    this.proximityMisses.clear();
     this.clearRetainedColdTurns();
     for (const sessionId of this.live.keys()) this.dropSession(sessionId);
   }
