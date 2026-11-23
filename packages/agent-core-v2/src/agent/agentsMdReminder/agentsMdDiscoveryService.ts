@@ -12,7 +12,6 @@ import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 
 const DISCOVERY_CACHE_TTL_MS = 5_000;
 const MAX_DIRECTORY_WATCHERS = 64;
-const MAX_REALPATH_CACHE = 512;
 const WATCHED_ENTRY_NAMES = new Set(['.kiki', ...AGENTS_MD_PLAIN_NAMES.map((name) => name.toLowerCase())]);
 
 interface DirectoryEntry {
@@ -105,21 +104,26 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     const fs = runtime.fs;
     if (fs === undefined) return normalized;
     const cache = this.cacheFor(runtime);
+    const now = this.now();
     const key = pathKey(normalized, runtime.environment.pathClass);
     const cached = cache.realpaths.get(key);
-    if (cached !== undefined && cached.expiresAt > this.now()) return cached.path;
+    if (cached !== undefined) {
+      if (cached.expiresAt > now) return cached.path;
+      cache.realpaths.delete(key);
+    }
     const inflight = cache.realpathFlights.get(key);
     if (inflight !== undefined) return inflight;
     const flight = fs.realpath(normalized)
-      .then((resolved) => normalize(resolved), () => normalized)
       .then((resolved) => {
+        const canonical = normalize(resolved);
         if (this.ttlMs > 0) {
-          if (cache.realpaths.size >= MAX_REALPATH_CACHE) {
-            cache.realpaths.delete(cache.realpaths.keys().next().value!);
+          const currentNow = this.now();
+          for (const [entryKey, entry] of cache.realpaths) {
+            if (entry.expiresAt <= currentNow) cache.realpaths.delete(entryKey);
           }
-          cache.realpaths.set(key, { path: resolved, expiresAt: this.now() + this.ttlMs });
+          cache.realpaths.set(key, { path: canonical, expiresAt: currentNow + this.ttlMs });
         }
-        return resolved;
+        return canonical;
       })
       .finally(() => {
         if (cache.realpathFlights.get(key) === flight) cache.realpathFlights.delete(key);

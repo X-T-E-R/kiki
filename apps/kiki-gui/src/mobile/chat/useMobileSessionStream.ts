@@ -13,6 +13,7 @@ export interface MobileSessionStreamResult {
   readonly state: SessionViewState;
   readonly loadingOlder: boolean;
   readonly loadOlder: () => Promise<void>;
+  readonly retryLoad: () => Promise<void>;
   readonly sendPrompt: (input: {
     readonly text: string;
     readonly model?: string;
@@ -149,5 +150,17 @@ export function useMobileSessionStream(
     [controller],
   );
 
-  return { state, loadingOlder, loadOlder, sendPrompt, abort, resolveApproval, answerQuestion, dismissQuestion };
+  const retryLoad = useCallback(async () => {
+    try {
+      if (state.loadError !== undefined) {
+        await controller.retryOpen();
+      } else if (state.resyncFailed && state.resyncError?.retryable !== false) {
+        await controller.resync();
+      }
+    } catch (error) {
+      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+    }
+  }, [controller, state.loadError, state.resyncError?.retryable, state.resyncFailed]);
+
+  return { state, loadingOlder, loadOlder, retryLoad, sendPrompt, abort, resolveApproval, answerQuestion, dismissQuestion };
 }

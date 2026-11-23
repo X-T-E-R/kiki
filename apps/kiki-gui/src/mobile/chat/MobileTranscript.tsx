@@ -15,6 +15,7 @@ import { MobileQuestionCard, type QuestionAnswers } from './MobileQuestionCard';
 interface MobileTranscriptProps {
   readonly blocks: readonly Block[];
   readonly loaded: boolean;
+  readonly loadError?: string;
   readonly busy: boolean;
   readonly hasMoreHistory: boolean;
   readonly loadingOlder: boolean;
@@ -24,6 +25,7 @@ interface MobileTranscriptProps {
   /** A local persona greeting shown before the first turn; never part of model history. */
   readonly greeting?: MessageBlock;
   readonly onLoadOlder: () => void;
+  readonly onRetryLoad?: () => void;
   readonly onOpenHood: (tab: HoodTab, changeId?: string) => void;
   readonly onResolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => void;
   readonly onAnswerQuestion: (questionId: string, answers: QuestionAnswers) => Promise<void>;
@@ -173,6 +175,7 @@ function AssistantBubble({ text }: { readonly text: string }) {
 export function MobileTranscript({
   blocks,
   loaded,
+  loadError,
   busy,
   hasMoreHistory,
   loadingOlder,
@@ -180,6 +183,7 @@ export function MobileTranscript({
   personaName,
   greeting,
   onLoadOlder,
+  onRetryLoad,
   onOpenHood,
   onResolveApproval,
   onAnswerQuestion,
@@ -288,7 +292,26 @@ export function MobileTranscript({
           </div>
         ) : null}
 
-        {!loaded ? (
+        {loadError !== undefined && (!loaded || entries.length === 0) ? (
+          <div
+            role="alert"
+            data-mobile-load-error=""
+            className="mx-auto my-8 flex w-full max-w-[360px] flex-col items-center rounded-2xl border border-danger/30 bg-danger/5 px-4 py-5 text-center"
+          >
+            <p className="text-[14px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
+            <p className="mt-1.5 break-words font-mono text-[12px] text-danger/80">{loadError}</p>
+            {onRetryLoad !== undefined ? (
+              <button
+                type="button"
+                data-mobile-retry-load=""
+                onClick={onRetryLoad}
+                className="mt-3.5 inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 text-[13.5px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep"
+              >
+                {t('common.retry')}
+              </button>
+            ) : null}
+          </div>
+        ) : !loaded ? (
           <p className="py-12 text-center text-[13.5px] text-ink-faint">{t('mobile.chat.loading')}</p>
         ) : entries.length === 0 && !showGreeting ? (
           <div className="py-16 text-center">
