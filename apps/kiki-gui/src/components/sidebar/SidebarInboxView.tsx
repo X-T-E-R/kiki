@@ -34,6 +34,7 @@ export interface SidebarInboxViewProps {
   readonly resolveTitle?: (text: string) => string;
   readonly activeShortcutsEnabled?: boolean;
   readonly onOpenItem: (item: UnifiedInboxItem) => void;
+  readonly onContextMenuItem?: (item: UnifiedInboxItem, x: number, y: number) => void;
   readonly onSettleItem: (item: UnifiedInboxItem) => void;
   readonly onSnoozeItem: (item: UnifiedInboxItem, preset: SnoozePreset) => void;
   readonly onArchiveItem: (item: UnifiedInboxItem) => void;
@@ -50,6 +51,7 @@ export function SidebarInboxView({
   resolveTitle,
   activeShortcutsEnabled = true,
   onOpenItem,
+  onContextMenuItem,
   onSettleItem,
   onSnoozeItem,
   onArchiveItem,
@@ -169,6 +171,7 @@ export function SidebarInboxView({
               untitled={untitled}
               resolveTitle={resolveTitle}
               onOpen={() => { onOpenItem(item); }}
+              onContextMenu={onContextMenuItem === undefined ? undefined : (x, y) => { onContextMenuItem(item, x, y); }}
               onSettle={() => { onSettleItem(item); }}
               onSnooze={(preset) => { onSnoozeItem(item, preset); }}
               onArchive={() => { onArchiveItem(item); }}
@@ -221,6 +224,7 @@ export function SidebarInboxView({
                       untitled={untitled}
                       resolveTitle={resolveTitle}
                       onOpen={() => { onOpenItem(item); }}
+                      onContextMenu={onContextMenuItem === undefined ? undefined : (x, y) => { onContextMenuItem(item, x, y); }}
                       onArchive={() => { onArchiveItem(item); }}
                     />
                   ))}
@@ -255,6 +259,7 @@ export function SidebarInboxView({
                       untitled={untitled}
                       resolveTitle={resolveTitle}
                       onOpen={() => { onOpenItem(item); }}
+                      onContextMenu={onContextMenuItem === undefined ? undefined : (x, y) => { onContextMenuItem(item, x, y); }}
                       onRestore={() => { onRestoreItem(item); }}
                     />
                   ))}
@@ -289,6 +294,7 @@ export function SidebarInboxView({
                       untitled={untitled}
                       resolveTitle={resolveTitle}
                       onOpen={() => { onOpenItem(item); }}
+                      onContextMenu={onContextMenuItem === undefined ? undefined : (x, y) => { onContextMenuItem(item, x, y); }}
                       onRestore={() => { onRestoreItem(item); }}
                     />
                   ))}

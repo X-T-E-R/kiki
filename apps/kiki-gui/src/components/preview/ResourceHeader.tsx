@@ -157,7 +157,7 @@ export function TabContextMenu({
         });
       } else if (action.id === 'copy-path' && trustedPath !== undefined) {
         const relativePath = relativeToCwd(trustedPath, cwd);
-        if (!isCopy || relativePath !== trustedPath) {
+        if (relativePath !== trustedPath) {
           actionEntries.push({
             key: 'copy-relative',
             label: t('file.copyRelativePath'),

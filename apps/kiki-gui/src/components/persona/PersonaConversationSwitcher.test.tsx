@@ -245,4 +245,13 @@ describe('the honest tests', () => {
     expect(rendered.container.textContent).not.toContain('正在读取对话');
     expect(rendered.container.textContent).not.toContain('没有匹配的对话');
   });
+
+  it('does not show the empty-match message when a single-thread persona already has its daily conversation', async () => {
+    const rendered = await render({
+      persona: persona({ homeSessionId: 'home_lin' }),
+      sessions: [session({ id: 'home_lin', title: '小柚 · 每日复盘' })],
+    });
+    expect(rendered.container.textContent).not.toContain('没有匹配的对话');
+    expect(rendered.container.querySelector('[data-conversation-item="home_lin"]')?.textContent).toContain('每日复盘');
+  });
 });

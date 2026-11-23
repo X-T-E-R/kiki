@@ -132,6 +132,7 @@ import { useConnection } from '../state/connection';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { resolveProfileIcon } from '../lib/profileIcon';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
+import { ComposerFileTile } from './fileContextMenu';
 import { ComposerNotes } from './ComposerNotes';
 import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAvailability, type ContextMeterUsage } from './ContextMeter';
 import { LifeMark } from './LifeMark';
@@ -3896,18 +3897,17 @@ export function Composer({
               };
               if (attachment.kind === 'file') {
                 shelfItems.push(
-                  <TextTile
+                  <ComposerFileTile
                     key={chipKey}
                     variant="shelf"
-                    title={attachment.path}
+                    path={attachment.path}
+                    name={attachment.name}
+                    isDir={attachment.isDir}
                     subtitle={fileExtensionTag(attachment.name, attachment.isDir, locale === 'zh' ? '目录' : 'DIR')}
                     leading={<FileGlyph dir={attachment.isDir} />}
-                    mono
                     onRemove={remove}
                     removeLabel={t('composer.removeAttachment', { name: attachment.name })}
-                  >
-                    <span className="min-w-0 truncate">{attachment.name}{attachment.isDir ? '/' : ''}</span>
-                  </TextTile>,
+                  />,
                 );
                 continue;
               }

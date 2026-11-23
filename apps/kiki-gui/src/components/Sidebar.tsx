@@ -40,7 +40,6 @@ import {
   undoLastTurn,
   type SessionActionContext,
 } from '@kiki/session-core/commands';
-import { appendToDraft, requestComposerInsert, threadRefLink } from '@kiki/session-core/composer';
 import { errorText } from '@kiki/session-core/i18n';
 import {
   formatElapsedClock,
@@ -94,8 +93,7 @@ import { useI18n } from '../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
-import { useLayerHistory } from '../lib/layerHistory';
-import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePaneResize, usePhoneMode } from '../lib/layoutHooks';
+import { useLayoutPreferences, useMediaQuery, usePaneResize, usePhoneMode } from '../lib/layoutHooks';
 import { requestScopeNavigation } from '../lib/navScope';
 import { enterSpace, launchWindowMode } from '../lib/spaces';
 import { clampOverlayPosition } from '../lib/overlayPosition';
@@ -130,6 +128,7 @@ import { SpaceScopeControl } from './sidebar/SpaceScopeControl';
 import { SidebarModeSwitch } from './sidebar/SidebarModeSwitch';
 import { SidebarInboxView } from './sidebar/SidebarInboxView';
 import { partitionColdFold } from './sidebar/coldFold';
+import { SessionContextMenu } from './sessionContextMenu';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
 import { usePersonaDirectory, type PersonaDirectoryEntry } from './persona/usePersonaDirectory';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
@@ -2542,6 +2541,25 @@ export function Sidebar({
               if (entry !== undefined) setActiveResult(entry.index);
             }}
             onOpen={(key) => { resultsByKey.get(key)?.open(); }}
+            onContextMenuSession={(session, x, y) => {
+              const targetSpaceKey = remoteSearchSpaceBySessionId.get(session.id) ?? currentSpaceKey;
+              const isRemote = targetSpaceKey.startsWith('remote:');
+              const baseHref = `/s/${encodeURIComponent(session.id)}`;
+              setMenu({
+                item: {
+                  kind: 'session',
+                  key: `session:${session.id}`,
+                  id: session.id,
+                  title: session.title,
+                  href: isRemote ? placeHrefForSpaceKey(targetSpaceKey, baseHref) : baseHref,
+                  session,
+                  spaceKey: targetSpaceKey,
+                  isRemote,
+                } as ConversationListItem,
+                x,
+                y,
+              });
+            }}
             workspaceNames={workspaceNameById}
           />
         </>
@@ -2564,6 +2582,39 @@ export function Sidebar({
           resolveTitle={resolveTitle}
           activeShortcutsEnabled={inert !== true && !isCollapsed && !search.active}
           onOpenItem={openInboxItem}
+          onContextMenuItem={(inboxItem, x, y) => {
+            if (inboxItem.ref.kind === 'room') {
+              const foundRoom = sessionGroups
+                .flatMap((g) => g.items)
+                .find((candidate): candidate is Extract<ConversationListItem, { kind: 'room' }> =>
+                  candidate.kind === 'room' && candidate.id === inboxItem.ref.id);
+              if (foundRoom !== undefined) {
+                setMenu({ item: foundRoom, x, y });
+              }
+              return;
+            }
+            const foundSession =
+              sessions.find((s) => s.id === inboxItem.ref.id) ??
+              personaSessions?.find((s) => s.id === inboxItem.ref.id) ??
+              multiSpaceSources?.flatMap((source) => source.sessions).find((s) => s.id === inboxItem.ref.id);
+            if (foundSession === undefined) return;
+            const isRemote = inboxItem.isRemote;
+            const baseHref = `/s/${encodeURIComponent(foundSession.id)}`;
+            setMenu({
+              item: {
+                kind: 'session',
+                key: `session:${foundSession.id}`,
+                id: foundSession.id,
+                title: foundSession.title,
+                href: isRemote ? placeHrefForSpaceKey(inboxItem.spaceKey, baseHref) : baseHref,
+                session: foundSession,
+                spaceKey: inboxItem.spaceKey,
+                isRemote,
+              } as ConversationListItem,
+              x,
+              y,
+            });
+          }}
           onSettleItem={inboxTriage.settleItem}
           onSnoozeItem={inboxTriage.snoozeItem}
           onArchiveItem={inboxTriage.archiveItem}
@@ -3168,7 +3219,7 @@ export function Sidebar({
         />
       ) : null}
       {menuItem !== null && menuItem.kind === 'session' ? (
-        <SessionMenu
+        <SessionContextMenu
           session={menuItem.session}
           copyLinkHref={menuItem.href}
           isRemote={menuItem.isRemote === true}
@@ -4027,7 +4078,6 @@ function RoomConversationRow({
  * the sheet's own rule resizes it for a thumb. */
 const ROW_MENU_ITEM =
   'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper pointer-coarse:min-h-11 pointer-coarse:text-[14px]';
-const ROW_MENU_DISABLED = 'disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent';
 
 /**
  * The room row's menu: the thread menu's shared spine (link, pin, rename,
@@ -4497,6 +4547,7 @@ function SearchResults({
   activeKey,
   onHover,
   onOpen,
+  onContextMenuSession,
   workspaceNames,
 }: {
   search: SessionSearchState;
@@ -4505,6 +4556,7 @@ function SearchResults({
   activeKey: string | undefined;
   onHover: (key: string) => void;
   onOpen: (key: string) => void;
+  onContextMenuSession?: (session: Session, x: number, y: number) => void;
   workspaceNames: ReadonlyMap<string, string>;
 }) {
   const { t } = useI18n();
@@ -4735,7 +4787,14 @@ function SearchResults({
               } else if (entry.kind === 'session') {
                 const match = entry.match;
                 content = (
-                  <button type="button" {...option(entry.optionKey)}>
+                  <button
+                    type="button"
+                    {...option(entry.optionKey)}
+                    onContextMenu={onContextMenuSession === undefined ? undefined : (event) => {
+                      event.preventDefault();
+                      onContextMenuSession(match.session.source, event.clientX, event.clientY);
+                    }}
+                  >
                     <span className="flex h-[19px] w-[7px] shrink-0 items-center">
                       <StatusMark session={match.session.source} state={sessionRowState(match.session.source, seen)} />
                     </span>
@@ -4827,7 +4886,15 @@ function SearchResults({
             <div role="group" aria-label={t('sidebar.results.sessions')}>
               <ResultHeading>{t('sidebar.results.sessions')}</ResultHeading>
               {local.sessions.map((match) => (
-                <button key={match.session.id} type="button" {...option(`s:${match.session.id}`)}>
+                <button
+                  key={match.session.id}
+                  type="button"
+                  {...option(`s:${match.session.id}`)}
+                  onContextMenu={onContextMenuSession === undefined ? undefined : (event) => {
+                    event.preventDefault();
+                    onContextMenuSession(match.session.source, event.clientX, event.clientY);
+                  }}
+                >
                   <span className="flex h-[19px] w-[7px] shrink-0 items-center">
                     <StatusMark session={match.session.source} state={sessionRowState(match.session.source, seen)} />
                   </span>
@@ -5224,587 +5291,6 @@ function SidebarFilterMenu({
     >
       {body}
     </AnchoredPopover>
-  );
-}
-
-type SessionContentAction = 'undo' | 'compact' | 'export';
-type SessionSubmenuKey = 'branch' | 'fork' | 'more';
-
-const BRANCH_SEED_MODES: readonly SessionSeedMode[] = ['fresh', 'compact', 'verbatim'];
-const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compact'];
-
-interface SessionMenuProps {
-  session: Session;
-  /** Copy-link href (supports `/p/:connectionId/s/:id` for remote sessions). */
-  copyLinkHref?: string;
-  /** True when the row belongs to a paired remote computer; suppresses local-only actions. */
-  isRemote?: boolean;
-  /** The row's shown title, for the menu's accessible name. */
-  title: string;
-  topLevel: boolean;
-  onToggleThreadDisplay: () => void;
-  scopeId: string;
-  /** The open conversation; the thread-reference entry needs one to insert into. */
-  activeSessionId: string | undefined;
-  x: number;
-  y: number;
-  onClose: () => void;
-  onRename: () => void;
-  onTogglePin: () => void;
-  onTogglePrivate: () => void;
-  onCreateBranch: (seed: SessionSeedMode) => void;
-  onForkSession: (seed: SessionSeedMode) => void;
-  onAction: (action: SessionContentAction) => void;
-  onArchive: () => void;
-  onRestore: () => void;
-  /** `[thread_communication].enabled`; undefined while the config loads. */
-  threadCommsEnabled: boolean | undefined;
-  onJoinRoom: () => void;
-  /** Its archive is in flight: only the entries that would race it go quiet. */
-  archiving?: boolean;
-  /** Its privacy toggle is in flight: prevents concurrent conflicting toggles. */
-  privateBusy?: boolean;
-}
-
-/**
- * The session row's menu. Its first level holds list management plus direct
- * branch and fork entry points (each expanding into the three context-seed
- * modes). Export, compact, and undo remain one level down under More on
- * desktop; phone mode shows the first level in a bottom sheet and steps into
- * the seed-mode choices when branch or fork is tapped.
- */
-function SessionMenu(props: SessionMenuProps) {
-  const { t } = useI18n();
-  const [sheetSubmenu, setSheetSubmenu] = useState<'branch' | 'fork' | null>(null);
-  if (!usePhoneMode()) return <SessionPointerMenu {...props} />;
-  const modes = sheetSubmenu === 'branch' ? BRANCH_SEED_MODES : FORK_SEED_MODES;
-  return (
-    <ActionSheet
-      ariaLabel={t('sidebar.sessionActionsFor', { title: props.title })}
-      overlayId="session-menu"
-      dataAttribute="data-session-menu"
-      onClose={() => {
-        setSheetSubmenu(null);
-        props.onClose();
-      }}
-    >
-      {sheetSubmenu === null ? (
-        <SessionMenuEntries
-          {...props}
-          phone
-          onOpenSeedSubmenu={(kind) => { setSheetSubmenu(kind); }}
-        />
-      ) : (
-        <>
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="seed-back"
-            className={`${ROW_MENU_ITEM} text-ink-soft`}
-            onClick={() => { setSheetSubmenu(null); }}
-          >
-            {t(sheetSubmenu === 'branch' ? 'menu.branch' : 'menu.fork')}
-          </button>
-          <div className="mx-1 my-1 border-t border-hairline" />
-          {modes.map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              role="menuitem"
-              data-menu-item={`${sheetSubmenu}-${mode}`}
-              className={ROW_MENU_ITEM}
-              onClick={() => {
-                const kind = sheetSubmenu;
-                setSheetSubmenu(null);
-                if (kind === 'branch') props.onCreateBranch(mode);
-                else props.onForkSession(mode);
-              }}
-            >
-              {t(`transcript.branch.seed.${mode}`)}
-            </button>
-          ))}
-        </>
-      )}
-    </ActionSheet>
-  );
-}
-
-/** The menu's first level, shared by the desktop menu and the phone sheet. */
-function SessionMenuEntries({
-  session,
-  copyLinkHref,
-  isRemote = false,
-  phone,
-  topLevel,
-  onToggleThreadDisplay,
-  scopeId,
-  activeSessionId,
-  onClose,
-  onRename,
-  onTogglePin,
-  onTogglePrivate,
-  onCreateBranch,
-  onForkSession,
-  onArchive,
-  onRestore,
-  threadCommsEnabled,
-  onJoinRoom,
-  archiving = false,
-  privateBusy = false,
-  activeSubmenu = null,
-  branchRef,
-  forkRef,
-  onOpenSeedSubmenu,
-}: SessionMenuProps & {
-  phone: boolean;
-  activeSubmenu?: SessionSubmenuKey | null;
-  branchRef?: RefObject<HTMLButtonElement | null>;
-  forkRef?: RefObject<HTMLButtonElement | null>;
-  onOpenSeedSubmenu?: (kind: 'branch' | 'fork') => void;
-}) {
-  const host = useHost();
-  const { t } = useI18n();
-  const archived = session.archived === true;
-  const canTogglePrivate = session.ephemeral !== true && !isSubagentSession(session);
-  const canBranchOrFork = !isRemote && canTogglePrivate;
-  // The lightweight link is the in-app route (the protocol-level kiki:// deep
-  // link is deliberately out of scope). Opening the folder rides the desktop
-  // opener commands, so the browser build, a phone, and remote computers get
-  // the copy only.
-  const cwd = session.metadata.cwd;
-  const canReveal = !phone && !isRemote && !scopeId.startsWith('ssh:') && host.revealPath !== undefined && cwd !== '';
-  // A thread reference goes into the open conversation's composer: with
-  // nothing open, or with this row being the open one, there is nowhere to
-  // add it, so the entry is not offered.
-  const canAddToConversation = !isRemote && activeSessionId !== undefined && activeSessionId !== session.id;
-  // Rooms need thread communication: switched off, the entry is not offered
-  // at all. Still loading is not off, so it stays.
-  const canJoinRoom = !isRemote && !isSubagentSession(session) && threadCommsEnabled !== false;
-  const runAndClose = (label: string, action: () => Promise<void>) => {
-    onClose();
-    runToastAction(label, action);
-  };
-  return (
-    <>
-      {sessionRelationOf(session)?.kind === 'thread' ? (
-        <>
-          <button type="button" role="menuitem" data-menu-item="thread-display" className={ROW_MENU_ITEM} onClick={onToggleThreadDisplay}>
-            {topLevel ? t('menu.showNested') : t('menu.showTopLevel')}
-          </button>
-          <div className="mx-1 my-1 border-t border-hairline" />
-        </>
-      ) : null}
-      {archived ? (
-        <button type="button" role="menuitem" data-menu-item="restore" className={ROW_MENU_ITEM} onClick={onRestore}>
-          {t('menu.restore')}
-        </button>
-      ) : (
-        <>
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="pin"
-            disabled={archiving}
-            className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
-            onClick={onTogglePin}
-          >
-            {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
-          </button>
-          <button type="button" role="menuitem" data-menu-item="rename" className={ROW_MENU_ITEM} onClick={onRename}>
-            {t('menu.rename')}
-          </button>
-          {canTogglePrivate ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="private"
-              disabled={archiving || privateBusy}
-              className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
-              onClick={onTogglePrivate}
-            >
-              {t(session.private === true ? 'private.exitPrivate' : 'private.makePrivate')}
-            </button>
-          ) : null}
-          {canBranchOrFork ? (
-            <>
-              <div className="mx-1 my-1 border-t border-hairline" />
-              <button
-                ref={branchRef}
-                type="button"
-                role="menuitem"
-                data-menu-item="branch"
-                disabled={archiving}
-                aria-haspopup={phone ? undefined : 'menu'}
-                aria-expanded={phone ? undefined : activeSubmenu === 'branch'}
-                className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED} flex items-center gap-2 ${!phone && activeSubmenu === 'branch' ? 'bg-paper' : ''}`}
-                onClick={() => {
-                  if (phone && onOpenSeedSubmenu !== undefined) {
-                    onOpenSeedSubmenu('branch');
-                    return;
-                  }
-                  onCreateBranch('fresh');
-                }}
-              >
-                <span className="min-w-0 flex-1 truncate">{t('menu.branch')}</span>
-                <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-              </button>
-              <button
-                ref={forkRef}
-                type="button"
-                role="menuitem"
-                data-menu-item="fork"
-                disabled={archiving}
-                aria-haspopup={phone ? undefined : 'menu'}
-                aria-expanded={phone ? undefined : activeSubmenu === 'fork'}
-                className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED} flex items-center gap-2 ${!phone && activeSubmenu === 'fork' ? 'bg-paper' : ''}`}
-                onClick={() => {
-                  if (phone && onOpenSeedSubmenu !== undefined) {
-                    onOpenSeedSubmenu('fork');
-                    return;
-                  }
-                  onForkSession('verbatim');
-                }}
-              >
-                <span className="min-w-0 flex-1 truncate">{t('menu.fork')}</span>
-                <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-              </button>
-            </>
-          ) : null}
-          <div className="mx-1 my-1 border-t border-hairline" />
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="copy-link"
-            className={ROW_MENU_ITEM}
-            onClick={() => {
-              runAndClose(t('menu.copyThreadLink'), () => copyTextToClipboard(copyLinkHref ?? `/s/${session.id}`));
-            }}
-          >
-            {t('menu.copyThreadLink')}
-          </button>
-          {canAddToConversation ? (
-            // A thread reference into the open conversation's composer, at its caret.
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="add-to-conversation"
-              className={ROW_MENU_ITEM}
-              onClick={() => {
-                if (activeSessionId === undefined) return;
-                onClose();
-                const link = threadRefLink(session.id);
-                if (!requestComposerInsert(activeSessionId, link)) appendToDraft(activeSessionId, link);
-              }}
-            >
-              {t('menu.addToConversation')}
-            </button>
-          ) : null}
-          {canJoinRoom ? (
-            <button type="button" role="menuitem" data-menu-item="join-room" className={ROW_MENU_ITEM} onClick={onJoinRoom}>
-              {t('room.joinRoom')}
-            </button>
-          ) : null}
-          {cwd !== '' ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="copy-path"
-              className={ROW_MENU_ITEM}
-              onClick={() => { runAndClose(t('menu.copyWorkingDirectory'), () => copyTextToClipboard(cwd)); }}
-            >
-              {t('menu.copyWorkingDirectory')}
-            </button>
-          ) : null}
-          {canReveal ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="open-folder"
-              className={ROW_MENU_ITEM}
-              onClick={() => { runAndClose(t('menu.openWorkingDirectory'), () => host.revealPath!(cwd)); }}
-            >
-              {t('menu.openWorkingDirectory')}
-            </button>
-          ) : null}
-          <div className="mx-1 my-1 border-t border-hairline" />
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="archive"
-            disabled={archiving}
-            className={`${ROW_MENU_ITEM} hover:text-danger ${ROW_MENU_DISABLED}`}
-            onClick={onArchive}
-          >
-            {archiving ? t('sidebar.archiving') : t('menu.archive')}
-          </button>
-        </>
-      )}
-    </>
-  );
-}
-
-/**
- * The desktop form: a small hand-rolled menu (no Radix) at the pointer or
- * beside the row's ⋯ — fixed panel, outside-click and Escape to close, the
- * panel size measured after mount so the position clamps inside the viewport
- * on both axes (right-click near an edge) — with More at its end.
- */
-function SessionPointerMenu(props: SessionMenuProps) {
-  const { session, title, x, y, onClose, onAction } = props;
-  const { t } = useI18n();
-  const archived = session.archived === true;
-  const menuRef = useRef<HTMLDivElement>(null);
-  // Focus holder to hand back to on Escape / item activation — whatever was
-  // focused when the menu opened (a row's inner button for a Shift+F10 that
-  // bubbled up, never an assumed row container). Outside-pointer closes do
-  // not restore: the pointer's own target takes the focus.
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
-  // Layout effect: the clamped position lands before the first paint, and the
-  // first item takes focus with it so the menu is keyboard-operable at once.
-  useLayoutEffect(() => {
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const node = menuRef.current;
-    if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
-    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-  }, []);
-
-  const restoreTriggerFocus = () => {
-    const trigger = returnFocusRef.current;
-    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
-    trigger.focus();
-  };
-  const point = unzoomedPoint(x, y);
-  const position = clampOverlayPosition(
-    point.x,
-    point.y,
-    size ?? { width: 176, height: 0 },
-    unzoomedViewport(),
-  );
-  // Latest onClose via ref: the parent passes inline closures and the sidebar
-  // re-renders on its poll interval, so a deps-keyed listener would churn and
-  // could swallow an Escape mid-reattach.
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  // On a phone the back button closes this menu first, instead of taking the
-  // drawer underneath (and the menu with it) in one press.
-  useLayerHistory('session-menu', useCoarsePointer(), onClose);
-  useEffect(() => {
-    const unregister = registerOverlay('session-menu');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      const owned = menuRef.current?.contains(document.activeElement) === true;
-      closeRef.current();
-      if (owned) restoreTriggerFocus();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof HTMLElement) || event.target.closest('[data-session-menu]') === null) {
-        closeRef.current();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-    // onClose rides the ref; attach once.
-  }, []);
-
-  // Submenus (`branch`, `fork`, `more`): ArrowRight or mouse hover opens a
-  // submenu; ArrowLeft or hovering another level-1 entry closes it; Escape
-  // closes the whole menu. Clicking `More` opens its submenu, whereas clicking
-  // `Branch` or `Fork` directly invokes its default seed mode immediately.
-  const branchRef = useRef<HTMLButtonElement>(null);
-  const forkRef = useRef<HTMLButtonElement>(null);
-  const moreRef = useRef<HTMLButtonElement>(null);
-  const submenuRef = useRef<HTMLDivElement>(null);
-  const [activeSubmenu, setActiveSubmenu] = useState<SessionSubmenuKey | null>(null);
-  const [submenuFocus, setSubmenuFocus] = useState(0);
-  const anchorForSubmenu = (key: SessionSubmenuKey | null): HTMLButtonElement | null => {
-    if (key === 'branch') return branchRef.current;
-    if (key === 'fork') return forkRef.current;
-    if (key === 'more') return moreRef.current;
-    return null;
-  };
-  const openSubmenu = (key: SessionSubmenuKey, focus: boolean) => {
-    setActiveSubmenu(key);
-    if (focus) setSubmenuFocus((count) => count + 1);
-  };
-  useEffect(() => {
-    if (submenuFocus > 0) submenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-  }, [submenuFocus]);
-  // Clamp the active submenu against the bottom and right viewport edges.
-  const [submenuPlace, setSubmenuPlace] = useState<{ top: number; left: boolean }>({ top: 0, left: false });
-  useLayoutEffect(() => {
-    const submenu = submenuRef.current;
-    const anchor = anchorForSubmenu(activeSubmenu);
-    const menuNode = menuRef.current;
-    if (activeSubmenu === null || submenu === null || anchor === null || menuNode === null) return;
-    const rect = anchor.getBoundingClientRect();
-    const menuRect = menuNode.getBoundingClientRect();
-    const baseTop = rect.top - menuRect.top - 5;
-    const overflow = rect.top - 5 + submenu.offsetHeight - (window.innerHeight - 8);
-    setSubmenuPlace({
-      top: overflow > 0 ? baseTop - overflow : baseTop,
-      left: rect.right + 8 + submenu.offsetWidth > window.innerWidth - 8,
-    });
-  }, [activeSubmenu]);
-  const contentActions: readonly { action: SessionContentAction; label: string; danger?: boolean }[] = [
-    { action: 'export', label: t('menu.export') },
-    { action: 'compact', label: t('menu.compact') },
-    { action: 'undo', label: t('menu.undo'), danger: true },
-  ];
-
-  const submenuEntries = activeSubmenu === 'branch'
-    ? BRANCH_SEED_MODES.map((mode) => ({
-        key: `branch-${mode}`,
-        label: t(`transcript.branch.seed.${mode}`),
-        danger: false,
-        onSelect: () => { props.onCreateBranch(mode); },
-      }))
-    : activeSubmenu === 'fork'
-      ? FORK_SEED_MODES.map((mode) => ({
-          key: `fork-${mode}`,
-          label: t(`transcript.branch.seed.${mode}`),
-          danger: false,
-          onSelect: () => { props.onForkSession(mode); },
-        }))
-      : activeSubmenu === 'more'
-        ? contentActions.map((entry) => ({
-            key: entry.action,
-            label: entry.label,
-            danger: entry.danger === true,
-            onSelect: () => { onAction(entry.action); },
-          }))
-        : [];
-  const submenuLabel = activeSubmenu === 'branch'
-    ? t('menu.branch')
-    : activeSubmenu === 'fork'
-      ? t('menu.fork')
-      : t('sidebar.menu.more');
-
-  return (
-    <div
-      ref={menuRef}
-      data-session-menu
-      role="menu"
-      aria-label={t('sidebar.sessionActionsFor', { title })}
-      onKeyDown={(event) => {
-        const submenu = submenuRef.current;
-        const inSubmenu = submenu !== null && event.target instanceof Node && submenu.contains(event.target);
-        if (inSubmenu && event.key === 'ArrowLeft') {
-          event.preventDefault();
-          const parent = anchorForSubmenu(activeSubmenu);
-          setActiveSubmenu(null);
-          parent?.focus();
-          return;
-        }
-        if (!inSubmenu && event.key === 'ArrowRight') {
-          const key: SessionSubmenuKey | null = event.target === branchRef.current ? 'branch'
-            : event.target === forkRef.current ? 'fork'
-              : event.target === moreRef.current ? 'more'
-                : null;
-          if (key !== null) {
-            event.preventDefault();
-            openSubmenu(key, true);
-            return;
-          }
-        }
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
-        const scope = inSubmenu ? submenu : menuRef.current;
-        const items = [...(scope?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])]
-          .filter((item) => inSubmenu || submenu === null || !submenu.contains(item));
-        if (items.length === 0) return;
-        event.preventDefault();
-        if (!inSubmenu) setActiveSubmenu(null);
-        const index = items.indexOf(document.activeElement as HTMLButtonElement);
-        const next = event.key === 'Home' ? 0
-          : event.key === 'End' ? items.length - 1
-          : event.key === 'ArrowDown' ? (index + 1) % items.length
-          : (index - 1 + items.length) % items.length;
-        items[next]?.focus();
-      }}
-      onPointerOver={(event) => {
-        if (event.pointerType !== 'mouse' || !(event.target instanceof Element)) return;
-        const item = event.target.closest('[role="menuitem"]');
-        if (item === null || submenuRef.current?.contains(item) === true) return;
-        if (item === branchRef.current) openSubmenu('branch', false);
-        else if (item === forkRef.current) openSubmenu('fork', false);
-        else if (item === moreRef.current) openSubmenu('more', false);
-        else setActiveSubmenu(null);
-      }}
-      onClick={(event) => {
-        // Item activation hands focus back to the opener — but only after
-        // the click's commit has landed: an in-place toggle (More keeps this
-        // menu open) keeps its focus, and a dialog the action opened
-        // (rename, join-room, undo) focuses itself on mount. Checking
-        // post-commit restores exactly when neither happened.
-        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
-        const menuNode = menuRef.current;
-        queueMicrotask(() => {
-          if (menuNode === null || menuNode.isConnected) return;
-          const active = document.activeElement;
-          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
-          restoreTriggerFocus();
-        });
-      }}
-      className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
-      style={{ left: position.left, top: position.top }}
-    >
-      <SessionMenuEntries
-        {...props}
-        phone={false}
-        activeSubmenu={activeSubmenu}
-        branchRef={branchRef}
-        forkRef={forkRef}
-      />
-      {archived || props.isRemote === true ? null : (
-        <>
-          <div className="mx-1 my-1 border-t border-hairline" />
-          <button
-            ref={moreRef}
-            type="button"
-            role="menuitem"
-            data-menu-item="more"
-            aria-haspopup="menu"
-            aria-expanded={activeSubmenu === 'more'}
-            className={`${ROW_MENU_ITEM} flex items-center gap-2 ${activeSubmenu === 'more' ? 'bg-paper' : ''}`}
-            onClick={() => { openSubmenu('more', true); }}
-          >
-            <span className="min-w-0 flex-1 truncate">{t('sidebar.menu.more')}</span>
-            <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-          </button>
-          {activeSubmenu !== null ? (
-            <div
-              ref={submenuRef}
-              role="menu"
-              aria-label={submenuLabel}
-              data-session-submenu={activeSubmenu}
-              className={`anim-enter absolute w-40 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)] ${
-                submenuPlace.left ? 'right-full mr-2' : 'left-full ml-2'
-              }`}
-              style={{ top: submenuPlace.top }}
-            >
-              {submenuEntries.map((entry) => (
-                <button
-                  key={entry.key}
-                  type="button"
-                  role="menuitem"
-                  data-menu-item={entry.key}
-                  className={`${ROW_MENU_ITEM} ${entry.danger ? 'hover:text-danger' : ''}`}
-                  onClick={entry.onSelect}
-                >
-                  {entry.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </>
-      )}
-    </div>
   );
 }
 

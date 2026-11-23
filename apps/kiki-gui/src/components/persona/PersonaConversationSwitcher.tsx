@@ -29,6 +29,7 @@ import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { AnchoredPopover } from '../overlays';
 import { RelativeTime } from '../RelativeTime';
+import { useSessionContextMenu } from '../sessionContextMenu';
 import { PersonaAvatar, personaAvatarOf, type PersonaAvatarData } from './PersonaAvatar';
 import { personaNewConversationUrl } from './personaNavigation';
 import type { PersonaDirectoryEntry } from './usePersonaDirectory';
@@ -83,6 +84,7 @@ interface ItemEntry {
   readonly isCurrent: boolean;
   readonly needsYou: boolean;
   readonly targetUrl: string;
+  readonly session?: Session;
 }
 
 function lifeOf(state: ReturnType<typeof sessionRowState>): ItemEntry['life'] {
@@ -111,6 +113,7 @@ export function PersonaConversationSwitcher({
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const [query, setQuery] = useState('');
+  const sessionMenu = useSessionContextMenu({ activeSessionId, portal: true });
   // The callers hand over a measured element, not a ref; the popover tier
   // anchors to a ref, so this adapter holds it for the panel's lifetime.
   const anchorRef = useRef<HTMLElement | null>(null);
@@ -129,10 +132,14 @@ export function PersonaConversationSwitcher({
     // The daily row is the persona's fixed entrance, not a summary of the
     // home session: it exists (and opens a draft) even before there is one.
     const dailyWorkspace = home?.workspace_id === undefined ? undefined : workspaceMap.get(home.workspace_id) ?? home.workspace_id;
+    const untitled = t('sidebar.untitled');
+    const dailyLabel = t('persona.dailyTitle');
+    const rawHomeTitle = home !== undefined ? sessionTitle(home, untitled).trim() : '';
+    const dailyHasDistinctTitle = rawHomeTitle !== '' && rawHomeTitle !== persona.name.trim() && rawHomeTitle !== untitled && rawHomeTitle !== dailyLabel;
     const list: ItemEntry[] = [{
       id: persona.homeSessionId ?? 'daily-draft',
       kind: 'daily',
-      title: t('persona.dailyTitle'),
+      title: dailyHasDistinctTitle ? rawHomeTitle : dailyLabel,
       workspaceName: dailyWorkspace,
       updatedAt: home?.updated_at,
       life: home === undefined ? 'idle' : lifeOf(sessionRowState(home, seen)),
@@ -141,6 +148,7 @@ export function PersonaConversationSwitcher({
       targetUrl: persona.homeSessionId === undefined
         ? `/p/${encodeURIComponent(persona.id)}/daily`
         : `/s/${encodeURIComponent(persona.homeSessionId)}`,
+      session: home,
     }];
 
     const others = personaSessions
@@ -163,6 +171,7 @@ export function PersonaConversationSwitcher({
           needsYou: state === 'needs-me',
           // A room member session is a seat in a room; the room is the address.
           targetUrl: roomId === undefined ? `/s/${encodeURIComponent(session.id)}` : `/rooms/${encodeURIComponent(roomId)}`,
+          session,
         };
       })
       .sort((a, b) => {
@@ -276,7 +285,18 @@ export function PersonaConversationSwitcher({
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         <ul className="flex flex-col gap-px">
           {items.map((item) => (
-            <li key={item.id}>
+            <li
+              key={item.id}
+              onContextMenu={(event) => {
+                if (item.session === undefined) return;
+                event.preventDefault();
+                event.stopPropagation();
+                sessionMenu.openSessionMenu(item.session, event.clientX, event.clientY, {
+                  title: item.title,
+                  copyLinkHref: item.targetUrl,
+                });
+              }}
+            >
               <button
                 type="button"
                 role="menuitem"
@@ -309,6 +329,9 @@ export function PersonaConversationSwitcher({
                     }`}>
                       {item.title}
                     </span>
+                    {item.kind === 'daily' && item.title !== t('persona.dailyTitle') ? (
+                      <span className="shrink-0 text-[10.5px] text-ink-faint">{t('persona.dailyBadge')}</span>
+                    ) : null}
                   </span>
                   {item.workspaceName !== undefined || (item.kind === 'daily' && persona.homeSessionId === undefined) ? (
                     <span className="mt-px min-w-0 truncate text-[11px] leading-4 text-ink-faint">
@@ -324,12 +347,12 @@ export function PersonaConversationSwitcher({
               </button>
             </li>
           ))}
-          {/* The daily row is always there, so an empty search is the only
-              * way the list narrows to nothing. A read that is still running
-              * or that failed is a different fact from "no matches", and the
-              * list would otherwise show only the daily entrance, which reads
-              * as "this persona has nothing". */}
-          {items.every((item) => item.kind === 'daily') ? (
+          {items.every((item) => item.kind === 'daily') && (
+            status?.error !== undefined
+            || status?.loading === true
+            || query.trim() !== ''
+            || persona.homeSessionId === undefined
+          ) ? (
             <li className="px-3 py-4 text-center text-[12px] text-ink-faint">
               {status?.error !== undefined
                 ? t('persona.conversationsLoadFailed', { detail: status.error })
@@ -370,6 +393,7 @@ export function PersonaConversationSwitcher({
         </button>
       </div>
       </div>
+      {sessionMenu.menuPortal}
     </AnchoredPopover>
   );
 }

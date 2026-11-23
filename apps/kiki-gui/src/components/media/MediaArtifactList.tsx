@@ -152,6 +152,7 @@ function MediaArtifactRow({
   const preview = useMediaPreview();
   const item = artifactToMediaRef(artifact);
   const meta = artifactFacts(artifact);
+  const rowMenu = useMediaRefMenu(item, artifact.name, sessionId);
   // Without a preview surface there is nothing to click, so the row shows a
   // plain file chip instead of a thumbnail — and the chip already carries the
   // name, so the column beside it would print it twice.
@@ -159,40 +160,48 @@ function MediaArtifactRow({
 
   if (artifact.kind === 'image' || artifact.kind === 'video') {
     return (
-      <div
-        className="flex min-w-0 flex-wrap items-center gap-2"
-        data-media-artifact={artifact.id}
-        data-media-kind={artifact.kind}
-        data-media-role={artifact.role}
-      >
-        <MediaPart item={item} agentId={agentId} />
-        {degraded ? null : (
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12px] text-ink" title={artifact.name}>{artifact.name}</span>
-            <span className="block font-mono text-[11px] text-ink-faint">{meta}</span>
-          </span>
-        )}
-        {artifact.role === 'preview' ? (
-          <span className="shrink-0 text-[11px] text-ink-faint">{t('cap.media.artifact.preview')}</span>
-        ) : null}
-      </div>
+      <>
+        <div
+          className="flex min-w-0 flex-wrap items-center gap-2"
+          data-media-artifact={artifact.id}
+          data-media-kind={artifact.kind}
+          data-media-role={artifact.role}
+          onContextMenu={rowMenu.openMenu}
+        >
+          <MediaPart item={item} agentId={agentId} />
+          {degraded ? null : (
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] text-ink" title={artifact.name}>{artifact.name}</span>
+              <span className="block font-mono text-[11px] text-ink-faint">{meta}</span>
+            </span>
+          )}
+          {artifact.role === 'preview' ? (
+            <span className="shrink-0 text-[11px] text-ink-faint">{t('cap.media.artifact.preview')}</span>
+          ) : null}
+        </div>
+        {rowMenu.menuElement}
+      </>
     );
   }
 
   if (artifact.kind === 'audio' && artifact.role === 'original') {
     return (
-      <div
-        className="flex min-w-0 flex-wrap items-center gap-2"
-        data-media-artifact={artifact.id}
-        data-media-kind="audio"
-        data-media-role={artifact.role}
-      >
-        <AudioOriginal artifact={artifact} sessionId={sessionId} />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12px] text-ink" title={artifact.name}>{artifact.name}</span>
-          <span className="block font-mono text-[11px] text-ink-faint">{meta}</span>
-        </span>
-      </div>
+      <>
+        <div
+          className="flex min-w-0 flex-wrap items-center gap-2"
+          data-media-artifact={artifact.id}
+          data-media-kind="audio"
+          data-media-role={artifact.role}
+          onContextMenu={rowMenu.openMenu}
+        >
+          <AudioOriginal artifact={artifact} sessionId={sessionId} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12px] text-ink" title={artifact.name}>{artifact.name}</span>
+            <span className="block font-mono text-[11px] text-ink-faint">{meta}</span>
+          </span>
+        </div>
+        {rowMenu.menuElement}
+      </>
     );
   }
 

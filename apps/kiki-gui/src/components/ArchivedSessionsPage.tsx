@@ -16,11 +16,14 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import type { DeleteArchivedSessionsResponse, Session } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { readTopLevelThreads } from '../lib/threadDisplayMemory';
-import { pushToast } from '../lib/toasts';
-import { useConnection } from '../state/connection';
+import { pushToast, runToastAction } from '../lib/toasts';
+import { useConnection, useOptionalConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
+import { isOnKikiComputer } from './imageActions';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
@@ -28,7 +31,7 @@ import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from './ui';
-import { MiniContextMenu } from './MiniContextMenu';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -576,14 +579,58 @@ function ArchivedRow({
   readonly onDelete: () => void;
 }) {
   const { t } = useI18n();
+  const host = useHost();
+  const connection = useOptionalConnection();
+  const localKikiComputer = isOnKikiComputer(connection);
   const moreRef = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const cwd = session.metadata?.cwd ?? '';
+  const entries = useMemo<readonly MiniMenuEntry[]>(() => {
+    const list: MiniMenuEntry[] = [
+      { key: 'restore', label: t('archive.restore'), run: onRestore },
+      {
+        key: 'copy-link',
+        label: t('menu.copyLink'),
+        run: () => {
+          runToastAction(t('menu.copyThreadLink'), () => copyTextToClipboard(`/s/${encodeURIComponent(session.id)}`));
+        },
+      },
+    ];
+    if (cwd !== '') {
+      list.push({
+        key: 'copy-path',
+        label: t('menu.copyPath'),
+        run: () => {
+          runToastAction(t('menu.copyWorkingDirectory'), () => copyTextToClipboard(cwd));
+        },
+      });
+      if (localKikiComputer && host.openPath !== undefined) {
+        const openPath = host.openPath;
+        list.push({
+          key: 'open-folder',
+          label: t('menu.openFolder'),
+          run: () => {
+            runToastAction(t('menu.openFolder'), () => openPath(cwd));
+          },
+        });
+      }
+    }
+    list.push({ separator: true });
+    list.push({ key: 'delete', label: t('archive.delete'), danger: true, run: onDelete });
+    return list;
+  }, [cwd, host.openPath, localKikiComputer, onDelete, onRestore, session.id, t]);
+
   return (
     <li
       ref={virtualRow?.measureRef}
       data-index={virtualRow?.index}
       data-archive-item={session.id}
       style={virtualRow !== undefined ? { top: virtualRow.top } : undefined}
+      onContextMenu={(event) => {
+        if (busy) return;
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
       className={`group flex min-w-0 items-start gap-1 py-1 ${virtualRow !== undefined ? 'absolute inset-x-0 ' : ''}${divider ? 'border-t border-hairline' : ''}`}
     >
       <button
@@ -633,11 +680,7 @@ function ArchivedRow({
           dataAttribute="data-archive-row-menu"
           itemDataAttribute="data-archive-action"
           onClose={() => { setMenu(null); }}
-          entries={[
-            { key: 'restore', label: t('archive.restore'), run: onRestore },
-            { separator: true },
-            { key: 'delete', label: t('archive.delete'), danger: true, run: onDelete },
-          ]}
+          entries={entries}
         />
       ) : null}
     </li>

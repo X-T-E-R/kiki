@@ -637,8 +637,9 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
     event.stopPropagation();
     setMenu({ x: event.clientX, y: event.clientY });
   }, []);
-  const downloadName = imagePreviewDownloadName({ name: item.name, path: item.path });
-  const hostPath = item.path === undefined ? undefined : hostActionPath(item.path, preview?.cwd);
+  const effectivePath = item.path ?? (item.origin?.trusted ? item.origin.path : undefined);
+  const downloadName = imagePreviewDownloadName({ name: item.name, path: effectivePath });
+  const hostPath = effectivePath === undefined ? undefined : hostActionPath(effectivePath, preview?.cwd);
   const onSave = useCallback(async () => {
     try {
       await saveMediaToDisk(
@@ -663,7 +664,7 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
   const entries = imageMenuEntries({
     t,
     src,
-    path: item.path,
+    path: effectivePath,
     cwd: preview?.cwd,
     link: httpImageLink(item.url),
     localKikiComputer,
@@ -716,6 +717,7 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
         title={name}
         aria-label={name}
         onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }}
+        onContextMenu={imageMenu.openMenu}
         className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1.5 ${THUMB_SIZE[size].frame} border border-hairline bg-panel px-2 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <span aria-hidden className={`flex items-center justify-center rounded-full bg-ink/10 ${size === 'strip' ? 'h-5 w-5' : 'h-8 w-8'}`}>
@@ -811,8 +813,9 @@ function AudioPart({ item }: { item: MediaRef }) {
   const src = resolvedSrc ?? (playback.status !== 'failed' && stickySrc?.key === mediaKey ? stickySrc.url : undefined);
   const failed = src === undefined && (playback.status === 'failed' || (needBlobFallback && load.status === 'failed'));
   const label = attachmentName(item, undefined, t('media.attachment'));
+  const audioMenu = useMediaRefMenu(item, label);
   return (
-    <span ref={hostRef} className="inline-flex max-w-full">
+    <span ref={hostRef} className="inline-flex max-w-full" onContextMenu={audioMenu.openMenu}>
       {src !== undefined ? (
         <audio
           ref={inlineMediaCleanupRef}
@@ -844,6 +847,7 @@ function AudioPart({ item }: { item: MediaRef }) {
       ) : (
         <FileChip item={item} />
       )}
+      {audioMenu.menuElement}
     </span>
   );
 }
@@ -976,6 +980,15 @@ export function buildResourceMenuEntries({
           label: t('file.copyAbsolutePath'),
           run: () => copyTextToClipboard(trustedPath),
         });
+      } else {
+        const relativePath = relativePathForMention(trustedPath, cwd);
+        if (relativePath !== trustedPath && relativePath !== copyTarget) {
+          entries.push({
+            key: 'copy-relative',
+            label: t('file.copyRelativePath'),
+            run: () => copyTextToClipboard(relativePath),
+          });
+        }
       }
     } else if (action.id === 'show-on-this-computer' && trustedPath !== undefined && host.revealPath !== undefined) {
       hostEntries.push({

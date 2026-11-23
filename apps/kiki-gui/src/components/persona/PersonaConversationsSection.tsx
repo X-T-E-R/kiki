@@ -29,8 +29,10 @@ import { useConnection } from '../../state/connection';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
+import type { MiniMenuEntry } from '../MiniContextMenu';
 import { RelativeTime } from '../RelativeTime';
 import { SearchableSelect } from '../SearchableSelect';
+import { useSessionContextMenu } from '../sessionContextMenu';
 import { personaNewConversationUrl } from './personaNavigation';
 import { personaQueryKey, PERSONAS_QUERY_KEY } from './usePersonas';
 
@@ -58,6 +60,7 @@ export function PersonaConversationsSection({
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const { client } = useConnection();
+  const sessionMenu = useSessionContextMenu({ portal: true });
 
   const [workspaceFilter, setWorkspaceFilter] = useState('');
   const [search, setSearch] = useState('');
@@ -261,8 +264,31 @@ export function PersonaConversationsSection({
             const canSetDaily = !isDaily && roomId === undefined && !session.archived
               && !session.busy && session.ephemeral !== true;
 
+            const openRowMenu = (x: number, y: number) => {
+              const extraTopEntries: MiniMenuEntry[] = canSetDaily
+                ? [{
+                    key: 'set-daily',
+                    label: t('persona.setAsDaily'),
+                    run: () => { changeDaily.mutate(session.id); },
+                  }]
+                : [];
+              sessionMenu.openSessionMenu(session, x, y, {
+                title,
+                copyLinkHref: roomId === undefined ? `/s/${encodeURIComponent(session.id)}` : `/rooms/${encodeURIComponent(roomId)}`,
+                extraTopEntries,
+              });
+            };
+            const rowMenuOpen = sessionMenu.menuSessionId === session.id;
+
             return (
-              <li key={session.id} className="group flex items-center gap-3 border-b border-hairline py-2.5 last:border-b-0">
+              <li
+                key={session.id}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  openRowMenu(event.clientX, event.clientY);
+                }}
+                className="group flex items-center gap-2 border-b border-hairline py-2.5 last:border-b-0"
+              >
                 <button
                   type="button"
                   data-persona-conversation-row={session.id}
@@ -309,6 +335,30 @@ export function PersonaConversationsSection({
                     {t('persona.setAsDaily')}
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  data-persona-conversation-menu={session.id}
+                  aria-haspopup="menu"
+                  aria-expanded={rowMenuOpen}
+                  aria-label={t('sidebar.sessionActionsFor', { title })}
+                  title={t('sidebar.sessionActionsFor', { title })}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (rowMenuOpen) {
+                      sessionMenu.closeSessionMenu();
+                      return;
+                    }
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openRowMenu(rect.right + 4, rect.top);
+                  }}
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                    rowMenuOpen
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100'
+                  }`}
+                >
+                  <Icon name="more" size={14} />
+                </button>
               </li>
             );
           })}
@@ -335,6 +385,7 @@ export function PersonaConversationsSection({
           </button>
         </div>
       ) : null}
+      {sessionMenu.menuPortal}
     </div>
   );
 }
