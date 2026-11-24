@@ -348,8 +348,8 @@ function fixture(
     ready: Promise.resolve(),
     getPricing: async () => ({ items: [], overrides: {} }),
     setPricing: async () => ({ items: [], overrides: {} }),
-    resolve: (model) => { priceObserver(); return price === undefined ? undefined : ({ requestedModel: model, catalogModel: model, strategy: 'exact', prices: { inputCostPerToken: price / 4, outputCostPerToken: price / 4, cacheReadInputTokenCost: price / 4, cacheCreationInputTokenCost: price / 4 }, currency: 'USD' }); },
-    calculate: (_model, usage) => { priceObserver(); return price === undefined ? undefined : price * ((usage.inputOther ?? 0) + (usage.output ?? 0) + (usage.inputCacheRead ?? 0) + (usage.inputCacheCreation ?? 0)) / 4; },
+    resolve: (model) => { priceObserver(); return price === undefined || model === 'unpriced-local' ? undefined : ({ requestedModel: model, catalogModel: model, strategy: 'exact', prices: { inputCostPerToken: price / 4, outputCostPerToken: price / 4, cacheReadInputTokenCost: price / 4, cacheCreationInputTokenCost: price / 4 }, currency: 'USD' }); },
+    calculate: (model, usage) => { priceObserver(); return price === undefined || model === 'unpriced-local' ? undefined : price * ((usage.inputOther ?? 0) + (usage.output ?? 0) + (usage.inputCacheRead ?? 0) + (usage.inputCacheCreation ?? 0)) / 4; },
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
@@ -545,13 +545,56 @@ describe('UsageAggregationService record-level sources', () => {
     await expect(query(f.service, { ...input, profile: 'explore', page_token: pageToken })).rejects.toThrow('restart from the first page');
     await expect(query(f.service, { page_size: 1, page_token: pageToken })).rejects.toThrow('restart from the first page');
     const unfiltered = await query(f.service, { page_size: 1 });
+    expect(unfiltered.query.sort_by).toBe('tokens');
+    expect(unfiltered.summary.turn_count).toBe(0);
+    expect(unfiltered.summary.request_count).toBe(4);
     expect(JSON.parse(Buffer.from(unfiltered.sessions.next_page_token ?? '', 'base64url').toString('utf8'))).toEqual({
-      v: 2, f: 'jx3eMhelCpunxj2P', r: expect.any(String), p: expect.any(String), k: [2, 'b'],
+      v: 2, f: '7z5U4dABSPFuYk0j', r: expect.any(String), p: expect.any(String), k: [8, 'b'],
     });
-    const old = Buffer.from(JSON.stringify({ v: 1, f: 'jx3eMhelCpunxj2P', k: [2, 'b'] })).toString('base64url');
+    const unfilteredToken = unfiltered.sessions.next_page_token ?? '';
+    await expect(query(f.service, { page_size: 1, sort_by: 'cost', page_token: unfilteredToken })).rejects.toThrow('restart from the first page');
+    const byCost = await query(f.service, { page_size: 1, sort_by: 'cost' });
+    expect(byCost.query.sort_by).toBe('cost');
+    expect(JSON.parse(Buffer.from(byCost.sessions.next_page_token ?? '', 'base64url').toString('utf8'))).toMatchObject({
+      v: 2, r: expect.any(String), p: expect.any(String), k: [2, 'b'],
+    });
+    const old = Buffer.from(JSON.stringify({ v: 1, f: '7z5U4dABSPFuYk0j', k: [8, 'b'] })).toString('base64url');
     await expect(query(f.service, { page_size: 1, page_token: old })).rejects.toThrow('restart from the first page');
     f.setPrice(2);
     await expect(query(f.service, { ...input, page_token: pageToken })).rejects.toThrow('restart from the first page');
+  });
+
+  it('supports hour granularity, tokens-first session/group ordering, and deduplicated summary turn_count/request_count', async () => {
+    const h0 = Date.parse('2026-11-24T01:10:00Z');
+    const h1 = Date.parse('2026-11-24T02:05:00Z');
+    const f = fixture([summary('high-tokens', 'w'), summary('high-cost', 'w')], {
+      [scope('w', 'high-tokens')]: [
+        { ...usageRecord(h0), model: 'unpriced-local', modelAlias: 'unpriced-local', turnId: 1, usage: { inputOther: 500, output: 200, inputCacheRead: 0, inputCacheCreation: 0 } },
+        { ...usageRecord(h1), model: 'unpriced-local', modelAlias: 'unpriced-local', turnId: 1, usage: { inputOther: 300, output: 100, inputCacheRead: 0, inputCacheCreation: 0 } },
+      ],
+      [scope('w', 'high-cost')]: [
+        { ...usageRecord(h0), model: 'priced-model', modelAlias: 'priced-model', turnId: 1, usage: { inputOther: 10, output: 10, inputCacheRead: 0, inputCacheCreation: 0 } },
+      ],
+    }, () => h1 + 1000);
+    const byTokens = await query(f.service, { granularity: 'hour', timezone_offset_minutes: 480, page_size: 1 });
+    expect(byTokens.query.granularity).toBe('hour');
+    expect(byTokens.query.sort_by).toBe('tokens');
+    expect(byTokens.summary.turn_count).toBe(2);
+    expect(byTokens.summary.request_count).toBe(3);
+    expect(byTokens.trend.map((b) => [b.start_at, b.end_at - b.start_at])).toEqual([
+      [Date.parse('2026-11-24T01:00:00Z'), 3_600_000],
+      [Date.parse('2026-11-24T02:00:00Z'), 3_600_000],
+    ]);
+    expect(byTokens.trend[0]!.groups.map((g) => g.key)).toEqual(['unpriced-local', 'priced-model']);
+    expect(byTokens.sessions.items.map((item) => item.id)).toEqual(['high-tokens']);
+    const page2 = await query(f.service, { granularity: 'hour', timezone_offset_minutes: 480, page_size: 1, page_token: byTokens.sessions.next_page_token! });
+    expect(page2.sessions.items.map((item) => item.id)).toEqual(['high-cost']);
+    expect(page2.sessions.has_more).toBe(false);
+
+    const byCost = await query(f.service, { granularity: 'hour', timezone_offset_minutes: 480, sort_by: 'cost' });
+    expect(byCost.query.sort_by).toBe('cost');
+    expect(byCost.trend[0]!.groups.map((g) => g.key)).toEqual(['priced-model', 'unpriced-local']);
+    expect(byCost.sessions.items.map((item) => item.id)).toEqual(['high-cost', 'high-tokens']);
   });
 
   it('keeps unknown sources and usage knowledge across wire, deleted history, ephemeral totals and checkpoint restart', async () => {

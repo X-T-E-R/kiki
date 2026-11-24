@@ -333,7 +333,7 @@ export class UsageDatabase {
     if (query.providers.length + query.profiles.length + query.agentIds.length > 0) clauses.push('u.ephemeral=0');
     const cost = `CASE WHEN f.mask=0 THEN 0 WHEN ((f.mask&1)=0 OR q.i IS NOT NULL) AND ((f.mask&2)=0 OR q.o IS NOT NULL) AND ((f.mask&4)=0 OR q.r IS NOT NULL) AND ((f.mask&8)=0 OR q.c IS NOT NULL) THEN f.input_other*coalesce(q.i,0)+f.output*coalesce(q.o,0)+f.cache_read*coalesce(q.r,0)+f.cache_creation*coalesce(q.c,0) END`;
     const dimension = query.dimension === 'model' ? "CASE WHEN u.ephemeral=1 THEN f.model ELSE coalesce(f.model_alias,'unknown') END" : query.dimension === 'agent' ? "CASE WHEN u.ephemeral=1 THEN 'ephemeral' ELSE coalesce(f.agent,'unknown') END" : query.dimension === 'project' ? 's.workspace' : query.dimension === 'session' ? "CASE WHEN u.ephemeral=1 THEN 'ephemeral' ELSE s.session_id END" : query.dimension === 'provider' ? "'provider:'||json_quote(f.provider)" : "'profile:'||json_quote(f.profile)";
-    const nativeBucket = query.granularity === 'five_hour' ? 18_000_000 : query.granularity === 'day' ? 86_400_000 : undefined;
+    const nativeBucket = query.granularity === 'hour' ? 3_600_000 : query.granularity === 'five_hour' ? 18_000_000 : query.granularity === 'day' ? 86_400_000 : undefined;
     const bucketKey = query.granularity === 'session' ? 's.session_id' : nativeBucket === undefined ? 'CAST(CAST(usage_bucket(f.time,?,?) AS INTEGER) AS TEXT)' : `CAST(CAST(floor((f.time+?)/${nativeBucket})*${nativeBucket}-? AS INTEGER) AS TEXT)`;
     const bucketParams: SQLInputValue[] = query.granularity === 'session' ? [] : nativeBucket === undefined ? [query.granularity, query.timezoneOffsetMinutes] : [query.timezoneOffsetMinutes * 60_000, query.timezoneOffsetMinutes * 60_000];
     this.db.exec('DROP TABLE IF EXISTS temp.usage_selected; DROP TABLE IF EXISTS temp.usage_sources');
@@ -371,17 +371,21 @@ export class UsageDatabase {
       if (!finiteCosts && rows.some((row) => Object.hasOwn(row, 'cost') && !Number.isFinite(Number(row['cost'])))) throw COST_OVERFLOW;
       return rows;
     };
-    const aggregate = `coalesce(sum(CASE WHEN state=0 THEN input_other ELSE 0 END),0) AS input_other,coalesce(sum(CASE WHEN state=0 THEN output ELSE 0 END),0) AS output,coalesce(sum(CASE WHEN state=0 THEN cache_read ELSE 0 END),0) AS cache_read,coalesce(sum(CASE WHEN state=0 THEN cache_creation ELSE 0 END),0) AS cache_creation,coalesce(${finiteCosts ? 'usage_finite_sum' : 'sum'}(cost),0) AS cost,(max(cost IS NULL OR price_unknown) OR sum(cost)>1.7976931348623157e308) AS cost_unknown,sum(CASE WHEN state=0 THEN record_count ELSE 0 END) AS known,sum(CASE WHEN state=1 THEN record_count ELSE 0 END) AS missing,sum(CASE WHEN state=2 THEN record_count ELSE 0 END) AS legacy`;
-    const totals = all(`SELECT ${aggregate},min(time) AS earliest,max(latest_time) AS latest,count(DISTINCT CASE WHEN ephemeral=0 THEN session_id END) AS sessions FROM priced`)[0]!;
-    const unknown = all('SELECT DISTINCT model FROM priced WHERE price_unknown ORDER BY model').map((row) => String(row['model']));
-    const groups = all(`SELECT bucket,group_key,${aggregate},CASE WHEN count(DISTINCT coalesce(provider,char(0)))=1 THEN min(provider) END AS provider,CASE WHEN count(DISTINCT coalesce(model_alias,char(0)))=1 THEN min(model_alias) END AS model_alias,CASE WHEN count(DISTINCT coalesce(agent,char(0)))=1 THEN min(agent) END AS agent,CASE WHEN count(DISTINCT coalesce(parent_agent,char(0)))=1 THEN min(parent_agent) END AS parent_agent,CASE WHEN count(DISTINCT coalesce(profile,char(0)))=1 THEN min(profile) END AS profile FROM priced ${query.granularity === 'session' ? 'WHERE ephemeral=0' : ''} GROUP BY bucket,group_key ORDER BY bucket,cost DESC,group_key`);
-    const buckets = all(`SELECT bucket,min(time) AS earliest,max(latest_time) AS latest,sum(record_count) AS requests FROM priced ${query.granularity === 'session' ? 'WHERE ephemeral=0' : ''} GROUP BY bucket`);
+    const aggregate = `coalesce(sum(CASE WHEN state=0 THEN input_other ELSE 0 END),0) AS input_other,coalesce(sum(CASE WHEN state=0 THEN output ELSE 0 END),0) AS output,coalesce(sum(CASE WHEN state=0 THEN cache_read ELSE 0 END),0) AS cache_read,coalesce(sum(CASE WHEN state=0 THEN cache_creation ELSE 0 END),0) AS cache_creation,coalesce(sum(CASE WHEN state=0 THEN input_other+output+cache_read+cache_creation ELSE 0 END),0) AS total_tokens,coalesce(${finiteCosts ? 'usage_finite_sum' : 'sum'}(cost),0) AS cost,(max(cost IS NULL OR price_unknown) OR sum(cost)>1.7976931348623157e308) AS cost_unknown,sum(CASE WHEN state=0 THEN record_count ELSE 0 END) AS known,sum(CASE WHEN state=1 THEN record_count ELSE 0 END) AS missing,sum(CASE WHEN state=2 THEN record_count ELSE 0 END) AS legacy`;
+    const sortBy = query.sortBy ?? 'tokens';
+    const sortColumn = sortBy === 'cost' ? 'cost' : 'total_tokens';
+    const scopeFilter = query.granularity === 'session' ? 'WHERE ephemeral=0' : '';
+    const totals = all(`SELECT ${aggregate},min(time) AS earliest,max(latest_time) AS latest,count(DISTINCT CASE WHEN ephemeral=0 THEN session_id END) AS sessions,coalesce(sum(record_count),0) AS requests FROM priced ${scopeFilter}`)[0]!;
+    const totalTurns = all('SELECT count(*) AS turns FROM (SELECT DISTINCT session_id,coalesce(agent,source_agent,\'\') AS effective_agent,turn FROM priced WHERE turn IS NOT NULL AND ephemeral=0)')[0]!;
+    const unknown = all(`SELECT DISTINCT model FROM priced WHERE ${query.granularity === 'session' ? 'ephemeral=0 AND ' : ''}price_unknown ORDER BY model`).map((row) => String(row['model']));
+    const groups = all(`SELECT bucket,group_key,${aggregate},CASE WHEN count(DISTINCT coalesce(provider,char(0)))=1 THEN min(provider) END AS provider,CASE WHEN count(DISTINCT coalesce(model_alias,char(0)))=1 THEN min(model_alias) END AS model_alias,CASE WHEN count(DISTINCT coalesce(agent,char(0)))=1 THEN min(agent) END AS agent,CASE WHEN count(DISTINCT coalesce(parent_agent,char(0)))=1 THEN min(parent_agent) END AS parent_agent,CASE WHEN count(DISTINCT coalesce(profile,char(0)))=1 THEN min(profile) END AS profile FROM priced ${scopeFilter} GROUP BY bucket,group_key ORDER BY bucket,${sortColumn} DESC,group_key`);
+    const buckets = all(`SELECT bucket,min(time) AS earliest,max(latest_time) AS latest,sum(record_count) AS requests FROM priced ${scopeFilter} GROUP BY bucket`);
     const turns = all('SELECT bucket,count(*) AS turns FROM (SELECT DISTINCT bucket,session_id,coalesce(agent,source_agent,\'\') AS effective_agent,turn FROM priced WHERE turn IS NOT NULL AND ephemeral=0) GROUP BY bucket');
     const drill = all(`SELECT bucket,session_id,count(DISTINCT turn) AS turns,sum(CASE WHEN turn IS NULL THEN record_count ELSE 0 END) AS unknown FROM priced WHERE ephemeral=0 GROUP BY bucket,session_id ORDER BY bucket,session_id`);
     const drillTurns = all(`SELECT bucket,session_id,turn FROM (SELECT bucket,session_id,turn,row_number() OVER(PARTITION BY bucket,session_id ORDER BY turn) AS n FROM (SELECT DISTINCT bucket,session_id,turn FROM priced WHERE ephemeral=0 AND turn IS NOT NULL)) WHERE n<=? ORDER BY bucket,session_id,turn`, [query.drilldownTurnLimit]);
-    const pageClause = query.position === undefined ? '' : 'WHERE cost<? OR (cost=? AND session_id<?)';
+    const pageClause = query.position === undefined ? '' : `WHERE ${sortColumn}<? OR (${sortColumn}=? AND session_id<?)`;
     const pageArgs: SQLInputValue[] = query.position === undefined ? [] : [query.position[0], query.position[0], query.position[1]];
-    const pages = all(`, session_totals AS (SELECT workspace,session_id,${aggregate} FROM priced WHERE ephemeral=0 GROUP BY workspace,session_id) SELECT * FROM session_totals ${pageClause} ORDER BY cost DESC,session_id DESC LIMIT ?`, [...pageArgs, query.pageSize + 1]);
+    const pages = all(`, session_totals AS (SELECT workspace,session_id,${aggregate} FROM priced WHERE ephemeral=0 GROUP BY workspace,session_id) SELECT * FROM session_totals ${pageClause} ORDER BY ${sortColumn} DESC,session_id DESC LIMIT ?`, [...pageArgs, query.pageSize + 1]);
     const hasMore = pages.length > query.pageSize;
     if (hasMore) pages.pop();
     const sessions = pages.map((row) => {
@@ -390,7 +394,7 @@ export class UsageDatabase {
       const model = all('SELECT model,sum(record_count) AS records FROM priced WHERE workspace=? AND session_id=? GROUP BY model ORDER BY records DESC,model LIMIT 1', [workspace, id])[0];
       const profiles = all('SELECT DISTINCT profile FROM priced WHERE workspace=? AND session_id=? AND profile IS NOT NULL ORDER BY profile', [workspace, id]).map((item) => String(item['profile']));
       const missing = all('SELECT DISTINCT model FROM priced WHERE workspace=? AND session_id=? AND price_unknown ORDER BY model', [workspace, id]).map((item) => String(item['model']));
-      return { ...aggregateOf(row), session: sessionOf(session), primaryModel: model === undefined ? undefined : String(model['model']), profileNames: profiles, unknownPriceModels: missing };
+      return { ...aggregateOf(row), session: sessionOf(session), sortValue: Number(row[sortColumn]), primaryModel: model === undefined ? undefined : String(model['model']), profileNames: profiles, unknownPriceModels: missing };
     });
     const selection: string[] = ['s.present=1', 'u.present=1', 'NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=u.workspace AND p.id=u.id)'];
     const selectedArgs: SQLInputValue[] = [];
@@ -417,7 +421,7 @@ export class UsageDatabase {
       const turnsBySession = groupRows(drillTurnsByBucket.get(key) ?? [], 'session_id');
       return { key, startAt, endAt: query.granularity === 'session' ? Number(row['latest']) + 1 : bucketEnd(startAt, query.granularity, query.timezoneOffsetMinutes), requests: Number(row['requests']), turns: turnsByBucket.get(key) ?? 0, groups: (groupsByBucket.get(key) ?? []).map((item) => ({ ...aggregateOf(item), key: String(item['group_key']), provider: nullable(item['provider']), modelAlias: nullable(item['model_alias']), agentId: nullable(item['agent']), parentAgentId: nullable(item['parent_agent']), profileName: nullable(item['profile']) })), sessions: members.slice(0, query.drilldownSessionLimit).map((item) => ({ id: String(item['session_id']), turns: Number(item['turns']), unknownTurnRecords: Number(item['unknown']), turnIds: (turnsBySession.get(String(item['session_id'])) ?? []).map((turn) => Number(turn['turn'])) })), sessionsTruncated: members.length > query.drilldownSessionLimit };
     }).sort((left, right) => left.startAt -right.startAt || left.key.localeCompare(right.key));
-    return { revision, total: aggregateOf(totals), earliestAt: totals['earliest'] === null ? undefined : Number(totals['earliest']), latestAt: totals['latest'] === null ? undefined : Number(totals['latest']), sessionCount: Number(totals['sessions']), incompleteSessions: Number(status['incomplete']), scannedSessions: Number(status['scanned']), includesDeletedSessions: Boolean(status['deleted']), unknownPriceModels: unknown, trend, sessions, hasMore };
+    return { revision, total: aggregateOf(totals), earliestAt: totals['earliest'] === null ? undefined : Number(totals['earliest']), latestAt: totals['latest'] === null ? undefined : Number(totals['latest']), sessionCount: Number(totals['sessions']), turnCount: Number(totalTurns['turns']), requestCount: Number(totals['requests']), incompleteSessions: Number(status['incomplete']), scannedSessions: Number(status['scanned']), includesDeletedSessions: Boolean(status['deleted']), unknownPriceModels: unknown, trend, sessions, hasMore };
     } finally { this.db.exec('DROP TABLE IF EXISTS temp.usage_selected; DROP TABLE IF EXISTS temp.usage_sources'); }
   }
 }
@@ -438,6 +442,7 @@ function factOf(row: Row): UsageFact {
 function sessionOf(row: Row): UsageReadModelSession { return { id: String(row['id']), workspaceId: String(row['workspace']), title: nullable(row['title']) ?? undefined, createdAt: Number(row['created']), updatedAt: Number(row['updated']), archived: Boolean(row['archived']), deleted: Boolean(row['deleted']), ephemeral: Boolean(row['ephemeral']) }; }
 function bucket(time: number, granularity: string, offset: number): number {
   const shift = offset * 60000;
+  if (granularity === 'hour') return Math.floor((time + shift) / 3600000) * 3600000 - shift;
   if (granularity === 'five_hour') return Math.floor((time + shift) / 18000000) * 18000000 - shift;
   const date = new Date(time + shift);
   if (granularity === 'month') return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) - shift;
@@ -446,5 +451,5 @@ function bucket(time: number, granularity: string, offset: number): number {
 }
 function bucketEnd(start: number, granularity: string, offset: number): number {
   if (granularity === 'month') { const date = new Date(start + offset * 60000); return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1) - offset * 60000; }
-  return start + (granularity === 'five_hour' ? 18000000 : granularity === 'week' ? 604800000 : 86400000);
+  return start + (granularity === 'hour' ? 3600000 : granularity === 'five_hour' ? 18000000 : granularity === 'week' ? 604800000 : 86400000);
 }

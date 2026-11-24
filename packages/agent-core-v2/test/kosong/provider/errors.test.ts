@@ -20,6 +20,7 @@ import {
   isRetryableGenerateError,
   isRetryableRequestInterruption,
   isRetryableBufferedRequestError,
+  isRetryableUncommittedStreamOverloadError,
   markProviderEventError,
   markProviderHttpError,
   normalizeAPIStatusError,
@@ -132,6 +133,26 @@ describe('SDK stream error metadata', () => {
       expect(payload.details).not.toHaveProperty('body');
     },
   );
+
+  it('classifies type-only Anthropic SSE overloaded_error, rate_limit_error, and service_unavailable as retryable uncommitted stream overloads while rejecting unnamed 429', async () => {
+    for (const type of ['overloaded_error', 'rate_limit_error', 'service_unavailable'] as const) {
+      const sse = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type, message: `${type} mid-stream` } })}\n\n`;
+      const response = new Response(sse, { headers: { 'content-type': 'text/event-stream' } });
+      const stream = AnthropicStream.fromSSEResponse(response, new AbortController());
+      let source: unknown;
+      try {
+        await consume(stream);
+      } catch (error) {
+        source = error;
+      }
+      const converted = convertAnthropicError(source);
+      expect(isRetryableUncommittedStreamOverloadError(converted)).toBe(true);
+    }
+    const unnamed429 = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429'), {
+      errorSource: 'provider_event',
+    });
+    expect(isRetryableUncommittedStreamOverloadError(unnamed429)).toBe(false);
+  });
 
   it('uses an envelope request ID when no response header ID is available', () => {
     const source = new AnthropicAPIError(undefined, {

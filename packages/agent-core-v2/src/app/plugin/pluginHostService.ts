@@ -108,6 +108,7 @@ export interface PluginHarnessQuotaSource {
   readonly label: string;
   readonly engineIds: readonly string[];
   readonly minRefreshIntervalMs: number;
+  readonly actions?: readonly import('@kiki/protocol').HarnessQuotaActionDeclaration[];
 }
 
 export interface PluginHarnessAccountLease {
@@ -126,6 +127,12 @@ export interface IPluginHostService {
   listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]>;
   listHarnessQuotaSources(): Promise<readonly PluginHarnessQuotaSource[]>;
   readHarnessQuota(source: string, signal: AbortSignal): Promise<readonly import('@kiki/protocol').HarnessQuotaReading[]>;
+  performHarnessQuotaAction?(
+    source: string,
+    action: import('@kiki/protocol').HarnessQuotaActionId,
+    accountId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<import('@kiki/protocol').HarnessQuotaActionResponse>;
   cachedHarnessQuota(): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>;
   attachQuotaCache(reader: () => Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>): void;
   listHarnessAccounts(source: string, engineId: string, signal: AbortSignal): Promise<readonly HarnessAccount[]>;
@@ -990,7 +997,14 @@ export class PluginHostService extends Service implements IPluginHostService {
     const byId = new Map(cached.sources.map((source) => [source.id, source]));
     return { sources: sources.map((source) => {
       const hit = byId.get(source.id);
-      return { ...source, engineIds: [...source.engineIds], readAt: hit?.readAt, readings: hit?.readings === undefined ? undefined : [...hit.readings], error: hit?.error };
+      return {
+        ...source,
+        engineIds: [...source.engineIds],
+        actions: source.actions === undefined ? undefined : source.actions.map((item) => ({ ...item })),
+        readAt: hit?.readAt,
+        readings: hit?.readings === undefined ? undefined : [...hit.readings],
+        error: hit?.error,
+      };
     }) };
   }
 
@@ -998,8 +1012,12 @@ export class PluginHostService extends Service implements IPluginHostService {
     const installed = await this.plugins.listPlugins();
     const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id }).catch(() => undefined)));
     return infos.filter((info): info is PluginInfo => info !== undefined && info.enabled && info.state === 'ok').flatMap((info) =>
-      (info.manifest?.kiki?.harnessQuotaSources ?? []).map(({ id, label, engineIds, minRefreshIntervalMs }) => ({
-        id: `plugin:${info.id}/${id}`, label, engineIds: [...engineIds], minRefreshIntervalMs: Math.max(300_000, minRefreshIntervalMs ?? 300_000),
+      (info.manifest?.kiki?.harnessQuotaSources ?? []).map(({ id, label, engineIds, minRefreshIntervalMs, actions }) => ({
+        id: `plugin:${info.id}/${id}`,
+        label,
+        engineIds: [...engineIds],
+        minRefreshIntervalMs: Math.max(300_000, minRefreshIntervalMs ?? 300_000),
+        actions: actions === undefined ? undefined : actions.map((item) => ({ ...item })),
       })));
   }
 
@@ -1013,6 +1031,33 @@ export class PluginHostService extends Service implements IPluginHostService {
       const definition = extension?.harnessQuotaSources?.find(({ id }) => id === sourceId);
       if (!info.enabled || info.state !== 'ok' || extension?.entry === undefined || definition === undefined) throw new Error('The quota source is not enabled or is no longer available');
       return this.getHost(info).readHarnessQuota(sourceId, signal, settings);
+    }, signal);
+  }
+
+  async performHarnessQuotaAction(
+    source: string,
+    action: import('@kiki/protocol').HarnessQuotaActionId,
+    accountId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<import('@kiki/protocol').HarnessQuotaActionResponse> {
+    signal.throwIfAborted();
+    const [, pluginId, sourceId] = /^plugin:([a-z0-9][a-z0-9_-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})$/.exec(source) ?? [];
+    if (pluginId === undefined || sourceId === undefined) throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Invalid plugin harness quota source id');
+    return this.runRequest(pluginId, (info, settings) => {
+      signal.throwIfAborted();
+      const extension = info.manifest?.kiki;
+      const definition = extension?.harnessQuotaSources?.find(({ id }) => id === sourceId);
+      if (!info.enabled || info.state !== 'ok' || extension?.entry === undefined || definition === undefined) {
+        throw new Error('The quota source is not enabled or is no longer available');
+      }
+      const declared = definition.actions?.find((item) => item.id === action);
+      if (declared === undefined) {
+        throw new Error(`Action ${action} is not declared for harness quota source ${source}`);
+      }
+      if (declared.scope === 'account' && !accountId) {
+        throw new Error(`Action ${action} requires account_id`);
+      }
+      return this.getHost(info).performHarnessQuotaAction(sourceId, action, accountId, signal, settings);
     }, signal);
   }
 

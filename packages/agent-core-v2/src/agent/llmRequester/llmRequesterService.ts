@@ -12,7 +12,6 @@ import {
 } from '#/agent/contextMemory/contextMemory';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
-import { isSubstantiveContentPart } from '#/agent/contextMemory/vacuousContent';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IAgentPluginStateService } from '#/agent/pluginState/pluginState';
 import { PluginStateError } from '#/agent/pluginState/pluginStateErrors';
@@ -638,20 +637,16 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       return { strip: snapshot };
     };
     let attemptObservedOutput = false;
-    let attemptObservedSubstantiveOutput = false;
-    let attemptObservedVisibleContent = false;
     let attemptStartedAt = Date.now();
     let attemptTraceId: string | undefined;
     let malformedFunctionCallRetry = 0;
     let lastAttemptMediaAttachments: readonly SentMediaAttachment[] = [];
-    let poisonedMediaRetryAttempted = false;
+    let poisonedMediaRetryCount = 0;
     const run = async (
       policy: ProjectionPolicy | undefined,
       params: ModelRequestParams,
     ): Promise<AgentLLMRequestFinish> => {
       attemptObservedOutput = false;
-      attemptObservedSubstantiveOutput = false;
-      attemptObservedVisibleContent = false;
       attemptStartedAt = Date.now();
       attemptTraceId = undefined;
       onRequestTrace(undefined);
@@ -707,7 +702,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         request.model,
         { unmarkedOpaquePolicy },
       );
-      lastAttemptMediaAttachments = collectSentMediaAttachments(projected, resolvedMessages, targetMessages);
+      lastAttemptMediaAttachments = collectSentMediaAttachments(
+        projected,
+        resolvedMessages,
+        targetMessages,
+        collectCurrentTurnMediaUrls(request.contextMessages),
+      );
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
@@ -799,16 +799,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
               responseRedacted = true;
               this.endpointVault.discard(this.agentContext.agentId, []);
               attemptObservedOutput = false;
-              attemptObservedSubstantiveOutput = false;
-              attemptObservedVisibleContent = false;
               toolCallIds.rollback();
               toolCallIds = this.toolCallIdNormalizer.beginResponse();
               onAttemptRetry?.('discard');
               break;
             case 'part':
               attemptObservedOutput ||= !isContentPart(event.part) || !isVacuousContentPart(event.part);
-              attemptObservedSubstantiveOutput ||= !isContentPart(event.part) || isSubstantiveContentPart(event.part);
-              attemptObservedVisibleContent ||= isContentPart(event.part) && isSubstantiveContentPart(event.part);
               handlingPart = true;
               await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
               handlingPart = false;
@@ -931,18 +927,18 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         const retryPolicy = findRetryPolicy(retryConfig?.policies, raw, {
           model: request.model.id, provider: request.model.providerName,
         });
-        const malformedFunctionCall = source?.type === 'turn' && !attemptObservedVisibleContent && isRetryableMalformedFunctionCallError(error);
-        const missingTerminal = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableMissingTerminalError(error);
-        const uncommittedOverload = source?.type === 'turn' &&
-          (attemptObservedOutput ? !attemptObservedSubstantiveOutput : requestDeliveryProvenance(error) !== 'executed') &&
-          isRetryableUncommittedStreamOverloadError(error);
+        const bufferedOperation = source?.type === 'operation' && onPart === noopOnPart;
+        const eligibleDiscardScope = source?.type === 'turn' || bufferedOperation || (source?.type === 'operation' && onAttemptRetry !== undefined);
+        const malformedFunctionCall = eligibleDiscardScope && isRetryableMalformedFunctionCallError(error);
+        const missingTerminal = eligibleDiscardScope && isRetryableMissingTerminalError(error);
+        const uncommittedOverload = eligibleDiscardScope && isRetryableUncommittedStreamOverloadError(error);
         const discardRetry = malformedFunctionCall || missingTerminal || uncommittedOverload;
         const canDegradeOrStripMedia =
           raw instanceof APIRequestTooLargeError &&
           requestDeliveryProvenance(error) !== 'executed' &&
           (policy?.media === undefined || policy?.media === 'degraded');
         const poisonedMediaUrls =
-          !poisonedMediaRetryAttempted &&
+          poisonedMediaRetryCount < 2 &&
           lastAttemptMediaAttachments.length > 0 &&
           typeof this.mediaResolver.markMediaPoisoned === 'function' &&
           requestDeliveryProvenance(error) !== 'executed' &&
@@ -959,9 +955,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           noteRetryAfterExceeded(error, retryAfterExceeded);
           throw error;
         }
-        if (source?.type === 'turn' && (discardRetry || isRetryableRequestInterruption(error))) {
-          const partialOutput = attemptObservedOutput || (discardRetry
-            ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error));
+        if (discardRetry || (source?.type === 'turn' && isRetryableRequestInterruption(error))) {
+          const partialOutput = !bufferedOperation && (attemptObservedOutput || (discardRetry
+            ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error)));
           if (partialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
           const defaultCap = malformedFunctionCall
             ? MALFORMED_FUNCTION_CALL_MAX_ATTEMPTS
@@ -1009,11 +1005,13 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
             maxAttempts, delayMs, discardedPartialOutput, retainedPartialOutput, ...fields, ...responseTransportLogFields(error),
           });
-          void this.dispatcher.dispatch(new TurnStepRetrying({
-            turnId: source.turnId, step: source.step ?? 1,
-            failedAttempt: interruptionAttempt, nextAttempt: interruptionAttempt + 1,
-            maxAttempts, delayMs, ...fields, errorMessage,
-          }));
+          if (source?.type === 'turn') {
+            void this.dispatcher.dispatch(new TurnStepRetrying({
+              turnId: source.turnId, step: source.step ?? 1,
+              failedAttempt: interruptionAttempt, nextAttempt: interruptionAttempt + 1,
+              maxAttempts, delayMs, ...fields, errorMessage,
+            }));
+          }
           interruptionAttempt++;
           await sleepForRetry(delayMs, signal);
           await refreshIdentityParams();
@@ -1022,11 +1020,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
         params = { ...params, googleContinuationToken: undefined };
         if (canSelfHealInvalidMedia) {
-          poisonedMediaRetryAttempted = true;
+          poisonedMediaRetryCount += 1;
           this.mediaResolver.markMediaPoisoned?.(poisonedMediaUrls);
-          this.log.warn('provider rejected media payload as invalid; poisoning media and retrying once', {
+          this.log.warn('provider rejected media payload as invalid; poisoning media and retrying', {
             model: request.model.name,
             mediaCount: poisonedMediaUrls.length,
+            retryCount: poisonedMediaRetryCount,
             ...request.logFields,
           });
           onAttemptRetry?.('discard');
@@ -2013,10 +2012,55 @@ function extractMediaPartUrl(
   return undefined;
 }
 
+const NON_TURN_USER_ORIGINS: ReadonlySet<string> = new Set([
+  'injection',
+  'task',
+  'hook_result',
+  'system_trigger',
+  'retry',
+  'compaction_summary',
+]);
+
+function collectCurrentTurnMediaUrls(
+  contextMessages: readonly (Message & { readonly origin?: { readonly kind?: string } })[],
+): ReadonlySet<string> | undefined {
+  let lastCanonicalUserIndex = -1;
+  let lastAssistantIndex = -1;
+  for (let i = contextMessages.length - 1; i >= 0; i -= 1) {
+    const message = contextMessages[i]!;
+    if (lastAssistantIndex < 0 && message.role === 'assistant') {
+      lastAssistantIndex = i;
+    }
+    if (
+      lastCanonicalUserIndex < 0 &&
+      message.role === 'user' &&
+      (message.origin?.kind === undefined || !NON_TURN_USER_ORIGINS.has(message.origin.kind))
+    ) {
+      lastCanonicalUserIndex = i;
+    }
+    if (lastCanonicalUserIndex >= 0) break;
+  }
+  const startIndex = lastCanonicalUserIndex >= 0
+    ? lastCanonicalUserIndex
+    : lastAssistantIndex >= 0
+      ? lastAssistantIndex + 1
+      : -1;
+  if (startIndex < 0 || startIndex >= contextMessages.length) return undefined;
+  const urls = new Set<string>();
+  for (let i = startIndex; i < contextMessages.length; i += 1) {
+    for (const part of contextMessages[i]!.content) {
+      const media = extractMediaPartUrl(part);
+      if (media !== undefined) urls.add(media.url);
+    }
+  }
+  return urls;
+}
+
 function collectSentMediaAttachments(
   projected: readonly Message[],
   resolvedMessages: readonly Message[],
   targetMessages: readonly Message[],
+  currentTurnSourceUrls?: ReadonlySet<string>,
 ): readonly SentMediaAttachment[] {
   const sourceByResolvedUrl = new Map<string, Set<string>>();
   for (let messageIndex = 0; messageIndex < resolvedMessages.length; messageIndex += 1) {
@@ -2036,23 +2080,51 @@ function collectSentMediaAttachments(
       }
     }
   }
-  const byResolvedUrl = new Map<string, Set<string>>();
-  for (const targetMessage of targetMessages) {
+  let lastUserIndex = -1;
+  for (let i = targetMessages.length - 1; i >= 0; i -= 1) {
+    if (targetMessages[i]!.role === 'user') {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  const byResolvedUrl = new Map<string, { urls: Set<string>; fromCurrentTurn: boolean }>();
+  for (let messageIndex = 0; messageIndex < targetMessages.length; messageIndex += 1) {
+    const targetMessage = targetMessages[messageIndex]!;
+    const fallbackInCurrentTurn = lastUserIndex >= 0 && messageIndex >= lastUserIndex;
     for (const part of targetMessage.content) {
       const targetMedia = extractMediaPartUrl(part);
       if (targetMedia === undefined) continue;
-      let urls = byResolvedUrl.get(targetMedia.url);
-      if (urls === undefined) {
-        urls = new Set<string>([targetMedia.url]);
-        byResolvedUrl.set(targetMedia.url, urls);
-      }
       const sources = sourceByResolvedUrl.get(targetMedia.url);
+      let inCurrentTurn: boolean;
+      if (currentTurnSourceUrls !== undefined) {
+        inCurrentTurn = currentTurnSourceUrls.has(targetMedia.url);
+        if (!inCurrentTurn && sources !== undefined) {
+          for (const sourceUrl of sources) {
+            if (currentTurnSourceUrls.has(sourceUrl)) {
+              inCurrentTurn = true;
+              break;
+            }
+          }
+        }
+      } else {
+        inCurrentTurn = fallbackInCurrentTurn;
+      }
+      let entry = byResolvedUrl.get(targetMedia.url);
+      if (entry === undefined) {
+        entry = { urls: new Set<string>([targetMedia.url]), fromCurrentTurn: inCurrentTurn };
+        byResolvedUrl.set(targetMedia.url, entry);
+      } else if (inCurrentTurn) {
+        entry.fromCurrentTurn = true;
+      }
       if (sources !== undefined) {
-        for (const sourceUrl of sources) urls.add(sourceUrl);
+        for (const sourceUrl of sources) entry.urls.add(sourceUrl);
       }
     }
   }
-  return [...byResolvedUrl.values()].map((urls) => ({ urls: [...urls] }));
+  return [...byResolvedUrl.values()].map(({ urls, fromCurrentTurn }) => ({
+    urls: [...urls],
+    fromCurrentTurn,
+  }));
 }
 
 registerScopedService(

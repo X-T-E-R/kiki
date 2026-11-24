@@ -10,10 +10,10 @@ import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
   PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS,
-  asrProviderDefinitionSchema, asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema,
+  asrProviderDefinitionSchema, asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaActionResponseSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema,
   pluginImAdapterDefinitionSchema, pluginImDiagnosticReportSchema, pluginImHistoryPageSchema, pluginImHistoryRequestSchema, sessionSourceDefinitionSchema,
   type AsrProviderDefinition, type AsrTranscribeInput, type AsrTranscribeResult, type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput, type HarnessAccountSourceDefinition,
-  type HarnessQuotaReading, type HarnessQuotaSourceDefinition, type PluginHarnessQuotaSnapshot,
+  type HarnessQuotaActionId, type HarnessQuotaActionResponse, type HarnessQuotaReading, type HarnessQuotaSourceDefinition, type PluginHarnessQuotaSnapshot,
   type ImInboundDiagnostic, type MediaConnection, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginMediaApi, type PluginMessagesApi, type SessionSourceDefinition,
 } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
@@ -274,6 +274,46 @@ export class PluginHost {
     const parsed = harnessQuotaBatchSchema.safeParse(result);
     if (!parsed.success) throw new Error('The adapter returned an invalid quota batch');
     return Array.isArray(parsed.data) ? parsed.data : parsed.data.readings;
+  }
+
+  async performHarnessQuotaAction(
+    sourceId: string,
+    action: HarnessQuotaActionId,
+    accountId: string | undefined,
+    signal: AbortSignal,
+    settings: Record<string, unknown>,
+  ): Promise<HarnessQuotaActionResponse> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
+    await this.start();
+    signal.throwIfAborted();
+    if (!this.registeredHarnessQuotaSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register harness quota source ${sourceId}`);
+    this.clearIdle();
+    const id = ++this.nextId;
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(new Error('Harness quota action timed out'));
+      }, 30_000);
+      timer.unref();
+      const finish = (error?: Error, value?: unknown) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(id);
+        this.scheduleIdle();
+        if (error) reject(error); else resolve(value);
+      };
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(signal.reason instanceof Error ? signal.reason : abortError('Harness quota action cancelled'));
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      this.pending.set(id, { resolve: (value) => finish(undefined, value), reject: (error) => finish(error) });
+      this.send({ id, method: 'harness-quota-action', params: { sourceId, action, accountId, settings, kikiHome: this.kikiHome } });
+    });
+    const parsed = harnessQuotaActionResponseSchema.safeParse(result);
+    if (!parsed.success) throw new Error('The adapter returned an invalid quota action response');
+    return parsed.data;
   }
 
   async connectImAdapter(adapterId: string, settings: Record<string, unknown>, instanceId: string, listener: (event: PluginImEvent) => Promise<void>, offset?: number): Promise<PluginImConnection> {

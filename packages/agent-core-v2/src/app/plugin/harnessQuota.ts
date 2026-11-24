@@ -1,6 +1,8 @@
 import {
   HARNESS_QUOTA_MIN_REFRESH_MS,
   HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  type HarnessQuotaActionId,
+  type HarnessQuotaActionResponse,
   type HarnessQuotaReading,
   type PluginHarnessQuotaSnapshot,
 } from '@kiki/protocol';
@@ -9,6 +11,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable, isAbortError } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { Service } from '#/_base/di/service';
+import { Error2, ErrorCodes } from '#/errors';
 import { IPluginHostService } from './pluginHostService';
 
 interface QuotaFlight {
@@ -25,6 +28,7 @@ function effectiveInterval(intervalMs: number): number {
 export class HarnessQuotaCache {
   private readonly entries = new Map<string, { readonly at: number; readonly readings: readonly HarnessQuotaReading[]; readonly error?: string; readonly lastSuccessAt?: number }>();
   private readonly inflight = new Map<string, QuotaFlight>();
+  private readonly generations = new Map<string, number>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -38,6 +42,7 @@ export class HarnessQuotaCache {
       return {
         ...definition,
         engineIds: [...definition.engineIds],
+        actions: definition.actions === undefined ? undefined : definition.actions.map((item) => ({ ...item })),
         readAt: readAtMs !== undefined ? new Date(readAtMs).toISOString() : undefined,
         readings: fresh ? [...hit.readings] : undefined,
         error: hit?.error !== undefined ? HARNESS_QUOTA_UNAVAILABLE_MESSAGE : undefined,
@@ -60,6 +65,7 @@ export class HarnessQuotaCache {
     }
     let flight = this.inflight.get(sourceId);
     if (flight === undefined || flight.controller.signal.aborted) {
+      const generation = this.generations.get(sourceId) ?? 0;
       const controller = new AbortController();
       const created: QuotaFlight = {
         controller,
@@ -68,14 +74,16 @@ export class HarnessQuotaCache {
         settled: false,
       };
       created.promise = Promise.resolve().then(() => load(controller.signal)).then((readings) => {
-        const at = this.now();
-        this.entries.set(sourceId, { at, readings, lastSuccessAt: at });
+        if ((this.generations.get(sourceId) ?? 0) === generation) {
+          const at = this.now();
+          this.entries.set(sourceId, { at, readings, lastSuccessAt: at });
+        }
         return readings;
       }, (error: unknown) => {
         const cancelled = controller.signal.aborted || isAbortError(error);
         const rawMessage = error instanceof Error ? error.message : String(error);
         const message = rawMessage.trim() || HARNESS_QUOTA_UNAVAILABLE_MESSAGE;
-        if (!cancelled) {
+        if (!cancelled && (this.generations.get(sourceId) ?? 0) === generation) {
           const previous = this.entries.get(sourceId);
           this.entries.set(sourceId, { at: this.now(), readings: [], error: message, lastSuccessAt: previous?.lastSuccessAt });
         }
@@ -97,6 +105,11 @@ export class HarnessQuotaCache {
       }
     }
   }
+  invalidate(sourceId: string): void {
+    this.generations.set(sourceId, (this.generations.get(sourceId) ?? 0) + 1);
+    this.entries.delete(sourceId);
+    this.inflight.delete(sourceId);
+  }
 }
 
 export interface IHarnessQuotaService {
@@ -104,6 +117,12 @@ export interface IHarnessQuotaService {
   definitions(): Promise<readonly PluginHarnessQuotaSnapshot[]>;
   cached(): Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }>;
   read(sourceId: string, signal?: AbortSignal): Promise<readonly HarnessQuotaReading[]>;
+  performAction?(
+    sourceId: string,
+    action: HarnessQuotaActionId,
+    accountId?: string,
+    signal?: AbortSignal,
+  ): Promise<HarnessQuotaActionResponse>;
 }
 
 export const IHarnessQuotaService = createDecorator<IHarnessQuotaService>('harnessQuotaService');
@@ -119,7 +138,12 @@ export class HarnessQuotaService extends Service implements IHarnessQuotaService
 
   async definitions(): Promise<readonly PluginHarnessQuotaSnapshot[]> {
     const sources = await this.hosts.listHarnessQuotaSources();
-    return sources.map((source) => ({ ...source, engineIds: [...source.engineIds], readings: undefined }));
+    return sources.map((source) => ({
+      ...source,
+      engineIds: [...source.engineIds],
+      actions: source.actions === undefined ? undefined : source.actions.map((item) => ({ ...item })),
+      readings: undefined,
+    }));
   }
 
   async cached(): Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }> {
@@ -136,6 +160,34 @@ export class HarnessQuotaService extends Service implements IHarnessQuotaService
       (flightSignal) => this.hosts.readHarnessQuota(sourceId, AbortSignal.any([flightSignal, AbortSignal.timeout(30_000)])),
       signal,
     );
+  }
+
+  async performAction(
+    sourceId: string,
+    action: HarnessQuotaActionId,
+    accountId?: string,
+    signal?: AbortSignal,
+  ): Promise<HarnessQuotaActionResponse> {
+    const definition = (await this.hosts.listHarnessQuotaSources()).find((source) => source.id === sourceId);
+    if (definition === undefined) {
+      throw new Error2(ErrorCodes.PLUGIN_NOT_FOUND, `Unknown harness quota source ${sourceId}`);
+    }
+    const declared = definition.actions?.find((item) => item.id === action);
+    if (declared === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `Action ${action} is not declared for harness quota source ${sourceId}`);
+    }
+    if (declared.scope === 'account' && !accountId) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `Action ${action} requires account_id`);
+    }
+    if (typeof this.hosts.performHarnessQuotaAction !== 'function') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Harness quota actions are not supported by the plugin host');
+    }
+    signal?.throwIfAborted();
+    const timeout = AbortSignal.timeout(30_000);
+    const effective = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+    const result = await this.hosts.performHarnessQuotaAction(sourceId, action, accountId, effective);
+    if (result.ok) this.cache.invalidate(sourceId);
+    return result;
   }
 }
 

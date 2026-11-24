@@ -198,6 +198,7 @@ interface NormalizedQuery {
   readonly includeArchived: boolean;
   readonly timezoneOffsetMinutes: number;
   readonly pageSize: number;
+  readonly sortBy: UsageResponse['query']['sort_by'];
 }
 
 function emptyAgentUsage(agentIds: readonly string[]): Readonly<Record<string, AgentUsageProjection>> {
@@ -1279,13 +1280,14 @@ export class UsageAggregationService {
       catch (error) { if ((error as { code?: string }).code === 'usage.revision_changed') throw new UsagePageTokenMismatchError('Usage statistics changed; restart from the first page'); throw error; }
       if (this.now() - started >= this.limits.deadlineMs) incompleteReason = 'deadline';
       const last = result.sessions.at(-1);
+      const lastSortValue = last?.sortValue;
       const complete = this.modelReady && incompleteReason === null && result.incompleteSessions === 0;
       const wire = (value: UsageReadModelAggregate): UsageAggregateWire => ({ tokens: { input_other: value.usage.inputOther, output: value.usage.output, input_cache_read: value.usage.inputCacheRead, input_cache_creation: value.usage.inputCacheCreation }, tokens_unknown: value.missingRecords > 0 || value.legacyZeroRecords > 0, cost_usd_estimated: value.cost, cost_unknown: value.costUnknown });
       return {
-        query: { granularity: query.granularity, range: { preset: query.range.preset, start_at: query.range.startAt ?? null, end_at: query.range.endAt ?? null, defaulted_to_all_history: query.range.defaultedToAllHistory }, dimension: query.dimension, models: [...query.models], providers: [...query.providers], profiles: [...query.profiles], agent_ids: [...query.agentIds], workspace_ids: [...query.workspaceIds], include_archived: query.includeArchived, timezone_offset_minutes: query.timezoneOffsetMinutes },
-        summary: { ...wire(result.total), session_count: result.sessionCount },
+        query: { granularity: query.granularity, range: { preset: query.range.preset, start_at: query.range.startAt ?? null, end_at: query.range.endAt ?? null, defaulted_to_all_history: query.range.defaultedToAllHistory }, dimension: query.dimension, models: [...query.models], providers: [...query.providers], profiles: [...query.profiles], agent_ids: [...query.agentIds], workspace_ids: [...query.workspaceIds], include_archived: query.includeArchived, timezone_offset_minutes: query.timezoneOffsetMinutes, sort_by: query.sortBy },
+        summary: { ...wire(result.total), session_count: result.sessionCount, turn_count: result.turnCount, request_count: result.requestCount },
         trend: result.trend.map((bucket) => ({ key: bucket.key, start_at: bucket.startAt, end_at: bucket.endAt, request_count: bucket.requests, turn_count: bucket.turns, groups: bucket.groups.map((group) => ({ key: group.key, ...wire(group), provider: group.provider, model_alias: group.modelAlias, agent_id: group.agentId, parent_agent_id: group.parentAgentId, profile_name: group.profileName })), drilldown: { sessions: bucket.sessions.map((session) => ({ session_id: session.id, turn_ids: [...session.turnIds], turn_count: session.turns, unknown_turn_records: session.unknownTurnRecords, turn_ids_truncated: session.turns > session.turnIds.length })), sessions_truncated: bucket.sessionsTruncated } })),
-        sessions: { items: result.sessions.map((row) => ({ id: row.session.id, workspace_id: row.session.workspaceId, title: row.session.title ?? null, created_at: row.session.createdAt, updated_at: row.session.updatedAt, archived: row.session.archived, deleted: row.session.deleted, usage: wire(row), primary_model: row.primaryModel ?? null, profile_names: [...row.profileNames], unknown_price_models: [...row.unknownPriceModels] })), total: result.sessionCount, has_more: result.hasMore, next_page_token: result.hasMore && last !== undefined ? Buffer.from(JSON.stringify({ v: 2, f: fingerprint, r: result.revision, p: pricingRevision, k: [last.cost, last.session.id] })).toString('base64url') : null },
+        sessions: { items: result.sessions.map((row) => ({ id: row.session.id, workspace_id: row.session.workspaceId, title: row.session.title ?? null, created_at: row.session.createdAt, updated_at: row.session.updatedAt, archived: row.session.archived, deleted: row.session.deleted, usage: wire(row), primary_model: row.primaryModel ?? null, profile_names: [...row.profileNames], unknown_price_models: [...row.unknownPriceModels] })), total: result.sessionCount, has_more: result.hasMore, next_page_token: result.hasMore && last !== undefined && lastSortValue !== undefined ? Buffer.from(JSON.stringify({ v: 2, f: fingerprint, r: result.revision, p: pricingRevision, k: [lastSortValue, last.session.id] })).toString('base64url') : null },
         reliability: { complete, import_progress: complete ? undefined : this.importProgress(query), coverage: { earliest_at: result.earliestAt ?? null, latest_at: result.latestAt ?? null }, usage_coverage: { known_records: result.total.knownRecords, missing_records: result.total.missingRecords, legacy_zero_records: result.total.legacyZeroRecords }, scanned_sessions: result.scannedSessions, incomplete_sessions: result.incompleteSessions, unknown_price_models: [...result.unknownPriceModels], includes_deleted_sessions: result.includesDeletedSessions, incomplete_reason: incompleteReason },
       };
     } catch (error) {
@@ -1366,6 +1368,7 @@ function normalizeQuery(raw: UsageQuery, now: number): NormalizedQuery {
     includeArchived: raw.include_archived === 'true',
     timezoneOffsetMinutes,
     pageSize: raw.page_size ?? DEFAULT_PAGE_SIZE,
+    sortBy: raw.sort_by ?? 'tokens',
   };
 }
 
@@ -1519,8 +1522,8 @@ function emptyAggregate(): AggregateAccumulator {
 
 function incompleteUsageResponse(query: NormalizedQuery, reason: UsageResponse['reliability']['incomplete_reason']): UsageResponse {
   return {
-    query: { granularity: query.granularity, range: { preset: query.range.preset, start_at: query.range.startAt ?? null, end_at: query.range.endAt ?? null, defaulted_to_all_history: query.range.defaultedToAllHistory }, dimension: query.dimension, models: [...query.models], providers: [...query.providers], profiles: [...query.profiles], agent_ids: [...query.agentIds], workspace_ids: [...query.workspaceIds], include_archived: query.includeArchived, timezone_offset_minutes: query.timezoneOffsetMinutes },
-    summary: { ...aggregateWire(emptyAggregate()), session_count: 0 },
+    query: { granularity: query.granularity, range: { preset: query.range.preset, start_at: query.range.startAt ?? null, end_at: query.range.endAt ?? null, defaulted_to_all_history: query.range.defaultedToAllHistory }, dimension: query.dimension, models: [...query.models], providers: [...query.providers], profiles: [...query.profiles], agent_ids: [...query.agentIds], workspace_ids: [...query.workspaceIds], include_archived: query.includeArchived, timezone_offset_minutes: query.timezoneOffsetMinutes, sort_by: query.sortBy },
+    summary: { ...aggregateWire(emptyAggregate()), session_count: 0, turn_count: 0, request_count: 0 },
     trend: [],
     sessions: { items: [], total: 0, has_more: false, next_page_token: null },
     reliability: { complete: false, coverage: { earliest_at: null, latest_at: null }, usage_coverage: { known_records: 0, missing_records: 0, legacy_zero_records: 0 }, scanned_sessions: 0, incomplete_sessions: 0, unknown_price_models: [], includes_deleted_sessions: false, incomplete_reason: reason },
@@ -1556,6 +1559,7 @@ function queryFingerprint(query: NormalizedQuery): string {
       query.includeArchived,
       query.timezoneOffsetMinutes,
       query.pageSize,
+      query.sortBy,
       ...(query.profiles.length > 0 ? [query.profiles] : []),
     ]))
     .digest('base64url')

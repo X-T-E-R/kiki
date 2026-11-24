@@ -253,7 +253,7 @@ function createService(
     readonly measuredTokens?: number;
     readonly reservedContextSize?: number;
     readonly mediaResolver?: Partial<IAgentMediaResolverService>;
-    readonly contextMessages?: Message[];
+    readonly contextMessages?: Array<Message & { readonly origin?: { readonly kind?: string; readonly variant?: string } }>;
     readonly sessionId?: string;
     readonly agentId?: string;
     readonly agentMeta?: AgentMeta;
@@ -2348,7 +2348,7 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(attempts.map(attempt => attempt.toolChoice)).toEqual(['none', 'none']);
   });
 
-  it.each(['local', 'executed', 'policy', 'never', 'operation', 'no-retraction'] as const)('honors %s for a malformed function-call failure', async (mode) => {
+  it.each(['local', 'executed', 'policy', 'never', 'no-retraction'] as const)('honors %s for a malformed function-call failure', async (mode) => {
     const error = markProviderEventError(new ChatProviderError('malformed function call'), 'antigravity_malformed_function_call');
     attachErrorDetails(error, { upstream_retryable: false });
     if (mode === 'local') attachErrorDetails(error, { retry: false });
@@ -2360,12 +2360,113 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     });
     const onAttemptRetry = vi.fn();
     await expect(service.request({
-      source: mode === 'operation' ? { type: 'operation', requestKind: 'full_compaction' } : { type: 'turn', turnId: 1, step: 1 },
+      source: { type: 'turn', turnId: 1, step: 1 },
       retry: mode === 'never' ? 'never' : undefined,
       onAttemptRetry: mode === 'no-retraction' ? undefined : onAttemptRetry,
     })).rejects.toBe(error);
     expect(calls.value).toBe(1);
     expect(onAttemptRetry).not.toHaveBeenCalled();
+  });
+
+  it('retries buffered internal operation failures (including custom observer with onAttemptRetry) on malformed_function_call, missing_terminal, and stream overload', async () => {
+    vi.useFakeTimers();
+    for (const [code, type] of [
+      ['antigravity_malformed_function_call', 'api_error'],
+      ['antigravity_missing_terminal', 'api_error'],
+      ['overloaded_error', 'overloaded_error'],
+      ['rate_limit_error', 'rate_limit_error'],
+    ] as const) {
+      const calls = { value: 0 };
+      const error = markProviderEventError(new ChatProviderError(`${code} failure`), code);
+      attachErrorDetails(error, { upstreamErrorType: type });
+      if (code.startsWith('antigravity_')) attachErrorDetails(error, { upstream_retryable: false });
+      noteExecutedRequestDelivery(error);
+      const { service } = createService(createRequester(calls, error), undefined);
+      const pending = service.request({ source: { type: 'operation', requestKind: 'full_compaction' } });
+      await vi.runAllTimersAsync();
+      expect((await pending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+      expect(calls.value).toBe(2);
+    }
+
+    const observerCalls = { value: 0 };
+    const base = createRequester(observerCalls, null);
+    const baseRequest = base.request.bind(base);
+    const observedParts: string[] = [];
+    const retryModes: string[] = [];
+    const observerRequester: ModelRequester = {
+      ...base,
+      async *request(input, signal, params) {
+        if (observerCalls.value === 0) {
+          observerCalls.value++;
+          yield { type: 'part', part: { type: 'text', text: 'partial summary' } };
+          const error = markProviderEventError(new ChatProviderError('missing terminal'), 'antigravity_missing_terminal');
+          attachErrorDetails(error, { upstreamErrorType: 'api_error', upstream_retryable: false });
+          noteExecutedRequestDelivery(error);
+          throw error;
+        }
+        yield { type: 'part', part: { type: 'text', text: 'ok' } };
+        yield* baseRequest(input, signal, params);
+      },
+    };
+    const { service: observerService } = createService(observerRequester, undefined);
+    const observerPending = observerService.request(
+      {
+        source: { type: 'operation', requestKind: 'full_compaction' },
+        onAttemptRetry: (mode) => {
+          retryModes.push(mode);
+          if (mode === 'discard') observedParts.length = 0;
+        },
+      },
+      (part) => {
+        if (part.type === 'text') observedParts.push(part.text);
+      },
+    );
+    await vi.runAllTimersAsync();
+    expect((await observerPending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(observerCalls.value).toBe(2);
+    expect(retryModes).toEqual(['discard']);
+    expect(observedParts).toEqual(['ok']);
+
+    const streamCalls = { value: 0 };
+    const streamBase = createRequester(streamCalls, null);
+    const streamBaseRequest = streamBase.request.bind(streamBase);
+    const streamRetryModes: string[] = [];
+    const anthropicTypeOnlyOverload = attachErrorDetails(new ChatProviderError('Overloaded'), {
+      errorSource: 'provider_stream',
+      upstreamErrorType: 'overloaded_error',
+    });
+    noteExecutedRequestDelivery(anthropicTypeOnlyOverload);
+    const streamRequester: ModelRequester = {
+      ...streamBase,
+      async *request(input, signal, params) {
+        if (streamCalls.value === 0) {
+          streamCalls.value++;
+          yield { type: 'part', part: { type: 'text', text: 'Checking now.' } };
+          throw anthropicTypeOnlyOverload;
+        }
+        yield* streamBaseRequest(input, signal, params);
+      },
+    };
+    const { service: streamService } = createService(streamRequester, undefined);
+    const streamPending = streamService.request({
+      source: { type: 'turn', turnId: 2, step: 1 },
+      onAttemptRetry: (mode) => streamRetryModes.push(mode),
+    });
+    await vi.runAllTimersAsync();
+    expect((await streamPending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(streamCalls.value).toBe(2);
+    expect(streamRetryModes).toEqual(['discard']);
+
+    const unnamed429Calls = { value: 0 };
+    const unnamed429 = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429'), {
+      errorSource: 'provider_event',
+    });
+    noteExecutedRequestDelivery(unnamed429);
+    const { service: unnamed429Service } = createService(createRequester(unnamed429Calls, unnamed429), undefined);
+    await expect(
+      unnamed429Service.request({ source: { type: 'turn', turnId: 3, step: 1 }, onAttemptRetry: vi.fn() }),
+    ).rejects.toBe(unnamed429);
+    expect(unnamed429Calls.value).toBe(1);
   });
 
   it.each([false, true])('uses the partial-response preference only when a malformed attempt streamed output: %s', async (partial) => {
@@ -2393,25 +2494,76 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(onAttemptRetry.mock.calls).toEqual(partial ? [] : [['discard']]);
   });
 
-  it('does not discard visible assistant text when malformed_function_call follows streamed text', async () => {
+  it('retracts streamed text preamble and retries with malformed-call nudge on antigravity_malformed_function_call while honoring retryPartialResponses=false and missing onAttemptRetry', async () => {
     vi.useFakeTimers();
+    const observedInputs: ModelRequestInput[] = [];
     const calls = { value: 0 };
-    const requester = createRequester(calls, null);
-    const error = markProviderEventError(new ChatProviderError('malformed function call'), 'antigravity_malformed_function_call');
-    attachErrorDetails(error, { upstream_retryable: false });
-    requester.request = async function* () {
-      calls.value++;
-      yield { type: 'part', part: { type: 'text', text: 'Already visible.' } };
-      throw error;
+    const base = createRequester(calls, null);
+    const baseRequest = base.request.bind(base);
+    const makeError = () => {
+      const error = markProviderEventError(
+        new ChatProviderError('Anthropic error: antigravity_malformed_function_call: The upstream returned a malformed function call. [type=api_error]'),
+        'antigravity_malformed_function_call',
+      );
+      attachErrorDetails(error, { upstreamErrorType: 'api_error', upstream_retryable: false });
+      noteExecutedRequestDelivery(error);
+      return error;
+    };
+    const requester: ModelRequester = {
+      ...base,
+      async *request(input, signal, params) {
+        observedInputs.push(input);
+        if (calls.value === 0) {
+          calls.value++;
+          yield { type: 'part', part: { type: 'text', text: 'Let me check that file.' } };
+          throw makeError();
+        }
+        yield* baseRequest(input, signal, params);
+      },
     };
     const { service } = createService(requester, undefined);
     const onAttemptRetry = vi.fn();
-    await expect(service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry })).rejects.toBe(error);
-    expect(calls.value).toBe(1);
-    expect(onAttemptRetry).not.toHaveBeenCalled();
+    const pending = service.request({
+      source: { type: 'turn', turnId: 1, step: 1 },
+      onAttemptRetry,
+      tools: [{ name: 'Read', description: 'Read file', parameters: {} }],
+    });
+    await vi.runAllTimersAsync();
+    expect((await pending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(2);
+    expect(onAttemptRetry.mock.calls).toEqual([['discard']]);
+    expect(observedInputs[1]?.messages.length).toBeGreaterThan(observedInputs[0]!.messages.length);
+
+    const vetoCalls = { value: 0 };
+    const vetoRequester: ModelRequester = {
+      ...createRequester(vetoCalls, null),
+      async *request() {
+        vetoCalls.value++;
+        yield { type: 'part', part: { type: 'text', text: 'Already visible.' } };
+        throw makeError();
+      },
+    };
+    const { service: noPartialRetry } = createService(vetoRequester, undefined, { retryConfig: { retryPartialResponses: false } });
+    const vetoOnRetry = vi.fn();
+    await expect(noPartialRetry.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry: vetoOnRetry })).rejects.toThrow('antigravity_malformed_function_call');
+    expect(vetoCalls.value).toBe(1);
+    expect(vetoOnRetry).not.toHaveBeenCalled();
+
+    const noCallbackCalls = { value: 0 };
+    const noCallbackRequester: ModelRequester = {
+      ...createRequester(noCallbackCalls, null),
+      async *request() {
+        noCallbackCalls.value++;
+        yield { type: 'part', part: { type: 'text', text: 'Already visible.' } };
+        throw makeError();
+      },
+    };
+    const { service: noCallback } = createService(noCallbackRequester, undefined);
+    await expect(noCallback.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toThrow('antigravity_malformed_function_call');
+    expect(noCallbackCalls.value).toBe(1);
   });
 
-  it.each(['signature', 'thinking', 'text', 'tool', 'discarded-text', 'discarded-tool'] as const)('retries a missing terminal only before substantive output: %s', async (kind) => {
+  it.each(['signature', 'thinking', 'text', 'tool', 'discarded-text', 'discarded-tool'] as const)('retracts and retries antigravity_missing_terminal with onAttemptRetry across streamed part kinds: %s', async (kind) => {
     vi.useFakeTimers();
     const calls = { value: 0 };
     const requester = createRequester(calls, null);
@@ -2440,11 +2592,39 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
     const result = pending.then(value => ({ value }), error => ({ error }));
     await vi.runAllTimersAsync();
-    const retryable = kind !== 'text' && kind !== 'tool';
-    expect(await result).toHaveProperty(retryable ? 'value' : 'error');
-    expect(calls.value).toBe(retryable ? 2 : 1);
-    expect(onAttemptRetry.mock.calls).toEqual(retryable ? Array.from({ length: kind.startsWith('discarded-') ? 2 : 1 }, () => ['discard']) : []);
-    expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(retryable ? 1 : 0);
+    expect(await result).toHaveProperty('value');
+    expect(calls.value).toBe(2);
+    expect(onAttemptRetry.mock.calls).toEqual(Array.from({ length: kind.startsWith('discarded-') ? 2 : 1 }, () => ['discard']));
+    expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(1);
+  });
+
+  it('retracts streamed text and retries mid-stream provider_event overload/rate_limit errors when onAttemptRetry is provided', async () => {
+    vi.useFakeTimers();
+    for (const code of ['overloaded_error', 'server_error', 'service_unavailable', 'rate_limit_error'] as const) {
+      const calls = { value: 0 };
+      const base = createRequester(calls, null);
+      const baseRequest = base.request.bind(base);
+      const error = markProviderEventError(new ChatProviderError(`mid-stream ${code}`), code);
+      noteExecutedRequestDelivery(error);
+      const requester: ModelRequester = {
+        ...base,
+        async *request(input, signal, params) {
+          if (calls.value === 0) {
+            calls.value++;
+            yield { type: 'part', part: { type: 'text', text: 'Partial mid-stream text' } };
+            throw error;
+          }
+          yield* baseRequest(input, signal, params);
+        },
+      };
+      const { service } = createService(requester, undefined);
+      const onAttemptRetry = vi.fn();
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
+      await vi.runAllTimersAsync();
+      expect((await pending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+      expect(calls.value).toBe(2);
+      expect(onAttemptRetry.mock.calls).toEqual([['discard']]);
+    }
   });
 
   it('cancels during interrupted response backoff without resending', async () => {
@@ -2793,41 +2973,64 @@ describe('AgentLLMRequesterService 400 INVALID_MEDIA self-heal', () => {
     expect(noMediaCalls.value).toBe(1);
   });
 
-  it('does not poison unrelated attachments on an unattributed multi-attachment invalid-media 400, and poisons only the named URL when attributed', async () => {
-    const goodUrl = 'https://media.example.test/good.png';
-    const badUrl = 'https://media.example.test/corrupt.png';
-    const unattributedCalls = { value: 0 };
-    const poisonedUnattributed: string[] = [];
-    const baseResolver = makePoisoningResolver();
-    const trackingResolver: IAgentMediaResolverService = {
-      ...baseResolver,
+  it('poisons earlier-turn attachments first on unattributed multi-attachment invalid-media 400 (capped at 2 retries), and poisons only the named URL when attributed', async () => {
+    const oldUrl = 'https://media.example.test/old.png';
+    const currentUrl = 'https://media.example.test/current.png';
+    const stagedCalls = { value: 0 };
+    const stagedObserved: Array<readonly Message[]> = [];
+    const stagedPoisoned: string[][] = [];
+    const stagedBaseResolver = makePoisoningResolver();
+    const stagedResolver: IAgentMediaResolverService = {
+      ...stagedBaseResolver,
       markMediaPoisoned(urls) {
-        for (const u of urls) poisonedUnattributed.push(u);
-        baseResolver.markMediaPoisoned?.(urls);
+        stagedPoisoned.push([...urls]);
+        stagedBaseResolver.markMediaPoisoned?.(urls);
       },
     };
-    const { service: ambiguous } = createService(
-      createRequester(unattributedCalls, invalidMedia400()),
+    const stagedBaseRequester = createRequester(stagedCalls, invalidMedia400(), [invalidMedia400()]);
+    const stagedRequester: ModelRequester = {
+      ...stagedBaseRequester,
+      async *request(input, signal, params) {
+        stagedObserved.push(input.messages);
+        yield* stagedBaseRequester.request(input, signal, params);
+      },
+    };
+    const { service: staged } = createService(stagedRequester, undefined, {
+      contextMessages: [
+        { role: 'user', toolCalls: [], content: [{ type: 'image_url', imageUrl: { url: oldUrl } }] },
+        { role: 'assistant', toolCalls: [], content: [{ type: 'text', text: 'prev reply' }] },
+        { role: 'user', toolCalls: [], content: [{ type: 'image_url', imageUrl: { url: currentUrl } }] },
+      ],
+      mediaResolver: stagedResolver,
+    });
+    const stagedTurn = await staged.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+    expect(stagedTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(stagedCalls.value).toBe(3);
+    expect(stagedPoisoned).toEqual([[oldUrl], [currentUrl]]);
+    expect(stagedObserved[1]![2]!.content[0]).toEqual({ type: 'image_url', imageUrl: { url: currentUrl } });
+    expect(stagedObserved[2]![2]!.content[0]).toEqual({
+      type: 'text',
+      text: '[media omitted: rejected by model provider as empty, corrupted, or unsupported]',
+    });
+
+    const cappedCalls = { value: 0 };
+    const { service: capped } = createService(
+      createRequester(cappedCalls, invalidMedia400(), [invalidMedia400(), invalidMedia400()]),
       undefined,
       {
         contextMessages: [
-          {
-            role: 'user',
-            toolCalls: [],
-            content: [
-              { type: 'image_url', imageUrl: { url: goodUrl } },
-              { type: 'image_url', imageUrl: { url: badUrl } },
-            ],
-          },
+          { role: 'user', toolCalls: [], content: [{ type: 'image_url', imageUrl: { url: oldUrl } }] },
+          { role: 'assistant', toolCalls: [], content: [{ type: 'text', text: 'prev' }] },
+          { role: 'user', toolCalls: [], content: [{ type: 'image_url', imageUrl: { url: currentUrl } }] },
         ],
-        mediaResolver: trackingResolver,
+        mediaResolver: makePoisoningResolver(),
       },
     );
-    await expect(ambiguous.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
-      statusCode: 400,
-    });
-    expect(unattributedCalls.value).toBe(1);
-    expect(poisonedUnattributed).toEqual([]);
+    await expect(capped.request({ source: { type: 'turn', turnId: 2, step: 1 } })).rejects.toMatchObject({ statusCode: 400 });
+    expect(cappedCalls.value).toBe(3);
+
+    const goodUrl = 'https://media.example.test/good.png';
+    const badUrl = 'https://media.example.test/corrupt.png';
 
     const attributedCalls = { value: 0 };
     const observedMessages: Array<readonly Message[]> = [];
@@ -2976,11 +3179,45 @@ describe('AgentLLMRequesterService 400 INVALID_MEDIA self-heal', () => {
       ],
       mediaResolver: proseResolver,
     });
-    await expect(proseService.request({ source: { type: 'turn', turnId: 1, step: 1 } })).rejects.toMatchObject({
-      statusCode: 400,
+    const proseTurn = await proseService.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(proseTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(proseMentionCalls.value).toBe(2);
+    expect(prosePoisoned).toEqual([goodUrl, badUrl]);
+
+    const reminderCalls = { value: 0 };
+    const reminderPoisoned: string[] = [];
+    const reminderResolverBase = makePoisoningResolver();
+    const reminderResolver: IAgentMediaResolverService = {
+      ...reminderResolverBase,
+      markMediaPoisoned(urls) {
+        for (const u of urls) reminderPoisoned.push(u);
+        reminderResolverBase.markMediaPoisoned?.(urls);
+      },
+    };
+    const { service: reminderService } = createService(createRequester(reminderCalls, invalidMedia400()), undefined, {
+      contextMessages: [
+        { role: 'user', toolCalls: [], content: [{ type: 'image_url', imageUrl: { url: badUrl } }] },
+        { role: 'assistant', toolCalls: [], content: [{ type: 'text', text: 'ok' }] },
+        { role: 'user', toolCalls: [], content: [{ type: 'image_url', imageUrl: { url: goodUrl } }] },
+        {
+          role: 'user',
+          toolCalls: [],
+          origin: { kind: 'task' },
+          content: [{ type: 'text', text: '<task-notification>child completed</task-notification>' }],
+        },
+        {
+          role: 'user',
+          toolCalls: [],
+          origin: { kind: 'injection', variant: 'system_reminder' },
+          content: [{ type: 'text', text: '<system-reminder>reminder after user prompt</system-reminder>' }],
+        },
+      ],
+      mediaResolver: reminderResolver,
     });
-    expect(proseMentionCalls.value).toBe(1);
-    expect(prosePoisoned).toEqual([]);
+    const reminderTurn = await reminderService.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+    expect(reminderTurn.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(reminderCalls.value).toBe(2);
+    expect(reminderPoisoned).toEqual([badUrl]);
   });
 
   it('does not loop under KIKI_INFINITE_RETRY when 400 INVALID_MEDIA lacks retryable=false', async () => {

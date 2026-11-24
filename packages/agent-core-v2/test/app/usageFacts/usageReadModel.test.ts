@@ -544,4 +544,142 @@ describe('Usage source read model', () => {
       await worker.close();
     }
   });
+
+  it('aggregates hour granularity directly from source_hour_total_v1 for whole-hour offsets, deduplicates summary turns across buckets, and sorts groups/sessions by tokens or cost', async () => {
+    const h0 = Date.parse('2026-11-24T00:15:00Z');
+    const h1 = Date.parse('2026-11-24T01:20:00Z');
+    const s1 = 'sessions/example/s-high-tokens/agents/main';
+    const s2 = 'sessions/example/s-high-cost/agents/main';
+    logs.append(s1, 'wire.jsonl', { type: 'usage.record', time: h0, model: 'unpriced-local', modelAlias: 'unpriced-local', agentId: 'main', turnId: 1, usageKnown: true, usage: usage(1000, 500) });
+    logs.append(s1, 'wire.jsonl', { type: 'usage.record', time: h1, model: 'unpriced-local', modelAlias: 'unpriced-local', agentId: 'main', turnId: 1, usageKnown: true, usage: usage(500, 0) });
+    logs.append(s2, 'wire.jsonl', { type: 'usage.record', time: h0, model: 'priced-model', modelAlias: 'priced-model', agentId: 'main', turnId: 2, usageKnown: true, usage: usage(100, 100) });
+    await logs.flush();
+    await facts.summary(s1);
+    await facts.summary(s2);
+    await model.catalog(
+      [
+        { id: 's-high-tokens', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false, deleted: false },
+        { id: 's-high-cost', workspaceId: 'example', createdAt: 0, updatedAt: 2, archived: false, deleted: false },
+      ],
+      [
+        { source: s1, workspaceId: 'example', sessionId: 's-high-tokens' },
+        { source: s2, workspaceId: 'example', sessionId: 's-high-cost' },
+      ],
+      true,
+    );
+
+    const byTokens = await model.query({
+      ...query,
+      granularity: 'hour',
+      timezoneOffsetMinutes: 480,
+      sortBy: 'tokens',
+      quotes: [{ model: 'priced-model', inputOther: 0.05, output: 0.05 }],
+      pageSize: 1,
+    });
+    expect(byTokens.trend.map((item) => [item.startAt, item.endAt - item.startAt, item.requests, item.turns])).toEqual([
+      [Date.parse('2026-11-24T00:00:00Z'), 3_600_000, 2, 2],
+      [Date.parse('2026-11-24T01:00:00Z'), 3_600_000, 1, 1],
+    ]);
+    expect(byTokens.turnCount).toBe(2);
+    expect(byTokens.requestCount).toBe(3);
+    expect(byTokens.trend[0]!.groups.map((group) => group.key)).toEqual(['unpriced-local', 'priced-model']);
+    expect(byTokens.sessions.map((item) => item.session.id)).toEqual(['s-high-tokens']);
+    expect(byTokens.hasMore).toBe(true);
+    const page2Tokens = await model.query({
+      ...query,
+      granularity: 'hour',
+      timezoneOffsetMinutes: 480,
+      sortBy: 'tokens',
+      quotes: [{ model: 'priced-model', inputOther: 0.05, output: 0.05 }],
+      pageSize: 1,
+      position: [2000, 's-high-tokens'],
+    });
+    expect(page2Tokens.sessions.map((item) => item.session.id)).toEqual(['s-high-cost']);
+    expect(page2Tokens.hasMore).toBe(false);
+
+    const groupTokenSum = byTokens.trend.flatMap((bucket) => bucket.groups).reduce(
+      (sum, group) => sum + group.usage.inputOther + group.usage.output + group.usage.inputCacheRead + group.usage.inputCacheCreation,
+      0,
+    );
+    const totalTokens = byTokens.total.usage.inputOther + byTokens.total.usage.output + byTokens.total.usage.inputCacheRead + byTokens.total.usage.inputCacheCreation;
+    expect(groupTokenSum).toBe(totalTokens);
+
+    const byCost = await model.query({
+      ...query,
+      granularity: 'hour',
+      timezoneOffsetMinutes: 480,
+      sortBy: 'cost',
+      quotes: [{ model: 'priced-model', inputOther: 0.05, output: 0.05 }],
+      pageSize: 2,
+    });
+    expect(byCost.trend[0]!.groups.map((group) => group.key)).toEqual(['priced-model', 'unpriced-local']);
+    expect(byCost.sessions.map((item) => item.session.id)).toEqual(['s-high-cost', 's-high-tokens']);
+
+    const fractional = await model.query({
+      ...query,
+      granularity: 'hour',
+      timezoneOffsetMinutes: 330,
+      quotes: [{ model: 'priced-model', inputOther: 0.05, output: 0.05 }],
+    });
+    expect(fractional.trend.map((item) => [item.startAt, item.endAt - item.startAt])).toEqual([
+      [Date.parse('2026-11-23T23:30:00Z'), 3_600_000],
+      [Date.parse('2026-11-24T00:30:00Z'), 3_600_000],
+    ]);
+
+    const ephSource = 'retained:ephemeral:example';
+    await model.apply({
+      source: ephSource,
+      progress: { batchStart: 0, offset: 1, ordinal: 1 },
+      records: [{ time: h0, model: 'priced-model', usageKnown: true, usage: usage(50, 50) }],
+      publish: {
+        start: 0,
+        checkpoint: { generation: 'eph-1', offset: 1, size: 1, mtimeMs: 1, boundaryHash: '', valid: true },
+        journalSize: 1,
+        session: { id: ephSource, workspaceId: 'example', createdAt: h0, updatedAt: h0, archived: false, deleted: true, ephemeral: true, complete: true },
+      },
+    });
+    const bySession = await model.query({
+      ...query,
+      granularity: 'session',
+      quotes: [{ model: 'priced-model', inputOther: 0.05, output: 0.05 }],
+      pageSize: 10,
+    });
+    const sessionGroupTokens = bySession.trend.flatMap((bucket) => bucket.groups).reduce(
+      (sum, group) => sum + group.usage.inputOther + group.usage.output + group.usage.inputCacheRead + group.usage.inputCacheCreation,
+      0,
+    );
+    const sessionSummaryTokens = bySession.total.usage.inputOther + bySession.total.usage.output + bySession.total.usage.inputCacheRead + bySession.total.usage.inputCacheCreation;
+    expect(sessionGroupTokens).toBe(sessionSummaryTokens);
+    expect(bySession.trend.reduce((sum, bucket) => sum + bucket.requests, 0)).toBe(bySession.requestCount);
+    expect(bySession.trend.map((bucket) => bucket.key)).not.toContain(ephSource);
+
+    const fracSource = 'sessions/example/s-frac/agents/main';
+    logs.append(fracSource, 'wire.jsonl', { type: 'usage.record', time: h0, model: 'unpriced-local', agentId: 'main', turnId: 1, usageKnown: true, usage: { inputOther: 0.1, output: 0.1, inputCacheRead: 0, inputCacheCreation: 0 } });
+    logs.append(fracSource, 'wire.jsonl', { type: 'usage.record', time: h0 + 1, model: 'unpriced-local', agentId: 'main', turnId: 2, usageKnown: true, usage: { inputOther: 0.2, output: 0.2, inputCacheRead: 0, inputCacheCreation: 0 } });
+    await logs.flush();
+    await facts.summary(fracSource);
+    await model.catalog(
+      [
+        { id: 's-high-tokens', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false, deleted: false },
+        { id: 's-high-cost', workspaceId: 'example', createdAt: 0, updatedAt: 2, archived: false, deleted: false },
+        { id: 's-frac', workspaceId: 'example', createdAt: h0, updatedAt: h0 + 1, archived: false, deleted: false },
+      ],
+      [
+        { source: s1, workspaceId: 'example', sessionId: 's-high-tokens' },
+        { source: s2, workspaceId: 'example', sessionId: 's-high-cost' },
+        { source: fracSource, workspaceId: 'example', sessionId: 's-frac' },
+      ],
+      true,
+    );
+    const fracPage1 = await model.query({ ...query, granularity: 'hour', sortBy: 'tokens', pageSize: 1, position: [10, 'z'] });
+    expect(fracPage1.sessions.map((item) => item.session.id)).toEqual(['s-frac']);
+    const fracPage2 = await model.query({
+      ...query,
+      granularity: 'hour',
+      sortBy: 'tokens',
+      pageSize: 1,
+      position: [fracPage1.sessions[0]!.sortValue, fracPage1.sessions[0]!.session.id],
+    });
+    expect(fracPage2.sessions.map((item) => item.session.id)).toEqual([]);
+  });
 });

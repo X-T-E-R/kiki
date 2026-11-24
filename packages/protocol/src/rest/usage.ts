@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const usageGranularitySchema = /* @__PURE__ */ z.enum(['day', 'week', 'month', 'session', 'five_hour']);
+export const usageGranularitySchema = /* @__PURE__ */ z.enum(['hour', 'day', 'week', 'month', 'session', 'five_hour']);
+export const usageSortBySchema = /* @__PURE__ */ z.enum(['tokens', 'cost']);
 export const usageRangePresetSchema = /* @__PURE__ */ z.enum([
   'today',
   'last_7_days',
@@ -29,6 +30,7 @@ export const usageQuerySchema = /* @__PURE__ */ z
     timezone_offset_minutes: z.coerce.number().int().min(-840).max(840).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
     page_token: z.string().min(1).optional(),
+    sort_by: usageSortBySchema.optional(),
   })
   .superRefine((value, ctx) => {
     const range = value.range ?? 'all';
@@ -141,8 +143,13 @@ export const usageResponseSchema = /* @__PURE__ */ z.object({
     workspace_ids: z.array(z.string()),
     include_archived: z.boolean(),
     timezone_offset_minutes: z.number().int(),
+    sort_by: usageSortBySchema,
   }),
-  summary: usageAggregateSchema.extend({ session_count: z.number().int().nonnegative() }),
+  summary: usageAggregateSchema.extend({
+    session_count: z.number().int().nonnegative(),
+    turn_count: z.number().int().nonnegative().optional(),
+    request_count: z.number().int().nonnegative().optional(),
+  }),
   trend: z.array(usageTrendBucketSchema),
   sessions: z.object({
     items: z.array(usageSessionItemSchema),
@@ -175,6 +182,7 @@ export const usageResponseSchema = /* @__PURE__ */ z.object({
   }),
 });
 
+export type UsageSortBy = z.infer<typeof usageSortBySchema>;
 export type UsageQuery = z.infer<typeof usageQuerySchema>;
 export type UsageResponse = z.infer<typeof usageResponseSchema>;
 export type UsageAggregateWire = z.infer<typeof usageAggregateSchema>;

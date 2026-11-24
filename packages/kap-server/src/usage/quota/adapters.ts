@@ -2,7 +2,7 @@ import type { ProviderQuotaMeter } from '@kiki/protocol';
 import { parseManagedUsagePayload, openaiCodexAccountId } from '@kiki/oauth';
 
 export type QuotaAdapterId = 'kimi' | 'codex' | 'claude' | 'deepseek' | 'minimax' | 'zai' | 'openrouter' | 'stepfun' | 'siliconflow-cn' | 'siliconflow-global' | 'novita';
-export interface QuotaAdapter { id: QuotaAdapterId; label: string; url: string; oauth: boolean }
+export interface QuotaAdapter { id: QuotaAdapterId; label: string; url: string; secondaryUrl?: string; oauth: boolean }
 export const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const num = (value: unknown): number | null => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -11,6 +11,23 @@ const zaiWindowUnits: Record<number, number> = { 1: 86400, 3: 3600, 5: 60, 6: 60
 function date(value: unknown, scale = 1): string | undefined {
   const millis = typeof value === 'number' ? value * scale : typeof value === 'string' ? Date.parse(value) : NaN;
   return Number.isFinite(millis) && Math.abs(millis) < 8.64e15 ? new Date(millis).toISOString() : undefined;
+}
+function unixDate(value: unknown): string | undefined {
+  const raw = num(value);
+  if (raw === null || raw <= 0) return undefined;
+  return date(raw, raw < 1e12 ? 1000 : 1);
+}
+function isStepPlanPayload(body: Record<string, unknown>): boolean {
+  const plan = body['data'] !== undefined && typeof body['data'] === 'object' && body['data'] !== null && !Array.isArray(body['data'])
+    ? record(body['data'])
+    : body;
+  return plan['plan_family'] !== undefined || plan['plan_credit_rate_limit'] !== undefined
+    || plan['five_hour_usage_left_rate'] !== undefined || plan['weekly_usage_left_rate'] !== undefined;
+}
+function stepLeftRateToUsedPercent(value: unknown): number | null {
+  const rate = num(value);
+  if (rate === null || rate < 0 || rate > 1) return null;
+  return Math.round((1 - rate) * 10_000) / 100;
 }
 function percent(id: string, label: string, used: unknown, reset?: string, seconds?: number, group?: string): ProviderQuotaMeter | undefined {
   const value = num(used);
@@ -31,8 +48,8 @@ export function selectQuotaAdapter(baseUrl: string | undefined, oauth: boolean):
   if (host === 'api.deepseek.com') return { id: 'deepseek', label: 'DeepSeek 官方余额', url: 'https://api.deepseek.com/user/balance', oauth: false };
   if (host === 'api.minimax.io' || host === 'api.minimaxi.com') return { id: 'minimax', label: 'MiniMax Coding Plan 官方用量', url: `https://${host}/v1/api/openplatform/coding_plan/remains`, oauth: false };
   if (host === 'open.bigmodel.cn' || host === 'api.z.ai') return { id: 'zai', label: host === 'open.bigmodel.cn' ? 'BigModel 官方套餐用量' : 'Z.ai 官方套餐用量', url: `https://${host}/api/monitor/usage/quota/limit`, oauth: false };
-  if (host === 'openrouter.ai') return { id: 'openrouter', label: 'OpenRouter 官方 key 额度', url: 'https://openrouter.ai/api/v1/key', oauth: false };
-  if (host === 'api.stepfun.com') return { id: 'stepfun', label: 'StepFun 官方余额', url: 'https://api.stepfun.com/v1/accounts', oauth: false };
+  if (host === 'openrouter.ai') return { id: 'openrouter', label: 'OpenRouter 官方额度', url: 'https://openrouter.ai/api/v1/credits', secondaryUrl: 'https://openrouter.ai/api/v1/key', oauth: false };
+  if (host === 'api.stepfun.com') return { id: 'stepfun', label: 'StepFun 官方额度', url: 'https://api.stepfun.com/v1/accounts', secondaryUrl: 'https://api.stepfun.com/step_plan/v1/usage', oauth: false };
   if (host === 'api.siliconflow.cn' || host === 'api.siliconflow.com') return { id: host.endsWith('.cn') ? 'siliconflow-cn' : 'siliconflow-global', label: 'SiliconFlow 官方余额', url: `https://${host}/v1/user/info`, oauth: false };
   if (host === 'api.novita.ai') return { id: 'novita', label: 'Novita AI 官方余额', url: 'https://api.novita.ai/v3/user/balance', oauth: false };
   return undefined;
@@ -55,8 +72,8 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
     : adapter === 'deepseek' ? Array.isArray(body['balance_infos'])
     : adapter === 'minimax' ? Array.isArray(body['model_remains'])
     : adapter === 'zai' ? Array.isArray(record(body['data'])['limits'])
-    : adapter === 'openrouter' ? body['data'] !== undefined
-    : adapter === 'stepfun' ? body['balance'] !== undefined
+    : adapter === 'openrouter' ? body['data'] !== undefined || body['credits'] !== undefined || body['key'] !== undefined
+    : adapter === 'stepfun' ? body['balance'] !== undefined || isStepPlanPayload(body)
     : adapter === 'novita' ? body['availableBalance'] !== undefined : body['data'] !== undefined;
   if (!shape) throw new Error('invalid_response');
   const meters: (ProviderQuotaMeter | undefined)[] = [];
@@ -84,7 +101,7 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
       const wallet = parsed.extraUsage; const raw = record(body['boosterWallet']);
       const currency = text(record(raw['monthlyChargeLimit'])['currency']) ?? text(record(raw['monthlyUsed'])['currency']);
       const remaining = num(record(raw['balance'])['amountLeft']) === null ? null : wallet.balanceCents / 100;
-      meters.push({ id: 'booster', label: '加量包余额', unit: 'money', unit_label: currency ?? '货币（币种未提供）', currency, scope: 'account', used: null, limit: null, remaining });
+      meters.push({ id: 'booster', label: '加量包余额', unit: 'money', unit_label: currency ?? '货币', currency, scope: 'account', used: null, limit: null, remaining });
     }
   }
   if (adapter === 'codex') {
@@ -141,14 +158,109 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
     }
   }
   if (adapter === 'openrouter') {
-    const row = record(body['data']); const limit = num(row['limit']); const used = num(row['usage']);
-    const remaining = num(row['limit_remaining']);
-    if (remaining !== null || limit !== null || used !== null) meters.push({ id: 'key-limit', label: 'API Key 额度（非账户总余额）', unit: 'money', unit_label: 'USD', currency: 'USD', scope: 'key', used, limit, remaining, window: text(row['limit_reset']) ? { label: String(row['limit_reset']) } : undefined });
+    const parseCreditsRow = (row: Record<string, unknown>): void => {
+      const totalCredits = num(row['total_credits']);
+      const totalUsage = num(row['total_usage']);
+      if (totalCredits === null && totalUsage === null) return;
+      const remaining = totalCredits !== null && totalUsage !== null ? Math.round((totalCredits - totalUsage) * 1e6) / 1e6 : null;
+      meters.push({ id: 'account-credits', label: '账户余额', unit: 'money', unit_label: 'USD', currency: 'USD', scope: 'account', used: totalUsage, limit: totalCredits, remaining });
+    };
+    const parseKeyRow = (row: Record<string, unknown>): void => {
+      const limit = num(row['limit']);
+      const used = num(row['usage']);
+      const remaining = num(row['limit_remaining']);
+      if (remaining !== null || limit !== null || used !== null) {
+        meters.push({ id: 'key-limit', label: 'API Key 额度', unit: 'money', unit_label: 'USD', currency: 'USD', scope: 'key', used, limit, remaining, window: text(row['limit_reset']) ? { label: String(row['limit_reset']) } : undefined });
+      }
+    };
+    if (body['credits'] !== undefined) parseCreditsRow(record(record(body['credits'])['data'] ?? body['credits']));
+    if (body['key'] !== undefined) parseKeyRow(record(record(body['key'])['data'] ?? body['key']));
+    if (body['data'] !== undefined) {
+      const row = record(body['data']);
+      parseCreditsRow(row);
+      parseKeyRow(row);
+    }
   }
-  if (adapter === 'stepfun' || adapter === 'siliconflow-cn' || adapter === 'siliconflow-global' || adapter === 'novita') {
-    const raw = adapter === 'stepfun' ? body['balance'] : adapter === 'novita' ? body['availableBalance'] : record(body['data'])['totalBalance'];
+  if (adapter === 'stepfun') {
+    const balance = num(body['balance']);
+    if (balance !== null) {
+      meters.push({ id: 'balance', label: 'CNY 余额', unit: 'money', unit_label: 'CNY', currency: 'CNY', scope: 'account', used: null, limit: null, remaining: balance });
+    }
+    if (isStepPlanPayload(body)) {
+      const plan = body['data'] !== undefined && typeof body['data'] === 'object' && body['data'] !== null && !Array.isArray(body['data'])
+        ? record(body['data'])
+        : body;
+      const status = num(plan['status']);
+      if (status !== null && status !== 0 && status !== 1) throw new Error('invalid_response');
+      const creditLimit = record(plan['plan_credit_rate_limit']);
+      const fiveHourReset = unixDate(plan['five_hour_usage_reset_time']);
+      const weeklyReset = unixDate(plan['weekly_usage_reset_time']);
+      const isCreditPlan = num(plan['plan_family']) === 2 || (
+        plan['plan_credit_rate_limit'] !== undefined &&
+        fiveHourReset === undefined &&
+        weeklyReset === undefined &&
+        (num(plan['five_hour_usage_left_rate']) ?? 0) === 0 &&
+        (num(plan['weekly_usage_left_rate']) ?? 0) === 0
+      );
+      if (isCreditPlan) {
+        const buckets = array(creditLimit['credit_buckets']);
+        let bucketTotal = 0;
+        let bucketResidual = 0;
+        let hasBuckets = false;
+        let earliestResetMs: number | undefined;
+        for (const item of buckets) {
+          const entry = record(item);
+          const total = num(entry['credit_total']);
+          const residual = num(entry['credit_residual']);
+          if (total === null || total <= 0 || residual === null || residual < 0) continue;
+          hasBuckets = true;
+          bucketTotal += total;
+          bucketResidual += residual;
+          const resetIso = unixDate(entry['next_reset_at']) ?? unixDate(entry['expire_at']);
+          if (resetIso !== undefined) {
+            const ms = Date.parse(resetIso);
+            if (earliestResetMs === undefined || ms < earliestResetMs) earliestResetMs = ms;
+          }
+        }
+        const resetAt = unixDate(creditLimit['subscription_credit_reset_time'])
+          ?? (earliestResetMs !== undefined ? new Date(earliestResetMs).toISOString() : undefined);
+        if (hasBuckets) {
+          meters.push({
+            id: 'step-plan-credits', label: 'Step Plan 额度', unit: 'credits', unit_label: 'credits', scope: 'account',
+            used: Math.max(0, bucketTotal - bucketResidual), limit: bucketTotal, remaining: bucketResidual,
+            window: resetAt ? { label: '订阅周期', reset_at: resetAt, reset_timezone: 'UTC' } : undefined,
+          });
+        } else {
+          const total = num(creditLimit['credit_total']);
+          const residual = num(creditLimit['credit_residual']);
+          if (total !== null && total > 0 && residual !== null && residual >= 0) {
+            meters.push({
+              id: 'step-plan-credits', label: 'Step Plan 额度', unit: 'credits', unit_label: 'credits', scope: 'account',
+              used: Math.max(0, total - residual), limit: total, remaining: residual,
+              window: resetAt ? { label: '订阅周期', reset_at: resetAt, reset_timezone: 'UTC' } : undefined,
+            });
+          } else {
+            const leftUsed = stepLeftRateToUsedPercent(creditLimit['subscription_credit_left_rate'])
+              ?? stepLeftRateToUsedPercent(creditLimit['topup_credit_left_rate']);
+            if (leftUsed !== null) meters.push(percent('step-plan-credits', 'Step Plan 额度', leftUsed, resetAt));
+          }
+        }
+      } else {
+        if (fiveHourReset !== undefined) {
+          const used5h = stepLeftRateToUsedPercent(plan['five_hour_usage_left_rate']);
+          if (used5h !== null) meters.push(percent('step-plan-5h', '5小时', used5h, fiveHourReset, 18000));
+        }
+        if (weeklyReset !== undefined) {
+          const used7d = stepLeftRateToUsedPercent(plan['weekly_usage_left_rate']);
+          if (used7d !== null) meters.push(percent('step-plan-7d', '7天', used7d, weeklyReset, 604800));
+        }
+      }
+    }
+  }
+  if (adapter === 'siliconflow-cn' || adapter === 'siliconflow-global' || adapter === 'novita') {
+    const raw = adapter === 'novita' ? body['availableBalance'] : record(body['data'])['totalBalance'];
     const value = num(raw);
-    const currency = adapter === 'stepfun' || adapter === 'siliconflow-cn' ? 'CNY' : 'USD';
+    const currency = adapter === 'siliconflow-cn' ? 'CNY' : 'USD';
     if (value !== null) meters.push({ id: 'balance', label: `${currency} 余额`, unit: 'money', unit_label: currency, currency, scope: 'account', used: null, limit: null, remaining: adapter === 'novita' ? value / 10000 : value });
   }
   return meters.filter((meter): meter is ProviderQuotaMeter => meter !== undefined);

@@ -11,7 +11,16 @@ export interface QuotaPreferences {
   update(id: string, enabled: boolean): Promise<void>;
 }
 export class QuotaFailure extends Error {
-  constructor(readonly reason: 'auth_required' | 'invalid_response' | 'request_failed' | 'rate_limited') { super(reason); }
+  readonly status?: number;
+  readonly partialMeters?: ProviderQuotaMeter[];
+  constructor(
+    readonly reason: 'auth_required' | 'invalid_response' | 'request_failed' | 'rate_limited',
+    options?: { readonly status?: number; readonly partialMeters?: ProviderQuotaMeter[] },
+  ) {
+    super(reason);
+    this.status = options?.status;
+    this.partialMeters = options?.partialMeters;
+  }
 }
 interface CacheEntry { revision: string; checked: number; dataAt?: number; meters: ProviderQuotaMeter[]; reason?: string }
 const TTL = 5 * 60_000;
@@ -53,16 +62,42 @@ export class ProviderQuotaService {
     return this.snapshot();
   }
   private async fetchTarget(target: QuotaTarget, signal: AbortSignal): Promise<void> {
-    let meters: ProviderQuotaMeter[] = []; let reason: string | undefined;
+    let meters: ProviderQuotaMeter[] = []; let reason: string | undefined; let partialMeters: ProviderQuotaMeter[] | undefined;
     try {
       meters = await target.fetch(signal);
       if (meters.length === 0) reason = 'no_data';
-    } catch (error) { reason = error instanceof QuotaFailure ? error.reason : 'request_failed'; }
+    } catch (error) {
+      if (error instanceof QuotaFailure) {
+        reason = error.reason;
+        partialMeters = error.partialMeters;
+      } else {
+        reason = 'request_failed';
+      }
+    }
     const latest = (await this.targets()).find((candidate) => candidate.id === target.id);
     if (signal.aborted || !latest || latest.revision !== target.revision || !latest.active || (await this.preferences.read())[target.id] === false) return;
     const previous = this.cache.get(target.id);
     const keep = reason !== undefined && reason !== 'auth_required' && reason !== 'no_data' && previous?.revision === target.revision;
-    this.cache.set(target.id, { revision: target.revision, checked: this.now(), dataAt: reason === undefined ? this.now() : keep ? previous.dataAt : undefined, meters: keep ? previous.meters : meters, reason });
+    let nextMeters = meters;
+    let nextDataAt: number | undefined;
+    if (reason === undefined) {
+      nextDataAt = this.now();
+    } else if (keep && partialMeters !== undefined && partialMeters.length > 0) {
+      const updatedById = new Map(partialMeters.map((meter) => [meter.id, meter]));
+      const merged = previous.meters.map((meter) => updatedById.get(meter.id) ?? meter);
+      for (const meter of partialMeters) {
+        if (!merged.some((existing) => existing.id === meter.id)) merged.push(meter);
+      }
+      nextMeters = merged;
+      nextDataAt = previous.dataAt;
+    } else if (keep) {
+      nextMeters = previous.meters;
+      nextDataAt = previous.dataAt;
+    } else if (partialMeters !== undefined && partialMeters.length > 0) {
+      nextMeters = partialMeters;
+      nextDataAt = this.now();
+    }
+    this.cache.set(target.id, { revision: target.revision, checked: this.now(), dataAt: nextDataAt, meters: nextMeters, reason });
   }
   private view(target: QuotaTarget, preferences: Record<string, boolean>, now: number): ProviderQuotaSource {
     const enabled = target.active && preferences[target.id] !== false;

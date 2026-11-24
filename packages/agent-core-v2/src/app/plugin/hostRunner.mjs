@@ -668,6 +668,30 @@ for await (const line of input) {
     ).finally(() => pending.delete(message.id));
     continue;
   }
+  if (message.method === 'harness-quota-action') {
+    const { sourceId, action, accountId, settings, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const adapter = shuttingDown === undefined ? harnessQuotaSources.get(sourceId) : undefined;
+    void Promise.resolve().then(async () => {
+      if (adapter === undefined || typeof adapter.performAction !== 'function') throw new Error('Unsupported harness quota action');
+      controller.signal.throwIfAborted();
+      return adapter.performAction(
+        accountId === undefined ? { action } : { action, accountId },
+        { settings: settings ?? {}, signal: controller.signal, kikiHome: kikiHome ?? '' },
+      );
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({
+        id: message.id,
+        error: {
+          code: -32000,
+          message: error instanceof Error && error.message.trim() !== '' ? error.message.slice(0, 512) : 'Harness quota action failed',
+        },
+      }),
+    ).finally(() => pending.delete(message.id));
+    continue;
+  }
   if (message.method === 'harness-account-release') {
     void releaseHarnessAccount(message.params?.prepareId).then(
       () => send({ id: message.id, result: true }),

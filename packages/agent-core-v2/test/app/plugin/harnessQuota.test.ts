@@ -1,7 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { HarnessQuotaCache } from '#/app/plugin/harnessQuota';
-import { HARNESS_QUOTA_UNAVAILABLE_MESSAGE, type HarnessQuotaReading, type PluginHarnessQuotaSnapshot } from '@kiki/protocol';
+import { HarnessQuotaCache, HarnessQuotaService } from '#/app/plugin/harnessQuota';
+import type { IPluginHostService } from '#/app/plugin/pluginHostService';
+import {
+  HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  harnessQuotaSourceDefinitionSchema,
+  type HarnessQuotaReading,
+  type PluginHarnessQuotaSnapshot,
+} from '@kiki/protocol';
 
 const definition: PluginHarnessQuotaSnapshot = {
   id: 'plugin:fixture-quota/example', label: 'Fixture', engineIds: ['agy-cli'], minRefreshIntervalMs: 300_000,
@@ -107,5 +113,94 @@ describe('harness quota cache', () => {
     const recovered = await cache.read(definition.id, 600_000, async () => [reading]);
     expect(recovered).toEqual([reading]);
     expect(cache.snapshots([definition]).sources[0]?.error).toBeUndefined();
+  });
+
+  it('forwards bounded declared quota actions, enforces account_id on account scope, and invalidates cached readings', async () => {
+    expect(harnessQuotaSourceDefinitionSchema.safeParse({
+      schemaVersion: 1,
+      id: 'pool',
+      label: 'Pool',
+      engineIds: ['agy-cli'],
+      actions: [
+        { id: 'set_primary', label: '设为当前账号', scope: 'account' },
+        { id: 'toggle_pause', label: '暂停此账号', scope: 'account' },
+        { id: 'manage', label: '在插件中管理', scope: 'pool' },
+      ],
+    }).success).toBe(true);
+    expect(harnessQuotaSourceDefinitionSchema.safeParse({
+      schemaVersion: 1,
+      id: 'pool',
+      label: 'Pool',
+      engineIds: ['agy-cli'],
+      actions: [
+        { id: 'set_primary', label: 'A', scope: 'account' },
+        { id: 'set_primary', label: 'B', scope: 'account' },
+      ],
+    }).success).toBe(false);
+
+    let readCount = 0;
+    const performHarnessQuotaAction = vi.fn(async () => ({ ok: true, message: 'switched' }));
+    const hosts = {
+      attachQuotaCache: vi.fn(),
+      listHarnessQuotaSources: vi.fn(async () => [{
+        id: definition.id,
+        label: definition.label,
+        engineIds: ['agy-cli'],
+        minRefreshIntervalMs: 300_000,
+        actions: [
+          { id: 'set_primary' as const, label: '设为当前账号', scope: 'account' as const },
+          { id: 'manage' as const, label: '在插件中管理', scope: 'pool' as const },
+        ],
+      }]),
+      readHarnessQuota: vi.fn(async () => {
+        readCount += 1;
+        return [reading];
+      }),
+      performHarnessQuotaAction,
+    } as unknown as IPluginHostService;
+
+    const service = new HarnessQuotaService(hosts);
+    await service.read(definition.id);
+    expect(readCount).toBe(1);
+    expect((await service.cached()).sources[0]?.actions).toEqual([
+      { id: 'set_primary', label: '设为当前账号', scope: 'account' },
+      { id: 'manage', label: '在插件中管理', scope: 'pool' },
+    ]);
+
+    await expect(service.performAction(definition.id, 'toggle_pause', 'work')).rejects.toThrow('not declared');
+    await expect(service.performAction(definition.id, 'set_primary', undefined)).rejects.toThrow('requires account_id');
+
+    const result = await service.performAction(definition.id, 'set_primary', 'work');
+    expect(result).toEqual({ ok: true, message: 'switched' });
+    expect(performHarnessQuotaAction).toHaveBeenCalledWith(definition.id, 'set_primary', 'work', expect.any(AbortSignal));
+
+    await service.read(definition.id);
+    expect(readCount).toBe(2);
+
+    let releaseSlowRead!: (value: readonly HarnessQuotaReading[]) => void;
+    const slowReadPromise = new Promise<readonly HarnessQuotaReading[]>((resolve) => {
+      releaseSlowRead = resolve;
+    });
+    const staleReading: HarnessQuotaReading = { ...reading, remaining: 10 };
+    const freshReading: HarnessQuotaReading = { ...reading, remaining: 95 };
+    let phase = 0;
+    const raceHosts = {
+      attachQuotaCache: vi.fn(),
+      listHarnessQuotaSources: hosts.listHarnessQuotaSources,
+      readHarnessQuota: vi.fn(async () => {
+        phase += 1;
+        if (phase === 1) return slowReadPromise;
+        return [freshReading];
+      }),
+      performHarnessQuotaAction: vi.fn(async () => ({ ok: true, message: 'switched' })),
+    } as unknown as IPluginHostService;
+    const raceService = new HarnessQuotaService(raceHosts);
+    const pendingOldRead = raceService.read(definition.id);
+    await Promise.resolve();
+    await raceService.performAction(definition.id, 'set_primary', 'work');
+    releaseSlowRead([staleReading]);
+    await pendingOldRead;
+    expect((await raceService.cached()).sources[0]?.readings).toBeUndefined();
+    expect(await raceService.read(definition.id)).toEqual([freshReading]);
   });
 });
