@@ -3,7 +3,6 @@ import { createRequire } from 'node:module';
 import {
   access,
   constants,
-  lstat,
   mkdir,
   mkdtemp,
   open as fsOpen,
@@ -25,10 +24,8 @@ const Fastify = kapServerRequire('fastify');
 
 import { AgentBlobServiceImpl } from '../../../packages/agent-core-v2/src/agent/blob/agentBlobServiceImpl.ts';
 import {
-  HOST_PINNED_MIN_BYTES,
   HOST_PINNED_SUBSCOPE,
   HOSTREF_PROTOCOL,
-  HostPinnedSourceChangedError,
   isHostPinnedSupported,
   openVerifiedHostPinnedStream,
   registerHostPinnedRef,
@@ -48,10 +45,8 @@ import { IHostFileSystem } from '../../../packages/agent-core-v2/src/os/interfac
 import { ISessionIndex } from '../../../packages/agent-core-v2/src/app/sessionIndex/sessionIndex.ts';
 import { ISessionManager } from '../../../packages/agent-core-v2/src/app/sessionManager/sessionManager.ts';
 import { sessionScopeOf, workspacePersistenceScope } from '../../../packages/agent-core-v2/src/index.ts';
-import { LIGHTWEIGHT_STATE_NAMES, readPersistedAgentCheckpoint } from '../../../packages/agent-core-v2/src/session/persistedAgentCheckpoint.ts';
+import { readPersistedAgentCheckpoint } from '../../../packages/agent-core-v2/src/session/persistedAgentCheckpoint.ts';
 import {
-  COLD_CHECKPOINT_ARCHIVE_ZST_KEY,
-  COLD_CHECKPOINT_PROJECTION_KEY,
   readArchivedReplayCheckpointEnvelope,
   rehydrateColdReplayCheckpoint,
 } from '../../../packages/agent-core-v2/src/session/replayCheckpointArchive.ts';
