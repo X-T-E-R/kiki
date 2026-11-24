@@ -90,13 +90,35 @@ import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
 import { buildResyncRequired } from './protocol';
 import {
+  encodeJsonValueBounded,
+  estimateJsonByteLengthBounded,
+  MAX_SINGLE_JOURNAL_LINE_BYTES,
+} from './boundedJsonEncoder';
+import {
   type EventEnvelope,
+  isAttentionEventType,
+  type JournalAppendOutcome,
   type JournalLogger,
+  type JournalWriteStats,
   pruneExpiredEventJournals,
   SessionEventJournal,
   sessionJournalPath,
   toAttentionCursor,
 } from './sessionEventJournal';
+import {
+  buildLightweightLoopEventStub,
+  buildLightweightTrackerStub,
+  buildRosterHintEnvelopeFromGap,
+  collectContiguousDiskRange,
+  collectContiguousTailRange,
+  isGlobalEventType,
+  judgeReplayVisibility,
+  preProjectEventForQueue,
+  type QueuedDispatchPayload,
+  type SessionTailEntry,
+  subjectMatchesAgentFilter,
+  subjectSuppressedByTranscript,
+} from './sessionEventReplay';
 
 export type ResyncReason =
   | 'buffer_overflow'
@@ -107,6 +129,8 @@ export type ResyncReason =
 
 export interface BufferedSinceResult {
   events: Array<{ seq: number; envelope: EventEnvelope }>;
+  /** Lightweight roster hints preserved across transcript-suppressed gaps for ordered views. */
+  rosterHints?: EventEnvelope[];
   /** When set, the client must rebuild from the snapshot and re-subscribe. */
   resyncRequired: ResyncReason | false;
   currentSeq: number;
@@ -116,7 +140,8 @@ export interface BufferedSinceResult {
 export interface RawSessionTarget {
   readonly wantsDeltas?: boolean;
   send(envelope: EventEnvelope): void;
-  onEvicted?(info: { readonly epoch: string; readonly seq: number }): void;
+  onEvicted?(info: { readonly epoch: string; readonly seq: number; readonly reason?: 'session_evicted' | 'journal_gap' }): void;
+  onGap?(info: { readonly epoch: string; readonly seq: number; readonly reason: 'journal_gap' }): void;
 }
 
 export interface GlobalRawTarget {
@@ -197,6 +222,19 @@ interface PendingTranscriptSeed {
   readonly timing: SessionViewTimingContext;
 }
 
+interface QueuedBackpressureState {
+  count: number;
+  omittedBytesAtLeast: number;
+  hasAttention: boolean;
+  isGlobal: boolean;
+}
+
+interface QueuedSessionTask {
+  readonly run: () => Promise<void> | void;
+  readonly liveBytes: number;
+  readonly backpressure?: QueuedBackpressureState;
+}
+
 interface SessionState {
   readonly sessionId: string;
   readonly sessionHandle?: ISessionScopeHandle;
@@ -204,14 +242,18 @@ interface SessionState {
   readonly tracker: InFlightTurnTracker;
   readonly roster: SubagentRosterTracker;
   mainAgent?: IAgentScopeHandle;
-  contextMessages: readonly ContextMessage[];
+  contextView: { messages: readonly ContextMessage[]; revision: number };
+  authoritativeContext: boolean;
   deferredWork?: SessionActivityState;
-  readonly tail: Array<{ seq: number; envelope: EventEnvelope }>;
+  readonly tail: SessionTailEntry[];
+  tailBytes: number;
   readonly targets: Map<BroadcastTarget, TargetSubscription>;
   readonly rawTargets: Set<RawSessionTarget>;
   readonly interactionConsumers: Map<BroadcastTarget, string>;
   interactionService?: ISessionInteractionService;
-  queue: Promise<void>;
+  readonly taskQueue: QueuedSessionTask[];
+  queuedLiveBytes: number;
+  queueDrainPromise?: Promise<void>;
   readonly agentDisposables: Map<string, IDisposable>;
   readonly lifecycleDisposables: IDisposable[];
   readonly knownInteractions: Map<string, { readonly kind: InteractionKind; readonly agentId: string }>;
@@ -222,11 +264,29 @@ interface SessionState {
 }
 
 export const DEFAULT_MAX_BUFFER_SIZE = 1000;
+const MAX_TAIL_BUFFER_BYTES = 8 * 1024 * 1024;
+const MAX_SESSION_QUEUE_LIVE_BYTES = 4 * 1024 * 1024;
+const MAX_PROCESS_QUEUE_LIVE_BYTES = 64 * 1024 * 1024;
+const MIN_QUEUED_TASK_BYTES = 256;
+const MAX_GLOBAL_RAW_RING_BYTES = 4 * 1024 * 1024;
 const GLOBAL_SESSION_ID = '__global__';
 const TRANSCRIPT_RESET_TAIL_TURNS = 20;
 let nextInteractionConsumerId = 0;
+let processQueuedLiveBytes = 0;
+
+function adjustQueueLiveBytes(state: SessionState, delta: number): void {
+  state.queuedLiveBytes = Math.max(0, state.queuedLiveBytes + delta);
+  processQueuedLiveBytes = Math.max(0, processQueuedLiveBytes + delta);
+}
 
 async function disposeSessionState(state: SessionState): Promise<void> {
+  if (state.queuedLiveBytes > 0) {
+    adjustQueueLiveBytes(state, -state.queuedLiveBytes);
+  }
+  state.taskQueue.length = 0;
+  state.tail.length = 0;
+  state.tailBytes = 0;
+  state.contextView = { messages: [], revision: 0 };
   for (const id of state.interactionConsumers.values()) {
     state.interactionService?.releaseConsumer(id);
   }
@@ -283,7 +343,11 @@ export class SessionEventBroadcaster {
   private readonly globalTargets = new Set<BroadcastTarget>();
   private readonly globalRawTargets = new Set<GlobalRawTarget>();
   private readonly knownPrivateSessionIds = new Set<string>();
-  private readonly globalRawRing: Array<{ seq: number; envelope: EventEnvelope; hidden: boolean }> = [];
+  private readonly globalRawRing: Array<
+    | { readonly kind: 'event'; readonly seq: number; readonly envelope: EventEnvelope; readonly hidden: boolean; readonly bytes: number }
+    | { readonly kind: 'gap'; readonly seq: number; readonly sessionId?: string; readonly hidden: boolean; readonly bytes: number }
+  > = [];
+  private globalRawRingBytes = 0;
   private globalRawSeq = 0;
   private readonly globalRawEpoch = crypto.randomUUID();
   /**
@@ -478,10 +542,30 @@ export class SessionEventBroadcaster {
     if (oldest === undefined || oldest > cursor.seq + 1) {
       return { events: [], resyncRequired: 'buffer_overflow', currentSeq, epoch };
     }
+    let expected = cursor.seq + 1;
+    const events: Array<{ seq: number; envelope: EventEnvelope }> = [];
+    for (const item of this.globalRawRing) {
+      if (item.seq <= cursor.seq) continue;
+      if (item.seq > currentSeq) break;
+      if (item.seq !== expected) {
+        return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
+      }
+      expected = item.seq + 1;
+      const visible =
+        scopedSessionId !== undefined
+          ? (item.kind === 'event' ? item.envelope.session_id : item.sessionId) === scopedSessionId
+          : !item.hidden;
+      if (!visible) continue;
+      if (item.kind === 'gap') {
+        return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
+      }
+      events.push({ seq: item.seq, envelope: item.envelope });
+    }
+    if (expected !== currentSeq + 1) {
+      return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
+    }
     return {
-      events: this.globalRawRing
-        .filter((item) => item.seq > cursor.seq && (scopedSessionId !== undefined ? item.envelope.session_id === scopedSessionId : !item.hidden))
-        .map(({ seq, envelope }) => ({ seq, envelope })),
+      events,
       resyncRequired: false,
       currentSeq,
       epoch,
@@ -547,8 +631,23 @@ export class SessionEventBroadcaster {
       epoch: this.globalRawEpoch,
     };
     const hidden = this.isHiddenForPublicGlobal(envelope.session_id, envelope);
-    this.globalRawRing.push({ seq, envelope, hidden });
-    while (this.globalRawRing.length > this.maxBufferSize) this.globalRawRing.shift();
+    const probe = encodeJsonValueBounded(envelope, MAX_SINGLE_JOURNAL_LINE_BYTES);
+    if (probe.ok) {
+      this.globalRawRing.push({ kind: 'event', seq, envelope, hidden, bytes: probe.bytes });
+      this.globalRawRingBytes += probe.bytes;
+    } else {
+      const gapBytes = 128;
+      this.globalRawRing.push({ kind: 'gap', seq, sessionId: envelope.session_id, hidden, bytes: gapBytes });
+      this.globalRawRingBytes += gapBytes;
+    }
+    while (
+      this.globalRawRing.length > this.maxBufferSize ||
+      this.globalRawRingBytes > MAX_GLOBAL_RAW_RING_BYTES
+    ) {
+      const dropped = this.globalRawRing.shift();
+      if (dropped === undefined) break;
+      this.globalRawRingBytes = Math.max(0, this.globalRawRingBytes - dropped.bytes);
+    }
     for (const target of this.globalRawTargets) {
       try {
         target.send(envelope, hidden);
@@ -712,6 +811,31 @@ export class SessionEventBroadcaster {
 
   isSessionViewed(sessionId: string): boolean {
     return (this.sessions.get(sessionId)?.targets.size ?? 0) > 0;
+  }
+
+  /** Return live journal write/compaction/tail metrics for a resident session, if active. */
+  getSessionJournalMetrics(sessionId: string): {
+    readonly journal: JournalWriteStats;
+    readonly tailBytes: number;
+    readonly tailCount: number;
+    readonly queuedLiveBytes: number;
+  } | undefined {
+    const state = this.sessions.get(sessionId);
+    if (state === undefined) return undefined;
+    return {
+      journal: state.journal.stats(),
+      tailBytes: state.tailBytes,
+      tailCount: state.tail.length,
+      queuedLiveBytes: state.queuedLiveBytes,
+    };
+  }
+
+  /** Flush the resident session's event queue and journal to disk when active. */
+  async flushSessionJournal(sessionId: string): Promise<void> {
+    const state = this.sessions.get(sessionId);
+    if (state === undefined) return;
+    await this.drainSessionQueue(state);
+    await state.journal.flush();
   }
 
   /**
@@ -1041,7 +1165,7 @@ export class SessionEventBroadcaster {
     this.nextTranscriptGeneration(state, target);
     const residencyLease = state.targets.get(target)?.residencyLease;
     if (residencyLease !== undefined) {
-      state.queue = state.queue.then(() => residencyLease.dispose()).then(() => undefined);
+      this.enqueueStateTask(state, async () => { await residencyLease.dispose(); });
     }
     state.targets.delete(target);
     const consumerId = state.interactionConsumers.get(target);
@@ -1576,12 +1700,14 @@ export class SessionEventBroadcaster {
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
     transcriptOnly = false,
+    detachedTranscriptAgents?: ReadonlySet<string>,
+    options?: { readonly wantsRosterHints?: boolean },
   ): Promise<BufferedSinceResult> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) {
       return { events: [], resyncRequired: 'session_recreated', currentSeq: 0, epoch: '' };
     }
-    await state.queue;
+    await this.drainSessionQueue(state);
     const { journal, tail } = state;
     const currentSeq = journal.seq;
     const { epoch } = journal;
@@ -1599,27 +1725,38 @@ export class SessionEventBroadcaster {
       return { events: [], resyncRequired: 'buffer_overflow', currentSeq, epoch };
     }
 
-    const applyFilter = (
-      entries: Array<{ seq: number; envelope: EventEnvelope }>,
-    ): Array<{ seq: number; envelope: EventEnvelope }> =>
-      filter === undefined && transcriptGrades === undefined
-        ? entries
-        : entries.filter(
-            ({ envelope }) =>
-              matchesAgentFilter(envelope, filter) &&
-              !suppressedByTranscript(envelope, transcriptGrades, transcriptOnly),
-          );
+    let covered = collectContiguousTailRange(tail, cursor.seq, currentSeq, epoch, sessionId);
+    if (covered === undefined) {
+      const fromDisk = await journal.readRecordsSince(cursor.seq, currentSeq, this.maxBufferSize);
+      if (!fromDisk.healthy || !fromDisk.headerEpochValid || fromDisk.epoch !== epoch) {
+        return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
+      }
+      covered = collectContiguousDiskRange(fromDisk.records, cursor.seq, currentSeq, epoch, sessionId);
+      if (covered === undefined) {
+        return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
+      }
+    }
 
-    const tailStart = tail[0]?.seq;
-    if (tailStart !== undefined && tailStart <= cursor.seq + 1) {
-      const events = applyFilter(tail.filter((e) => e.seq > cursor.seq));
-      return { events, resyncRequired: false, currentSeq, epoch };
+    const verdict = judgeReplayVisibility(
+      covered,
+      sessionId,
+      epoch,
+      filter,
+      transcriptGrades,
+      transcriptOnly,
+      detachedTranscriptAgents,
+      options?.wantsRosterHints === true,
+    );
+    if (!verdict.ok) {
+      return { events: [], resyncRequired: verdict.reason, currentSeq, epoch };
     }
-    const fromDisk = await journal.readSince(cursor.seq, this.maxBufferSize);
-    if (!diskReplayIsContiguous(cursor.seq, fromDisk)) {
-      return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
-    }
-    return { events: applyFilter(fromDisk), resyncRequired: false, currentSeq, epoch };
+    return {
+      events: verdict.events,
+      ...(verdict.rosterHints.length > 0 ? { rosterHints: verdict.rosterHints } : {}),
+      resyncRequired: false,
+      currentSeq,
+      epoch,
+    };
   }
 
   async getCursor(
@@ -1635,7 +1772,8 @@ export class SessionEventBroadcaster {
       const cold = await this.readColdWatermark(sessionId, signal, indexed);
       return cold ?? { seq: 0, epoch: '', attentionSeq: 0 };
     }
-    await (signal === undefined ? state.queue : abortable(state.queue, signal));
+    const drained = this.drainSessionQueue(state);
+    await (signal === undefined ? drained : abortable(drained, signal));
     signal?.throwIfAborted();
     return {
       seq: state.journal.seq,
@@ -1658,13 +1796,11 @@ export class SessionEventBroadcaster {
       agentId: 'main',
       sessionId,
     };
-    const queued = state.queue
-      .then(() => this.dispatch(state, event, false))
-      .then(() => state.journal.flush());
-    state.queue = queued.catch((error: unknown) => {
-      this.logDispatchDropped(sessionId, event.type, error);
-    });
-    await queued;
+    const projected = preProjectEventForQueue(event, false);
+    await this.enqueueStateTaskAsync(state, async () => {
+      await this.dispatchProjected(state, projected, false);
+      await state.journal.flush();
+    }, event.type);
     return { seq: state.journal.seq, epoch: state.journal.epoch };
   }
 
@@ -1747,37 +1883,42 @@ export class SessionEventBroadcaster {
       };
     }
     const captureMessages = options.captureMessages !== false;
-    const queued = state.queue;
-    const barrier = timeSessionViewPhase('snapshot_queue', fields, () => queued, timing).then(() => {
-      timing.signal?.throwIfAborted();
-      const contextMessages = captureMessages ? [...state.contextMessages] : [];
-      const mainAgent = state.mainAgent;
-      const frozen = {
-        seq: state.journal.seq,
-        epoch: state.journal.epoch,
-        attentionSeq: state.journal.attentionSeq,
-        contextMessages,
-        contextMessageCount: captureMessages
-          ? state.contextMessages.length
-          : cachedMessageCount(this.opts.core, sessionId, state.contextMessages) ?? state.contextMessages.length,
-        mainAgent,
-        inFlightTurn: structuredClone(state.tracker.get(sessionId)),
-        subagents: structuredClone(state.roster.get(sessionId)),
-        pendingApprovals: structuredClone(state.interactionService?.listPending('approval').map((interaction) => toWireApproval(interaction, sessionId)) ?? []),
-        pendingQuestions: structuredClone(state.interactionService?.listPending('question').map((interaction) => toWireQuestion(interaction, sessionId)) ?? []),
-        pendingUserTools: structuredClone(state.interactionService?.listPending('user_tool').map((interaction) => toWirePendingUserTool(interaction, sessionId)) ?? []),
-        currentPromptId: readCurrentPromptId(mainAgent),
-        status: structuredClone(readSnapshotStatus(mainAgent)),
-      };
-      const captured = timeSessionViewPhase('snapshot_capture', fields, async () => options.capture?.(), timing);
-      return { ...frozen, captured };
-    });
-    state.queue = barrier
-      .then(() => undefined)
-      .catch((error: unknown) => {
-        this.logDispatchDropped(sessionId, 'snapshot.capture', error);
-      });
-    const { mainAgent, contextMessages, captured, ...base } = await barrier;
+    const barrier = await timeSessionViewPhase(
+      'snapshot_queue',
+      fields,
+      () =>
+        this.enqueueStateTaskAsync(
+          state,
+          () => {
+            timing.signal?.throwIfAborted();
+            const viewMessages = state.contextView.messages;
+            const contextMessages = captureMessages ? [...viewMessages] : [];
+            const mainAgent = state.mainAgent;
+            const frozen = {
+              seq: state.journal.seq,
+              epoch: state.journal.epoch,
+              attentionSeq: state.journal.attentionSeq,
+              contextMessages,
+              contextMessageCount: captureMessages
+                ? viewMessages.length
+                : cachedMessageCount(this.opts.core, sessionId, viewMessages) ?? viewMessages.length,
+              mainAgent,
+              inFlightTurn: structuredClone(state.tracker.get(sessionId)),
+              subagents: structuredClone(state.roster.get(sessionId)),
+              pendingApprovals: structuredClone(state.interactionService?.listPending('approval').map((interaction) => toWireApproval(interaction, sessionId)) ?? []),
+              pendingQuestions: structuredClone(state.interactionService?.listPending('question').map((interaction) => toWireQuestion(interaction, sessionId)) ?? []),
+              pendingUserTools: structuredClone(state.interactionService?.listPending('user_tool').map((interaction) => toWirePendingUserTool(interaction, sessionId)) ?? []),
+              currentPromptId: readCurrentPromptId(mainAgent),
+              status: structuredClone(readSnapshotStatus(mainAgent)),
+            };
+            const captured = timeSessionViewPhase('snapshot_capture', fields, async () => options.capture?.(), timing);
+            return { ...frozen, captured };
+          },
+          'snapshot.capture',
+        ),
+      timing,
+    );
+    const { mainAgent, contextMessages, captured, ...base } = barrier;
     if (options.deferHistory === true && captureMessages && mainAgent !== undefined) {
       await mainAgent.accessor.get(IWireService).flush();
       timing.signal?.throwIfAborted();
@@ -1854,7 +1995,7 @@ export class SessionEventBroadcaster {
     await this.sessionLifecycleSubscription.dispose();
     await Promise.allSettled([...this.evictions.values(), ...this.pendingStates.values()]);
     for (const [sessionId, state] of this.sessions) {
-      await state.queue;
+      await this.drainSessionQueue(state);
       await disposeSessionState(state);
       this.opts.transcriptService?.dropSession(sessionId);
     }
@@ -1883,7 +2024,7 @@ export class SessionEventBroadcaster {
     if (state === undefined || this.sessions.get(sessionId) !== state) return;
 
     this.sessions.delete(sessionId);
-    await state.queue;
+    await this.drainSessionQueue(state);
     await disposeSessionState(state);
     this.opts.transcriptService?.dropSession(sessionId);
   }
@@ -1931,13 +2072,16 @@ export class SessionEventBroadcaster {
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
-      contextMessages: [],
+      contextView: { messages: [], revision: 0 },
+      authoritativeContext: false,
       tail: [],
+      tailBytes: 0,
       targets: new Map(),
       rawTargets: new Set(),
       interactionConsumers: new Map(),
       interactionService: session.accessor.get(ISessionInteractionService),
-      queue: Promise.resolve(),
+      taskQueue: [],
+      queuedLiveBytes: 0,
       agentDisposables: new Map(),
       lifecycleDisposables: [],
       knownInteractions: new Map(),
@@ -1985,12 +2129,15 @@ export class SessionEventBroadcaster {
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
-      contextMessages: [],
+      contextView: { messages: [], revision: 0 },
+      authoritativeContext: false,
       tail: [],
+      tailBytes: 0,
       targets: new Map(),
       rawTargets: new Set(),
       interactionConsumers: new Map(),
-      queue: Promise.resolve(),
+      taskQueue: [],
+      queuedLiveBytes: 0,
       agentDisposables: new Map(),
       lifecycleDisposables: [],
       knownInteractions: new Map(),
@@ -2158,9 +2305,7 @@ export class SessionEventBroadcaster {
 
   private async dispatchGlobal(event: Event): Promise<void> {
     const state = await this.ensureGlobalState();
-    state.queue = state.queue
-      .then(() => this.dispatch(state, event, isVolatileEventType(event.type)))
-      .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
+    this.enqueueEvent(state, event, isVolatileEventType(event.type));
   }
 
   /**
@@ -2180,9 +2325,7 @@ export class SessionEventBroadcaster {
       throw error;
     }
     if (state === undefined) return;
-    state.queue = state.queue
-      .then(() => this.dispatch(state, event, isVolatileEventType(event.type)))
-      .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
+    this.enqueueEvent(state, event, isVolatileEventType(event.type));
   }
 
   /**
@@ -2233,7 +2376,9 @@ export class SessionEventBroadcaster {
       }
       if (handle.id === MAIN_AGENT_ID) {
         state.mainAgent = handle;
-        state.contextMessages = readContextMessages(handle);
+        const probe = probeAuthoritativeContext(handle);
+        state.authoritativeContext = probe.authoritative;
+        state.contextView = { messages: probe.messages, revision: state.contextView.revision + 1 };
       }
       state.agentDisposables.set(handle.id, this.attachAgent(sessionId, handle));
     };
@@ -2257,7 +2402,7 @@ export class SessionEventBroadcaster {
       agents.onDidDispose((agentId) => {
         const d = state.agentDisposables.get(agentId);
         if (d !== undefined) {
-          state.queue = state.queue.then(() => d.dispose()).then(() => undefined);
+          this.enqueueStateTask(state, async () => { await d.dispose(); });
           state.agentDisposables.delete(agentId);
           this.enqueueDurable(state, {
             type: 'agent.disposed',
@@ -2355,9 +2500,7 @@ export class SessionEventBroadcaster {
           agentId,
           sessionId,
         } as unknown as Event;
-        state.queue = state.queue
-          .then(() => this.dispatch(state, wireEvent, true))
-          .catch((error: unknown) => this.logDispatchDropped(state.sessionId, wireEvent.type, error));
+        this.enqueueEvent(state, wireEvent, true);
       }
       return;
     }
@@ -2428,14 +2571,10 @@ export class SessionEventBroadcaster {
       wireEvent = Object.assign({}, event, { agentId, sessionId }) as unknown as Event;
     }
     const volatile = isVolatileSignal(event.type);
-    state.queue = state.queue
-      .then(() => this.dispatch(state, wireEvent, volatile))
-      .catch((error: unknown) => this.logDispatchDropped(state.sessionId, wireEvent.type, error));
+    this.enqueueEvent(state, wireEvent, volatile);
     const legacy = legacyTaskEvent(event, agentId, sessionId);
     if (legacy !== undefined) {
-      state.queue = state.queue
-        .then(() => this.dispatch(state, legacy, volatile))
-        .catch((error: unknown) => this.logDispatchDropped(state.sessionId, legacy.type, error));
+      this.enqueueEvent(state, legacy, volatile);
     }
   }
 
@@ -2487,20 +2626,341 @@ export class SessionEventBroadcaster {
     );
   }
 
+  private enqueueStateTask(
+    state: SessionState,
+    run: () => Promise<void> | void,
+    eventType = 'task',
+    liveBytes = 0,
+  ): void {
+    if (liveBytes > 0) adjustQueueLiveBytes(state, liveBytes);
+    state.taskQueue.push({
+      liveBytes,
+      run: async () => {
+        try {
+          await run();
+        } catch (error: unknown) {
+          this.logDispatchDropped(state.sessionId, eventType, error);
+        }
+      },
+    });
+    this.ensureQueueDraining(state);
+  }
+
+  private enqueueStateTaskAsync<T>(
+    state: SessionState,
+    run: () => Promise<T> | T,
+    eventType: string,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      state.taskQueue.push({
+        liveBytes: 0,
+        run: async () => {
+          try {
+            resolve(await run());
+          } catch (error: unknown) {
+            this.logDispatchDropped(state.sessionId, eventType, error);
+            reject(error);
+          }
+        },
+      });
+      this.ensureQueueDraining(state);
+    });
+  }
+
+  private ensureQueueDraining(state: SessionState): void {
+    if (state.queueDrainPromise !== undefined) return;
+    state.queueDrainPromise = (async () => {
+      await Promise.resolve();
+      while (state.taskQueue.length > 0) {
+        const next = state.taskQueue.shift()!;
+        try {
+          await next.run();
+        } finally {
+          if (next.liveBytes > 0) adjustQueueLiveBytes(state, -next.liveBytes);
+        }
+      }
+    })().finally(() => {
+      state.queueDrainPromise = undefined;
+      if (state.taskQueue.length > 0) this.ensureQueueDraining(state);
+    });
+  }
+
+  private async drainSessionQueue(state: SessionState): Promise<void> {
+    while (state.queueDrainPromise !== undefined || state.taskQueue.length > 0) {
+      this.ensureQueueDraining(state);
+      await state.queueDrainPromise;
+    }
+  }
+
+  private hasUnsuppressedRecipient(
+    state: SessionState,
+    eventType: string,
+    agentId: string | null,
+    routingKnown: boolean,
+  ): boolean {
+    if (isGlobalEventType(eventType)) {
+      if (this.globalTargets.size > 0 || this.globalRawTargets.size > 0 || state.rawTargets.size > 0) {
+        return true;
+      }
+      for (const s of this.sessions.values()) {
+        if (s.targets.size > 0) return true;
+      }
+      return false;
+    }
+    if (state.rawTargets.size > 0) return true;
+    const subject = { eventType, agentId, routingKnown };
+    for (const sub of state.targets.values()) {
+      if (!subjectMatchesAgentFilter(subject, sub.agentFilter)) continue;
+      if (
+        !subjectSuppressedByTranscript(
+          subject,
+          sub.transcriptGrades,
+          sub.transcriptOnly === true,
+          sub.detachedTranscriptAgents,
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private enqueueEvent(state: SessionState, event: Event, volatile: boolean): void {
+    let contextAuthoritativeRef: readonly ContextMessage[] | undefined;
+    let fallbackSplice: { readonly start: number; readonly deleteCount: number; readonly messages: readonly ContextMessage[] } | undefined;
+    if (event.agentId === MAIN_AGENT_ID && event.type === 'context.spliced') {
+      const liveRef = readContextMessagesRef(state.mainAgent);
+      if (
+        liveRef !== undefined &&
+        (state.authoritativeContext ||
+          (liveRef !== state.contextView.messages &&
+            (event.messages.length === 0 ||
+              (liveRef[event.start] === event.messages[0] &&
+                liveRef[event.start + event.messages.length - 1] === event.messages.at(-1)))))
+      ) {
+        contextAuthoritativeRef = liveRef;
+      } else {
+        fallbackSplice = {
+          start: event.start,
+          deleteCount: event.deleteCount,
+          messages: event.messages,
+        };
+      }
+    }
+
+    const projected = preProjectEventForQueue(event, volatile, MAX_SINGLE_JOURNAL_LINE_BYTES);
+    let finalProjected: QueuedDispatchPayload = projected;
+    let liveBytes = MIN_QUEUED_TASK_BYTES;
+    let backpressureDropped = false;
+    let backpressureOmittedBytes = 0;
+
+    if (projected.kind === 'oversized_gap') {
+      const wantsRaw = this.hasUnsuppressedRecipient(
+        state,
+        projected.eventType,
+        projected.agentId,
+        projected.routingKnown,
+      );
+      if (wantsRaw) {
+        const probe = encodeJsonValueBounded(event, MAX_SESSION_QUEUE_LIVE_BYTES);
+        if (
+          probe.ok &&
+          state.queuedLiveBytes + probe.bytes <= MAX_SESSION_QUEUE_LIVE_BYTES &&
+          processQueuedLiveBytes + probe.bytes <= MAX_PROCESS_QUEUE_LIVE_BYTES
+        ) {
+          finalProjected = { ...projected, liveRawEvent: event };
+          liveBytes = Math.max(MIN_QUEUED_TASK_BYTES, probe.bytes);
+        }
+      }
+      if (
+        finalProjected.kind === 'oversized_gap' &&
+        finalProjected.liveRawEvent === undefined &&
+        (state.queuedLiveBytes + MIN_QUEUED_TASK_BYTES > MAX_SESSION_QUEUE_LIVE_BYTES ||
+          processQueuedLiveBytes + MIN_QUEUED_TASK_BYTES > MAX_PROCESS_QUEUE_LIVE_BYTES)
+      ) {
+        backpressureDropped = true;
+        backpressureOmittedBytes = projected.omittedBytesAtLeast;
+      }
+    } else if (!volatile) {
+      const neededBytes = Math.max(MIN_QUEUED_TASK_BYTES, projected.estimatedBytes);
+      if (
+        state.queuedLiveBytes + neededBytes > MAX_SESSION_QUEUE_LIVE_BYTES ||
+        processQueuedLiveBytes + neededBytes > MAX_PROCESS_QUEUE_LIVE_BYTES
+      ) {
+        backpressureDropped = true;
+        backpressureOmittedBytes = projected.estimatedBytes;
+      } else {
+        liveBytes = neededBytes;
+      }
+    } else {
+      liveBytes = Math.max(MIN_QUEUED_TASK_BYTES, Math.min(projected.estimatedBytes, MAX_SINGLE_JOURNAL_LINE_BYTES));
+    }
+
+    if (backpressureDropped && !volatile) {
+      const eventHasAttention = isAttentionEventType(event.type);
+      const eventIsGlobal = isGlobalEventType(event.type);
+      const tailTask = state.taskQueue.at(-1);
+      if (
+        contextAuthoritativeRef === undefined &&
+        fallbackSplice === undefined &&
+        tailTask?.backpressure !== undefined
+      ) {
+        tailTask.backpressure.count += 1;
+        tailTask.backpressure.omittedBytesAtLeast += backpressureOmittedBytes;
+        tailTask.backpressure.hasAttention ||= eventHasAttention;
+        tailTask.backpressure.isGlobal ||= eventIsGlobal;
+        this.ensureQueueDraining(state);
+        return;
+      }
+
+      const bpState: QueuedBackpressureState = {
+        count: 1,
+        omittedBytesAtLeast: backpressureOmittedBytes,
+        hasAttention: eventHasAttention,
+        isGlobal: eventIsGlobal,
+      };
+      const trackerStub = buildLightweightTrackerStub(event);
+      const bpLiveBytes = MIN_QUEUED_TASK_BYTES;
+      adjustQueueLiveBytes(state, bpLiveBytes);
+      state.taskQueue.push({
+        liveBytes: bpLiveBytes,
+        backpressure: bpState,
+        run: async () => {
+          try {
+            if (contextAuthoritativeRef !== undefined) {
+              state.contextView = {
+                messages: contextAuthoritativeRef,
+                revision: state.contextView.revision + 1,
+              };
+            } else if (fallbackSplice !== undefined) {
+              const prev = state.contextView.messages;
+              state.contextView = {
+                messages: [
+                  ...prev.slice(0, fallbackSplice.start),
+                  ...fallbackSplice.messages,
+                  ...prev.slice(fallbackSplice.start + fallbackSplice.deleteCount),
+                ],
+                revision: state.contextView.revision + 1,
+              };
+            }
+            if (bpState.count === 1) {
+              state.tracker.apply(state.sessionId, trackerStub);
+              state.roster.apply(state.sessionId, trackerStub);
+            }
+            const fromSeq = state.journal.nextSeq();
+            let toSeq = fromSeq;
+            for (let i = 1; i < bpState.count; i += 1) {
+              toSeq = state.journal.nextSeq();
+            }
+            const outcome = state.journal.appendGap(toSeq, {
+              fromSeq,
+              eventType: '*',
+              agentId: null,
+              routingKnown: false,
+              omittedBytesAtLeast: bpState.omittedBytesAtLeast,
+              reason: 'queue_backpressure',
+              sessionId: state.sessionId,
+              advancesAttention: bpState.hasAttention,
+            });
+            this.pushTailOutcome(state, outcome);
+            const frame = buildResyncRequired(state.sessionId, 'journal_gap', toSeq, state.journal.epoch);
+            if (bpState.isGlobal) {
+              const recipients = new Set<BroadcastTarget>(this.globalTargets);
+              for (const target of this.allTargets()) recipients.add(target);
+              for (const target of recipients) {
+                try {
+                  target.sendControl?.(frame);
+                } catch {}
+              }
+            } else {
+              for (const target of state.targets.keys()) {
+                try {
+                  target.sendControl?.(frame);
+                } catch {}
+              }
+            }
+            this.notifyRawTargetsGap(state, toSeq);
+          } catch (error: unknown) {
+            this.logDispatchDropped(state.sessionId, 'queue_backpressure', error);
+          }
+        },
+      });
+      this.ensureQueueDraining(state);
+      return;
+    }
+
+    this.enqueueStateTask(
+      state,
+      () => {
+        if (contextAuthoritativeRef !== undefined) {
+          state.contextView = {
+            messages: contextAuthoritativeRef,
+            revision: state.contextView.revision + 1,
+          };
+        } else if (fallbackSplice !== undefined) {
+          const prev = state.contextView.messages;
+          state.contextView = {
+            messages: [
+              ...prev.slice(0, fallbackSplice.start),
+              ...fallbackSplice.messages,
+              ...prev.slice(fallbackSplice.start + fallbackSplice.deleteCount),
+            ],
+            revision: state.contextView.revision + 1,
+          };
+        }
+        return this.dispatchProjected(state, finalProjected, volatile);
+      },
+      event.type,
+      liveBytes,
+    );
+  }
+
   private enqueueContextLoopEvent(state: SessionState, event: Event): void {
-    state.queue = state.queue
-      .then(() => {
-        if (event.type !== 'context.append_loop_event') return;
-        state.contextMessages = foldLoopEvent(state.contextMessages, event.event);
-        state.tracker.apply(state.sessionId, event);
-      })
-      .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
+    if (event.type !== 'context.append_loop_event') return;
+    const authoritativeRef = state.authoritativeContext
+      ? readContextMessagesRef(state.mainAgent)
+      : undefined;
+    const trackerStub = buildLightweightLoopEventStub(event);
+    if (authoritativeRef !== undefined) {
+      this.enqueueStateTask(
+        state,
+        () => {
+          state.contextView = {
+            messages: authoritativeRef,
+            revision: state.contextView.revision + 1,
+          };
+          if (trackerStub !== undefined) {
+            state.tracker.apply(state.sessionId, trackerStub);
+          }
+        },
+        event.type,
+        MIN_QUEUED_TASK_BYTES,
+      );
+      return;
+    }
+    const loopPayload = event.event;
+    const estimated = estimateJsonByteLengthBounded(loopPayload, MAX_SESSION_QUEUE_LIVE_BYTES);
+    const liveBytes = Number.isFinite(estimated)
+      ? Math.max(MIN_QUEUED_TASK_BYTES, Math.min(estimated, MAX_SESSION_QUEUE_LIVE_BYTES))
+      : MIN_QUEUED_TASK_BYTES;
+    this.enqueueStateTask(
+      state,
+      () => {
+        state.contextView = {
+          messages: foldLoopEvent(state.contextView.messages, loopPayload),
+          revision: state.contextView.revision + 1,
+        };
+        if (trackerStub !== undefined) {
+          state.tracker.apply(state.sessionId, trackerStub);
+        }
+      },
+      event.type,
+      liveBytes,
+    );
   }
 
   private enqueueDurable(state: SessionState, event: Event): void {
-    state.queue = state.queue
-      .then(() => this.dispatch(state, event, false))
-      .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
+    this.enqueueEvent(state, event, false);
   }
 
   /**
@@ -2509,8 +2969,9 @@ export class SessionEventBroadcaster {
    * here is a real tuple change).
    */
   private enqueueWorkChanged(state: SessionState, work: SessionActivityState): void {
-    state.queue = state.queue
-      .then(async () => {
+    this.enqueueStateTask(
+      state,
+      async () => {
         const attentionCursor = toAttentionCursor({
           epoch: state.journal.epoch,
           attentionSeq: state.journal.attentionSeq,
@@ -2527,7 +2988,7 @@ export class SessionEventBroadcaster {
           agentId: 'main',
           sessionId: state.sessionId,
         } as Event;
-        await this.dispatch(state, event, false);
+        await this.dispatchProjected(state, preProjectEventForQueue(event, false), false);
         const coreEvents = this.opts.core.accessor.get(IEventService) as { publish?: (event: unknown) => void };
         coreEvents.publish?.({
           type: 'event.session.work_changed',
@@ -2542,10 +3003,9 @@ export class SessionEventBroadcaster {
             attention_cursor: attentionCursor,
           },
         });
-      })
-      .catch((error: unknown) =>
-        this.logDispatchDropped(state.sessionId, 'event.session.work_changed', error),
-      );
+      },
+      'event.session.work_changed',
+    );
   }
 
   /**
@@ -2573,74 +3033,214 @@ export class SessionEventBroadcaster {
     );
   }
 
-  private async dispatch(state: SessionState, event: Event, volatile: boolean): Promise<void> {
-    const { journal, tracker, roster, tail, targets, sessionId } = state;
-    if (event.agentId === MAIN_AGENT_ID && event.type === 'context.spliced') {
-      state.contextMessages = [
-        ...state.contextMessages.slice(0, event.start),
-        ...event.messages,
-        ...state.contextMessages.slice(event.start + event.deleteCount),
-      ];
+  private pushTailOutcome(state: SessionState, outcome: JournalAppendOutcome): void {
+    if (outcome.kind === 'event') {
+      state.tail.push({
+        kind: 'event',
+        seq: outcome.seq,
+        attentionSeq: outcome.attentionSeq,
+        bytes: outcome.bytes,
+        encoded: outcome.encoded,
+        eventType: outcome.eventType,
+        agentId: outcome.agentId,
+        epoch: outcome.epoch,
+        sessionId: outcome.sessionId,
+        rosterHint: outcome.rosterHint,
+      });
+      state.tailBytes += outcome.bytes;
+    } else if (outcome.collapsedIntoPrevious) {
+      const last = state.tail.at(-1);
+      if (last !== undefined && last.kind === 'gap' && last.gap.reason === 'queue_backpressure') {
+        state.tailBytes = Math.max(0, state.tailBytes - last.bytes + outcome.bytes);
+        state.tail[state.tail.length - 1] = {
+          kind: 'gap',
+          seq: outcome.seq,
+          ...(outcome.fromSeq !== undefined ? { fromSeq: outcome.fromSeq } : {}),
+          attentionSeq: outcome.attentionSeq,
+          bytes: outcome.bytes,
+          gap: outcome.gap,
+        };
+      } else {
+        state.tail.push({
+          kind: 'gap',
+          seq: outcome.seq,
+          ...(outcome.fromSeq !== undefined ? { fromSeq: outcome.fromSeq } : {}),
+          attentionSeq: outcome.attentionSeq,
+          bytes: outcome.bytes,
+          gap: outcome.gap,
+        });
+        state.tailBytes += outcome.bytes;
+      }
+    } else {
+      state.tail.push({
+        kind: 'gap',
+        seq: outcome.seq,
+        ...(outcome.fromSeq !== undefined ? { fromSeq: outcome.fromSeq } : {}),
+        attentionSeq: outcome.attentionSeq,
+        bytes: outcome.bytes,
+        gap: outcome.gap,
+      });
+      state.tailBytes += outcome.bytes;
     }
-    const annotation = tracker.apply(sessionId, event);
-    roster.apply(sessionId, event);
+
+    while (state.tail.length > this.maxBufferSize || state.tailBytes > MAX_TAIL_BUFFER_BYTES) {
+      const dropped = state.tail.shift();
+      if (dropped === undefined) break;
+      state.tailBytes = Math.max(0, state.tailBytes - dropped.bytes);
+    }
+  }
+
+  private async dispatchProjected(
+    state: SessionState,
+    queued: QueuedDispatchPayload,
+    volatile: boolean,
+  ): Promise<void> {
+    const { journal, tracker, roster, targets, sessionId } = state;
+    const trackerEvent = queued.kind === 'full' ? queued.event : queued.trackerEvent;
+    const annotation = tracker.apply(sessionId, trackerEvent);
+    roster.apply(sessionId, trackerEvent);
     if (annotation.disposition === 'rejected' || annotation.disposition === 'closed') return;
 
-    let envelope: EventEnvelope;
+    let liveEnvelope: EventEnvelope | undefined;
+    let durableSeq = journal.seq;
+    let gapOutcome: JournalAppendOutcome | undefined;
+
     if (volatile) {
-      envelope = this.buildEnvelope(journal.seq, sessionId, event, {
-        epoch: journal.epoch,
-        volatile: true,
-        ...(annotation.offset !== undefined ? { offset: annotation.offset } : {}),
-      });
+      if (queued.kind === 'full') {
+        liveEnvelope = this.buildEnvelope(journal.seq, sessionId, queued.event, {
+          epoch: journal.epoch,
+          volatile: true,
+          ...(annotation.offset !== undefined ? { offset: annotation.offset } : {}),
+        });
+      }
     } else {
       const seq = journal.nextSeq();
-      envelope = this.buildEnvelope(seq, sessionId, event, { epoch: journal.epoch });
-      journal.append(seq, envelope);
-      tail.push({ seq, envelope });
-      while (tail.length > this.maxBufferSize) tail.shift();
+      durableSeq = seq;
+      if (queued.kind === 'full') {
+        const envelope = this.buildEnvelope(seq, sessionId, queued.event, { epoch: journal.epoch });
+        journal.append(seq, envelope);
+        const outcome = journal.lastOutcome();
+        if (outcome !== undefined) {
+          this.pushTailOutcome(state, outcome);
+          gapOutcome = outcome;
+        }
+        liveEnvelope = envelope;
+      } else {
+        const outcome = journal.appendGap(seq, {
+          eventType: queued.eventType,
+          agentId: queued.agentId,
+          routingKnown: queued.routingKnown,
+          omittedBytesAtLeast: queued.omittedBytesAtLeast,
+          reason: queued.reason,
+          ...(queued.rosterHint !== undefined ? { rosterHint: queued.rosterHint } : {}),
+          sessionId,
+        });
+        this.pushTailOutcome(state, outcome);
+        gapOutcome = outcome;
+        if (queued.liveRawEvent !== undefined) {
+          liveEnvelope = this.buildEnvelope(seq, sessionId, queued.liveRawEvent, { epoch: journal.epoch });
+        }
+      }
     }
 
-    if (isGlobalEvent(event.type)) {
-      this.recordAndEmitGlobalRaw(envelope);
-      const recipients = new Set<BroadcastTarget>(this.globalTargets);
-      for (const target of this.allTargets()) recipients.add(target);
-      for (const target of recipients) {
-        try {
-          target.send(envelope, 'immediate');
-        } catch {
-        }
-      }
-      if (envelope.session_id === state.sessionId) {
-        for (const rawTarget of state.rawTargets) {
+    const eventType = queued.kind === 'full' ? queued.event.type : queued.eventType;
+    const agentId =
+      queued.kind === 'full'
+        ? typeof queued.event.agentId === 'string'
+          ? queued.event.agentId
+          : null
+        : queued.agentId;
+    const routingKnown = queued.kind === 'full' ? true : queued.routingKnown;
+
+    if (isGlobalEvent(eventType)) {
+      if (liveEnvelope !== undefined) {
+        this.recordAndEmitGlobalRaw(liveEnvelope);
+        const recipients = new Set<BroadcastTarget>(this.globalTargets);
+        for (const target of this.allTargets()) recipients.add(target);
+        for (const target of recipients) {
           try {
-            rawTarget.send(envelope);
+            target.send(liveEnvelope, 'immediate');
+          } catch {
+          }
+        }
+        if (liveEnvelope.session_id === state.sessionId) {
+          for (const rawTarget of state.rawTargets) {
+            try {
+              rawTarget.send(liveEnvelope);
+            } catch {}
+          }
+        }
+      } else if (!volatile) {
+        const frame = buildResyncRequired(sessionId, 'journal_gap', durableSeq, journal.epoch);
+        const recipients = new Set<BroadcastTarget>(this.globalTargets);
+        for (const target of this.allTargets()) recipients.add(target);
+        for (const target of recipients) {
+          try {
+            target.sendControl?.(frame);
           } catch {}
         }
+        this.notifyRawTargetsGap(state, durableSeq);
       }
-    } else {
+      return;
+    }
+
+    if (liveEnvelope !== undefined) {
       for (const rawTarget of state.rawTargets) {
         try {
-          rawTarget.send(envelope);
+          rawTarget.send(liveEnvelope);
         } catch {}
       }
-      for (const [target, sub] of targets) {
-        if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
-        try {
-          if (suppressedByTranscript(envelope, sub.transcriptGrades, sub.transcriptOnly === true, sub.detachedTranscriptAgents)) {
-            if (target.sendRosterHint !== undefined && (
-              (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed' ||
-                event.type === 'turn.started' || event.type === 'turn.ended') && event.agentId !== MAIN_AGENT_ID ||
-              (event.type === 'task.started' || event.type === 'task.terminated') && (event.info as { kind?: unknown } | undefined)?.kind === 'agent' ||
-              event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||
-              event.type === 'subagent.completed' || event.type === 'subagent.failed'
-            )) target.sendRosterHint(envelope);
-            else if (envelope.volatile !== true) target.sendDurableCursor?.({ seq: envelope.seq, epoch: envelope.epoch });
-            continue;
+    } else if (!volatile) {
+      this.notifyRawTargetsGap(state, durableSeq);
+    }
+
+    const subject = { eventType, agentId, routingKnown };
+    const rosterHintEnvelope =
+      liveEnvelope !== undefined
+        ? liveEnvelope
+        : gapOutcome?.kind === 'gap'
+          ? buildRosterHintEnvelopeFromGap(gapOutcome.gap, sessionId, journal.epoch)
+          : undefined;
+    const isRosterHint =
+      ((eventType === 'agent.status.updated' ||
+        eventType === 'agent.branch_sealed' ||
+        eventType === 'agent.tool_lock_changed' ||
+        eventType === 'turn.started' ||
+        eventType === 'turn.ended') &&
+        agentId !== MAIN_AGENT_ID) ||
+      ((eventType === 'task.started' || eventType === 'task.terminated') &&
+        ((trackerEvent as { info?: { kind?: unknown } }).info?.kind === 'agent' ||
+          (queued.kind === 'oversized_gap' && queued.rosterHint?.infoKind === 'agent'))) ||
+      eventType === 'subagent.spawned' ||
+      eventType === 'subagent.started' ||
+      eventType === 'subagent.suspended' ||
+      eventType === 'subagent.completed' ||
+      eventType === 'subagent.failed';
+
+    for (const [target, sub] of targets) {
+      if (!subjectMatchesAgentFilter(subject, sub.agentFilter)) continue;
+      try {
+        if (
+          subjectSuppressedByTranscript(
+            subject,
+            sub.transcriptGrades,
+            sub.transcriptOnly === true,
+            sub.detachedTranscriptAgents,
+          )
+        ) {
+          if (target.sendRosterHint !== undefined && isRosterHint && rosterHintEnvelope !== undefined) {
+            target.sendRosterHint(rosterHintEnvelope);
+          } else if (!volatile) {
+            target.sendDurableCursor?.({ seq: durableSeq, epoch: journal.epoch });
           }
-          target.send(envelope);
-        } catch {
+          continue;
         }
+        if (liveEnvelope !== undefined) {
+          target.send(liveEnvelope);
+        } else if (!volatile) {
+          target.sendControl?.(buildResyncRequired(sessionId, 'journal_gap', durableSeq, journal.epoch));
+        }
+      } catch {
       }
     }
   }
@@ -2662,6 +3262,16 @@ export class SessionEventBroadcaster {
       payload: event,
       ...extras,
     };
+  }
+
+  private notifyRawTargetsGap(state: SessionState, seq: number): void {
+    const info = { epoch: state.journal.epoch, seq, reason: 'journal_gap' as const };
+    for (const rawTarget of state.rawTargets) {
+      try {
+        if (rawTarget.onGap !== undefined) rawTarget.onGap(info);
+        else rawTarget.onEvicted?.(info);
+      } catch {}
+    }
   }
 
   private *allTargets(): Iterable<BroadcastTarget> {
@@ -2686,11 +3296,29 @@ function admittedForHistory(seed: PendingTranscriptSeed): Set<string> {
   return admitted;
 }
 
-function readContextMessages(agent: IAgentScopeHandle): readonly ContextMessage[] {
+function readContextMessagesRef(agent: IAgentScopeHandle | undefined): readonly ContextMessage[] | undefined {
+  if (agent === undefined) return undefined;
   try {
-    return [...agent.accessor.get(IAgentContextMemoryService).get()];
+    return agent.accessor.get(IAgentContextMemoryService).get();
   } catch {
-    return [];
+    return undefined;
+  }
+}
+
+function probeAuthoritativeContext(agent: IAgentScopeHandle): {
+  readonly authoritative: boolean;
+  readonly messages: readonly ContextMessage[];
+} {
+  try {
+    const svc = agent.accessor.get(IAgentContextMemoryService);
+    const first = svc.get();
+    const second = svc.get();
+    return {
+      authoritative: first === second,
+      messages: first === second ? first : [...first],
+    };
+  } catch {
+    return { authoritative: false, messages: [] };
   }
 }
 
@@ -2748,140 +3376,7 @@ function legacyTaskEvent(event: Event2<any>, agentId: string, sessionId: string)
 }
 
 export function isGlobalEvent(type: string): boolean {
-  return (
-    type === 'session.meta.updated' ||
-    type === 'session.worktree.changed' ||
-    type.startsWith('event.session.') ||
-    type.startsWith('event.workspace.') ||
-    type.startsWith('event.config.') ||
-    (type.startsWith('event.plugin.') && type !== 'event.plugin.topic') ||
-    type.startsWith('event.persona.') ||
-    type.startsWith('event.capability.') ||
-    type.startsWith('event.model_catalog.') ||
-    type.startsWith('event.remote_connections.')
-  );
-}
-
-function isAgentLifecycleEvent(type: string): boolean {
-  return (
-    type === 'agent.created' ||
-    type === 'agent.disposed' ||
-    type === 'agent.branch_sealed' ||
-    type === 'agent.tool_lock_changed'
-  );
-}
-
-function matchesAgentFilter(envelope: EventEnvelope, filter: AgentFilter): boolean {
-  if (filter === undefined) return true;
-  if (isGlobalEvent(envelope.type)) return true;
-  if (isAgentLifecycleEvent(envelope.type)) return true;
-  if (envelope.type.startsWith('event.approval.') || envelope.type.startsWith('event.question.')) return true;
-  const payload = envelope.payload;
-  const agentId =
-    typeof payload === 'object' && payload !== null
-      ? (payload as { agentId?: unknown }).agentId
-      : undefined;
-  if (typeof agentId !== 'string') return true;
-  return filter.has(agentId);
-}
-
-const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
-  'turn.started',
-  'turn.ended',
-  'turn.step.started',
-  'turn.step.completed',
-  'turn.step.interrupted',
-  'turn.step.retrying',
-  'assistant.delta',
-  'thinking.delta',
-  'tool.call.delta',
-  'tool.call.started',
-  'tool.progress',
-  'tool.result',
-  'shell.started',
-  'shell.output',
-  'shell.completed',
-  'task.started',
-  'task.terminated',
-  'background.task.started',
-  'background.task.terminated',
-  'task.notified',
-  'subagent.spawned',
-  'subagent.started',
-  'subagent.completed',
-  'subagent.failed',
-  'subagent.suspended',
-  'agent_message.delivered',
-  'compaction.started',
-  'compaction.blocked',
-  'compaction.cancelled',
-  'compaction.completed',
-  'skill.activated',
-  'plugin_command.activated',
-  'cron.fired',
-  'error',
-  'warning',
-  'goal.updated',
-  'plan.revision',
-  'context.spliced',
-  'agent.status.updated',
-  'hook.result',
-  'prompt.submitted',
-  'prompt.started',
-  'prompt.completed',
-  'prompt.aborted',
-  'prompt.steered',
-  'prompt.steer_accepted',
-  'prompt.queued',
-  'prompt.queue_hold_changed',
-  'prompt.enqueued',
-  'prompt.replaced',
-  'prompt.timing_changed',
-  'prompt.launch_committed',
-  'prompt.moved',
-  'event.question.requested',
-  'event.question.dismissed',
-  'event.question.answered',
-  'event.approval.requested',
-  'event.approval.resolved',
-]);
-
-const TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES: ReadonlySet<string> = new Set([
-  'context.append_message',
-  'context.append_loop_event',
-  'turn.prompt',
-  'llm.request',
-  'llm.tools_snapshot',
-  'profile.dynamic_snapshot',
-  'profile.bind',
-  'task.restoration_settled',
-  'task.settlement_ready',
-  'prompt.outcome_committed',
-]);
-
-function suppressedByTranscript(
-  envelope: EventEnvelope,
-  spec: TranscriptGradeSpec | undefined,
-  transcriptOnly = false,
-  detachedTranscriptAgents?: ReadonlySet<string>,
-): boolean {
-  if (spec === undefined) return false;
-  if (isGlobalEvent(envelope.type)) return false;
-  if (isAgentLifecycleEvent(envelope.type)) return false;
-  const payload = envelope.payload;
-  const agentId =
-    typeof payload === 'object' && payload !== null
-      ? (payload as { agentId?: unknown }).agentId
-      : undefined;
-  if (typeof agentId !== 'string') return false;
-  const grade = gradeFor(spec, agentId);
-  if (grade === 'off') {
-    if (!transcriptOnly || detachedTranscriptAgents?.has(agentId) === true) return false;
-    if (envelope.type.startsWith('event.approval.') || envelope.type.startsWith('event.question.')) return false;
-    return TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type) || TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES.has(envelope.type);
-  }
-  if (TRANSCRIPT_PROJECTED_EVENT_TYPES.has(envelope.type)) return true;
-  return transcriptOnly && TRANSCRIPT_ONLY_INTERNAL_EVENT_TYPES.has(envelope.type);
+  return isGlobalEventType(type);
 }
 
 function interactionRequestedEvent(interaction: Interaction, sessionId: string): Event | undefined {
@@ -3093,16 +3588,4 @@ function configWarningPayload(payload: unknown): { warnings: ConfigWarningItem[]
     items.push(typeof domain === 'string' ? { domain, message } : { message });
   }
   return { warnings: items };
-}
-
-function diskReplayIsContiguous(
-  fromSeqExclusive: number,
-  entries: Array<{ seq: number }>,
-): boolean {
-  let expected = fromSeqExclusive + 1;
-  for (const entry of entries) {
-    if (entry.seq !== expected) return false;
-    expected = entry.seq + 1;
-  }
-  return true;
 }

@@ -5084,5 +5084,153 @@ describe('SessionEventBroadcaster', () => {
         connection_id: 'conn-123',
       });
     });
+
+    it('rejects missing end seq on disk replay with journal_gap instead of accepting a short suffix', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      await bc.subscribe('s1', collectingTarget().target);
+
+      main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+      main.bus.emit(agentEvent('tool.call.started', { turnId: 1, toolCallId: 'c1', name: 'Read' }));
+      main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+      const cursor = await bc.getCursor('s1');
+      expect(cursor.seq).toBeGreaterThanOrEqual(3);
+
+      await bc.close();
+      const journalPath = join(dir, 's1.jsonl');
+      const lines = (await readFile(journalPath, 'utf8')).trim().split('\n');
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+      header['last_seq'] = cursor.seq;
+      const withoutLast = [JSON.stringify(header), ...lines.slice(1, -1)].join('\n') + '\n';
+      await writeFile(journalPath, withoutLast, 'utf8');
+
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core: makeCore(sessions, eventBus, {}, lifecycleEvents) });
+      const replay = await bc.getBufferedSince('s1', { seq: 0, epoch: cursor.epoch });
+      expect(replay.resyncRequired).toBe('journal_gap');
+      expect(replay.currentSeq).toBe(cursor.seq);
+      expect(replay.events).toEqual([]);
+    });
+
+    it('judges oversized gaps per connection across transcript suppression, agent filters, detached agents, and unsuppressed events', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const child = lc.addAgent('child-1');
+      sessions.set('s1', lc);
+
+      const modern = collectingTarget();
+      await bc.subscribe('s1', modern.target, undefined, { '*': 'delta' });
+      const startCursor = await bc.getCursor('s1');
+
+      const hugeText = 'H'.repeat(300 * 1024);
+      main.bus.emit(agentEvent('tool.result', { turnId: 1, toolCallId: 'c1', output: hugeText }));
+      child.bus.emit(agentEvent('subagent.completed', { subagentId: 'child-1', taskId: 't1', receipt: hugeText }));
+      const afterOversized = await bc.getCursor('s1');
+      expect(afterOversized.seq).toBe(startCursor.seq + 2);
+
+      const legacyReplay = await bc.getBufferedSince('s1', startCursor);
+      expect(legacyReplay.resyncRequired).toBe('journal_gap');
+
+      const modernReplay = await bc.getBufferedSince('s1', startCursor, undefined, { '*': 'delta' }, false, undefined, {
+        wantsRosterHints: true,
+      });
+      expect(modernReplay.resyncRequired).toBe(false);
+      expect(modernReplay.currentSeq).toBe(afterOversized.seq);
+      expect(modernReplay.events).toEqual([]);
+      expect(modernReplay.rosterHints?.some((h) => h.type === 'subagent.completed')).toBe(true);
+
+      const offGradeReplay = await bc.getBufferedSince('s1', startCursor, undefined, { main: 'off', 'child-1': 'delta' });
+      expect(offGradeReplay.resyncRequired).toBe('journal_gap');
+
+      const detachedReplay = await bc.getBufferedSince(
+        's1',
+        startCursor,
+        undefined,
+        { main: 'off', 'child-1': 'delta' },
+        true,
+        new Set(['main']),
+      );
+      expect(detachedReplay.resyncRequired).toBe('journal_gap');
+
+      const filteredOutMain = await bc.getBufferedSince(
+        's1',
+        startCursor,
+        new Set(['child-1']),
+        { 'child-1': 'delta' },
+      );
+      expect(filteredOutMain.resyncRequired).toBe(false);
+      expect(filteredOutMain.currentSeq).toBe(afterOversized.seq);
+
+      const beforeApproval = await bc.getCursor('s1');
+      main.bus.emit(agentEvent('custom.unsuppressed', { data: hugeText }));
+      const afterUnsuppressed = await bc.getCursor('s1');
+      expect(afterUnsuppressed.seq).toBe(beforeApproval.seq + 1);
+      const modernUnsuppressed = await bc.getBufferedSince('s1', beforeApproval, undefined, { '*': 'delta' });
+      expect(modernUnsuppressed.resyncRequired).toBe('journal_gap');
+    });
+
+    it('bounds state.tail encoded bytes at 8 MiB and preserves authoritative contextView snapshot parity', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      let authoritativeMessages: Array<{ role: 'user' | 'assistant'; content: Array<{ type: 'text'; text: string }>; toolCalls: never[] }> = [];
+      main.set(IAgentContextMemoryService, { get: () => authoritativeMessages });
+      sessions.set('s1', lc);
+
+      await bc.subscribe('s1', collectingTarget().target, undefined, { '*': 'delta' });
+
+      const msg1 = { role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }], toolCalls: [] };
+      authoritativeMessages = [msg1];
+      main.bus.emit(agentEvent('context.spliced', { start: 0, deleteCount: 0, messages: [msg1] }));
+
+      const snap = await bc.getSnapshotState('s1');
+      expect(snap.contextMessageCount).toBe(1);
+      expect(snap.contextMessages).toEqual([msg1]);
+      expect(snap.contextMessages[0]).toBe(msg1);
+
+      const medium = 'm'.repeat(120 * 1024);
+      for (let i = 0; i < 90; i += 1) {
+        main.bus.emit(agentEvent('tool.result', { turnId: 1, toolCallId: `c-${i}`, output: medium }));
+      }
+      await bc.flushSessionJournal('s1');
+      const metrics = bc.getSessionJournalMetrics('s1');
+      expect(metrics).toBeDefined();
+      expect(metrics!.tailBytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+    });
+
+    it('reports journal_gap rather than session_evicted to raw targets on oversized live drops and drops giant loop payloads on authoritative context', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      let authoritativeMessages: Array<{ role: 'user' | 'assistant'; content: Array<{ type: 'text'; text: string }>; toolCalls: never[] }> = [];
+      main.set(IAgentContextMemoryService, { get: () => authoritativeMessages });
+      sessions.set('s1', lc);
+
+      const gapSignals: Array<{ epoch: string; seq: number; reason: string }> = [];
+      const evictedSignals: Array<{ epoch: string; seq: number; reason?: string }> = [];
+      const detach = await bc.attachRawSessionTarget('s1', {
+        wantsDeltas: false,
+        send: () => {},
+        onGap: (info) => { gapSignals.push(info); },
+        onEvicted: (info) => { evictedSignals.push(info); },
+      });
+
+      main.bus.emit(agentEvent('context.append_loop_event', {
+        event: {
+          type: 'tool.result',
+          toolCallId: 'huge-loop-tc',
+          output: 'L'.repeat(16 * 1024 * 1024),
+        },
+      }));
+      main.bus.emit(agentEvent('tool.result', {
+        turnId: 1,
+        toolCallId: 'giant-raw-drop',
+        output: 'Z'.repeat(16 * 1024 * 1024),
+      }));
+      await bc.flushSessionJournal('s1');
+
+      expect(gapSignals.length).toBeGreaterThanOrEqual(1);
+      expect(gapSignals[0]!.reason).toBe('journal_gap');
+      expect(evictedSignals).toHaveLength(0);
+      detach();
+    });
   });
 });

@@ -6,13 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type EventEnvelope,
+  getJournalProcessPendingBytes,
+  MAX_SINGLE_JOURNAL_LINE_BYTES,
+  prepareEventsDirForDowngrade,
   pruneExpiredEventJournals,
   SessionEventJournal,
 } from '../src/transport/ws/v1/sessionEventJournal';
+import { encodeJsonLineBounded, encodeJsonValueBounded } from '../src/transport/ws/v1/boundedJsonEncoder';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, rename: vi.fn(actual.rename) };
+  return { ...actual, open: vi.fn(actual.open), rename: vi.fn(actual.rename) };
 });
 
 function envelope(seq: number): EventEnvelope {
@@ -244,7 +248,7 @@ describe('SessionEventJournal', () => {
     await reopened.close();
   });
 
-  it('preserves an oversized complete payload during old-journal convergence', async () => {
+  it('projects an oversized legacy payload to a gap during old-journal convergence while preserving watermark and bounded entries', async () => {
     const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_big', created_at: 1 });
     const payload = 'x'.repeat(2 * 1024 * 1024);
     const old = JSON.stringify({ kind: 'event', seq: 1, envelope: envelope(1) });
@@ -254,11 +258,26 @@ describe('SessionEventJournal', () => {
     expect(reopened.epoch).toBe('ep_big');
     expect(reopened.seq).toBe(50001);
     reopened.append(reopened.nextSeq(), envelope(50002));
-    expect((await reopened.readSince(50000, 1))[0]?.envelope.payload).toBe(payload);
+    const range = await reopened.readRecordsSince(50000, 50002, 10);
+    expect(range.healthy).toBe(true);
+    expect(range.records).toHaveLength(2);
+    expect(range.records[0]).toMatchObject({
+      kind: 'gap',
+      seq: 50001,
+      reason: 'legacy_oversized_line',
+    });
+    expect(range.records[1]).toMatchObject({
+      kind: 'event',
+      seq: 50002,
+      envelope: expect.objectContaining({ seq: 50002, payload: { seq: 50002 } }),
+    });
     await reopened.close();
-    const lines = (await readFile(filePath, 'utf8')).trim().split('\n');
+    const text = await readFile(filePath, 'utf8');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(4096);
+    const lines = text.trim().split('\n');
     expect(lines).toHaveLength(3);
-    expect(JSON.parse(lines[1]!).seq).toBe(50001);
+    expect(JSON.parse(lines[1]!)).toMatchObject({ kind: 'gap', seq: 50001 });
+    expect(JSON.parse(lines[2]!)).toMatchObject({ kind: 'event', seq: 50002 });
   });
 
   it('leaves a cold 1 GiB journal untouched and converges on its first append using only tail IO', async () => {
@@ -502,7 +521,7 @@ describe('SessionEventJournal', () => {
     await large.close();
   });
 
-  it('enforces maxRetainedBytes while retaining at least the newest event and compacting oversized pre-existing files', async () => {
+  it('enforces maxRetainedBytes with 2x/1x hysteresis, projects oversized events to gaps, and drops to header-only for tiny budgets', async () => {
     const capBytes = 4096;
     const journal = await SessionEventJournal.open(filePath, undefined, 1000, capBytes);
     const pad = 'a'.repeat(1800);
@@ -510,9 +529,8 @@ describe('SessionEventJournal', () => {
       journal.append(journal.nextSeq(), { ...envelope(seq), payload: { seq, pad } });
     }
     await journal.flush();
-    const afterFlushLines = (await readFile(filePath, 'utf8')).trim().split('\n');
-    expect(afterFlushLines.length).toBeLessThanOrEqual(3);
-    expect((await journal.readSince(0, 10)).length).toBeLessThanOrEqual(2);
+    const afterFlushSize = (await stat(filePath)).size;
+    expect(afterFlushSize).toBeLessThanOrEqual(capBytes * 2 + 512);
     await journal.close();
     const lines = (await readFile(filePath, 'utf8')).trim().split('\n');
     expect(lines.length).toBeLessThanOrEqual(3);
@@ -522,11 +540,24 @@ describe('SessionEventJournal', () => {
     const oversizedPayload = 'z'.repeat(capBytes * 2);
     const reopened = await SessionEventJournal.open(filePath, undefined, 1000, capBytes);
     reopened.append(reopened.nextSeq(), { ...envelope(9), payload: oversizedPayload });
+    expect(reopened.lastOutcome()?.kind).toBe('gap');
     await reopened.close();
     const afterOversized = (await readFile(filePath, 'utf8')).trim().split('\n');
-    expect(afterOversized).toHaveLength(2);
-    expect(JSON.parse(afterOversized[1]!).seq).toBe(9);
-    expect((await reopened.readSince(8, 10))[0]?.envelope.payload).toBe(oversizedPayload);
+    expect(afterOversized.length).toBeLessThanOrEqual(3);
+    expect(JSON.parse(afterOversized.at(-1)!)).toMatchObject({
+      kind: 'gap',
+      seq: 9,
+      reason: 'payload_too_large',
+    });
+    expect(Buffer.byteLength(afterOversized.at(-1)!, 'utf8')).toBeLessThan(512);
+
+    const tinyPath = join(dir, 'tiny_budget.jsonl');
+    const tiny = await SessionEventJournal.open(tinyPath, undefined, 1000, 32);
+    tiny.append(tiny.nextSeq(), envelope(1));
+    await tiny.close();
+    const tinyLines = (await readFile(tinyPath, 'utf8')).trim().split('\n');
+    expect(tinyLines).toHaveLength(1);
+    expect(JSON.parse(tinyLines[0]!)).toMatchObject({ kind: 'journal_header', last_seq: 1, attention_seq: 1 });
 
     const oldHeader = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_bytes', created_at: 1 });
     const bigRow = (seq: number) => JSON.stringify({ kind: 'event', seq, envelope: { ...envelope(seq), payload: 'm'.repeat(3000) } });
@@ -616,5 +647,493 @@ describe('SessionEventJournal', () => {
     });
     expect(removed).toBe(0);
     expect(await readdir(dir)).toContain('sess_race.jsonl');
+  });
+
+  it('enforces the exact 256 KiB UTF-8 line boundary with LF, CJK, surrogate pairs, escapes, and rejects unserializable objects', async () => {
+    const baseLine = {
+      kind: 'event',
+      seq: 1,
+      attention_seq: 1,
+      envelope: { type: 'tool.result', seq: 1, timestamp: '2026-01-01T00:00:00.000Z', payload: { text: '' } },
+    };
+    const overhead = Buffer.byteLength(JSON.stringify(baseLine), 'utf8') + 1;
+    const exactFill = 'a'.repeat(MAX_SINGLE_JOURNAL_LINE_BYTES - overhead);
+    const exactOk = encodeJsonLineBounded(
+      { ...baseLine, envelope: { ...baseLine.envelope, payload: { text: exactFill } } },
+      MAX_SINGLE_JOURNAL_LINE_BYTES,
+    );
+    expect(exactOk.ok).toBe(true);
+    if (exactOk.ok) {
+      expect(exactOk.bytes).toBe(MAX_SINGLE_JOURNAL_LINE_BYTES);
+      expect(exactOk.buffer[exactOk.bytes - 1]).toBe(10);
+    }
+
+    const overByOne = encodeJsonLineBounded(
+      { ...baseLine, envelope: { ...baseLine.envelope, payload: { text: exactFill + 'b' } } },
+      MAX_SINGLE_JOURNAL_LINE_BYTES,
+    );
+    expect(overByOne.ok).toBe(false);
+    if (!overByOne.ok && overByOne.reason === 'exceeded') {
+      expect(overByOne.omittedBytesAtLeast).toBeGreaterThan(MAX_SINGLE_JOURNAL_LINE_BYTES);
+    }
+
+    const cjkAndEscapes = '中文测试\n\t"\\🚀\uD800';
+    const encodedUnicode = encodeJsonLineBounded({ text: cjkAndEscapes }, 1024);
+    expect(encodedUnicode.ok).toBe(true);
+    if (encodedUnicode.ok) {
+      expect(JSON.parse(encodedUnicode.buffer.toString('utf8'))).toEqual({
+        text: JSON.parse(JSON.stringify(cjkAndEscapes)),
+      });
+    }
+
+    const circular: Record<string, unknown> = { a: 1 };
+    circular['self'] = circular;
+    const warn = vi.fn();
+    const journal = await SessionEventJournal.open(filePath, { warn });
+    journal.append(journal.nextSeq(), {
+      type: 'custom.bad',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      payload: circular,
+    });
+    const badOutcome = journal.lastOutcome();
+    expect(badOutcome?.kind).toBe('gap');
+    if (badOutcome?.kind === 'gap') {
+      expect(badOutcome.gap.reason).toBe('unserializable');
+    }
+    journal.append(journal.nextSeq(), {
+      type: 'custom.bigint',
+      seq: 2,
+      timestamp: new Date().toISOString(),
+      payload: { n: 42n },
+    });
+    const bigIntOutcome = journal.lastOutcome();
+    expect(bigIntOutcome?.kind).toBe('gap');
+    if (bigIntOutcome?.kind === 'gap') {
+      expect(bigIntOutcome.gap.reason).toBe('unserializable');
+    }
+    await journal.close();
+  });
+
+  it('handles writev short writes, recovers from zero-progress failure via truncate rollback, and poisons on unprovable corruption', async () => {
+    const probe = await open(filePath, 'w');
+    const proto = Object.getPrototypeOf(probe);
+    const originalWritev = proto.writev as (buffers: ArrayBufferView[], pos?: number) => Promise<{ bytesWritten: number; buffers: ArrayBufferView[] }>;
+    await probe.close();
+
+    let call = 0;
+    const shortSpy = vi.spyOn(proto, 'writev').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      const buffers = args[0] as ArrayBufferView[];
+      const pos = args[1] as number | undefined;
+      call += 1;
+      if (call === 1 && buffers.length > 0) {
+        const first = buffers[0]!;
+        const sliceLen = Math.max(1, Math.floor(first.byteLength / 2));
+        const partial = Buffer.from(first.buffer, first.byteOffset, sliceLen);
+        const res = await originalWritev.call(this, [partial], pos);
+        return { bytesWritten: res.bytesWritten, buffers };
+      }
+      return originalWritev.call(this, buffers, pos);
+    });
+    try {
+      const journal = await SessionEventJournal.open(filePath);
+      journal.append(journal.nextSeq(), envelope(1));
+      journal.append(journal.nextSeq(), envelope(2));
+      await journal.flush();
+      expect(call).toBeGreaterThanOrEqual(2);
+      const entries = await journal.readSince(0, 10);
+      expect(entries.map((e) => e.seq)).toEqual([1, 2]);
+      await journal.close();
+    } finally {
+      shortSpy.mockRestore();
+    }
+
+    const rollbackPath = join(dir, 'rollback.jsonl');
+    const j2 = await SessionEventJournal.open(rollbackPath);
+    j2.append(j2.nextSeq(), envelope(1));
+    await j2.flush();
+    const sizeBefore = (await stat(rollbackPath)).size;
+
+    let injectedPartial = false;
+    const failSpy = vi.spyOn(proto, 'writev').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      const buffers = args[0] as ArrayBufferView[];
+      const pos = args[1] as number | undefined;
+      if (!injectedPartial) {
+        injectedPartial = true;
+        const partial = Buffer.from('{"kind":"event","seq":2');
+        await originalWritev.call(this, [partial], pos);
+        return { bytesWritten: 0, buffers };
+      }
+      return originalWritev.call(this, buffers, pos);
+    });
+    try {
+      j2.append(j2.nextSeq(), envelope(2));
+      await j2.flush();
+      expect((await stat(rollbackPath)).size).toBe(sizeBefore);
+      await j2.flush();
+      const restored = await j2.readSince(0, 10);
+      expect(restored.map((e) => e.seq)).toEqual([1, 2]);
+      await j2.close();
+    } finally {
+      failSpy.mockRestore();
+    }
+
+    const poisonPath = join(dir, 'poison.jsonl');
+    const j3 = await SessionEventJournal.open(poisonPath);
+    j3.append(j3.nextSeq(), envelope(1));
+    await j3.flush();
+    const truncSpy = vi.spyOn(proto, 'truncate').mockRejectedValueOnce(new Error('EIO truncate'));
+    const failSpy2 = vi.spyOn(proto, 'writev').mockImplementationOnce(async function (this: unknown, ...args: unknown[]) {
+      const pos = args[1] as number | undefined;
+      await originalWritev.call(this, [Buffer.from('{"torn')], pos);
+      throw new Error('EIO writev');
+    });
+    try {
+      j3.append(j3.nextSeq(), envelope(2));
+      await j3.flush();
+      expect(j3.poisoned).toBe(true);
+      const range = await j3.readRecordsSince(0, 2, 10);
+      expect(range.healthy).toBe(false);
+      await j3.close();
+    } finally {
+      failSpy2.mockRestore();
+      truncSpy.mockRestore();
+    }
+  });
+
+  it('streams cold 4 MiB legacy lines at head, middle, and tail with <=64 KiB reads, ignores fake nested fields, and restores missing attentionSeq', async () => {
+    const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_legacy_huge', created_at: 1 });
+    const fakeNested = '{"kind":"event","seq":999999,"attention_seq":999999}';
+    const hugeBody = fakeNested + 'x'.repeat(4 * 1024 * 1024);
+    const line1 = JSON.stringify({
+      kind: 'event',
+      seq: 1,
+      envelope: { type: 'turn.ended', seq: 1, epoch: 'ep_legacy_huge', session_id: 's1', timestamp: '2026-01-01T00:00:00Z', payload: { agentId: 'main', body: hugeBody } },
+    });
+    const line2 = JSON.stringify({
+      kind: 'event',
+      seq: 2,
+      envelope: { type: 'tool.result', seq: 2, epoch: 'ep_legacy_huge', session_id: 's1', timestamp: '2026-01-01T00:00:01Z', payload: { agentId: 'main', output: hugeBody } },
+    });
+    const line3 = JSON.stringify({
+      kind: 'event',
+      seq: 3,
+      envelope: { type: 'context.spliced', seq: 3, epoch: 'ep_legacy_huge', session_id: 's1', timestamp: '2026-01-01T00:00:02Z', payload: { agentId: 'main', messages: hugeBody } },
+    });
+    await writeFile(filePath, `${header}\n${line1}\n${line2}\n${line3}\n`);
+
+    const probe = await open(filePath, 'r');
+    const readSpy = vi.spyOn(Object.getPrototypeOf(probe), 'read');
+    await probe.close();
+    try {
+      const wm = await SessionEventJournal.peekWatermark(filePath);
+      expect(wm).toEqual({ epoch: 'ep_legacy_huge', seq: 3, attentionSeq: 1 });
+      const maxReadChunk = Math.max(0, ...readSpy.mock.calls.map((args) => Number(args[2]) || 0));
+      expect(maxReadChunk).toBeLessThanOrEqual(64 * 1024);
+
+      const opened = await SessionEventJournal.open(filePath);
+      const range = await opened.readRecordsSince(0, 3, 10);
+      expect(range.healthy).toBe(true);
+      expect(range.records).toHaveLength(3);
+      expect(range.records.map((r) => r.seq)).toEqual([1, 2, 3]);
+      expect(range.records.every((r) => r.kind === 'gap' && r.reason === 'legacy_oversized_line')).toBe(true);
+      await opened.close();
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('collapses backpressured pending writes into one constant-space gap preserving attentionSeq and keeps write amplification <= 2.5x', async () => {
+    const pendingBefore = getJournalProcessPendingBytes();
+    const bpPath = join(dir, 'backpressure.jsonl');
+    const bp = await SessionEventJournal.open(bpPath, undefined, 1000, 4 * 1024 * 1024, {
+      maxSessionPendingBytes: 1024,
+    });
+    const pad = 'p'.repeat(400);
+    for (let i = 1; i <= 20; i += 1) {
+      bp.append(bp.nextSeq(), {
+        type: i === 15 ? 'turn.ended' : 'tool.result',
+        seq: i,
+        timestamp: new Date().toISOString(),
+        payload: { agentId: 'main', pad },
+      });
+    }
+    expect(bp.attentionSeq).toBe(15);
+    expect(bp.stats().backpressureCollapseCount).toBeGreaterThan(0);
+    await bp.close();
+    expect(bp.stats().sessionPendingBytes).toBe(0);
+    expect(getJournalProcessPendingBytes()).toBe(pendingBefore);
+    expect(await SessionEventJournal.peekWatermark(bpPath)).toEqual({
+      epoch: bp.epoch,
+      seq: 20,
+      attentionSeq: 15,
+    });
+
+    const ampPath = join(dir, 'write_amp.jsonl');
+    const b0 = 64 * 1024;
+    const amp = await SessionEventJournal.open(ampPath, undefined, 1000, b0);
+    const body = 'k'.repeat(2000);
+    for (let i = 1; i <= 260; i += 1) {
+      amp.append(amp.nextSeq(), {
+        type: 'event.session.work_changed',
+        seq: i,
+        timestamp: new Date().toISOString(),
+        payload: { agentId: 'main', body },
+      });
+      if (i % 16 === 0) await amp.flush();
+    }
+    await amp.flush();
+    const s = amp.stats();
+    expect(s.compactionCount).toBeGreaterThanOrEqual(3);
+    expect(s.diskFileBytes).toBeLessThanOrEqual(b0 * 2 + 64 * 1024);
+    const writeAmp = (s.appendedBytes + s.compactedTempBytes) / s.validBoundedLineBytes;
+    expect(writeAmp).toBeLessThanOrEqual(2.5);
+    await amp.close();
+    expect((await stat(ampPath)).size).toBeLessThanOrEqual(b0 + 512);
+  });
+
+  it('enforces strict pending byte caps including zero budgets and O(1) header-only coalescing', async () => {
+    const zeroPendingPath = join(dir, 'zero_pending_cap.jsonl');
+    const jZero = await SessionEventJournal.open(zeroPendingPath, undefined, 100, 64 * 1024, {
+      maxSessionPendingBytes: 0,
+    });
+    for (let i = 1; i <= 50; i += 1) {
+      jZero.append(jZero.nextSeq(), envelope(i));
+      expect(jZero.stats().sessionPendingBytes).toBeLessThanOrEqual(0);
+    }
+    await jZero.close();
+    expect((await SessionEventJournal.peekWatermark(zeroPendingPath)).seq).toBe(50);
+
+    const tinyPendingPath = join(dir, 'tiny_pending_cap.jsonl');
+    const jTiny = await SessionEventJournal.open(tinyPendingPath, undefined, 100, 64 * 1024, {
+      maxSessionPendingBytes: 512,
+    });
+    for (let i = 1; i <= 40; i += 1) {
+      jTiny.append(jTiny.nextSeq(), {
+        type: i === 25 ? 'turn.started' : 'tool.progress',
+        seq: i,
+        timestamp: new Date().toISOString(),
+        payload: { agentId: 'main', text: 'x'.repeat(240) },
+      });
+      expect(jTiny.stats().sessionPendingBytes).toBeLessThanOrEqual(512);
+    }
+    expect(jTiny.attentionSeq).toBe(25);
+    await jTiny.close();
+    expect(jTiny.stats().sessionPendingBytes).toBe(0);
+    expect(await SessionEventJournal.peekWatermark(tinyPendingPath)).toEqual({
+      epoch: jTiny.epoch,
+      seq: 40,
+      attentionSeq: 25,
+    });
+
+    const zeroCapPath = join(dir, 'zero_cap_coalesce.jsonl');
+    const jCap0 = await SessionEventJournal.open(zeroCapPath, undefined, 0, 0);
+    for (let i = 1; i <= 2000; i += 1) {
+      jCap0.append(jCap0.nextSeq(), envelope(i));
+    }
+    expect(jCap0.stats().sessionPendingBytes).toBeLessThanOrEqual(64);
+    await jCap0.close();
+    expect(jCap0.stats().sessionPendingBytes).toBe(0);
+    expect((await SessionEventJournal.peekWatermark(zeroCapPath)).seq).toBe(2000);
+  });
+
+  it('recovers from transient EBUSY on open and never overwrites an intact journal when lock persists', async () => {
+    const intactPath = join(dir, 'ebusy_intact.jsonl');
+    const seed = await SessionEventJournal.open(intactPath);
+    const originalEpoch = seed.epoch;
+    for (let i = 1; i <= 5; i += 1) seed.append(seed.nextSeq(), envelope(i));
+    await seed.close();
+    const originalText = await readFile(intactPath, 'utf8');
+
+    const openMock = vi.mocked(open);
+    const realOpen = openMock.getMockImplementation()!;
+    const ebusy = Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+
+    let transientFailures = 2;
+    openMock.mockImplementation(async (...args) => {
+      if (args[0] === intactPath && transientFailures > 0) {
+        transientFailures -= 1;
+        throw ebusy;
+      }
+      return realOpen(...args);
+    });
+    try {
+      const recovered = await SessionEventJournal.open(intactPath);
+      expect(recovered.epoch).toBe(originalEpoch);
+      expect(recovered.seq).toBe(5);
+      await recovered.close();
+    } finally {
+      openMock.mockImplementation(realOpen);
+    }
+
+    let lockActive = true;
+    openMock.mockImplementation(async (...args) => {
+      if (args[0] === intactPath && lockActive) {
+        throw ebusy;
+      }
+      return realOpen(...args);
+    });
+    let locked: SessionEventJournal;
+    try {
+      locked = await SessionEventJournal.open(intactPath);
+      locked.append(locked.nextSeq(), envelope(1));
+      await locked.flush();
+      lockActive = false;
+      await locked.flush();
+      expect(locked.poisoned).toBe(true);
+      await locked.close();
+    } finally {
+      openMock.mockImplementation(realOpen);
+    }
+    expect(await readFile(intactPath, 'utf8')).toBe(originalText);
+    const afterLock = await SessionEventJournal.open(intactPath);
+    expect(afterLock.epoch).toBe(originalEpoch);
+    expect(afterLock.seq).toBe(5);
+    await afterLock.close();
+  });
+
+  it('prevents base 2bc86a9ebf downgrade from reusing seq in the same epoch on v2 gap-bearing files', async () => {
+    const parseBase2bc86a9ebf = (text: string): { epoch: string | undefined; lastSeq: number } => {
+      let epoch: string | undefined;
+      let lastSeq = 0;
+      for (const raw of text.split('\n')) {
+        const trimmed = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (trimmed.length === 0) continue;
+        let value: unknown;
+        try {
+          value = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (typeof value !== 'object' || value === null) continue;
+        const kind = (value as { kind?: unknown }).kind;
+        if (kind === 'journal_header' && epoch === undefined) {
+          const ep = (value as { epoch?: unknown }).epoch;
+          if (typeof ep === 'string' && ep.length > 0) {
+            epoch = ep;
+            const ls = (value as { last_seq?: unknown }).last_seq;
+            if (typeof ls === 'number' && Number.isSafeInteger(ls) && ls >= 0) {
+              lastSeq = Math.max(lastSeq, ls);
+            }
+          }
+        } else if (kind === 'event') {
+          const seq = (value as { seq?: unknown }).seq;
+          const env = (value as { envelope?: unknown }).envelope;
+          if (typeof seq === 'number' && Number.isInteger(seq) && seq > 0 && typeof env === 'object' && env !== null) {
+            lastSeq = Math.max(lastSeq, seq);
+          }
+        }
+      }
+      return { epoch, lastSeq };
+    };
+
+    const freshV2Path = join(dir, 'v2_gap_tail.jsonl');
+    const j1 = await SessionEventJournal.open(freshV2Path);
+    j1.append(j1.nextSeq(), envelope(1));
+    j1.append(j1.nextSeq(), {
+      type: 'tool.result',
+      seq: 2,
+      timestamp: new Date().toISOString(),
+      payload: { agentId: 'main', output: 'X'.repeat(300 * 1024) },
+    });
+    await j1.close();
+    const freshV2Text = await readFile(freshV2Path, 'utf8');
+    expect(JSON.parse(freshV2Text.split('\n')[0]!)).toMatchObject({ kind: 'journal_header_v2', version: 2 });
+    expect(parseBase2bc86a9ebf(freshV2Text).epoch).toBeUndefined();
+    expect(await SessionEventJournal.peekWatermark(freshV2Path)).toEqual({
+      epoch: j1.epoch,
+      seq: 2,
+      attentionSeq: 1,
+    });
+
+    const upgradedV1Path = join(dir, 'v1_upgraded_on_gap.jsonl');
+    const v1Header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_v1_upgrade', created_at: 1 });
+    const v1Ev = JSON.stringify({ kind: 'event', seq: 1, envelope: envelope(1) });
+    await writeFile(upgradedV1Path, `${v1Header}\n${v1Ev}\n`, 'utf8');
+    const j2 = await SessionEventJournal.open(upgradedV1Path);
+    j2.appendGap(j2.nextSeq(), {
+      eventType: 'tool.result',
+      agentId: 'main',
+      routingKnown: true,
+      omittedBytesAtLeast: 16 * 1024 * 1024,
+      reason: 'payload_too_large',
+    });
+    await j2.close();
+    const upgradedText = await readFile(upgradedV1Path, 'utf8');
+    expect(JSON.parse(upgradedText.split('\n')[0]!)).toMatchObject({ kind: 'journal_header_v2', epoch: 'ep_v1_upgrade' });
+    expect(parseBase2bc86a9ebf(upgradedText).epoch).toBeUndefined();
+
+    const removed = await prepareEventsDirForDowngrade(dir);
+    expect(removed).toBeGreaterThanOrEqual(2);
+  });
+
+  it('requires strict LF termination on watermark recovery and replay and truncates torn valid-looking JSON tails', async () => {
+    const lfPath = join(dir, 'strict_lf.jsonl');
+    const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_lf', created_at: 1 });
+    const ev3 = JSON.stringify({ kind: 'event', seq: 3, attention_seq: 3, envelope: envelope(3) });
+    const tornValidJsonWithoutLf = JSON.stringify({ kind: 'event', seq: 4, attention_seq: 4, envelope: envelope(4) });
+    await writeFile(lfPath, `${header}\n${ev3}\n${tornValidJsonWithoutLf}`, 'utf8');
+
+    expect(await SessionEventJournal.peekWatermark(lfPath)).toEqual({
+      epoch: 'ep_lf',
+      seq: 3,
+      attentionSeq: 3,
+    });
+    const reopened = await SessionEventJournal.open(lfPath);
+    expect(reopened.seq).toBe(3);
+    const beforeWrite = await reopened.readRecordsSince(2, 10, 10);
+    expect(beforeWrite.healthy).toBe(false);
+    expect(beforeWrite.records.map((r) => r.seq)).toEqual([3]);
+
+    const newEnv4: EventEnvelope = {
+      type: 'turn.ended',
+      seq: 4,
+      timestamp: new Date().toISOString(),
+      payload: { marker: 'replacement-seq-4' },
+    };
+    reopened.append(reopened.nextSeq(), newEnv4);
+    await reopened.flush();
+    const afterWrite = await reopened.readRecordsSince(2, 10, 10);
+    expect(afterWrite.healthy).toBe(true);
+    expect(afterWrite.records.map((r) => r.seq)).toEqual([3, 4]);
+    expect(afterWrite.records[1]?.kind === 'event' ? afterWrite.records[1].envelope.payload : undefined).toEqual({
+      marker: 'replacement-seq-4',
+    });
+    await reopened.close();
+  });
+
+  it('matches JSON.stringify for DataView, rejects boxed BigInt, and supports re-entrant toJSON calls', () => {
+    const dv = new DataView(new ArrayBuffer(70 * 1024));
+    const dvEncoded = encodeJsonValueBounded(dv, 1024);
+    expect(dvEncoded.ok).toBe(true);
+    if (dvEncoded.ok) {
+      expect(dvEncoded.buffer.toString('utf8')).toBe('{}');
+    }
+
+    const boxedBigInt = Object(1n);
+    const biEncoded = encodeJsonValueBounded(boxedBigInt, 1024);
+    expect(biEncoded.ok).toBe(false);
+    if (!biEncoded.ok) {
+      expect(biEncoded.reason).toBe('invalid');
+    }
+
+    const reentrant = {
+      outer: 'before',
+      nested: {
+        toJSON() {
+          const inner = encodeJsonLineBounded({ inner: 'x'.repeat(512) }, 4096);
+          return inner.ok ? inner.bytes : -1;
+        },
+      },
+      tail: 'after',
+    };
+    const out = encodeJsonLineBounded(reentrant, 4096);
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      const parsed = JSON.parse(out.buffer.toString('utf8')) as { outer: string; nested: number; tail: string };
+      expect(parsed.outer).toBe('before');
+      expect(parsed.nested).toBeGreaterThan(512);
+      expect(parsed.tail).toBe('after');
+    }
   });
 });

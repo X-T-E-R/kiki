@@ -21,6 +21,7 @@ import type {
   SessionEventBroadcaster,
 } from '../transport/ws/v1/sessionEventBroadcaster';
 import type { EventEnvelope } from '../transport/ws/v1/sessionEventJournal';
+import { encodeJsonValueBounded } from '../transport/ws/v1/boundedJsonEncoder';
 
 type RouteHandler = (
   req: { id: string; params: unknown; query: unknown; headers?: Record<string, unknown> },
@@ -113,15 +114,22 @@ function projectRawFrame(envelope: EventEnvelope): Record<string, unknown> {
   return base;
 }
 
-function formatFrame(frame: Record<string, unknown>, ndjson: boolean): string {
-  if (ndjson) return `${JSON.stringify(frame)}\n`;
+function formatFrameBounded(
+  frame: Record<string, unknown>,
+  ndjson: boolean,
+  maxBytes: number,
+): string | undefined {
+  const encoded = encodeJsonValueBounded(frame, maxBytes);
+  if (!encoded.ok) return undefined;
+  const json = encoded.buffer.toString('utf8');
+  if (ndjson) return `${json}\n`;
   const lines: string[] = [];
   const epoch = typeof frame['epoch'] === 'string' ? frame['epoch'] : undefined;
   const seq = typeof frame['seq'] === 'number' ? frame['seq'] : undefined;
   if (epoch !== undefined && seq !== undefined) lines.push(`id: ${epoch}:${seq}`);
   else if (seq !== undefined) lines.push(`id: ${seq}`);
   if (typeof frame['type'] === 'string') lines.push(`event: ${frame['type']}`);
-  lines.push(`data: ${JSON.stringify(frame)}`);
+  lines.push(`data: ${json}`);
   return `${lines.join('\n')}\n\n`;
 }
 
@@ -221,6 +229,10 @@ export function registerRawEventsRoutes(
         return;
       }
 
+      let lastEmittedSeq = -1;
+      const bufferedQueue: EventEnvelope[] = [];
+      let replayDone = false;
+
       const writeFrame = (frame: Record<string, unknown>): boolean => {
         if (closed || reply.raw.destroyed || reply.raw.writableEnded) return false;
         if (reply.raw.writableLength > MAX_BACKPRESSURE_BYTES) {
@@ -228,13 +240,55 @@ export function registerRawEventsRoutes(
           reply.raw.destroy();
           return false;
         }
-        reply.raw.write(formatFrame(frame, ndjson));
+        const formatted = formatFrameBounded(frame, ndjson, MAX_BACKPRESSURE_BYTES);
+        if (formatted === undefined) {
+          const resetFrame = formatFrameBounded(
+            {
+              type: 'reset',
+              session_id,
+              epoch: typeof frame['epoch'] === 'string' ? frame['epoch'] : '',
+              latest_seq: typeof frame['seq'] === 'number' ? frame['seq'] : Math.max(0, lastEmittedSeq),
+              reason: 'journal_gap',
+            },
+            ndjson,
+            MAX_BACKPRESSURE_BYTES,
+          );
+          if (resetFrame !== undefined) reply.raw.write(resetFrame);
+          cleanup();
+          reply.raw.end();
+          return false;
+        }
+        reply.raw.write(formatted);
         return true;
       };
 
-      let lastEmittedSeq = -1;
-      const bufferedQueue: EventEnvelope[] = [];
-      let replayDone = false;
+      let pendingReset: { epoch: string; seq: number; reason: 'session_evicted' | 'journal_gap' } | undefined;
+
+      const emitResetAndClose = (epoch: string, seq: number, reason: 'session_evicted' | 'journal_gap'): void => {
+        if (closed) return;
+        writeFrame({
+          type: 'reset',
+          session_id,
+          epoch,
+          latest_seq: seq,
+          reason,
+        });
+        cleanup();
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      };
+
+      const handleResetSignal = (epoch: string, seq: number, reason: 'session_evicted' | 'journal_gap'): void => {
+        if (closed) return;
+        if (!replayDone) {
+          pendingReset = {
+            epoch,
+            seq: Math.max(pendingReset?.seq ?? 0, seq),
+            reason: pendingReset?.reason === 'session_evicted' ? 'session_evicted' : reason,
+          };
+          return;
+        }
+        emitResetAndClose(epoch, seq, reason);
+      };
 
       const target: RawSessionTarget = {
         wantsDeltas: grade === 'delta',
@@ -250,17 +304,11 @@ export function registerRawEventsRoutes(
           if (envelope.volatile !== true) lastEmittedSeq = envelope.seq;
           writeFrame(projectRawFrame(envelope));
         },
-        onEvicted({ epoch, seq }) {
-          if (closed) return;
-          writeFrame({
-            type: 'reset',
-            session_id,
-            epoch,
-            latest_seq: seq,
-            reason: 'session_evicted',
-          });
-          cleanup();
-          if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+        onGap({ epoch, seq, reason }) {
+          handleResetSignal(epoch, seq, reason);
+        },
+        onEvicted({ epoch, seq, reason }) {
+          handleResetSignal(epoch, seq, reason ?? 'session_evicted');
         },
       };
 
@@ -312,6 +360,10 @@ export function registerRawEventsRoutes(
       }
 
       replayDone = true;
+      if (pendingReset !== undefined && (pendingReset.reason === 'session_evicted' || pendingReset.seq > lastEmittedSeq)) {
+        emitResetAndClose(pendingReset.epoch, pendingReset.seq, pendingReset.reason);
+        return;
+      }
       for (const pending of bufferedQueue.splice(0)) {
         if (closed) return;
         if (pending.volatile !== true && pending.seq <= lastEmittedSeq) continue;
@@ -360,6 +412,10 @@ export function registerRawEventsRoutes(
 
       let closed = false;
       let unregisterCloser: (() => void) | undefined;
+      let lastEmittedSeq = -1;
+      const queued: Array<{ readonly envelope: EventEnvelope; readonly hidden: boolean }> = [];
+      let replayDone = false;
+
       const writeFrame = (frame: Record<string, unknown>): boolean => {
         if (closed || reply.raw.destroyed || reply.raw.writableEnded) return false;
         if (reply.raw.writableLength > MAX_BACKPRESSURE_BYTES) {
@@ -367,13 +423,26 @@ export function registerRawEventsRoutes(
           reply.raw.destroy();
           return false;
         }
-        reply.raw.write(formatFrame(frame, ndjson));
+        const formatted = formatFrameBounded(frame, ndjson, MAX_BACKPRESSURE_BYTES);
+        if (formatted === undefined) {
+          const resetFrame = formatFrameBounded(
+            {
+              type: 'reset',
+              epoch: typeof frame['epoch'] === 'string' ? frame['epoch'] : '',
+              latest_seq: typeof frame['seq'] === 'number' ? frame['seq'] : Math.max(0, lastEmittedSeq),
+              reason: 'journal_gap',
+            },
+            ndjson,
+            MAX_BACKPRESSURE_BYTES,
+          );
+          if (resetFrame !== undefined) reply.raw.write(resetFrame);
+          cleanup();
+          reply.raw.end();
+          return false;
+        }
+        reply.raw.write(formatted);
         return true;
       };
-
-      let lastEmittedSeq = -1;
-      const queued: Array<{ readonly envelope: EventEnvelope; readonly hidden: boolean }> = [];
-      let replayDone = false;
 
       const emitEnvelope = (envelope: EventEnvelope, hidden: boolean): void => {
         if (closed) return;
