@@ -368,6 +368,210 @@ describe('provider quotas', () => {
     expect(selectQuotaAdapter('https://api.deepseek.com', true)).toBeUndefined();
     const zai = selectQuotaAdapter('https://api.z.ai/api/paas/v4', false)!;
     expect(quotaHeaders(zai, 'YOUR_API_KEY')['Authorization']).toBe('YOUR_API_KEY');
+    for (const url of ['http://api.zjuam.art/v1', 'https://api.zjuam.art.evil.test/v1', 'https://api.zjuam.art:8443/v1', 'https://api.zjuam.art/v1?x=1']) {
+      expect(selectQuotaAdapter(url, false)).toBeUndefined();
+    }
+    expect(selectQuotaAdapter('https://api.zjuam.art/v1', true)).toBeUndefined();
+    expect(selectQuotaAdapter('https://api.zjuam.art/v1', false)).toMatchObject({ id: 'kiki-quota', url: 'https://api.zjuam.art/v1/kiki/quota', oauth: false });
+    expect(selectQuotaAdapter('https://api.zjuam.art', false)).toMatchObject({ id: 'kiki-quota', url: 'https://api.zjuam.art/v1/kiki/quota', oauth: false });
+  });
+  it('parses kiki.key_quota pool windows and personal usage with group tags', () => {
+    const payload = {
+      object: 'kiki.key_quota',
+      generated_at: '2026-11-25T05:35:00Z',
+      key: {
+        id: 123,
+        name: 'Kiki Subscription',
+        masked_key: 'ah-••••abcd',
+        portal_managed: true,
+        project_id: 2,
+        group_slug: 'ren-group',
+        group_name: '用户组1',
+        channel_tags: ['我们组'],
+      },
+      personal_usage: {
+        requests_today: 12,
+        tokens_today: 45210,
+        requests_7d: 84,
+        tokens_7d: 391000,
+      },
+      pool_quotas: [
+        {
+          slug: 'gemini',
+          title: 'Google Gemini 4',
+          availability: 'available',
+          models: ['gemini-4-neon', 'gemini-4-carbon', 'gemini-4-hydrogen'],
+          apiFormats: ['anthropic/messages'],
+          windows: [
+            { key: '5h', label: '5h Window', usedPercent: 12.5, remainingPercent: 87.5, resetAt: '2026-11-25T08:00:00Z' },
+            { key: 'weekly', label: 'Weekly Cap', remainingPercent: 65, resetAt: '2026-12-01T00:00:00Z' },
+          ],
+        },
+        {
+          slug: 'claude',
+          title: 'Claude',
+          windows: [
+            { key: '24h', usedPercent: 100, remainingPercent: 0, resetAt: '2026-11-26T00:00:00Z' },
+            { key: '1d', label: 'Daily Burst', usedPercent: 25 },
+            { key: 'bad', usedPercent: 150 },
+          ],
+        },
+      ],
+    };
+    const meters = parseQuota('kiki-quota', payload, time);
+    expect(meters).toEqual([
+      {
+        id: 'pool-gemini-5h',
+        label: 'Google Gemini 4 · 5h Window',
+        unit: 'percent',
+        unit_label: '%',
+        used: 12.5,
+        limit: 100,
+        remaining: 87.5,
+        scope: 'account',
+        model_group: 'Google Gemini 4',
+        window: { label: 'Google Gemini 4 · 5h Window', duration_seconds: 18000, reset_at: '2026-11-25T08:00:00.000Z', reset_timezone: 'UTC' },
+      },
+      {
+        id: 'pool-gemini-weekly',
+        label: 'Google Gemini 4 · Weekly Cap',
+        unit: 'percent',
+        unit_label: '%',
+        used: 35,
+        limit: 100,
+        remaining: 65,
+        scope: 'account',
+        model_group: 'Google Gemini 4',
+        window: { label: 'Google Gemini 4 · Weekly Cap', duration_seconds: 604800, reset_at: '2026-12-01T00:00:00.000Z', reset_timezone: 'UTC' },
+      },
+      {
+        id: 'pool-claude-24h',
+        label: 'Claude · 24h',
+        unit: 'percent',
+        unit_label: '%',
+        used: 100,
+        limit: 100,
+        remaining: 0,
+        scope: 'account',
+        model_group: 'Claude',
+        window: { label: 'Claude · 24h', duration_seconds: 86400, reset_at: '2026-11-26T00:00:00.000Z', reset_timezone: 'UTC' },
+      },
+      {
+        id: 'pool-claude-1d',
+        label: 'Claude · Daily Burst',
+        unit: 'percent',
+        unit_label: '%',
+        used: 25,
+        limit: 100,
+        remaining: 75,
+        scope: 'account',
+        model_group: 'Claude',
+        window: { label: 'Claude · Daily Burst', duration_seconds: 86400, reset_at: undefined, reset_timezone: undefined },
+      },
+      {
+        id: 'personal-requests-today',
+        label: '我们组 · 今日请求',
+        unit: 'count',
+        unit_label: '次',
+        scope: 'key',
+        model_group: '我们组',
+        used: 12,
+        limit: null,
+        remaining: null,
+      },
+      {
+        id: 'personal-tokens-today',
+        label: '我们组 · 今日 Tokens',
+        unit: 'count',
+        unit_label: 'tokens',
+        scope: 'key',
+        model_group: '我们组',
+        used: 45210,
+        limit: null,
+        remaining: null,
+      },
+      {
+        id: 'personal-tokens-7d',
+        label: '我们组 · 7日 Tokens',
+        unit: 'count',
+        unit_label: 'tokens',
+        scope: 'key',
+        model_group: '我们组',
+        used: 391000,
+        limit: null,
+        remaining: null,
+      },
+    ]);
+
+    const fallbackGroup = parseQuota('kiki-quota', {
+      object: 'kiki.key_quota',
+      key: { group_name: '用户组1', channel_tags: [] },
+      personal_usage: { requests_today: 0, tokens_today: 0, tokens_7d: 500 },
+      pool_quotas: [],
+    }, time);
+    expect(fallbackGroup.map((m) => [m.id, m.label, m.model_group, m.used, m.limit, m.remaining])).toEqual([
+      ['personal-requests-today', '用户组1 · 今日请求', '用户组1', 0, null, null],
+      ['personal-tokens-today', '用户组1 · 今日 Tokens', '用户组1', 0, null, null],
+      ['personal-tokens-7d', '用户组1 · 7日 Tokens', '用户组1', 500, null, null],
+    ]);
+
+    expect(() => parseQuota('kiki-quota', { object: 'unknown' }, time)).toThrow('invalid_response');
+  });
+  it('deduplicates providers sharing the same quota endpoint and credential while preserving distinct keys', async () => {
+    const providers = {
+      axon: { type: 'openai_responses', baseUrl: 'https://api.zjuam.art/v1', apiKey: 'ah-test-shared-001' },
+      'axon-message': { type: 'anthropic', baseUrl: 'https://api.zjuam.art', apiKey: 'ah-test-shared-001' },
+      'axon-alt': { type: 'openai_responses', baseUrl: 'https://api.zjuam.art/v1', apiKey: 'ah-test-other-002' },
+      'axon-empty': { type: 'openai_responses', baseUrl: 'https://api.zjuam.art/v1' },
+    };
+    const services = new Map<unknown, unknown>([
+      [IProviderService, { ready: Promise.resolve(), list: () => providers }],
+      [IOAuthService, {}],
+      [IAtomicDocumentStore, { get: async () => undefined, update: async () => {} }],
+      [INbSearchService, { quotaSources: async () => [] }],
+      [IAgentExecutorRegistry, { list: () => [] }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => { expect(services.has(token)).toBe(true); return services.get(token); } } } as unknown as Scope;
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.zjuam.art/v1/kiki/quota');
+      expect(init?.redirect).toBe('error');
+      const auth = new Headers(init?.headers).get('authorization');
+      const tag = auth === 'Bearer ah-test-shared-001' ? '我们组' : '共享曹';
+      return new Response(JSON.stringify({
+        object: 'kiki.key_quota',
+        generated_at: '2026-11-25T05:35:00Z',
+        key: { channel_tags: [tag] },
+        personal_usage: { requests_today: 12, tokens_today: 45210, tokens_7d: 391000 },
+        pool_quotas: [{ slug: 'gemini', title: 'Google Gemini 4', windows: [{ key: '5h', label: '5h Window', usedPercent: 12.5, remainingPercent: 87.5, resetAt: '2099-01-01T00:00:00Z' }] }],
+      }));
+    });
+    const service = createProviderQuotaService(core, fetchMock);
+    const initial = providerQuotaSnapshotSchema.parse(await service.snapshot());
+    expect(initial.sources.map((s) => [s.id, s.account_label, s.supported])).toEqual([
+      ['provider:axon', '共享凭据：axon · axon-message', true],
+      ['provider:axon-alt', '此提供商的 API Key', true],
+      ['provider:axon-empty', '此提供商的 API Key', true],
+    ]);
+
+    const refreshed = providerQuotaSnapshotSchema.parse(await service.refresh('provider:axon'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const axonSource = refreshed.sources.find((s) => s.id === 'provider:axon')!;
+    expect(axonSource.status).toBe('ready');
+    expect(axonSource.meters.map((m) => [m.id, m.label, m.remaining, m.used])).toEqual([
+      ['pool-gemini-5h', 'Google Gemini 4 · 5h Window', 87.5, 12.5],
+      ['personal-requests-today', '我们组 · 今日请求', null, 12],
+      ['personal-tokens-today', '我们组 · 今日 Tokens', null, 45210],
+      ['personal-tokens-7d', '我们组 · 7日 Tokens', null, 391000],
+    ]);
+    expect(JSON.stringify(refreshed)).not.toContain('ah-test-shared-001');
+    expect(JSON.stringify(refreshed)).not.toContain('ah-test-other-002');
+
+    const altRefreshed = providerQuotaSnapshotSchema.parse(await service.refresh('provider:axon-alt'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(altRefreshed.sources.find((s) => s.id === 'provider:axon-alt')!.meters[1]?.label).toBe('共享曹 · 今日请求');
+
+    const emptyRefreshed = providerQuotaSnapshotSchema.parse(await service.refresh('provider:axon-empty'));
+    expect(emptyRefreshed.sources.find((s) => s.id === 'provider:axon-empty')!.status).toBe('auth_required');
   });
   it('uses bounded read-only requests, rejects redirects/auth/oversized or malformed data without leaking secrets', async () => {
     const adapter = selectQuotaAdapter('https://api.deepseek.com', false)!;
