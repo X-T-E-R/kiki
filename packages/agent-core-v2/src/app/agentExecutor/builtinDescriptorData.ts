@@ -5,7 +5,9 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     label: 'Google Antigravity ACP', protocol: 'acp-v1', homeEnv: 'GEMINI_HOME',
     sources: [
       { id: 'env', kind: 'env', name: 'ANTIGRAVITY_ACP_PATH' },
+      { id: 'kiki-managed-cli', kind: 'glob', pattern: '${KIKI_HOME}/tools/antigravity-acp/versions/*/*' },
       { id: 'agy-cli', kind: 'path-lookup', command: 'agy', requiredBasename: 'agy' },
+      { id: 'antigravity-cli', kind: 'path-lookup', command: 'antigravity', requiredBasename: 'antigravity' },
       { id: 'kiki-managed', kind: 'glob', pattern: '${KIKI_HOME}/tools/antigravity-acp/*/*/agy_acp_server.*' },
       { id: 'codeg-managed', kind: 'glob', pattern: '${LOCALAPPDATA}/app.codeg/acp-binaries/antigravity-acp/*/*/agy_acp_server.exe' },
       { id: 'path', kind: 'path-lookup', command: 'agy_acp_server', requiredBasename: 'agy_acp_server' },
@@ -16,9 +18,9 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     mcpTransports: ['stdio', 'http', 'sse'], defaultProfile: true,
     promptDeliveries: ['append', 'replace', 'preamble'],
     permission: { via: 'session_mode', manual: 'default', auto: 'auto_edit', yolo: 'yolo' },
-    installHint: 'Install Google Antigravity ACP CLI through the Antigravity executor binary cache (default 1.4.5), or install agy 1.5.1+ for its native acp transport; the Antigravity IDE is not an ACP CLI.',
+    installHint: 'Install the official Google Antigravity CLI 1.5+ through the Antigravity executor binary cache, or install agy / antigravity 1.5+ on PATH; legacy 1.4.5 agy_acp_server installs remain supported. The Antigravity Electron IDE is not an ACP CLI.',
     diagnostics: [{ kind: 'message', severity: 'info', message: 'Antigravity ACP uses its own settings.json and Google sign-in; use the executor login flow before starting a session.' }],
-    revision: '2026-11-11.1',
+    revision: '2026-11-24.1',
   },
   'agy-cli': {
     label: 'AGY CLI', protocol: 'acp-v1', args: [],

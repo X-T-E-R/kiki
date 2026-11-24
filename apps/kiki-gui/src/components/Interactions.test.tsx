@@ -21,6 +21,7 @@ import { createViewState, projectAgentTranscriptView, type ApprovalBlock, type Q
 import { AgentTranscript, type ContentRef, type InteractionState } from '@kiki/transcript';
 import { I18nProvider } from '../i18n';
 import { ApprovalCard, externalPermissionFromDisplay, InteractionRecord, QuestionCard, type PlanReviewResponse } from './Interactions';
+import { extractExternalSubagentSnapshot } from './externalSubagentInfo';
 import { TranscriptDetailProvider } from './transcriptDetail';
 import { getToasts } from '../lib/toasts';
 
@@ -833,5 +834,93 @@ describe('InteractionRecord (tray placement)', () => {
     expect(review).not.toBeNull();
     await act(async () => { flushSync(() => { click(review!); }); });
     expect(onReview).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Antigravity security warning & external subagent polish', () => {
+  it('extracts and renders per-option security warning from _meta["agy.security.warning"] and changes without raw JSON clutter', async () => {
+    const parsed = externalPermissionFromDisplay({
+      kind: 'external_permission',
+      summary: 'Antigravity wants to run a shell command',
+      options: [
+        {
+          id: 'allow-always',
+          label: 'Allow always',
+          kind: 'allow_always',
+          _meta: { 'agy.security.warning': 'Grants persistent command execution in this workspace.' },
+          changes: [{ kind: 'security_warning', message: 'Duplicate warning filtered from raw changes' }],
+        },
+        {
+          id: 'allow-once',
+          label: 'Allow once',
+          kind: 'allow_once',
+        },
+      ],
+    });
+    if (parsed?.ok !== true) throw new Error('expected ok');
+    expect(parsed.display.options[0]?.securityWarning).toBe('Grants persistent command execution in this workspace.');
+    expect(parsed.display.options[0]?.changes).toEqual([]);
+
+    const onResolve = vi.fn(() => Promise.resolve());
+    const container = await renderCard(
+      approvalBlock({
+        kind: 'external_permission',
+        summary: 'Antigravity wants to run a shell command',
+        options: [
+          {
+            id: 'allow-always',
+            label: 'Allow always',
+            kind: 'allow_always',
+            _meta: { 'agy.security.warning': 'Grants persistent command execution in this workspace.' },
+          },
+          { id: 'allow-once', label: 'Allow once', kind: 'allow_once' },
+        ],
+      }),
+      onResolve,
+    );
+    const warning = container.querySelector('[data-external-option-warning="allow-always"]');
+    expect(warning?.textContent).toContain('Grants persistent command execution in this workspace.');
+    expect(container.querySelector('[data-external-option-warning="allow-once"]')).toBeNull();
+  });
+
+  it('extracts Antigravity invoke_subagent role, prompt, and latest step', () => {
+    const info = extractExternalSubagentSnapshot({
+      kind: 'tool',
+      id: 'tool-1',
+      toolCallId: 'external:agy:sub-1',
+      name: 'invoke_subagent',
+      status: 'running',
+      args: { role: 'researcher', prompt: 'Inspect ACP quota schema' },
+      argsText: '',
+      description: undefined,
+      isError: false,
+      durationMs: undefined,
+      progressText: undefined,
+      output: { kind: 'external_tool_output', rawOutput: { status: 'running', latestStep: 'Reading antigravityQuota.ts' } },
+      display: undefined,
+    });
+    expect(info).toEqual({
+      role: 'researcher',
+      prompt: 'Inspect ACP quota schema',
+      latestStep: 'Reading antigravityQuota.ts',
+      status: 'running',
+      children: [],
+      incomplete: undefined,
+    });
+    expect(extractExternalSubagentSnapshot({
+      kind: 'tool',
+      id: 'tool-2',
+      toolCallId: 'native:1',
+      name: 'Read',
+      status: 'done',
+      args: { path: 'a.ts' },
+      argsText: '',
+      description: undefined,
+      isError: false,
+      durationMs: undefined,
+      progressText: undefined,
+      output: undefined,
+      display: undefined,
+    })).toBeUndefined();
   });
 });

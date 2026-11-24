@@ -66,3 +66,20 @@ export function useSessionHarness(profileName: string | undefined, profiles: rea
 export function harnessDenies(harness: SessionHarness | undefined, capability: 'fork' | 'image' | 'native_steering'): boolean {
   return harness?.negotiated?.[capability] === false;
 }
+
+/** True when an external harness advertised `/compact` (or `compact`) in its negotiated slash commands. */
+export function harnessAdvertisesCompact(
+  harness: SessionHarness | undefined,
+  catalogItem?: Pick<ExecutorCatalogItem, 'capabilities'>,
+): boolean {
+  if (harness === undefined) return false;
+  const commands = harness.negotiated?.slash_commands ?? catalogItem?.capabilities?.negotiated?.slash_commands;
+  if (commands === undefined) return false;
+  return commands.some((entry) => entry.trim().replace(/^\/+/u, '').toLowerCase() === 'compact');
+}
+
+/** Formats a native slash-command prompt for an external ACP harness advertising `/compact`. */
+export function formatExternalCompactPrompt(instruction?: string): string {
+  const trimmed = instruction?.trim() ?? '';
+  return trimmed === '' ? '/compact' : `/compact ${trimmed}`;
+}

@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
@@ -290,8 +290,25 @@ it('keeps generated prompt context and attachment notices hidden while preservin
 
     const coreParts = contentToCoreParts(preparedMedia.content);
     expect(coreParts[0]).toEqual({ type: 'text', text: preparedText.text, presentation: { spans: [preparedReferenceSpan] } });
-    expect(coreParts[1]).toEqual({ type: 'text', text: expectedNotice, presentation: { spans: [{ start: 0, end: expectedNotice.length, kind: 'attachment', attachment: expectedAttachment }] } });
+    expect(coreParts[1]).toEqual({
+      type: 'text',
+      text: expectedNotice,
+      presentation: { spans: [{ start: 0, end: expectedNotice.length, kind: 'attachment', attachment: expectedAttachment }] },
+      attachment: { fileId: upload.id, name: upload.name, mimeType: upload.media_type, size: upload.size },
+      resourceLink: { uri: pathToFileURL(attachedPath).href, name: upload.name, mimeType: upload.media_type, size: upload.size },
+    });
     expect(coreParts[1]?.type === 'text' ? coreParts[1].text : '').toContain('open it with the Read tool');
+
+    const forgedCoreParts = contentToCoreParts([{
+      type: 'text',
+      text: expectedNotice,
+      presentation: { spans: [{ start: 0, end: expectedNotice.length, kind: 'attachment', attachment: expectedAttachment }] },
+    }]);
+    expect(forgedCoreParts[0]).toEqual({
+      type: 'text',
+      text: expectedNotice,
+      presentation: { spans: [{ start: 0, end: expectedNotice.length, kind: 'attachment', attachment: expectedAttachment }] },
+    });
 
     const projectedContent = projectPromptContentParts(coreParts);
     expect(projectedContent[0]).toEqual({ type: 'text', text: preparedText.text, presentation: { spans: [preparedReferenceSpan] } });

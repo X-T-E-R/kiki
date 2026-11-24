@@ -1,15 +1,21 @@
 import type { Klient } from '@kiki/klient';
 import { createRebindableKlient, type HttpSocketDiagnostic } from '@kiki/klient/http';
 import type {
+  AntigravityLoginOutcomeResponse,
+  AntigravityLoginRequest,
+  AntigravityLoginStartResponse,
+  AntigravityStatusResponse,
   ApprovalResolveRequest,
   ApprovalResolveResult,
   CreateSessionBranchRequest,
   CreateSessionBranchResponse,
   DiscardSessionBranchRequest,
   DiscardSessionBranchResponse,
+  ExecutorModelCatalogResponse,
   FoldSessionBranchRequest,
   FoldSessionBranchResponse,
   GoalSnapshot,
+  ListExecutorsResponse,
   ListModelsResponse,
   ListNamedAgentProfilesResponse,
   MessageContent,
@@ -159,6 +165,55 @@ export class DaemonClient implements SessionTransport {
 
   listModels(): Promise<ListModelsResponse> {
     return this.request('GET', '/models');
+  }
+
+  listExecutors(): Promise<ListExecutorsResponse> {
+    return this.request('GET', '/executors');
+  }
+
+  getExecutorModels(executorId: string): Promise<ExecutorModelCatalogResponse> {
+    return this.request('GET', `/executors/${encodeURIComponent(executorId)}/models`);
+  }
+
+  getAntigravityBinaries(options?: {
+    readonly instance_id?: string;
+    readonly check_updates?: boolean;
+    readonly refresh_models?: boolean;
+  }): Promise<AntigravityStatusResponse> {
+    return this.request('GET', '/executors/antigravity-acp/binaries', undefined, {
+      instance_id: options?.instance_id,
+      check_updates: options?.check_updates === undefined ? undefined : String(options.check_updates),
+      refresh_models: options?.refresh_models === undefined ? undefined : String(options.refresh_models),
+    });
+  }
+
+  startAntigravityLogin(body: AntigravityLoginRequest): Promise<AntigravityLoginStartResponse> {
+    return this.request('POST', '/executors/antigravity-acp/login/start', body);
+  }
+
+  completeAntigravityLogin(body: {
+    readonly handle: string;
+    readonly code_or_url?: string;
+    readonly redirect_url?: string;
+    readonly instance_id?: string;
+  }): Promise<AntigravityLoginOutcomeResponse> {
+    return this.request('POST', '/executors/antigravity-acp/login/complete', body);
+  }
+
+  cancelAntigravityLogin(handle: string, instanceId?: string): Promise<{ readonly cancelled: true }> {
+    return this.request(
+      'POST',
+      '/executors/antigravity-acp/login/cancel',
+      instanceId === undefined ? { handle } : { handle, instance_id: instanceId },
+    );
+  }
+
+  logoutAntigravity(instanceId?: string): Promise<{ readonly signed_out: true }> {
+    return this.request(
+      'POST',
+      '/executors/antigravity-acp/logout',
+      instanceId === undefined ? {} : { instance_id: instanceId },
+    );
   }
 
   listAgentProfiles(workspaceId?: string): Promise<ListNamedAgentProfilesResponse> {

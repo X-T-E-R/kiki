@@ -16,6 +16,7 @@ export interface HostProcessOptionsLike {
   readonly envUnset?: readonly string[];
   readonly shell?: boolean | string;
   readonly detached?: boolean;
+  readonly ownedProcessTree?: boolean;
   readonly windowsHide?: boolean;
   readonly mergeStderr?: boolean;
   readonly timeout?: number;
@@ -139,6 +140,7 @@ export interface AcpOpenSessionResult {
   readonly configOptions: readonly SessionConfigOption[];
   readonly currentModeId?: string;
   readonly availableModes?: readonly string[];
+  readonly availableCommands?: readonly string[];
   readonly sessionRef: ExecutorSessionRefEnvelope;
   /** Metadata sent on the native session open; live reuse retains that request, not unsent updates. */
   readonly sessionRequestMeta?: Readonly<Record<string, unknown>>;
@@ -186,11 +188,30 @@ export type AcpContextHookHandler = (
   context: { readonly signal: AbortSignal },
 ) => Promise<{ readonly additionalContext: string }>;
 
+export interface AcpAntigravityTimingOptions {
+  readonly busyRetryMs?: number;
+  readonly terminalDebounceMs?: number;
+  readonly openReplySilenceMs?: number;
+  readonly silentCommandCapMs?: number;
+  readonly subagentPollIntervalMs?: number;
+}
+
+export interface AcpAntigravityHooks {
+  readonly readPreEditFile?: (path: string) => string | undefined;
+  readonly childrenAtWork?: (
+    sessionId: string,
+    toolCallIds: readonly string[],
+  ) => Promise<{ readonly activeToolCallIds: readonly string[]; readonly incomplete: boolean }>;
+  readonly hasPendingReply?: (sessionId: string) => Promise<boolean>;
+  readonly timing?: AcpAntigravityTimingOptions;
+}
+
 export interface AcpClientOptions {
   readonly contextHookHandler?: AcpContextHookHandler;
   readonly planApprovalHandler?: AcpPlanApprovalHandler;
   readonly permissionHandler?: AcpPermissionHandler;
   readonly elicitationHandler?: AcpElicitationHandler;
+  readonly antigravityHooks?: AcpAntigravityHooks;
   readonly logger?: AcpClientLogger;
   readonly platform?: NodeJS.Platform;
   readonly onStateChange?: (status: AcpClientStatus) => void;
@@ -211,6 +232,7 @@ export interface AcpTurnRequest {
 
 export interface AcpTurnResult {
   readonly response: PromptResponse;
+  readonly promptUsages?: readonly NonNullable<PromptResponse['usage']>[];
   readonly session: AcpOpenSessionResult;
   /**
    * Best-effort snapshot of the agent's stderr received when the prompt

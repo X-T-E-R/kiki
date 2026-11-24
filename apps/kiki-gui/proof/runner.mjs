@@ -387,8 +387,10 @@ async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
     }
   };
 
+  const dpr = Number(process.env.KIKI_PROOF_DPR);
   const context = await browser.newContext({
     viewport: { width: view.width, height: view.width <= 639 ? 844 : 900 },
+    ...(Number.isFinite(dpr) && dpr > 0 ? { deviceScaleFactor: dpr } : {}),
     ...(view.width <= 639 ? { isMobile: true, hasTouch: true } : {}),
     reducedMotion: 'reduce',
   });

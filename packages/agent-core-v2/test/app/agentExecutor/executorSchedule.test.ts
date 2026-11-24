@@ -438,4 +438,133 @@ describe('executor instance config merge', () => {
     expect(applyExecutorInstancePatch(saved, { 'instance-work': { ...entry, quota_account_id: null } })['instance-work']?.quota_account_id).toBeUndefined();
     expect(applyExecutorInstancePatch(saved, { 'instance-work': { ...entry, launch: null } })['instance-work']?.launch).toBeUndefined();
   });
+
+  it('defaults antigravity-acp instance account ids to instance.id and schedules by official quota readings', async () => {
+    const instances = [
+      { id: 'agy-a', label: 'A', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/a' }, proxy: { kind: 'inherit' as const } },
+      { id: 'agy-b', label: 'B', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/b' }, proxy: { kind: 'inherit' as const } },
+    ];
+    const resolvedModelScoped = await resolveExecutorSchedule({
+      requestedExecutor: 'antigravity-acp',
+      familyId: 'antigravity-acp',
+      sessionChoice: 'auto',
+      instances,
+      quotaSourceId: 'official:antigravity-acp',
+      targetModel: 'gemini-3-pro',
+    }, async (sourceId) => {
+      expect(sourceId).toBe('official:antigravity-acp');
+      return [
+        { accountId: 'agy-a', pool: 'gemini', modelIds: ['gemini-3-pro'], unit: 'percent', window: '5h', remaining: 25 },
+        { accountId: 'agy-b', pool: 'gemini', modelIds: ['gemini-3-pro'], unit: 'percent', window: '5h', remaining: 90 },
+      ];
+    });
+    expect(resolvedModelScoped.choice).toMatchObject({
+      instance: 'agy-b',
+      launchId: 'agy-b',
+      quotaSourceId: 'official:antigravity-acp',
+      quotaConsulted: true,
+    });
+
+    const resolvedUnscoped = await resolveExecutorSchedule({
+      requestedExecutor: 'antigravity-acp',
+      familyId: 'antigravity-acp',
+      sessionChoice: 'auto',
+      instances,
+      quotaSourceId: 'official:antigravity-acp',
+    }, async () => [
+      { accountId: 'agy-a', unit: 'percent', window: '5h', remaining: 70 },
+      { accountId: 'agy-b', unit: 'percent', window: '5h', remaining: 30 },
+    ]);
+    expect(resolvedUnscoped.choice).toMatchObject({
+      instance: 'agy-a',
+      launchId: 'agy-a',
+      quotaSourceId: 'official:antigravity-acp',
+      quotaConsulted: true,
+    });
+  });
+
+  it('ranks main alongside instances, treats { account_id: "auto" } as auto, and respects official pool family when modelIds is empty', async () => {
+    const instances = [
+      { id: 'agy-work', label: 'Work', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/work' }, proxy: { kind: 'inherit' as const } },
+    ];
+
+    const mainWins = await resolveExecutorSchedule({
+      requestedExecutor: 'antigravity-acp',
+      familyId: 'antigravity-acp',
+      sessionChoice: 'auto',
+      instances,
+      quotaSourceId: 'official:antigravity-acp',
+      targetModel: 'gemini-3-pro',
+    }, async () => [
+      { accountId: 'antigravity-acp', pool: 'gemini', unit: 'percent', window: '5h', remaining: 95 },
+      { accountId: 'agy-work', pool: 'gemini', unit: 'percent', window: '5h', remaining: 20 },
+    ]);
+    expect(mainWins.choice).toMatchObject({
+      instance: 'main',
+      launchId: 'antigravity-acp',
+      quotaConsulted: true,
+      missingInstance: false,
+    });
+
+    const workWins = await resolveExecutorSchedule({
+      requestedExecutor: 'antigravity-acp',
+      familyId: 'antigravity-acp',
+      sessionChoice: { account_id: 'auto' },
+      instances,
+      quotaSourceId: 'official:antigravity-acp',
+      targetModel: 'gemini-3-pro',
+    }, async () => [
+      { accountId: 'antigravity-acp', pool: 'gemini', unit: 'percent', window: '5h', remaining: 10 },
+      { accountId: 'agy-work', pool: 'gemini', unit: 'percent', window: '5h', remaining: 85 },
+    ]);
+    expect(workWins.choice).toMatchObject({
+      choice: 'auto',
+      instance: 'agy-work',
+      launchId: 'agy-work',
+      quotaConsulted: true,
+      missingInstance: false,
+    });
+
+    const poolIsolated = await resolveExecutorSchedule({
+      requestedExecutor: 'antigravity-acp',
+      familyId: 'antigravity-acp',
+      sessionChoice: 'auto',
+      instances: [
+        { id: 'agy-a', label: 'A', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/a' }, proxy: { kind: 'inherit' as const } },
+        { id: 'agy-b', label: 'B', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/b' }, proxy: { kind: 'inherit' as const } },
+      ],
+      quotaSourceId: 'official:antigravity-acp',
+      targetModel: 'claude-sonnet-4-6',
+    }, async () => [
+      { accountId: 'agy-a', pool: 'gemini', unit: 'percent', window: '5h', remaining: 95 },
+      { accountId: 'agy-a', pool: 'claude-gpt', unit: 'percent', window: '5h', remaining: 0 },
+      { accountId: 'agy-b', pool: 'claude-gpt', unit: 'percent', window: '5h', remaining: 60 },
+    ]);
+    expect(poolIsolated.choice).toMatchObject({
+      instance: 'agy-b',
+      launchId: 'agy-b',
+      quotaConsulted: true,
+    });
+
+    const geminiStillRoutesA = await resolveExecutorSchedule({
+      requestedExecutor: 'antigravity-acp',
+      familyId: 'antigravity-acp',
+      sessionChoice: 'auto',
+      instances: [
+        { id: 'agy-a', label: 'A', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/a' }, proxy: { kind: 'inherit' as const } },
+        { id: 'agy-b', label: 'B', sourceExecutor: 'antigravity-acp', configuration: { kind: 'config_directory' as const, path: '/b' }, proxy: { kind: 'inherit' as const } },
+      ],
+      quotaSourceId: 'official:antigravity-acp',
+      targetModel: 'gemini-3-pro',
+    }, async () => [
+      { accountId: 'agy-a', pool: 'gemini', unit: 'percent', window: '5h', remaining: 95 },
+      { accountId: 'agy-a', pool: 'claude-gpt', unit: 'percent', window: '5h', remaining: 0 },
+      { accountId: 'agy-b', pool: 'gemini', unit: 'percent', window: '5h', remaining: 30 },
+    ]);
+    expect(geminiStillRoutesA.choice).toMatchObject({
+      instance: 'agy-a',
+      launchId: 'agy-a',
+      quotaConsulted: true,
+    });
+  });
 });

@@ -405,4 +405,83 @@ describe('provider quotas', () => {
       expect(JSON.stringify(await client.snapshot())).not.toContain('YOUR_API_KEY');
     } finally { await app.close(); }
   });
+
+  it('exposes official Google Antigravity CloudCode PA quota for antigravity-acp and its instances', async () => {
+    const { mkdir, mkdtemp, rm, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { IBootstrapService } = await import('@kiki/agent-core-v2');
+    const root = await mkdtemp(join(tmpdir(), 'kiki-kap-agy-quota-'));
+    try {
+      const profileMain = join(root, 'main-profile');
+      const profileApiKey = join(root, 'apikey-profile');
+      await mkdir(join(profileMain, 'antigravity-acp'), { recursive: true });
+      await mkdir(join(profileApiKey, 'antigravity-acp'), { recursive: true });
+      await writeFile(join(profileMain, 'antigravity-acp', 'settings.json'), JSON.stringify({ auth: { type: 'oauth-personal' } }));
+      await writeFile(join(profileMain, 'antigravity-acp', 'antigravity-oauth-token'), JSON.stringify({
+        token: { access_token: 'agy-live-token', expiry: new Date(Date.now() + 3_600_000).toISOString() },
+      }));
+      await writeFile(join(profileApiKey, 'antigravity-acp', 'settings.json'), JSON.stringify({ auth: { type: 'gemini-api-key' } }));
+
+      const prefs = new Map<string, Record<string, boolean>>();
+      const services = new Map<unknown, unknown>([
+        [IProviderService, { ready: Promise.resolve(), list: () => ({}) }],
+        [IOAuthService, {}],
+        [IAtomicDocumentStore, {
+          get: async (s: string, k: string) => prefs.get(`${s}:${k}`),
+          update: async (s: string, k: string, fn: (v: Record<string, boolean> | undefined) => Record<string, boolean>) => {
+            prefs.set(`${s}:${k}`, fn(prefs.get(`${s}:${k}`)));
+          },
+        }],
+        [INbSearchService, { quotaSources: async () => [], keyUsage: async () => ({ keys: [] }) }],
+        [IBootstrapService, { homeDir: root, osHomeDir: root, platform: 'win32', arch: 'x64', getEnv: () => undefined }],
+        [IAgentExecutorRegistry, {
+          list: () => [
+            { id: 'antigravity-acp', label: 'Google Antigravity ACP', protocol: 'acp-v1', args: [], revision: '1', homeEnv: 'GEMINI_HOME', homeDir: profileMain },
+            {
+              id: 'agy-apikey',
+              label: 'AGY API Key',
+              protocol: 'acp-v1',
+              args: [],
+              revision: '2',
+              homeEnv: 'GEMINI_HOME',
+              homeDir: profileApiKey,
+              instance: { source_executor: 'antigravity-acp', label: 'AGY API Key', configuration: { kind: 'config_directory', path: profileApiKey }, proxy: { kind: 'inherit' } },
+            },
+          ],
+        }],
+      ]);
+      const futureResetAt = new Date(Date.now() + 3 * 3_600_000).toISOString();
+      const fakeFetch: typeof fetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/oauth2/v2/userinfo')) return new Response(JSON.stringify({ id: 'u1', email: 'quota@example.test' }));
+        if (url.includes('daily-cloudcode-pa.googleapis.com')) {
+          return new Response(JSON.stringify({
+            groups: [{ buckets: [{ bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.8, resetTime: futureResetAt }] }],
+          }));
+        }
+        return new Response(JSON.stringify({ groups: [] }));
+      };
+      const service = createProviderQuotaService({ accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope, fakeFetch);
+      const initial = await service.snapshot();
+      const mainSource = initial.sources.find((s) => s.id === 'executor:antigravity-acp');
+      const apiKeySource = initial.sources.find((s) => s.id === 'executor:agy-apikey');
+      expect(mainSource).toMatchObject({ supported: true, status: 'unknown', source: { label: 'Google CloudCode PA 官方额度' } });
+      expect(apiKeySource).toMatchObject({ supported: false, status: 'unsupported' });
+
+      const refreshed = await service.refresh('executor:antigravity-acp');
+      const ready = refreshed.sources.find((s) => s.id === 'executor:antigravity-acp');
+      expect(ready?.status).toBe('ready');
+      expect(ready?.meters[0]).toMatchObject({
+        id: 'gemini-5h',
+        unit: 'percent',
+        used: 20,
+        limit: 100,
+        remaining: 80,
+        window: { label: '5h', duration_seconds: 18_000, reset_at: futureResetAt },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

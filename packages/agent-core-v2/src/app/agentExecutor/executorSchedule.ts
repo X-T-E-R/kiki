@@ -66,7 +66,8 @@ export interface ScheduleChoice {
 
 export function instanceAccountId(instance: ScheduleInstanceView): string | undefined {
   if (instance.quotaAccountId !== undefined) return instance.quotaAccountId;
-  return instance.configuration.kind === 'plugin_account' ? instance.configuration.account_id : undefined;
+  if (instance.configuration.kind === 'plugin_account') return instance.configuration.account_id;
+  return instance.sourceExecutor === 'antigravity-acp' ? instance.id : undefined;
 }
 
 function isInstanceId(value: string): boolean {
@@ -77,13 +78,21 @@ function sameChoice(left: ExecutorInstanceChoice, right: ExecutorInstanceChoice)
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizeInstanceChoice(choice: ExecutorInstanceChoice): ExecutorInstanceChoice {
+  return typeof choice === 'object' && choice.account_id === 'auto' ? 'auto' : choice;
+}
+
 export function winningScheduleChoice(input: ScheduleChoiceInput): { readonly choice: ExecutorInstanceChoice; readonly source: ExecutionValueSource } {
-  if (input.sessionChoice !== undefined && input.sessionChoice !== null) return { choice: input.sessionChoice, source: 'session' };
+  if (input.sessionChoice !== undefined && input.sessionChoice !== null) {
+    return { choice: normalizeInstanceChoice(input.sessionChoice), source: 'session' };
+  }
   if (isInstanceId(input.requestedExecutor)) return { choice: input.requestedExecutor, source: 'session' };
   if (input.profileChoice !== undefined && (input.profileExecutor === undefined || input.profileExecutor === input.familyId || input.profileExecutor === input.requestedExecutor)) {
-    return { choice: input.profileChoice, source: 'profile' };
+    return { choice: normalizeInstanceChoice(input.profileChoice), source: 'profile' };
   }
-  if (input.defaultsChoice !== undefined) return { choice: input.defaultsChoice, source: 'harness-settings' };
+  if (input.defaultsChoice !== undefined) {
+    return { choice: normalizeInstanceChoice(input.defaultsChoice), source: 'harness-settings' };
+  }
   return { choice: 'main', source: 'harness-default' };
 }
 
@@ -164,7 +173,10 @@ export function decideExecutorSchedule(input: ScheduleChoiceInput): ScheduleChoi
   const previous = input.previous?.schedule;
   const sameProfile = input.previous?.profileIdentity === input.profileIdentity;
   const policy = input.autoContinuationPolicy ?? 'prefer_current';
-  const freshExplicitSessionAuto = input.sessionChoice === 'auto' && (
+  const sessionNormalized = input.sessionChoice === undefined || input.sessionChoice === null
+    ? undefined
+    : normalizeInstanceChoice(input.sessionChoice);
+  const freshExplicitSessionAuto = sessionNormalized === 'auto' && (
     input.freshSessionChoice === true ||
     previous === undefined ||
     previous.choice !== 'auto' ||
@@ -191,7 +203,8 @@ export function decideExecutorSchedule(input: ScheduleChoiceInput): ScheduleChoi
   return resolveChoice(input, next.choice, next.source);
 }
 
-function resolveChoice(input: ScheduleChoiceInput, choice: ExecutorInstanceChoice, source: ExecutionValueSource): ScheduleChoice {
+function resolveChoice(input: ScheduleChoiceInput, rawChoice: ExecutorInstanceChoice, source: ExecutionValueSource): ScheduleChoice {
+  const choice = normalizeInstanceChoice(rawChoice);
   if (choice === 'main') return decision(input, choice, source, input.familyId, 'main');
   if (choice === 'auto') {
     const hasExcluded = (input.excludedInstances?.length ?? 0) > 0;
@@ -209,12 +222,34 @@ function resolveChoice(input: ScheduleChoiceInput, choice: ExecutorInstanceChoic
   return decision(input, choice, source, match.id, match.id);
 }
 
+const OFFICIAL_POOL_IDS = new Set([
+  'gemini',
+  'gemini-argon',
+  'gemini-carbon',
+  'claude-gpt',
+  'claude-gpt-shared',
+  'claude',
+  'gpt',
+]);
+
+function matchesOfficialPool(pool: string, model: string | undefined): boolean {
+  if (!OFFICIAL_POOL_IDS.has(pool)) return false;
+  if (model === undefined) return true;
+  if (pool === 'gemini-argon') return /argon/i.test(model);
+  if (pool === 'gemini-carbon') return /carbon/i.test(model);
+  if (pool === 'gemini') return /gemini/i.test(model) && !/argon|carbon/i.test(model);
+  if (pool === 'claude-gpt' || pool === 'claude-gpt-shared') return /claude|gpt|o[134]|3p/i.test(model);
+  if (pool === 'claude') return /claude/i.test(model);
+  if (pool === 'gpt') return /gpt|o[134]/i.test(model);
+  return false;
+}
+
 function readingCanRoute(reading: HarnessQuotaReading, model: string | undefined): boolean {
   if (reading.remaining === undefined) return false;
   const modelIds = reading.modelIds ?? [];
-  if (reading.pool !== undefined && modelIds.length === 0) return false;
-  if (modelIds.length === 0) return reading.pool === undefined;
-  return model !== undefined && modelIds.includes(model);
+  if (modelIds.length > 0) return model !== undefined && modelIds.includes(model);
+  if (reading.pool === undefined) return true;
+  return matchesOfficialPool(reading.pool, model);
 }
 
 function pickPositiveQuotaInstance(
@@ -223,7 +258,7 @@ function pickPositiveQuotaInstance(
   familyId: string,
   targetModel: string | undefined,
   excludedInstances: readonly ('main' | string)[] = [],
-): string | undefined {
+): 'main' | string | undefined {
   const excludedIds = new Set(excludedInstances);
   const excludedAccounts = new Set(
     instances
@@ -231,29 +266,42 @@ function pickPositiveQuotaInstance(
       .map((instance) => instanceAccountId(instance))
       .filter((account): account is string => account !== undefined),
   );
-  const candidates = instances.filter(
-    (instance) =>
-      instance.sourceExecutor === familyId &&
-      !excludedIds.has(instance.id) &&
-      instanceAccountId(instance) !== undefined &&
-      !excludedAccounts.has(instanceAccountId(instance)!),
-  );
+  if (excludedIds.has('main') || excludedIds.has(familyId)) {
+    excludedAccounts.add('main');
+    excludedAccounts.add(familyId);
+  }
+  const candidates: Array<{ readonly id: 'main' | string; readonly accountId: string }> = instances
+    .filter(
+      (instance) =>
+        instance.sourceExecutor === familyId &&
+        !excludedIds.has(instance.id) &&
+        instanceAccountId(instance) !== undefined &&
+        !excludedAccounts.has(instanceAccountId(instance)!),
+    )
+    .map((instance) => ({ id: instance.id, accountId: instanceAccountId(instance)! }));
+  if (!excludedIds.has('main') && !excludedIds.has(familyId)) {
+    const mainReadingAccount = readings.find(
+      (reading) => (reading.accountId === familyId || reading.accountId === 'main') && !excludedAccounts.has(reading.accountId),
+    )?.accountId;
+    if (mainReadingAccount !== undefined) {
+      candidates.push({ id: 'main', accountId: mainReadingAccount });
+    }
+  }
   const usable = readings.filter((reading) => readingCanRoute(reading, targetModel));
   const counts = new Map<HarnessQuotaReading['unit'], number>();
   for (const reading of usable) {
     if ((reading.remaining ?? 0) <= 0) continue;
-    if (!candidates.some((instance) => instanceAccountId(instance) === reading.accountId)) continue;
+    if (!candidates.some((candidate) => candidate.accountId === reading.accountId)) continue;
     counts.set(reading.unit, (counts.get(reading.unit) ?? 0) + 1);
   }
   const unit = [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0];
   if (unit === undefined) return undefined;
-  const scored = candidates.flatMap((instance) => {
-    const account = instanceAccountId(instance);
-    const windows = usable.filter((reading) => reading.accountId === account && reading.unit === unit);
+  const scored = candidates.flatMap((candidate) => {
+    const windows = usable.filter((reading) => reading.accountId === candidate.accountId && reading.unit === unit);
     if (windows.length === 0) return [];
     const remaining = Math.min(...windows.map((reading) => reading.remaining ?? 0));
     if (remaining <= 0) return [];
-    return [{ id: instance.id, remaining }];
+    return [{ id: candidate.id, remaining }];
   }).sort((left, right) => right.remaining - left.remaining || left.id.localeCompare(right.id));
   return scored[0]?.id;
 }

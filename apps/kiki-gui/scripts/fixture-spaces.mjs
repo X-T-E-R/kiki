@@ -495,7 +495,7 @@ export function spaceConfig(server) {
  * descriptors, which are how an engine counts as configured on a machine that
  * has neither a profile nor an override for it.
  */
-const RAW_SECTIONS = ['agent_executor_overrides', 'agent_executor_display', 'agent_executors'];
+const RAW_SECTIONS = ['agent_executor_overrides', 'agent_executor_display', 'agent_executors', 'agent_executor_instances'];
 
 function withRaw(config) {
   const raw = {};

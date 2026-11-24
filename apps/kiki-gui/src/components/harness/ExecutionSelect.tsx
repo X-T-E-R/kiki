@@ -31,7 +31,11 @@ import {
 import { useI18n } from '../../i18n';
 import { externalClientsFacade } from '../../lib/externalClients';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
-import { mapExecutorCapabilities, type ExecutorCapabilityPresentation } from '../../lib/executorCapabilities';
+import {
+  mapExecutorCapabilities,
+  resolveExecutorModelThinkingLevels,
+  type ExecutorCapabilityPresentation,
+} from '../../lib/executorCapabilities';
 import { useElapsedSince } from '../RelativeTime';
 import { useOptionalConnection } from '../../state/connection';
 import {
@@ -56,7 +60,12 @@ import { formatThinkingEffortWord } from '../../lib/thinkingEffort';
  */
 function advertisedThinkingLevels(
   capabilities: ExecutorCapabilityPresentation | undefined,
+  modelId?: string,
+  modelThinkingLevels?: Readonly<Record<string, readonly string[]>>,
 ): readonly string[] | undefined {
+  if (modelId !== undefined && modelId !== '' && modelThinkingLevels !== undefined && Object.hasOwn(modelThinkingLevels, modelId)) {
+    return modelThinkingLevels[modelId];
+  }
   const levels = capabilities?.thinking_levels;
   if (levels?.kind === 'unavailable') return [];
   if (levels?.kind === 'ready' || levels?.kind === 'partial') return levels.values ?? [];
@@ -88,6 +97,7 @@ export interface ExecutionSelectProps {
   readonly onChangeEffort?: (effort: string) => void;
   readonly onCancelPending?: () => void;
   readonly executorResponse?: ExecutorModelCatalogResponse;
+  readonly modelThinkingLevels?: Readonly<Record<string, readonly string[]>>;
   readonly executorRefreshBusy?: boolean;
   readonly executorRefreshFailed?: boolean;
   readonly onRefreshExecutorModels?: () => void;
@@ -120,6 +130,7 @@ export function ExecutionSelect({
   onChangeEffort,
   onCancelPending,
   executorResponse,
+  modelThinkingLevels,
   executorRefreshBusy = false,
   executorRefreshFailed = false,
   onRefreshExecutorModels,
@@ -190,10 +201,12 @@ export function ExecutionSelect({
     return (kind === 'ready' || kind === 'partial') ? (executorCapabilities.models.values ?? []) : [];
   }, [executorCapabilities]);
 
+  const effectiveModelThinkingLevels = modelThinkingLevels ?? engineItem?.capabilities?.negotiated?.model_thinking_levels;
+  const selectedExternalModel = typeof choice.overrides?.model === 'string' ? choice.overrides.model : undefined;
   const executorEffortLevels = useMemo(() => {
-    if (!executorCapabilities) return [];
-    return executorCapabilities.thinking_levels.values ?? [];
-  }, [executorCapabilities]);
+    const fallback = executorCapabilities?.thinking_levels.values;
+    return resolveExecutorModelThinkingLevels(selectedExternalModel, effectiveModelThinkingLevels, fallback) ?? [];
+  }, [executorCapabilities, selectedExternalModel, effectiveModelThinkingLevels]);
 
   // Diagnostics statusLine for external engines
   const statusLine = useMemo(() => {
@@ -320,7 +333,7 @@ export function ExecutionSelect({
       onRequireSwitchConfirmation(modelVal);
       return;
     }
-    const advertised = advertisedThinkingLevels(executorCapabilities);
+    const advertised = advertisedThinkingLevels(executorCapabilities, modelVal, effectiveModelThinkingLevels);
     const current = choice.overrides?.thinking;
     const thinking = advertised === undefined
       ? (current === '' ? undefined : current)
@@ -337,7 +350,7 @@ export function ExecutionSelect({
         : { ...rest, model: modelVal, thinking },
     });
     onPicked?.();
-  }, [onRequireSwitchConfirmation, choice, executorCapabilities, onChange, onPicked]);
+  }, [onRequireSwitchConfirmation, choice, executorCapabilities, effectiveModelThinkingLevels, onChange, onPicked]);
 
   const handleSelectEffort = useCallback((effortVal: string | undefined) => {
     if (!isNative) setPickedEffort(effortVal ?? null);

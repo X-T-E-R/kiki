@@ -2083,12 +2083,15 @@ export function PermissionSelect({
   value,
   onChange,
   compact = false,
+  nativeAutoPermission = false,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly value: PermissionMode;
   readonly onChange: (mode: PermissionMode) => void;
   readonly compact?: boolean;
+  /** True when the active external executor advertises its own built-in `'auto'` permission mode. */
+  readonly nativeAutoPermission?: boolean;
 }) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -2121,8 +2124,9 @@ export function PermissionSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`${t('composer.permAria')}: ${t(current.labelKey)}`}
-        title={`${t(current.labelKey)} — ${t(current.hintKey)}`}
+        title={`${t(current.labelKey)} — ${t(current.id === 'auto' && nativeAutoPermission ? 'composer.perm.autoNativeHint' : current.hintKey)}`}
         data-permission-tone={current.tone}
+        data-permission-native-auto={nativeAutoPermission ? 'true' : undefined}
         onClick={() => { onOpenChange(!open); }}
         data-segment-set={value !== RECOMMENDED_PERMISSION_MODE ? '' : undefined}
         className={`${STATUS_SEGMENT_CLASS} max-w-56 @max-[30rem]/toolbar:gap-1 @max-[30rem]/toolbar:px-1.5 ${
@@ -2198,7 +2202,9 @@ export function PermissionSelect({
                           <span className={`block font-medium ${mode.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>
                             {t(mode.labelKey)}
                           </span>
-                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(mode.hintKey)}</span>
+                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
+                            {t(mode.id === 'auto' && nativeAutoPermission ? 'composer.perm.autoNativeHint' : mode.hintKey)}
+                          </span>
                         </span>
                       </button>
                     );

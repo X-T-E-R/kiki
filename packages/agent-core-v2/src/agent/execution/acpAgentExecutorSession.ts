@@ -4,10 +4,19 @@ import { createControlledPromise } from '@antfu/utils';
 import {
   AcpProcessClient,
   AcpClientError,
+  antigravitySecurityWarning,
   antigravitySessionMode,
+  antigravitySubagentLaunches,
+  antigravitySupportsEmbeddedContext,
+  antigravitySupportsLogout,
+  antigravitySupportsPromptSteering,
   antigravitySupportsSystemPromptAppend,
+  classifyAntigravitySubagentToolCall,
+  describeAntigravitySubagentLaunches,
   extractAntigravityUserInputQuestion,
   extractDroidElicitationForm,
+  isAntigravityManagedMcpRequest,
+  isOfficialAntigravityAcpServer,
   legacyAntigravityModelFamily,
   resolveAntigravityUserInputOptionId,
   type AcpOpenSessionOptions,
@@ -33,13 +42,26 @@ import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
 import { CLAUDE_EXPLICIT_SETTINGS_SOURCES } from '#/app/agentExecutor/claudeCredentials';
 import { antigravityProcessService, antigravitySettingsHome } from '#/app/agentExecutor/antigravityProcess';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
-import { watchAntigravityTurnOutcome, type AntigravityTurnFailure } from '#/os/backends/node-local/antigravityRuntime';
+import {
+  inspectAntigravitySubagentWork,
+  readAntigravityChildrenAtWork,
+  readAntigravityPendingReply,
+  readAntigravityPreEditFileInRoots,
+  watchAntigravityTurnOutcome,
+  type AntigravityTurnFailure,
+} from '#/os/backends/node-local/antigravityRuntime';
 import { acquireHarnessMcp } from './harnessMcpLease';
 import { harnessContextProcess } from './harnessContextProcess';
 import { harnessAccountError, harnessAccountProcess, HarnessAccountStartupError } from './harnessAccountProcess';
-import { acpAttachments, externalAttachments } from './externalAttachments';
-import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
-import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
+import {
+  externalAttachments,
+  extractExternalAttachmentParts,
+  promptTextWithoutPromotedAttachments,
+  resolveAcpAttachmentsDetailed,
+} from './externalAttachments';
+import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { recordNegotiatedSnapshot, type ExtendedNegotiatedExecutorCapabilities } from './negotiatedSnapshot';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { acpAuthObservation, recordExecutorAuth } from './executorAuth';
 import { executorLaunchArgs, executorProcessEnv, executorProcessOptions } from '#/app/agentExecutor/executorOverrides';
 import { executorSourceId, IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -106,6 +128,10 @@ interface AcpClientLike {
     request: Parameters<AcpProcessClientType['startTurn']>[0],
   ): Promise<AcpTurnHandle<NormalizedExecutorEvent>>;
   steer?(prompt: Parameters<AcpProcessClientType['steer']>[0]): Promise<boolean | 'unknown'>;
+  supportsPromptSteering?(): boolean;
+  advertisedCommands?(): readonly string[];
+  logout?(signal?: AbortSignal): Promise<boolean>;
+  retireSession?(reason?: unknown): Promise<void>;
   cancel(reason?: unknown): Promise<boolean>;
   shutdown(reason?: unknown): Promise<void>;
 }
@@ -113,7 +139,7 @@ interface AcpClientLike {
 interface ActiveExternalTurn {
   readonly turn: MutableExternalTurn;
   readonly recorder: ExternalTurnRecorder;
-  readonly handle: AcpTurnHandle<NormalizedExecutorEvent>;
+  handle: AcpTurnHandle<NormalizedExecutorEvent>;
   readonly completion: Promise<{ readonly summary: string; readonly usage?: TokenUsage }>;
 }
 
@@ -157,10 +183,14 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #lastTurnCancelled = false;
   #harnessMcp: HarnessMcpLease | undefined;
   #permissionRestore: { readonly sessionId: string; readonly config?: AcpSessionConfigSelection; readonly modeId?: string } | undefined;
+  #lastOpened: AcpOpenSessionResult | undefined;
+  #advertisedCommands: readonly string[] = [];
+  #officialAntigravity = false;
+  #effectiveAntigravitySessionMode: string | undefined;
 
   constructor(
     private context: AgentExecutorContext,
-    clientFactory: (
+    clientFactory?: (
       processService: HostProcessServiceLike,
       permissionHandler: (
         request: AcpPermissionRequest,
@@ -169,26 +199,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       elicitationHandler: AcpElicitationHandler,
       planApprovalHandler: AcpPlanApprovalHandler,
       contextHookHandler: AcpContextHookHandler,
-    ) => AcpClientLike = (processService, permissionHandler, elicitationHandler, planApprovalHandler, contextHookHandler) =>
-      new AcpProcessClient(
-        processService,
-        {
-          id: context.descriptor.id,
-          sourceId: executorSourceId(context.descriptor),
-          command: requiredCommand(context),
-          args: resolveAcpProcessArgs(context),
-          ...executorProcessOptions(context.descriptor, processService.redactDiagnostic),
-          startupTimeoutMs: context.descriptor.startupTimeoutMs,
-          shutdownGraceMs: context.descriptor.shutdownGraceMs,
-          stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
-          clientName: 'kiki-agent-core-v2',
-          runtimeVersion: context.descriptor.version,
-        },
-        { permissionHandler,
-          elicitationHandler: ['codex-acp', 'deepseek-acp', 'dsh-acp', 'droid-acp'].includes(executorSourceId(context.descriptor)) ? elicitationHandler : undefined,
-          planApprovalHandler: executorSourceId(context.descriptor) === 'grok-acp' ? planApprovalHandler : undefined,
-          contextHookHandler: executorSourceId(context.descriptor) === 'grok-acp' ? contextHookHandler : undefined },
-      ),
+    ) => AcpClientLike,
   ) {
     const runtime = context.agent.accessor.get(IAgentRuntimeService);
     this.#runtimeLease = runtime.acquire(['process']);
@@ -210,9 +221,69 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService));
-    const contextProcess = harnessContextProcess(['antigravity-acp', 'agy-cli'].includes(executorSourceId(context.descriptor)) ? antigravityProcessService(processes, context.descriptor,
+    const sourceId = executorSourceId(context.descriptor);
+    const contextProcess = harnessContextProcess(['antigravity-acp', 'agy-cli'].includes(sourceId) ? antigravityProcessService(processes, context.descriptor,
       context.agent.accessor.get(IBootstrapService)) : processes, () => this.#harnessMcp);
-    this.#client = clientFactory(
+    const isLocalRuntime = this.#runtimeLease.runtime.identity.runtimeId === 'local';
+    const antigravityHooks = sourceId === 'antigravity-acp' && isLocalRuntime
+      ? {
+          readPreEditFile: (filePath: string) => {
+            const roots = this.#runtimeLease.runtime.workspace.mapRoots(this.#workspace);
+            return readAntigravityPreEditFileInRoots(filePath, [roots.workDir, ...roots.additionalDirs ?? []]);
+          },
+          childrenAtWork: (sessionId: string, toolCallIds: readonly string[]) => readAntigravityChildrenAtWork({
+            profileDirectory: antigravitySettingsHome(
+              executorProcessEnv(this.context.descriptor),
+              this.context.agent.accessor.get(IBootstrapService),
+              this.context.descriptor.id,
+            ),
+            sessionId,
+            toolCallIds,
+          }),
+          hasPendingReply: (sessionId: string) => readAntigravityPendingReply({
+            profileDirectory: antigravitySettingsHome(
+              executorProcessEnv(this.context.descriptor),
+              this.context.agent.accessor.get(IBootstrapService),
+              this.context.descriptor.id,
+            ),
+            sessionId,
+          }),
+        }
+      : undefined;
+    const createDefaultClient = (
+      ps: HostProcessServiceLike,
+      permissionHandler: (
+        request: AcpPermissionRequest,
+        options: { readonly signal: AbortSignal; readonly options: readonly AcpPermissionOption[] },
+      ) => Promise<{ readonly outcome: 'selected' | 'cancelled'; readonly optionId?: string }>,
+      elicitationHandler: AcpElicitationHandler,
+      planApprovalHandler: AcpPlanApprovalHandler,
+      contextHookHandler: AcpContextHookHandler,
+    ): AcpClientLike =>
+      new AcpProcessClient(
+        ps,
+        {
+          id: context.descriptor.id,
+          sourceId,
+          command: requiredCommand(context),
+          args: resolveAcpProcessArgs(context),
+          ...executorProcessOptions(context.descriptor, ps.redactDiagnostic),
+          startupTimeoutMs: context.descriptor.startupTimeoutMs,
+          shutdownGraceMs: context.descriptor.shutdownGraceMs,
+          stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
+          clientName: 'kiki-agent-core-v2',
+          runtimeVersion: context.descriptor.version,
+        },
+        {
+          permissionHandler,
+          elicitationHandler: ['codex-acp', 'deepseek-acp', 'dsh-acp', 'droid-acp'].includes(sourceId) ? elicitationHandler : undefined,
+          planApprovalHandler: sourceId === 'grok-acp' ? planApprovalHandler : undefined,
+          contextHookHandler: sourceId === 'grok-acp' ? contextHookHandler : undefined,
+          antigravityHooks,
+        },
+      );
+    const factory = clientFactory ?? createDefaultClient;
+    this.#client = factory(
       harnessAccountProcess(contextProcess, context, this.#runtimeLease.runtime.identity.runtimeId).processes,
       (request, options) => this.#requestPermission(request, options),
       (request, options) => this.#requestElicitation(request, options.signal),
@@ -312,32 +383,25 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       profileDelivery: priorSessionId === opened.sessionId ? prior.profileDelivery : undefined,
     }));
     await this.#dispatcher.flush();
+    this.#lastOpened = opened;
+    this.#officialAntigravity = executorSourceId(this.context.descriptor) === 'antigravity-acp' &&
+      isOfficialAntigravityAcpServer(opened.initialize);
+    if (opened.availableCommands !== undefined && opened.availableCommands.length > 0) {
+      this.#advertisedCommands = opened.availableCommands;
+    }
     let configured = await this.#configure(opened, options.signal, losses).catch(async (error: unknown) => {
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
       throw error;
     });
-    const negotiated: NegotiatedExecutorCapabilities = {
-      models: advertisedSelectValues(configured.configOptions, 'model'),
-      thinkingLevels: advertisedSelectValues(configured.configOptions, 'thought_level'),
-      nativeAgents: advertisedSelectValues(configured.configOptions, 'native_agent') ?? [],
-      authMethods: opened.initialize.authMethods?.map((method) => method.id),
-      agentVersion: opened.initialize.agentInfo?.version,
-      image: opened.capabilities.promptCapabilities?.image === true || executorSourceId(this.context.descriptor) === 'grok-acp',
-      audio: opened.capabilities.promptCapabilities?.audio === true,
-      fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
-      nativeSteering: (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true,
-      questionForm: ['codex-acp', 'deepseek-acp', 'dsh-acp', 'droid-acp'].includes(executorSourceId(this.context.descriptor)),
-      planApproval: executorSourceId(this.context.descriptor) === 'grok-acp',
-      resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
-      load: opened.capabilities.loadSession === true,
-      permissionModes: opened.availableModes,
-    };
+    const negotiated = this.#buildNegotiatedCapabilities(opened, configured);
     await recordNegotiatedSnapshot(this.context, negotiated);
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
       this.context.descriptor.id, this.context.descriptor.version, negotiated, this.context.descriptor.registryRevision,
     );
+    const poisonedPrior = isPoisonedSessionRef(prior.sessionRef);
     const handoff = (prior.sessionRef?.ref['copiedIdentity'] === true ||
+        poisonedPrior ||
         this.context.binding.execution === undefined || sessionOptions.allowRetiredSessionFallback === true) &&
         opened.mode === 'new' && prior.sessionRef !== undefined
       ? buildHandoff(this.#memory.get())
@@ -346,8 +410,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('resume_new_session_handoff');
       if (handoff.truncated) losses.add('handoff_truncated');
     }
+    const advertisedCommands = this.#currentAdvertisedCommands(opened);
+    const nativeCompact = isNativeCompactCommand(prompt, advertisedCommands);
     const deliverProfile =
-      !reusablePrior || prior.profileDeliveredSessionId !== configured.sessionId;
+      !nativeCompact && (!reusablePrior || prior.profileDeliveredSessionId !== configured.sessionId);
     const promptDeliveryResolution = resolvePromptDelivery(this.context.descriptor, this.context.binding);
     const nativeAppendDelivered =
       sessionOptions.systemPromptAppend !== undefined &&
@@ -369,14 +435,35 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           ? 'system_prompt_override'
           : 'first_prompt_preamble'
         : prior.profileDelivery ?? 'first_prompt_preamble';
-    const remotePrompt = buildRemotePrompt({
+    const requestContent = request.kind === 'prompt'
+      ? request.input
+      : request.kind === 'mailbox'
+        ? request.message.content
+        : undefined;
+    const resolvedInputAttachments = await resolveAcpAttachmentsDetailed(
+      extractExternalAttachmentParts(requestContent),
+      {
+        embeddedContext: opened.capabilities.promptCapabilities?.embeddedContext === true,
+        isLocalRuntime: this.#isLocalRuntime(),
+        enforceAntigravityLimits: executorSourceId(this.context.descriptor) === 'antigravity-acp',
+        mediaStore: this.#mediaStore(),
+      },
+    );
+    const outboundPromptBody = promptTextWithoutPromotedAttachments(
+      requestContent,
+      resolvedInputAttachments.promotedParts,
       prompt,
-      systemPrompt: deliverProfile && !nativeProfileDelivered
-        ? this.context.binding.systemPrompt
-        : undefined,
-      handoff: handoff?.text,
-    });
-    const resumeMode: ExecutorResumeMode = handoff === undefined
+    );
+    const remotePrompt = nativeCompact
+      ? prompt.trim()
+      : buildRemotePrompt({
+          prompt: outboundPromptBody,
+          systemPrompt: deliverProfile && !nativeProfileDelivered
+            ? this.context.binding.systemPrompt
+            : undefined,
+          handoff: handoff?.text,
+        });
+    const resumeMode: ExecutorResumeMode = handoff === undefined || nativeCompact
       ? opened.mode
       : 'handoff';
     const recorder = new ExternalTurnRecorder(
@@ -455,7 +542,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       this.#promptAttempted = true;
       handle = await this.#client.startTurn({
         prompt: remotePrompt,
-        attachments: acpAttachments(externalAttachments(request)),
+        attachments: resolvedInputAttachments.blocks,
         signal: controller.signal,
         session: { ...sessionOptions, sessionRef: configured.sessionRef, requireResume: true, allowRetiredSessionFallback: undefined },
         onDeliveryAttempt: () => { attempt.possibleDelivery = true; },
@@ -524,6 +611,24 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         sameSession: priorSessionId !== undefined && priorSessionId === configured.sessionId,
       },
       checkAntigravityOutcome,
+      executorSourceId(this.context.descriptor) === 'antigravity-acp'
+        ? {
+            sessionOptions: {
+              ...sessionOptions,
+              sessionRef: configured.sessionRef,
+              requireResume: true,
+              allowRetiredSessionFallback: undefined,
+            },
+            watchOutcome: () => watchAntigravityTurnOutcome(
+              antigravitySettingsHome(
+                executorProcessEnv(this.context.descriptor),
+                this.context.agent.accessor.get(IBootstrapService),
+                this.context.descriptor.id,
+              ),
+              configured.sessionId,
+            ),
+          }
+        : undefined,
     );
     const active: ActiveExternalTurn = { turn, recorder, handle, completion };
     this.#active = active;
@@ -624,6 +729,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   async waitForSteerBoundary(turnId: number): Promise<boolean> {
     const active = this.#active;
     if (active?.turn.id !== turnId || this.#client.steer === undefined) return false;
+    if (this.#supportsPromptSteering()) return true;
     const boundary = AbortSignal.any([active.turn.signal, AbortSignal.timeout(STEER_TOOL_BOUNDARY_MS)]);
     return await active.recorder.toolsSettled(boundary) && this.#active === active;
   }
@@ -631,14 +737,26 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     if (active === undefined || this.#client.steer === undefined || !await this.waitForSteerBoundary(active.turn.id)) return false;
-    const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+    const attachmentParts = extractExternalAttachmentParts(message.content);
+    const { blocks: resolvedAttachments, promotedParts } = await resolveAcpAttachmentsDetailed(attachmentParts, {
+      embeddedContext: this.#lastOpened?.capabilities.promptCapabilities?.embeddedContext === true,
+      isLocalRuntime: this.#isLocalRuntime(),
+      enforceAntigravityLimits: executorSourceId(this.context.descriptor) === 'antigravity-acp',
+      mediaStore: this.#mediaStore(),
+    });
+    const fallbackText = message.content
+      .filter((part): part is Extract<(typeof message.content)[number], { type: 'text' }> => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+    const text = promptTextWithoutPromotedAttachments(message.content, promotedParts, fallbackText);
+    const steerBlocks = [
+      ...(text.length > 0 || resolvedAttachments.length === 0 ? [{ type: 'text' as const, text }] : []),
+      ...resolvedAttachments,
+    ];
     const discardEcho = active.recorder.expectUserEcho(text);
     let outcome: boolean | 'unknown' = false;
     try {
-      outcome = await this.#client.steer([
-        { type: 'text', text },
-        ...acpAttachments(message.content.filter((part) => part.type !== 'text')),
-      ]);
+      outcome = await this.#client.steer(steerBlocks);
       return outcome;
     } finally {
       if (outcome !== true) discardEcho();
@@ -695,32 +813,70 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       readonly sameSession: boolean;
     },
     checkAntigravityOutcome?: (stopReason: string) => Promise<AntigravityTurnFailure | undefined>,
+    antigravityContinuation?: {
+      readonly sessionOptions: AcpOpenSessionOptions;
+      readonly watchOutcome: () => Promise<(stopReason: string) => Promise<AntigravityTurnFailure | undefined>>;
+    },
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
-    const pump = (async () => {
+    const pumpEvents = async (activeHandle: AcpTurnHandle<NormalizedExecutorEvent>): Promise<void> => {
       try {
-        for await (const event of handle.events) {
-          await recorder.record(event as ExternalExecutorEvent);
+        for await (const event of activeHandle.events) {
+          const enriched = await this.#enrichAntigravityEvent(event, accounting.sessionRef);
+          if (enriched.type === 'commands.update') {
+            this.#recordAdvertisedCommands(enriched.commands);
+          }
+          await recorder.record(enriched as ExternalExecutorEvent);
         }
       } catch (error) {
-        await handle.cancel(error);
+        await activeHandle.cancel(error);
         throw error;
       }
-    })();
+    };
+    let activePump: Promise<void> = pumpEvents(handle);
     try {
-      const [completed] = await Promise.all([handle.completion, pump]);
+      let [completed] = await Promise.all([handle.completion, activePump]);
       if (completed.response._meta?.['usage'] !== undefined) await recorder.reportedUsage(completed.response._meta['usage']);
-      const antigravityFailure = checkAntigravityOutcome === undefined
+      let antigravityFailure = checkAntigravityOutcome === undefined
         ? undefined
         : await checkAntigravityOutcome(String(completed.response.stopReason));
+      if (
+        antigravityFailure?.continuable === true &&
+        antigravityContinuation !== undefined &&
+        !controller.signal.aborted &&
+        completed.response.stopReason !== 'cancelled' &&
+        String(completed.response.stopReason) !== 'error'
+      ) {
+        const checkContinuationOutcome = await antigravityContinuation.watchOutcome();
+        const contHandle = await this.#client.startTurn({
+          prompt: 'continue',
+          attachments: [],
+          signal: controller.signal,
+          session: antigravityContinuation.sessionOptions,
+        });
+        if (this.#active?.turn === turn) {
+          this.#active.handle = contHandle;
+        }
+        activePump = pumpEvents(contHandle);
+        const [contCompleted] = await Promise.all([contHandle.completion, activePump]);
+        if (contCompleted.response._meta?.['usage'] !== undefined) {
+          await recorder.reportedUsage(contCompleted.response._meta['usage']);
+        }
+        completed = mergeContinuationTurnResults(completed, contCompleted);
+        antigravityFailure = await checkContinuationOutcome(String(contCompleted.response.stopReason));
+      }
+      if (antigravityFailure?.poisonedSession === true) {
+        await this.#markPoisonedSession(accounting, antigravityFailure);
+      }
       const turnResult = antigravityFailure !== undefined
         ? { type: 'failed' as const, steps: 1, error: antigravityTurnError(antigravityFailure) }
         : turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {
+        const sourceId = executorSourceId(this.context.descriptor);
         const accounted = usageFromAcp(
           completed,
           accounting.priorCumulativeUsage,
           accounting.sameSession,
-          executorSourceId(this.context.descriptor) === 'agy-cli',
+          sourceId === 'agy-cli' || sourceId === 'antigravity-acp',
         );
         if (accounted?.cumulative !== undefined) {
           await this.#dispatcher.dispatch(
@@ -765,7 +921,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       result.resolve({ ...turnResult, error });
       throw toError(error, 'External ACP turn failed');
     } catch (error) {
-      await pump.catch(() => undefined);
+      await activePump.catch(() => undefined);
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, this.#runtimeLease.runtime.workspace.mapRoots(this.#workspace).workDir, auth);
       if (controller.signal.aborted) {
@@ -955,8 +1111,12 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     if (declared?.via === 'session_mode') {
       const rawSelected = declared[vendorMode] ?? declared.manual;
-      const selected = executorSourceId(this.context.descriptor) === 'antigravity-acp'
-        ? antigravitySessionMode(this.context.descriptor.selectedSource, rawSelected)
+      const isAgy = executorSourceId(this.context.descriptor) === 'antigravity-acp';
+      const officialAgy = isAgy && isOfficialAntigravityAcpServer(opened.initialize);
+      const selected = isAgy
+        ? officialAgy
+          ? antigravitySessionMode(undefined, vendorMode === 'auto' ? 'auto' : rawSelected, opened.availableModes)
+          : antigravitySessionMode(this.context.descriptor.selectedSource, rawSelected, opened.availableModes)
         : rawSelected;
       if (opened.availableModes !== undefined && !opened.availableModes.includes(selected)) {
         throw new Error2(ErrorCodes.CONFIG_INVALID,
@@ -970,6 +1130,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }
       await this.#persistPermissionRestore(configured);
       configured = await this.#client.configureSession({ modeId: selected, signal });
+      if (isAgy) this.#effectiveAntigravitySessionMode = selected;
       if (configured.currentModeId === selected) return configured;
     }
     if (mode !== undefined) throw new Error2(ErrorCodes.CONFIG_INVALID,
@@ -1016,11 +1177,186 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const snapshot = sessionRefWithLocalSource(sessionRef, localSource);
     const home = launchHome(this.context.descriptor);
     const ref: Record<string, unknown> = { ...snapshot.ref };
+    delete ref['kikiPoisonedSessionId'];
     if (home.length > 0) ref['kikiLaunchHome'] = home;
     else delete ref['kikiLaunchHome'];
     if (this.#permissionRestore === undefined) delete ref['kikiPermissionRestore'];
     else ref['kikiPermissionRestore'] = this.#permissionRestore;
     return { ...snapshot, executorId: this.context.descriptor.id, ref };
+  }
+
+  #isLocalRuntime(): boolean {
+    return this.#runtimeLease.runtime.identity.runtimeId === 'local';
+  }
+
+  #mediaStore(): ISessionMediaStore | undefined {
+    try {
+      return this.context.agent.accessor.get(ISessionMediaStore);
+    } catch {
+      return undefined;
+    }
+  }
+
+  #supportsPromptSteering(): boolean {
+    if (this.#client.supportsPromptSteering?.() === true) return true;
+    return executorSourceId(this.context.descriptor) === 'antigravity-acp' &&
+      this.#lastOpened !== undefined &&
+      antigravitySupportsPromptSteering(this.#lastOpened.initialize);
+  }
+
+  #currentAdvertisedCommands(opened?: AcpOpenSessionResult): readonly string[] {
+    const live = this.#client.advertisedCommands?.() ?? [];
+    if (live.length > 0) return live;
+    if (this.#advertisedCommands.length > 0) return this.#advertisedCommands;
+    return opened?.availableCommands ?? [];
+  }
+
+  #buildNegotiatedCapabilities(
+    opened: AcpOpenSessionResult,
+    configured: AcpOpenSessionResult,
+  ): ExtendedNegotiatedExecutorCapabilities {
+    const sourceId = executorSourceId(this.context.descriptor);
+    const embeddedContext = antigravitySupportsEmbeddedContext(opened.initialize);
+    const isLocal = this.#isLocalRuntime();
+    const models = advertisedSelectValues(configured.configOptions, 'model');
+    const thinkingLevels = advertisedSelectValues(configured.configOptions, 'thought_level');
+    const currentModel = configured.configOptions.find((option) =>
+      option.category === 'model' && option.type === 'select')?.currentValue;
+    const priorNegotiated = this.context.agent.accessor.get(IAgentExecutorRegistry).negotiated?.(
+      this.context.descriptor.id,
+      this.context.descriptor.version,
+    ) as ExtendedNegotiatedExecutorCapabilities | undefined;
+    const existingModelThinking = priorNegotiated?.modelThinkingLevels;
+    const modelThinkingLevels = typeof currentModel === 'string' && currentModel.length > 0 && thinkingLevels !== undefined
+      ? { ...existingModelThinking, [currentModel]: [...thinkingLevels] }
+      : existingModelThinking;
+    const slashCommands = this.#currentAdvertisedCommands(opened);
+    const nativeSteering =
+      (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true ||
+      (sourceId === 'antigravity-acp' && antigravitySupportsPromptSteering(opened.initialize));
+    const supportsLogout = antigravitySupportsLogout(opened.initialize);
+    const supportsManualCompact = slashCommands.includes('/compact');
+    return {
+      models,
+      thinkingLevels,
+      modelThinkingLevels,
+      slashCommands: slashCommands.length > 0 ? [...slashCommands] : undefined,
+      nativeAgents: advertisedSelectValues(configured.configOptions, 'native_agent') ?? [],
+      authMethods: opened.initialize.authMethods?.map((method) => method.id),
+      agentVersion: opened.initialize.agentInfo?.version,
+      image: opened.capabilities.promptCapabilities?.image === true || sourceId === 'grok-acp',
+      audio: opened.capabilities.promptCapabilities?.audio === true,
+      embeddedContext: embeddedContext || undefined,
+      pdf: embeddedContext && isLocal ? true : undefined,
+      textAttachment: embeddedContext && isLocal ? true : undefined,
+      logout: supportsLogout || undefined,
+      fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
+      nativeSteering,
+      questionForm: ['codex-acp', 'deepseek-acp', 'dsh-acp', 'droid-acp'].includes(sourceId),
+      planApproval: sourceId === 'grok-acp',
+      resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
+      load: opened.capabilities.loadSession === true,
+      permissionModes: opened.availableModes,
+      controls: supportsManualCompact ? { manualCompact: true } : undefined,
+    };
+  }
+
+  #recordAdvertisedCommands(rawCommands: readonly unknown[]): void {
+    const names = normalizeSlashCommandNames(rawCommands);
+    if (names.length === 0) return;
+    this.#advertisedCommands = names;
+    if (this.#lastOpened === undefined) return;
+    const negotiated = this.#buildNegotiatedCapabilities(this.#lastOpened, this.#lastOpened);
+    void recordNegotiatedSnapshot(this.context, negotiated).catch(() => undefined);
+    this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
+      this.context.descriptor.id,
+      this.context.descriptor.version,
+      negotiated,
+      this.context.descriptor.registryRevision,
+    );
+  }
+
+  async #enrichAntigravityEvent(
+    event: NormalizedExecutorEvent,
+    sessionRef: ExecutorSessionRefEnvelope,
+  ): Promise<NormalizedExecutorEvent> {
+    if (
+      executorSourceId(this.context.descriptor) !== 'antigravity-acp' ||
+      !this.#isLocalRuntime() ||
+      (event.type !== 'tool.call' && event.type !== 'tool.update')
+    ) {
+      return event;
+    }
+    if (classifyAntigravitySubagentToolCall({ kind: event.kind, title: event.title }) !== 'subagent') {
+      return event;
+    }
+    const sessionId = sessionIdFromState(sessionRef);
+    const launches = antigravitySubagentLaunches(event.rawInput);
+    const described = launches === undefined ? undefined : describeAntigravitySubagentLaunches(launches);
+    const profileHome = antigravitySettingsHome(
+      executorProcessEnv(this.context.descriptor),
+      this.context.agent.accessor.get(IBootstrapService),
+      this.context.descriptor.id,
+    );
+    const snapshot = sessionId === undefined
+      ? undefined
+      : await inspectAntigravitySubagentWork({
+          profileDirectory: profileHome,
+          sessionId,
+          toolCallId: event.toolCallId,
+        }).catch(() => undefined);
+    const entry = snapshot?.entries[0];
+    if (entry === undefined && described === undefined) return event;
+    const subagentInfo = {
+      role: entry?.role ?? described?.title,
+      prompt: entry?.prompt ?? described?.prompt,
+      state: entry?.state,
+      reported: entry?.reported ?? false,
+      latestStep: entry?.latestStep,
+      incomplete: entry?.incomplete ?? snapshot?.incomplete ?? false,
+    };
+    const existingOutput = objectOf(event.rawOutput);
+    const rawOutput = existingOutput !== undefined
+      ? { ...existingOutput, subagent: subagentInfo }
+      : event.rawOutput === undefined
+        ? { subagent: subagentInfo }
+        : { value: event.rawOutput, subagent: subagentInfo };
+    return { ...event, rawOutput };
+  }
+
+  async #markPoisonedSession(
+    accounting: {
+      readonly bindingFingerprint: string;
+      readonly sessionRef: ExecutorSessionRefEnvelope;
+      readonly sessionEpoch: number;
+      readonly profileDeliveredSessionId: string | undefined;
+      readonly profileDelivery: ExecutorProfileDelivery | undefined;
+    },
+    failure: AntigravityTurnFailure,
+  ): Promise<void> {
+    const poisonedId = sessionIdFromState(accounting.sessionRef);
+    if (poisonedId !== undefined) {
+      await this.#dispatcher.dispatch(
+        new ExecutorSessionUpdated({
+          executionGeneration: this.context.binding.execution?.generation,
+          executorId: this.context.descriptor.id,
+          descriptorRevision: this.context.descriptor.revision,
+          bindingFingerprint: accounting.bindingFingerprint,
+          sessionRef: {
+            ...accounting.sessionRef,
+            ref: {
+              ...accounting.sessionRef.ref,
+              kikiPoisonedSessionId: poisonedId,
+            },
+          },
+          sessionEpoch: accounting.sessionEpoch,
+          profileDeliveredSessionId: accounting.profileDeliveredSessionId,
+          profileDelivery: accounting.profileDelivery,
+        }),
+      );
+      await this.#dispatcher.flush();
+    }
+    await this.#client.retireSession?.(antigravityTurnError(failure));
   }
 
   #reserveTurnId(): number {
@@ -1135,13 +1471,51 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const vendorDefault = context.options.find((option) => option.optionId === 'kiki.vendor_default');
     if (vendorDefault !== undefined) return { outcome: 'selected', optionId: vendorDefault.optionId };
+    if (executorSourceId(this.context.descriptor) === 'antigravity-acp') {
+      const effectiveMode = externalPermissionMode(this.context);
+      const allowOnce = context.options.find((option) => option.kind === 'allow_once');
+      if (allowOnce !== undefined) {
+        const leasedServerName = this.#harnessMcp?.server.name;
+        if (
+          leasedServerName !== undefined &&
+          (effectiveMode === 'yolo' || effectiveMode === 'auto') &&
+          isAntigravityManagedMcpRequest(request, leasedServerName)
+        ) {
+          return { outcome: 'selected', optionId: allowOnce.optionId };
+        }
+        if (
+          effectiveMode === 'yolo' &&
+          (this.#officialAntigravity || this.#effectiveAntigravitySessionMode === 'default')
+        ) {
+          return { outcome: 'selected', optionId: allowOnce.optionId };
+        }
+        if (
+          effectiveMode === 'auto' &&
+          this.#effectiveAntigravitySessionMode === 'default' &&
+          isAntigravityAutoEditSafeKind(request.toolCall.kind)
+        ) {
+          return { outcome: 'selected', optionId: allowOnce.optionId };
+        }
+      }
+    }
     const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
       agentId: this.context.agent.id, turnId: active.turn.id, toolCallId,
       toolName: request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
       action: request.toolCall.title ?? 'Run external tool',
-      display: { kind: 'external_permission', summary: request.toolCall.title ?? 'External tool permission',
-        detail: boundedPermissionDetail(request), options: context.options.map((option) => ({
-          id: option.optionId, label: option.name, kind: option.kind, changes: optionChanges(option) })) },
+      display: {
+        kind: 'external_permission',
+        summary: request.toolCall.title ?? 'External tool permission',
+        detail: boundedPermissionDetail(request),
+        options: context.options.map((option) => {
+          const warning = antigravitySecurityWarning(option);
+          return {
+            id: option.optionId,
+            label: warning === undefined ? option.name : `${option.name} (${warning})`,
+            kind: option.kind,
+            changes: optionChanges(option),
+          };
+        }),
+      },
     }), context.signal);
     const selected = context.options.find((option) => option.optionId === response?.selectedOptionId);
     return response === undefined || response.decision === 'cancelled' || selected === undefined ||
@@ -1222,6 +1596,43 @@ function turnResultFromAcp(result: AcpTurnResult): TurnResult {
         error: new Error(`External ACP agent returned unknown stop reason ${String(result.response.stopReason)}`),
       };
   }
+}
+
+function mergeContinuationUsage(
+  first: AcpTurnResult['response']['usage'],
+  second: AcpTurnResult['response']['usage'],
+): AcpTurnResult['response']['usage'] {
+  if (first === undefined || first === null) return second;
+  if (second === undefined || second === null) return first;
+  return {
+    inputTokens: first.inputTokens + second.inputTokens,
+    outputTokens: first.outputTokens + second.outputTokens,
+    totalTokens: first.totalTokens + second.totalTokens,
+    ...(first.cachedReadTokens !== undefined || second.cachedReadTokens !== undefined
+      ? { cachedReadTokens: (first.cachedReadTokens ?? 0) + (second.cachedReadTokens ?? 0) }
+      : {}),
+    ...(first.cachedWriteTokens !== undefined || second.cachedWriteTokens !== undefined
+      ? { cachedWriteTokens: (first.cachedWriteTokens ?? 0) + (second.cachedWriteTokens ?? 0) }
+      : {}),
+    ...(first.thoughtTokens !== undefined || second.thoughtTokens !== undefined
+      ? { thoughtTokens: (first.thoughtTokens ?? 0) + (second.thoughtTokens ?? 0) }
+      : {}),
+  };
+}
+
+function mergeContinuationTurnResults(first: AcpTurnResult, second: AcpTurnResult): AcpTurnResult {
+  const promptUsages = [
+    ...(first.promptUsages ?? (first.response.usage !== undefined && first.response.usage !== null ? [first.response.usage] : [])),
+    ...(second.promptUsages ?? (second.response.usage !== undefined && second.response.usage !== null ? [second.response.usage] : [])),
+  ];
+  return {
+    ...second,
+    response: {
+      ...second.response,
+      usage: mergeContinuationUsage(first.response.usage, second.response.usage),
+    },
+    ...(promptUsages.length > 0 ? { promptUsages } : {}),
+  };
 }
 
 function usageFromAcp(
@@ -1553,6 +1964,11 @@ function optionChanges(option: AcpPermissionOption): readonly unknown[] | undefi
 }
 
 function boundedPermissionDetail(request: AcpPermissionRequest): unknown {
+  const securityWarnings: Record<string, string> = {};
+  for (const option of request.options) {
+    const warning = antigravitySecurityWarning(option);
+    if (warning !== undefined) securityWarnings[option.optionId] = warning;
+  }
   return {
     toolCall: {
       title: request.toolCall.title,
@@ -1563,7 +1979,39 @@ function boundedPermissionDetail(request: AcpPermissionRequest): unknown {
       locations: request.toolCall.locations,
     },
     meta: request._meta,
+    ...(Object.keys(securityWarnings).length > 0 ? { securityWarnings } : {}),
   };
+}
+
+function isPoisonedSessionRef(ref: ExecutorSessionRefEnvelope | undefined): boolean {
+  const sessionId = sessionIdFromState(ref);
+  return sessionId !== undefined && ref?.ref['kikiPoisonedSessionId'] === sessionId;
+}
+
+function isAntigravityAutoEditSafeKind(kind: AcpPermissionRequest['toolCall']['kind']): boolean {
+  return kind === 'edit' || kind === 'read' || kind === 'search' || kind === 'fetch';
+}
+
+function normalizeSlashCommandNames(commands: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of commands) {
+    const raw = typeof entry === 'string' ? entry : objectOf(entry)?.['name'];
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    names.push(normalized);
+  }
+  return names;
+}
+
+function isNativeCompactCommand(prompt: string, advertisedCommands: readonly string[]): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed !== '/compact' && !trimmed.startsWith('/compact ')) return false;
+  return advertisedCommands.some((command) => command === '/compact' || command === 'compact');
 }
 
 function launchHome(descriptor: AgentExecutorContext['descriptor']): string {
@@ -1583,7 +2031,9 @@ function originalRemoteResumeFields(
   broken = false,
   reusable = agentExecutorBindingMatches(binding, state.bindingFingerprint),
 ): { readonly sessionRef: ExecutorSessionRefEnvelope | undefined; readonly requireResume: boolean } {
-  if (state.sessionRef?.ref['copiedIdentity'] === true) return { sessionRef: undefined, requireResume: false };
+  if (state.sessionRef?.ref['copiedIdentity'] === true || isPoisonedSessionRef(state.sessionRef)) {
+    return { sessionRef: undefined, requireResume: false };
+  }
   const homeMatches = sameLaunchHome(state.sessionRef, descriptor);
   const changedInstance = state.executorId !== undefined && (state.executorId !== descriptor.id || state.descriptorRevision !== descriptor.revision);
   return {
@@ -1722,6 +2172,8 @@ function antigravityTurnError(failure: AntigravityTurnFailure): Error {
       reason_code: failure.code,
       retryable: failure.retryable,
       resetAt: failure.resetAt,
+      ...(failure.poisonedSession === true ? { poisonedSession: true } : {}),
+      ...(failure.continuable === true ? { continuable: true } : {}),
     },
   });
 }
