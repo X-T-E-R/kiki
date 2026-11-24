@@ -7,7 +7,7 @@ import { portableSpaceSourceRecordSchema, type PortableSpaceApplyInput, type Por
 import { z } from 'zod';
 import { formatRecipients, parseRecipients } from './ageCodec';
 import { endpointForPath, endpointKey, inspectTree, resealOptions, SpaceEndpoints, type LoadedSpaceTree } from './endpoints';
-import { writeLive } from './liveSpace';
+import { reconcileOfficialPlugins, writeLive } from './liveSpace';
 import { applyUnset, assignPath, isUnitId, modelDependencies, planChanges, reconcile, sameUnit, unitHashes, type Change, type VerifiedBase } from './mergeEngine';
 import { missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
@@ -386,13 +386,24 @@ export class PortableSpaceService {
     if (errors.length) throw new Error(errors.join('; '));
     if (signal?.aborted) throw new Error('Subscription sync cancelled');
     let backupPath: string | undefined;
-    if (!equalUnits(merged.nextUnits, targetUnits)) {
+    const wroteLive = !equalUnits(merged.nextUnits, targetUnits);
+    if (wroteLive) {
       if (createBackup) {
         backupPath = join(this.endpoints.home, 'backups', 'portable-spaces', `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.kiki.tgz`);
         const { recipient } = await this.endpoints.sync.ensureDeviceKeypair();
         await this.endpoints.write(backupPath, liveTree, { format: 'tgz', secretMode: 'sealed', encryption: { mode: 'x25519', recipients: [recipient] } });
       }
       await writeLive(this.endpoints.live, merged.nextUnits, targetUnits, 'override');
+    }
+    const pendingUpstreamPlugins = new Map<string, boolean>();
+    const appliedSet = new Set(merged.appliedIds);
+    for (const [unitId, unit] of upstreamUnits) {
+      if (unit.domain !== 'plugins' || unit.key[0] !== 'plugins' || unit.key[1] === undefined) continue;
+      if (wroteLive && appliedSet.has(unitId)) continue;
+      pendingUpstreamPlugins.set(unit.key[1], object(unit.value)['enabled'] !== false);
+    }
+    if (pendingUpstreamPlugins.size > 0) {
+      await reconcileOfficialPlugins(this.endpoints.live, pendingUpstreamPlugins);
     }
     const key = await this.hashKey();
     await this.saveBase(recordId, merged.nextBaseUnits, key);

@@ -22,6 +22,7 @@ import { GUI_CREDENTIALS, readGuiCredentials, readHomeFiles } from './homeFiles'
 import { writePrivateFile } from '../auth/privateFiles';
 import { sameUnit } from './mergeEngine';
 import { safePortablePath } from './tarArchive';
+import { findBundledOfficialPlugin } from './urlSubscription';
 
 export interface LiveServices {
   bootstrap: IBootstrapService;
@@ -35,6 +36,7 @@ export interface LiveServices {
   sessions: ISessionManager;
   index: ISessionIndex;
   logs: IAppendLogStore;
+  log?: { warn(message: string, details?: Record<string, unknown>): void };
 }
 
 function scopePath(scope: MemoryScope): string {
@@ -321,6 +323,75 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
     if (data) await writeFileAtomic(join(home, 'extensions.toml'), data);
     else await rm(join(home, 'extensions.toml'), { force: true });
   }
+  const changedOfficialPlugins = new Map<string, boolean>();
+  for (const unitId of changed) {
+    const nextUnit = next.get(unitId);
+    if (nextUnit === undefined || nextUnit.domain !== 'plugins' || nextUnit.key[0] !== 'plugins' || nextUnit.key[1] === undefined) continue;
+    const id = nextUnit.key[1];
+    if (findBundledOfficialPlugin(id) === undefined) continue;
+    changedOfficialPlugins.set(id, object(nextUnit.value)['enabled'] !== false);
+  }
+  if (changedOfficialPlugins.size > 0) {
+    await reconcileOfficialPlugins(live, changedOfficialPlugins);
+  }
   if (configDomains.size) await live.config.reload();
   return syncSkills(home, next, before);
+}
+
+/** Reconciles compiled-in official plugins declared in portable spaces without trusting remote sources or failing offline syncs. */
+export async function reconcileOfficialPlugins(
+  live: Pick<LiveServices, 'plugins' | 'log'>,
+  desiredPlugins: ReadonlyMap<string, boolean>,
+): Promise<void> {
+  const candidates: { readonly id: string; readonly enabled: boolean; readonly source: string; readonly sha256?: string }[] = [];
+  for (const [id, enabled] of desiredPlugins) {
+    const official = findBundledOfficialPlugin(id);
+    if (official === undefined) continue;
+    candidates.push({ id, enabled, source: official.source, sha256: official.sha256 });
+  }
+  if (candidates.length === 0) return;
+  let installedById: Map<string, { readonly enabled: boolean }>;
+  try {
+    installedById = new Map((await live.plugins.listPlugins()).map((item) => [item.id, item]));
+  } catch (error) {
+    live.log?.warn('portable space official plugin list failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  for (const candidate of candidates) {
+    const existing = installedById.get(candidate.id);
+    if (existing === undefined) {
+      if (!candidate.enabled) continue;
+      try {
+        await live.plugins.installPlugin({
+          source: candidate.source,
+          ...(candidate.sha256 === undefined ? {} : { sha256: candidate.sha256 }),
+          consent: true,
+          defaultEnabled: true,
+        });
+      } catch (error) {
+        live.log?.warn('portable space official plugin install failed', {
+          id: candidate.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      continue;
+    }
+    if (existing.enabled !== candidate.enabled) {
+      try {
+        await live.plugins.setPluginEnabled({
+          id: candidate.id,
+          enabled: candidate.enabled,
+          defaultEnabled: candidate.enabled,
+        });
+      } catch (error) {
+        live.log?.warn('portable space official plugin toggle failed', {
+          id: candidate.id,
+          enabled: candidate.enabled,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
 }

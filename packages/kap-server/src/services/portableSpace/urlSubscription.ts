@@ -3,6 +3,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
+import { readBundledPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import type { PortableSpaceDomain, PortableSpaceExcludedItem } from '@kiki/protocol';
 import { sameUnit, type VerifiedBase } from './mergeEngine';
 import { encodeToml, object, parseToml, PLAIN, type Data, type Units } from './treeProjection';
@@ -398,7 +399,33 @@ function isExecutableMcpEntry(entry: Data): boolean {
     || entry['type'] === 'stdio';
 }
 
-/** Strips executable hooks, cron scripts, agent executors, recipe hooks, and stdio/executable MCP settings from remote URL packs. */
+export interface OfficialCatalogPlugin {
+  readonly id: string;
+  readonly source: string;
+  readonly sha256?: string;
+}
+
+let cachedOfficialPlugins: ReadonlyMap<string, OfficialCatalogPlugin> | undefined;
+
+/** Looks up a compiled-in official Kiki plugin by ID without network access or trusting remote sources. */
+export function findBundledOfficialPlugin(id: string): OfficialCatalogPlugin | undefined {
+  if (cachedOfficialPlugins === undefined) {
+    const map = new Map<string, OfficialCatalogPlugin>();
+    for (const entry of readBundledPluginCatalog().marketplace.plugins) {
+      if (entry.tier === 'official' && typeof entry.source === 'string' && entry.source.length > 0) {
+        map.set(entry.id, {
+          id: entry.id,
+          source: entry.source,
+          ...(typeof entry.sha256 === 'string' && entry.sha256.length > 0 ? { sha256: entry.sha256 } : {}),
+        });
+      }
+    }
+    cachedOfficialPlugins = map;
+  }
+  return cachedOfficialPlugins.get(id);
+}
+
+/** Strips executable hooks, cron scripts, agent executors, recipe hooks, stdio MCP settings, and untrusted extensions from remote URL packs. */
 export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffer>): {
   readonly files: Map<string, Buffer>;
   readonly excluded: PortableSpaceExcludedItem[];
@@ -513,6 +540,58 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
         }
       }
       sanitized.set(path, mutated ? encodeToml(data) : bytes);
+      continue;
+    }
+
+    if (path === 'extensions.toml') {
+      const data = parseToml(bytes);
+      if (Object.hasOwn(data, 'skill_repos')) {
+        const repos = Array.isArray(data['skill_repos']) ? data['skill_repos'] : [];
+        if (repos.length === 0) {
+          excluded.push({
+            id: 'skills:skill_repos',
+            domain: 'skills',
+            path: 'skill_repos',
+            reason: 'Blocked skill_repos git clone from remote URL subscription',
+          });
+        } else {
+          for (const entry of repos) {
+            const name = typeof object(entry)['name'] === 'string' ? String(object(entry)['name']) : 'unknown';
+            excluded.push({
+              id: `skills:skill_repos.${name.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+              domain: 'skills',
+              path: `skill_repos.${name}`.slice(0, 512),
+              reason: 'Blocked skill_repos git clone from remote URL subscription',
+            });
+          }
+        }
+      }
+      const keptPlugins: Data[] = [];
+      const seenPluginIds = new Set<string>();
+      if (Array.isArray(data['plugins'])) {
+        for (const rawEntry of data['plugins']) {
+          const entry = object(rawEntry);
+          const id = typeof entry['id'] === 'string' ? entry['id'].trim() : '';
+          if (id.length === 0 || findBundledOfficialPlugin(id) === undefined) {
+            excluded.push({
+              id: `plugins:plugins.${(id || 'unknown').replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+              domain: 'plugins',
+              path: `plugins.${id || 'unknown'}`.slice(0, 512),
+              reason: 'Blocked non-official plugin from remote URL subscription',
+            });
+            continue;
+          }
+          if (seenPluginIds.has(id)) continue;
+          seenPluginIds.add(id);
+          keptPlugins.push({
+            id,
+            enabled: entry['enabled'] !== false,
+          });
+        }
+      }
+      if (keptPlugins.length > 0) {
+        sanitized.set(path, encodeToml({ plugins: keptPlugins }));
+      }
       continue;
     }
 

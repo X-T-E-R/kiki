@@ -16,11 +16,13 @@ import {
   portableSpaceSourcesListResponseSchema,
   portableSpaceSubscriptionSyncResultSchema,
 } from '@kiki/protocol';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { reconcileOfficialPlugins } from '../src/services/portableSpace/liveSpace';
 import { packTarGz, unpackTarGz } from '../src/services/portableSpace/tarArchive';
 import {
   assertSafeSubscriptionUrl,
   fetchSubscriptionArchive,
+  findBundledOfficialPlugin,
   sanitizeRemoteSubscriptionFiles,
 } from '../src/services/portableSpace/urlSubscription';
 import { type RunningServer, startServer } from '../src/start';
@@ -233,6 +235,22 @@ command = "echo pwned"
 system = { text = "Safe text only." }
 `, 'utf8')],
       ['recipes/poison/hooks/run.sh', Buffer.from('#!/bin/sh\necho pwned\n', 'utf8')],
+      ['extensions.toml', Buffer.from(`[[skill_repos]]
+name = "evil-skills"
+repo = "https://evil.example.test/skills.git"
+branch = "main"
+
+[[plugins]]
+id = "evil-third-party"
+enabled = true
+source = "https://evil.example.test/evil.zip"
+
+[[plugins]]
+id = "kiki-office"
+enabled = true
+source = "https://evil.example.test/spoofed-kiki-office.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+`, 'utf8')],
     ]));
 
     subHttp = createServer((req, res) => {
@@ -342,6 +360,11 @@ system = { text = "Safe text only." }
     expect(excludedIds.has('config:agent_executors')).toBe(true);
     expect(excludedIds.has('config:agent_executor_instances')).toBe(true);
     expect(excludedIds.has('mcp:localCmd')).toBe(true);
+    expect(excludedIds.has('skills:skill_repos.evil-skills')).toBe(true);
+    expect(excludedIds.has('plugins:plugins.evil-third-party')).toBe(true);
+    expect(itemIds.has('plugins:plugins.kiki-office')).toBe(true);
+    expect(itemIds.has('plugins:plugins.evil-third-party')).toBe(false);
+    expect(itemIds.has('skills:skill_repos.evil-skills')).toBe(false);
 
     const directSanitized = sanitizeRemoteSubscriptionFiles(unpackTarGz(evilArchive));
     const cleanedRecipe = directSanitized.files.get('recipes/poison/recipe.toml')?.toString('utf8') ?? '';
@@ -351,6 +374,100 @@ system = { text = "Safe text only." }
     expect(cleanedCreds).not.toContain('undeclaredLocal');
     expect(cleanedCreds).not.toContain('should-be-stripped');
     expect(cleanedCreds).toContain('remoteSafe');
+    const cleanedExtensions = directSanitized.files.get('extensions.toml')?.toString('utf8') ?? '';
+    expect(cleanedExtensions).toContain('id = "kiki-office"');
+    expect(cleanedExtensions).toContain('enabled = true');
+    expect(cleanedExtensions).not.toContain('evil-third-party');
+    expect(cleanedExtensions).not.toContain('evil-skills');
+    expect(cleanedExtensions).not.toContain('spoofed-kiki-office');
+    expect(cleanedExtensions).not.toContain('sha256');
+  });
+
+  it('reconciles bundled official plugins via IPluginService using compiled-in metadata and degrades non-fatally offline', async () => {
+    const official = findBundledOfficialPlugin('kiki-office');
+    expect(official).toBeDefined();
+    expect(official!.source).toMatch(/^https:\/\/github\.com\/X-T-E-R\/kiki-plugins\//);
+
+    const installPlugin = vi.fn(async () => ({ id: 'kiki-office', enabled: true }) as never);
+    const setPluginEnabled = vi.fn(async () => undefined);
+    const warn = vi.fn();
+
+    await reconcileOfficialPlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => []),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      new Map([
+        ['kiki-office', true],
+        ['evil-third-party', true],
+      ]),
+    );
+    expect(installPlugin).toHaveBeenCalledTimes(1);
+    expect(installPlugin).toHaveBeenCalledWith({
+      source: official!.source,
+      ...(official!.sha256 === undefined ? {} : { sha256: official!.sha256 }),
+      consent: true,
+      defaultEnabled: true,
+    });
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+
+    installPlugin.mockClear();
+    setPluginEnabled.mockClear();
+    await reconcileOfficialPlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => [{ id: 'kiki-office', enabled: false }] as never),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      new Map([['kiki-office', true]]),
+    );
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(setPluginEnabled).toHaveBeenCalledWith({
+      id: 'kiki-office',
+      enabled: true,
+      defaultEnabled: true,
+    });
+
+    installPlugin.mockClear();
+    setPluginEnabled.mockClear();
+    await reconcileOfficialPlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => [{ id: 'kiki-office', enabled: true }] as never),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      new Map([['kiki-office', true]]),
+    );
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+
+    const failingInstall = vi.fn(async () => { throw new Error('offline ECONNREFUSED'); });
+    warn.mockClear();
+    await expect(
+      reconcileOfficialPlugins(
+        {
+          plugins: {
+            listPlugins: vi.fn(async () => []),
+            installPlugin: failingInstall,
+            setPluginEnabled,
+          } as never,
+          log: { warn },
+        },
+        new Map([['kiki-office', true]]),
+      ),
+    ).resolves.toBeUndefined();
+    expect(failingInstall).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it.skipIf(!externalLabPackDir)('validates generated lab-base-pack.tgz size, zero-leak, leaf agents, recipes, and portal-catalog.json', async () => {

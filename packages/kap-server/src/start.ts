@@ -1574,6 +1574,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessions: core.accessor.get(ISessionManager),
     index: core.accessor.get(ISessionIndex),
     logs: core.accessor.get(IAppendLogStore),
+    log: core.accessor.get(ILogService),
   }, syncService, opts.allowLoopbackSubscriptions ? { allowLoopback: true } : undefined));
   registerPortableSpaceRoutes(app, portableSpaces, localOwnerToken);
   portableSpaces.startAutoSync();
